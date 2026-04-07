@@ -14265,11 +14265,11 @@ export default function App(){
 
         <div style={{marginTop:12,display:'flex',gap:8}}>
           <button className="btn btn-primary" disabled={(!imp.pdfParsed&&!imp.raw.trim())||!imp.custId||imp.pdfLoading}
-            onClick={()=>{
+            onClick={async()=>{
               if(imp.pdfParsed&&imp.pdfParsed.lineItems.length>0){
+                const _skuNorm=s=>(s||'').toLowerCase().replace(/[\s-]/g,'');
                 const pdfItems=imp.pdfParsed.lineItems.map((li,idx)=>{
                   const baseSku=li.sku;
-                  const _skuNorm=s=>(s||'').toLowerCase().replace(/[\s-]/g,'');
                   const catMatch=prod.find(p=>p.sku===baseSku)||(baseSku.length>3?prod.find(p=>p.sku.toLowerCase()===baseSku.toLowerCase()):null)||(baseSku.length>3?prod.find(p=>_skuNorm(p.sku)===_skuNorm(baseSku)):null);
                   const sizes=li.sizes&&Object.keys(li.sizes).length>0?li.sizes:{OSFA:li.quantity};
 
@@ -14304,6 +14304,23 @@ export default function App(){
                     _pdfRaw:li.raw
                   };
                 });
+
+                // Server-side fallback: resolve unmatched SKUs that may be beyond client-side prod limit
+                const unmatched=pdfItems.filter(it=>!it.catMatch&&!it.is_decoration&&it.sku);
+                if(unmatched.length>0&&supabase){
+                  try{
+                    const unmatchedSkus=[...new Set(unmatched.map(it=>it.sku))];
+                    const{data:serverProds}=await supabase.from('products').select('*').in('sku',unmatchedSkus);
+                    if(serverProds?.length){
+                      const found=new Map(serverProds.map(p=>[p.sku,p]));
+                      pdfItems.forEach(it=>{
+                        if(it.catMatch||it.is_decoration)return;
+                        const match=found.get(it.sku);
+                        if(match){it.catMatch=match;it.is_custom=false;it.name=match.name;it.brand=match.brand||it.brand;if(!it.color&&match.color)it.color=match.color;it.issues=[]}
+                      });
+                    }
+                  }catch(e){console.warn('[Import] Server-side SKU fallback failed:',e)}
+                }
 
                 // Separate decorations from products — drop decorations entirely (rep adds separately)
                 const products=pdfItems.filter(it=>!it.is_decoration);
