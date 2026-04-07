@@ -252,8 +252,8 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps}){
   const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});const[tcLook,setTcLook]=useState({loading:false,msg:''});
   const doTcLookup=async(fields)=>{if(!supabase||!fields.shipping_state||!fields.shipping_zip)return null;try{return await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:fields.shipping_address_line1||'',city:fields.shipping_city||'',state:fields.shipping_state,zip5:fields.shipping_zip})}catch(e){return{ok:false,error:'Error: '+e.message}}};
   const APPAREL_EXEMPT=['MN','NJ','PA','VT','AK','DE','MT','NH','OR'];const APPAREL_THRESHOLD=['MA','NY','RI'];
-  const _initRef=React.useRef(null);
-  const sv=(k,v)=>setF(x=>({...x,[k]:v}));React.useEffect(()=>{const c=customer?{...customer}:b;if(c.id&&!c.alpha_tag&&c.name)c.alpha_tag=c.name.replace(/[^a-zA-Z0-9 ]/g,'').trim().split(/\s+/).slice(0,2).join(' ').toUpperCase().slice(0,12);if(c.id&&(!c.contacts||!c.contacts.length))c.contacts=[{name:'',email:'',phone:'',role:'Head Coach'}];
+  const _initRef=React.useRef(null);const _openRef=React.useRef(false);
+  const sv=(k,v)=>setF(x=>({...x,[k]:v}));React.useEffect(()=>{if(!isOpen){_openRef.current=false;return}if(_openRef.current)return;_openRef.current=true;const c=customer?{...customer}:b;if(c.id&&!c.alpha_tag&&c.name)c.alpha_tag=c.name.replace(/[^a-zA-Z0-9 ]/g,'').trim().split(/\s+/).slice(0,2).join(' ').toUpperCase().slice(0,12);if(c.id&&(!c.contacts||!c.contacts.length))c.contacts=[{name:'',email:'',phone:'',role:'Head Coach'}];
     // Migrate existing alt_billing_addresses to have type field
     if(c.alt_billing_addresses){c.alt_billing_addresses=c.alt_billing_addresses.map(a=>a.type?a:{...a,type:'billing'})}
     // If editing and billing differs from shipping, migrate billing into alt_billing_addresses
