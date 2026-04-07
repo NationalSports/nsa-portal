@@ -13557,7 +13557,7 @@ export default function App(){
           if(Object.keys(sizes).length>0)parsed.push({sku,sizes,total});
         });
         if(parsed.length===0){nf('No valid rows found in file','error');setInvUpload(x=>({...x,uploading:false}));return}
-        // Match against existing products — try exact match first, then prefix/contains
+        // Match against existing products — try exact match first, then fuzzy fallbacks
         const matched=[];const unmatched=[];
         parsed.forEach(row=>{
           const s=row.sku;
@@ -13566,9 +13566,12 @@ export default function App(){
           if(!p)p=prod.find(x=>s.startsWith(x.sku.toUpperCase())||x.sku.toUpperCase().startsWith(s));
           // Fallback: strip dashes/spaces and compare
           if(!p){const stripped=s.replace(/[-\s]/g,'');p=prod.find(x=>x.sku.toUpperCase().replace(/[-\s]/g,'')===stripped)}
+          // Fallback: either SKU contains the other (handles SKUs with embedded color names etc.)
+          if(!p)p=prod.find(x=>{const xs=x.sku.toUpperCase();return xs.includes(s)||s.includes(xs)});
           if(p)matched.push({...row,product:p});
           else unmatched.push({...row,name:'',retail_price:'',category:'Tees',brand:'Adidas'});
         });
+        if(unmatched.length>0)console.log('[InvCSV] Unmatched SKUs:',unmatched.map(u=>u.sku),'| Sample catalog SKUs:',prod.slice(0,20).map(p=>p.sku));
         setInvUpload({step:'review',parsed,matched,unmatched,fileName:file.name,uploading:false});
         nf(parsed.length+' SKUs parsed — '+matched.length+' matched, '+unmatched.length+' new');
       }catch(e){console.error('[InvCSV]',e);nf('Failed to parse file: '+e.message,'error');setInvUpload(x=>({...x,uploading:false}))}
