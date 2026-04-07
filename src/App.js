@@ -3322,6 +3322,19 @@ export default function App(){
           }
         });
       }
+      // Notify sales rep when IFs are pulled by warehouse
+      safeItems(so).forEach(it=>{
+        safePicks(it).filter(pk=>pk.status==='pulled'&&pk.pulled_at).forEach(pk=>{
+          const pa=parseDate(pk.pulled_at);if(!pa)return;
+          const daysAgo=Math.floor((new Date()-pa)/(1000*60*60*24));
+          if(daysAgo<=7){
+            const szKeys=Object.keys(pk).filter(k=>SZ_ORD.includes(k)&&pk[k]>0);
+            const qty=szKeys.reduce((a,s)=>a+(pk[s]||0),0);
+            const szStr=szKeys.map(s=>s+':'+pk[s]).join(', ');
+            todos.push({type:'if_pulled',priority:3,msg:'📦 IF pulled: '+(it.sku||it.name||'Item'),detail:tag+' · '+so.id+' · '+qty+' units ('+szStr+')'+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so,action:'View',role:'sales',isNotification:true,date:pk.pulled_at});
+          }
+        });
+      });
     });
     // Coach-approved estimates → rep needs to convert to SO
     ests.filter(e=>e.status==='approved'&&e.approved_by==='Coach').forEach(e=>{
