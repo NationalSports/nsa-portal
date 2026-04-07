@@ -50,6 +50,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const decoVendors=decoVendorsProp||[];const decoVendorPricing=decoVendorPricingProp||[];
     const DECO_VENDORS=(()=>{const names=decoVendors.filter(v=>v.is_active!==false).map(v=>v.name);return names.length>0?[...names,'Other']:['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','Other']})();
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
+  const[showFirmApprove,setShowFirmApprove]=useState(false);const[firmRushPct,setFirmRushPct]=useState(0);
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('final');const[invDepositPct,setInvDepositPct]=useState(50);const[invBilling,setInvBilling]=useState('');
   const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');const[invSendTo,setInvSendTo]=useState('');const[invSendCustomEmail,setInvSendCustomEmail]=useState('');
   const[invSmsEnabled,setInvSmsEnabled]=useState(false);const[invSmsPhone,setInvSmsPhone]=useState('');const[invSmsMsg,setInvSmsMsg]=useState('');
@@ -1311,6 +1312,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             return actualShip>0&&overage>0?<div style={{fontSize:10,padding:'4px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#dc2626',fontWeight:600,marginTop:4}}>
               ⚠️ Shipping cost ${actualShip.toFixed(2)} exceeds quoted ${quotedShip.toFixed(2)} by <strong>${overage.toFixed(2)}</strong>
             </div>:null})()}
+      {isSO&&safeFirm(o).length>0&&(()=>{const fd=safeFirm(o)[0];const approved=fd.approved;return<div style={{padding:'8px 16px',background:approved?'#f5f3ff':'#faf5ff',border:approved?'2px solid #7c3aed':'2px solid #c4b5fd',borderRadius:8,marginTop:8,display:'flex',alignItems:'center',gap:10}}>
+        <span style={{fontSize:14}}>{approved?'✅':'📌'}</span>
+        <div style={{flex:1,fontSize:12}}>
+          {approved?<><strong style={{color:'#7c3aed'}}>Firm Date Approved:</strong> <strong>{fd.date}</strong></>
+          :<><strong style={{color:'#7c3aed'}}>Firm Date Requested:</strong> <strong>{fd.date}</strong> <span style={{color:'#94a3b8'}}>— Pending GM approval</span>{fd.note&&<span style={{color:'#64748b'}}> · {fd.note}</span>}</>}
+          {fd.rush_pct>0&&<span style={{marginLeft:8,padding:'1px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>+{fd.rush_pct}% deco rush fee</span>}
+        </div>
+        {!approved&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}} onClick={()=>{setShowFirmApprove(true)}}>Review & Approve</button>}
+      </div>})()}
       </div>
       <div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
         <div style={{flex:1,minWidth:180}}><label className="form-label">Memo</label><input className="form-input" value={o.memo} onChange={e=>sv('memo',e.target.value)} style={{fontSize:14}}/></div>
@@ -1322,9 +1332,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <option value="at_once">At-Once</option><option value="booking">Booking</option></select>
         </div>}
         {isSO&&<div style={{width:140}}>
-          <label className="form-label">{o.order_type==='booking'?'Expected':'Expected'}</label>
+          <label className="form-label">Expected</label>
           <input className="form-input" type="date" value={o.expected_date||''} onChange={e=>sv('expected_date',e.target.value)}/>
-          <button style={{fontSize:10,marginTop:4,padding:'3px 8px',borderRadius:4,background:'#f5f3ff',border:'1px solid #ddd6fe',color:'#7c3aed',cursor:'pointer',fontWeight:600,display:'flex',alignItems:'center',gap:3}} onClick={()=>{setFirmReqDate(o.expected_date||'');setFirmReqNote('');setShowFirmReq(true)}}>📌 Request Firm Date</button>
         </div>}
         {isSO&&o.order_type==='booking'&&<div style={{width:140}}>
           <label className="form-label">Ship Date</label>
@@ -1508,6 +1517,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               nf('Credit of $'+creditToApply.toFixed(2)+' applied (available: $'+totalBal.toFixed(2)+')');
             }} onMouseEnter={e=>e.currentTarget.style.background='#ecfdf5'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🏷️ Apply Credit</button>}
             {o.credit_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#065f46',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);sv('credit_applied',false);sv('credit_amount',0);nf('Credit removed')}} onMouseEnter={e=>e.currentTarget.style.background='#ecfdf5'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🏷️ Remove Credit</button>}
+            {isSO&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#7c3aed',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);setFirmReqDate(o.expected_date||'');setFirmReqNote('');setShowFirmReq(true)}} onMouseEnter={e=>e.currentTarget.style.background='#f5f3ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}>📌 Request Firm Date</button></>}
             {(isE||onDelete)&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#dc2626',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(onDelete){onDelete(o.id)}else{nf('Delete not available','error')}}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="trash" size={12}/> Delete</button></>}
           </div></>})()}
         </div>
@@ -1601,7 +1611,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <button className={`tab ${tab==='messages'?'active':''}`} onClick={()=>setTab('messages')}>Messages {(()=>{const entityMsgs=(msgs||[]).filter(m=>(m.entity_id===o.id)||(m.so_id===o.id));const unread=entityMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{unread}</span>:` (${entityMsgs.length})`})()}</button>
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
       {isSO&&<button className={`tab ${tab==='jobs'?'active':''}`} onClick={()=>setTab('jobs')}>Jobs {(()=>{const jc=(o.jobs||[]).length;return jc>0?` (${jc})`:''})()}</button>}
-      {isSO&&<button className={`tab ${tab==='firm_dates'?'active':''}`} onClick={()=>setTab('firm_dates')}>Firm Dates ({safeFirm(o).length})</button>}
       {isSO&&<button className={`tab ${tab==='tracking'?'active':''}`} onClick={()=>setTab('tracking')}>Tracking {(()=>{const sc=(o._shipments||[]).length||(o._tracking_number?1:0);return sc>0?<span style={{background:'#166534',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{sc}</span>:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='costs'?'active':''}`} onClick={()=>setTab('costs')} style={tab==='costs'?{background:'#166534',color:'white'}:{}}>💰 Costs</button>}
       <button className={`tab ${tab==='history'?'active':''}`} onClick={()=>setTab('history')}>History</button>
@@ -2934,19 +2943,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
       </div>})()}
 
-    {/* FIRM DATES TAB */}
-    {isSO&&tab==='firm_dates'&&<div className="card"><div className="card-header"><h2>Firm Date Requests</h2><button className="btn btn-sm btn-primary" onClick={()=>sv('firm_dates',[...safeFirm(o),{item_desc:'',date:'',approved:false}])}><Icon name="plus" size={12}/> Add</button></div>
-      <div className="card-body">{safeFirm(o).length===0?<div className="empty">No firm date requests</div>:
-        <table><thead><tr><th>Item</th><th>Date</th><th>Status</th><th>Action</th></tr></thead><tbody>
-        {safeFirm(o).map((fd,i)=>{const itemOpts=safeItems(o).map(it=>`${it.sku} - ${it.name}`);
-          return<tr key={i}>
-          <td><select className="form-select" value={fd.item_desc} onChange={e=>{const fds=[...safeFirm(o)];fds[i]={...fds[i],item_desc:e.target.value};sv('firm_dates',fds)}}>
-            <option value="">Select item...</option>{itemOpts.map(opt=><option key={opt}>{opt}</option>)}<option value="__custom">Other (type below)</option></select>
-            {fd.item_desc==='__custom'&&<input className="form-input" style={{marginTop:4,fontSize:12}} placeholder="Custom description..." onChange={e=>{const fds=[...safeFirm(o)];fds[i]={...fds[i],item_desc:e.target.value};sv('firm_dates',fds)}}/>}</td>
-          <td><input className="form-input" type="date" value={fd.date||''} onChange={e=>{const fds=[...safeFirm(o)];fds[i]={...fds[i],date:e.target.value};sv('firm_dates',fds)}}/></td>
-          <td>{fd.approved?<span className="badge badge-green">Approved</span>:<span className="badge badge-amber">Pending</span>}</td>
-          <td><div style={{display:'flex',gap:4}}>{!fd.approved&&<button className="btn btn-sm btn-primary" onClick={()=>{const fds=[...safeFirm(o)];fds[i]={...fds[i],approved:true};sv('firm_dates',fds);nf('Approved')}}>✓</button>}
-            <button className="btn btn-sm btn-secondary" onClick={()=>sv('firm_dates',safeFirm(o).filter((_,x)=>x!==i))}><Icon name="trash" size={10}/></button></div></td></tr>})}</tbody></table>}</div></div>}
 
     {/* COSTS TAB — Expected vs Actual */}
     {isSO&&tab==='costs'&&(()=>{
@@ -3319,11 +3315,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <input className="form-input" type="date" value={firmReqDate} onChange={e=>setFirmReqDate(e.target.value)}/>
         </div>
         <div style={{marginBottom:12}}>
-          <label className="form-label">Note to GM (Gayle)</label>
+          <label className="form-label">Note to Production Manager</label>
           <textarea className="form-input" rows={3} value={firmReqNote} onChange={e=>setFirmReqNote(e.target.value)} placeholder="e.g., Coach needs by this date for first game, already confirmed with Adidas they can ship by 3/5..."/>
         </div>
         <div style={{padding:10,background:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:6,fontSize:11,color:'#6d28d9'}}>
-          <strong>Preview message to Gayle Peterson (GM):</strong>
+          <strong>Preview message to Production Manager:</strong>
           <div style={{marginTop:4,padding:8,background:'white',borderRadius:4,fontSize:12,color:'#374151'}}>
             <strong>{cu.name}</strong> is requesting a firm date for <strong>{o.id}</strong> ({cust?.name} — {o.memo}).<br/>
             📅 Requested: <strong>{firmReqDate||'—'}</strong><br/>
@@ -3349,6 +3345,42 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }}>📌 Send Request to GM</button>
       </div>
     </div></div>}
+
+    {/* FIRM DATE APPROVE MODAL */}
+    {showFirmApprove&&(()=>{const fd=safeFirm(o)[0];if(!fd)return null;return<div className="modal-overlay" onClick={()=>setShowFirmApprove(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:480}}>
+      <div className="modal-header"><h2>📌 Review Firm Date Request</h2><button className="modal-close" onClick={()=>setShowFirmApprove(false)}>x</button></div>
+      <div className="modal-body">
+        <div style={{padding:12,background:'#f8fafc',borderRadius:6,marginBottom:12}}>
+          <div style={{fontWeight:700,color:'#1e40af'}}>{o.id} — {cust?.name}</div>
+          <div style={{fontSize:12,color:'#64748b'}}>{o.memo}</div>
+          <div style={{fontSize:12,marginTop:4}}>Requested by: <strong>{fd.requested_by}</strong> on {fd.requested_at}</div>
+          <div style={{fontSize:13,marginTop:4,color:'#7c3aed',fontWeight:700}}>Firm Date: {fd.date}</div>
+          {fd.note&&<div style={{fontSize:12,color:'#64748b',marginTop:4}}>Note: {fd.note}</div>}
+        </div>
+        <div style={{marginBottom:12}}>
+          <label className="form-label">Rush Fee — In-House Decoration Cost Increase</label>
+          <div style={{display:'flex',gap:6,marginTop:4}}>
+            {[{v:0,l:'No Rush Fee'},{v:10,l:'+10%'},{v:25,l:'+25%'},{v:50,l:'+50%'}].map(opt=>
+              <button key={opt.v} className={`btn btn-sm ${firmRushPct===opt.v?'btn-primary':'btn-secondary'}`} style={firmRushPct===opt.v?{background:'#7c3aed',borderColor:'#7c3aed'}:{}} onClick={()=>setFirmRushPct(opt.v)}>{opt.l}</button>)}
+          </div>
+          <div style={{fontSize:10,color:'#64748b',marginTop:4}}>Applies only to in-house decoration costs, not garment costs.</div>
+        </div>
+      </div>
+      <div className="modal-footer">
+        <button className="btn btn-secondary" onClick={()=>setShowFirmApprove(false)}>Cancel</button>
+        <button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>{
+          const fds=safeFirm(o).map((f,i)=>i===0?{...f,approved:true,approved_by:cu.name,approved_at:new Date().toLocaleString(),rush_pct:firmRushPct}:f);
+          sv('firm_dates',fds);
+          sv('expected_date',fd.date);
+          const msg={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,
+            text:'✅ FIRM DATE APPROVED: '+fd.date+(firmRushPct>0?' — Rush fee: +'+firmRushPct+'% on in-house decoration':''),
+            ts:new Date().toLocaleString(),read_by:[cu.id],firm_approved:true,firm_date:fd.date,tagged_members:[],entity_type:'so',entity_id:o.id};
+          onMsg(prev=>[...prev,msg]);
+          setShowFirmApprove(false);setFirmRushPct(0);
+          nf('Firm date approved'+(firmRushPct>0?' with +'+firmRushPct+'% deco rush fee':''));
+        }}>✅ Approve Firm Date</button>
+      </div>
+    </div></div>})()}
 
     {/* CREATE INVOICE MODAL */}
     {showInvCreate&&(()=>{
