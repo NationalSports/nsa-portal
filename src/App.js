@@ -594,13 +594,8 @@ const _dbSaveSOInner = async (so) => {
   if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number')so._version=vc}
   return _dbSavingGuard(async()=>{let saveFailed=false;try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
-    let{error:soErr}=await supabase.from('sales_orders').upsert(_pick(soRow,_soCols),{onConflict:'id'});
-    if(soErr){
-      const coreSoRow={};Object.keys(_pick(soRow,_soCols)).forEach(k=>{if(!_soExtraCols.has(k))coreSoRow[k]=_pick(soRow,_soCols)[k]});
-      const retry=await supabase.from('sales_orders').upsert(coreSoRow,{onConflict:'id'});
-      if(retry.error){console.error('[DB] sales_orders upsert failed:',retry.error.message);saveFailed=true}
-      else console.warn('[DB] SO saved with core columns only')
-    }
+    // NOTE: SO row upsert is deferred to AFTER items/children are inserted (see below)
+    // This prevents cross-tab race conditions where poll sees new updated_at but stale items
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
     const oldItemIds=(await supabase.from('so_items').select('id').eq('so_id',so.id)).data?.map(i=>i.id)||[];
     if(oldItemIds.length){
@@ -717,6 +712,15 @@ const _dbSaveSOInner = async (so) => {
           else console.warn('[DB] PO lines saved without billed/tracking_numbers columns')
         }
       }
+    }
+    // Upsert SO row LAST — so updated_at only changes in DB after all children are in place
+    // This prevents cross-tab polls from seeing new updated_at with stale/missing items
+    let{error:soErr}=await supabase.from('sales_orders').upsert(_pick(soRow,_soCols),{onConflict:'id'});
+    if(soErr){
+      const coreSoRow={};Object.keys(_pick(soRow,_soCols)).forEach(k=>{if(!_soExtraCols.has(k))coreSoRow[k]=_pick(soRow,_soCols)[k]});
+      const retry=await supabase.from('sales_orders').upsert(coreSoRow,{onConflict:'id'});
+      if(retry.error){console.error('[DB] sales_orders upsert failed:',retry.error.message);saveFailed=true}
+      else console.warn('[DB] SO saved with core columns only')
     }
     if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}
     _dbSaveFailedIds.delete(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();
@@ -1901,12 +1905,19 @@ export default function App(){
         setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;
           // If DB has empty items/jobs (mid-save transient state), keep local entirely
           if(local.items?.length&&(!s.items||!s.items.length))return local;
-          // Fast path: if updated_at and item count match, data is unchanged — return same ref
-          if(local.updated_at===s.updated_at&&(local.items?.length||0)===(s.items?.length||0))return local;
+          // Count pick_lines across all items for change detection
+          const localPickCount=(local.items||[]).reduce((a,it)=>(it.pick_lines?.length||0)+a,0);
+          const dbPickCount=(s.items||[]).reduce((a,it)=>(it.pick_lines?.length||0)+a,0);
+          // Fast path: only skip if updated_at, item count, AND pick_line count all match
+          if(local.updated_at===s.updated_at&&(local.items?.length||0)===(s.items?.length||0)&&localPickCount===dbPickCount)return local;
           // Accept DB data — don't compare updated_at (string comparison of locale dates is unreliable)
           const m={...s};
           if(local.jobs?.length&&(!s.jobs||!s.jobs.length))m.jobs=local.jobs;
           if(local.art_files?.length&&(!s.art_files||!s.art_files.length))m.art_files=local.art_files;
+          // Protect against mid-save transient state: if local has pick_lines but DB doesn't, preserve them
+          if(localPickCount>0&&dbPickCount===0&&m.items?.length){
+            m.items=m.items.map((si,idx)=>{const li=local.items?.[idx];if(li?.pick_lines?.length&&(!si.pick_lines||!si.pick_lines.length))return{...si,pick_lines:li.pick_lines};return si});
+          }
           return m};
           if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.sales_orders.map(s=>(_dbSaveFailedIds.has(s.id)||_dbSavePendingIds.has(s.id))?(prev.find(p=>p.id===s.id)||s):mergeSO(s));_dbSnap.current.sos=merged;if(prev.length===merged.length&&merged.every((m,i)=>m===prev[i]))return prev;return merged}
           const merged2=d.sales_orders.map(mergeSO);_dbSnap.current.sos=merged2;if(prev.length===merged2.length&&merged2.every((m,i)=>m===prev[i]))return prev;return merged2});
