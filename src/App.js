@@ -13562,7 +13562,7 @@ export default function App(){
         parsed.forEach(row=>{
           const p=prod.find(x=>x.sku.toUpperCase()===row.sku);
           if(p)matched.push({...row,product:p});
-          else unmatched.push({...row,name:'',retail_price:'',category:'Tees'});
+          else unmatched.push({...row,name:'',retail_price:'',category:'Tees',brand:'Adidas'});
         });
         setInvUpload({step:'review',parsed,matched,unmatched,fileName:file.name,uploading:false});
         nf(parsed.length+' SKUs parsed — '+matched.length+' matched, '+unmatched.length+' new');
@@ -13586,11 +13586,12 @@ export default function App(){
       items.forEach((it,i)=>{
         if(!it.name||!it.sku)return;
         const retail=parseFloat(it.retail_price)||0;
-        const cat=it.category||'Tees';
-        const cost=retail>0?Math.floor(retail*(cat==='Custom'?0.4125:0.375)*100)/100:0;
+        const cat=it.category||'Tees';const brand=it.brand||'Adidas';
+        const costMult=brand==='Adidas'?(cat==='Custom'?0.4125:0.375):(brand==='Under Armour'||brand==='New Balance')?0.425:0;
+        const cost=retail>0&&costMult>0?Math.floor(retail*costMult*100)/100:0;
         const allSizes=Object.keys(it.sizes);
-        const p={id:'p-inv-'+Date.now()+'-'+i,vendor_id:D_V.find(v=>v.name==='Adidas')?.id||null,sku:it.sku,name:it.name,
-          brand:'Adidas',color:'',color_category:null,category:cat,
+        const p={id:'p-inv-'+Date.now()+'-'+i,vendor_id:D_V.find(v=>v.name.toLowerCase()===brand.toLowerCase())?.id||null,sku:it.sku,name:it.name,
+          brand,color:'',color_category:null,category:cat,
           retail_price:retail,nsa_cost:cost,
           available_sizes:allSizes.length>0?SZ_ORD_I.filter(s=>allSizes.includes(s)).concat(allSizes.filter(s=>!SZ_ORD_I.includes(s))):['S','M','L','XL','2XL'],
           is_active:true,_inv:{},_alerts:{}};
@@ -15239,20 +15240,25 @@ export default function App(){
             {/* STEP 3: New products — bulk add names & retail for unmatched SKUs */}
             {invUpload.step==='newProducts'&&<>
               <h3 style={{fontSize:14,marginBottom:4}}>New Products — Add to Catalog</h3>
-              <p style={{fontSize:12,color:'#64748b',margin:'0 0 12px'}}>These SKUs weren't found in the system. Add a name and retail price for each. Cost is calculated automatically (Adidas 37.5%, Custom 41.25%).</p>
+              <p style={{fontSize:12,color:'#64748b',margin:'0 0 12px'}}>These SKUs weren't found in the system. Add a name, brand, and retail price for each. Cost is auto-calculated (Adidas 37.5%/41.25% Custom, UA/NB 42.5%).</p>
               <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:0,maxHeight:400,overflowY:'auto'}}>
-                <table><thead><tr><th style={{width:100}}>SKU</th><th style={{width:200}}>Name *</th><th style={{width:90}}>Retail *</th><th style={{width:80}}>Cost</th><th style={{width:100}}>Category</th><th>Sizes</th></tr></thead>
+                <table><thead><tr><th style={{width:100}}>SKU</th><th style={{width:180}}>Name *</th><th style={{width:110}}>Brand</th><th style={{width:90}}>Retail *</th><th style={{width:80}}>Cost</th><th style={{width:100}}>Category</th><th>Sizes</th></tr></thead>
                 <tbody>{invUpload.unmatched.map((u,i)=>{
-                  const retail=parseFloat(u.retail_price)||0;const cat=u.category||'Tees';
-                  const cost=retail>0?Math.floor(retail*(cat==='Custom'?0.4125:0.375)*100)/100:0;
+                  const retail=parseFloat(u.retail_price)||0;const cat=u.category||'Tees';const brand=u.brand||'Adidas';
+                  const costMult=brand==='Adidas'?(cat==='Custom'?0.4125:0.375):(brand==='Under Armour'||brand==='New Balance')?0.425:0;
+                  const cost=retail>0&&costMult>0?Math.floor(retail*costMult*100)/100:0;
                   const sizeSummary=SZ_ORD_I.filter(sz=>u.sizes[sz]>0).map(sz=>sz+':'+u.sizes[sz]).join(', ')||Object.entries(u.sizes).filter(([,v])=>v>0).map(([k,v])=>k+':'+v).join(', ');
                   return<tr key={i}>
                     <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:11}}>{u.sku}</td>
                     <td><input className="form-input" style={{fontSize:11,padding:'4px 6px'}} value={u.name} placeholder="Product name..."
                       onChange={e=>{const v=e.target.value;setInvUpload(x=>({...x,unmatched:x.unmatched.map((r,j)=>j===i?{...r,name:v}:r)}))}}/></td>
+                    <td><select className="form-select" style={{fontSize:10,padding:'3px 4px'}} value={brand}
+                      onChange={e=>{const v=e.target.value;setInvUpload(x=>({...x,unmatched:x.unmatched.map((r,j)=>j===i?{...r,brand:v}:r)}))}}>
+                      {['Adidas','Under Armour','New Balance','Nike','Other'].map(b=><option key={b}>{b}</option>)}
+                    </select></td>
                     <td><input className="form-input" style={{fontSize:11,padding:'4px 6px',width:70}} type="number" step="0.01" value={u.retail_price} placeholder="0.00"
                       onChange={e=>{const v=e.target.value;setInvUpload(x=>({...x,unmatched:x.unmatched.map((r,j)=>j===i?{...r,retail_price:v}:r)}))}}/></td>
-                    <td style={{fontSize:11,color:'#64748b'}}>{cost>0?'$'+cost.toFixed(2):<span style={{color:'#d1d5db'}}>auto</span>}</td>
+                    <td style={{fontSize:11,color:'#64748b'}}>{cost>0?'$'+cost.toFixed(2):(costMult>0?<span style={{color:'#d1d5db'}}>auto</span>:<span style={{color:'#d97706',fontSize:10}}>manual</span>)}</td>
                     <td><select className="form-select" style={{fontSize:10,padding:'3px 4px'}} value={u.category||'Tees'}
                       onChange={e=>{const v=e.target.value;setInvUpload(x=>({...x,unmatched:x.unmatched.map((r,j)=>j===i?{...r,category:v}:r)}))}}>
                       {CATEGORIES.map(c=><option key={c}>{c}</option>)}
