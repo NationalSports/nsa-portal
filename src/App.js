@@ -970,6 +970,24 @@ const _dbDeleteInvoice = async (id) => {
 // Save-in-progress guard — prevents poll/realtime from loading partial data during delete-and-reinsert
 let _dbSavingCount=0;let _dbLastSaveAt=0;
 const _dbSavingGuard=async(fn)=>{_dbSavingCount++;try{return await fn()}finally{_dbSavingCount--;_dbLastSaveAt=Date.now()}};
+// Direct pick_line status update — atomic, bypasses SO delete-and-reinsert for fast cross-tab sync
+const _dbUpdatePickLineStatus=async(soId,itemIdx,pickId,status,pulledQtys)=>{
+  if(!supabase)return;
+  try{
+    // Find the so_item_id for this item index
+    const{data:items}=await supabase.from('so_items').select('id').eq('so_id',soId).order('item_index');
+    const itemRow=items?.[itemIdx];if(!itemRow)return;
+    // Update the pick_line status directly
+    const updateData={status,pulled_at:status==='pulled'?new Date().toLocaleString():null};
+    if(pulledQtys){updateData.sizes=pulledQtys}
+    const{error}=await supabase.from('so_item_pick_lines').update(updateData).eq('so_item_id',itemRow.id).eq('pick_id',pickId);
+    if(error)console.error('[DB] Direct pick_line update failed:',error.message);
+    else{console.log('[DB] Direct pick_line update:',pickId,'→',status);
+      // Bump SO updated_at so other tabs detect the change
+      await supabase.from('sales_orders').update({updated_at:new Date().toLocaleString()}).eq('id',soId);
+    }
+  }catch(e){console.error('[DB] Direct pick_line update error:',e)}
+};
 // Per-entity save queue — prevents concurrent saves for the same estimate/SO from racing.
 // When a save is in-progress and a newer version arrives, the newer version is queued.
 // After the current save finishes, only the LATEST queued version is saved (intermediate versions are skipped).
@@ -989,6 +1007,11 @@ const _queuedEntitySave=async(id,data,saveFn)=>{
   }finally{delete _dbSaveInFlight[id]}
   return lastResult;
 };
+// Track recently-pulled SOs — prevents poll/realtime from reverting pulls for 30s after a warehouse pull
+// This is a safety net for slow connections where the full SO save might not complete before the next poll
+const _recentlyPulledSOs=new Map();// soId → timestamp
+const _markRecentlyPulled=(soId)=>{_recentlyPulledSOs.set(soId,Date.now())};
+const _isRecentlyPulled=(soId)=>{const t=_recentlyPulledSOs.get(soId);if(!t)return false;if(Date.now()-t>30000){_recentlyPulledSOs.delete(soId);return false}return true};
 // Safe localStorage write — catches QuotaExceededError and notifies user instead of silently failing
 let _lsQuotaWarned=false;// prevent spamming quota warnings
 let _onCacheFullChange=null;// set by App component to show persistent banner
@@ -1813,8 +1836,8 @@ export default function App(){
         if(Date.now()-_dbLastSaveAt<1500){console.log('[DB] Reload deferred — save just finished');_rtTimer=setTimeout(reloadAll,1500);return}
         const d=await _dbLoad();if(!d||!d.hasData)return;
         // Preserve local versions of estimates/SOs whose decoration saves failed — don't let DB data overwrite them
-        const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id);
-        const _hasProtected=_dbSaveFailedIds.size>0||_dbSavePendingIds.size>0;
+        const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
+        const _hasProtected=_dbSaveFailedIds.size>0||_dbSavePendingIds.size>0||_recentlyPulledSOs.size>0;
         const _mergeProtected=(dbArr,snapKey,setter)=>{
           if(!_hasProtected)return{snap:dbArr,apply:prev=>{const r=_jsonEq(prev,dbArr)?prev:dbArr;return r}};
           return{snap:dbArr.map(e=>_shouldProtect(e.id)?(_dbSnap.current[snapKey]?.find(s=>s.id===e.id)||e):e),
@@ -1919,7 +1942,8 @@ export default function App(){
             m.items=m.items.map((si,idx)=>{const li=local.items?.[idx];if(li?.pick_lines?.length&&(!si.pick_lines||!si.pick_lines.length))return{...si,pick_lines:li.pick_lines};return si});
           }
           return m};
-          if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.sales_orders.map(s=>(_dbSaveFailedIds.has(s.id)||_dbSavePendingIds.has(s.id))?(prev.find(p=>p.id===s.id)||s):mergeSO(s));_dbSnap.current.sos=merged;if(prev.length===merged.length&&merged.every((m,i)=>m===prev[i]))return prev;return merged}
+          const _protect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
+          if(_dbSaveFailedIds.size||_dbSavePendingIds.size||_recentlyPulledSOs.size){const merged=d.sales_orders.map(s=>_protect(s.id)?(prev.find(p=>p.id===s.id)||s):mergeSO(s));_dbSnap.current.sos=merged;if(prev.length===merged.length&&merged.every((m,i)=>m===prev[i]))return prev;return merged}
           const merged2=d.sales_orders.map(mergeSO);_dbSnap.current.sos=merged2;if(prev.length===merged2.length&&merged2.every((m,i)=>m===prev[i]))return prev;return merged2});
         setInvs(prev=>{const mergeInv=i=>{const local=prev.find(p=>p.id===i.id);if(!local)return i;const m={...i};if(local.payments?.length&&(!i.payments||!i.payments.length))m.payments=local.payments;if(local.print_history?.length&&!i.print_history?.length)m.print_history=local.print_history;if(local.sent_history?.length&&!i.sent_history?.length)m.sent_history=local.sent_history;if(local.email_status&&!i.email_status)m.email_status=local.email_status;if(local.email_opened_at&&!i.email_opened_at)m.email_opened_at=local.email_opened_at;return m};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.invoices.map(i=>(_dbSaveFailedIds.has(i.id)||_dbSavePendingIds.has(i.id))?(prev.find(p=>p.id===i.id)||i):mergeInv(i));return changed(prev,merged)?merged:prev}const merged2=d.invoices.map(mergeInv);return changed(prev,merged2)?merged2:prev});
         setCust(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
@@ -9509,7 +9533,10 @@ export default function App(){
                         boxes.filter(bx=>bx.tracking_number).forEach(bx=>{shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'ups',ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,created_by:cu?.id,created_at:new Date().toLocaleString()})});
                         updatedSO._shipments=shipments;
                       }
-                      savSO(updatedSO);
+                      _markRecentlyPulled(t.soId);
+                      savSO(updatedSO,{skipMerge:true});
+                      // Also do a direct atomic pick_line update to DB — fast cross-tab sync without waiting for full SO save
+                      if(activePick){const pq={};szKeys.forEach(sz=>{pq[sz]=actualQtys2[sz]||0});_dbUpdatePickLineStatus(t.soId,t.itemIdx,activePick.pick_id,'pulled',pq)}
                       const pulledSizes2=szKeys.filter(sz=>(actualQtys2[sz]||0)>0).map(sz=>sz+':'+actualQtys2[sz]).join(' ');
                       const totalPulling2=szKeys.reduce((a,sz)=>a+(actualQtys2[sz]||0),0);
                       addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:t.sku,name:t.name,color:t.color,productId:p?.id||item.product_id,sizes:pulledSizes2,qty:totalPulling2,by:cu?.id||'warehouse'});
