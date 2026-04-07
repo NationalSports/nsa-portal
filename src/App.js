@@ -977,10 +977,9 @@ const _dbUpdatePickLineStatus=async(soId,itemIdx,pickId,status,pulledQtys)=>{
     // Find the so_item_id for this item index
     const{data:items}=await supabase.from('so_items').select('id').eq('so_id',soId).order('item_index');
     const itemRow=items?.[itemIdx];if(!itemRow)return;
-    // Update the pick_line status directly
-    const updateData={status,pulled_at:status==='pulled'?new Date().toLocaleString():null};
-    if(pulledQtys){updateData.sizes=pulledQtys}
-    const{error}=await supabase.from('so_item_pick_lines').update(updateData).eq('so_item_id',itemRow.id).eq('pick_id',pickId);
+    // Update the pick_line status and sizes — pulled_at goes into sizes JSONB (not a top-level column)
+    const sizes={...pulledQtys,pulled_at:status==='pulled'?new Date().toLocaleString():undefined};
+    const{error}=await supabase.from('so_item_pick_lines').update({status,sizes}).eq('so_item_id',itemRow.id).eq('pick_id',pickId);
     if(error)console.error('[DB] Direct pick_line update failed:',error.message);
     else{console.log('[DB] Direct pick_line update:',pickId,'→',status);
       // Bump SO updated_at so other tabs detect the change
