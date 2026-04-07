@@ -594,8 +594,20 @@ const _dbSaveSOInner = async (so) => {
   if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number')so._version=vc}
   return _dbSavingGuard(async()=>{let saveFailed=false;try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
-    // NOTE: SO row upsert is deferred to AFTER items/children are inserted (see below)
-    // This prevents cross-tab race conditions where poll sees new updated_at but stale items
+    // Save SO row FIRST (FK constraint requires it before items), but with OLD updated_at
+    // We'll bump updated_at LAST so cross-tab polls don't see stale items
+    const finalUpdatedAt=soRow.updated_at;
+    const soRowInitial={..._pick(soRow,_soCols)};
+    // Try to preserve existing updated_at for the initial upsert (only bump it after children are saved)
+    const{data:existingSO}=await supabase.from('sales_orders').select('updated_at').eq('id',so.id).single();
+    if(existingSO)soRowInitial.updated_at=existingSO.updated_at;
+    let{error:soErr}=await supabase.from('sales_orders').upsert(soRowInitial,{onConflict:'id'});
+    if(soErr){
+      const coreSoRow={};Object.keys(soRowInitial).forEach(k=>{if(!_soExtraCols.has(k))coreSoRow[k]=soRowInitial[k]});
+      const retry=await supabase.from('sales_orders').upsert(coreSoRow,{onConflict:'id'});
+      if(retry.error){console.error('[DB] sales_orders upsert failed:',retry.error.message);saveFailed=true}
+      else console.warn('[DB] SO saved with core columns only')
+    }
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
     const oldItemIds=(await supabase.from('so_items').select('id').eq('so_id',so.id)).data?.map(i=>i.id)||[];
     if(oldItemIds.length){
@@ -713,14 +725,9 @@ const _dbSaveSOInner = async (so) => {
         }
       }
     }
-    // Upsert SO row LAST — so updated_at only changes in DB after all children are in place
-    // This prevents cross-tab polls from seeing new updated_at with stale/missing items
-    let{error:soErr}=await supabase.from('sales_orders').upsert(_pick(soRow,_soCols),{onConflict:'id'});
-    if(soErr){
-      const coreSoRow={};Object.keys(_pick(soRow,_soCols)).forEach(k=>{if(!_soExtraCols.has(k))coreSoRow[k]=_pick(soRow,_soCols)[k]});
-      const retry=await supabase.from('sales_orders').upsert(coreSoRow,{onConflict:'id'});
-      if(retry.error){console.error('[DB] sales_orders upsert failed:',retry.error.message);saveFailed=true}
-      else console.warn('[DB] SO saved with core columns only')
+    // Bump updated_at LAST — so cross-tab polls only see the new timestamp after all children are in place
+    if(finalUpdatedAt!==existingSO?.updated_at){
+      await supabase.from('sales_orders').update({updated_at:finalUpdatedAt}).eq('id',so.id);
     }
     if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}
     _dbSaveFailedIds.delete(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();
