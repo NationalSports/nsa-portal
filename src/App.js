@@ -14190,7 +14190,7 @@ export default function App(){
                   </div>
                 </div>}
               </div>
-              <CustModal isOpen={impNewCust} onClose={()=>setImpNewCust(false)} onSave={(newC)=>{savC(newC);setImp(x=>({...x,custId:newC.id}));setImpNewCust(false);nf('Customer "'+newC.name+'" created and selected')}} customer={imp.pdfParsed?.customerName&&!imp.custId?{name:imp.pdfParsed.customerName,alpha_tag:imp.pdfParsed.customerName.replace(/[^a-zA-Z0-9 ]/g,'').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase()}:null} parents={pars} reps={REPS}/>
+              <CustModal isOpen={impNewCust} onClose={()=>setImpNewCust(false)} onSave={(newC)=>{savC(newC);setImp(x=>({...x,custId:newC.id}));setImpNewCust(false);nf('Customer "'+newC.name+'" created and selected')}} customer={imp.pdfParsed?.customerName&&!imp.custId?{name:imp.pdfParsed.customerName,alpha_tag:imp.pdfParsed.customerName.replace(/[^a-zA-Z0-9 ]/g,'').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase()}:null} parents={pars} reps={REPS} supabase={supabase}/>
               {imp.custId&&(()=>{const c=cust.find(x=>x.id===imp.custId);if(!c)return null;
                 return<div style={{padding:10,background:'#f0fdf4',borderRadius:6,marginBottom:12}}>
                   <div style={{fontWeight:700}}>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></div>
@@ -18636,7 +18636,7 @@ export default function App(){
         </div>
       </div>
     </div></div>}
-    <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars} reps={REPS}/>
+    <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars} reps={REPS} supabase={supabase}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
     {/* INVENTORY PO CREATE MODAL */}
