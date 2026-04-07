@@ -3345,6 +3345,7 @@ export default function App(){
     // Filter to person-specific: reps see their customers' todos, CSRs see their assigned reps' todos
     const myTodos=todos.filter(t=>{
       if(t.role==='all')return true;
+      if(t.role==='gm'&&(cu.role==='gm'||cu.role==='admin'||cu.role==='super_admin'))return true;
       if(cu.role==='rep'||cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return t.repId===cu.id;
       if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(t.repId)}
       return true;
@@ -3387,14 +3388,14 @@ export default function App(){
     <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{borderColor:'#f59e0b'}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
       {isA&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
       <div className="stat-card" style={{borderColor:ssConnected?'#22c55e':'#ef4444'}}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
-    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
         <select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
           <option value="me">My Items</option><option value="all">All Reps</option>{REPS.filter(r=>r.id!==cu.id&&(r.role==='rep'||r.role==='admin'||r.role==='gm')).map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}
         </select>
         <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
-          <option value="all">All Types</option><option value="art">Art / Approvals</option><option value="follow_up">Follow-ups</option><option value="est">Estimates</option><option value="order">Orders / Deposits</option><option value="deadline">Deadlines</option><option value="delivery">Delivery</option><option value="issue">Issues</option>
+          <option value="all">All Types</option><option value="art">Art / Approvals</option><option value="follow_up">Follow-ups</option><option value="est">Estimates</option><option value="order">Orders / Deposits</option><option value="deadline">Deadlines</option><option value="delivery">Delivery</option><option value="firm">Firm Dates</option><option value="issue">Issues</option>
         </select></div></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {actionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'All clear!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
@@ -14191,7 +14192,7 @@ export default function App(){
                   </div>
                 </div>}
               </div>
-              <CustModal isOpen={impNewCust} onClose={()=>setImpNewCust(false)} onSave={(newC)=>{savC(newC);setImp(x=>({...x,custId:newC.id}));setImpNewCust(false);nf('Customer "'+newC.name+'" created and selected')}} customer={imp.pdfParsed?.customerName&&!imp.custId?{name:imp.pdfParsed.customerName,alpha_tag:imp.pdfParsed.customerName.replace(/[^a-zA-Z0-9 ]/g,'').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase()}:null} parents={pars} reps={REPS}/>
+              <CustModal isOpen={impNewCust} onClose={()=>setImpNewCust(false)} onSave={(newC)=>{savC(newC);setImp(x=>({...x,custId:newC.id}));setImpNewCust(false);nf('Customer "'+newC.name+'" created and selected')}} customer={imp.pdfParsed?.customerName&&!imp.custId?{name:imp.pdfParsed.customerName,alpha_tag:imp.pdfParsed.customerName.replace(/[^a-zA-Z0-9 ]/g,'').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase()}:null} parents={pars} reps={REPS} supabase={supabase}/>
               {imp.custId&&(()=>{const c=cust.find(x=>x.id===imp.custId);if(!c)return null;
                 return<div style={{padding:10,background:'#f0fdf4',borderRadius:6,marginBottom:12}}>
                   <div style={{fontWeight:700}}>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></div>
@@ -14266,11 +14267,11 @@ export default function App(){
 
         <div style={{marginTop:12,display:'flex',gap:8}}>
           <button className="btn btn-primary" disabled={(!imp.pdfParsed&&!imp.raw.trim())||!imp.custId||imp.pdfLoading}
-            onClick={()=>{
+            onClick={async()=>{
               if(imp.pdfParsed&&imp.pdfParsed.lineItems.length>0){
+                const _skuNorm=s=>(s||'').toLowerCase().replace(/[\s-]/g,'');
                 const pdfItems=imp.pdfParsed.lineItems.map((li,idx)=>{
                   const baseSku=li.sku;
-                  const _skuNorm=s=>(s||'').toLowerCase().replace(/[\s-]/g,'');
                   const catMatch=prod.find(p=>p.sku===baseSku)||(baseSku.length>3?prod.find(p=>p.sku.toLowerCase()===baseSku.toLowerCase()):null)||(baseSku.length>3?prod.find(p=>_skuNorm(p.sku)===_skuNorm(baseSku)):null);
                   const sizes=li.sizes&&Object.keys(li.sizes).length>0?li.sizes:{OSFA:li.quantity};
 
@@ -14305,6 +14306,23 @@ export default function App(){
                     _pdfRaw:li.raw
                   };
                 });
+
+                // Server-side fallback: resolve unmatched SKUs that may be beyond client-side prod limit
+                const unmatched=pdfItems.filter(it=>!it.catMatch&&!it.is_decoration&&it.sku);
+                if(unmatched.length>0&&supabase){
+                  try{
+                    const unmatchedSkus=[...new Set(unmatched.map(it=>it.sku))];
+                    const{data:serverProds}=await supabase.from('products').select('*').in('sku',unmatchedSkus);
+                    if(serverProds?.length){
+                      const found=new Map(serverProds.map(p=>[p.sku,p]));
+                      pdfItems.forEach(it=>{
+                        if(it.catMatch||it.is_decoration)return;
+                        const match=found.get(it.sku);
+                        if(match){it.catMatch=match;it.is_custom=false;it.name=match.name;it.brand=match.brand||it.brand;if(!it.color&&match.color)it.color=match.color;it.issues=[]}
+                      });
+                    }
+                  }catch(e){console.warn('[Import] Server-side SKU fallback failed:',e)}
+                }
 
                 // Separate decorations from products — drop decorations entirely (rep adds separately)
                 const products=pdfItems.filter(it=>!it.is_decoration);
@@ -14501,19 +14519,20 @@ export default function App(){
               <table style={{fontSize:11}}><thead><tr><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th><th>Retail</th><th>Cost</th><th>Sell</th><th>Sizes</th><th>Qty</th><th>Total</th></tr></thead>
               <tbody>{keeping.map((it,i)=>{
                 const au=isAUi(it.brand);
-                const sell=it.rate||0;
-                const costMult=it.brand==='Adidas'?0.375:(it.brand==='Under Armour'||it.brand==='New Balance')?0.425:0;
-                const adiRetailDiv=0.6;// Adidas contract: always 40% off MSRP
-                const retail=it._retail!=null?it._retail:(it.brand==='Adidas'?rQ(sell/adiRetailDiv):au?rQ(sell/(1-disc)):0);
-                const cost=au?rQ(retail*costMult):rQ(sell/mk);
+                const cat=it.catMatch;
+                const sell=it._sell!=null?it._sell:(it.rate||0);
+                const retail=it._retail!=null?it._retail:(cat?.retail_price||0);
+                const cost=it._cost!=null?it._cost:(au?(cat?.nsa_cost||rQ(retail*(it.brand==='Adidas'?0.375:0.425))):rQ(sell/mk));
+                const displayName=it._name!=null?it._name:(cat?.name||it.name||'');
+                const displayColor=it._color!=null?it._color:(cat?.color||it.color||'');
                 return<tr key={i}>
                   <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
-                  <td><input className="form-input" style={{fontSize:11,padding:'2px 4px',width:'100%',minWidth:120}} value={it._name!=null?it._name:(it.name||'')} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_name:v}:p)}))}}/></td>
+                  <td><input className="form-input" style={{fontSize:11,padding:'2px 4px',width:'100%',minWidth:120}} value={displayName} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_name:v}:p)}))}}/></td>
                   <td style={{fontSize:10}}>{it.brand}</td>
-                  <td><input className="form-input" style={{fontSize:10,padding:'2px 4px',width:90}} value={it._color!=null?it._color:(it.color||'')} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_color:v}:p)}))}}/></td>
-                  <td style={{textAlign:'right'}}>{au?<input type="number" step="0.01" min="0" className="form-input" style={{width:75,fontSize:11,textAlign:'right',padding:'2px 4px'}} value={retail||''} onChange={e=>{const v=parseFloat(e.target.value)||0;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_retail:v}:p)}))}}/>:<span style={{color:'#94a3b8'}}>—</span>}</td>
-                  <td style={{textAlign:'right'}}>${cost.toFixed(2)}</td>
-                  <td style={{textAlign:'right',fontWeight:600}}>${sell.toFixed(2)}</td>
+                  <td><input className="form-input" style={{fontSize:10,padding:'2px 4px',width:90}} value={displayColor} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_color:v}:p)}))}}/></td>
+                  <td style={{textAlign:'right'}}><input type="number" step="0.01" min="0" className="form-input" style={{width:75,fontSize:11,textAlign:'right',padding:'2px 4px'}} value={retail||''} onChange={e=>{const v=parseFloat(e.target.value)||0;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_retail:v}:p)}))}}/></td>
+                  <td style={{textAlign:'right'}}><input type="number" step="0.01" min="0" className="form-input" style={{width:75,fontSize:11,textAlign:'right',padding:'2px 4px'}} value={cost||''} onChange={e=>{const v=parseFloat(e.target.value)||0;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_cost:v}:p)}))}}/></td>
+                  <td style={{textAlign:'right',fontWeight:600}}><input type="number" step="0.01" min="0" className="form-input" style={{width:75,fontSize:11,textAlign:'right',padding:'2px 4px',fontWeight:600}} value={sell||''} onChange={e=>{const v=parseFloat(e.target.value)||0;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_sell:v,rate:v,totalAmt:v*(p.totalQty||0)}:p)}))}}/></td>
                   <td style={{fontSize:9}}>{Object.entries(it.sizes||{}).sort(([a],[b])=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)).map(([s,q])=>s+':'+q).join(' ')}</td>
                   <td style={{fontWeight:700,textAlign:'center'}}>{it.totalQty||0}</td>
                   <td style={{textAlign:'right'}}>${(it.totalAmt||0).toFixed(0)}</td>
@@ -18620,7 +18639,7 @@ export default function App(){
         </div>
       </div>
     </div></div>}
-    <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars} reps={REPS}/>
+    <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars} reps={REPS} supabase={supabase}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
     {/* INVENTORY PO CREATE MODAL */}
