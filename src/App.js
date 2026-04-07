@@ -2524,7 +2524,7 @@ export default function App(){
     }).catch(e=>{console.error('[OMG] Detail load failed:',e);setOmgDetailLoading(false)});
   },[omgSel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const[estF,setEstF]=useState({status:'open',rep:'all',search:'',sort:'date_desc'});
-  const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
+  const[soF,setSOF]=useState({status:'active',rep:'all',search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
   const dirtyRef=React.useRef(false);
   const[favSkus,setFavSkus]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_fav_skus')||'[]')}catch{return[]}});
@@ -4027,7 +4027,8 @@ export default function App(){
     if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} openPOId={eSOOpenPO} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod} companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC}/></React.Suspense></ComponentErrorBoundary>
     // Filter SOs
     let fSOs=[...sos];
-    if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
+    if(soF.status==='active')fSOs=fSOs.filter(s=>calcSOStatus(s)!=='complete');
+    else if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
     if(soF.rep!=='all')fSOs=fSOs.filter(s=>s.created_by===soF.rep);
     if(soF.search){const ss=soF.search.toLowerCase();fSOs=fSOs.filter(s=>{const c2=cust.find(x=>x.id===s.customer_id);return s.id.toLowerCase().includes(ss)||(s.memo||'').toLowerCase().includes(ss)||(c2?.name||'').toLowerCase().includes(ss)||(c2?.alpha_tag||'').toLowerCase().includes(ss)||(s.po_number||'').toLowerCase().includes(ss)||safeItems(s).some(it=>(it.sku||'').toLowerCase().includes(ss)||(it.name||'').toLowerCase().includes(ss))})}
     // Sort
@@ -4037,26 +4038,26 @@ export default function App(){
     else if(soF.sort==='customer')fSOs.sort((a,b)=>{const ca=cust.find(x=>x.id===a.customer_id)?.name||'';const cb=cust.find(x=>x.id===b.customer_id)?.name||'';return ca.localeCompare(cb)});
     // Status counts using actual so.status
     const stCounts={booking:sos.filter(s=>calcSOStatus(s)==='booking').length,need_order:sos.filter(s=>calcSOStatus(s)==='need_order').length,waiting_receive:sos.filter(s=>calcSOStatus(s)==='waiting_receive').length,items_received:sos.filter(s=>calcSOStatus(s)==='items_received').length,in_production:sos.filter(s=>calcSOStatus(s)==='in_production').length,ready_to_invoice:sos.filter(s=>calcSOStatus(s)==='ready_to_invoice').length,complete:sos.filter(s=>calcSOStatus(s)==='complete').length};
-    const activeFilters=soF.status!=='all'||soF.rep!=='all'||soF.search;
+    const activeFilters=(soF.status!=='all'&&soF.status!=='active')||soF.rep!=='all'||soF.search;
 
     return(<>
       {/* Clickable status stat cards */}
       <div className="stats-row">
-        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:'all'}))}>
-          <div className="stat-label">Total</div><div className="stat-value">{sos.length}</div></div>
-        {stCounts.booking>0&&<div className="stat-card" style={{cursor:'pointer',outline:soF.status==='booking'?'2px solid #4338ca':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='booking'?'all':'booking'}))}>
+        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='active'||soF.status==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:'active'}))}>
+          <div className="stat-label">Active</div><div className="stat-value">{sos.length-stCounts.complete}</div></div>
+        {stCounts.booking>0&&<div className="stat-card" style={{cursor:'pointer',outline:soF.status==='booking'?'2px solid #4338ca':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='booking'?'active':'booking'}))}>
           <div className="stat-label">Booking</div><div className="stat-value" style={{color:'#4338ca'}}>{stCounts.booking}</div></div>}
-        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='need_order'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='need_order'?'all':'need_order'}))}>
+        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='need_order'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='need_order'?'active':'need_order'}))}>
           <div className="stat-label">Need Order</div><div className="stat-value" style={{color:'#d97706'}}>{stCounts.need_order}</div></div>
-        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='waiting_receive'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='waiting_receive'?'all':'waiting_receive'}))}>
+        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='waiting_receive'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='waiting_receive'?'active':'waiting_receive'}))}>
           <div className="stat-label">Waiting</div><div className="stat-value" style={{color:'#2563eb'}}>{stCounts.waiting_receive}</div></div>
-        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='items_received'?'2px solid #065f46':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='items_received'?'all':'items_received'}))}>
+        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='items_received'?'2px solid #065f46':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='items_received'?'active':'items_received'}))}>
           <div className="stat-label">Items In</div><div className="stat-value" style={{color:'#065f46'}}>{stCounts.items_received}</div></div>
-        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='in_production'?'2px solid #7c3aed':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='in_production'?'all':'in_production'}))}>
+        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='in_production'?'2px solid #7c3aed':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='in_production'?'active':'in_production'}))}>
           <div className="stat-label">In Production</div><div className="stat-value" style={{color:'#7c3aed'}}>{stCounts.in_production}</div></div>
-        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='ready_to_invoice'?'2px solid #c2410c':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='ready_to_invoice'?'all':'ready_to_invoice'}))}>
+        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='ready_to_invoice'?'2px solid #c2410c':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='ready_to_invoice'?'active':'ready_to_invoice'}))}>
           <div className="stat-label">Ready to Invoice</div><div className="stat-value" style={{color:'#c2410c'}}>{stCounts.ready_to_invoice}</div></div>
-        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='complete'?'2px solid #166534':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='complete'?'all':'complete'}))}>
+        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='complete'?'2px solid #166534':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='complete'?'active':'complete'}))}>
           <div className="stat-label">Complete</div><div className="stat-value" style={{color:'#166534'}}>{stCounts.complete}</div></div>
       </div>
 
@@ -4067,7 +4068,7 @@ export default function App(){
           <option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={soF.sort} onChange={e=>setSOF(f=>({...f,sort:e.target.value}))}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="expected">By Expected Date</option><option value="customer">By Customer</option></select>
-        {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setSOF({status:'all',rep:'all',search:'',sort:'date_desc'})}>\u2715 Clear</button>}
+        {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setSOF({status:'active',rep:'all',search:'',sort:'date_desc'})}>\u2715 Clear</button>}
         <span style={{fontSize:11,color:'#64748b'}}>{fSOs.length}{fSOs.length!==sos.length?' of '+sos.length:''} orders</span>
       </div>
 
