@@ -14517,19 +14517,20 @@ export default function App(){
               <table style={{fontSize:11}}><thead><tr><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th><th>Retail</th><th>Cost</th><th>Sell</th><th>Sizes</th><th>Qty</th><th>Total</th></tr></thead>
               <tbody>{keeping.map((it,i)=>{
                 const au=isAUi(it.brand);
-                const sell=it.rate||0;
-                const costMult=it.brand==='Adidas'?0.375:(it.brand==='Under Armour'||it.brand==='New Balance')?0.425:0;
-                const adiRetailDiv=0.6;// Adidas contract: always 40% off MSRP
-                const retail=it._retail!=null?it._retail:(it.brand==='Adidas'?rQ(sell/adiRetailDiv):au?rQ(sell/(1-disc)):0);
-                const cost=au?rQ(retail*costMult):rQ(sell/mk);
+                const cat=it.catMatch;
+                const sell=it._sell!=null?it._sell:(it.rate||0);
+                const retail=it._retail!=null?it._retail:(cat?.retail_price||0);
+                const cost=it._cost!=null?it._cost:(au?(cat?.nsa_cost||rQ(retail*(it.brand==='Adidas'?0.375:0.425))):rQ(sell/mk));
+                const displayName=it._name!=null?it._name:(cat?.name||it.name||'');
+                const displayColor=it._color!=null?it._color:(cat?.color||it.color||'');
                 return<tr key={i}>
                   <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
-                  <td><input className="form-input" style={{fontSize:11,padding:'2px 4px',width:'100%',minWidth:120}} value={it._name!=null?it._name:(it.name||'')} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_name:v}:p)}))}}/></td>
+                  <td><input className="form-input" style={{fontSize:11,padding:'2px 4px',width:'100%',minWidth:120}} value={displayName} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_name:v}:p)}))}}/></td>
                   <td style={{fontSize:10}}>{it.brand}</td>
-                  <td><input className="form-input" style={{fontSize:10,padding:'2px 4px',width:90}} value={it._color!=null?it._color:(it.color||'')} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_color:v}:p)}))}}/></td>
-                  <td style={{textAlign:'right'}}>{au?<input type="number" step="0.01" min="0" className="form-input" style={{width:75,fontSize:11,textAlign:'right',padding:'2px 4px'}} value={retail||''} onChange={e=>{const v=parseFloat(e.target.value)||0;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_retail:v}:p)}))}}/>:<span style={{color:'#94a3b8'}}>—</span>}</td>
-                  <td style={{textAlign:'right'}}>${cost.toFixed(2)}</td>
-                  <td style={{textAlign:'right',fontWeight:600}}>${sell.toFixed(2)}</td>
+                  <td><input className="form-input" style={{fontSize:10,padding:'2px 4px',width:90}} value={displayColor} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_color:v}:p)}))}}/></td>
+                  <td style={{textAlign:'right'}}><input type="number" step="0.01" min="0" className="form-input" style={{width:75,fontSize:11,textAlign:'right',padding:'2px 4px'}} value={retail||''} onChange={e=>{const v=parseFloat(e.target.value)||0;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_retail:v}:p)}))}}/></td>
+                  <td style={{textAlign:'right'}}><input type="number" step="0.01" min="0" className="form-input" style={{width:75,fontSize:11,textAlign:'right',padding:'2px 4px'}} value={cost||''} onChange={e=>{const v=parseFloat(e.target.value)||0;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_cost:v}:p)}))}}/></td>
+                  <td style={{textAlign:'right',fontWeight:600}}><input type="number" step="0.01" min="0" className="form-input" style={{width:75,fontSize:11,textAlign:'right',padding:'2px 4px',fontWeight:600}} value={sell||''} onChange={e=>{const v=parseFloat(e.target.value)||0;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_sell:v,rate:v,totalAmt:v*(p.totalQty||0)}:p)}))}}/></td>
                   <td style={{fontSize:9}}>{Object.entries(it.sizes||{}).sort(([a],[b])=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)).map(([s,q])=>s+':'+q).join(' ')}</td>
                   <td style={{fontWeight:700,textAlign:'center'}}>{it.totalQty||0}</td>
                   <td style={{textAlign:'right'}}>${(it.totalAmt||0).toFixed(0)}</td>
