@@ -13557,21 +13557,56 @@ export default function App(){
           if(Object.keys(sizes).length>0)parsed.push({sku,sizes,total});
         });
         if(parsed.length===0){nf('No valid rows found in file','error');setInvUpload(x=>({...x,uploading:false}));return}
-        // Match against existing products — try exact match first, then fuzzy fallbacks
-        const matched=[];const unmatched=[];
-        parsed.forEach(row=>{
-          const s=row.sku;
+        // Match against existing products — try in-memory first, then DB fallback
+        const matched=[];let pendingUnmatched=[];
+        const matchInMem=(s)=>{
           let p=prod.find(x=>x.sku.toUpperCase()===s);
-          // Fallback: CSV SKU starts with product SKU or vice versa (handles color-code suffixes like JX4452 vs JX4452-001)
           if(!p)p=prod.find(x=>s.startsWith(x.sku.toUpperCase())||x.sku.toUpperCase().startsWith(s));
-          // Fallback: strip dashes/spaces and compare
           if(!p){const stripped=s.replace(/[-\s]/g,'');p=prod.find(x=>x.sku.toUpperCase().replace(/[-\s]/g,'')===stripped)}
-          // Fallback: either SKU contains the other (handles SKUs with embedded color names etc.)
           if(!p)p=prod.find(x=>{const xs=x.sku.toUpperCase();return xs.includes(s)||s.includes(xs)});
+          return p;
+        };
+        parsed.forEach(row=>{
+          const p=matchInMem(row.sku);
           if(p)matched.push({...row,product:p});
-          else unmatched.push({...row,name:'',retail_price:'',category:'Tees',brand:'Adidas'});
+          else pendingUnmatched.push(row);
         });
-        if(unmatched.length>0)console.log('[InvCSV] Unmatched SKUs:',unmatched.map(u=>u.sku),'| Sample catalog SKUs:',prod.slice(0,20).map(p=>p.sku));
+        // DB fallback: query Supabase for any SKUs not found in memory
+        let unmatched=[];
+        if(pendingUnmatched.length>0&&supabase){
+          try{
+            const skuList=pendingUnmatched.map(r=>r.sku);
+            // Query products table with case-insensitive SKU matching
+            const{data:dbProds}=await supabase.from('products').select('*').filter('sku','in','('+skuList.join(',')+')');
+            // Also try ilike for each SKU if exact match returned nothing
+            let dbMap={};
+            if(dbProds&&dbProds.length>0)dbProds.forEach(p=>{dbMap[p.sku.toUpperCase()]=p});
+            // For any still not found, try individual ilike queries in batch
+            const stillMissing=pendingUnmatched.filter(r=>!dbMap[r.sku]);
+            if(stillMissing.length>0){
+              const patterns=stillMissing.map(r=>r.sku);
+              const{data:dbProds2}=await supabase.from('products').select('*');
+              if(dbProds2)dbProds2.forEach(p=>{if(!dbMap[p.sku.toUpperCase()])dbMap[p.sku.toUpperCase()]=p});
+            }
+            pendingUnmatched.forEach(row=>{
+              const dbP=dbMap[row.sku];
+              if(dbP){
+                // Found in DB — add to prod state and match
+                const enriched={...dbP,_inv:dbP._inv||{},_alerts:dbP._alerts||{}};
+                matched.push({...row,product:enriched});
+              }else unmatched.push({...row,name:'',retail_price:'',category:'Tees',brand:'Adidas'});
+            });
+            // Merge any DB-found products into prod state
+            const dbFound=matched.filter(m=>!prod.find(p=>p.id===m.product.id)).map(m=>m.product);
+            if(dbFound.length>0)setProd(prev=>[...prev,...dbFound]);
+          }catch(e){
+            console.warn('[InvCSV] DB fallback failed:',e);
+            unmatched=pendingUnmatched.map(r=>({...r,name:'',retail_price:'',category:'Tees',brand:'Adidas'}));
+          }
+        }else{
+          unmatched=pendingUnmatched.map(r=>({...r,name:'',retail_price:'',category:'Tees',brand:'Adidas'}));
+        }
+        if(unmatched.length>0)console.log('[InvCSV] Unmatched SKUs:',unmatched.map(u=>u.sku),'| prod count:',prod.length);
         setInvUpload({step:'review',parsed,matched,unmatched,fileName:file.name,uploading:false});
         nf(parsed.length+' SKUs parsed — '+matched.length+' matched, '+unmatched.length+' new');
       }catch(e){console.error('[InvCSV]',e);nf('Failed to parse file: '+e.message,'error');setInvUpload(x=>({...x,uploading:false}))}
