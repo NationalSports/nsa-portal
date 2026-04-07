@@ -13571,39 +13571,35 @@ export default function App(){
           if(p)matched.push({...row,product:p});
           else pendingUnmatched.push(row);
         });
-        // DB fallback: query Supabase for any SKUs not found in memory (handles DB load timeout)
+        // DB fallback: fetch all products from Supabase directly (handles DB load timeout)
+        // The in-memory prod state may be incomplete if the initial DB load timed out
         let unmatched=[];
         if(pendingUnmatched.length>0&&supabase){
           try{
-            const dbMap={};
-            // Query in batches of 50 (Supabase .in() has limits) — try both original and uppercase
-            const allSkus=[...new Set(pendingUnmatched.flatMap(r=>[r.sku,r.sku.toLowerCase()]))];
-            for(let i=0;i<allSkus.length;i+=50){
-              const batch=allSkus.slice(i,i+50);
-              const{data,error}=await supabase.from('products').select('*').in('sku',batch);
-              if(error)console.warn('[InvCSV] DB query error:',error.message);
-              if(data)data.forEach(p=>{dbMap[p.sku.toUpperCase()]=p});
-            }
-            // Also try ilike for any still not found (catches partial/fuzzy matches in DB)
-            const stillMissing=pendingUnmatched.filter(r=>!dbMap[r.sku]);
-            if(stillMissing.length>0){
-              // Query with or/ilike filters in batches of 10
-              for(let i=0;i<stillMissing.length&&i<100;i+=10){
-                const batch=stillMissing.slice(i,i+10);
-                const orFilter=batch.map(r=>'sku.ilike.%'+r.sku+'%').join(',');
-                const{data}=await supabase.from('products').select('*').or(orFilter);
-                if(data)data.forEach(p=>{if(!dbMap[p.sku.toUpperCase()])dbMap[p.sku.toUpperCase()]=p});
-              }
-            }
-            console.log('[InvCSV] DB fallback found',Object.keys(dbMap).length,'products for',pendingUnmatched.length,'unmatched SKUs');
+            // Fetch all products directly — fast for typical catalog sizes
+            const{data:allDbProds,error}=await supabase.from('products').select('*').order('sku');
+            if(error)console.warn('[InvCSV] DB products query error:',error.message);
+            const dbProds=allDbProds||[];
+            console.log('[InvCSV] DB fallback: loaded',dbProds.length,'products from Supabase for',pendingUnmatched.length,'unmatched SKUs');
+            // Build lookup maps for fast matching
+            const byExact=new Map();const byUpper=new Map();const byStripped=new Map();
+            dbProds.forEach(p=>{
+              byExact.set(p.sku,p);
+              byUpper.set(p.sku.toUpperCase(),p);
+              byStripped.set(p.sku.toUpperCase().replace(/[-\s]/g,''),p);
+            });
             pendingUnmatched.forEach(row=>{
-              const dbP=dbMap[row.sku]||dbMap[row.sku.toLowerCase()];
+              const s=row.sku;
+              let dbP=byExact.get(s)||byUpper.get(s);
+              if(!dbP){const stripped=s.replace(/[-\s]/g,'');dbP=byStripped.get(stripped)}
+              // Prefix/contains fallback
+              if(!dbP)dbP=dbProds.find(p=>{const ps=p.sku.toUpperCase();return s.startsWith(ps)||ps.startsWith(s)||ps.includes(s)||s.includes(ps)});
               if(dbP){
                 const enriched={...dbP,_inv:dbP._inv||{},_alerts:dbP._alerts||{}};
                 matched.push({...row,product:enriched});
               }else unmatched.push({...row,name:'',retail_price:'',category:'Tees',brand:'Adidas'});
             });
-            // Merge DB-found products into local prod state so rest of app can use them
+            // Merge DB-found products into local prod state
             const dbFound=matched.filter(m=>!prod.find(p=>p.id===m.product.id)).map(m=>m.product);
             if(dbFound.length>0){setProd(prev=>[...prev,...dbFound]);console.log('[InvCSV] Merged',dbFound.length,'products from DB into local state')}
           }catch(e){
@@ -13631,10 +13627,25 @@ export default function App(){
       if(invUpload.unmatched.length>0)setInvUpload(x=>({...x,step:'newProducts',matched:[]}));
       else setInvUpload({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
     };
-    const saveNewInvProducts=(items)=>{
-      const newProds=[];const invUpdates=[];
+    const saveNewInvProducts=async(items)=>{
+      // Pre-check DB for existing SKUs to avoid duplicates
+      let existingDbMap={};
+      if(supabase){
+        try{
+          const skus=items.map(it=>it.sku).filter(Boolean);
+          const{data}=await supabase.from('products').select('*').in('sku',skus);
+          if(data)data.forEach(p=>{existingDbMap[p.sku.toUpperCase()]=p});
+        }catch(e){console.warn('[InvCSV] Pre-check failed:',e)}
+      }
+      const newProds=[];const invUpdates=[];const existingUpdates=[];
       items.forEach((it,i)=>{
         if(!it.name||!it.sku)return;
+        // If SKU already exists in DB, update inventory on existing product instead of creating new
+        const existing=existingDbMap[it.sku.toUpperCase()]||prod.find(x=>x.sku.toUpperCase()===it.sku.toUpperCase());
+        if(existing){
+          existingUpdates.push({product:{...existing,_inv:existing._inv||{},_alerts:existing._alerts||{}},sizes:it.sizes});
+          return;
+        }
         const retail=parseFloat(it.retail_price)||0;
         const cat=it.category||'Tees';const brand=it.brand||'Adidas';
         const costMult=brand==='Adidas'?(cat==='Custom'?0.4125:0.375):(brand==='Under Armour'||brand==='New Balance')?0.425:0;
@@ -13648,14 +13659,25 @@ export default function App(){
         newProds.push(p);
         invUpdates.push({product:p,sizes:it.sizes});
       });
+      // Update inventory on existing products found in DB
+      if(existingUpdates.length>0){
+        existingUpdates.forEach(({product,sizes})=>{
+          const newInv={...(product._inv||{})};const deltas={};
+          Object.entries(sizes).forEach(([sz,qty])=>{const prev=newInv[sz]||0;deltas[sz]=qty-prev;newInv[sz]=qty});
+          savI(product.id,newInv,deltas,'Inventory CSV upload','manual');
+        });
+        // Merge into local state if not already there
+        const toMerge=existingUpdates.map(u=>u.product).filter(p=>!prod.find(x=>x.id===p.id));
+        if(toMerge.length>0)setProd(prev=>[...prev,...toMerge]);
+        nf(existingUpdates.length+' existing product'+(existingUpdates.length!==1?'s':'')+' updated');
+      }
       if(newProds.length>0){
         setProd(prev=>{
           const next=[...prev,...newProds];
-          // Apply inventory to new products
           return next.map(p=>{const upd=invUpdates.find(u=>u.product.id===p.id);return upd?{...p,_inv:upd.sizes}:p});
         });
         newProds.forEach(p=>{const upd=invUpdates.find(u=>u.product.id===p.id);if(upd)p._inv=upd.sizes;_dbSaveProduct(p)});
-        nf(newProds.length+' new products added to catalog with inventory');
+        nf(newProds.length+' new product'+(newProds.length!==1?'s':'')+' added to catalog with inventory');
       }
       setInvUpload({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
     };
