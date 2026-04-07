@@ -1519,7 +1519,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' promo order closed');
         }}><Icon name="check" size={14}/> Close Promo Order</button>
         :<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
-          setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('deposit');setInvDepositPct(50);setShowInvCreate(true);
+          setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('final');setInvDepositPct(50);setShowInvCreate(true);
         }}><Icon name="dollar" size={14}/> Create Invoice</button>}
       </div>}
       {/* SHIPPING */}
@@ -3625,10 +3625,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             ]}],
           footer:ir.inv_type==='deposit'?_ci.depositTerms:_ci.terms});
       };
-      return<div className="modal-overlay" onClick={()=>setInvReview(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
+      return<div className="modal-overlay" onClick={()=>{setInvReview(null);if(onNavInvoice)onNavInvoice(ir)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header" style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white'}}>
           <h2 style={{color:'white'}}>Invoice Created — {ir.id}</h2>
-          <button className="modal-close" style={{color:'white'}} onClick={()=>setInvReview(null)}>x</button>
+          <button className="modal-close" style={{color:'white'}} onClick={()=>{setInvReview(null);if(onNavInvoice)onNavInvoice(ir)}}>x</button>
         </div>
         <div className="modal-body" style={{padding:0}}>
           {/* Invoice preview */}
@@ -3693,7 +3693,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <button className="btn btn-secondary" onClick={()=>{setInvReview(null);if(onNavInvoice)onNavInvoice(ir)}}>Go to Invoices</button>
           <div style={{display:'flex',gap:8}}>
             <button className="btn btn-secondary" onClick={printInvoice}>🖨️ Print Invoice</button>
-            <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>{setInvSendTo('');setInvSendCustomEmail('');setInvSendModal(true)}}>📧 Send to Coach</button>
+            <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>{const _c=(cust?.contacts||[]).filter(c=>c.email);setInvSendTo(_c.length>0?[_c[0].email]:[]);setInvSendCustomEmail('');setInvSendModal(true)}}>📧 Send to Coach</button>
           </div>
         </div>
       </div></div>
@@ -3703,19 +3703,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {invSendModal&&invReview&&(()=>{
       const ir=invReview;const ic=ir._customer||cust;
       const contacts=(ic?.contacts||[]).filter(c=>c.email);
-      const resolvedEmail=invSendTo==='__custom__'?invSendCustomEmail:invSendTo||(contacts[0]?.email||'');
-      const resolvedName=invSendTo==='__custom__'?invSendCustomEmail:(contacts.find(c=>c.email===invSendTo)||contacts[0])?.name||'Coach';
-      return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setInvSendModal(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
+      const selectedEmails=Array.isArray(invSendTo)?invSendTo:invSendTo?[invSendTo]:[];
+      const allRecipients=[...selectedEmails];
+      const hasRecipients=allRecipients.length>0;
+      return<div className="modal-overlay" style={{zIndex:10001}} onMouseDown={e=>{if(e.target===e.currentTarget)setInvSendModal(false)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
         <div className="modal-header"><h2>Send Invoice to Coach</h2><button className="modal-close" onClick={()=>setInvSendModal(false)}>x</button></div>
         <div className="modal-body">
           <div style={{marginBottom:12}}>
             <label className="form-label">Sending to</label>
-            <select className="form-input" value={invSendTo||contacts[0]?.email||''} onChange={e=>{setInvSendTo(e.target.value);if(e.target.value!=='__custom__')setInvSendCustomEmail('')}} style={{fontSize:13,marginBottom:invSendTo==='__custom__'?8:0}}>
-              {contacts.map(c=><option key={c.email} value={c.email}>{c.name||'Contact'} — {c.email}{c.role?' ('+c.role+')':''}</option>)}
-              {contacts.length===0&&<option value="" disabled>No contacts with email on file</option>}
-              <option value="__custom__">Enter a different email...</option>
-            </select>
-            {invSendTo==='__custom__'&&<input className="form-input" type="email" placeholder="Enter email address" value={invSendCustomEmail} onChange={e=>setInvSendCustomEmail(e.target.value)} style={{fontSize:13}}/>}
+            {contacts.length>0&&<div style={{display:'flex',flexDirection:'column',gap:4,marginBottom:8}}>
+              {contacts.map(c=><label key={c.email} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',padding:'6px 8px',borderRadius:6,background:selectedEmails.includes(c.email)?'#eff6ff':'#f8fafc',border:'1px solid '+(selectedEmails.includes(c.email)?'#93c5fd':'#e2e8f0'),fontSize:13}}>
+                <input type="checkbox" checked={selectedEmails.includes(c.email)} onChange={e=>{if(e.target.checked)setInvSendTo([...selectedEmails,c.email]);else setInvSendTo(selectedEmails.filter(x=>x!==c.email))}} style={{width:15,height:15,accentColor:'#2563eb'}}/>
+                <span style={{fontWeight:selectedEmails.includes(c.email)?600:400}}>{c.name||'Contact'} — {c.email}{c.role?' ('+c.role+')':''}</span>
+              </label>)}
+            </div>}
+            {contacts.length===0&&<div style={{fontSize:12,color:'#94a3b8',marginBottom:8}}>No contacts with email on file</div>}
+            <div style={{display:'flex',gap:4}}>
+              <input className="form-input" type="email" placeholder="Add email address..." value={invSendCustomEmail} onChange={e=>setInvSendCustomEmail(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&invSendCustomEmail&&invSendCustomEmail.includes('@')&&!selectedEmails.includes(invSendCustomEmail)){setInvSendTo([...selectedEmails,invSendCustomEmail]);setInvSendCustomEmail('')}}} style={{fontSize:13,flex:1}}/>
+              <button className="btn btn-secondary" disabled={!invSendCustomEmail||!invSendCustomEmail.includes('@')||selectedEmails.includes(invSendCustomEmail)} onClick={()=>{setInvSendTo([...selectedEmails,invSendCustomEmail]);setInvSendCustomEmail('')}} style={{fontSize:12,whiteSpace:'nowrap'}}>+ Add</button>
+            </div>
+            {selectedEmails.filter(e=>!contacts.find(c=>c.email===e)).length>0&&<div style={{display:'flex',flexWrap:'wrap',gap:4,marginTop:6}}>
+              {selectedEmails.filter(e=>!contacts.find(c=>c.email===e)).map(e=><span key={e} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:12,fontSize:11,color:'#1e40af'}}>
+                {e}<button onClick={()=>setInvSendTo(selectedEmails.filter(x=>x!==e))} style={{background:'none',border:'none',cursor:'pointer',color:'#64748b',fontSize:14,padding:0,lineHeight:1}}>x</button>
+              </span>)}
+            </div>}
           </div>
           <div style={{marginBottom:12}}>
             <label className="form-label">Invoice</label>
@@ -3751,10 +3762,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setInvSendModal(false)}>Cancel</button>
-          <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={!resolvedEmail} onClick={async()=>{
+          <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={!hasRecipients} onClick={async()=>{
             setInvSendModal(false);
-            const toEmail=resolvedEmail;
-            const toName=resolvedName;
+            const toList=allRecipients.map(em=>{const c=contacts.find(x=>x.email===em);return{email:em,name:c?.name||em}});
+            const toEmail=toList.map(t=>t.email).join(', ');
+            const toName=toList.map(t=>t.name).join(', ');
             // Build PDF attachment
             const _$e=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
             const irBillName=ir.billing_name||ic?.name||'—';const irBal=ir.total-(ir.paid||0);
@@ -3825,7 +3837,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':'')
               +'</div>';
             const res=await sendBrevoEmail({
-              to:[{email:toEmail,name:toName}],
+              to:toList,
               subject:'Invoice '+ir.id+' — $'+ir.total.toFixed(2)+' from National Sports Apparel',
               htmlContent:emailHtml,
               senderName:cu.name||'National Sports Apparel',
@@ -3850,7 +3862,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Also post to messages
             const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] Sent to '+toName+' ('+toEmail+')'+(invSmsEnabled&&invSmsPhone?' + SMS to '+invSmsPhone:'')+'\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[],entity_type:'so',entity_id:ir.so_id};
             if(onMsg)onMsg(prev=>[...prev,soMsg]);
-          }}>📧 Send Invoice{resolvedEmail?'':' (No email)'}</button>
+          }}>📧 Send Invoice{hasRecipients?' to '+allRecipients.length+' recipient'+(allRecipients.length>1?'s':''):' (No email)'}</button>
         </div>
       </div></div>
     })()}
