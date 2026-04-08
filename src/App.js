@@ -1021,7 +1021,8 @@ const _isRecentlyPulled=(soId)=>{const t=_recentlyPulledSOs.get(soId);if(!t)retu
 // Safe localStorage write — catches QuotaExceededError and notifies user instead of silently failing
 let _lsQuotaWarned=false;// prevent spamming quota warnings
 let _onCacheFullChange=null;// set by App component to show persistent banner
-const _lsSet=(key,value)=>{try{localStorage.setItem(key,value);return true}catch(e){if((e.name==='QuotaExceededError'||e.message?.includes('quota'))&&!_lsQuotaWarned){_lsQuotaWarned=true;if(_onCacheFullChange)_onCacheFullChange(true);console.error('[Storage] localStorage quota exceeded writing key:',key)}return false}};
+const _LS_MAX_KEY_SIZE=2*1024*1024;// 2MB per key — skip caching datasets larger than this to avoid quota issues
+const _lsSet=(key,value)=>{try{if(value&&value.length>_LS_MAX_KEY_SIZE){console.warn('[Storage] Skipping cache for',key,'— size',Math.round(value.length/1024)+'KB exceeds 2MB limit');return false}localStorage.setItem(key,value);return true}catch(e){if((e.name==='QuotaExceededError'||e.message?.includes('quota'))&&!_lsQuotaWarned){_lsQuotaWarned=true;if(_onCacheFullChange)_onCacheFullChange(true);console.error('[Storage] localStorage quota exceeded writing key:',key)}return false}};
 // Track IDs of estimates/SOs whose save failed — prevents reload/poll from overwriting local state
 // Persisted to localStorage so protection survives page refresh
 const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_ids')||'[]'));
@@ -2308,63 +2309,84 @@ export default function App(){
     if(window.location.search.includes('portal='))return;if(_dbSaveFailedIds.size>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
   // Flush all state to localStorage when tab is hidden (prevents data loss on mobile tab-kill/timeout)
   // Also retry failed saves immediately when tab regains visibility (don't wait 60s)
+  const _lastVisFlush=useRef(0);
   React.useEffect(()=>{
     const onVis=()=>{
       if(document.hidden){
-        // Tab going hidden — emergency flush all state to localStorage as cache for next load
+        // Tab going hidden — emergency flush to localStorage as cache for next load
+        // Throttle: skip if flushed within last 30s to reduce memory/CPU pressure
         // Skip if quota already exceeded — data will reload from Supabase
-        if(!_lsQuotaWarned){
+        const now=Date.now();
+        if(!_lsQuotaWarned&&now-_lastVisFlush.current>30000){
+          _lastVisFlush.current=now;
           const d=_visFlushRefs.current;
+          // Only cache core data needed for fast startup (skip large collections like products)
           _lsSet('nsa_cust',JSON.stringify(d.cust));
           _lsSet('nsa_ests',JSON.stringify(d.ests));
           _lsSet('nsa_sos',JSON.stringify(d.sos));
           _lsSet('nsa_invs',JSON.stringify(d.invs));
           _lsSet('nsa_msgs',JSON.stringify(d.msgs));
           _lsSet('nsa_prod',JSON.stringify(d.prod));
-          _lsSet('nsa_vend',JSON.stringify(d.vend));
-          _lsSet('nsa_reps',JSON.stringify(d.REPS));
-          _lsSet('nsa_omg_stores',JSON.stringify(d.omgStores));
-          _lsSet('nsa_issues',JSON.stringify(d.issues));
         }
       }else if(_dbSaveFailedIds.size>0&&_initialLoadDone.current&&_dbLoadSuccess.current){
-        // Tab returning — immediately retry failed saves instead of waiting 60s
-        console.log('[DB] Tab visible — retrying',_dbSaveFailedIds.size,'failed saves');
-        const snapKeys=['ests','sos','invs','cust','prod','msgs'];
+        // Tab returning — immediately retry failed saves instead of waiting for backoff timer
+        // Reset backoff since user is actively using the tab
+        _retryBackoff.current=60000;
         const shouldRetry=id=>_dbSaveFailedIds.has(id)&&!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000);
-        snapKeys.forEach(key=>{const snap=_dbSnap.current[key];if(!snap)return;_dbSnap.current[key]=snap.map(s=>shouldRetry(s.id)?{...s,_retry:Date.now()}:s)});
-        setEsts(prev=>[...prev]);setSOs(prev=>[...prev]);setInvs(prev=>[...prev]);
-        setCust(prev=>[...prev]);setProd(prev=>[...prev]);setMsgs(prev=>[...prev]);
+        const retryIds=[..._dbSaveFailedIds].filter(shouldRetry).slice(0,10);
+        if(retryIds.length){
+          console.log('[DB] Tab visible — retrying',retryIds.length,'failed saves');
+          const retrySet=new Set(retryIds);
+          const snapMap={ests:[_dbSnap.current.ests,setEsts],sos:[_dbSnap.current.sos,setSOs],invs:[_dbSnap.current.invs,setInvs],cust:[_dbSnap.current.cust,setCust],prod:[_dbSnap.current.prod,setProd],msgs:[_dbSnap.current.msgs,setMsgs]};
+          Object.entries(snapMap).forEach(([key,[snap,setter]])=>{
+            if(!snap)return;
+            const hasFailedItem=snap.some(s=>retrySet.has(s.id));
+            if(!hasFailedItem)return;
+            _dbSnap.current[key]=snap.map(s=>retrySet.has(s.id)?{...s,_retry:Date.now()}:s);
+            setter(prev=>[...prev]);
+          });
+        }
       }
     };
     document.addEventListener('visibilitychange',onVis);
     return()=>document.removeEventListener('visibilitychange',onVis);
   },[]);
-  // Background retry — every 60s, re-trigger saves for any entities with failed IDs
-  // Works by updating the snapshot to force _diffSave to detect a difference on the next state change
-  // This is a lightweight approach: no new save calls, just nudges the existing auto-save system
+  // Background retry — re-trigger saves for entities with failed IDs
+  // Uses exponential backoff: 60s → 120s → 240s (max 4min) to avoid hammering a down server
+  // Only re-renders state arrays that actually contain failed IDs (not all 6 every time)
+  const _retryBackoff=useRef(60000);
   React.useEffect(()=>{
     if(!supabase)return;
-    const retry=setInterval(()=>{
-      if(!_dbSaveFailedIds.size||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
+    let retryTimer=null;
+    const scheduleRetry=()=>{retryTimer=setTimeout(doRetry,_retryBackoff.current)};
+    const doRetry=()=>{
+      if(!_dbSaveFailedIds.size||!_initialLoadDone.current||!_dbLoadSuccess.current){_retryBackoff.current=60000;scheduleRetry();return}
       // Clean up failed IDs for entities that no longer exist in state (deleted by user)
       const d=_visFlushRefs.current;const allIds=new Set([...d.ests,...d.sos,...d.invs,...d.cust,...d.prod,...d.msgs].map(e=>e.id));
       const orphaned=[..._dbSaveFailedIds].filter(id=>!allIds.has(id));
-      if(orphaned.length){orphaned.forEach(id=>{_dbSaveFailedIds.delete(id);console.log('[DB] Cleared orphaned failed ID:',id)});_persistFailedIds();if(!_dbSaveFailedIds.size)return}
+      if(orphaned.length){orphaned.forEach(id=>{_dbSaveFailedIds.delete(id);console.log('[DB] Cleared orphaned failed ID:',id)});_persistFailedIds();if(!_dbSaveFailedIds.size){_retryBackoff.current=60000;scheduleRetry();return}}
       // Skip IDs that were recently saved (prevents rapid re-conflict loops)
       const retryIds=[..._dbSaveFailedIds].filter(id=>!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000));
-      if(!retryIds.length)return;
-      console.log('[DB] Retry: attempting re-save for',retryIds.length,'failed IDs:',retryIds);
-      // For each failed ID, clear its snapshot entry so _diffSave will re-detect and re-save it
-      const snapKeys=['ests','sos','invs','cust','prod','msgs'];
-      snapKeys.forEach(key=>{
-        const snap=_dbSnap.current[key];if(!snap)return;
-        _dbSnap.current[key]=snap.map(s=>retryIds.includes(s.id)?{...s,_retry:Date.now()}:s);
+      if(!retryIds.length){scheduleRetry();return}
+      // Cap retries at 10 IDs per cycle to avoid spiking CPU/network
+      const batch=retryIds.slice(0,10);
+      console.log('[DB] Retry: attempting re-save for',batch.length,'of',retryIds.length,'failed IDs (backoff:',Math.round(_retryBackoff.current/1000)+'s)');
+      const retrySet=new Set(batch);
+      // Only update snapshots + trigger re-render for arrays that actually contain failed IDs
+      const snapMap={ests:[_dbSnap.current.ests,setEsts],sos:[_dbSnap.current.sos,setSOs],invs:[_dbSnap.current.invs,setInvs],cust:[_dbSnap.current.cust,setCust],prod:[_dbSnap.current.prod,setProd],msgs:[_dbSnap.current.msgs,setMsgs]};
+      Object.entries(snapMap).forEach(([key,[snap,setter]])=>{
+        if(!snap)return;
+        const hasFailedItem=snap.some(s=>retrySet.has(s.id));
+        if(!hasFailedItem)return;// skip arrays with no failed items — no re-render needed
+        _dbSnap.current[key]=snap.map(s=>retrySet.has(s.id)?{...s,_retry:Date.now()}:s);
+        setter(prev=>[...prev]);
       });
-      // Trigger a minimal state update to kick off _diffSave effects
-      setEsts(prev=>[...prev]);setSOs(prev=>[...prev]);setInvs(prev=>[...prev]);
-      setCust(prev=>[...prev]);setProd(prev=>[...prev]);setMsgs(prev=>[...prev]);
-    },60000);
-    return()=>clearInterval(retry);
+      // Increase backoff for next cycle (max 4 minutes)
+      _retryBackoff.current=Math.min(_retryBackoff.current*2,240000);
+      scheduleRetry();
+    };
+    scheduleRetry();
+    return()=>{if(retryTimer)clearTimeout(retryTimer)};
   },[]);
   // Handle QB OAuth callback redirect
   React.useEffect(()=>{
