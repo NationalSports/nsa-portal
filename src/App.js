@@ -1026,12 +1026,13 @@ const _LS_TOTAL_BUDGET=4*1024*1024;// 4MB total budget — stop caching when loc
 // Small essential keys that should always be written (settings, user prefs, tiny state)
 const _LS_ESSENTIAL=new Set(['nsa_user','nsa_settings','nsa_mobile_mode','nsa_role_view','nsa_prod_cols','nsa_save_failed_ids','nsa_duplicate_sku_ids','nsa_fav_skus','nsa_dismissed_notifs','nsa_dismissed_todos','nsa_recent','nsa_ups_pickup_check','nsa_auto_backup_ts']);
 const _lsTotalSize=()=>{let t=0;try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k)t+=k.length+(localStorage.getItem(k)||'').length}}catch{}return t*2};// ×2 for UTF-16
+let _lsBudgetWarned=false;// prevent spamming budget skip logs
 const _lsSet=(key,value)=>{try{
   // Essential small keys always get written
   if(!_LS_ESSENTIAL.has(key)){
-    if(value&&value.length>_LS_MAX_KEY_SIZE){console.warn('[Storage] Skipping cache for',key,'— size',Math.round(value.length/1024)+'KB exceeds 1MB limit');return false}
-    // Check total budget before writing non-essential keys
-    if(_lsTotalSize()>_LS_TOTAL_BUDGET){if(!_lsQuotaWarned){_lsQuotaWarned=true;if(_onCacheFullChange)_onCacheFullChange(true);console.warn('[Storage] Total localStorage over 4MB budget, skipping',key)}return false}
+    if(value&&value.length>_LS_MAX_KEY_SIZE){if(!_lsBudgetWarned){_lsBudgetWarned=true;console.warn('[Storage] Skipping cache for',key,'— size',Math.round(value.length/1024)+'KB exceeds 1MB limit')}return false}
+    // Check total budget before writing non-essential keys — silently skip (data is safe in cloud)
+    if(_lsTotalSize()>_LS_TOTAL_BUDGET){if(!_lsBudgetWarned){_lsBudgetWarned=true;console.warn('[Storage] Total localStorage over 4MB budget, skipping non-essential cache writes')}return false}
   }
   localStorage.setItem(key,value);return true
 }catch(e){if((e.name==='QuotaExceededError'||e.message?.includes('quota'))&&!_lsQuotaWarned){_lsQuotaWarned=true;if(_onCacheFullChange)_onCacheFullChange(true);console.error('[Storage] localStorage quota exceeded writing key:',key)}return false}};
