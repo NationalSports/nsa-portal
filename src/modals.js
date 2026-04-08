@@ -7,11 +7,12 @@ import { Icon, Bg, calcSOStatus, SortHeader, PantoneAdder, SearchSelect } from '
 import { CONTACT_ROLES } from './pricing';
 import { invokeEdgeFn } from './utils';
 
-function VendDetail({vendor,products,onUpdateProducts,onBack,catalogItems=[],onSaveCatalogItem,onDeleteCatalogItem,onBulkImportCatalog,nf}){
+function VendDetail({vendor,products,onUpdateProducts,onBack,catalogItems=[],onSaveCatalogItem,onDeleteCatalogItem,onBulkImportCatalog,onBulkImportProducts,nf}){
   const[syncing,setSyncing]=React.useState(false);
   const[catSearch,setCatSearch]=useState('');
   const[catEdit,setCatEdit]=useState(null);// null or item being edited/added
   const[catImporting,setCatImporting]=useState(false);
+  const[importType,setImportType]=useState('reference');// 'reference' | 'products'
   const syncSSPricing=async()=>{
     if(!products||syncing)return;
     setSyncing(true);
@@ -100,19 +101,29 @@ function VendDetail({vendor,products,onUpdateProducts,onBack,catalogItems=[],onS
   </div>}
   </div></div>
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{vendor._oi||0}</div></div><div className="stat-card"><div className="stat-label">Current</div><div className="stat-value" style={{color:'#166534'}}>${(vendor._ac||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">30 Day</div><div className="stat-value" style={{color:(vendor._a3||0)>0?'#d97706':''}}>${(vendor._a3||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">60+</div><div className="stat-value" style={{color:(vendor._a6||0)>0?'#dc2626':''}}>${((vendor._a6||0)+(vendor._a9||0)).toLocaleString()}</div></div></div>
-  {/* ── Vendor Catalog Items ── */}
+  {/* ── Import & Catalog ── */}
   <div className="card" style={{marginBottom:16}}>
     <div className="card-header" style={{display:'flex',alignItems:'center',gap:8}}>
-      <h2>Catalog Items</h2>
-      <span style={{fontSize:11,color:'#64748b',fontWeight:400}}>Quick-add items for estimates (no inventory)</span>
-      <span className="badge badge-blue" style={{marginLeft:'auto'}}>{catalogItems.length}</span>
+      <h2>Import & Catalog</h2>
+      <span className="badge badge-blue" style={{marginLeft:'auto'}}>{catalogItems.length} reference item{catalogItems.length!==1?'s':''}</span>
     </div>
     <div className="card-body">
-      <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
-        <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search catalog items..." value={catSearch} onChange={e=>setCatSearch(e.target.value)}/></div>
-        <button className="btn btn-sm btn-primary" onClick={()=>setCatEdit({vendor_id:vendor.id,sku:'',name:'',brand:vendor.name,color:'',category:'',nsa_cost:0,retail_price:0,available_sizes:['S','M','L','XL','2XL'],image_url:'',notes:''})}><Icon name="plus" size={12}/> Add Item</button>
-        <label className="btn btn-sm btn-secondary" style={{cursor:'pointer',display:'flex',alignItems:'center',gap:4}}>
-          <Icon name="upload" size={12}/> Import CSV
+      {/* ── Upload Section ── */}
+      <div style={{marginBottom:16,padding:14,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+          <span style={{fontSize:12,fontWeight:700}}>Import as:</span>
+          <button className={`btn btn-sm ${importType==='reference'?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>setImportType('reference')}>Reference Catalog</button>
+          <button className={`btn btn-sm ${importType==='products'?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>setImportType('products')}>Products</button>
+        </div>
+        <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>
+          {importType==='reference'
+            ?<>Items for quick-add on estimates/SOs. No inventory tracking, no product page entry. Perfect for vendors you order from but don't stock.</>
+            :<>Full products added to the Products page with inventory tracking. Use for items you carry in stock.</>}
+        </div>
+        <div style={{fontSize:10,color:'#94a3b8',marginBottom:8}}>CSV columns: <strong>sku</strong>, <strong>name</strong>, brand, color, cost, retail, category{importType==='products'?', available_sizes':''}</div>
+        <label style={{display:'block',padding:16,border:'2px dashed #d1d5db',borderRadius:8,textAlign:'center',cursor:'pointer',background:'white',transition:'all 0.2s'}}>
+          {catImporting?<span style={{color:'#3b82f6',fontWeight:600}}>Importing...</span>
+          :<><span style={{fontSize:20}}>📂</span><br/><span style={{fontSize:12,color:'#64748b'}}>Drop CSV/TSV file here or click to browse</span></>}
           <input type="file" accept=".csv,.tsv,.txt" hidden onChange={async e=>{
             const file=e.target.files?.[0];if(!file)return;
             setCatImporting(true);
@@ -129,25 +140,37 @@ function VendDetail({vendor,products,onUpdateProducts,onBack,catalogItems=[],onS
               const costIdx=headers.findIndex(h=>h==='cost'||h==='nsa_cost'||h==='price'||h==='wholesale');
               const retailIdx=headers.findIndex(h=>h==='retail'||h==='retail_price'||h==='msrp');
               const catIdx=headers.findIndex(h=>h==='category'||h==='cat');
+              const sizesIdx=headers.findIndex(h=>h==='sizes'||h==='available_sizes');
               if(skuIdx<0||nameIdx<0){nf&&nf('CSV must have "sku" and "name" columns','error');setCatImporting(false);return}
               const items=[];
               for(let i=1;i<lines.length;i++){
                 const cols=lines[i].split(sep).map(c=>c.replace(/^"|"$/g,'').trim());
                 const sku=cols[skuIdx];const name=cols[nameIdx];
                 if(!sku||!name)continue;
+                const parsedSizes=sizesIdx>=0&&cols[sizesIdx]?cols[sizesIdx].split(/[,;]\s*/).map(s=>s.trim()).filter(Boolean):['S','M','L','XL','2XL'];
                 items.push({vendor_id:vendor.id,sku,name,brand:brandIdx>=0?cols[brandIdx]:vendor.name,
                   color:colorIdx>=0?cols[colorIdx]:'',nsa_cost:costIdx>=0?parseFloat(cols[costIdx])||0:0,
                   retail_price:retailIdx>=0?parseFloat(cols[retailIdx])||0:0,
-                  category:catIdx>=0?cols[catIdx]:'',available_sizes:['S','M','L','XL','2XL']});
+                  category:catIdx>=0?cols[catIdx]:'',available_sizes:parsedSizes});
               }
               if(!items.length){nf&&nf('No valid rows found in CSV','error');setCatImporting(false);return}
-              const saved=await onBulkImportCatalog(items);
-              nf&&nf(saved.length+' item'+(saved.length!==1?'s':'')+' imported to '+vendor.name+' catalog');
+              if(importType==='reference'){
+                const saved=await onBulkImportCatalog(items);
+                nf&&nf(saved.length+' reference item'+(saved.length!==1?'s':'')+' imported to '+vendor.name+' catalog');
+              }else{
+                const count=await onBulkImportProducts(items);
+                nf&&nf(count+' product'+(count!==1?'s':'')+' imported to '+vendor.name);
+              }
             }catch(err){nf&&nf('Import failed: '+err.message,'error')}
             finally{setCatImporting(false);e.target.value=''}
           }}/>
-          {catImporting&&<span style={{fontSize:10}}>...</span>}
         </label>
+      </div>
+      {/* ── Reference Catalog Items ── */}
+      <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
+        <span style={{fontSize:13,fontWeight:700}}>Reference Catalog</span>
+        <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search catalog items..." value={catSearch} onChange={e=>setCatSearch(e.target.value)}/></div>
+        <button className="btn btn-sm btn-primary" onClick={()=>setCatEdit({vendor_id:vendor.id,sku:'',name:'',brand:vendor.name,color:'',category:'',nsa_cost:0,retail_price:0,available_sizes:['S','M','L','XL','2XL'],image_url:'',notes:''})}><Icon name="plus" size={12}/> Add Item</button>
       </div>
       {/* Edit/Add form */}
       {catEdit&&<div style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',marginBottom:12}}>
