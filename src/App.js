@@ -1021,8 +1021,20 @@ const _isRecentlyPulled=(soId)=>{const t=_recentlyPulledSOs.get(soId);if(!t)retu
 // Safe localStorage write — catches QuotaExceededError and notifies user instead of silently failing
 let _lsQuotaWarned=false;// prevent spamming quota warnings
 let _onCacheFullChange=null;// set by App component to show persistent banner
-const _LS_MAX_KEY_SIZE=2*1024*1024;// 2MB per key — skip caching datasets larger than this to avoid quota issues
-const _lsSet=(key,value)=>{try{if(value&&value.length>_LS_MAX_KEY_SIZE){console.warn('[Storage] Skipping cache for',key,'— size',Math.round(value.length/1024)+'KB exceeds 2MB limit');return false}localStorage.setItem(key,value);return true}catch(e){if((e.name==='QuotaExceededError'||e.message?.includes('quota'))&&!_lsQuotaWarned){_lsQuotaWarned=true;if(_onCacheFullChange)_onCacheFullChange(true);console.error('[Storage] localStorage quota exceeded writing key:',key)}return false}};
+const _LS_MAX_KEY_SIZE=1024*1024;// 1MB per key — skip caching datasets larger than this
+const _LS_TOTAL_BUDGET=4*1024*1024;// 4MB total budget — stop caching when localStorage exceeds this
+// Small essential keys that should always be written (settings, user prefs, tiny state)
+const _LS_ESSENTIAL=new Set(['nsa_user','nsa_settings','nsa_mobile_mode','nsa_role_view','nsa_prod_cols','nsa_save_failed_ids','nsa_duplicate_sku_ids','nsa_fav_skus','nsa_dismissed_notifs','nsa_dismissed_todos','nsa_recent','nsa_ups_pickup_check','nsa_auto_backup_ts']);
+const _lsTotalSize=()=>{let t=0;try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k)t+=k.length+(localStorage.getItem(k)||'').length}}catch{}return t*2};// ×2 for UTF-16
+const _lsSet=(key,value)=>{try{
+  // Essential small keys always get written
+  if(!_LS_ESSENTIAL.has(key)){
+    if(value&&value.length>_LS_MAX_KEY_SIZE){console.warn('[Storage] Skipping cache for',key,'— size',Math.round(value.length/1024)+'KB exceeds 1MB limit');return false}
+    // Check total budget before writing non-essential keys
+    if(_lsTotalSize()>_LS_TOTAL_BUDGET){if(!_lsQuotaWarned){_lsQuotaWarned=true;if(_onCacheFullChange)_onCacheFullChange(true);console.warn('[Storage] Total localStorage over 4MB budget, skipping',key)}return false}
+  }
+  localStorage.setItem(key,value);return true
+}catch(e){if((e.name==='QuotaExceededError'||e.message?.includes('quota'))&&!_lsQuotaWarned){_lsQuotaWarned=true;if(_onCacheFullChange)_onCacheFullChange(true);console.error('[Storage] localStorage quota exceeded writing key:',key)}return false}};
 // Track IDs of estimates/SOs whose save failed — prevents reload/poll from overwriting local state
 // Persisted to localStorage so protection survives page refresh
 const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_ids')||'[]'));
