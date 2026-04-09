@@ -14172,12 +14172,36 @@ export default function App(){
           if(!soIds.includes(s.id))return s;
           changed=true;
           const prevFreight=safeNum(s._inbound_freight||0);
+          // Count PO qty per SKU across all SO items so we can split cost proportionally for duplicate SKUs
+          const skuPOQty={};
+          (s.items||[]).forEach(it=>{
+            const hasPO=it.po_lines?.some(po=>{const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===poLc||pid.startsWith(poLc)});
+            if(!hasPO)return;
+            const sk=(it.sku||'').toUpperCase();
+            if(!costBySku.hasOwnProperty(sk))return;// skip items not on the bill
+            const poQty=it.po_lines.filter(po=>{const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===poLc||pid.startsWith(poLc)}).reduce((a,po)=>a+Object.entries(po).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost'&&!k.startsWith('_')).reduce((a2,[,v])=>a2+v,0),0);
+            skuPOQty[sk]=(skuPOQty[sk]||0)+poQty;
+          });
           // Find PO lines on this SO whose po_id starts with the bill PO number
+          const skuCostApplied={};// track how much cost has been applied per SKU to handle rounding on last item
           const updatedItems=(s.items||[]).map(it=>{
             const matchPO=it.po_lines?.find(po=>{const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===poLc||pid.startsWith(poLc)});
             if(!matchPO)return it;
             const itemSku=(it.sku||'').toUpperCase();
+            // Only apply cost/billed data for items whose SKU is actually on the bill
+            if(!costBySku.hasOwnProperty(itemSku)){
+              // Still apply tracking numbers even if item isn't on this bill
+              return{...it,po_lines:it.po_lines.map(po=>{
+                const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
+                if(pid!==poLc&&!pid.startsWith(poLc))return po;
+                const trackNums=[...(po.tracking_numbers||[])];
+                if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+                return{...po,tracking_numbers:trackNums};
+              })};
+            }
             const itemBilled=billedBySku[itemSku]||{};
+            const totalSkuCost=costBySku[itemSku]||0;
+            const totalSkuQty=skuPOQty[itemSku]||1;
             return{...it,po_lines:it.po_lines.map(po=>{
               const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
               if(pid!==poLc&&!pid.startsWith(poLc))return po;
@@ -14186,11 +14210,19 @@ export default function App(){
               Object.entries(itemBilled).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
               const trackNums=[...(po.tracking_numbers||[])];
               if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
-              const itemCost=costBySku[itemSku]||0;
+              // Split cost proportionally by PO qty for this item vs total qty for this SKU
+              const poQty=Object.entries(po).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost'&&!k.startsWith('_')).reduce((a,[,v])=>a+v,0);
+              const proportion=totalSkuQty>0?poQty/totalSkuQty:1;
+              const alreadyApplied=skuCostApplied[itemSku]||0;
+              const remaining=Math.round((totalSkuCost-alreadyApplied)*100)/100;
+              const itemCost=Math.round(totalSkuCost*proportion*100)/100;
+              // Use remaining on last allocation to avoid rounding drift
+              const appliedCost=itemCost>remaining?remaining:itemCost;
+              skuCostApplied[itemSku]=(skuCostApplied[itemSku]||0)+appliedCost;
               const prevBillCost=safeNum(po._bill_cost||0);
               return{...po,billed:newBilled,tracking_numbers:trackNums,
-                _bill_cost:Math.round((prevBillCost+itemCost)*100)/100,
-                _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking,cost:itemCost}]};
+                _bill_cost:Math.round((prevBillCost+appliedCost)*100)/100,
+                _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking,cost:appliedCost}]};
             })};
           });
           const updatedSO={...s,_inbound_freight:Math.round((prevFreight+perSOFreight)*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
