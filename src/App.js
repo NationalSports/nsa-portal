@@ -879,7 +879,7 @@ const _dbSaveProduct = async (p) => {
   try{
     const row={id:p.id,vendor_id:p.vendor_id||null,sku:p.sku,name:p.name,brand:p.brand||null,color:p.color||null,
       color_category:p.color_category||null,category:p.category||null,retail_price:p.retail_price||0,nsa_cost:p.nsa_cost||0,
-      is_active:p.is_active!==false,available_sizes:p.available_sizes||[],_colors:p._colors||null,
+      is_active:p.is_active!==false,is_archived:p.is_archived||false,available_sizes:p.available_sizes||[],_colors:p._colors||null,
       image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
     const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
     if(error){
@@ -889,8 +889,8 @@ const _dbSaveProduct = async (p) => {
         _dbDuplicateSkuIds.add(p.id);_persistDuplicateSkuIds();_dbSaveFailedIds.delete(p.id);_persistFailedIds();return true;
       }
       // If image columns don't exist yet, retry without them (product data still saves)
-      if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('color_category')){
-        const{image_front_url,image_back_url,color_category,...rowNoExtra}=row;
+      if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('color_category')||error.message?.includes('is_archived')){
+        const{image_front_url,image_back_url,color_category,is_archived,...rowNoExtra}=row;
         const{error:e2}=await supabase.from('products').upsert(rowNoExtra,{onConflict:'id'});
         if(e2){if(e2.message?.includes('products_sku_unique')||e2.message?.includes('duplicate key value')){console.warn('[DB] Skipping duplicate SKU:',p.sku);return false}console.error('[DB] save product (no extra cols):',e2.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
       }else{console.error('[DB] save product:',error.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error');return false}
@@ -2426,7 +2426,7 @@ export default function App(){
     },250);
     return()=>{if(_gProdTimer.current)clearTimeout(_gProdTimer.current)};
   },[gQ]);// eslint-disable-line
-  const[mF,setMF]=useState('mine');const[mHideClosed,setMHideClosed]=useState(true);const[mEntityF,setMEntityF]=useState('all');const[mThread,setMThread]=useState(null);const mThreadInputRef=useRef(null);const[mThreadMentionQuery,setMThreadMentionQuery]=useState(null);const[mThreadMentionIdx,setMThreadMentionIdx]=useState(0);const[mThreadDept,setMThreadDept]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
+  const[mF,setMF]=useState('mine');const[mHideClosed,setMHideClosed]=useState(true);const[mEntityF,setMEntityF]=useState('all');const[mThread,setMThread]=useState(null);const mThreadInputRef=useRef(null);const[mThreadMentionQuery,setMThreadMentionQuery]=useState(null);const[mThreadMentionIdx,setMThreadMentionIdx]=useState(0);const[mThreadDept,setMThreadDept]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all',arc:'hide'});
   // ─── Server-side product search state (paginated) ───
   const[prodPage,setProdPage]=useState(0);const PROD_PAGE_SIZE=50;
   const[prodServerResults,setProdServerResults]=useState(null);// {products:[], total:0} or null=use client
@@ -2726,7 +2726,7 @@ export default function App(){
     if(prodServerResults&&pg==='products')return prodServerResults.products;
     // Fallback: client-side filter (used when RPC unavailable or on other pages)
     let l=prod;if(q&&pg==='products'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.brand?.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s))}
-    if(pF.cat!=='all')l=l.filter(p=>p.category===pF.cat);if(pF.vnd!=='all')l=l.filter(p=>p.vendor_id===pF.vnd);if(pF.stk==='instock')l=l.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(pF.clr!=='all')l=l.filter(p=>p.color_category===pF.clr);return l},[prod,q,pF,pg,prodServerResults]);
+    if(pF.cat!=='all')l=l.filter(p=>p.category===pF.cat);if(pF.vnd!=='all')l=l.filter(p=>p.vendor_id===pF.vnd);if(pF.stk==='instock')l=l.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(pF.clr!=='all')l=l.filter(p=>p.color_category===pF.clr);if(pF.arc==='hide')l=l.filter(p=>!p.is_archived);else if(pF.arc==='only')l=l.filter(p=>p.is_archived);return l},[prod,q,pF,pg,prodServerResults]);
   const iD=useMemo(()=>{let l=prod.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(iF.cat!=='all')l=l.filter(p=>p.category===iF.cat);if(iF.vnd!=='all')l=l.filter(p=>p.vendor_id===iF.vnd);if(iF.clr!=='all')l=l.filter(p=>p.color_category===iF.clr);
     if(iShowFav&&favSkus.length>0)l=l.filter(p=>favSkus.includes(p.sku));
     if(q&&pg==='inventory'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s))}
@@ -4158,7 +4158,9 @@ export default function App(){
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:4}}>
                 <span style={{fontFamily:'monospace',fontWeight:800,fontSize:18,background:'#dbeafe',padding:'2px 10px',borderRadius:4,color:'#1e40af'}}>{ep.sku}</span>
                 <span style={{fontSize:18,fontWeight:700}}>{ep.name}</span>
+                {ep.is_archived&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>ARCHIVED</span>}
                 <button className="btn btn-sm btn-secondary" onClick={()=>setEditing(true)} style={{marginLeft:'auto'}}><Icon name="edit" size={12}/> Edit</button>
+                <button className="btn btn-sm" style={{background:ep.is_archived?'#fef3c7':'#f1f5f9',color:ep.is_archived?'#92400e':'#64748b',border:'1px solid '+(ep.is_archived?'#fde68a':'#e2e8f0'),fontWeight:700}} onClick={()=>{const updated={...ep,is_archived:!ep.is_archived};setEp(updated);setProd(p=>p.map(x=>x.id===updated.id?{...x,is_archived:updated.is_archived}:x));_dbSaveProduct(updated);nf(updated.is_archived?'Product archived':'Product unarchived')}}>{ep.is_archived?'Unarchive':'Archive'}</button>
                 <button className="btn btn-sm" style={{background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0',fontWeight:700}} onClick={()=>setAM({open:true,p:ep})}><Icon name="plus" size={12}/> Adjust Inventory</button>
               </div>
               <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:13,color:'#64748b',marginBottom:8}}>
@@ -4366,7 +4368,8 @@ export default function App(){
     <label style={{fontSize:12,display:'flex',alignItems:'center',gap:4}}><input type="checkbox" checked={pF.stk==='instock'} onChange={e=>setPF(f=>({...f,stk:e.target.checked?'instock':'all'}))}/> In Stock</label>
     <select className="form-select" style={{width:110}} value={pF.cat} onChange={e=>setPF(f=>({...f,cat:e.target.value}))}><option value="all">Category</option>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select>
     <select className="form-select" style={{width:110}} value={pF.vnd} onChange={e=>setPF(f=>({...f,vnd:e.target.value}))}><option value="all">Vendor</option>{vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>
-    <select className="form-select" style={{width:130}} value={pF.clr} onChange={e=>setPF(f=>({...f,clr:e.target.value}))}><option value="all">Color</option>{cols.map(c=><option key={c}>{c}</option>)}</select></div>
+    <select className="form-select" style={{width:130}} value={pF.clr} onChange={e=>setPF(f=>({...f,clr:e.target.value}))}><option value="all">Color</option>{cols.map(c=><option key={c}>{c}</option>)}</select>
+    <select className="form-select" style={{width:120}} value={pF.arc} onChange={e=>setPF(f=>({...f,arc:e.target.value}))}><option value="hide">Active</option><option value="all">All</option><option value="only">Archived</option></select></div>
   <div className="card"><div className="card-body" style={{padding:0}}>
   {fP.map(p=>{const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
     return(<div key={p.id} style={{padding:'14px 16px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setSelP(p)}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
@@ -4377,7 +4380,7 @@ export default function App(){
         {(p.images||[]).length>1&&<span style={{fontSize:9,color:'#7c3aed',fontWeight:700,background:'#f5f3ff',padding:'2px 6px',borderRadius:4}}>+{(p.images||[]).length-1}</span>}
       </div>
       <div style={{flex:1}}>
-        <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontFamily:'monospace',fontWeight:800,background:'#dbeafe',padding:'2px 8px',borderRadius:3,color:'#1e40af'}}>{p.sku}</span><span style={{fontWeight:700}}>{p.name}</span>{p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}</div>
+        <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontFamily:'monospace',fontWeight:800,background:'#dbeafe',padding:'2px 8px',borderRadius:3,color:'#1e40af'}}>{p.sku}</span><span style={{fontWeight:700}}>{p.name}</span>{p.is_archived&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#f1f5f9',color:'#64748b',fontWeight:700}}>ARCHIVED</span>}{p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}</div>
         <div style={{fontSize:12,color:'#94a3b8',marginTop:2}}><span className="badge badge-blue" style={{marginRight:4}}>{p.brand}</span>{p.color} | ${p.nsa_cost?.toFixed(2)} | {au?'Tier':'$'+rQ(p.nsa_cost*1.65).toFixed(2)}</div>
         <div style={{display:'flex',gap:2,marginTop:6,flexWrap:'wrap'}}>
           {[...new Set(p.available_sizes)].filter(sz=>showSz(sz,p._inv?.[sz])).map(sz=>{const v=p._inv?.[sz]||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`}><div className="size-label">{sz}</div><div className="size-qty">{v}</div></div>})}

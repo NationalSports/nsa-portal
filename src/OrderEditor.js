@@ -1176,7 +1176,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
   },[syncJobs]);// eslint-disable-line
 
-  const fp=products.filter(p=>{if(!pS||pS.length<2)return false;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)||p.color?.toLowerCase().includes(q)});
+  const fp=products.filter(p=>{if(!pS||pS.length<2)return false;if(p.is_archived)return false;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)||p.color?.toLowerCase().includes(q)});
   // Server-side product search fallback when local products don't match
   const[serverProducts,setServerProducts]=useState([]);
   const serverSearchTimer=useRef(null);
