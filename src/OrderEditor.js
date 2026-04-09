@@ -6091,7 +6091,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {/* PO FULL PAGE VIEW */}
     {poFullPage&&(()=>{
       const{po,item,allLines,soId,soItems}=poFullPage;
-      const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&k!=='drop_ship'&&typeof po[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+      const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&typeof po[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
       const received=po.received||{};const cancelled=po.cancelled||{};const shipments=po.shipments||[];
       const getRcvd=sz=>(received[sz]||0);const getCncl=sz=>(cancelled[sz]||0);const getOpen=sz=>Math.max(0,(po[sz]||0)-getRcvd(sz)-getCncl(sz));
       const totalOrdered=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const totalReceived=szKeys.reduce((a,sz)=>a+getRcvd(sz),0);
@@ -6104,7 +6104,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Gather all items on this PO from the SO
       const poItems=(allLines||[{lineIdx:0}]).map(ln=>({item:soItems?.[ln.lineIdx],po:soItems?.[ln.lineIdx]?.po_lines?.find(p=>p.po_id===po.po_id)||po})).filter(x=>x.item);
       const grandTotal=poItems.reduce((a,{item:it,po:p})=>{
-        const sk=Object.keys(p).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&k!=='drop_ship'&&typeof p[k]==='number');
+        const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&typeof p[k]==='number');
         const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.unit_cost!=null?safeNum(p.unit_cost):safeNum(it.nsa_cost);return a+qty*uc},0);
       return<div className="po-fullpage">
         <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
@@ -6152,7 +6152,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </tr></thead>
                 <tbody>
                   {poItems.map(({item:it,po:p},idx)=>{
-                    const sk=Object.keys(p).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&k!=='drop_ship'&&typeof p[k]==='number');
+                    const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&typeof p[k]==='number');
                     const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.unit_cost!=null?safeNum(p.unit_cost):safeNum(it.nsa_cost);
                     return<tr key={idx} style={{borderBottom:'1px solid #e2e8f0'}}>
                       <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
