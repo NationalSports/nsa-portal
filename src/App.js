@@ -4395,7 +4395,7 @@ export default function App(){
             </div>
             </>:(()=>{const primaryImg=ep.image_url||(ep.images&&ep.images[0])||null;const secondaryImgs=[ep.back_image_url,...(ep.images||[]).filter(u=>u!==primaryImg)].filter(Boolean);return<>
             {primaryImg?<img src={primaryImg} alt="Primary" style={{width:170,height:170,objectFit:'cover',borderRadius:8,border:'1px solid #e2e8f0'}}/>
-            :<a href={'https://www.google.com/search?tbm=isch&q='+encodeURIComponent((ep.sku||'')+' '+(ep.brand||'')+' '+(ep.color||''))} target="_blank" rel="noopener noreferrer" title={'Search '+ep.sku+' images'} style={{width:170,height:170,borderRadius:8,border:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc',textDecoration:'none',cursor:'pointer'}}><span style={{fontSize:28,opacity:0.3}}>📷</span></a>}
+            :<a href={'https://www.google.com/search?tbm=isch&q='+encodeURIComponent((ep.sku||'')+' '+(ep.name||'')+' '+(ep.brand||'')+' '+(ep.color||''))} target="_blank" rel="noopener noreferrer" title={'Search '+ep.sku+' images'} style={{width:170,height:170,borderRadius:8,border:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc',textDecoration:'none',cursor:'pointer'}}><span style={{fontSize:28,opacity:0.3}}>📷</span></a>}
             {secondaryImgs.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{secondaryImgs.map((url,i)=><img key={i} src={url} alt="" style={{width:40,height:40,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>)}</div>}
             </>})()}
           </div>
