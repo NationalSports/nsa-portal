@@ -217,7 +217,7 @@ tbody tr { cursor: pointer; }
 
 /* PO full page overlay — sits beside sidebar */
 .po-fullpage {
-  position: fixed; top: 0; left: 220px; right: 0; bottom: 0;
+  position: fixed; top: 52px; left: 220px; right: 0; bottom: 0;
   background: #f1f5f9; z-index: 40; overflow: auto;
 }
 
