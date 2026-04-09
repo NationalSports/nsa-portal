@@ -16475,14 +16475,18 @@ export default function App(){
         const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType FROM Account WHERE AccountType IN ('Cost of Goods Sold','Expense') MAXRESULTS 200"});
         (acctRes?.QueryResponse?.Account||[]).forEach(a=>{acctMap[a.Name]={value:a.Id,name:a.Name}});
       }catch(e){console.warn('[QB] Account query failed:',e)}
-      const toSync=[];
+      // Group PO lines by po_id so we push one QB PO with all line items
+      const poGroupMap={};
       sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{
         if(!poMap[pl.po_id]){
-          toSync.push({pl,so,it,vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand});
+          if(!poGroupMap[pl.po_id])poGroupMap[pl.po_id]={poId:pl.po_id,entries:[],vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand,created_at:pl.created_at,account:pl.po_type==='outside_deco'?qbConfig.mapping.deco_account:qbConfig.mapping.cogs_account};
+          poGroupMap[pl.po_id].entries.push({pl,so,it});
         }
       })})});
-      for(const{pl,so,it,vendor:vendorName}of toSync){
-        if(!vendorName){log.details.push(pl.po_id+' — skipped: no vendor name');log.status='partial';continue}
+      const poGroups=Object.values(poGroupMap);
+      for(const group of poGroups){
+        const vendorName=group.vendor;
+        if(!vendorName){log.details.push(group.poId+' — skipped: no vendor name');log.status='partial';continue}
         // Find or create vendor in QB
         let v=vend.find(x=>x.name===vendorName)||D_V.find(x=>x.name===vendorName);
         let qbVendorId=vendorQBMap[vendorName]||v?.qb_vendor_id;
@@ -16493,32 +16497,37 @@ export default function App(){
           else{
             const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendorName,CompanyName:vendorName}});
             if(vRes?.Vendor?.Id){qbVendorId=vRes.Vendor.Id}
-            else{log.details.push(pl.po_id+' — vendor "'+vendorName+'" creation failed: '+(vRes?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial';continue}
+            else{log.details.push(group.poId+' — vendor "'+vendorName+'" creation failed: '+(vRes?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial';continue}
           }
           vendorQBMap[vendorName]=qbVendorId;
           if(v)setVend(prev=>prev.map(vv=>vv.id===v.id?{...vv,qb_vendor_id:qbVendorId}:vv));
         }
-        const qty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&k.match(/^[A-Z0-9]/)).reduce((a,[,v])=>a+v,0);
-        const rate=pl.po_type==='outside_deco'?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
-        const account=pl.po_type==='outside_deco'?qbConfig.mapping.deco_account:qbConfig.mapping.cogs_account;
+        // Build Line array with one entry per SO item on this PO
+        const qbLines=group.entries.map(({pl:p,so:s,it:i})=>{
+          const qty=Object.entries(p).filter(([k,v])=>typeof v==='number'&&!k.startsWith('_')&&!['unit_cost','billed','tracking_numbers','vendor','drop_ship'].includes(k)&&k.match(/^[A-Z0-9]/)).reduce((a,[,v])=>a+v,0);
+          const rate=p.po_type==='outside_deco'?safeNum(p.unit_cost):safeNum(i.nsa_cost);
+          return{DetailType:'AccountBasedExpenseLineDetail',Amount:qty*rate,
+            Description:i.sku+' '+i.name+' x'+qty+' @$'+rate.toFixed(2)+' (SO: '+s.id+')',
+            AccountBasedExpenseLineDetail:{AccountRef:acctMap[group.account]||Object.values(acctMap)[0]||{name:group.account||'Expenses'}}};
+        });
+        const totalAmount=qbLines.reduce((a,l)=>a+l.Amount,0);
+        const soRefs=[...new Set(group.entries.map(({so:s})=>s.id))].join(', ');
         const qbPO={
-          DocNumber:pl.po_id,
+          DocNumber:group.poId,
           VendorRef:{value:qbVendorId},
-          TxnDate:(pl.created_at||'').slice(0,10)||new Date().toISOString().slice(0,10),
-          Line:[{DetailType:'AccountBasedExpenseLineDetail',Amount:qty*rate,
-            Description:it.sku+' '+it.name+' x'+qty+' @$'+rate.toFixed(2)+' (SO: '+so.id+')',
-            AccountBasedExpenseLineDetail:{AccountRef:acctMap[account]||Object.values(acctMap)[0]||{name:account||'Expenses'}}}],
-          PrivateNote:'Portal PO for SO: '+so.id,
-          ...(poMap[pl.po_id]?{Id:poMap[pl.po_id],sparse:true}:{}),
+          TxnDate:(group.created_at||'').slice(0,10)||new Date().toISOString().slice(0,10),
+          Line:qbLines,
+          PrivateNote:'Portal PO for SO: '+soRefs,
+          ...(poMap[group.poId]?{Id:poMap[group.poId],sparse:true}:{}),
         };
         const res=await qbApi('upsert_purchase_order',{purchase_order:qbPO});
         if(res?.PurchaseOrder?.Id){
-          poMap[pl.po_id]=res.PurchaseOrder.Id;
-          log.details.push(pl.po_id+' → QB PO #'+res.PurchaseOrder.Id+' ('+vendorName+' $'+(qty*rate).toFixed(2)+')');synced++;
-        }else{log.details.push(pl.po_id+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+          poMap[group.poId]=res.PurchaseOrder.Id;
+          log.details.push(group.poId+' → QB PO #'+res.PurchaseOrder.Id+' ('+vendorName+' $'+totalAmount.toFixed(2)+', '+qbLines.length+' items)');synced++;
+        }else{log.details.push(group.poId+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
       }
-      if(synced===0&&toSync.length>0)log.status='error';
-      log.details.unshift(synced+'/'+toSync.length+' purchase orders synced');
+      if(synced===0&&poGroups.length>0)log.status='error';
+      log.details.unshift(synced+'/'+poGroups.length+' purchase orders synced');
       setQBConfig(prev=>({...prev,qbPOMap:{...prev.qbPOMap,...poMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' purchase orders synced to QB');
       setQbSyncing(false);
@@ -16579,7 +16588,7 @@ export default function App(){
     };
 
     const buildQBPurchaseOrder=(pl,so,it)=>{
-      const qty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&k.match(/^[A-Z0-9]/)).reduce((a,[,v])=>a+v,0);
+      const qty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!k.startsWith('_')&&!['unit_cost','billed','tracking_numbers','vendor','drop_ship'].includes(k)&&k.match(/^[A-Z0-9]/)).reduce((a,[,v])=>a+v,0);
       const rate=pl.po_type==='outside_deco'?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
       return{docType:'PurchaseOrder',docNumber:pl.po_id,vendorRef:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand,
         date:pl.created_at,soRef:so.id,lines:[{desc:it.sku+' '+it.name,qty,rate,amount:qty*rate}],
