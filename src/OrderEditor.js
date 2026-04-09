@@ -2974,11 +2974,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(pickQty>0?pickQty*safeNum(it.nsa_cost):0);
           const billedUnitCost=billedCostFromPOs>0&&poBlankQty>0?Math.round(billedCostFromPOs/poBlankQty*100)/100:null;
           const catalogCost=safeNum(it.nsa_cost);
+          const catProduct=products.find(x=>x.id===it.product_id)||(it.sku?products.find(x=>(x.sku||'').toLowerCase()===(it.sku||'').toLowerCase()):null);
           costLines.push({category:'Blanks',sku:it.sku,name:it.name,vendor:D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'—',
             qty,expected:expectedBlank,actual:actualBlank,poCount:blankPOs.length+(pickQty>0?1:0),
             poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
             allReceived:blankPOs.length>0&&blankPOs.every(p=>p.status==='received'),
-            product_id:it.product_id,billedUnitCost,catalogCost});
+            _catProduct:catProduct,billedUnitCost,catalogCost});
           safeDecos(it).forEach(d=>{
             const dp=dP(d,qty,af,qty);
             const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const expectedDeco=eqD*dp.cost;
@@ -3062,10 +3063,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <td style={{textAlign:'right'}}>{l.isShippingDetail?'—':'$'+l.expected.toFixed(2)}</td>
                 <td style={{textAlign:'right',fontWeight:700,color:l.actual>0?'#0f172a':'#94a3b8'}}>{l.actual>0?'$'+l.actual.toFixed(2):l.isShipping?'$0.00':'—'}</td>
                 <td style={{textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.isShippingDetail?'—':(l.actual>0||l.isShipping)?(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2):'—'}
-                  {l.billedUnitCost!=null&&Math.abs(l.billedUnitCost-l.catalogCost)>0.005&&<div><button style={{fontSize:9,padding:'1px 6px',borderRadius:4,border:'1px solid #93c5fd',background:'#eff6ff',color:'#1e40af',cursor:'pointer',fontWeight:600,marginTop:2}} onClick={()=>{
-                    const skuLc=(l.sku||'').toLowerCase();
-                    const p=products.find(x=>x.id===l.product_id||(x.sku||'').toLowerCase()===skuLc);if(!p){nf('Product not found in catalog','error');return}
-                    const updated={...p,nsa_cost:l.billedUnitCost};
+                  {l.billedUnitCost!=null&&l._catProduct&&Math.abs(l.billedUnitCost-l.catalogCost)>0.005&&<div><button style={{fontSize:9,padding:'1px 6px',borderRadius:4,border:'1px solid #93c5fd',background:'#eff6ff',color:'#1e40af',cursor:'pointer',fontWeight:600,marginTop:2}} onClick={()=>{
+                    const updated={...l._catProduct,nsa_cost:l.billedUnitCost};
                     if(onSaveProduct)onSaveProduct(updated);
                     nf(l.sku+' catalog cost updated: $'+l.catalogCost.toFixed(2)+' → $'+l.billedUnitCost.toFixed(2));
                   }}>Update Catalog → ${l.billedUnitCost.toFixed(2)}</button></div>}
