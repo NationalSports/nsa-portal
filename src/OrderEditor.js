@@ -6106,7 +6106,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const grandTotal=poItems.reduce((a,{item:it,po:p})=>{
         const sk=Object.keys(p).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&k!=='drop_ship'&&typeof p[k]==='number');
         const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.unit_cost!=null?safeNum(p.unit_cost):safeNum(it.nsa_cost);return a+qty*uc},0);
-      return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'#f1f5f9',zIndex:9999,overflow:'auto'}}>
+      return<div className="po-fullpage">
         <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
             <div style={{display:'flex',alignItems:'center',gap:12}}>
