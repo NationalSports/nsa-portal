@@ -125,6 +125,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const adidasInvCache=useRef({});// {sku: {sizes:{...}, lastSynced, fetchedAt}}
   const[adidasInv,setAdidasInv]=useState({});// {sku: {sizes:{S:{qty,futureDate,futureQty},...}, lastSynced, loading, error}}
   const adidasInvFetching=useRef({});
+  const[catalogUpdatedSkus,setCatalogUpdatedSkus]=useState({});// track SKUs whose catalog cost was updated this session
 
   const fetchAdidasInv=useCallback(async(sku)=>{
     if(!sku)return;
@@ -2953,24 +2954,48 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {/* COSTS TAB — Expected vs Actual */}
     {isSO&&tab==='costs'&&(()=>{
         const costLines=[];
+        // Pre-compute per-SKU billed totals for correct unit cost on duplicate SKUs
+        // (bill cost is split proportionally across items, but billed qty is duplicated on each)
+        const _skuBillCost={},_skuBillQtySeen={};
+        safeItems(o).forEach(it=>{
+          const sk=(it.sku||'').toUpperCase();if(!sk)return;
+          const blankPOs=(it.po_lines||[]).filter(pl=>pl.po_type!=='outside_deco');
+          const bc=blankPOs.reduce((a,pl)=>a+safeNum(pl._bill_cost||0),0);
+          if(bc>0){_skuBillCost[sk]=(_skuBillCost[sk]||0)+bc;
+            if(!_skuBillQtySeen[sk]){_skuBillQtySeen[sk]=true;_skuBillCost[sk+'_qty']=blankPOs.reduce((a,pl)=>a+Object.values(pl.billed||{}).reduce((a2,v)=>a2+safeNum(v),0),0)}}
+        });
         safeItems(o).forEach((it,ii)=>{
           const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
           if(!qty)return;
-          const expectedBlank=qty*safeNum(it.nsa_cost);
           const blankPOs=(it.po_lines||[]).filter(pl=>pl.po_type!=='outside_deco');
           const poBlankQty=blankPOs.reduce((a,pl)=>{
             return a+Object.entries(pl).filter(([k,v])=>typeof v==='number'&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0)},0);
+          // Expected cost: use PO unit_cost when set, otherwise item nsa_cost
+          const expectedFromPOs=blankPOs.reduce((a,pl)=>{
+            const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0);
+            const uc=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
+            return a+poQty*uc},0);
+          const expectedBlank=expectedFromPOs+(Math.max(0,qty-poBlankQty))*safeNum(it.nsa_cost);
           // Include inventory picks in actual cost (already-owned stock still has cost basis)
           const pickQty=safePicks(it).reduce((a,pk)=>a+Object.entries(pk).filter(([k,v])=>typeof v==='number'&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0),0);
           const accountedQty=poBlankQty+pickQty;
           const hasActual=blankPOs.length>0||pickQty>0;
-          // Use actual billed cost from supplier bills when available, else fall back to qty*nsa_cost
+          // Use actual billed cost from supplier bills when available; no bill = no actual (show "—")
           const billedCostFromPOs=blankPOs.reduce((a,pl)=>a+safeNum(pl._bill_cost||0),0);
-          const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(hasActual?accountedQty*safeNum(it.nsa_cost):0);
+          const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(pickQty>0?pickQty*safeNum(it.nsa_cost):0);
+          // Use SKU-level totals for unit cost so duplicate SKUs don't halve the price
+          const _sk=(it.sku||'').toUpperCase();
+          const skuTotalCost=_skuBillCost[_sk]||0;
+          const skuBilledQty=_skuBillCost[_sk+'_qty']||0;
+          const billedUnitCost=skuTotalCost>0&&skuBilledQty>0?Math.round(skuTotalCost/skuBilledQty*100)/100:null;
+          const catalogCost=safeNum(it.nsa_cost);
+          const catProduct=products.find(x=>x.id===it.product_id)||(it.sku?products.find(x=>(x.sku||'').toLowerCase()===(it.sku||'').toLowerCase()):null);
           costLines.push({category:'Blanks',sku:it.sku,name:it.name,vendor:D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'—',
             qty,expected:expectedBlank,actual:actualBlank,poCount:blankPOs.length+(pickQty>0?1:0),
             poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
-            allReceived:blankPOs.length>0&&blankPOs.every(p=>p.status==='received')});
+            allReceived:blankPOs.length>0&&blankPOs.every(p=>p.status==='received'),
+            _catProduct:catProduct,_productId:it.product_id,_vendorId:it.vendor_id,_brand:it.brand,_color:it.color,_imageUrl:it.image_url,
+            billedUnitCost,catalogCost});
           safeDecos(it).forEach(d=>{
             const dp=dP(d,qty,af,qty);
             const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const expectedDeco=eqD*dp.cost;
@@ -2991,7 +3016,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           });
         });
         if(costLines.length===0)return<div className="card"><div className="card-body"><div className="empty">No cost data — add items first</div></div></div>;
-        const hasActuals=costLines.some(l=>l.poCount>0);
+        const hasActuals=costLines.some(l=>l.actual>0);
         // Shipping & freight costs for GP calculation — fallback to summing shipment records
         const shipCostFromRecs=(o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
         const shipCostVal=safeNum(o._shipping_cost||o._shipstation_cost||0)||shipCostFromRecs;
@@ -3007,7 +3032,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // Totals computed AFTER shipping lines added
         const totalExpected=costLines.reduce((a,l)=>a+(l.isShippingSubtotal?0:l.expected),0)+quotedShip;
         const totalActual=costLines.reduce((a,l)=>a+(l.isShippingSubtotal?0:l.actual),0);
-        const variance=totalActual-totalExpected;
+        // Variance totals only include billed items (items with actual cost > 0)
+        const billedExpected=costLines.filter(l=>!l.isShippingSubtotal&&!l.isShippingDetail&&l.actual>0).reduce((a,l)=>a+l.expected,0);
+        const billedActual=costLines.filter(l=>!l.isShippingSubtotal&&!l.isShippingDetail&&l.actual>0).reduce((a,l)=>a+l.actual,0);
+        // Add shipping subtotal to billed totals if any shipping costs exist
+        const shippingSub=costLines.find(l=>l.isShippingSubtotal);
+        const shipActual=shippingSub?shippingSub.actual:0;
+        const shipExpected=shipActual>0?quotedShip:0;
+        const variance=(billedActual+shipActual)-(billedExpected+shipExpected);
         const cats={};costLines.forEach(l=>{if(l.isShippingSubtotal)return;if(!cats[l.category])cats[l.category]={expected:0,actual:0};cats[l.category].expected+=l.expected;cats[l.category].actual+=l.actual});if(cats['Shipping'])cats['Shipping'].expected=quotedShip;
 
         return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between'}}>
@@ -3053,7 +3085,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <td style={{textAlign:'right',fontWeight:600}}>{l.qty}</td>
                 <td style={{textAlign:'right'}}>{l.isShippingDetail?'—':'$'+l.expected.toFixed(2)}</td>
                 <td style={{textAlign:'right',fontWeight:700,color:l.actual>0?'#0f172a':'#94a3b8'}}>{l.actual>0?'$'+l.actual.toFixed(2):l.isShipping?'$0.00':'—'}</td>
-                <td style={{textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.isShippingDetail?'—':l.poCount>0||l.isShipping?(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2):'—'}</td>
+                <td style={{textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.isShippingDetail?'—':(l.actual>0||l.isShipping)?(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2):'—'}
+                  {l.billedUnitCost!=null&&!catalogUpdatedSkus[l.sku]&&Math.abs(l.billedUnitCost-l.catalogCost)>0.005&&<div><button style={{fontSize:9,padding:'1px 6px',borderRadius:4,border:'1px solid #93c5fd',background:'#eff6ff',color:'#1e40af',cursor:'pointer',fontWeight:600,marginTop:2}} onClick={()=>{
+                    const cp=l._catProduct||products.find(x=>x.id===l._productId)||products.find(x=>(x.sku||'').toLowerCase()===(l.sku||'').toLowerCase());
+                    const updated=cp?{...cp,nsa_cost:l.billedUnitCost}:{id:l._productId,sku:l.sku,name:l.name,vendor_id:l._vendorId||null,brand:l._brand||null,color:l._color||null,image_url:l._imageUrl||null,nsa_cost:l.billedUnitCost};
+                    if(onSaveProduct)onSaveProduct(updated);
+                    setCatalogUpdatedSkus(p=>({...p,[l.sku]:true}));
+                    nf(l.sku+' catalog cost updated: $'+l.catalogCost.toFixed(2)+' → $'+l.billedUnitCost.toFixed(2));
+                  }}>Update Catalog → ${l.billedUnitCost.toFixed(2)}</button></div>}
+                </td>
                 <td style={{fontSize:11,color:'#7c3aed',fontWeight:600}}>{l.poIds||<span style={{color:'#94a3b8'}}>No PO</span>}</td>
               </tr>})}</tbody>
             <tfoot><tr style={{fontWeight:800}}>
@@ -4093,7 +4133,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div><label className="form-label">Ship To</label><select className="form-select" defaultValue="warehouse"><option value="warehouse">NSA Warehouse — Emerson</option>{addrs.map(a=><option key={a.id} value={a.id}>{a.label}</option>)}</select></div>
             <div><label className="form-label">Expected Date</label><input className="form-input" type="date" id={'po-date-'+(preexistingPO?'preexisting':autoPoId)}/></div></div>
           <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" id={'po-dropship-'+(preexistingPO?'preexisting':autoPoId)}/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school/decorator, skip warehouse receive</span></label></div>
-          {poItems.map((it,vi)=>{const soQ=Object.values(it.sizes).reduce((a,v)=>a+v,0);const excluded=!!poExcluded[vi];
+          {poItems.map((it,vi)=>{const soQ=Object.values(it.sizes).reduce((a,v)=>a+v,0);const excluded=!!poExcluded[vi];const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const catCost=catP?safeNum(catP.nsa_cost):safeNum(it.nsa_cost);
             return<div key={vi} style={{padding:12,border:'1px solid '+(excluded?'#f1f5f9':'#e2e8f0'),borderRadius:6,marginBottom:8,opacity:excluded?0.4:1,transition:'opacity 0.15s'}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
                 <div style={{display:'flex',alignItems:'center',gap:8}}><input type="checkbox" checked={!excluded} onChange={()=>setPOExcluded(x=>({...x,[vi]:!x[vi]}))} style={{marginTop:1}}/><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:4}}>{it.sku}</span><strong>{it.name}</strong> — {it.color}</div>
@@ -4105,7 +4145,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{display:'flex',gap:8,alignItems:'center',marginTop:8}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Price/Unit:</span>
                 <span style={{fontSize:12,color:'#94a3b8'}}>$</span>
-                <input id={'po-price-'+vi} style={{width:80,border:'1px solid #d1d5db',borderRadius:4,padding:'4px 6px',fontSize:14,fontWeight:700}} defaultValue={safeNum(it.nsa_cost).toFixed(2)}/>
+                <input id={'po-price-'+vi} style={{width:80,border:'1px solid #d1d5db',borderRadius:4,padding:'4px 6px',fontSize:14,fontWeight:700}} defaultValue={catCost.toFixed(2)}/>
               </div>
             </div>})}
           <div style={{marginTop:8}}><label className="form-label">Notes</label><input className="form-input" placeholder="PO notes for vendor..." id={'po-notes-'+poId}/></div></>}
@@ -4120,7 +4160,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               pit.openSizes.forEach(([sz,v])=>{const el=document.getElementById('po-qty-'+vi+'-'+sz);sizes[sz]=el?parseInt(el.value)||0:v});
               const qty=Object.values(sizes).reduce((a,v)=>a+v,0);
               const batchPriceEl=document.getElementById('po-price-'+vi);
-              const batchUnitCost=batchPriceEl?parseFloat(batchPriceEl.value)||0:safeNum(pit.nsa_cost);
+              const batchCatProd=products.find(p=>p.id===pit.product_id||p.sku===pit.sku);
+              const batchUnitCost=batchPriceEl?parseFloat(batchPriceEl.value)||0:safeNum(batchCatProd?.nsa_cost??pit.nsa_cost);
               totalCost+=qty*batchUnitCost;
               batchItems.push({sku:pit.sku,name:pit.name,color:pit.color,sizes,qty,unit_cost:batchUnitCost,item_idx:pit._idx});
             });
@@ -4140,7 +4181,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const idx=pit._idx;if(idx==null)return;
             const isDropShip=document.getElementById(dropShipElId)?.checked||false;
             const priceEl=document.getElementById('po-price-'+vi);
-            const unitCostVal=priceEl?parseFloat(priceEl.value)||0:safeNum(pit.nsa_cost);
+            const catProd=products.find(p=>p.id===pit.product_id||p.sku===pit.sku);
+            const unitCostVal=priceEl?parseFloat(priceEl.value)||0:safeNum(catProd?.nsa_cost??pit.nsa_cost);
             const poLine={po_id:effectivePoId,vendor:vn,status:preexistingPO?'ordered':'waiting',created_at:new Date().toLocaleDateString(),memo:preexistingPO?'Preexisting PO (NetSuite)':'',received:{},shipments:[],unit_cost:unitCostVal};
             if(preexistingPO)poLine.preexisting=true;
             if(isDropShip)poLine.drop_ship=true;
@@ -5819,7 +5861,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>}
 
           {/* PO Summary Table */}
-          {(()=>{const unitCost=po.po_type==='outside_deco'?safeNum(po.unit_cost):safeNum(item?.nsa_cost);const poTotal=totalOrdered*unitCost;const rcvdTotal=totalReceived*unitCost;const openTotal=totalOpen*unitCost;return<>
+          {(()=>{const unitCost=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(item?.nsa_cost);const poTotal=totalOrdered*unitCost;const rcvdTotal=totalReceived*unitCost;const openTotal=totalOpen*unitCost;return<>
           <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',marginBottom:12}}>
             <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th><th style={{padding:'4px 8px',textAlign:'right',minWidth:70}}>$</th></tr></thead>
             <tbody>
@@ -5833,7 +5875,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </table>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'#f0f9ff',borderRadius:6,marginBottom:12}}>
             <div style={{display:'flex',gap:16,fontSize:12}}>
-              <span style={{color:'#64748b'}}>Unit Cost: <strong style={{color:'#0f172a'}}>${unitCost.toFixed(2)}</strong></span>
+              <span style={{color:'#64748b',display:'flex',alignItems:'center',gap:4}}>Unit Cost: $<input key={unitCost} defaultValue={unitCost.toFixed(2)} style={{width:64,fontWeight:800,color:'#0f172a',border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 4px',fontSize:12,textAlign:'right',background:'white'}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}} onBlur={e=>{const val=parseFloat(e.target.value);if(isNaN(val)||val===unitCost)return;const updatedPO={...po,unit_cost:val};const updatedItems=o.items.map((it,i)=>i===activeLine.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===activeLine.poIdx?updatedPO:p)}:it);const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(prev=>({...prev,po:updatedPO}));nf('Unit cost updated to $'+val.toFixed(2))}}/></span>
               {po.po_type==='outside_deco'&&<span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>}
             </div>
             <div style={{fontWeight:800,fontSize:16,color:'#0f172a'}}>PO Total: ${poTotal.toFixed(2)}</div>
