@@ -12605,6 +12605,7 @@ export default function App(){
     pdfFile:null,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
   const[impNewCust,setImpNewCust]=useState(false);// show CustModal from import flow
   const[impTab,setImpTab]=useState('orders');// orders|customers|vendors|products|bills
+  const[impVendor,setImpVendor]=useState('');// default vendor_id for product import
   const[bulkImp,setBulkImp]=useState({raw:'',parsed:[],issues:[],step:'paste'});// paste|review|done
   const[billImport,setBillImport]=useState({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}});
   const[savedBills,setSavedBills]=useState(()=>{try{const s=localStorage.getItem('nsa_saved_bills');return s?JSON.parse(s):[]}catch{return[]}});
@@ -13044,7 +13045,8 @@ export default function App(){
         if(!sku||!name){skipped.push('Row '+(i+2)+': missing SKU or name');return}
         const existing=prod.find(p=>p.sku.toLowerCase()===sku.toLowerCase());
         const vendorName=(row[colMap.vendor_name]||row[colMap.brand]||'').trim();
-        const vendor=D_V.find(v=>v.name.toLowerCase()===vendorName.toLowerCase());
+        const vendor=vendorName?[...D_V,...vend].find(v=>v.name.toLowerCase()===vendorName.toLowerCase()):null;
+        const effectiveVendorId=vendor?.id||(impVendor||null);
         const sizes=(row[colMap.available_sizes]||'').trim();
         const parsedSizes=sizes?sizes.split(',').map(s=>s.trim()).filter(Boolean):null;
         const rowColor=(row[colMap.color]||'').trim();
@@ -13073,7 +13075,7 @@ export default function App(){
           if(row[colMap.retail_price]&&parseFloat(row[colMap.retail_price]))updates.retail_price=parseFloat(row[colMap.retail_price]);
           if(row[colMap.nsa_cost]&&parseFloat(row[colMap.nsa_cost]))updates.nsa_cost=parseFloat(row[colMap.nsa_cost]);
           if(parsedSizes&&parsedSizes.length>0)updates.available_sizes=parsedSizes;
-          if(vendor)updates.vendor_id=vendor.id;
+          if(effectiveVendorId)updates.vendor_id=effectiveVendorId;
           if(Object.keys(updates).length>0){
             // Merge with any previous pending update for the same product
             const prevIdx=updated.findIndex(u=>u.id===existing.id);
@@ -13093,8 +13095,8 @@ export default function App(){
           return;
         }
         added.push({
-          id:'p-'+Date.now()+'-'+i,vendor_id:vendor?.id||null,sku,name,
-          brand:row[colMap.brand]||'',color:rowColor,
+          id:'p-'+Date.now()+'-'+i,vendor_id:effectiveVendorId||null,sku,name,
+          brand:row[colMap.brand]||[...D_V,...vend].find(v=>v.id===effectiveVendorId)?.name||'',color:rowColor,
           color_category:mapColorCategory(rowColor),
           category:row[colMap.category]||'',
           retail_price:parseFloat(row[colMap.retail_price])||0,
@@ -14296,6 +14298,16 @@ export default function App(){
         <div className="card" style={{marginBottom:12}}>
           <div className="card-header"><h2>{impTab==='customers'?'👥 Bulk Import Customers':impTab==='vendors'?'🏭 Bulk Import Vendors':'📦 Bulk Import Products'}</h2></div>
           <div className="card-body">
+
+            {/* Vendor selector for product imports */}
+            {impTab==='products'&&<div style={{marginBottom:12,padding:10,background:'#f0fdf4',borderRadius:6,border:'1px solid #bbf7d0',display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontSize:12,fontWeight:700,color:'#166534'}}>Vendor:</span>
+              <select className="form-select" style={{width:200,fontSize:12}} value={impVendor} onChange={e=>setImpVendor(e.target.value)}>
+                <option value="">— None (use CSV column) —</option>
+                {[...D_V,...vend.filter(v=>!D_V.some(d=>d.id===v.id))].map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+              </select>
+              <span style={{fontSize:10,color:'#64748b'}}>Applied to all rows unless a row has its own vendor_name column</span>
+            </div>}
 
             {/* STEP 1: Paste / Upload */}
             {bulkImp.step==='paste'&&<>
