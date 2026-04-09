@@ -3016,7 +3016,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // Totals computed AFTER shipping lines added
         const totalExpected=costLines.reduce((a,l)=>a+(l.isShippingSubtotal?0:l.expected),0)+quotedShip;
         const totalActual=costLines.reduce((a,l)=>a+(l.isShippingSubtotal?0:l.actual),0);
-        const variance=totalActual-totalExpected;
+        // Variance totals only include billed items (items with actual cost > 0)
+        const billedExpected=costLines.filter(l=>!l.isShippingSubtotal&&!l.isShippingDetail&&l.actual>0).reduce((a,l)=>a+l.expected,0);
+        const billedActual=costLines.filter(l=>!l.isShippingSubtotal&&!l.isShippingDetail&&l.actual>0).reduce((a,l)=>a+l.actual,0);
+        // Add shipping subtotal to billed totals if any shipping costs exist
+        const shippingSub=costLines.find(l=>l.isShippingSubtotal);
+        const shipActual=shippingSub?shippingSub.actual:0;
+        const shipExpected=shipActual>0?quotedShip:0;
+        const variance=(billedActual+shipActual)-(billedExpected+shipExpected);
         const cats={};costLines.forEach(l=>{if(l.isShippingSubtotal)return;if(!cats[l.category])cats[l.category]={expected:0,actual:0};cats[l.category].expected+=l.expected;cats[l.category].actual+=l.actual});if(cats['Shipping'])cats['Shipping'].expected=quotedShip;
 
         return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between'}}>
@@ -3063,8 +3070,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <td style={{textAlign:'right'}}>{l.isShippingDetail?'—':'$'+l.expected.toFixed(2)}</td>
                 <td style={{textAlign:'right',fontWeight:700,color:l.actual>0?'#0f172a':'#94a3b8'}}>{l.actual>0?'$'+l.actual.toFixed(2):l.isShipping?'$0.00':'—'}</td>
                 <td style={{textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.isShippingDetail?'—':(l.actual>0||l.isShipping)?(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2):'—'}
-                  {l.billedUnitCost!=null&&l._catProduct&&Math.abs(l.billedUnitCost-l.catalogCost)>0.005&&<div><button style={{fontSize:9,padding:'1px 6px',borderRadius:4,border:'1px solid #93c5fd',background:'#eff6ff',color:'#1e40af',cursor:'pointer',fontWeight:600,marginTop:2}} onClick={()=>{
-                    const updated={...l._catProduct,nsa_cost:l.billedUnitCost};
+                  {l.billedUnitCost!=null&&Math.abs(l.billedUnitCost-l.catalogCost)>0.005&&<div><button style={{fontSize:9,padding:'1px 6px',borderRadius:4,border:'1px solid #93c5fd',background:'#eff6ff',color:'#1e40af',cursor:'pointer',fontWeight:600,marginTop:2}} onClick={()=>{
+                    const cp=l._catProduct||products.find(x=>(x.sku||'').toLowerCase()===(l.sku||'').toLowerCase());
+                    if(!cp){nf('Product not found in catalog for '+l.sku,'error');return}
+                    const updated={...cp,nsa_cost:l.billedUnitCost};
                     if(onSaveProduct)onSaveProduct(updated);
                     nf(l.sku+' catalog cost updated: $'+l.catalogCost.toFixed(2)+' → $'+l.billedUnitCost.toFixed(2));
                   }}>Update Catalog → ${l.billedUnitCost.toFixed(2)}</button></div>}
