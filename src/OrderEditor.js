@@ -2964,9 +2964,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const pickQty=safePicks(it).reduce((a,pk)=>a+Object.entries(pk).filter(([k,v])=>typeof v==='number'&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0),0);
           const accountedQty=poBlankQty+pickQty;
           const hasActual=blankPOs.length>0||pickQty>0;
-          // Use actual billed cost from supplier bills when available, else fall back to qty*nsa_cost
+          // Use actual billed cost from supplier bills when available; no bill = no actual (show "—")
           const billedCostFromPOs=blankPOs.reduce((a,pl)=>a+safeNum(pl._bill_cost||0),0);
-          const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(hasActual?accountedQty*safeNum(it.nsa_cost):0);
+          const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(pickQty>0?pickQty*safeNum(it.nsa_cost):0);
           costLines.push({category:'Blanks',sku:it.sku,name:it.name,vendor:D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'—',
             qty,expected:expectedBlank,actual:actualBlank,poCount:blankPOs.length+(pickQty>0?1:0),
             poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
@@ -2991,7 +2991,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           });
         });
         if(costLines.length===0)return<div className="card"><div className="card-body"><div className="empty">No cost data — add items first</div></div></div>;
-        const hasActuals=costLines.some(l=>l.poCount>0);
+        const hasActuals=costLines.some(l=>l.actual>0);
         // Shipping & freight costs for GP calculation — fallback to summing shipment records
         const shipCostFromRecs=(o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
         const shipCostVal=safeNum(o._shipping_cost||o._shipstation_cost||0)||shipCostFromRecs;
@@ -3053,7 +3053,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <td style={{textAlign:'right',fontWeight:600}}>{l.qty}</td>
                 <td style={{textAlign:'right'}}>{l.isShippingDetail?'—':'$'+l.expected.toFixed(2)}</td>
                 <td style={{textAlign:'right',fontWeight:700,color:l.actual>0?'#0f172a':'#94a3b8'}}>{l.actual>0?'$'+l.actual.toFixed(2):l.isShipping?'$0.00':'—'}</td>
-                <td style={{textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.isShippingDetail?'—':l.poCount>0||l.isShipping?(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2):'—'}</td>
+                <td style={{textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.isShippingDetail?'—':(l.actual>0||l.isShipping)?(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2):'—'}</td>
                 <td style={{fontSize:11,color:'#7c3aed',fontWeight:600}}>{l.poIds||<span style={{color:'#94a3b8'}}>No PO</span>}</td>
               </tr>})}</tbody>
             <tfoot><tr style={{fontWeight:800}}>
