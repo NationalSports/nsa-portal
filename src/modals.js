@@ -248,7 +248,7 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
 // MODALS
 
 function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase}){
-  const b={parent_id:null,name:'',alpha_tag:'',contacts:[{name:'',email:'',phone:'',role:'Head Coach'}],shipping_city:'',shipping_state:'',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30'};
+  const b={parent_id:null,name:'',alpha_tag:'',contacts:[{name:'',email:'',phone:'',role:'Head Coach'}],shipping_city:'',shipping_state:'',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',tax_exempt:false,tax_rate:0};
   const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});const[tcLook,setTcLook]=useState({loading:false,msg:''});
   const doTcLookup=async(fields)=>{if(!supabase||!fields.shipping_state||!fields.shipping_zip)return null;try{return await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:fields.shipping_address_line1||'',city:fields.shipping_city||'',state:fields.shipping_state,zip5:fields.shipping_zip})}catch(e){return{ok:false,error:'Error: '+e.message}}};
   const APPAREL_EXEMPT=['MN','NJ','PA','VT','AK','DE','MT','NH','OR'];const APPAREL_THRESHOLD=['MA','NY','RI'];
@@ -345,7 +345,8 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase}){
     const billAlt=(dat.alt_billing_addresses||[]).find(a=>a.type==='billing');
     if(billAlt&&(billAlt.street||billAlt.city)){dat.billing_address_line1=billAlt.street||'';dat.billing_city=billAlt.city||'';dat.billing_state=billAlt.state||'';dat.billing_zip=billAlt.zip||''}
     else{dat.billing_address_line1=dat.shipping_address_line1||'';dat.billing_city=dat.shipping_city||'';dat.billing_state=dat.shipping_state||'';dat.billing_zip=dat.shipping_zip||''}
-    try{if(!dat.tax_exempt&&!(dat.tax_rate>0)&&dat.shipping_state&&dat.shipping_zip&&supabase){setTcLook({loading:true,msg:'Looking up tax rate...'});const d=await Promise.race([doTcLookup(dat),new Promise(r=>setTimeout(()=>r({ok:false,error:'timeout'}),8000))]);if(d?.ok){dat.tax_rate=d.tax_rate}}}catch(e){console.error('[CustModal] TaxCloud lookup error:',e)}finally{setTcLook({loading:false,msg:''})}onSave(dat);onClose()}}>{tcLook.loading?'Saving...':'Save'}</button></div></div></div>);
+    if(dat.tax_exempt){dat.tax_rate=0}
+    else{try{if(!(dat.tax_rate>0)&&dat.shipping_state&&dat.shipping_zip&&supabase){setTcLook({loading:true,msg:'Looking up tax rate...'});const d=await Promise.race([doTcLookup(dat),new Promise(r=>setTimeout(()=>r({ok:false,error:'timeout'}),8000))]);if(d?.ok){dat.tax_rate=d.tax_rate}}}catch(e){console.error('[CustModal] TaxCloud lookup error:',e)}finally{setTcLook({loading:false,msg:''})}}onSave(dat);onClose()}}>{tcLook.loading?'Saving...':'Save'}</button></div></div></div>);
 }
 
 function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});const[d,setD]=useState({});const[reason,setReason]=useState('');const[adjType,setAdjType]=useState('manual');

@@ -15,7 +15,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, sendBrevoEmail } from './utils';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
@@ -107,17 +107,8 @@ let stripePromise = null;
 try { if (_stripePk) stripePromise = loadStripe(_stripePk); }
 catch(e) { console.warn('[Stripe] Init failed:', e.message); }
 
-// ─── Brevo Email Setup ───
+// ─── Brevo Setup ───
 const _brevoKey = process.env.REACT_APP_BREVO_API_KEY || '';
-const sendBrevoEmail=async({to,subject,htmlContent,textContent,senderName,senderEmail,replyTo,attachment})=>{
-  try{const payload={sender:{name:senderName||'National Sports Apparel',email:senderEmail||'noreply@nationalsportsapparel.com'},to:Array.isArray(to)?to:[{email:to}],subject,htmlContent:htmlContent||undefined,textContent:textContent||undefined};
-    if(replyTo)payload.replyTo={email:replyTo.email,name:replyTo.name||senderName||'National Sports Apparel'};
-    if(attachment&&attachment.length>0)payload.attachment=attachment;
-    const r=await fetch('/.netlify/functions/brevo-proxy',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(payload)});
-    const d=await r.json();if(!r.ok)return{ok:false,error:d.message||d.error||'Send failed'};return{ok:true,messageId:d.messageId}}
-  catch(e){return{ok:false,error:e.message}}
-};
 
 // ─── Brevo SMS Setup ───
 const _brevoSmsSender=process.env.REACT_APP_BREVO_SMS_SENDER||'NatSportsAp';
@@ -756,7 +747,7 @@ const _dbSaveSOInner = async (so) => {
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
 const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address'];
-const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history']);
+const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address']);
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{try{
