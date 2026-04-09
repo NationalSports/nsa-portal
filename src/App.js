@@ -150,6 +150,12 @@ const _missing404Tables=new Map();// table → timestamp
 const _MISSING_TABLE_TTL=5*60*1000;// 5 minutes
 // Track which tables timed out during the most recent _dbLoad — cleared at start of each load
 const _lastLoadTimedOut=new Set();
+// Circuit breaker: track consecutive poll failures to implement exponential backoff
+let _pollConsecutiveFailures=0;
+const _POLL_BASE_INTERVAL=15000;// 15s normal interval
+const _POLL_MAX_INTERVAL=120000;// 2min max backoff
+const _getPollInterval=()=>Math.min(_POLL_BASE_INTERVAL*Math.pow(2,_pollConsecutiveFailures),_POLL_MAX_INTERVAL);
+let _fetchErrorLoggedAt=0;// throttle fetch error logging to once per 30s
 const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
   if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL)return Promise.resolve({data:[],error:null,status:200});
@@ -162,8 +168,14 @@ const _safeQuery=(table,opts)=>{
   return Promise.race([q,timeout]).then(r=>{
     if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){
       _missing404Tables.set(table,Date.now());return{data:[],error:null,status:200}}
-    if(r.status===408){console.warn('[DB] Query timeout for table:',table);_lastLoadTimedOut.add(table);return{data:[],error:null,status:408}}
+    if(r.status===408){_lastLoadTimedOut.add(table);return{data:[],error:null,status:408}}
     return r;
+  }).catch(e=>{
+    // Catch network/CORS/fetch errors — log at most once per 30s to avoid console spam
+    const now=Date.now();
+    if(now-_fetchErrorLoggedAt>30000){_fetchErrorLoggedAt=now;console.warn('[DB] Fetch error ('+table+'):',e.message||e)}
+    _lastLoadTimedOut.add(table);
+    return{data:[],error:{message:e.message||'Fetch failed'},status:0};
   });
 };
 
@@ -356,8 +368,10 @@ const _dbLoad = async () => {
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
     const is404=r=>r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204');
-    const errs=coreResults.filter(({r})=>r.error&&!is404(r));
+    const errs=coreResults.filter(({r})=>r.error&&!is404(r)&&r.status!==0);
+    const fetchErrs=coreResults.filter(({r})=>r.status===0);// network/CORS failures already logged by _safeQuery
     if(errs.length){console.error('[DB] Load errors:',errs.map(({n,r})=>`${n}: ${r.error.message}`));return null}
+    if(fetchErrs.length&&!errs.length){return null}// silently return null — _safeQuery already logged the fetch error
     // Helper: return data or empty array (safe for 404 / missing tables)
     const d=r=>r.data||[];
     const team=d(rTeam);const custRaw=d(rCust);const contacts=d(rContacts);
@@ -1909,12 +1923,19 @@ export default function App(){
       // Debounce realtime events — coalesce rapid-fire changes into a single reload
       const debouncedReload=()=>{if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,2000)};
       // Subscribe to core tables + pick_lines for instant warehouse sync
+      let _rtErrorLogged=false;
       ['estimates','sales_orders','invoices','messages','customers','products','so_item_pick_lines'].forEach(table=>{
-        const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload()}).subscribe();
+        const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload()}).subscribe((status,err)=>{
+          if(status==='SUBSCRIBED')return;
+          if(status==='CHANNEL_ERROR'||status==='TIMED_OUT'){
+            if(!_rtErrorLogged){console.warn('[Realtime] Subscription issue for',table,':',status,err?.message||'');_rtErrorLogged=true}
+          }
+          if(status==='CLOSED'){console.log('[Realtime] Channel closed:',table)}
+        });
         channels.push(ch);
       });
-      // Reload when tab becomes visible (user switches back to this tab)
-      const onVis=()=>{if(!document.hidden&&_dbReady.current)debouncedReload()};
+      // Reload when tab becomes visible (user switches back to this tab) — reset poll backoff
+      const onVis=()=>{if(!document.hidden&&_dbReady.current){_pollConsecutiveFailures=0;debouncedReload()}};
       document.addEventListener('visibilitychange',onVis);
       channels._onVis=onVis;
     }
@@ -1934,18 +1955,28 @@ export default function App(){
       setEsts(prev=>prev.map(e=>e.status==='converted'&&!sos.some(s=>s.estimate_id===e.id)?{...e,status:'approved',updated_at:new Date().toLocaleString()}:e));
     }
   },[dbLoading]); // eslint-disable-line react-hooks/exhaustive-deps
-  // ─── Supabase polling: safety-net refresh every 15 seconds for cross-tab/cross-device sync ───
+  // ─── Supabase polling: safety-net refresh with exponential backoff for cross-tab/cross-device sync ───
   React.useEffect(()=>{
     if(!supabase)return;
-    const poll=setInterval(async()=>{
-      if(!_dbReady.current)return;
+    let pollTimer=null;let cancelled=false;
+    const schedulePoll=()=>{if(cancelled)return;const interval=_getPollInterval();pollTimer=setTimeout(runPoll,interval)};
+    const runPoll=async()=>{
+      if(cancelled)return;
+      if(!_dbReady.current){schedulePoll();return}
       // Skip poll if saves are in-flight to prevent overwriting unsaved local changes
-      if(_dbSavingCount>0){console.log('[DB] Poll deferred — save in progress');return}
+      if(_dbSavingCount>0){console.log('[DB] Poll deferred — save in progress');schedulePoll();return}
       try{
         const d=await _dbLoad();
-        if(!d||!d.hasData)return;
+        if(!d||!d.hasData){
+          _pollConsecutiveFailures=Math.min(_pollConsecutiveFailures+1,6);
+          if(_pollConsecutiveFailures>1)console.warn('[DB] Poll returned no data (attempt '+_pollConsecutiveFailures+', next in '+Math.round(_getPollInterval()/1000)+'s)');
+          schedulePoll();return;
+        }
+        // Success — reset backoff
+        if(_pollConsecutiveFailures>0)console.log('[DB] Poll recovered after '+_pollConsecutiveFailures+' failures');
+        _pollConsecutiveFailures=0;
         // If decoration queries timed out, skip this poll entirely to prevent data loss
-        if(d._decoTimedOut){console.warn('[DB] Poll skipped — decoration query timed out, preserving local data');return}
+        if(d._decoTimedOut){console.warn('[DB] Poll skipped — decoration query timed out, preserving local data');schedulePoll();return}
         // If initial load failed but polling recovered, re-enable Supabase writes
         if(!_dbLoadSuccess.current){_dbLoadSuccess.current=true;setDbError(null);console.log('[DB] Poll recovered — Supabase writes re-enabled')}
         // Preserve local versions of entities whose saves failed — don't let DB data overwrite them
@@ -1997,9 +2028,15 @@ export default function App(){
         if(as.submitted_batches)setSubmittedBatches(prev=>JSON.stringify(prev)!==JSON.stringify(as.submitted_batches)?as.submitted_batches:prev);
         if(as.batch_pos)setBatchPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.batch_pos)?as.batch_pos:prev);
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(JSON.stringify(prev)===JSON.stringify(ci))return prev;Object.assign(NSA,ci);return ci});
-      }catch(e){console.warn('[DB] Poll failed:',e.message)}
-    },15000);// poll every 15s — ensures cross-tab/cross-device sync when realtime fails
-    return()=>clearInterval(poll);
+      }catch(e){
+        _pollConsecutiveFailures=Math.min(_pollConsecutiveFailures+1,6);
+        if(_pollConsecutiveFailures<=2)console.warn('[DB] Poll failed:',e.message);
+        else console.warn('[DB] Poll failed (attempt '+_pollConsecutiveFailures+', backing off to '+Math.round(_getPollInterval()/1000)+'s)');
+      }
+      schedulePoll();
+    };
+    schedulePoll();
+    return()=>{cancelled=true;if(pollTimer)clearTimeout(pollTimer)};
   },[]);
 
 
