@@ -150,6 +150,15 @@ const _missing404Tables=new Map();// table → timestamp
 const _MISSING_TABLE_TTL=5*60*1000;// 5 minutes
 // Track which tables timed out during the most recent _dbLoad — cleared at start of each load
 const _lastLoadTimedOut=new Set();
+// Circuit breaker: track consecutive poll failures to implement exponential backoff
+let _pollConsecutiveFailures=0;
+const _POLL_BASE_INTERVAL=60000;// 60s normal interval (realtime handles instant sync)
+const _POLL_MAX_INTERVAL=120000;// 2min max backoff
+const _getPollInterval=()=>Math.min(_POLL_BASE_INTERVAL*Math.pow(2,_pollConsecutiveFailures),_POLL_MAX_INTERVAL);
+// Tiered polling: core tables every 60s, full sync (including cold tables) every 5th cycle (~5 min)
+let _pollCycle=0;
+const _FULL_SYNC_EVERY=5;// every 5th poll = ~5 minutes
+let _fetchErrorLoggedAt=0;// throttle fetch error logging to once per 30s
 const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
   if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL)return Promise.resolve({data:[],error:null,status:200});
@@ -162,8 +171,14 @@ const _safeQuery=(table,opts)=>{
   return Promise.race([q,timeout]).then(r=>{
     if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){
       _missing404Tables.set(table,Date.now());return{data:[],error:null,status:200}}
-    if(r.status===408){console.warn('[DB] Query timeout for table:',table);_lastLoadTimedOut.add(table);return{data:[],error:null,status:408}}
+    if(r.status===408){_lastLoadTimedOut.add(table);return{data:[],error:null,status:408}}
     return r;
+  }).catch(e=>{
+    // Catch network/CORS/fetch errors — log at most once per 30s to avoid console spam
+    const now=Date.now();
+    if(now-_fetchErrorLoggedAt>30000){_fetchErrorLoggedAt=now;console.warn('[DB] Fetch error ('+table+'):',e.message||e)}
+    _lastLoadTimedOut.add(table);
+    return{data:[],error:{message:e.message||'Fetch failed'},status:0};
   });
 };
 
@@ -296,13 +311,17 @@ function AdidasB2BRow({sku, brand, sizes, showSz, inv}) {
   </div>);
 }
 
-const _dbLoad = async () => {
+const _dbLoad = async (opts={}) => {
+  const {coreOnly=false} = opts;
   if (!supabase) return null;
   if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
     _lastLoadTimedOut.clear();
     // Load tables in batches to avoid overwhelming Supabase connection pool
     const _batch=async(queries,size=5)=>{const results=[];for(let i=0;i<queries.length;i+=size){results.push(...await Promise.all(queries.slice(i,i+size).map(q=>q())));} return results};
+    // When coreOnly, skip slow-changing tables (team, vendors, omg, issues, deco, promo, etc.)
+    // They'll be loaded on full polls every 5 minutes and via realtime reloadAll()
+    const _skip=()=>Promise.resolve({data:[],error:null,status:200});
     const [rTeam,rCust,rContacts,rVend,rProd,rProdInv,rEst,rEstArt,rEstItems,rEstDecos,
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
       rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
@@ -311,10 +330,10 @@ const _dbLoad = async () => {
       rDecoVendors,rDecoVendorPricing,
       rQuoteReqs,rQuoteReqItems,
       rDismissedTodos,rDismissedNotifs] = await _batch([
-      ()=>_safeQuery('team_members',{order:'name'}),
+      ()=>coreOnly?_skip():_safeQuery('team_members',{order:'name'}),
       ()=>_safeQuery('customers',{order:'name'}),
       ()=>_safeQuery('customer_contacts'),
-      ()=>_safeQuery('vendors',{order:'name'}),
+      ()=>coreOnly?_skip():_safeQuery('vendors',{order:'name'}),
       ()=>_safeQuery('products',{order:'name'}),
       ()=>_safeQuery('product_inventory'),
       ()=>_safeQuery('estimates',{order:'id'}),
@@ -334,30 +353,32 @@ const _dbLoad = async () => {
       ()=>_safeQuery('invoice_items'),
       ()=>_safeQuery('messages',{order:'id'}),
       ()=>_safeQuery('message_reads'),
-      ()=>_safeQuery('omg_stores',{order:'id'}),
-      ()=>_safeQuery('omg_store_products'),
-      ()=>_safeQuery('issues'),
+      ()=>coreOnly?_skip():_safeQuery('omg_stores',{order:'id'}),
+      ()=>coreOnly?_skip():_safeQuery('omg_store_products'),
+      ()=>coreOnly?_skip():_safeQuery('issues'),
       ()=>_safeQuery('app_state'),
       ()=>_safeQuery('customer_promo_programs'),
       ()=>_safeQuery('customer_promo_periods'),
       ()=>_safeQuery('customer_promo_usage'),
       ()=>_safeQuery('customer_credits'),
       ()=>_safeQuery('customer_credit_usage'),
-      ()=>_safeQuery('rep_csr_assignments'),
-      ()=>_safeQuery('assigned_todos'),
-      ()=>_safeQuery('todo_comments'),
-      ()=>_safeQuery('deco_vendors',{order:'name'}),
-      ()=>_safeQuery('deco_vendor_pricing'),
-      ()=>_safeQuery('quote_requests',{order:'created_at',orderOpts:{ascending:false}}),
-      ()=>_safeQuery('quote_request_items',{order:'sort_order'}),
-      ()=>_safeQuery('dismissed_todos'),
-      ()=>_safeQuery('dismissed_notifs'),
+      ()=>coreOnly?_skip():_safeQuery('rep_csr_assignments'),
+      ()=>coreOnly?_skip():_safeQuery('assigned_todos'),
+      ()=>coreOnly?_skip():_safeQuery('todo_comments'),
+      ()=>coreOnly?_skip():_safeQuery('deco_vendors',{order:'name'}),
+      ()=>coreOnly?_skip():_safeQuery('deco_vendor_pricing'),
+      ()=>coreOnly?_skip():_safeQuery('quote_requests',{order:'created_at',orderOpts:{ascending:false}}),
+      ()=>coreOnly?_skip():_safeQuery('quote_request_items',{order:'sort_order'}),
+      ()=>coreOnly?_skip():_safeQuery('dismissed_todos'),
+      ()=>coreOnly?_skip():_safeQuery('dismissed_notifs'),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
     const is404=r=>r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204');
-    const errs=coreResults.filter(({r})=>r.error&&!is404(r));
+    const errs=coreResults.filter(({r})=>r.error&&!is404(r)&&r.status!==0);
+    const fetchErrs=coreResults.filter(({r})=>r.status===0);// network/CORS failures already logged by _safeQuery
     if(errs.length){console.error('[DB] Load errors:',errs.map(({n,r})=>`${n}: ${r.error.message}`));return null}
+    if(fetchErrs.length&&!errs.length){return null}// silently return null — _safeQuery already logged the fetch error
     // Helper: return data or empty array (safe for 404 / missing tables)
     const d=r=>r.data||[];
     const team=d(rTeam);const custRaw=d(rCust);const contacts=d(rContacts);
@@ -427,7 +448,7 @@ const _dbLoad = async () => {
     const hasData=(customers.length>0)||(sales_orders.length>0);
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations');
-    return{team,customers,vendors,products,estimates,sales_orders,invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut};
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_coreOnly:coreOnly};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
 const _dbSeed = async (d) => {
@@ -1909,12 +1930,19 @@ export default function App(){
       // Debounce realtime events — coalesce rapid-fire changes into a single reload
       const debouncedReload=()=>{if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,2000)};
       // Subscribe to core tables + pick_lines for instant warehouse sync
+      let _rtErrorLogged=false;
       ['estimates','sales_orders','invoices','messages','customers','products','so_item_pick_lines'].forEach(table=>{
-        const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload()}).subscribe();
+        const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload()}).subscribe((status,err)=>{
+          if(status==='SUBSCRIBED')return;
+          if(status==='CHANNEL_ERROR'||status==='TIMED_OUT'){
+            if(!_rtErrorLogged){console.warn('[Realtime] Subscription issue for',table,':',status,err?.message||'');_rtErrorLogged=true}
+          }
+          if(status==='CLOSED'){console.log('[Realtime] Channel closed:',table)}
+        });
         channels.push(ch);
       });
-      // Reload when tab becomes visible (user switches back to this tab)
-      const onVis=()=>{if(!document.hidden&&_dbReady.current)debouncedReload()};
+      // Reload when tab becomes visible (user switches back to this tab) — reset poll backoff
+      const onVis=()=>{if(!document.hidden&&_dbReady.current){_pollConsecutiveFailures=0;debouncedReload()}};
       document.addEventListener('visibilitychange',onVis);
       channels._onVis=onVis;
     }
@@ -1934,18 +1962,31 @@ export default function App(){
       setEsts(prev=>prev.map(e=>e.status==='converted'&&!sos.some(s=>s.estimate_id===e.id)?{...e,status:'approved',updated_at:new Date().toLocaleString()}:e));
     }
   },[dbLoading]); // eslint-disable-line react-hooks/exhaustive-deps
-  // ─── Supabase polling: safety-net refresh every 15 seconds for cross-tab/cross-device sync ───
+  // ─── Supabase polling: safety-net refresh with exponential backoff for cross-tab/cross-device sync ───
   React.useEffect(()=>{
     if(!supabase)return;
-    const poll=setInterval(async()=>{
-      if(!_dbReady.current)return;
+    let pollTimer=null;let cancelled=false;
+    const schedulePoll=()=>{if(cancelled)return;const interval=_getPollInterval();pollTimer=setTimeout(runPoll,interval)};
+    const runPoll=async()=>{
+      if(cancelled)return;
+      if(!_dbReady.current){schedulePoll();return}
       // Skip poll if saves are in-flight to prevent overwriting unsaved local changes
-      if(_dbSavingCount>0){console.log('[DB] Poll deferred — save in progress');return}
+      if(_dbSavingCount>0){console.log('[DB] Poll deferred — save in progress');schedulePoll();return}
       try{
-        const d=await _dbLoad();
-        if(!d||!d.hasData)return;
+        // Tiered polling: load only core tables most of the time, full sync every 5th cycle
+        const coreOnly=(_pollCycle%_FULL_SYNC_EVERY)!==0;
+        _pollCycle++;
+        const d=await _dbLoad({coreOnly});
+        if(!d||!d.hasData){
+          _pollConsecutiveFailures=Math.min(_pollConsecutiveFailures+1,6);
+          if(_pollConsecutiveFailures>1)console.warn('[DB] Poll returned no data (attempt '+_pollConsecutiveFailures+', next in '+Math.round(_getPollInterval()/1000)+'s)');
+          schedulePoll();return;
+        }
+        // Success — reset backoff
+        if(_pollConsecutiveFailures>0)console.log('[DB] Poll recovered after '+_pollConsecutiveFailures+' failures');
+        _pollConsecutiveFailures=0;
         // If decoration queries timed out, skip this poll entirely to prevent data loss
-        if(d._decoTimedOut){console.warn('[DB] Poll skipped — decoration query timed out, preserving local data');return}
+        if(d._decoTimedOut){console.warn('[DB] Poll skipped — decoration query timed out, preserving local data');schedulePoll();return}
         // If initial load failed but polling recovered, re-enable Supabase writes
         if(!_dbLoadSuccess.current){_dbLoadSuccess.current=true;setDbError(null);console.log('[DB] Poll recovered — Supabase writes re-enabled')}
         // Preserve local versions of entities whose saves failed — don't let DB data overwrite them
@@ -1958,7 +1999,14 @@ export default function App(){
         const pollMsgs=_pollMerge(d.messages,'msgs');
         const pollProd=_pollMerge(d.products,'prod');
         // Update snapshot before state — auto-save effects will diff against this
-        _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:pollCust,prod:pollProd,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
+        // CRITICAL: When coreOnly, preserve previous snapshot for cold tables (team, vendors, omg, issues)
+        // to prevent auto-save effects from seeing a false diff and re-saving all entities
+        const _prevSnap=_dbSnap.current;
+        _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:pollCust,prod:pollProd,
+          vend:d._coreOnly?_prevSnap.vend:d.vendors,
+          team:d._coreOnly?_prevSnap.team:d.team,
+          omg:d._coreOnly?_prevSnap.omg:d.omg_stores,
+          issues:d._coreOnly?_prevSnap.issues:d.issues};
         setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(prev.find(p=>p.id===e.id)||e):mergeEst(e));return changed(prev,merged)?merged:prev}const merged2=d.estimates.map(mergeEst);return changed(prev,merged2)?merged2:prev});
         setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;
           // If DB has empty items/jobs (mid-save transient state), keep local entirely
@@ -1997,9 +2045,15 @@ export default function App(){
         if(as.submitted_batches)setSubmittedBatches(prev=>JSON.stringify(prev)!==JSON.stringify(as.submitted_batches)?as.submitted_batches:prev);
         if(as.batch_pos)setBatchPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.batch_pos)?as.batch_pos:prev);
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(JSON.stringify(prev)===JSON.stringify(ci))return prev;Object.assign(NSA,ci);return ci});
-      }catch(e){console.warn('[DB] Poll failed:',e.message)}
-    },15000);// poll every 15s — ensures cross-tab/cross-device sync when realtime fails
-    return()=>clearInterval(poll);
+      }catch(e){
+        _pollConsecutiveFailures=Math.min(_pollConsecutiveFailures+1,6);
+        if(_pollConsecutiveFailures<=2)console.warn('[DB] Poll failed:',e.message);
+        else console.warn('[DB] Poll failed (attempt '+_pollConsecutiveFailures+', backing off to '+Math.round(_getPollInterval()/1000)+'s)');
+      }
+      schedulePoll();
+    };
+    schedulePoll();
+    return()=>{cancelled=true;if(pollTimer)clearTimeout(pollTimer)};
   },[]);
 
 
