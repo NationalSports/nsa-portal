@@ -2953,6 +2953,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {/* COSTS TAB — Expected vs Actual */}
     {isSO&&tab==='costs'&&(()=>{
         const costLines=[];
+        // Pre-compute per-SKU billed totals for correct unit cost on duplicate SKUs
+        // (bill cost is split proportionally across items, but billed qty is duplicated on each)
+        const _skuBillCost={},_skuBillQtySeen={};
+        safeItems(o).forEach(it=>{
+          const sk=(it.sku||'').toUpperCase();if(!sk)return;
+          const blankPOs=(it.po_lines||[]).filter(pl=>pl.po_type!=='outside_deco');
+          const bc=blankPOs.reduce((a,pl)=>a+safeNum(pl._bill_cost||0),0);
+          if(bc>0){_skuBillCost[sk]=(_skuBillCost[sk]||0)+bc;
+            if(!_skuBillQtySeen[sk]){_skuBillQtySeen[sk]=true;_skuBillCost[sk+'_qty']=blankPOs.reduce((a,pl)=>a+Object.values(pl.billed||{}).reduce((a2,v)=>a2+safeNum(v),0),0)}}
+        });
         safeItems(o).forEach((it,ii)=>{
           const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
           if(!qty)return;
@@ -2972,8 +2982,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // Use actual billed cost from supplier bills when available; no bill = no actual (show "—")
           const billedCostFromPOs=blankPOs.reduce((a,pl)=>a+safeNum(pl._bill_cost||0),0);
           const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(pickQty>0?pickQty*safeNum(it.nsa_cost):0);
-          const billedQty=blankPOs.reduce((a,pl)=>a+Object.values(pl.billed||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
-          const billedUnitCost=billedCostFromPOs>0&&billedQty>0?Math.round(billedCostFromPOs/billedQty*100)/100:null;
+          // Use SKU-level totals for unit cost so duplicate SKUs don't halve the price
+          const _sk=(it.sku||'').toUpperCase();
+          const skuTotalCost=_skuBillCost[_sk]||0;
+          const skuBilledQty=_skuBillCost[_sk+'_qty']||0;
+          const billedUnitCost=skuTotalCost>0&&skuBilledQty>0?Math.round(skuTotalCost/skuBilledQty*100)/100:null;
           const catalogCost=safeNum(it.nsa_cost);
           const catProduct=products.find(x=>x.id===it.product_id)||(it.sku?products.find(x=>(x.sku||'').toLowerCase()===(it.sku||'').toLowerCase()):null);
           costLines.push({category:'Blanks',sku:it.sku,name:it.name,vendor:D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'—',
