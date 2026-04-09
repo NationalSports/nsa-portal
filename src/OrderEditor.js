@@ -2972,7 +2972,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // Use actual billed cost from supplier bills when available; no bill = no actual (show "—")
           const billedCostFromPOs=blankPOs.reduce((a,pl)=>a+safeNum(pl._bill_cost||0),0);
           const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(pickQty>0?pickQty*safeNum(it.nsa_cost):0);
-          const billedUnitCost=billedCostFromPOs>0&&poBlankQty>0?Math.round(billedCostFromPOs/poBlankQty*100)/100:null;
+          const billedQty=blankPOs.reduce((a,pl)=>a+Object.values(pl.billed||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
+          const billedUnitCost=billedCostFromPOs>0&&billedQty>0?Math.round(billedCostFromPOs/billedQty*100)/100:null;
           const catalogCost=safeNum(it.nsa_cost);
           const catProduct=products.find(x=>x.id===it.product_id)||(it.sku?products.find(x=>(x.sku||'').toLowerCase()===(it.sku||'').toLowerCase()):null);
           costLines.push({category:'Blanks',sku:it.sku,name:it.name,vendor:D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'—',
