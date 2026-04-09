@@ -2979,7 +2979,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             qty,expected:expectedBlank,actual:actualBlank,poCount:blankPOs.length+(pickQty>0?1:0),
             poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
             allReceived:blankPOs.length>0&&blankPOs.every(p=>p.status==='received'),
-            _catProduct:catProduct,billedUnitCost,catalogCost});
+            _catProduct:catProduct,_productId:it.product_id,_vendorId:it.vendor_id,_brand:it.brand,_color:it.color,_imageUrl:it.image_url,
+            billedUnitCost,catalogCost});
           safeDecos(it).forEach(d=>{
             const dp=dP(d,qty,af,qty);
             const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const expectedDeco=eqD*dp.cost;
@@ -3071,9 +3072,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <td style={{textAlign:'right',fontWeight:700,color:l.actual>0?'#0f172a':'#94a3b8'}}>{l.actual>0?'$'+l.actual.toFixed(2):l.isShipping?'$0.00':'—'}</td>
                 <td style={{textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.isShippingDetail?'—':(l.actual>0||l.isShipping)?(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2):'—'}
                   {l.billedUnitCost!=null&&Math.abs(l.billedUnitCost-l.catalogCost)>0.005&&<div><button style={{fontSize:9,padding:'1px 6px',borderRadius:4,border:'1px solid #93c5fd',background:'#eff6ff',color:'#1e40af',cursor:'pointer',fontWeight:600,marginTop:2}} onClick={()=>{
-                    const cp=l._catProduct||products.find(x=>(x.sku||'').toLowerCase()===(l.sku||'').toLowerCase());
-                    if(!cp){nf('Product not found in catalog for '+l.sku,'error');return}
-                    const updated={...cp,nsa_cost:l.billedUnitCost};
+                    const cp=l._catProduct||products.find(x=>x.id===l._productId)||products.find(x=>(x.sku||'').toLowerCase()===(l.sku||'').toLowerCase());
+                    const updated=cp?{...cp,nsa_cost:l.billedUnitCost}:{id:l._productId,sku:l.sku,name:l.name,vendor_id:l._vendorId||null,brand:l._brand||null,color:l._color||null,image_url:l._imageUrl||null,nsa_cost:l.billedUnitCost};
                     if(onSaveProduct)onSaveProduct(updated);
                     nf(l.sku+' catalog cost updated: $'+l.catalogCost.toFixed(2)+' → $'+l.billedUnitCost.toFixed(2));
                   }}>Update Catalog → ${l.billedUnitCost.toFixed(2)}</button></div>}
