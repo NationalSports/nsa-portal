@@ -2956,10 +2956,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         safeItems(o).forEach((it,ii)=>{
           const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
           if(!qty)return;
-          const expectedBlank=qty*safeNum(it.nsa_cost);
           const blankPOs=(it.po_lines||[]).filter(pl=>pl.po_type!=='outside_deco');
           const poBlankQty=blankPOs.reduce((a,pl)=>{
             return a+Object.entries(pl).filter(([k,v])=>typeof v==='number'&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0)},0);
+          // Expected cost: use PO unit_cost when set, otherwise item nsa_cost
+          const expectedFromPOs=blankPOs.reduce((a,pl)=>{
+            const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0);
+            const uc=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
+            return a+poQty*uc},0);
+          const expectedBlank=expectedFromPOs+(Math.max(0,qty-poBlankQty))*safeNum(it.nsa_cost);
           // Include inventory picks in actual cost (already-owned stock still has cost basis)
           const pickQty=safePicks(it).reduce((a,pk)=>a+Object.entries(pk).filter(([k,v])=>typeof v==='number'&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0),0);
           const accountedQty=poBlankQty+pickQty;
