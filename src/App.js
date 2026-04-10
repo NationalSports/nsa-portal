@@ -7794,7 +7794,7 @@ export default function App(){
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
   const[rptRep,setRptRep]=useState('all');
-  const[rptWidgets,setRptWidgets]=useState({pipeline:true,repLeaderboard:true,custHealth:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
+  const[rptWidgets,setRptWidgets]=useState({pipeline:true,repLeaderboard:true,custHealth:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
   const[commOverrides,setCommOverrides]=useState(()=>loadState('comm_overrides',{}));// {invoiceId: true} = admin approved full commission on late invoice
   React.useEffect(()=>{_saveAppState('comm_overrides',commOverrides)},[commOverrides]);
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
@@ -7847,6 +7847,31 @@ export default function App(){
       const health=daysSince<=14?'active':daysSince<=30?'warm':daysSince<=60?'cooling':'at_risk';
       return{...c,rev,soCount:cSOs.length,daysSince,openBal,paidBal,hasOpen,health,lastMemo:lastSO?.memo};
     }).sort((a,b)=>b.rev-a.rev);
+
+    // Average days to pay per customer
+    const payDaysData=(()=>{
+      const custMap={};
+      invs.filter(i=>i.status==='paid').forEach(inv=>{
+        const invDate=parseDate(inv.date);if(!invDate)return;
+        const lastPay=inv.payments?.length>0?inv.payments[inv.payments.length-1]:null;
+        const paidDate=lastPay?.date?parseDate(lastPay.date):(inv.updated_at?parseDate(inv.updated_at):null);
+        if(!paidDate)return;
+        const days=Math.max(0,Math.round((paidDate-invDate)/(1000*60*60*24)));
+        const cid=inv.customer_id;
+        if(!custMap[cid])custMap[cid]={totalDays:0,count:0,invoices:[],minDays:Infinity,maxDays:0};
+        custMap[cid].totalDays+=days;custMap[cid].count++;
+        custMap[cid].minDays=Math.min(custMap[cid].minDays,days);
+        custMap[cid].maxDays=Math.max(custMap[cid].maxDays,days);
+        custMap[cid].invoices.push({id:inv.id,days,total:safeNum(inv.total),date:inv.date});
+      });
+      return Object.entries(custMap).map(([cid,d])=>{
+        const c=cust.find(x=>x.id===cid);const rep=REPS.find(r=>r.id===c?.primary_rep_id);
+        const avgDays=Math.round(d.totalDays/d.count);
+        const terms=c?.payment_terms||'net30';
+        const termDays=parseInt((terms.match(/\d+/)||['30'])[0])||30;
+        return{cid,name:c?.name||'Unknown',alpha:c?.alpha_tag||'',repId:c?.primary_rep_id,repName:rep?.name?.split(' ')[0]||'—',avgDays,minDays:d.minDays,maxDays:d.maxDays,count:d.count,terms,termDays,overdue:avgDays>termDays,totalPaid:d.invoices.reduce((a,i)=>a+i.total,0)};
+      }).filter(x=>rptRep==='all'||x.repId===rptRep);
+    })();
 
     // Product mix
     const productMix={};
@@ -7985,6 +8010,66 @@ export default function App(){
               <td style={{fontSize:11}}>{opp}</td>
             </tr>})}</tbody></table>
         </div>}
+      </div>}
+
+      {/* AVG DAYS TO PAY */}
+      {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
+        <WH id="payDays" title="Avg Days to Pay Invoices" icon="📅"/>
+        {rptWidgets.payDays&&(()=>{
+          const[pdSort,setPdSort]=React.useState('avgDays');
+          const[pdDir,setPdDir]=React.useState('desc');
+          const[pdSearch,setPdSearch]=React.useState('');
+          const toggleSort=(col)=>{if(pdSort===col)setPdDir(d=>d==='asc'?'desc':'asc');else{setPdSort(col);setPdDir(col==='name'?'asc':'desc')}};
+          const filtered=payDaysData.filter(c=>!pdSearch||c.name.toLowerCase().includes(pdSearch.toLowerCase())||c.alpha?.toLowerCase().includes(pdSearch.toLowerCase()));
+          const sorted=[...filtered].sort((a,b)=>{let v;if(pdSort==='name')v=a.name.localeCompare(b.name);else if(pdSort==='avgDays')v=a.avgDays-b.avgDays;else if(pdSort==='count')v=a.count-b.count;else if(pdSort==='totalPaid')v=a.totalPaid-b.totalPaid;else if(pdSort==='terms')v=a.termDays-b.termDays;else v=0;return pdDir==='asc'?v:-v});
+          const overall=payDaysData.length>0?Math.round(payDaysData.reduce((a,c)=>a+c.avgDays,0)/payDaysData.length):0;
+          const onTime=payDaysData.filter(c=>!c.overdue).length;
+          const late=payDaysData.filter(c=>c.overdue).length;
+          const SH=({col,children})=><th style={{cursor:'pointer',userSelect:'none'}} onClick={()=>toggleSort(col)}>{children} {pdSort===col?(pdDir==='asc'?'▲':'▼'):''}</th>;
+          return<div className="card-body">
+            <div style={{display:'flex',gap:8,marginBottom:12}}>
+              <div style={{flex:1,padding:8,background:'#dbeafe',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{overall}d</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#1e40af'}}>Overall Avg</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#dcfce7',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{onTime}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#166534'}}>On Time</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#fecaca',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#dc2626'}}>{late}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#dc2626'}}>Past Terms</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#f1f5f9',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#475569'}}>{payDaysData.length}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#475569'}}>Customers</div>
+              </div>
+            </div>
+            <input placeholder="Search customers..." value={pdSearch} onChange={e=>setPdSearch(e.target.value)} style={{width:'100%',padding:'6px 10px',border:'1px solid #e2e8f0',borderRadius:6,fontSize:12,marginBottom:8}}/>
+            {sorted.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:16}}>No paid invoices found</div>:
+            <table style={{fontSize:12}}><thead><tr>
+              <SH col="name">Customer</SH>
+              <SH col="avgDays">Avg Days</SH>
+              <th>Range</th>
+              <SH col="count">Invoices</SH>
+              <SH col="totalPaid">Total Paid</SH>
+              <SH col="terms">Terms</SH>
+              <th>Rep</th>
+              <th>Status</th>
+            </tr></thead><tbody>
+              {sorted.map(c=>{const pct=c.termDays>0?Math.round(c.avgDays/c.termDays*100):0;
+                return<tr key={c.cid} style={{cursor:'pointer',background:c.overdue?'#fef2f2':''}} onClick={()=>{setSelC(cust.find(cc=>cc.id===c.cid));setPg('customers')}}>
+                  <td style={{fontWeight:700}}>{c.name} {c.alpha&&<span style={{fontSize:9,color:'#94a3b8'}}>{c.alpha}</span>}</td>
+                  <td style={{textAlign:'center',fontWeight:800,color:c.overdue?'#dc2626':c.avgDays<=c.termDays*0.75?'#166534':'#d97706'}}>{c.avgDays}d</td>
+                  <td style={{textAlign:'center',fontSize:11,color:'#64748b'}}>{c.minDays}–{c.maxDays}d</td>
+                  <td style={{textAlign:'center',fontWeight:600}}>{c.count}</td>
+                  <td style={{textAlign:'right',fontWeight:600}}>${c.totalPaid.toLocaleString()}</td>
+                  <td style={{textAlign:'center',fontSize:11}}>{c.terms}</td>
+                  <td style={{fontSize:11}}>{c.repName}</td>
+                  <td style={{textAlign:'center'}}><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:c.overdue?'#fecaca':'#dcfce7',color:c.overdue?'#dc2626':'#166534'}}>{c.overdue?'Past Terms':'On Time'}</span></td>
+                </tr>})}
+            </tbody></table>}
+          </div>})()}
       </div>}
 
       {/* PRODUCT MIX */}
@@ -8783,7 +8868,7 @@ export default function App(){
       <div className="card" style={{marginBottom:12}}>
         <div className="card-header" style={{padding:'8px 16px'}}><h2 style={{margin:0,fontSize:13}}>⚙️ Customize Dashboard</h2></div>
         <div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers'],['prodThroughput','Prod Throughput'],['artTime','Art Time'],['decoTime','Deco Time'],['laborSummary','Labor Summary']].map(([k,label])=>
+          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['payDays','Avg Days to Pay'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers'],['prodThroughput','Prod Throughput'],['artTime','Art Time'],['decoTime','Deco Time'],['laborSummary','Labor Summary']].map(([k,label])=>
             <label key={k} style={{fontSize:11,display:'flex',alignItems:'center',gap:4,padding:'4px 8px',background:rptWidgets[k]?'#dbeafe':'#f1f5f9',borderRadius:6,cursor:'pointer',border:'1px solid '+(rptWidgets[k]?'#93c5fd':'#e2e8f0')}}>
               <input type="checkbox" checked={rptWidgets[k]||false} onChange={()=>toggleWidget(k)}/> {label}
             </label>)}
