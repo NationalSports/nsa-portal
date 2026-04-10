@@ -14,7 +14,7 @@ import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks } from './components';
-import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice } from './businessLogic';
+import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, sendBrevoEmail } from './utils';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -7794,7 +7794,7 @@ export default function App(){
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
   const[rptRep,setRptRep]=useState('all');
-  const[rptWidgets,setRptWidgets]=useState({pipeline:true,repLeaderboard:true,custHealth:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
+  const[rptWidgets,setRptWidgets]=useState({pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
   const[commOverrides,setCommOverrides]=useState(()=>loadState('comm_overrides',{}));// {invoiceId: true} = admin approved full commission on late invoice
   React.useEffect(()=>{_saveAppState('comm_overrides',commOverrides)},[commOverrides]);
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
@@ -7847,6 +7847,98 @@ export default function App(){
       const health=daysSince<=14?'active':daysSince<=30?'warm':daysSince<=60?'cooling':'at_risk';
       return{...c,rev,soCount:cSOs.length,daysSince,openBal,paidBal,hasOpen,health,lastMemo:lastSO?.memo};
     }).sort((a,b)=>b.rev-a.rev);
+
+    // Average days to pay per customer
+    const payDaysData=(()=>{
+      const custMap={};
+      invs.filter(i=>i.status==='paid').forEach(inv=>{
+        const invDate=parseDate(inv.date);if(!invDate)return;
+        const lastPay=inv.payments?.length>0?inv.payments[inv.payments.length-1]:null;
+        const paidDate=lastPay?.date?parseDate(lastPay.date):(inv.updated_at?parseDate(inv.updated_at):null);
+        if(!paidDate)return;
+        const days=Math.max(0,Math.round((paidDate-invDate)/(1000*60*60*24)));
+        const cid=inv.customer_id;
+        if(!custMap[cid])custMap[cid]={totalDays:0,count:0,invoices:[],minDays:Infinity,maxDays:0};
+        custMap[cid].totalDays+=days;custMap[cid].count++;
+        custMap[cid].minDays=Math.min(custMap[cid].minDays,days);
+        custMap[cid].maxDays=Math.max(custMap[cid].maxDays,days);
+        custMap[cid].invoices.push({id:inv.id,days,total:safeNum(inv.total),date:inv.date});
+      });
+      return Object.entries(custMap).map(([cid,d])=>{
+        const c=cust.find(x=>x.id===cid);const rep=REPS.find(r=>r.id===c?.primary_rep_id);
+        const avgDays=Math.round(d.totalDays/d.count);
+        const terms=c?.payment_terms||'net30';
+        const termDays=parseInt((terms.match(/\d+/)||['30'])[0])||30;
+        return{cid,name:c?.name||'Unknown',alpha:c?.alpha_tag||'',repId:c?.primary_rep_id,repName:rep?.name?.split(' ')[0]||'—',avgDays,minDays:d.minDays,maxDays:d.maxDays,count:d.count,terms,termDays,overdue:avgDays>termDays,totalPaid:d.invoices.reduce((a,i)=>a+i.total,0)};
+      }).filter(x=>rptRep==='all'||x.repId===rptRep);
+    })();
+
+    // Customer reorder forecast
+    const reorderData=(()=>{
+      const _pd=d=>{if(!d)return null;const m2=d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m2)return null;let y2=parseInt(m2[3]);if(y2<100)y2+=2000;return new Date(y2,parseInt(m2[1])-1,parseInt(m2[2]))};
+      return cust.filter(c=>c.id!=='c_deleted').map(c=>{
+        const cSOs=sos.filter(s=>s.customer_id===c.id);
+        if(cSOs.length<2)return null;
+        const dates=cSOs.map(s=>_pd(s.created_at)).filter(Boolean).sort((a,b)=>a-b);
+        if(dates.length<2)return null;
+        const gaps=[];for(let i=1;i<dates.length;i++)gaps.push(Math.round((dates[i]-dates[i-1])/(86400000)));
+        const avgCycle=Math.round(gaps.reduce((a,g)=>a+g,0)/gaps.length);
+        const lastDate=dates[dates.length-1];
+        const daysSince=Math.round((new Date()-lastDate)/86400000);
+        const nextExpected=new Date(lastDate.getTime()+avgCycle*86400000);
+        const daysUntil=Math.round((nextExpected-new Date())/86400000);
+        const rep=REPS.find(r=>r.id===c.primary_rep_id);
+        const rev=cSOs.reduce((a,s)=>a+soCalc(s).rev,0);
+        return{cid:c.id,name:c.name,alpha:c.alpha_tag||'',repId:c.primary_rep_id,repName:rep?.name?.split(' ')[0]||'—',orderCount:cSOs.length,avgCycle,daysSince,daysUntil,nextExpected,rev,status:daysUntil<=-14?'overdue':daysUntil<=0?'due':daysUntil<=14?'upcoming':'on_track'};
+      }).filter(x=>x&&(rptRep==='all'||x.repId===rptRep));
+    })();
+
+    // Quote win/loss analysis
+    const winLossData=(()=>{
+      const _pd2=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
+      const filtered=rptRep==='all'?ests:ests.filter(e=>e.created_by===rptRep);
+      const converted=filtered.filter(e=>e.status==='converted');
+      const open=filtered.filter(e=>e.status==='draft'||e.status==='open'||e.status==='sent'||e.status==='approved');
+      const won=converted.map(e=>{
+        const so=sos.find(s=>s.estimate_id===e.id);
+        const eDate=_pd2(e.created_at);const sDate=so?_pd2(so.created_at):null;
+        const daysToClose=eDate&&sDate?Math.max(0,Math.round((sDate-eDate)/86400000)):null;
+        const c=cust.find(x=>x.id===e.customer_id);const m=so?soCalc(so):{rev:0};
+        return{...e,_cname:c?.name||'Unknown',_alpha:c?.alpha_tag||'',_rev:m.rev,_daysToClose:daysToClose,_soId:so?.id};
+      });
+      const avgDaysToClose=won.filter(w=>w._daysToClose!==null).length>0?Math.round(won.filter(w=>w._daysToClose!==null).reduce((a,w)=>a+w._daysToClose,0)/won.filter(w=>w._daysToClose!==null).length):0;
+      const totalWonRev=won.reduce((a,w)=>a+w._rev,0);
+      const convRate=filtered.length>0?Math.round(converted.length/filtered.length*100):0;
+      // Stale quotes: sent/approved but not converted, older than 30 days
+      const stale=open.filter(e=>{const d=_pd2(e.created_at);return d&&Math.round((new Date()-d)/86400000)>30}).map(e=>{
+        const c=cust.find(x=>x.id===e.customer_id);const age=Math.round((new Date()-_pd2(e.created_at))/86400000);
+        return{...e,_cname:c?.name||'Unknown',_alpha:c?.alpha_tag||'',_age:age};
+      }).sort((a,b)=>b._age-a._age);
+      return{won,open,stale,converted,filtered,avgDaysToClose,totalWonRev,convRate,total:filtered.length,wonCount:converted.length,openCount:open.length,staleCount:stale.length};
+    })();
+
+    // Open AR aging by customer
+    const arAgingData=(()=>{
+      const now=new Date();
+      const custMap={};
+      invs.filter(i=>i.status!=='paid'&&safeNum(i.total)-safeNum(i.paid)>0).forEach(inv=>{
+        const invDate=parseDate(inv.date);if(!invDate)return;
+        const daysOut=Math.max(0,Math.round((now-invDate)/86400000));
+        const balance=safeNum(inv.total)-safeNum(inv.paid);
+        const cid=inv.customer_id;
+        if(!custMap[cid])custMap[cid]={current:0,d30:0,d60:0,d90:0,d90plus:0,total:0,invoices:[]};
+        if(daysOut<=30)custMap[cid].current+=balance;
+        else if(daysOut<=60)custMap[cid].d30+=balance;
+        else if(daysOut<=90)custMap[cid].d60+=balance;
+        else custMap[cid].d90plus+=balance;
+        custMap[cid].total+=balance;
+        custMap[cid].invoices.push({id:inv.id,date:inv.date,due_date:inv.due_date,total:safeNum(inv.total),paid:safeNum(inv.paid),balance,daysOut});
+      });
+      return Object.entries(custMap).map(([cid,d])=>{
+        const c=cust.find(x=>x.id===cid);const rep=REPS.find(r=>r.id===c?.primary_rep_id);
+        return{cid,name:c?.name||'Unknown',alpha:c?.alpha_tag||'',repId:c?.primary_rep_id,repName:rep?.name?.split(' ')[0]||'—',...d,invCount:d.invoices.length,oldestDays:Math.max(...d.invoices.map(i=>i.daysOut))};
+      }).filter(x=>rptRep==='all'||x.repId===rptRep).sort((a,b)=>b.total-a.total);
+    })();
 
     // Product mix
     const productMix={};
@@ -7935,6 +8027,134 @@ export default function App(){
               </tr>})}</tbody></table>
           </div>}
         </div>
+
+        {/* Quote Win/Loss Analysis */}
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="winLoss" title="Quote Win/Loss Analysis" icon="🎯"/>
+          {rptWidgets.winLoss&&(()=>{
+            return<div className="card-body">
+              <div style={{display:'flex',gap:8,marginBottom:12}}>
+                <div style={{flex:1,padding:8,background:'#dbeafe',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{winLossData.total}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#1e40af'}}>Total Quotes</div>
+                </div>
+                <div style={{flex:1,padding:8,background:'#dcfce7',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{winLossData.wonCount}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#166534'}}>Won</div>
+                </div>
+                <div style={{flex:1,padding:8,background:'#fef3c7',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>{winLossData.openCount}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#92400e'}}>Open</div>
+                </div>
+                <div style={{flex:1,padding:8,background:winLossData.staleCount>0?'#fecaca':'#f1f5f9',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:winLossData.staleCount>0?'#dc2626':'#475569'}}>{winLossData.staleCount}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:winLossData.staleCount>0?'#dc2626':'#475569'}}>Stale (30d+)</div>
+                </div>
+                <div style={{flex:1,padding:8,background:'#e0e7ff',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#4338ca'}}>{winLossData.convRate}%</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#4338ca'}}>Win Rate</div>
+                </div>
+                <div style={{flex:1,padding:8,background:'#f0fdf4',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{winLossData.avgDaysToClose}d</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#166534'}}>Avg Days to Close</div>
+                </div>
+              </div>
+              {/* Won deals */}
+              {winLossData.won.length>0&&<><div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:6}}>Won Quotes — Converted to SO</div>
+              <table style={{fontSize:12,marginBottom:16}}><thead><tr>
+                <th>Estimate</th><th>Customer</th><th>Memo</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'center'}}>Days to Close</th><th>SO</th>
+              </tr></thead><tbody>
+                {winLossData.won.sort((a,b)=>(b._rev||0)-(a._rev||0)).slice(0,15).map(w=>
+                  <tr key={w.id} style={{background:'#f0fdf4'}}>
+                    <td style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{w.id}</td>
+                    <td style={{fontWeight:600}}>{w._cname} {w._alpha&&<span style={{fontSize:9,color:'#94a3b8'}}>{w._alpha}</span>}</td>
+                    <td style={{fontSize:11,color:'#64748b',maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{w.memo}</td>
+                    <td style={{textAlign:'right',fontWeight:600}}>${w._rev.toLocaleString()}</td>
+                    <td style={{textAlign:'center',fontWeight:700,color:w._daysToClose!==null?(w._daysToClose<=7?'#166534':w._daysToClose<=30?'#d97706':'#dc2626'):'#94a3b8'}}>{w._daysToClose!==null?w._daysToClose+'d':'—'}</td>
+                    <td style={{fontWeight:600,color:'#4338ca',cursor:'pointer',fontSize:12}} onClick={()=>{const so=sos.find(s=>s.id===w._soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}>{w._soId||'—'}</td>
+                  </tr>)}
+              </tbody></table></>}
+              {/* Stale quotes needing follow-up */}
+              {winLossData.stale.length>0&&<><div style={{fontSize:12,fontWeight:700,color:'#dc2626',marginBottom:6}}>Stale Quotes — No Conversion After 30+ Days</div>
+              <table style={{fontSize:12}}><thead><tr>
+                <th>Estimate</th><th>Customer</th><th>Memo</th><th style={{textAlign:'center'}}>Status</th><th style={{textAlign:'center'}}>Age</th>
+              </tr></thead><tbody>
+                {winLossData.stale.slice(0,15).map(s=>{
+                  const stLabel2={draft:'Draft',open:'Open',sent:'Sent',approved:'Approved'};
+                  return<tr key={s.id} style={{background:s._age>90?'#fef2f2':s._age>60?'#fffbeb':''}}>
+                    <td style={{fontWeight:700,color:'#1e40af',fontSize:12,cursor:'pointer'}} onClick={()=>{setPg('estimates')}}>{s.id}</td>
+                    <td style={{fontWeight:600}}>{s._cname} {s._alpha&&<span style={{fontSize:9,color:'#94a3b8'}}>{s._alpha}</span>}</td>
+                    <td style={{fontSize:11,color:'#64748b',maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.memo}</td>
+                    <td style={{textAlign:'center'}}><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:s.status==='sent'?'#dbeafe':s.status==='approved'?'#dcfce7':'#f1f5f9',color:s.status==='sent'?'#1e40af':s.status==='approved'?'#166534':'#475569'}}>{stLabel2[s.status]||s.status}</span></td>
+                    <td style={{textAlign:'center',fontWeight:800,color:s._age>90?'#dc2626':s._age>60?'#d97706':'#92400e'}}>{s._age}d</td>
+                  </tr>})}
+              </tbody></table></>}
+              {winLossData.total===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:16}}>No estimates found</div>}
+            </div>})()}
+        </div>
+
+        {/* Booking Orders */}
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="bookingOrders" title="Booking Orders" icon="📋"/>
+          {rptWidgets.bookingOrders&&(()=>{
+            const bookings=filtSOs.filter(s=>isBookingOrder(s)).map(so=>{
+              const m=soCalc(so);const c=cust.find(x=>x.id===so.customer_id);
+              const rep=REPS.find(r=>r.id===so.created_by);
+              const daysOut=bookingDaysUntilShip(so);
+              const st=calcSOStatus(so);
+              return{...so,_rev:m.rev,_cost:m.cost,_margin:m.margin,_pct:m.pct,_units:m.units,_cname:c?.name||'Unknown',_alpha:c?.alpha_tag||'',_repName:rep?.name?.split(' ')[0]||'—',_daysOut:daysOut,_st:st};
+            }).sort((a,b)=>(a._daysOut??9999)-(b._daysOut??9999));
+            const confirmed=bookings.filter(b=>b.booking_confirmed);
+            const unconfirmed=bookings.filter(b=>!b.booking_confirmed);
+            const totalBookingRev=bookings.reduce((a,b)=>a+b._rev,0);
+            const urgent=unconfirmed.filter(b=>b._daysOut!==null&&b._daysOut<=100);
+            return<div className="card-body">
+              <div style={{display:'flex',gap:8,marginBottom:12}}>
+                <div style={{flex:1,padding:8,background:'#e0e7ff',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#4338ca'}}>{bookings.length}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#4338ca'}}>Total Bookings</div>
+                </div>
+                <div style={{flex:1,padding:8,background:'#dcfce7',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{confirmed.length}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#166534'}}>Confirmed</div>
+                </div>
+                <div style={{flex:1,padding:8,background:'#fef3c7',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>{unconfirmed.length}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#92400e'}}>Unconfirmed</div>
+                </div>
+                <div style={{flex:1,padding:8,background:urgent.length>0?'#fecaca':'#f1f5f9',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:urgent.length>0?'#dc2626':'#475569'}}>{urgent.length}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:urgent.length>0?'#dc2626':'#475569'}}>Needs Attention</div>
+                </div>
+                <div style={{flex:1,padding:8,background:'#dbeafe',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>${(totalBookingRev/1000).toFixed(1)}k</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#1e40af'}}>Booking Revenue</div>
+                </div>
+              </div>
+              {bookings.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:16}}>No booking orders found</div>:
+              <table style={{fontSize:12}}><thead><tr>
+                <th>SO</th><th>Customer</th><th>Memo</th><th>Rep</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'center'}}>Ship Date</th><th style={{textAlign:'center'}}>Days Out</th><th style={{textAlign:'center'}}>Confirmed</th><th>Status</th>
+              </tr></thead><tbody>
+                {bookings.map(b=>{
+                  const isUrgent=!b.booking_confirmed&&b._daysOut!==null&&b._daysOut<=100;
+                  const confirmedBy=b.booking_confirmed_by?REPS.find(r=>r.id===b.booking_confirmed_by)?.name?.split(' ')[0]:'';
+                  const confirmedAt=b.booking_confirmed_at?new Date(b.booking_confirmed_at).toLocaleDateString():'';
+                  return<tr key={b.id} style={{cursor:'pointer',background:isUrgent?'#fef2f2':b.booking_confirmed?'#f0fdf4':''}} onClick={()=>{setESO(sos.find(x=>x.id===b.id));setESOC(cust.find(c=>c.id===b.customer_id));setPg('orders')}}>
+                    <td style={{fontWeight:700,color:'#4338ca',fontSize:12}}>{b.id}</td>
+                    <td style={{fontWeight:600}}>{b._cname} {b._alpha&&<span style={{fontSize:9,color:'#94a3b8'}}>{b._alpha}</span>}</td>
+                    <td style={{fontSize:11,color:'#64748b',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.memo}</td>
+                    <td style={{fontSize:11}}>{b._repName}</td>
+                    <td style={{textAlign:'right',fontWeight:600}}>${b._rev.toLocaleString()}</td>
+                    <td style={{textAlign:'center',fontWeight:600}}>{b.expected_ship_date||'—'}</td>
+                    <td style={{textAlign:'center',fontWeight:800,color:b._daysOut===null?'#94a3b8':b._daysOut<=30?'#dc2626':b._daysOut<=100?'#d97706':'#166534'}}>{b._daysOut!==null?b._daysOut+'d':'—'}</td>
+                    <td style={{textAlign:'center'}}>{b.booking_confirmed
+                      ?<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:'#dcfce7',color:'#166534'}} title={confirmedBy&&confirmedAt?confirmedBy+' · '+confirmedAt:''}>Yes{confirmedBy?' · '+confirmedBy:''}</span>
+                      :<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:isUrgent?'#fecaca':'#fef3c7',color:isUrgent?'#dc2626':'#92400e'}}>{isUrgent?'Needs Confirm':'Pending'}</span>}</td>
+                    <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[b._st]?.bg,color:SC[b._st]?.c}}>{b._st==='booking'?'Booking':b._st==='need_order'?'Need Order':b._st==='waiting_receive'?'Waiting':b._st==='items_received'?'Items In':b._st==='in_production'?'In Prod':b._st==='ready_to_invoice'?'Ready Inv':b._st==='complete'?'Complete':b._st}</span></td>
+                  </tr>})}
+              </tbody></table>}
+            </div>})()}
+        </div>
       </>}
 
       {/* REP LEADERBOARD */}
@@ -7985,6 +8205,207 @@ export default function App(){
               <td style={{fontSize:11}}>{opp}</td>
             </tr>})}</tbody></table>
         </div>}
+      </div>}
+
+      {/* AVG DAYS TO PAY */}
+      {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
+        <WH id="payDays" title="Avg Days to Pay Invoices" icon="📅"/>
+        {rptWidgets.payDays&&(()=>{
+          const[pdSort,setPdSort]=React.useState('avgDays');
+          const[pdDir,setPdDir]=React.useState('desc');
+          const[pdSearch,setPdSearch]=React.useState('');
+          const toggleSort=(col)=>{if(pdSort===col)setPdDir(d=>d==='asc'?'desc':'asc');else{setPdSort(col);setPdDir(col==='name'?'asc':'desc')}};
+          const filtered=payDaysData.filter(c=>!pdSearch||c.name.toLowerCase().includes(pdSearch.toLowerCase())||c.alpha?.toLowerCase().includes(pdSearch.toLowerCase()));
+          const sorted=[...filtered].sort((a,b)=>{let v;if(pdSort==='name')v=a.name.localeCompare(b.name);else if(pdSort==='avgDays')v=a.avgDays-b.avgDays;else if(pdSort==='count')v=a.count-b.count;else if(pdSort==='totalPaid')v=a.totalPaid-b.totalPaid;else if(pdSort==='terms')v=a.termDays-b.termDays;else v=0;return pdDir==='asc'?v:-v});
+          const overall=payDaysData.length>0?Math.round(payDaysData.reduce((a,c)=>a+c.avgDays,0)/payDaysData.length):0;
+          const onTime=payDaysData.filter(c=>!c.overdue).length;
+          const late=payDaysData.filter(c=>c.overdue).length;
+          const SH=({col,children})=><th style={{cursor:'pointer',userSelect:'none'}} onClick={()=>toggleSort(col)}>{children} {pdSort===col?(pdDir==='asc'?'▲':'▼'):''}</th>;
+          return<div className="card-body">
+            <div style={{display:'flex',gap:8,marginBottom:12}}>
+              <div style={{flex:1,padding:8,background:'#dbeafe',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{overall}d</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#1e40af'}}>Overall Avg</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#dcfce7',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{onTime}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#166534'}}>On Time</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#fecaca',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#dc2626'}}>{late}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#dc2626'}}>Past Terms</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#f1f5f9',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#475569'}}>{payDaysData.length}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#475569'}}>Customers</div>
+              </div>
+            </div>
+            <input placeholder="Search customers..." value={pdSearch} onChange={e=>setPdSearch(e.target.value)} style={{width:'100%',padding:'6px 10px',border:'1px solid #e2e8f0',borderRadius:6,fontSize:12,marginBottom:8}}/>
+            {sorted.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:16}}>No paid invoices found</div>:
+            <table style={{fontSize:12}}><thead><tr>
+              <SH col="name">Customer</SH>
+              <SH col="avgDays">Avg Days</SH>
+              <th>Range</th>
+              <SH col="count">Invoices</SH>
+              <SH col="totalPaid">Total Paid</SH>
+              <SH col="terms">Terms</SH>
+              <th>Rep</th>
+              <th>Status</th>
+            </tr></thead><tbody>
+              {sorted.map(c=>{const pct=c.termDays>0?Math.round(c.avgDays/c.termDays*100):0;
+                return<tr key={c.cid} style={{cursor:'pointer',background:c.overdue?'#fef2f2':''}} onClick={()=>{setSelC(cust.find(cc=>cc.id===c.cid));setPg('customers')}}>
+                  <td style={{fontWeight:700}}>{c.name} {c.alpha&&<span style={{fontSize:9,color:'#94a3b8'}}>{c.alpha}</span>}</td>
+                  <td style={{textAlign:'center',fontWeight:800,color:c.overdue?'#dc2626':c.avgDays<=c.termDays*0.75?'#166534':'#d97706'}}>{c.avgDays}d</td>
+                  <td style={{textAlign:'center',fontSize:11,color:'#64748b'}}>{c.minDays}–{c.maxDays}d</td>
+                  <td style={{textAlign:'center',fontWeight:600}}>{c.count}</td>
+                  <td style={{textAlign:'right',fontWeight:600}}>${c.totalPaid.toLocaleString()}</td>
+                  <td style={{textAlign:'center',fontSize:11}}>{c.terms}</td>
+                  <td style={{fontSize:11}}>{c.repName}</td>
+                  <td style={{textAlign:'center'}}><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:c.overdue?'#fecaca':'#dcfce7',color:c.overdue?'#dc2626':'#166534'}}>{c.overdue?'Past Terms':'On Time'}</span></td>
+                </tr>})}
+            </tbody></table>}
+          </div>})()}
+      </div>}
+
+      {/* CUSTOMER REORDER FORECAST */}
+      {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
+        <WH id="reorderForecast" title="Customer Reorder Forecast" icon="🔮"/>
+        {rptWidgets.reorderForecast&&(()=>{
+          const[rfSort,setRfSort]=React.useState('daysUntil');
+          const[rfDir,setRfDir]=React.useState('asc');
+          const[rfSearch,setRfSearch]=React.useState('');
+          const[rfFilter,setRfFilter]=React.useState('all');
+          const toggleRfSort=(col)=>{if(rfSort===col)setRfDir(d=>d==='asc'?'desc':'asc');else{setRfSort(col);setRfDir(col==='name'?'asc':'asc')}};
+          const filtered=reorderData.filter(c=>(!rfSearch||c.name.toLowerCase().includes(rfSearch.toLowerCase())||c.alpha?.toLowerCase().includes(rfSearch.toLowerCase()))&&(rfFilter==='all'||c.status===rfFilter));
+          const sorted=[...filtered].sort((a,b)=>{let v;if(rfSort==='name')v=a.name.localeCompare(b.name);else if(rfSort==='daysUntil')v=a.daysUntil-b.daysUntil;else if(rfSort==='avgCycle')v=a.avgCycle-b.avgCycle;else if(rfSort==='daysSince')v=a.daysSince-b.daysSince;else if(rfSort==='rev')v=a.rev-b.rev;else if(rfSort==='orderCount')v=a.orderCount-b.orderCount;else v=0;return rfDir==='asc'?v:-v});
+          const overdue=reorderData.filter(c=>c.status==='overdue').length;
+          const due=reorderData.filter(c=>c.status==='due').length;
+          const upcoming=reorderData.filter(c=>c.status==='upcoming').length;
+          const SH2=({col,children})=><th style={{cursor:'pointer',userSelect:'none'}} onClick={()=>toggleRfSort(col)}>{children} {rfSort===col?(rfDir==='asc'?'▲':'▼'):''}</th>;
+          return<div className="card-body">
+            <div style={{display:'flex',gap:8,marginBottom:12}}>
+              <div style={{flex:1,padding:8,background:'#fecaca',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#dc2626'}}>{overdue}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#dc2626'}}>Overdue</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#fef3c7',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>{due}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#92400e'}}>Due Now</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#dbeafe',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{upcoming}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#1e40af'}}>Upcoming (14d)</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#dcfce7',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{reorderData.filter(c=>c.status==='on_track').length}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#166534'}}>On Track</div>
+              </div>
+            </div>
+            <div style={{display:'flex',gap:8,marginBottom:8}}>
+              <input placeholder="Search customers..." value={rfSearch} onChange={e=>setRfSearch(e.target.value)} style={{flex:1,padding:'6px 10px',border:'1px solid #e2e8f0',borderRadius:6,fontSize:12}}/>
+              <select value={rfFilter} onChange={e=>setRfFilter(e.target.value)} style={{padding:'6px 10px',border:'1px solid #e2e8f0',borderRadius:6,fontSize:12}}>
+                <option value="all">All</option><option value="overdue">Overdue</option><option value="due">Due Now</option><option value="upcoming">Upcoming</option><option value="on_track">On Track</option>
+              </select>
+            </div>
+            {sorted.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:16}}>No customers with repeat orders found</div>:
+            <table style={{fontSize:12}}><thead><tr>
+              <SH2 col="name">Customer</SH2>
+              <SH2 col="avgCycle">Avg Cycle</SH2>
+              <SH2 col="daysSince">Last Order</SH2>
+              <SH2 col="daysUntil">Next Expected</SH2>
+              <SH2 col="orderCount">Orders</SH2>
+              <SH2 col="rev">Revenue</SH2>
+              <th>Rep</th>
+              <th>Status</th>
+            </tr></thead><tbody>
+              {sorted.map(c=>{
+                const stColor={overdue:'#dc2626',due:'#d97706',upcoming:'#1e40af',on_track:'#166534'};
+                const stBg={overdue:'#fecaca',due:'#fef3c7',upcoming:'#dbeafe',on_track:'#dcfce7'};
+                const stLabel3={overdue:'Overdue',due:'Due Now',upcoming:'Upcoming',on_track:'On Track'};
+                return<tr key={c.cid} style={{cursor:'pointer',background:c.status==='overdue'?'#fef2f2':''}} onClick={()=>{setSelC(cust.find(cc=>cc.id===c.cid));setPg('customers')}}>
+                  <td style={{fontWeight:700}}>{c.name} {c.alpha&&<span style={{fontSize:9,color:'#94a3b8'}}>{c.alpha}</span>}</td>
+                  <td style={{textAlign:'center',fontWeight:600}}>{c.avgCycle}d</td>
+                  <td style={{textAlign:'center',color:c.daysSince>c.avgCycle?'#dc2626':'#64748b'}}>{c.daysSince}d ago</td>
+                  <td style={{textAlign:'center',fontWeight:800,color:c.daysUntil<=-14?'#dc2626':c.daysUntil<=0?'#d97706':c.daysUntil<=14?'#1e40af':'#166534'}}>{c.daysUntil<=0?Math.abs(c.daysUntil)+'d overdue':'in '+c.daysUntil+'d'}</td>
+                  <td style={{textAlign:'center'}}>{c.orderCount}</td>
+                  <td style={{textAlign:'right',fontWeight:600}}>${c.rev.toLocaleString()}</td>
+                  <td style={{fontSize:11}}>{c.repName}</td>
+                  <td style={{textAlign:'center'}}><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:stBg[c.status],color:stColor[c.status]}}>{stLabel3[c.status]}</span></td>
+                </tr>})}
+            </tbody></table>}
+          </div>})()}
+      </div>}
+
+      {/* OPEN AR AGING BY CUSTOMER */}
+      {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
+        <WH id="arAging" title="Open AR Aging by Customer" icon="💵"/>
+        {rptWidgets.arAging&&(()=>{
+          const[arSort,setArSort]=React.useState('total');
+          const[arDir,setArDir]=React.useState('desc');
+          const[arSearch,setArSearch]=React.useState('');
+          const toggleArSort=(col)=>{if(arSort===col)setArDir(d=>d==='asc'?'desc':'asc');else{setArSort(col);setArDir('desc')}};
+          const filtered2=arAgingData.filter(c=>!arSearch||c.name.toLowerCase().includes(arSearch.toLowerCase())||c.alpha?.toLowerCase().includes(arSearch.toLowerCase()));
+          const sorted2=[...filtered2].sort((a,b)=>{let v;if(arSort==='name')v=a.name.localeCompare(b.name);else if(arSort==='total')v=a.total-b.total;else if(arSort==='current')v=a.current-b.current;else if(arSort==='d30')v=a.d30-b.d30;else if(arSort==='d60')v=a.d60-b.d60;else if(arSort==='d90plus')v=a.d90plus-b.d90plus;else if(arSort==='oldestDays')v=a.oldestDays-b.oldestDays;else v=0;return arDir==='asc'?v:-v});
+          const totals={current:0,d30:0,d60:0,d90plus:0,total:0};
+          arAgingData.forEach(c=>{totals.current+=c.current;totals.d30+=c.d30;totals.d60+=c.d60;totals.d90plus+=c.d90plus;totals.total+=c.total});
+          const SH3=({col,children})=><th style={{cursor:'pointer',userSelect:'none',textAlign:'right'}} onClick={()=>toggleArSort(col)}>{children} {arSort===col?(arDir==='asc'?'▲':'▼'):''}</th>;
+          return<div className="card-body">
+            <div style={{display:'flex',gap:8,marginBottom:12}}>
+              <div style={{flex:1,padding:8,background:'#dcfce7',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>${totals.current.toLocaleString()}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#166534'}}>Current (0-30d)</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#fef3c7',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:16,fontWeight:800,color:'#92400e'}}>${totals.d30.toLocaleString()}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#92400e'}}>31-60 Days</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#ffedd5',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:16,fontWeight:800,color:'#ea580c'}}>${totals.d60.toLocaleString()}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#ea580c'}}>61-90 Days</div>
+              </div>
+              <div style={{flex:1,padding:8,background:totals.d90plus>0?'#fecaca':'#f1f5f9',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:16,fontWeight:800,color:totals.d90plus>0?'#dc2626':'#475569'}}>${totals.d90plus.toLocaleString()}</div>
+                <div style={{fontSize:10,fontWeight:600,color:totals.d90plus>0?'#dc2626':'#475569'}}>90+ Days</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#dbeafe',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:16,fontWeight:800,color:'#1e40af'}}>${totals.total.toLocaleString()}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#1e40af'}}>Total Open AR</div>
+              </div>
+            </div>
+            <input placeholder="Search customers..." value={arSearch} onChange={e=>setArSearch(e.target.value)} style={{width:'100%',padding:'6px 10px',border:'1px solid #e2e8f0',borderRadius:6,fontSize:12,marginBottom:8}}/>
+            {sorted2.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:16}}>No open receivables</div>:
+            <table style={{fontSize:12}}><thead><tr>
+              <th style={{cursor:'pointer',userSelect:'none'}} onClick={()=>toggleArSort('name')}>Customer {arSort==='name'?(arDir==='asc'?'▲':'▼'):''}</th>
+              <SH3 col="current">0-30d</SH3>
+              <SH3 col="d30">31-60d</SH3>
+              <SH3 col="d60">61-90d</SH3>
+              <SH3 col="d90plus">90d+</SH3>
+              <SH3 col="total">Total</SH3>
+              <th style={{textAlign:'center',cursor:'pointer',userSelect:'none'}} onClick={()=>toggleArSort('oldestDays')}>Oldest {arSort==='oldestDays'?(arDir==='asc'?'▲':'▼'):''}</th>
+              <th>Rep</th>
+            </tr></thead><tbody>
+              {sorted2.map(c=>
+                <tr key={c.cid} style={{cursor:'pointer',background:c.d90plus>0?'#fef2f2':c.d60>0?'#fffbeb':''}} onClick={()=>{setSelC(cust.find(cc=>cc.id===c.cid));setPg('customers')}}>
+                  <td style={{fontWeight:700}}>{c.name} {c.alpha&&<span style={{fontSize:9,color:'#94a3b8'}}>{c.alpha}</span>} <span style={{fontSize:10,color:'#94a3b8'}}>({c.invCount})</span></td>
+                  <td style={{textAlign:'right',color:c.current>0?'#166534':'#94a3b8'}}>{c.current>0?'$'+c.current.toLocaleString():'—'}</td>
+                  <td style={{textAlign:'right',color:c.d30>0?'#92400e':'#94a3b8',fontWeight:c.d30>0?600:400}}>{c.d30>0?'$'+c.d30.toLocaleString():'—'}</td>
+                  <td style={{textAlign:'right',color:c.d60>0?'#ea580c':'#94a3b8',fontWeight:c.d60>0?700:400}}>{c.d60>0?'$'+c.d60.toLocaleString():'—'}</td>
+                  <td style={{textAlign:'right',color:c.d90plus>0?'#dc2626':'#94a3b8',fontWeight:c.d90plus>0?800:400}}>{c.d90plus>0?'$'+c.d90plus.toLocaleString():'—'}</td>
+                  <td style={{textAlign:'right',fontWeight:800}}>${c.total.toLocaleString()}</td>
+                  <td style={{textAlign:'center',fontWeight:700,color:c.oldestDays>90?'#dc2626':c.oldestDays>60?'#ea580c':c.oldestDays>30?'#92400e':'#166534'}}>{c.oldestDays}d</td>
+                  <td style={{fontSize:11}}>{c.repName}</td>
+                </tr>)}
+              <tr style={{fontWeight:800,borderTop:'2px solid #1e293b',background:'#f8fafc'}}>
+                <td>TOTAL ({arAgingData.length} customers)</td>
+                <td style={{textAlign:'right',color:'#166534'}}>${totals.current.toLocaleString()}</td>
+                <td style={{textAlign:'right',color:'#92400e'}}>${totals.d30.toLocaleString()}</td>
+                <td style={{textAlign:'right',color:'#ea580c'}}>${totals.d60.toLocaleString()}</td>
+                <td style={{textAlign:'right',color:'#dc2626'}}>${totals.d90plus.toLocaleString()}</td>
+                <td style={{textAlign:'right',color:'#1e40af'}}>${totals.total.toLocaleString()}</td>
+                <td></td><td></td>
+              </tr>
+            </tbody></table>}
+          </div>})()}
       </div>}
 
       {/* PRODUCT MIX */}
@@ -8783,7 +9204,7 @@ export default function App(){
       <div className="card" style={{marginBottom:12}}>
         <div className="card-header" style={{padding:'8px 16px'}}><h2 style={{margin:0,fontSize:13}}>⚙️ Customize Dashboard</h2></div>
         <div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers'],['prodThroughput','Prod Throughput'],['artTime','Art Time'],['decoTime','Deco Time'],['laborSummary','Labor Summary']].map(([k,label])=>
+          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['winLoss','Quote Win/Loss'],['bookingOrders','Booking Orders'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['reorderForecast','Reorder Forecast'],['arAging','AR Aging'],['payDays','Avg Days to Pay'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers'],['prodThroughput','Prod Throughput'],['artTime','Art Time'],['decoTime','Deco Time'],['laborSummary','Labor Summary']].map(([k,label])=>
             <label key={k} style={{fontSize:11,display:'flex',alignItems:'center',gap:4,padding:'4px 8px',background:rptWidgets[k]?'#dbeafe':'#f1f5f9',borderRadius:6,cursor:'pointer',border:'1px solid '+(rptWidgets[k]?'#93c5fd':'#e2e8f0')}}>
               <input type="checkbox" checked={rptWidgets[k]||false} onChange={()=>toggleWidget(k)}/> {label}
             </label>)}
