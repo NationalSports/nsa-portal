@@ -7794,7 +7794,7 @@ export default function App(){
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
   const[rptRep,setRptRep]=useState('all');
-  const[rptWidgets,setRptWidgets]=useState({pipeline:true,bookingOrders:true,repLeaderboard:true,custHealth:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
+  const[rptWidgets,setRptWidgets]=useState({pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
   const[commOverrides,setCommOverrides]=useState(()=>loadState('comm_overrides',{}));// {invoiceId: true} = admin approved full commission on late invoice
   React.useEffect(()=>{_saveAppState('comm_overrides',commOverrides)},[commOverrides]);
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
@@ -7871,6 +7871,73 @@ export default function App(){
         const termDays=parseInt((terms.match(/\d+/)||['30'])[0])||30;
         return{cid,name:c?.name||'Unknown',alpha:c?.alpha_tag||'',repId:c?.primary_rep_id,repName:rep?.name?.split(' ')[0]||'—',avgDays,minDays:d.minDays,maxDays:d.maxDays,count:d.count,terms,termDays,overdue:avgDays>termDays,totalPaid:d.invoices.reduce((a,i)=>a+i.total,0)};
       }).filter(x=>rptRep==='all'||x.repId===rptRep);
+    })();
+
+    // Customer reorder forecast
+    const reorderData=(()=>{
+      const _pd=d=>{if(!d)return null;const m2=d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m2)return null;let y2=parseInt(m2[3]);if(y2<100)y2+=2000;return new Date(y2,parseInt(m2[1])-1,parseInt(m2[2]))};
+      return cust.filter(c=>c.id!=='c_deleted').map(c=>{
+        const cSOs=sos.filter(s=>s.customer_id===c.id);
+        if(cSOs.length<2)return null;
+        const dates=cSOs.map(s=>_pd(s.created_at)).filter(Boolean).sort((a,b)=>a-b);
+        if(dates.length<2)return null;
+        const gaps=[];for(let i=1;i<dates.length;i++)gaps.push(Math.round((dates[i]-dates[i-1])/(86400000)));
+        const avgCycle=Math.round(gaps.reduce((a,g)=>a+g,0)/gaps.length);
+        const lastDate=dates[dates.length-1];
+        const daysSince=Math.round((new Date()-lastDate)/86400000);
+        const nextExpected=new Date(lastDate.getTime()+avgCycle*86400000);
+        const daysUntil=Math.round((nextExpected-new Date())/86400000);
+        const rep=REPS.find(r=>r.id===c.primary_rep_id);
+        const rev=cSOs.reduce((a,s)=>a+soCalc(s).rev,0);
+        return{cid:c.id,name:c.name,alpha:c.alpha_tag||'',repId:c.primary_rep_id,repName:rep?.name?.split(' ')[0]||'—',orderCount:cSOs.length,avgCycle,daysSince,daysUntil,nextExpected,rev,status:daysUntil<=-14?'overdue':daysUntil<=0?'due':daysUntil<=14?'upcoming':'on_track'};
+      }).filter(x=>x&&(rptRep==='all'||x.repId===rptRep));
+    })();
+
+    // Quote win/loss analysis
+    const winLossData=(()=>{
+      const _pd2=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
+      const filtered=rptRep==='all'?ests:ests.filter(e=>e.created_by===rptRep);
+      const converted=filtered.filter(e=>e.status==='converted');
+      const open=filtered.filter(e=>e.status==='draft'||e.status==='open'||e.status==='sent'||e.status==='approved');
+      const won=converted.map(e=>{
+        const so=sos.find(s=>s.estimate_id===e.id);
+        const eDate=_pd2(e.created_at);const sDate=so?_pd2(so.created_at):null;
+        const daysToClose=eDate&&sDate?Math.max(0,Math.round((sDate-eDate)/86400000)):null;
+        const c=cust.find(x=>x.id===e.customer_id);const m=so?soCalc(so):{rev:0};
+        return{...e,_cname:c?.name||'Unknown',_alpha:c?.alpha_tag||'',_rev:m.rev,_daysToClose:daysToClose,_soId:so?.id};
+      });
+      const avgDaysToClose=won.filter(w=>w._daysToClose!==null).length>0?Math.round(won.filter(w=>w._daysToClose!==null).reduce((a,w)=>a+w._daysToClose,0)/won.filter(w=>w._daysToClose!==null).length):0;
+      const totalWonRev=won.reduce((a,w)=>a+w._rev,0);
+      const convRate=filtered.length>0?Math.round(converted.length/filtered.length*100):0;
+      // Stale quotes: sent/approved but not converted, older than 30 days
+      const stale=open.filter(e=>{const d=_pd2(e.created_at);return d&&Math.round((new Date()-d)/86400000)>30}).map(e=>{
+        const c=cust.find(x=>x.id===e.customer_id);const age=Math.round((new Date()-_pd2(e.created_at))/86400000);
+        return{...e,_cname:c?.name||'Unknown',_alpha:c?.alpha_tag||'',_age:age};
+      }).sort((a,b)=>b._age-a._age);
+      return{won,open,stale,converted,filtered,avgDaysToClose,totalWonRev,convRate,total:filtered.length,wonCount:converted.length,openCount:open.length,staleCount:stale.length};
+    })();
+
+    // Open AR aging by customer
+    const arAgingData=(()=>{
+      const now=new Date();
+      const custMap={};
+      invs.filter(i=>i.status!=='paid'&&safeNum(i.total)-safeNum(i.paid)>0).forEach(inv=>{
+        const invDate=parseDate(inv.date);if(!invDate)return;
+        const daysOut=Math.max(0,Math.round((now-invDate)/86400000));
+        const balance=safeNum(inv.total)-safeNum(inv.paid);
+        const cid=inv.customer_id;
+        if(!custMap[cid])custMap[cid]={current:0,d30:0,d60:0,d90:0,d90plus:0,total:0,invoices:[]};
+        if(daysOut<=30)custMap[cid].current+=balance;
+        else if(daysOut<=60)custMap[cid].d30+=balance;
+        else if(daysOut<=90)custMap[cid].d60+=balance;
+        else custMap[cid].d90plus+=balance;
+        custMap[cid].total+=balance;
+        custMap[cid].invoices.push({id:inv.id,date:inv.date,due_date:inv.due_date,total:safeNum(inv.total),paid:safeNum(inv.paid),balance,daysOut});
+      });
+      return Object.entries(custMap).map(([cid,d])=>{
+        const c=cust.find(x=>x.id===cid);const rep=REPS.find(r=>r.id===c?.primary_rep_id);
+        return{cid,name:c?.name||'Unknown',alpha:c?.alpha_tag||'',repId:c?.primary_rep_id,repName:rep?.name?.split(' ')[0]||'—',...d,invCount:d.invoices.length,oldestDays:Math.max(...d.invoices.map(i=>i.daysOut))};
+      }).filter(x=>rptRep==='all'||x.repId===rptRep).sort((a,b)=>b.total-a.total);
     })();
 
     // Product mix
@@ -7959,6 +8026,71 @@ export default function App(){
                 <td style={{width:80}}><Bar val={s._rev} max={Math.max(...pipeline.map(p=>p._rev))} color={s._pct>=40?'#22c55e':'#f59e0b'}/></td>
               </tr>})}</tbody></table>
           </div>}
+        </div>
+
+        {/* Quote Win/Loss Analysis */}
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="winLoss" title="Quote Win/Loss Analysis" icon="🎯"/>
+          {rptWidgets.winLoss&&(()=>{
+            return<div className="card-body">
+              <div style={{display:'flex',gap:8,marginBottom:12}}>
+                <div style={{flex:1,padding:8,background:'#dbeafe',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{winLossData.total}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#1e40af'}}>Total Quotes</div>
+                </div>
+                <div style={{flex:1,padding:8,background:'#dcfce7',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{winLossData.wonCount}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#166534'}}>Won</div>
+                </div>
+                <div style={{flex:1,padding:8,background:'#fef3c7',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>{winLossData.openCount}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#92400e'}}>Open</div>
+                </div>
+                <div style={{flex:1,padding:8,background:winLossData.staleCount>0?'#fecaca':'#f1f5f9',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:winLossData.staleCount>0?'#dc2626':'#475569'}}>{winLossData.staleCount}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:winLossData.staleCount>0?'#dc2626':'#475569'}}>Stale (30d+)</div>
+                </div>
+                <div style={{flex:1,padding:8,background:'#e0e7ff',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#4338ca'}}>{winLossData.convRate}%</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#4338ca'}}>Win Rate</div>
+                </div>
+                <div style={{flex:1,padding:8,background:'#f0fdf4',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{winLossData.avgDaysToClose}d</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#166534'}}>Avg Days to Close</div>
+                </div>
+              </div>
+              {/* Won deals */}
+              {winLossData.won.length>0&&<><div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:6}}>Won Quotes — Converted to SO</div>
+              <table style={{fontSize:12,marginBottom:16}}><thead><tr>
+                <th>Estimate</th><th>Customer</th><th>Memo</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'center'}}>Days to Close</th><th>SO</th>
+              </tr></thead><tbody>
+                {winLossData.won.sort((a,b)=>(b._rev||0)-(a._rev||0)).slice(0,15).map(w=>
+                  <tr key={w.id} style={{background:'#f0fdf4'}}>
+                    <td style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{w.id}</td>
+                    <td style={{fontWeight:600}}>{w._cname} {w._alpha&&<span style={{fontSize:9,color:'#94a3b8'}}>{w._alpha}</span>}</td>
+                    <td style={{fontSize:11,color:'#64748b',maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{w.memo}</td>
+                    <td style={{textAlign:'right',fontWeight:600}}>${w._rev.toLocaleString()}</td>
+                    <td style={{textAlign:'center',fontWeight:700,color:w._daysToClose!==null?(w._daysToClose<=7?'#166534':w._daysToClose<=30?'#d97706':'#dc2626'):'#94a3b8'}}>{w._daysToClose!==null?w._daysToClose+'d':'—'}</td>
+                    <td style={{fontWeight:600,color:'#4338ca',cursor:'pointer',fontSize:12}} onClick={()=>{const so=sos.find(s=>s.id===w._soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}>{w._soId||'—'}</td>
+                  </tr>)}
+              </tbody></table></>}
+              {/* Stale quotes needing follow-up */}
+              {winLossData.stale.length>0&&<><div style={{fontSize:12,fontWeight:700,color:'#dc2626',marginBottom:6}}>Stale Quotes — No Conversion After 30+ Days</div>
+              <table style={{fontSize:12}}><thead><tr>
+                <th>Estimate</th><th>Customer</th><th>Memo</th><th style={{textAlign:'center'}}>Status</th><th style={{textAlign:'center'}}>Age</th>
+              </tr></thead><tbody>
+                {winLossData.stale.slice(0,15).map(s=>{
+                  const stLabel2={draft:'Draft',open:'Open',sent:'Sent',approved:'Approved'};
+                  return<tr key={s.id} style={{background:s._age>90?'#fef2f2':s._age>60?'#fffbeb':''}}>
+                    <td style={{fontWeight:700,color:'#1e40af',fontSize:12,cursor:'pointer'}} onClick={()=>{setPg('estimates')}}>{s.id}</td>
+                    <td style={{fontWeight:600}}>{s._cname} {s._alpha&&<span style={{fontSize:9,color:'#94a3b8'}}>{s._alpha}</span>}</td>
+                    <td style={{fontSize:11,color:'#64748b',maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.memo}</td>
+                    <td style={{textAlign:'center'}}><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:s.status==='sent'?'#dbeafe':s.status==='approved'?'#dcfce7':'#f1f5f9',color:s.status==='sent'?'#1e40af':s.status==='approved'?'#166534':'#475569'}}>{stLabel2[s.status]||s.status}</span></td>
+                    <td style={{textAlign:'center',fontWeight:800,color:s._age>90?'#dc2626':s._age>60?'#d97706':'#92400e'}}>{s._age}d</td>
+                  </tr>})}
+              </tbody></table></>}
+              {winLossData.total===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:16}}>No estimates found</div>}
+            </div>})()}
         </div>
 
         {/* Booking Orders */}
@@ -8131,6 +8263,147 @@ export default function App(){
                   <td style={{fontSize:11}}>{c.repName}</td>
                   <td style={{textAlign:'center'}}><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:c.overdue?'#fecaca':'#dcfce7',color:c.overdue?'#dc2626':'#166534'}}>{c.overdue?'Past Terms':'On Time'}</span></td>
                 </tr>})}
+            </tbody></table>}
+          </div>})()}
+      </div>}
+
+      {/* CUSTOMER REORDER FORECAST */}
+      {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
+        <WH id="reorderForecast" title="Customer Reorder Forecast" icon="🔮"/>
+        {rptWidgets.reorderForecast&&(()=>{
+          const[rfSort,setRfSort]=React.useState('daysUntil');
+          const[rfDir,setRfDir]=React.useState('asc');
+          const[rfSearch,setRfSearch]=React.useState('');
+          const[rfFilter,setRfFilter]=React.useState('all');
+          const toggleRfSort=(col)=>{if(rfSort===col)setRfDir(d=>d==='asc'?'desc':'asc');else{setRfSort(col);setRfDir(col==='name'?'asc':'asc')}};
+          const filtered=reorderData.filter(c=>(!rfSearch||c.name.toLowerCase().includes(rfSearch.toLowerCase())||c.alpha?.toLowerCase().includes(rfSearch.toLowerCase()))&&(rfFilter==='all'||c.status===rfFilter));
+          const sorted=[...filtered].sort((a,b)=>{let v;if(rfSort==='name')v=a.name.localeCompare(b.name);else if(rfSort==='daysUntil')v=a.daysUntil-b.daysUntil;else if(rfSort==='avgCycle')v=a.avgCycle-b.avgCycle;else if(rfSort==='daysSince')v=a.daysSince-b.daysSince;else if(rfSort==='rev')v=a.rev-b.rev;else if(rfSort==='orderCount')v=a.orderCount-b.orderCount;else v=0;return rfDir==='asc'?v:-v});
+          const overdue=reorderData.filter(c=>c.status==='overdue').length;
+          const due=reorderData.filter(c=>c.status==='due').length;
+          const upcoming=reorderData.filter(c=>c.status==='upcoming').length;
+          const SH2=({col,children})=><th style={{cursor:'pointer',userSelect:'none'}} onClick={()=>toggleRfSort(col)}>{children} {rfSort===col?(rfDir==='asc'?'▲':'▼'):''}</th>;
+          return<div className="card-body">
+            <div style={{display:'flex',gap:8,marginBottom:12}}>
+              <div style={{flex:1,padding:8,background:'#fecaca',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#dc2626'}}>{overdue}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#dc2626'}}>Overdue</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#fef3c7',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>{due}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#92400e'}}>Due Now</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#dbeafe',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{upcoming}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#1e40af'}}>Upcoming (14d)</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#dcfce7',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{reorderData.filter(c=>c.status==='on_track').length}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#166534'}}>On Track</div>
+              </div>
+            </div>
+            <div style={{display:'flex',gap:8,marginBottom:8}}>
+              <input placeholder="Search customers..." value={rfSearch} onChange={e=>setRfSearch(e.target.value)} style={{flex:1,padding:'6px 10px',border:'1px solid #e2e8f0',borderRadius:6,fontSize:12}}/>
+              <select value={rfFilter} onChange={e=>setRfFilter(e.target.value)} style={{padding:'6px 10px',border:'1px solid #e2e8f0',borderRadius:6,fontSize:12}}>
+                <option value="all">All</option><option value="overdue">Overdue</option><option value="due">Due Now</option><option value="upcoming">Upcoming</option><option value="on_track">On Track</option>
+              </select>
+            </div>
+            {sorted.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:16}}>No customers with repeat orders found</div>:
+            <table style={{fontSize:12}}><thead><tr>
+              <SH2 col="name">Customer</SH2>
+              <SH2 col="avgCycle">Avg Cycle</SH2>
+              <SH2 col="daysSince">Last Order</SH2>
+              <SH2 col="daysUntil">Next Expected</SH2>
+              <SH2 col="orderCount">Orders</SH2>
+              <SH2 col="rev">Revenue</SH2>
+              <th>Rep</th>
+              <th>Status</th>
+            </tr></thead><tbody>
+              {sorted.map(c=>{
+                const stColor={overdue:'#dc2626',due:'#d97706',upcoming:'#1e40af',on_track:'#166534'};
+                const stBg={overdue:'#fecaca',due:'#fef3c7',upcoming:'#dbeafe',on_track:'#dcfce7'};
+                const stLabel3={overdue:'Overdue',due:'Due Now',upcoming:'Upcoming',on_track:'On Track'};
+                return<tr key={c.cid} style={{cursor:'pointer',background:c.status==='overdue'?'#fef2f2':''}} onClick={()=>{setSelC(cust.find(cc=>cc.id===c.cid));setPg('customers')}}>
+                  <td style={{fontWeight:700}}>{c.name} {c.alpha&&<span style={{fontSize:9,color:'#94a3b8'}}>{c.alpha}</span>}</td>
+                  <td style={{textAlign:'center',fontWeight:600}}>{c.avgCycle}d</td>
+                  <td style={{textAlign:'center',color:c.daysSince>c.avgCycle?'#dc2626':'#64748b'}}>{c.daysSince}d ago</td>
+                  <td style={{textAlign:'center',fontWeight:800,color:c.daysUntil<=-14?'#dc2626':c.daysUntil<=0?'#d97706':c.daysUntil<=14?'#1e40af':'#166534'}}>{c.daysUntil<=0?Math.abs(c.daysUntil)+'d overdue':'in '+c.daysUntil+'d'}</td>
+                  <td style={{textAlign:'center'}}>{c.orderCount}</td>
+                  <td style={{textAlign:'right',fontWeight:600}}>${c.rev.toLocaleString()}</td>
+                  <td style={{fontSize:11}}>{c.repName}</td>
+                  <td style={{textAlign:'center'}}><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:stBg[c.status],color:stColor[c.status]}}>{stLabel3[c.status]}</span></td>
+                </tr>})}
+            </tbody></table>}
+          </div>})()}
+      </div>}
+
+      {/* OPEN AR AGING BY CUSTOMER */}
+      {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
+        <WH id="arAging" title="Open AR Aging by Customer" icon="💵"/>
+        {rptWidgets.arAging&&(()=>{
+          const[arSort,setArSort]=React.useState('total');
+          const[arDir,setArDir]=React.useState('desc');
+          const[arSearch,setArSearch]=React.useState('');
+          const toggleArSort=(col)=>{if(arSort===col)setArDir(d=>d==='asc'?'desc':'asc');else{setArSort(col);setArDir('desc')}};
+          const filtered2=arAgingData.filter(c=>!arSearch||c.name.toLowerCase().includes(arSearch.toLowerCase())||c.alpha?.toLowerCase().includes(arSearch.toLowerCase()));
+          const sorted2=[...filtered2].sort((a,b)=>{let v;if(arSort==='name')v=a.name.localeCompare(b.name);else if(arSort==='total')v=a.total-b.total;else if(arSort==='current')v=a.current-b.current;else if(arSort==='d30')v=a.d30-b.d30;else if(arSort==='d60')v=a.d60-b.d60;else if(arSort==='d90plus')v=a.d90plus-b.d90plus;else if(arSort==='oldestDays')v=a.oldestDays-b.oldestDays;else v=0;return arDir==='asc'?v:-v});
+          const totals={current:0,d30:0,d60:0,d90plus:0,total:0};
+          arAgingData.forEach(c=>{totals.current+=c.current;totals.d30+=c.d30;totals.d60+=c.d60;totals.d90plus+=c.d90plus;totals.total+=c.total});
+          const SH3=({col,children})=><th style={{cursor:'pointer',userSelect:'none',textAlign:'right'}} onClick={()=>toggleArSort(col)}>{children} {arSort===col?(arDir==='asc'?'▲':'▼'):''}</th>;
+          return<div className="card-body">
+            <div style={{display:'flex',gap:8,marginBottom:12}}>
+              <div style={{flex:1,padding:8,background:'#dcfce7',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>${totals.current.toLocaleString()}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#166534'}}>Current (0-30d)</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#fef3c7',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:16,fontWeight:800,color:'#92400e'}}>${totals.d30.toLocaleString()}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#92400e'}}>31-60 Days</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#ffedd5',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:16,fontWeight:800,color:'#ea580c'}}>${totals.d60.toLocaleString()}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#ea580c'}}>61-90 Days</div>
+              </div>
+              <div style={{flex:1,padding:8,background:totals.d90plus>0?'#fecaca':'#f1f5f9',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:16,fontWeight:800,color:totals.d90plus>0?'#dc2626':'#475569'}}>${totals.d90plus.toLocaleString()}</div>
+                <div style={{fontSize:10,fontWeight:600,color:totals.d90plus>0?'#dc2626':'#475569'}}>90+ Days</div>
+              </div>
+              <div style={{flex:1,padding:8,background:'#dbeafe',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:16,fontWeight:800,color:'#1e40af'}}>${totals.total.toLocaleString()}</div>
+                <div style={{fontSize:10,fontWeight:600,color:'#1e40af'}}>Total Open AR</div>
+              </div>
+            </div>
+            <input placeholder="Search customers..." value={arSearch} onChange={e=>setArSearch(e.target.value)} style={{width:'100%',padding:'6px 10px',border:'1px solid #e2e8f0',borderRadius:6,fontSize:12,marginBottom:8}}/>
+            {sorted2.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:16}}>No open receivables</div>:
+            <table style={{fontSize:12}}><thead><tr>
+              <th style={{cursor:'pointer',userSelect:'none'}} onClick={()=>toggleArSort('name')}>Customer {arSort==='name'?(arDir==='asc'?'▲':'▼'):''}</th>
+              <SH3 col="current">0-30d</SH3>
+              <SH3 col="d30">31-60d</SH3>
+              <SH3 col="d60">61-90d</SH3>
+              <SH3 col="d90plus">90d+</SH3>
+              <SH3 col="total">Total</SH3>
+              <th style={{textAlign:'center',cursor:'pointer',userSelect:'none'}} onClick={()=>toggleArSort('oldestDays')}>Oldest {arSort==='oldestDays'?(arDir==='asc'?'▲':'▼'):''}</th>
+              <th>Rep</th>
+            </tr></thead><tbody>
+              {sorted2.map(c=>
+                <tr key={c.cid} style={{cursor:'pointer',background:c.d90plus>0?'#fef2f2':c.d60>0?'#fffbeb':''}} onClick={()=>{setSelC(cust.find(cc=>cc.id===c.cid));setPg('customers')}}>
+                  <td style={{fontWeight:700}}>{c.name} {c.alpha&&<span style={{fontSize:9,color:'#94a3b8'}}>{c.alpha}</span>} <span style={{fontSize:10,color:'#94a3b8'}}>({c.invCount})</span></td>
+                  <td style={{textAlign:'right',color:c.current>0?'#166534':'#94a3b8'}}>{c.current>0?'$'+c.current.toLocaleString():'—'}</td>
+                  <td style={{textAlign:'right',color:c.d30>0?'#92400e':'#94a3b8',fontWeight:c.d30>0?600:400}}>{c.d30>0?'$'+c.d30.toLocaleString():'—'}</td>
+                  <td style={{textAlign:'right',color:c.d60>0?'#ea580c':'#94a3b8',fontWeight:c.d60>0?700:400}}>{c.d60>0?'$'+c.d60.toLocaleString():'—'}</td>
+                  <td style={{textAlign:'right',color:c.d90plus>0?'#dc2626':'#94a3b8',fontWeight:c.d90plus>0?800:400}}>{c.d90plus>0?'$'+c.d90plus.toLocaleString():'—'}</td>
+                  <td style={{textAlign:'right',fontWeight:800}}>${c.total.toLocaleString()}</td>
+                  <td style={{textAlign:'center',fontWeight:700,color:c.oldestDays>90?'#dc2626':c.oldestDays>60?'#ea580c':c.oldestDays>30?'#92400e':'#166534'}}>{c.oldestDays}d</td>
+                  <td style={{fontSize:11}}>{c.repName}</td>
+                </tr>)}
+              <tr style={{fontWeight:800,borderTop:'2px solid #1e293b',background:'#f8fafc'}}>
+                <td>TOTAL ({arAgingData.length} customers)</td>
+                <td style={{textAlign:'right',color:'#166534'}}>${totals.current.toLocaleString()}</td>
+                <td style={{textAlign:'right',color:'#92400e'}}>${totals.d30.toLocaleString()}</td>
+                <td style={{textAlign:'right',color:'#ea580c'}}>${totals.d60.toLocaleString()}</td>
+                <td style={{textAlign:'right',color:'#dc2626'}}>${totals.d90plus.toLocaleString()}</td>
+                <td style={{textAlign:'right',color:'#1e40af'}}>${totals.total.toLocaleString()}</td>
+                <td></td><td></td>
+              </tr>
             </tbody></table>}
           </div>})()}
       </div>}
@@ -8931,7 +9204,7 @@ export default function App(){
       <div className="card" style={{marginBottom:12}}>
         <div className="card-header" style={{padding:'8px 16px'}}><h2 style={{margin:0,fontSize:13}}>⚙️ Customize Dashboard</h2></div>
         <div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['bookingOrders','Booking Orders'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['payDays','Avg Days to Pay'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers'],['prodThroughput','Prod Throughput'],['artTime','Art Time'],['decoTime','Deco Time'],['laborSummary','Labor Summary']].map(([k,label])=>
+          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['winLoss','Quote Win/Loss'],['bookingOrders','Booking Orders'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['reorderForecast','Reorder Forecast'],['arAging','AR Aging'],['payDays','Avg Days to Pay'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers'],['prodThroughput','Prod Throughput'],['artTime','Art Time'],['decoTime','Deco Time'],['laborSummary','Labor Summary']].map(([k,label])=>
             <label key={k} style={{fontSize:11,display:'flex',alignItems:'center',gap:4,padding:'4px 8px',background:rptWidgets[k]?'#dbeafe':'#f1f5f9',borderRadius:6,cursor:'pointer',border:'1px solid '+(rptWidgets[k]?'#93c5fd':'#e2e8f0')}}>
               <input type="checkbox" checked={rptWidgets[k]||false} onChange={()=>toggleWidget(k)}/> {label}
             </label>)}
