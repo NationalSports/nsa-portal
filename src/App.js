@@ -14,7 +14,7 @@ import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks } from './components';
-import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice } from './businessLogic';
+import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, sendBrevoEmail } from './utils';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -7794,7 +7794,7 @@ export default function App(){
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
   const[rptRep,setRptRep]=useState('all');
-  const[rptWidgets,setRptWidgets]=useState({pipeline:true,repLeaderboard:true,custHealth:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
+  const[rptWidgets,setRptWidgets]=useState({pipeline:true,bookingOrders:true,repLeaderboard:true,custHealth:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
   const[commOverrides,setCommOverrides]=useState(()=>loadState('comm_overrides',{}));// {invoiceId: true} = admin approved full commission on late invoice
   React.useEffect(()=>{_saveAppState('comm_overrides',commOverrides)},[commOverrides]);
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
@@ -7959,6 +7959,69 @@ export default function App(){
                 <td style={{width:80}}><Bar val={s._rev} max={Math.max(...pipeline.map(p=>p._rev))} color={s._pct>=40?'#22c55e':'#f59e0b'}/></td>
               </tr>})}</tbody></table>
           </div>}
+        </div>
+
+        {/* Booking Orders */}
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="bookingOrders" title="Booking Orders" icon="📋"/>
+          {rptWidgets.bookingOrders&&(()=>{
+            const bookings=filtSOs.filter(s=>isBookingOrder(s)).map(so=>{
+              const m=soCalc(so);const c=cust.find(x=>x.id===so.customer_id);
+              const rep=REPS.find(r=>r.id===so.created_by);
+              const daysOut=bookingDaysUntilShip(so);
+              const st=calcSOStatus(so);
+              return{...so,_rev:m.rev,_cost:m.cost,_margin:m.margin,_pct:m.pct,_units:m.units,_cname:c?.name||'Unknown',_alpha:c?.alpha_tag||'',_repName:rep?.name?.split(' ')[0]||'—',_daysOut:daysOut,_st:st};
+            }).sort((a,b)=>(a._daysOut??9999)-(b._daysOut??9999));
+            const confirmed=bookings.filter(b=>b.booking_confirmed);
+            const unconfirmed=bookings.filter(b=>!b.booking_confirmed);
+            const totalBookingRev=bookings.reduce((a,b)=>a+b._rev,0);
+            const urgent=unconfirmed.filter(b=>b._daysOut!==null&&b._daysOut<=100);
+            return<div className="card-body">
+              <div style={{display:'flex',gap:8,marginBottom:12}}>
+                <div style={{flex:1,padding:8,background:'#e0e7ff',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#4338ca'}}>{bookings.length}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#4338ca'}}>Total Bookings</div>
+                </div>
+                <div style={{flex:1,padding:8,background:'#dcfce7',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{confirmed.length}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#166534'}}>Confirmed</div>
+                </div>
+                <div style={{flex:1,padding:8,background:'#fef3c7',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>{unconfirmed.length}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#92400e'}}>Unconfirmed</div>
+                </div>
+                <div style={{flex:1,padding:8,background:urgent.length>0?'#fecaca':'#f1f5f9',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:urgent.length>0?'#dc2626':'#475569'}}>{urgent.length}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:urgent.length>0?'#dc2626':'#475569'}}>Needs Attention</div>
+                </div>
+                <div style={{flex:1,padding:8,background:'#dbeafe',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>${(totalBookingRev/1000).toFixed(1)}k</div>
+                  <div style={{fontSize:10,fontWeight:600,color:'#1e40af'}}>Booking Revenue</div>
+                </div>
+              </div>
+              {bookings.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:16}}>No booking orders found</div>:
+              <table style={{fontSize:12}}><thead><tr>
+                <th>SO</th><th>Customer</th><th>Memo</th><th>Rep</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'center'}}>Ship Date</th><th style={{textAlign:'center'}}>Days Out</th><th style={{textAlign:'center'}}>Confirmed</th><th>Status</th>
+              </tr></thead><tbody>
+                {bookings.map(b=>{
+                  const isUrgent=!b.booking_confirmed&&b._daysOut!==null&&b._daysOut<=100;
+                  const confirmedBy=b.booking_confirmed_by?REPS.find(r=>r.id===b.booking_confirmed_by)?.name?.split(' ')[0]:'';
+                  const confirmedAt=b.booking_confirmed_at?new Date(b.booking_confirmed_at).toLocaleDateString():'';
+                  return<tr key={b.id} style={{cursor:'pointer',background:isUrgent?'#fef2f2':b.booking_confirmed?'#f0fdf4':''}} onClick={()=>{setESO(sos.find(x=>x.id===b.id));setESOC(cust.find(c=>c.id===b.customer_id));setPg('orders')}}>
+                    <td style={{fontWeight:700,color:'#4338ca',fontSize:12}}>{b.id}</td>
+                    <td style={{fontWeight:600}}>{b._cname} {b._alpha&&<span style={{fontSize:9,color:'#94a3b8'}}>{b._alpha}</span>}</td>
+                    <td style={{fontSize:11,color:'#64748b',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.memo}</td>
+                    <td style={{fontSize:11}}>{b._repName}</td>
+                    <td style={{textAlign:'right',fontWeight:600}}>${b._rev.toLocaleString()}</td>
+                    <td style={{textAlign:'center',fontWeight:600}}>{b.expected_ship_date||'—'}</td>
+                    <td style={{textAlign:'center',fontWeight:800,color:b._daysOut===null?'#94a3b8':b._daysOut<=30?'#dc2626':b._daysOut<=100?'#d97706':'#166534'}}>{b._daysOut!==null?b._daysOut+'d':'—'}</td>
+                    <td style={{textAlign:'center'}}>{b.booking_confirmed
+                      ?<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:'#dcfce7',color:'#166534'}} title={confirmedBy&&confirmedAt?confirmedBy+' · '+confirmedAt:''}>Yes{confirmedBy?' · '+confirmedBy:''}</span>
+                      :<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:isUrgent?'#fecaca':'#fef3c7',color:isUrgent?'#dc2626':'#92400e'}}>{isUrgent?'Needs Confirm':'Pending'}</span>}</td>
+                    <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[b._st]?.bg,color:SC[b._st]?.c}}>{b._st==='booking'?'Booking':b._st==='need_order'?'Need Order':b._st==='waiting_receive'?'Waiting':b._st==='items_received'?'Items In':b._st==='in_production'?'In Prod':b._st==='ready_to_invoice'?'Ready Inv':b._st==='complete'?'Complete':b._st}</span></td>
+                  </tr>})}
+              </tbody></table>}
+            </div>})()}
         </div>
       </>}
 
@@ -8868,7 +8931,7 @@ export default function App(){
       <div className="card" style={{marginBottom:12}}>
         <div className="card-header" style={{padding:'8px 16px'}}><h2 style={{margin:0,fontSize:13}}>⚙️ Customize Dashboard</h2></div>
         <div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['payDays','Avg Days to Pay'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers'],['prodThroughput','Prod Throughput'],['artTime','Art Time'],['decoTime','Deco Time'],['laborSummary','Labor Summary']].map(([k,label])=>
+          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['bookingOrders','Booking Orders'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['payDays','Avg Days to Pay'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers'],['prodThroughput','Prod Throughput'],['artTime','Art Time'],['decoTime','Deco Time'],['laborSummary','Labor Summary']].map(([k,label])=>
             <label key={k} style={{fontSize:11,display:'flex',alignItems:'center',gap:4,padding:'4px 8px',background:rptWidgets[k]?'#dbeafe':'#f1f5f9',borderRadius:6,cursor:'pointer',border:'1px solid '+(rptWidgets[k]?'#93c5fd':'#e2e8f0')}}>
               <input type="checkbox" checked={rptWidgets[k]||false} onChange={()=>toggleWidget(k)}/> {label}
             </label>)}
