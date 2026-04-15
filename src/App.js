@@ -3005,69 +3005,16 @@ export default function App(){
         const incTypes = [...new Set((omgStoresData.included || []).map(i => i.type))];
         console.log('[OMG] Included resource types:', incTypes);
       }
-      // ── Strategy ──
-      // 1. Fetch order_products?include=product → get qty + product prices
-      // 2. Fetch ALL /orders?include=sale → build order→sale map (force relationship population)
-      // 3. Link order_products to stores via order→sale
+      // ── Strategy (per-sale, not global) ──
+      // The previous approach paginated /orders and /order_products globally,
+      // then tried to match records to stores in-memory. With a 50-page cap
+      // (~5000 records), the fetched window was unrelated to the recent stores
+      // we care about — result: every record "unmatched". Now we iterate each
+      // recent store and fetch ONLY its orders + order_products.
       const saleTotals = {};
-      const productMap = {}; // product_id → { base_price, ... }
-      const orderToSale = {}; // order_id → sale_id
       const ordersBySale = {}; // sale_id → [order resources]
 
-      // Helper: paginate an endpoint, collecting data + calling a callback per page
-      // Uses 3 strategies: links.next, meta.page.cursor, constructed cursor from ID
-      const fetchAllPagesWithCallback = async (endpoint, onPage, maxPages = 50) => {
-        let allData = [];
-        const seenIds = new Set();
-        const basePath = endpoint.split('?')[0];
-        const baseQuery = endpoint.includes('?') ? '&' + endpoint.split('?')[1] : '';
-        let nextUrl = endpoint;
-        for (let page = 0; page < maxPages; page++) {
-          let resp;
-          try { resp = await omgApiCall(nextUrl); } catch (e) {
-            console.warn(`[OMG] Page ${page + 1} failed for ${basePath}:`, e.message);
-            break;
-          }
-          const data = resp?.data || [];
-          if (data.length === 0) break;
-          const newRecords = data.filter(d => !seenIds.has(d.id));
-          if (newRecords.length === 0) break;
-          newRecords.forEach(d => seenIds.add(d.id));
-          allData = allData.concat(newRecords);
-          if (onPage) onPage(resp, newRecords);
-          if (data.length < 100) break;
-          // Strategy 1: links.next
-          if (resp?.links?.next) {
-            try {
-              const u = new URL(resp.links.next);
-              nextUrl = u.pathname.replace(/^\/v1/, '') + u.search;
-              continue;
-            } catch {
-              nextUrl = resp.links.next.startsWith('/') ? resp.links.next : '/' + resp.links.next;
-              continue;
-            }
-          }
-          // Strategy 2: cursor from last record's meta
-          const lastRecord = data[data.length - 1];
-          const cursor = lastRecord?.meta?.page?.cursor;
-          if (cursor) {
-            nextUrl = `${basePath}?page[after]=${cursor}${baseQuery}`;
-            continue;
-          }
-          // Strategy 3: construct cursor from last record ID
-          if (lastRecord?.id) {
-            const constructedCursor = btoa(JSON.stringify({ id: lastRecord.id }));
-            nextUrl = `${basePath}?page[after]=${constructedCursor}${baseQuery}`;
-            continue;
-          }
-          break;
-        }
-        return allData;
-      };
-
-      // Shortcut: if the sale resource itself carries totals, we can skip
-      // the expensive order_products/orders chain entirely. Check the first
-      // store for any of the common aggregate field names.
+      // Shortcut: if the sale resource already carries totals, skip the chain
       const saleHasTotals = (attrs) => {
         const keys = ['total_sales','sales_total','revenue','items_sold','total_items','orders_count','order_count'];
         return keys.some(k => attrs?.[k] !== undefined && attrs?.[k] !== null);
@@ -3077,112 +3024,128 @@ export default function App(){
         console.log('[OMG] ✓ Sale resource has pre-computed totals — skipping order_products chain');
       }
 
-      // Step 1: Fetch ALL order_products with include=product (paginated)
-      let allOrderProducts = [];
-      if (!skipChain) {
-        try {
-          allOrderProducts = await fetchAllPagesWithCallback(
-            '/order_products?include=product',
-            (resp) => {
-              (resp?.included || []).forEach(i => {
-                if ((i.type === 'products' || i.type === 'product') && !productMap[i.id]) {
-                  productMap[i.id] = i.attributes || {};
-                }
-              });
+      // Helper: try a list of endpoints, return the first that responds with data.
+      // Once an endpoint works, paginate it (up to maxPages) and merge data + included.
+      const tryEndpointsPaginated = async (endpoints, maxPages = 20) => {
+        for (const ep of endpoints) {
+          let firstResp;
+          try {
+            firstResp = await omgApiCall(ep);
+          } catch (e) {
+            console.log(`[OMG] ${ep} failed: ${e.message}`);
+            continue;
+          }
+          if (!firstResp?.data) continue;
+          const allData = [...firstResp.data];
+          const allIncluded = [...(firstResp.included || [])];
+          const seenIds = new Set(allData.map(d => d.id));
+          // Continue paginating if there's a links.next
+          let nextUrl = firstResp?.links?.next || null;
+          let pages = 1;
+          while (nextUrl && pages < maxPages) {
+            let relativeUrl = nextUrl;
+            try {
+              const u = new URL(nextUrl);
+              relativeUrl = u.pathname.replace(/^\/v1/, '') + u.search;
+            } catch { /* already relative */ }
+            let nextResp;
+            try {
+              nextResp = await omgApiCall(relativeUrl);
+            } catch (e) {
+              console.warn(`[OMG] Pagination page ${pages + 1} failed for ${ep}: ${e.message}`);
+              break;
             }
-          );
-        } catch (e) { console.warn('[OMG] order_products fetch failed:', e.message); }
-        console.log(`[OMG] Fetched ${allOrderProducts.length} order_products, ${Object.keys(productMap).length} products`);
-        // Diagnostic: log sample order_product structure
-        if (allOrderProducts[0]) {
-          console.log('[OMG] Sample order_product — full resource:', allOrderProducts[0]);
-          console.log('[OMG] Sample order_product — relationships:', allOrderProducts[0].relationships);
-          console.log('[OMG] Sample order_product — relationship keys:', Object.keys(allOrderProducts[0].relationships || {}));
-        }
-      }
-
-      // Step 2: Fetch ALL /orders with include=sale (force relationship population)
-      // Some JSON:API servers omit the relationship linkage unless you sideload
-      // the related resource, so include=sale ensures every order carries its sale id.
-      // We try with include first, fall back to plain /orders if that 400s.
-      // Resolve the relationship name that links an order to its sale by looking
-      // at whichever key has a sale/store/team_store-shaped data object.
-      const extractSaleId = (o) => {
-        const rels = o.relationships || {};
-        // Try common names first
-        const candidates = ['sale','sales','store','team_store','pop_up_store','sales_channel','parent'];
-        for (const k of candidates) {
-          const id = rels[k]?.data?.id;
-          if (id) return id;
-        }
-        // Fallback: any relationship whose data.type is sale-like
-        for (const v of Object.values(rels)) {
-          const t = v?.data?.type;
-          if (t && /^sale|^store|^team_store|^pop_up/i.test(t)) return v.data.id;
+            const nextData = nextResp?.data || [];
+            const newRecords = nextData.filter(d => !seenIds.has(d.id));
+            if (newRecords.length === 0) break;
+            newRecords.forEach(d => seenIds.add(d.id));
+            allData.push(...newRecords);
+            allIncluded.push(...(nextResp.included || []));
+            nextUrl = nextResp?.links?.next || null;
+            pages++;
+          }
+          return { data: allData, included: allIncluded, ep };
         }
         return null;
       };
 
       if (!skipChain) {
-        let allOrders = [];
-        try {
-          allOrders = await fetchAllPagesWithCallback('/orders?include=sale');
-        } catch (e) {
-          console.warn('[OMG] /orders?include=sale failed, retrying /orders:', e.message);
-          try { allOrders = await fetchAllPagesWithCallback('/orders'); }
-          catch (e2) { console.warn('[OMG] /orders fetch failed:', e2.message); }
-        }
-        // Diagnostic: log sample order structure so we can see what relationships actually exist
-        if (allOrders[0]) {
-          console.log('[OMG] Sample order — full resource:', allOrders[0]);
-          console.log('[OMG] Sample order — relationships:', allOrders[0].relationships);
-          console.log('[OMG] Sample order — relationship keys:', Object.keys(allOrders[0].relationships || {}));
-          // Show which rels have data (critical for linking)
-          for (const [k, v] of Object.entries(allOrders[0].relationships || {})) {
-            console.log(`[OMG]   order.rel[${k}]:`, v?.data !== undefined ? v.data : '(no data)');
+        // Iterate each recent store and fetch its orders + order_products directly.
+        // This caps work to the stores we actually care about.
+        let totalOrders = 0, totalOrderProducts = 0, storesWithData = 0;
+        for (const store of stores) {
+          const saleId = store.id;
+          // Fetch this store's orders. Try a few endpoint shapes for compatibility.
+          const ordersResult = await tryEndpointsPaginated([
+            `/sales/${saleId}/orders`,
+            `/orders?filter[sale_id]=${saleId}`,
+            `/orders?sale_id=${saleId}`,
+          ]);
+          if (!ordersResult) {
+            console.warn(`[OMG] No orders fetched for sale ${saleId}`);
+            continue;
+          }
+          const orderList = ordersResult.data;
+          if (!orderList.length) continue;
+          ordersBySale[saleId] = orderList;
+          totalOrders += orderList.length;
+
+          // Fetch order_products for each of this store's orders. Prefer a
+          // bulk filter when supported; fall back to per-order if necessary.
+          const storeOrderProducts = [];
+          const productMap = {};
+          const bulkResult = await tryEndpointsPaginated([
+            `/order_products?filter[sale_id]=${saleId}&include=product`,
+            `/order_products?filter[sale_id]=${saleId}`,
+          ]);
+          if (bulkResult && bulkResult.data.length > 0) {
+            storeOrderProducts.push(...bulkResult.data);
+            bulkResult.included.forEach(i => {
+              if ((i.type === 'product' || i.type === 'products') && !productMap[i.id]) {
+                productMap[i.id] = i.attributes || {};
+              }
+            });
+          } else {
+            // Per-order fallback
+            for (const o of orderList) {
+              const opResult = await tryEndpointsPaginated([
+                `/orders/${o.id}/order_products?include=product`,
+                `/orders/${o.id}/order_products`,
+                `/order_products?filter[order_id]=${o.id}&include=product`,
+                `/order_products?filter[order_id]=${o.id}`,
+              ], 5);
+              if (!opResult) continue;
+              storeOrderProducts.push(...opResult.data);
+              opResult.included.forEach(i => {
+                if ((i.type === 'product' || i.type === 'products') && !productMap[i.id]) {
+                  productMap[i.id] = i.attributes || {};
+                }
+              });
+            }
+          }
+          totalOrderProducts += storeOrderProducts.length;
+
+          // Aggregate totals for this store
+          const totals = { totalItems: 0, totalSales: 0, orderCount: orderList.length };
+          const orderIds = new Set();
+          storeOrderProducts.forEach(op => {
+            const qty = parseInt(op.attributes?.quantity || 0);
+            const productId = op.relationships?.product?.data?.id;
+            const product = productId ? productMap[productId] : null;
+            const price = product ? parseFloat(product.base_price || 0) : 0;
+            totals.totalItems += qty;
+            totals.totalSales += price * qty;
+            const orderId = op.relationships?.order?.data?.id;
+            if (orderId) orderIds.add(orderId);
+          });
+          if (orderIds.size > 0) totals.orderCount = orderIds.size;
+          if (totals.totalItems > 0 || totals.orderCount > 0 || totals.totalSales > 0) {
+            saleTotals[saleId] = totals;
+            storesWithData++;
           }
         }
-        allOrders.forEach(o => {
-          const saleId = extractSaleId(o);
-          if (saleId) {
-            orderToSale[o.id] = saleId;
-            if (!ordersBySale[saleId]) ordersBySale[saleId] = [];
-            ordersBySale[saleId].push(o);
-          }
-        });
-        console.log(`[OMG] Fetched ${allOrders.length} orders, ${Object.keys(orderToSale).length} mapped to sales`);
-
-        // Check coverage
-        const allOrderIds = new Set(allOrderProducts.map(op => op.relationships?.order?.data?.id).filter(Boolean));
-        const unmappedCount = [...allOrderIds].filter(id => !orderToSale[id]).length;
-        if (unmappedCount > 0) {
-          console.warn(`[OMG] ${unmappedCount} of ${allOrderIds.size} unique order IDs still unmapped — order→sale linking is broken. Click "Probe API" for diagnostics.`);
-        }
+        console.log(`[OMG] Per-sale sync: ${stores.length} stores iterated | ${totalOrders} orders | ${totalOrderProducts} order_products | ${storesWithData} stores with data`);
       }
-
-      // Step 3: Compute totals — link via order→sale
-      const storeIds = new Set(stores.map(s => s.id));
-      let matched = 0, unmatched = 0;
-      const orderIdsPerSale = {};
-      allOrderProducts.forEach(op => {
-        const orderId = op.relationships?.order?.data?.id;
-        const productId = op.relationships?.product?.data?.id;
-        const saleId = orderId ? orderToSale[orderId] : null;
-        if (!saleId || !storeIds.has(saleId)) { unmatched++; return; }
-        matched++;
-        const product = productId ? productMap[productId] : null;
-        const price = product ? parseFloat(product.base_price || 0) : 0;
-        const qty = parseInt(op.attributes?.quantity || 0);
-        if (!saleTotals[saleId]) saleTotals[saleId] = { totalItems: 0, totalSales: 0, orderCount: 0 };
-        saleTotals[saleId].totalItems += qty;
-        saleTotals[saleId].totalSales += price * qty;
-        if (!orderIdsPerSale[saleId]) orderIdsPerSale[saleId] = new Set();
-        if (orderId) orderIdsPerSale[saleId].add(orderId);
-      });
-      for (const [saleId, orderIds] of Object.entries(orderIdsPerSale)) {
-        if (saleTotals[saleId]) saleTotals[saleId].orderCount = orderIds.size;
-      }
-      console.log(`[OMG] Totals: ${Object.keys(saleTotals).length} stores with data | ${matched} matched, ${unmatched} unmatched OPs`);
 
       // Convert store list data and populate with computed totals
       const convertedStores = stores.map(store => {
