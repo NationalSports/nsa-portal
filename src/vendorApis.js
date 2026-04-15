@@ -648,7 +648,22 @@ const convertOMGStore = (omgResponse, nsaCustomers) => {
 
   // Map OMG status to NSA status (OMG: open, closed, pending, ordered, fulfilled, scheduled, finalized, archived)
   const statusMap = { open: 'open', closed: 'closed', finalized: 'closed', archived: 'closed', fulfilled: 'closed' };
-  const nsaStatus = statusMap[attrs.status] || 'draft';
+  let nsaStatus = statusMap[attrs.status] || 'draft';
+
+  // Date override: OMG leaves a lot of sales flagged 'open' past their
+  // expires_at date and reports 'open' for sales whose opens_at is still in
+  // the future. Respect the actual dates so our UI doesn't light up stores
+  // as "open" that are really closed or not yet launched.
+  const now = Date.now();
+  const expiresAt = attrs.expires_at ? new Date(attrs.expires_at).getTime() : null;
+  const opensAt = attrs.opens_at ? new Date(attrs.opens_at).getTime() : null;
+  if (nsaStatus === 'open') {
+    if (expiresAt != null && !isNaN(expiresAt) && expiresAt < now) {
+      nsaStatus = 'closed';
+    } else if (opensAt != null && !isNaN(opensAt) && opensAt > now) {
+      nsaStatus = 'draft';
+    }
+  }
 
   // Aggregate order product data across all orders
   const allOrderProducts = (omgResponse.orderProducts || []).flatMap(resp => resp?.data || []);
@@ -759,6 +774,7 @@ const convertOMGStore = (omgResponse, nsaCustomers) => {
     subdomain: attrs.subdomain || '',
     channel_type: attrs.channel_type || 'pop-up',
     _omg_source: true, _omg_id: resource.id, _omg_sale_code: attrs.sale_code,
+    _omg_raw_status: attrs.status || '',
     _last_synced: new Date().toISOString()
   };
 };
