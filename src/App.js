@@ -2276,35 +2276,52 @@ export default function App(){
       ]);
       const orders = ordersResult?.data || [];
 
-      // Order products for this store — prefer bulk filter, fall back per-order
+      // Order products for this store — prefer bulk filter, fall back per-order.
+      // Include product + attribute_values + product_attributes so we can
+      // reconstruct sizes. (Nested includes don't work on OMG, but multiple
+      // top-level includes do.)
       const productMap = {};
+      const attrValueMap = {}; // attribute_value id → { name, parentAttrId }
+      const productAttrMap = {}; // product_attribute id → { name }
+      const captureIncluded = (arr) => {
+        (arr || []).forEach(i => {
+          const t = i.type;
+          if ((t === 'product' || t === 'products') && !productMap[i.id]) {
+            productMap[i.id] = i.attributes || {};
+          } else if ((t === 'attribute_value' || t === 'attribute_values') && !attrValueMap[i.id]) {
+            const parentAttrId = i.relationships?.product_attribute?.data?.id
+              || i.relationships?.product_attributes?.data?.id
+              || null;
+            attrValueMap[i.id] = { name: i.attributes?.name || i.attributes?.value || '', parentAttrId };
+          } else if ((t === 'product_attribute' || t === 'product_attributes') && !productAttrMap[i.id]) {
+            productAttrMap[i.id] = { name: i.attributes?.name || '' };
+          }
+        });
+      };
       let orderProducts = [];
       const bulkResult = await tryPaginated([
+        `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values,product_attributes`,
+        `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values`,
         `/order_products?filter[sale_id]=${omgId}&include=product`,
         `/order_products?filter[sale_id]=${omgId}`,
       ]);
       if (bulkResult && bulkResult.data.length > 0) {
         orderProducts = bulkResult.data;
-        bulkResult.included.forEach(i => {
-          if ((i.type === 'product' || i.type === 'products') && !productMap[i.id]) {
-            productMap[i.id] = i.attributes || {};
-          }
-        });
+        captureIncluded(bulkResult.included);
       } else if (orders.length > 0) {
         for (const o of orders) {
           const opResult = await tryPaginated([
+            `/orders/${o.id}/order_products?include=product,attribute_values,product_attributes`,
+            `/orders/${o.id}/order_products?include=product,attribute_values`,
             `/orders/${o.id}/order_products?include=product`,
             `/orders/${o.id}/order_products`,
+            `/order_products?filter[order_id]=${o.id}&include=product,attribute_values,product_attributes`,
             `/order_products?filter[order_id]=${o.id}&include=product`,
             `/order_products?filter[order_id]=${o.id}`,
           ], 5);
           if (!opResult) continue;
           orderProducts.push(...opResult.data);
-          opResult.included.forEach(i => {
-            if ((i.type === 'product' || i.type === 'products') && !productMap[i.id]) {
-              productMap[i.id] = i.attributes || {};
-            }
-          });
+          captureIncluded(opResult.included);
         }
       }
 
@@ -2319,6 +2336,67 @@ export default function App(){
         orderProducts: orderProducts.length > 0 ? [{ data: orderProducts, included: productIncluded }] : [],
       };
       const updated = { ...convertOMGStore(detail, cust), _details_loaded: true };
+
+      // ── Aggregate sizes per product ──
+      // Each order_product carries attribute_values (size, color, etc). We
+      // match each value to its parent product_attribute to identify the size
+      // one (product_attribute.name matches /size/i). Fallback: if no parent
+      // type info is available, treat short value names (≤4 chars, alphanumeric)
+      // as sizes heuristically.
+      const isSizeAttrId = (parentAttrId) => {
+        const attr = parentAttrId ? productAttrMap[parentAttrId] : null;
+        return attr && /size/i.test(attr.name || '');
+      };
+      const looksLikeSize = (v) => typeof v === 'string' && /^(X{0,4}S|S|M|L|X{0,4}L|\d?XL|OSFA|OS|Y[XS]{0,3}[SML]|\d{1,3})$/i.test(v.trim());
+      const sizeByProduct = {}; // productId → { sizeName: qty }
+      orderProducts.forEach(op => {
+        const qty = parseInt(op.attributes?.quantity || 0) || 0;
+        if (qty === 0) return;
+        const productId = op.relationships?.product?.data?.id;
+        if (!productId) return;
+        // Find this OP's attribute_values
+        const avRels = op.relationships?.attribute_values?.data || op.relationships?.attributes?.data || [];
+        const avList = Array.isArray(avRels) ? avRels : (avRels ? [avRels] : []);
+        let sizeName = null;
+        for (const rel of avList) {
+          const av = attrValueMap[rel.id];
+          if (!av) continue;
+          if (isSizeAttrId(av.parentAttrId)) { sizeName = av.name; break; }
+          if (!sizeName && looksLikeSize(av.name)) sizeName = av.name;
+        }
+        // Last resort: check inline op.attributes.product_attributes if present
+        if (!sizeName && op.attributes?.product_attributes) {
+          const pa = op.attributes.product_attributes;
+          if (Array.isArray(pa)) {
+            const sizeEntry = pa.find(x => /size/i.test(x?.name || x?.type || ''));
+            if (sizeEntry) sizeName = sizeEntry.value || sizeEntry.name;
+          } else if (typeof pa === 'object') {
+            for (const [k, v] of Object.entries(pa)) {
+              if (/size/i.test(k)) { sizeName = typeof v === 'string' ? v : (v?.name || v?.value); break; }
+            }
+          }
+        }
+        if (!sizeName) sizeName = 'OS';
+        if (!sizeByProduct[productId]) sizeByProduct[productId] = {};
+        sizeByProduct[productId][sizeName] = (sizeByProduct[productId][sizeName] || 0) + qty;
+      });
+
+      // Override sizes on the products returned from convertOMGStore.
+      // convertOMGStore groups by SKU; we indexed by productId. Look up the
+      // productId for each row by matching via the productMap.style/sku.
+      const productIdBySku = {};
+      Object.entries(productMap).forEach(([pid, pattrs]) => {
+        const sku = pattrs?.style || pattrs?.sku;
+        if (sku && !productIdBySku[sku]) productIdBySku[sku] = pid;
+      });
+      if (updated.products) {
+        updated.products = updated.products.map(p => {
+          const pid = productIdBySku[p.sku];
+          if (pid && sizeByProduct[pid]) return { ...p, sizes: sizeByProduct[pid] };
+          return p;
+        });
+      }
+      console.log(`[OMG] Sizes aggregated for ${Object.keys(sizeByProduct).length} products (${Object.keys(attrValueMap).length} attribute_values, ${Object.keys(productAttrMap).length} product_attributes in cache)`);
 
       // Compute totals from order products
       let salesTotal = 0, totalItems = 0;
