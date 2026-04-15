@@ -7795,6 +7795,17 @@ export default function App(){
   const[rptTab,setRptTab]=useState('overview');
   const[rptRep,setRptRep]=useState('all');
   const[rptWidgets,setRptWidgets]=useState({pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
+  // Customers-tab widget state — must live at component level (not inside conditional IIFEs) to avoid React error #310 (rules of hooks)
+  const[pdSort,setPdSort]=useState('avgDays');
+  const[pdDir,setPdDir]=useState('desc');
+  const[pdSearch,setPdSearch]=useState('');
+  const[rfSort,setRfSort]=useState('daysUntil');
+  const[rfDir,setRfDir]=useState('asc');
+  const[rfSearch,setRfSearch]=useState('');
+  const[rfFilter,setRfFilter]=useState('all');
+  const[arSort,setArSort]=useState('total');
+  const[arDir,setArDir]=useState('desc');
+  const[arSearch,setArSearch]=useState('');
   const[commOverrides,setCommOverrides]=useState(()=>loadState('comm_overrides',{}));// {invoiceId: true} = admin approved full commission on late invoice
   React.useEffect(()=>{_saveAppState('comm_overrides',commOverrides)},[commOverrides]);
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
@@ -8211,9 +8222,6 @@ export default function App(){
       {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
         <WH id="payDays" title="Avg Days to Pay Invoices" icon="📅"/>
         {rptWidgets.payDays&&(()=>{
-          const[pdSort,setPdSort]=React.useState('avgDays');
-          const[pdDir,setPdDir]=React.useState('desc');
-          const[pdSearch,setPdSearch]=React.useState('');
           const toggleSort=(col)=>{if(pdSort===col)setPdDir(d=>d==='asc'?'desc':'asc');else{setPdSort(col);setPdDir(col==='name'?'asc':'desc')}};
           const filtered=payDaysData.filter(c=>!pdSearch||c.name.toLowerCase().includes(pdSearch.toLowerCase())||c.alpha?.toLowerCase().includes(pdSearch.toLowerCase()));
           const sorted=[...filtered].sort((a,b)=>{let v;if(pdSort==='name')v=a.name.localeCompare(b.name);else if(pdSort==='avgDays')v=a.avgDays-b.avgDays;else if(pdSort==='count')v=a.count-b.count;else if(pdSort==='totalPaid')v=a.totalPaid-b.totalPaid;else if(pdSort==='terms')v=a.termDays-b.termDays;else v=0;return pdDir==='asc'?v:-v});
@@ -8271,10 +8279,6 @@ export default function App(){
       {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
         <WH id="reorderForecast" title="Customer Reorder Forecast" icon="🔮"/>
         {rptWidgets.reorderForecast&&(()=>{
-          const[rfSort,setRfSort]=React.useState('daysUntil');
-          const[rfDir,setRfDir]=React.useState('asc');
-          const[rfSearch,setRfSearch]=React.useState('');
-          const[rfFilter,setRfFilter]=React.useState('all');
           const toggleRfSort=(col)=>{if(rfSort===col)setRfDir(d=>d==='asc'?'desc':'asc');else{setRfSort(col);setRfDir(col==='name'?'asc':'asc')}};
           const filtered=reorderData.filter(c=>(!rfSearch||c.name.toLowerCase().includes(rfSearch.toLowerCase())||c.alpha?.toLowerCase().includes(rfSearch.toLowerCase()))&&(rfFilter==='all'||c.status===rfFilter));
           const sorted=[...filtered].sort((a,b)=>{let v;if(rfSort==='name')v=a.name.localeCompare(b.name);else if(rfSort==='daysUntil')v=a.daysUntil-b.daysUntil;else if(rfSort==='avgCycle')v=a.avgCycle-b.avgCycle;else if(rfSort==='daysSince')v=a.daysSince-b.daysSince;else if(rfSort==='rev')v=a.rev-b.rev;else if(rfSort==='orderCount')v=a.orderCount-b.orderCount;else v=0;return rfDir==='asc'?v:-v});
@@ -8340,9 +8344,6 @@ export default function App(){
       {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
         <WH id="arAging" title="Open AR Aging by Customer" icon="💵"/>
         {rptWidgets.arAging&&(()=>{
-          const[arSort,setArSort]=React.useState('total');
-          const[arDir,setArDir]=React.useState('desc');
-          const[arSearch,setArSearch]=React.useState('');
           const toggleArSort=(col)=>{if(arSort===col)setArDir(d=>d==='asc'?'desc':'asc');else{setArSort(col);setArDir('desc')}};
           const filtered2=arAgingData.filter(c=>!arSearch||c.name.toLowerCase().includes(arSearch.toLowerCase())||c.alpha?.toLowerCase().includes(arSearch.toLowerCase()));
           const sorted2=[...filtered2].sort((a,b)=>{let v;if(arSort==='name')v=a.name.localeCompare(b.name);else if(arSort==='total')v=a.total-b.total;else if(arSort==='current')v=a.current-b.current;else if(arSort==='d30')v=a.d30-b.d30;else if(arSort==='d60')v=a.d60-b.d60;else if(arSort==='d90plus')v=a.d90plus-b.d90plus;else if(arSort==='oldestDays')v=a.oldestDays-b.oldestDays;else v=0;return arDir==='asc'?v:-v});
