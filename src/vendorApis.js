@@ -270,82 +270,161 @@ const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
   } catch (error) { console.error('[OMG] API call failed:', endpoint, error); throw error; }
 };
 
-// ─── Temporary API Probe (diagnostic) ───
+// ─── OMG API Probe (deep diagnostic) ───
+// Goal: figure out EXACTLY how OMG's JSON:API links sales → orders → order_products → products
+// so we can stop silently dropping every record. Dumps full structures to console and
+// returns a summary for the UI so the user doesn't have to dig through the console.
 const probeOMGEndpoints = async () => {
-  const endpoints = [
-    '/orders',
-    '/orders?limit=1',
-    '/order_products',
-    '/order_products?limit=1',
-    '/line_items',
-    '/products',
-    '/products?limit=1',
-    '/customers',
-    '/customer_infos',
-    '/invoices',
-    '/shipments',
-    '/reports',
-    '/sale_products',
-    '/sale_items',
-  ];
-  const results = {};
-  for (const ep of endpoints) {
-    try {
-      const data = await omgApiCall(ep);
-      results[ep] = { status: 'ok', keys: Object.keys(data || {}), meta: data?.meta, recordCount: Array.isArray(data?.data) ? data.data.length : (data?.data ? 1 : 0) };
-      if (data?.data?.[0]) {
-        results[ep].sampleType = data.data[0].type;
-        results[ep].sampleId = data.data[0].id;
-      }
-      if (data?.data?.[0]?.attributes) results[ep].sampleAttrs = Object.keys(data.data[0].attributes);
-      if (data?.data?.[0]?.relationships) {
-        results[ep].sampleRels = Object.keys(data.data[0].relationships);
-        // For orders, log relationship values to see how they link to sales
-        if (ep.startsWith('/orders')) {
-          const rels = data.data[0].relationships;
-          results[ep].sampleRelValues = {};
-          for (const [k, v] of Object.entries(rels)) {
-            results[ep].sampleRelValues[k] = v?.data ? { type: v.data.type, id: v.data.id } : v;
-          }
-        }
-      }
-    } catch (err) {
-      results[ep] = { status: 'error', message: err.message };
-    }
-  }
-  // Now probe include params on a known sale
-  let saleId = null;
+  const log = (...args) => console.log('[OMG-PROBE]', ...args);
+  const report = [];
+  const push = (line) => { report.push(line); log(line); };
+
+  push('═══ OMG API PROBE START ═══');
+
+  // ── STEP 1: Dump a sample sale's full structure ──
+  let sampleSale = null;
   try {
-    const salesResp = await omgApiCall('/sales?limit=1');
-    if (salesResp?.data?.length > 0) saleId = salesResp.data[0].id;
-  } catch (err) {
-    results['sale lookup'] = { status: 'error', message: err.message };
-  }
+    const salesResp = await omgApiCall('/sales?include=organization');
+    sampleSale = salesResp?.data?.[0];
+    if (sampleSale) {
+      push(`✓ /sales returned ${salesResp.data.length} records`);
+      log('SAMPLE SALE — full resource:', sampleSale);
+      log('SAMPLE SALE — attributes:', sampleSale.attributes);
+      log('SAMPLE SALE — relationships:', sampleSale.relationships);
+      push(`Sale attribute keys: ${Object.keys(sampleSale.attributes || {}).join(', ')}`);
+      push(`Sale relationship keys: ${Object.keys(sampleSale.relationships || {}).join(', ')}`);
+      // CRITICAL: look for any attribute that might contain pre-computed totals
+      const attrs = sampleSale.attributes || {};
+      const candidates = ['total_sales','total','sales_total','revenue','amount','gross_total','net_total',
+        'items_sold','total_items','quantity_sold','item_count','units_sold',
+        'orders_count','order_count','orders_total','num_orders',
+        'fundraise','fundraise_total','fundraise_raised','fundraise_amount','profit',
+        'unique_buyers','buyer_count','customer_count'];
+      const found = candidates.filter(k => attrs[k] !== undefined && attrs[k] !== null);
+      if (found.length) push(`🎯 PRE-COMPUTED TOTALS FOUND on sale: ${found.map(k=>`${k}=${attrs[k]}`).join(', ')}`);
+      else push('⚠ No pre-computed totals on sale attributes (checked common names)');
+    } else {
+      push('✗ /sales returned no records');
+    }
+  } catch (err) { push(`✗ /sales failed: ${err.message}`); }
+
+  const saleId = sampleSale?.id;
+
+  // ── STEP 2: Dump a sample order's full structure and see how it links to a sale ──
+  let sampleOrder = null;
+  try {
+    const ordersResp = await omgApiCall('/orders');
+    sampleOrder = ordersResp?.data?.[0];
+    if (sampleOrder) {
+      push(`✓ /orders returned ${ordersResp.data.length} records`);
+      log('SAMPLE ORDER — full resource:', sampleOrder);
+      log('SAMPLE ORDER — attributes:', sampleOrder.attributes);
+      log('SAMPLE ORDER — relationships:', sampleOrder.relationships);
+      push(`Order attribute keys: ${Object.keys(sampleOrder.attributes || {}).join(', ')}`);
+      const rels = sampleOrder.relationships || {};
+      push(`Order relationship keys: ${Object.keys(rels).join(', ')}`);
+      // For each relationship, show whether it has data (needed for linking)
+      for (const [k, v] of Object.entries(rels)) {
+        const hasData = v?.data !== undefined && v?.data !== null;
+        const dataInfo = hasData ? `data=${JSON.stringify(v.data)}` : '(no data, links only)';
+        push(`  order.rel[${k}]: ${dataInfo}`);
+      }
+      // CRITICAL: which relationship (if any) links back to the sale?
+      const saleLike = Object.entries(rels).find(([k]) =>
+        /sale|store|pop.?up|team/i.test(k));
+      if (saleLike) {
+        push(`🎯 Order→Sale relationship name appears to be: "${saleLike[0]}"`);
+      } else {
+        push('⚠ No obvious sale-like relationship on order — linking will fail!');
+      }
+    } else {
+      push('✗ /orders returned no records');
+    }
+  } catch (err) { push(`✗ /orders failed: ${err.message}`); }
+
+  // ── STEP 3: Test /orders?include=sale to force relationship population ──
+  try {
+    const resp = await omgApiCall('/orders?include=sale');
+    const first = resp?.data?.[0];
+    const saleData = first?.relationships?.sale?.data;
+    const incSales = (resp?.included || []).filter(i => i.type === 'sale' || i.type === 'sales');
+    push(`/orders?include=sale → sale.data on first order: ${saleData ? JSON.stringify(saleData) : 'null/missing'}, included sales: ${incSales.length}`);
+  } catch (err) { push(`✗ /orders?include=sale failed: ${err.message}`); }
+
+  // ── STEP 4: Test /order_products relationships ──
+  let sampleOP = null;
+  try {
+    const opResp = await omgApiCall('/order_products?include=product');
+    sampleOP = opResp?.data?.[0];
+    if (sampleOP) {
+      log('SAMPLE ORDER_PRODUCT — full resource:', sampleOP);
+      log('SAMPLE ORDER_PRODUCT — attributes:', sampleOP.attributes);
+      log('SAMPLE ORDER_PRODUCT — relationships:', sampleOP.relationships);
+      push(`OP attribute keys: ${Object.keys(sampleOP.attributes || {}).join(', ')}`);
+      const rels = sampleOP.relationships || {};
+      push(`OP relationship keys: ${Object.keys(rels).join(', ')}`);
+      for (const [k, v] of Object.entries(rels)) {
+        const hasData = v?.data !== undefined && v?.data !== null;
+        push(`  op.rel[${k}]: ${hasData ? JSON.stringify(v.data) : '(no data)'}`);
+      }
+      const incTypes = [...new Set((opResp?.included || []).map(i => i.type))];
+      push(`/order_products included types: ${incTypes.join(', ') || '(none)'}`);
+    }
+  } catch (err) { push(`✗ /order_products failed: ${err.message}`); }
+
+  // ── STEP 5: Test filter[sale_id] approaches for a known sale ──
   if (saleId) {
-    const includeEndpoints = [
+    const filterTests = [
+      `/orders?filter[sale_id]=${saleId}`,
+      `/orders?filter[sale]=${saleId}`,
+      `/orders?sale_id=${saleId}`,
+      `/order_products?filter[sale_id]=${saleId}`,
+      `/order_products?filter[sale]=${saleId}`,
+      `/sales/${saleId}/orders`,
+      `/sales/${saleId}/order_products`,
       `/sales/${saleId}?include=orders`,
-      `/sales/${saleId}?include=line_items`,
-      `/sales/${saleId}?include=order_items`,
-      `/sales/${saleId}?include=products`,
-      `/sales/${saleId}?include=sale_products`,
-      `/sales/${saleId}?include=orders,line_items,products`,
+      `/sales/${saleId}?include=orders.order_products.product`,
+      `/sales/${saleId}?include=order_products.product`,
     ];
-    for (const ep of includeEndpoints) {
+    for (const ep of filterTests) {
       try {
-        const data = await omgApiCall(ep);
-        const incTypes = data?.included ? [...new Set(data.included.map(i => i.type))] : [];
-        results[ep] = { status: 'ok', includedTypes: incTypes, includedCount: data?.included?.length || 0 };
+        const r = await omgApiCall(ep);
+        const count = Array.isArray(r?.data) ? r.data.length : (r?.data ? 1 : 0);
+        const incTypes = [...new Set((r?.included || []).map(i => i.type))];
+        push(`  ${ep} → ${count} records, included: [${incTypes.join(',')}]`);
       } catch (err) {
-        results[ep] = { status: 'error', message: err.message };
+        push(`  ${ep} → ERROR: ${err.message}`);
       }
     }
   }
-  console.log('=== OMG API PROBE RESULTS ===');
-  for (const [ep, res] of Object.entries(results)) {
-    console.log(`[PROBE] ${ep}:`, JSON.stringify(res));
+
+  // ── STEP 6: Fetch a single order by ID with nested includes ──
+  if (sampleOrder?.id) {
+    const oid = sampleOrder.id;
+    const nestedTests = [
+      `/orders/${oid}?include=sale`,
+      `/orders/${oid}?include=order_products.product`,
+      `/orders/${oid}?include=sale,order_products.product`,
+      `/orders/${oid}?include=line_items`,
+    ];
+    for (const ep of nestedTests) {
+      try {
+        const r = await omgApiCall(ep);
+        const incTypes = [...new Set((r?.included || []).map(i => i.type))];
+        push(`  ${ep} → included: [${incTypes.join(',')}] (${r?.included?.length || 0})`);
+      } catch (err) {
+        push(`  ${ep} → ERROR: ${err.message}`);
+      }
+    }
   }
-  console.log('=== END PROBE ===');
-  alert('Probe complete — check browser console for results.');
+
+  push('═══ OMG API PROBE END ═══');
+  // Show the report in an alert so the user can read without console diving
+  const summary = report.join('\n');
+  console.log(summary);
+  // Also stash it on window for easy copy-paste
+  if (typeof window !== 'undefined') window.__omgProbeReport = summary;
+  alert('OMG API probe complete!\n\nSummary:\n\n' + summary + '\n\n(Also in console + window.__omgProbeReport)');
 };
 
 const fetchOMGStores = async () => {
@@ -615,15 +694,38 @@ const convertOMGStore = (omgResponse, nsaCustomers) => {
   // Count unique buyers from customer_info on orders
   const buyerIds = new Set((omgResponse.orders || []).map(o => o.relationships?.customer_info?.data?.id).filter(Boolean));
 
+  // ── FALLBACK: read pre-computed totals directly from sale.attributes ──
+  // OMG's own admin dashboard shows these numbers per store, so they're almost
+  // certainly on the sale resource. We don't know the exact field names, so try
+  // several common candidates. This works even when the order_product chain
+  // fails to link properly (which has historically been the main bug).
+  const firstNum = (...keys) => {
+    for (const k of keys) {
+      const v = attrs[k];
+      if (v !== undefined && v !== null && v !== '') {
+        const n = typeof v === 'number' ? v : parseFloat(v);
+        if (!isNaN(n)) return n;
+      }
+    }
+    return null;
+  };
+  const attrOrders = firstNum('orders_count','order_count','num_orders','orders_total','total_orders');
+  const attrItems  = firstNum('items_sold','total_items','quantity_sold','item_count','units_sold','total_quantity');
+  const attrSales  = firstNum('total_sales','sales_total','revenue','amount','gross_total','net_total','total','gross','gross_sales');
+  const attrFund   = firstNum('fundraise','fundraise_total','fundraise_raised','fundraise_amount','profit','fundraising_total');
+  const attrBuyers = firstNum('unique_buyers','buyer_count','customer_count','buyers_count');
+
   return {
     id: `OMG-${resource.id}`, store_name: attrs.name || attrs.sale_code,
     customer_id: matchedCustomer?.id || null, rep_id: matchedCustomer?.primary_rep_id || null,
     status: nsaStatus,
     open_date: attrs.opens_at ? new Date(attrs.opens_at).toLocaleDateString() : '',
     close_date: attrs.expires_at ? new Date(attrs.expires_at).toLocaleDateString() : '',
-    orders: omgResponse.orders?.length || 0, total_sales: totalSales,
-    fundraise_total: fundraiseTotal, items_sold: totalItems,
-    unique_buyers: buyerIds.size,
+    orders: attrOrders !== null ? attrOrders : (omgResponse.orders?.length || 0),
+    total_sales: attrSales !== null ? attrSales : totalSales,
+    fundraise_total: attrFund !== null ? attrFund : fundraiseTotal,
+    items_sold: attrItems !== null ? attrItems : totalItems,
+    unique_buyers: attrBuyers !== null ? attrBuyers : buyerIds.size,
     products: Object.values(productSummary).map(p => ({
       sku: p.sku, name: p.name, color: '', retail: p.retail, cost: p.cost,
       deco_type: p.deco_type, deco_cost: p.deco_cost, sizes: {},

@@ -2989,15 +2989,22 @@ export default function App(){
       const stores = omgStoresData.data;
       // Log first store's full data to help debug what fields are available
       if (stores.length > 0) {
-        console.log('[OMG] Sample store ALL attributes:', JSON.stringify(stores[0].attributes));
-        console.log('[OMG] Sample store ALL relationship keys:', Object.keys(stores[0].relationships || {}));
+        console.log('[OMG] Sample store — full resource:', stores[0]);
+        console.log('[OMG] Sample store — attributes:', stores[0].attributes);
+        console.log('[OMG] Sample store — relationships:', stores[0].relationships);
+        console.log('[OMG] Sample store ALL attribute keys:', Object.keys(stores[0].attributes || {}));
+        // Check if totals are already baked in on the sale resource
+        const a = stores[0].attributes || {};
+        const totalKeys = Object.keys(a).filter(k =>
+          /sales|revenue|amount|total|gross|items|quantity|units|orders|fund|buyers|count/i.test(k));
+        if (totalKeys.length) console.log('[OMG] 🎯 Possible pre-computed total fields:', totalKeys.map(k => `${k}=${a[k]}`).join(', '));
         // Log all included resource types
         const incTypes = [...new Set((omgStoresData.included || []).map(i => i.type))];
         console.log('[OMG] Included resource types:', incTypes);
       }
       // ── Strategy ──
       // 1. Fetch order_products?include=product → get qty + product prices
-      // 2. Fetch ALL /orders (paginated) → build order→sale map
+      // 2. Fetch ALL /orders?include=sale → build order→sale map (force relationship population)
       // 3. Link order_products to stores via order→sale
       const saleTotals = {};
       const productMap = {}; // product_id → { base_price, ... }
@@ -3055,27 +3062,85 @@ export default function App(){
         return allData;
       };
 
+      // Shortcut: if the sale resource itself carries totals, we can skip
+      // the expensive order_products/orders chain entirely. Check the first
+      // store for any of the common aggregate field names.
+      const saleHasTotals = (attrs) => {
+        const keys = ['total_sales','sales_total','revenue','items_sold','total_items','orders_count','order_count'];
+        return keys.some(k => attrs?.[k] !== undefined && attrs?.[k] !== null);
+      };
+      const skipChain = stores.length > 0 && saleHasTotals(stores[0].attributes);
+      if (skipChain) {
+        console.log('[OMG] ✓ Sale resource has pre-computed totals — skipping order_products chain');
+      }
+
       // Step 1: Fetch ALL order_products with include=product (paginated)
       let allOrderProducts = [];
-      try {
-        allOrderProducts = await fetchAllPagesWithCallback(
-          '/order_products?include=product',
-          (resp) => {
-            (resp?.included || []).forEach(i => {
-              if ((i.type === 'products' || i.type === 'product') && !productMap[i.id]) {
-                productMap[i.id] = i.attributes || {};
-              }
-            });
-          }
-        );
-      } catch (e) { console.warn('[OMG] order_products fetch failed:', e.message); }
-      console.log(`[OMG] Fetched ${allOrderProducts.length} order_products, ${Object.keys(productMap).length} products`);
+      if (!skipChain) {
+        try {
+          allOrderProducts = await fetchAllPagesWithCallback(
+            '/order_products?include=product',
+            (resp) => {
+              (resp?.included || []).forEach(i => {
+                if ((i.type === 'products' || i.type === 'product') && !productMap[i.id]) {
+                  productMap[i.id] = i.attributes || {};
+                }
+              });
+            }
+          );
+        } catch (e) { console.warn('[OMG] order_products fetch failed:', e.message); }
+        console.log(`[OMG] Fetched ${allOrderProducts.length} order_products, ${Object.keys(productMap).length} products`);
+        // Diagnostic: log sample order_product structure
+        if (allOrderProducts[0]) {
+          console.log('[OMG] Sample order_product — full resource:', allOrderProducts[0]);
+          console.log('[OMG] Sample order_product — relationships:', allOrderProducts[0].relationships);
+          console.log('[OMG] Sample order_product — relationship keys:', Object.keys(allOrderProducts[0].relationships || {}));
+        }
+      }
 
-      // Step 2: Fetch ALL /orders (paginated) to build complete order→sale map
-      try {
-        const allOrders = await fetchAllPagesWithCallback('/orders');
+      // Step 2: Fetch ALL /orders with include=sale (force relationship population)
+      // Some JSON:API servers omit the relationship linkage unless you sideload
+      // the related resource, so include=sale ensures every order carries its sale id.
+      // We try with include first, fall back to plain /orders if that 400s.
+      // Resolve the relationship name that links an order to its sale by looking
+      // at whichever key has a sale/store/team_store-shaped data object.
+      const extractSaleId = (o) => {
+        const rels = o.relationships || {};
+        // Try common names first
+        const candidates = ['sale','sales','store','team_store','pop_up_store','sales_channel','parent'];
+        for (const k of candidates) {
+          const id = rels[k]?.data?.id;
+          if (id) return id;
+        }
+        // Fallback: any relationship whose data.type is sale-like
+        for (const v of Object.values(rels)) {
+          const t = v?.data?.type;
+          if (t && /^sale|^store|^team_store|^pop_up/i.test(t)) return v.data.id;
+        }
+        return null;
+      };
+
+      if (!skipChain) {
+        let allOrders = [];
+        try {
+          allOrders = await fetchAllPagesWithCallback('/orders?include=sale');
+        } catch (e) {
+          console.warn('[OMG] /orders?include=sale failed, retrying /orders:', e.message);
+          try { allOrders = await fetchAllPagesWithCallback('/orders'); }
+          catch (e2) { console.warn('[OMG] /orders fetch failed:', e2.message); }
+        }
+        // Diagnostic: log sample order structure so we can see what relationships actually exist
+        if (allOrders[0]) {
+          console.log('[OMG] Sample order — full resource:', allOrders[0]);
+          console.log('[OMG] Sample order — relationships:', allOrders[0].relationships);
+          console.log('[OMG] Sample order — relationship keys:', Object.keys(allOrders[0].relationships || {}));
+          // Show which rels have data (critical for linking)
+          for (const [k, v] of Object.entries(allOrders[0].relationships || {})) {
+            console.log(`[OMG]   order.rel[${k}]:`, v?.data !== undefined ? v.data : '(no data)');
+          }
+        }
         allOrders.forEach(o => {
-          const saleId = o.relationships?.sale?.data?.id;
+          const saleId = extractSaleId(o);
           if (saleId) {
             orderToSale[o.id] = saleId;
             if (!ordersBySale[saleId]) ordersBySale[saleId] = [];
@@ -3083,13 +3148,13 @@ export default function App(){
           }
         });
         console.log(`[OMG] Fetched ${allOrders.length} orders, ${Object.keys(orderToSale).length} mapped to sales`);
-      } catch (e) { console.warn('[OMG] /orders fetch failed:', e.message); }
 
-      // Check coverage
-      const allOrderIds = new Set(allOrderProducts.map(op => op.relationships?.order?.data?.id).filter(Boolean));
-      const unmappedCount = [...allOrderIds].filter(id => !orderToSale[id]).length;
-      if (unmappedCount > 0) {
-        console.warn(`[OMG] ${unmappedCount} of ${allOrderIds.size} unique order IDs still unmapped`);
+        // Check coverage
+        const allOrderIds = new Set(allOrderProducts.map(op => op.relationships?.order?.data?.id).filter(Boolean));
+        const unmappedCount = [...allOrderIds].filter(id => !orderToSale[id]).length;
+        if (unmappedCount > 0) {
+          console.warn(`[OMG] ${unmappedCount} of ${allOrderIds.size} unique order IDs still unmapped — order→sale linking is broken. Click "Probe API" for diagnostics.`);
+        }
       }
 
       // Step 3: Compute totals — link via order→sale
