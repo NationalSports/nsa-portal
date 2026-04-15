@@ -2275,25 +2275,44 @@ export default function App(){
         `/orders?sale_id=${omgId}`,
       ]);
       let orders = ordersResult?.data || [];
+      // Quick diagnostic: log the first row's relationship keys so we can see
+      // what fields OMG actually serves. Helps verify the cross-sale filters
+      // below are looking at the right relationship names.
+      if (orders[0]) {
+        const relKeys = Object.keys(orders[0].relationships || {});
+        const attrKeys = Object.keys(orders[0].attributes || {}).filter(k => /sale|store/i.test(k));
+        console.log(`[OMG] order[0] relationships:`, relKeys, 'sale-ish attrs:', attrKeys);
+      }
       // Defense-in-depth: some OMG fallback endpoints silently ignore query
       // filters and return global data. Drop any order whose sale relationship
-      // doesn't match this store — otherwise items from unrelated sales leak
-      // into this store's detail view. When no sale relationship is present we
-      // trust the row (nothing to verify against).
+      // (or sale_id attribute) doesn't match this store — otherwise items from
+      // unrelated sales leak into this store's detail view. Verify against
+      // multiple possible field names since OMG's shape varies by endpoint.
+      const orderBelongsToSale = (o) => {
+        const rels = o.relationships || {};
+        const relSaleId = rels.sale?.data?.id || rels.sales?.data?.id || rels.store?.data?.id;
+        if (relSaleId != null) return String(relSaleId) === String(omgId);
+        const attrs = o.attributes || {};
+        const attrSaleId = attrs.sale_id ?? attrs.saleId ?? attrs.store_id ?? attrs.storeId;
+        if (attrSaleId != null) return String(attrSaleId) === String(omgId);
+        return true; // no way to verify — trust the server's route scoping
+      };
       const beforeOrders = orders.length;
-      orders = orders.filter(o => {
-        const saleRelId = o.relationships?.sale?.data?.id;
-        if (!saleRelId) return true;
-        return String(saleRelId) === String(omgId);
-      });
+      orders = orders.filter(orderBelongsToSale);
       if (orders.length !== beforeOrders) {
         console.warn(`[OMG] Dropped ${beforeOrders - orders.length} order(s) from sale ${omgId} — sale relationship didn't match`);
       }
 
-      // Order products for this store — prefer bulk filter, fall back per-order.
-      // Include product + attribute_values + product_attributes so we can
-      // reconstruct sizes. (Nested includes don't work on OMG, but multiple
-      // top-level includes do.)
+      // Order products for this store.
+      // IMPORTANT: we deliberately AVOID the bulk /order_products?filter[sale_id]=...
+      // endpoint here. It's historically unreliable — OMG silently ignores
+      // filter[sale_id] under some conditions and returns global data, which
+      // is how items from unrelated sales end up leaking into a store's detail
+      // view. The per-order nested route `/orders/{id}/order_products` is
+      // route-scoped on the server and cannot return cross-sale rows, so we
+      // only use that path when we have orders to iterate. The bulk endpoint
+      // is kept ONLY as a last-resort fallback for stores with zero orders in
+      // our result set, and even then we strictly post-filter the response.
       const productMap = {};
       const attrValueMap = {}; // attribute_value id → { name, parentAttrId }
       const productAttrMap = {}; // product_attribute id → { name }
@@ -2313,47 +2332,63 @@ export default function App(){
         });
       };
       let orderProducts = [];
-      const bulkResult = await tryPaginated([
-        `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values,product_attributes`,
-        `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values`,
-        `/order_products?filter[sale_id]=${omgId}&include=product`,
-        `/order_products?filter[sale_id]=${omgId}`,
-      ]);
-      if (bulkResult && bulkResult.data.length > 0) {
-        orderProducts = bulkResult.data;
-        captureIncluded(bulkResult.included);
-      } else if (orders.length > 0) {
+      if (orders.length > 0) {
+        // Per-order path (route-scoped — safe). Iterate each order and fetch
+        // its order_products directly. Tag each row with its source order id
+        // so the cross-contamination filter below can verify membership even
+        // when OMG doesn't populate relationships.order on the row.
         for (const o of orders) {
           const opResult = await tryPaginated([
             `/orders/${o.id}/order_products?include=product,attribute_values,product_attributes`,
             `/orders/${o.id}/order_products?include=product,attribute_values`,
             `/orders/${o.id}/order_products?include=product`,
             `/orders/${o.id}/order_products`,
-            `/order_products?filter[order_id]=${o.id}&include=product,attribute_values,product_attributes`,
-            `/order_products?filter[order_id]=${o.id}&include=product`,
-            `/order_products?filter[order_id]=${o.id}`,
           ], 5);
           if (!opResult) continue;
+          opResult.data.forEach(op => { op._sourceOrderId = o.id; });
           orderProducts.push(...opResult.data);
           captureIncluded(opResult.included);
         }
+      } else {
+        // No orders — try the bulk endpoint as last resort (with post-filter).
+        const bulkResult = await tryPaginated([
+          `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values,product_attributes`,
+          `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values`,
+          `/order_products?filter[sale_id]=${omgId}&include=product`,
+          `/order_products?filter[sale_id]=${omgId}`,
+        ]);
+        if (bulkResult && bulkResult.data.length > 0) {
+          orderProducts = bulkResult.data;
+          captureIncluded(bulkResult.included);
+        }
       }
 
-      // Defense-in-depth: some OMG endpoints (notably the bulk
-      // /order_products?filter[sale_id]=... path) silently ignore the filter
-      // and return global data. Before we trust any of these rows, verify that
-      // each order_product points to one of THIS sale's orders. Without this
-      // check items from other stores leak into the current store's detail
-      // view (the "wrong items flowing into Poly Rodeo" symptom).
+      // Defense-in-depth: verify every order_product belongs to THIS sale.
+      // The per-order fetch path above tags each row with _sourceOrderId (the
+      // order we fetched it from) — that's the strictest check since it can't
+      // be forged by an unreliable filter endpoint. For rows that came from
+      // the bulk fallback (no _sourceOrderId), fall through to the relationship
+      // check. If neither check can run, drop the row rather than guess: the
+      // historical symptom is cross-sale leakage, so the safe default is to
+      // err on the side of excluding ambiguous rows.
       const myOrderIds = new Set(orders.map(o => String(o.id)).filter(Boolean));
-      if (myOrderIds.size > 0) {
+      if (myOrderIds.size > 0 || orderProducts.length > 0) {
         const beforeOP = orderProducts.length;
         orderProducts = orderProducts.filter(op => {
-          const orderIdRel = op.relationships?.order?.data?.id;
-          if (orderIdRel) return myOrderIds.has(String(orderIdRel));
-          const saleIdRel = op.relationships?.sale?.data?.id;
-          if (saleIdRel) return String(saleIdRel) === String(omgId);
-          return true; // no relationship info — can't verify, keep it
+          if (op._sourceOrderId != null) return myOrderIds.has(String(op._sourceOrderId));
+          const rels = op.relationships || {};
+          const orderIdRel = rels.order?.data?.id || rels.orders?.data?.id;
+          if (orderIdRel != null) return myOrderIds.has(String(orderIdRel));
+          const saleIdRel = rels.sale?.data?.id || rels.sales?.data?.id || rels.store?.data?.id;
+          if (saleIdRel != null) return String(saleIdRel) === String(omgId);
+          const attrs = op.attributes || {};
+          const attrOrderId = attrs.order_id ?? attrs.orderId;
+          if (attrOrderId != null) return myOrderIds.has(String(attrOrderId));
+          const attrSaleId = attrs.sale_id ?? attrs.saleId ?? attrs.store_id ?? attrs.storeId;
+          if (attrSaleId != null) return String(attrSaleId) === String(omgId);
+          // No way to verify and we have known orders — drop the row to
+          // avoid leaking cross-sale data.
+          return myOrderIds.size === 0;
         });
         if (orderProducts.length !== beforeOP) {
           console.warn(`[OMG] Dropped ${beforeOP - orderProducts.length} order_product(s) not belonging to sale ${omgId} (${store.store_name})`);
@@ -9947,17 +9982,23 @@ export default function App(){
                 <td style={{textAlign:'right'}}>${p.retail}</td><td style={{textAlign:'right'}}>${p.cost}</td><td style={{textAlign:'right'}}>${p.deco_cost}</td>
                 <td>{(()=>{
                   const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','OS','OSFA'];
-                  const entries=Object.entries(p.sizes||{}).sort((a,b)=>{
-                    const ai=sizeOrder.indexOf(a[0]),bi=sizeOrder.indexOf(b[0]);
-                    return (ai===-1?99:ai)-(bi===-1?99:bi);
-                  });
-                  if(entries.length===0)return <span style={{fontSize:10,color:'#94a3b8'}}>—</span>;
-                  return <div style={{display:'flex',flexWrap:'wrap',gap:4,maxWidth:280}}>{entries.map(([sz,q2])=>
-                    <span key={sz} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 7px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:10,fontSize:10,lineHeight:1.2}}>
-                      <span style={{color:'#64748b',fontWeight:600}}>{sz}</span>
-                      <span style={{color:'#1e40af',fontWeight:800}}>{q2}</span>
-                    </span>
-                  )}</div>;
+                  const entries=Object.entries(p.sizes||{})
+                    .filter(([sz,q2])=>sz&&String(sz).trim()&&q2>0)
+                    .sort((a,b)=>{
+                      const ai=sizeOrder.indexOf(a[0]),bi=sizeOrder.indexOf(b[0]);
+                      return (ai===-1?99:ai)-(bi===-1?99:bi);
+                    });
+                  if(entries.length===0)return <span style={{fontSize:11,color:'#94a3b8'}}>—</span>;
+                  return <table style={{borderCollapse:'separate',borderSpacing:0,fontSize:11,border:'1px solid #e2e8f0',borderRadius:6,overflow:'hidden'}}>
+                    <tbody>
+                      <tr>{entries.map(([sz])=>
+                        <td key={sz} style={{padding:'3px 8px',background:'#f1f5f9',color:'#475569',fontWeight:700,textAlign:'center',borderRight:'1px solid #e2e8f0',letterSpacing:0.3,textTransform:'uppercase',fontSize:10}}>{sz}</td>
+                      )}</tr>
+                      <tr>{entries.map(([sz,q2])=>
+                        <td key={sz} style={{padding:'3px 8px',color:'#1e40af',fontWeight:800,textAlign:'center',borderTop:'1px solid #e2e8f0',borderRight:'1px solid #e2e8f0',background:'#fff'}}>{q2}</td>
+                      )}</tr>
+                    </tbody>
+                  </table>;
                 })()}</td>
                 <td style={{fontWeight:700,textAlign:'center'}}>{q}</td>
                 <td style={{textAlign:'right',fontWeight:600}}>${rev.toLocaleString()}</td>
