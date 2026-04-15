@@ -3779,7 +3779,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
     {/* ═══ SEND TO COACH MODAL ═══ */}
     {invSendModal&&invReview&&(()=>{
-      const ir=invReview;const ic=ir._customer||cust;
+      const ir=invReview;const ic=ir._customer||cust;const irSO=ir._so||o;
       const contacts=(ic?.contacts||[]).filter(c=>c.email);
       const selectedEmails=Array.isArray(invSendTo)?invSendTo:invSendTo?[invSendTo]:[];
       const allRecipients=[...selectedEmails];
@@ -3925,6 +3925,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             });
             if(res.ok){
               nf('Invoice '+ir.id+' sent to '+toEmail);
+              setInvReview(null);
             }else{
               nf('Failed to send invoice: '+(res.error||'Unknown error'),'error');
             }
