@@ -2279,27 +2279,125 @@ export default function App(){
       //   - /orders?include=sale         → works; each order carries
       //     relationships.sale.data.id = "sale_XXXXX"
       //
-      // The only correct strategy is: paginate /orders globally (sorted by
-      // updated_at desc so recent sales surface first) and filter client-side
-      // on relationships.sale.data.id. Expensive, but it's what the API
-      // requires. tryPaginated follows links.next for us.
-      const allOrdersResult = await tryPaginated([
-        `/orders?include=sale&sort=-updated_at&page[size]=200`,
-        `/orders?sort=-updated_at&page[size]=200`,
-        `/orders?include=sale&sort=-updated_at`,
-        `/orders?sort=-updated_at`,
-        `/orders?include=sale`,
-        `/orders`,
-      ], 100);
+      // So the only correct strategy is: paginate /orders globally and
+      // filter client-side on relationships.sale.data.id.
+      //
+      // Two subtleties the previous version got wrong:
+      //   1. tryPaginated falls through on ERROR but not on an empty 200
+      //      response, so if OMG accepts a param combination but returns
+      //      {data:[]}, we'd stop without trying simpler variants.
+      //   2. tryPaginated only follows links.next; if OMG doesn't populate
+      //      it we'd stop at page 1. We now fall back to manually
+      //      incrementing ?page[number]= as well.
+      //
+      // We also cache the global result across stores so opening 10 stores
+      // in a row doesn't re-paginate the same universe.
+      const fetchAll = async (endpoint, maxPages = 200) => {
+        let first;
+        try { first = await omgApiCall(endpoint); }
+        catch (e) { console.log(`[OMG]   ✗ ${endpoint}: ${e.message}`); return null; }
+        if (!first || !first.data) { console.log(`[OMG]   ✗ ${endpoint}: no data field`); return null; }
+        const allData = [...first.data];
+        const allIncluded = [...(first.included || [])];
+        const seen = new Set(allData.map(d => d.id));
+        const hasLinksNext = !!first?.links?.next;
+        console.log(`[OMG]   ${endpoint} page 1: ${first.data.length} rows, links.next=${hasLinksNext}`);
+        let pages = 1;
+        // Prefer links.next when OMG provides it
+        let nextUrl = first?.links?.next || null;
+        if (nextUrl) {
+          while (nextUrl && pages < maxPages) {
+            let rel = nextUrl;
+            try { const u = new URL(nextUrl); rel = u.pathname.replace(/^\/v1/, '') + u.search; } catch {}
+            let next;
+            try { next = await omgApiCall(rel); }
+            catch (e) { console.warn(`[OMG]   page ${pages + 1} (links.next) failed: ${e.message}`); break; }
+            const nd = next?.data || [];
+            if (nd.length === 0) break;
+            const fresh = nd.filter(d => !seen.has(d.id));
+            if (fresh.length === 0) break;
+            fresh.forEach(d => seen.add(d.id));
+            allData.push(...fresh);
+            allIncluded.push(...(next.included || []));
+            nextUrl = next?.links?.next || null;
+            pages++;
+          }
+        } else if (first.data.length > 0) {
+          // Fall back: manually increment ?page[number]= until we stop
+          // getting fresh rows. If the scheme isn't supported we'll see
+          // immediate duplicates and bail.
+          const sep = endpoint.includes('?') ? '&' : '?';
+          for (let p = 2; p <= maxPages; p++) {
+            const url = `${endpoint}${sep}page[number]=${p}`;
+            let next;
+            try { next = await omgApiCall(url); }
+            catch (e) { console.log(`[OMG]   manual page ${p} failed: ${e.message}`); break; }
+            const nd = next?.data || [];
+            if (nd.length === 0) break;
+            const fresh = nd.filter(d => !seen.has(d.id));
+            if (fresh.length === 0) {
+              console.log(`[OMG]   manual page ${p}: all duplicates — page[number] pagination not supported, stopping`);
+              break;
+            }
+            fresh.forEach(d => seen.add(d.id));
+            allData.push(...fresh);
+            allIncluded.push(...(next.included || []));
+            pages++;
+          }
+        }
+        console.log(`[OMG]   ✓ ${endpoint}: ${allData.length} total rows across ${pages} page(s)`);
+        return { data: allData, included: allIncluded };
+      };
+      const fetchAllVariants = async (endpoints, maxPages = 200) => {
+        for (const ep of endpoints) {
+          const result = await fetchAll(ep, maxPages);
+          if (result && result.data.length > 0) return { ...result, ep };
+        }
+        return null;
+      };
+
+      // Session cache — shared across loadOMGStoreDetail calls so opening
+      // multiple stores in a row doesn't re-paginate the universe. Cleared
+      // when the user clicks the store-level Re-sync button (force=true)
+      // or when the session starts.
+      window._omgGlobalCache = window._omgGlobalCache || { orders: null, orderProducts: null };
+      const cache = window._omgGlobalCache;
+      if (force) { cache.orders = null; cache.orderProducts = null; }
+
+      let allOrdersResult = cache.orders;
+      if (!allOrdersResult) {
+        console.log(`[OMG] Fetching global /orders (cache miss)…`);
+        allOrdersResult = await fetchAllVariants([
+          `/orders?include=sale&sort=-updated_at&page[size]=200`,
+          `/orders?include=sale&sort=-updated_at`,
+          `/orders?sort=-updated_at&page[size]=200`,
+          `/orders?sort=-updated_at`,
+          `/orders?include=sale&page[size]=200`,
+          `/orders?include=sale`,
+          `/orders?page[size]=200`,
+          `/orders`,
+        ], 200);
+        cache.orders = allOrdersResult;
+      } else {
+        console.log(`[OMG] Using cached global /orders (${allOrdersResult.data.length} rows)`);
+      }
       const rawOrders = allOrdersResult?.data || [];
-      let orders = rawOrders.filter(o => {
-        const sid = o.relationships?.sale?.data?.id;
-        return sid != null && String(sid) === String(omgId);
-      });
+
+      // Flexible sale-id matcher: OMG uses prefixed ids like "sale_W353C"
+      // but the store row might store the bare code. Accept either.
+      const myIdStr = String(omgId);
+      const myIdBare = myIdStr.replace(/^sale_/, '');
+      const matchSale = (sid) => {
+        if (sid == null) return false;
+        const s = String(sid);
+        return s === myIdStr || s === myIdBare || s === `sale_${myIdBare}`;
+      };
+      let orders = rawOrders.filter(o => matchSale(o.relationships?.sale?.data?.id));
       console.log(`[OMG] /orders scanned ${rawOrders.length} global rows → ${orders.length} matched sale ${omgId} (${store.store_name})`);
       if (rawOrders.length > 0 && orders.length === 0) {
-        console.warn(`[OMG] Zero orders matched sale ${omgId}. First 5 raw sale ids seen:`,
-          rawOrders.slice(0, 5).map(o => o.relationships?.sale?.data?.id));
+        const uniqSales = new Set(rawOrders.map(o => o.relationships?.sale?.data?.id).filter(Boolean));
+        console.warn(`[OMG] Zero orders matched. Raw scan spans ${uniqSales.size} unique sales. Target sale present: ${uniqSales.has(myIdStr) || uniqSales.has(myIdBare)}. First 10 raw sale ids:`,
+          [...uniqSales].slice(0, 10));
       }
 
       // Order products for this store.
@@ -2307,9 +2405,7 @@ export default function App(){
       // Same story as orders: /order_products?filter[sale_id] and
       // filter[order_id] are silently ignored, and no nested route exists.
       // We paginate /order_products globally and filter client-side against
-      // this sale's order id set (collected above from the global /orders
-      // pagination). The probe confirmed each order_product carries
-      // relationships.order.data.id = "ord_XXXXX", which is our match key.
+      // this sale's order id set (collected above).
       const productMap = {};
       const attrValueMap = {}; // attribute_value id → { name, parentAttrId }
       const productAttrMap = {}; // product_attribute id → { name }
@@ -2331,18 +2427,28 @@ export default function App(){
       let orderProducts = [];
       const myOrderIds = new Set(orders.map(o => String(o.id)).filter(Boolean));
       if (myOrderIds.size > 0) {
-        const allOPResult = await tryPaginated([
-          `/order_products?include=product,attribute_values,product_attributes&sort=-updated_at&page[size]=200`,
-          `/order_products?include=product,attribute_values&sort=-updated_at&page[size]=200`,
-          `/order_products?include=product&sort=-updated_at&page[size]=200`,
-          `/order_products?include=product,attribute_values,product_attributes&sort=-updated_at`,
-          `/order_products?include=product,attribute_values&sort=-updated_at`,
-          `/order_products?include=product&sort=-updated_at`,
-          `/order_products?sort=-updated_at`,
-          `/order_products?include=product,attribute_values,product_attributes`,
-          `/order_products?include=product`,
-          `/order_products`,
-        ], 200);
+        let allOPResult = cache.orderProducts;
+        if (!allOPResult) {
+          console.log(`[OMG] Fetching global /order_products (cache miss)…`);
+          allOPResult = await fetchAllVariants([
+            `/order_products?include=product,attribute_values,product_attributes&sort=-updated_at&page[size]=200`,
+            `/order_products?include=product,attribute_values,product_attributes&sort=-updated_at`,
+            `/order_products?include=product,attribute_values&sort=-updated_at&page[size]=200`,
+            `/order_products?include=product,attribute_values&sort=-updated_at`,
+            `/order_products?include=product&sort=-updated_at&page[size]=200`,
+            `/order_products?include=product&sort=-updated_at`,
+            `/order_products?sort=-updated_at&page[size]=200`,
+            `/order_products?sort=-updated_at`,
+            `/order_products?include=product,attribute_values,product_attributes`,
+            `/order_products?include=product,attribute_values`,
+            `/order_products?include=product`,
+            `/order_products?page[size]=200`,
+            `/order_products`,
+          ], 400);
+          cache.orderProducts = allOPResult;
+        } else {
+          console.log(`[OMG] Using cached global /order_products (${allOPResult.data.length} rows)`);
+        }
         const rawOPs = allOPResult?.data || [];
         orderProducts = rawOPs.filter(op => {
           const orderId = op.relationships?.order?.data?.id;
@@ -2351,8 +2457,9 @@ export default function App(){
         captureIncluded(allOPResult?.included);
         console.log(`[OMG] /order_products scanned ${rawOPs.length} global rows → ${orderProducts.length} matched for ${myOrderIds.size} orders of sale ${omgId}`);
         if (rawOPs.length > 0 && orderProducts.length === 0) {
-          console.warn(`[OMG] Zero order_products matched. First 5 raw order ids seen:`,
-            rawOPs.slice(0, 5).map(op => op.relationships?.order?.data?.id));
+          const uniqOrderRefs = new Set(rawOPs.map(op => op.relationships?.order?.data?.id).filter(Boolean));
+          console.warn(`[OMG] Zero order_products matched. Raw scan spans ${uniqOrderRefs.size} unique orders. Intersection with our ${myOrderIds.size} orders: 0. First 10 raw order ids:`,
+            [...uniqOrderRefs].slice(0, 10));
         }
       } else {
         console.warn(`[OMG] Skipping order_products fetch — no orders matched sale ${omgId}`);
