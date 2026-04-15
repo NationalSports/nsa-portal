@@ -1660,6 +1660,9 @@ export default function App(){
   // OMG API sync state
   const[omgSyncing,setOmgSyncing]=useState(false);
   const[omgLastSync,setOmgLastSync]=useState(null);
+  // OMG API probe state (diagnostic panel — streams results as they come in)
+  const[omgProbing,setOmgProbing]=useState(false);
+  const[omgProbeLines,setOmgProbeLines]=useState([]);
   const[dbLoading,setDbLoading]=useState(!!supabase);const[dbError,setDbError]=useState(null);const _dbReady=useRef(false);const _dbLoadSuccess=useRef(false);
   const[failedSaveCount,setFailedSaveCount]=useState(_dbSaveFailedIds.size);_onFailedIdsChange=setFailedSaveCount;
   const[cacheFull,setCacheFull]=useState(_lsQuotaWarned);_onCacheFullChange=setCacheFull;
@@ -9861,19 +9864,54 @@ export default function App(){
       </>);
     }
 
+    const runOMGProbe = async () => {
+      if (omgProbing) return;
+      setOmgProbing(true);
+      setOmgProbeLines(['▶ Starting probe — this hits ~30 endpoints and may take a minute...']);
+      try {
+        await probeOMGEndpoints((line) => {
+          setOmgProbeLines(prev => [...prev, line]);
+        });
+      } catch (e) {
+        setOmgProbeLines(prev => [...prev, '✗ Probe crashed: ' + (e?.message || String(e))]);
+      } finally {
+        setOmgProbing(false);
+      }
+    };
     return(<>
       {/* OMG API Sync */}
-      <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center'}}>
+      <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
         <button className="btn btn-primary" onClick={syncOMGStores} disabled={omgSyncing} style={{fontSize:12}}>
           {omgSyncing ? 'Syncing...' : 'Sync from OMG'}
         </button>
-        <button className="btn btn-secondary" onClick={probeOMGEndpoints} style={{fontSize:12}}>
-          Probe API
+        <button className="btn btn-secondary" onClick={runOMGProbe} disabled={omgProbing} style={{fontSize:12}}>
+          {omgProbing ? 'Probing...' : 'Probe API'}
         </button>
+        {omgProbeLines.length > 0 && !omgProbing && (
+          <button className="btn btn-sm btn-secondary" onClick={()=>setOmgProbeLines([])} style={{fontSize:11}}>Clear</button>
+        )}
         <div style={{fontSize:11,color:'#64748b'}}>
           Last synced: {omgLastSync ? new Date(omgLastSync).toLocaleString() : 'Never'}
         </div>
       </div>
+
+      {/* Probe results panel — streams results as they come in (works on mobile, no alert/console needed) */}
+      {omgProbeLines.length > 0 && (
+        <div style={{marginBottom:12,padding:12,background:'#0f172a',color:'#e2e8f0',borderRadius:8,fontFamily:'monospace',fontSize:11,maxHeight:320,overflowY:'auto',whiteSpace:'pre-wrap',wordBreak:'break-word'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,position:'sticky',top:0,background:'#0f172a',paddingBottom:4,borderBottom:'1px solid #334155'}}>
+            <div style={{fontWeight:700,color:'#22d3ee'}}>OMG API Probe {omgProbing?'(running...)':'(done)'}</div>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{
+              const text = omgProbeLines.join('\n');
+              if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(()=>nf('Probe output copied to clipboard'),()=>nf('Copy failed — long-press the text to select','error'));
+              else nf('Clipboard not available — long-press text to select','error');
+            }}>Copy</button>
+          </div>
+          {omgProbeLines.map((line,i)=>{
+            const highlight = line.includes('🎯') ? {color:'#fbbf24',fontWeight:700} : line.includes('⚠') || line.includes('✗') ? {color:'#f87171'} : line.includes('✓') ? {color:'#4ade80'} : line.startsWith('→') ? {color:'#94a3b8'} : {};
+            return <div key={i} style={highlight}>{line}</div>;
+          })}
+        </div>
+      )}
 
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>

@@ -273,18 +273,33 @@ const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
 // ─── OMG API Probe (deep diagnostic) ───
 // Goal: figure out EXACTLY how OMG's JSON:API links sales → orders → order_products → products
 // so we can stop silently dropping every record. Dumps full structures to console and
-// returns a summary for the UI so the user doesn't have to dig through the console.
-const probeOMGEndpoints = async () => {
+// streams summary lines via onLine callback so the caller can render them on-screen
+// (important for mobile where there's no console + alert() is unreliable for long text).
+const probeOMGEndpoints = async (onLine) => {
   const log = (...args) => console.log('[OMG-PROBE]', ...args);
   const report = [];
-  const push = (line) => { report.push(line); log(line); };
+  const push = (line) => {
+    report.push(line);
+    log(line);
+    if (typeof onLine === 'function') {
+      try { onLine(line); } catch { /* ignore callback errors */ }
+    }
+  };
+
+  // Wrap fetches in a timeout so a single hanging call can't block the whole probe
+  const withTimeout = (promise, ms = 15000, label = '') =>
+    Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`timeout after ${ms}ms${label ? ' on ' + label : ''}`)), ms))
+    ]);
 
   push('═══ OMG API PROBE START ═══');
 
   // ── STEP 1: Dump a sample sale's full structure ──
   let sampleSale = null;
   try {
-    const salesResp = await omgApiCall('/sales?include=organization');
+    push('→ /sales?include=organization');
+    const salesResp = await withTimeout(omgApiCall('/sales?include=organization'), 15000, '/sales');
     sampleSale = salesResp?.data?.[0];
     if (sampleSale) {
       push(`✓ /sales returned ${salesResp.data.length} records`);
@@ -313,7 +328,8 @@ const probeOMGEndpoints = async () => {
   // ── STEP 2: Dump a sample order's full structure and see how it links to a sale ──
   let sampleOrder = null;
   try {
-    const ordersResp = await omgApiCall('/orders');
+    push('→ /orders');
+    const ordersResp = await withTimeout(omgApiCall('/orders'), 15000, '/orders');
     sampleOrder = ordersResp?.data?.[0];
     if (sampleOrder) {
       push(`✓ /orders returned ${ordersResp.data.length} records`);
@@ -344,7 +360,8 @@ const probeOMGEndpoints = async () => {
 
   // ── STEP 3: Test /orders?include=sale to force relationship population ──
   try {
-    const resp = await omgApiCall('/orders?include=sale');
+    push('→ /orders?include=sale');
+    const resp = await withTimeout(omgApiCall('/orders?include=sale'), 15000, '/orders?include=sale');
     const first = resp?.data?.[0];
     const saleData = first?.relationships?.sale?.data;
     const incSales = (resp?.included || []).filter(i => i.type === 'sale' || i.type === 'sales');
@@ -354,7 +371,8 @@ const probeOMGEndpoints = async () => {
   // ── STEP 4: Test /order_products relationships ──
   let sampleOP = null;
   try {
-    const opResp = await omgApiCall('/order_products?include=product');
+    push('→ /order_products?include=product');
+    const opResp = await withTimeout(omgApiCall('/order_products?include=product'), 15000, '/order_products');
     sampleOP = opResp?.data?.[0];
     if (sampleOP) {
       log('SAMPLE ORDER_PRODUCT — full resource:', sampleOP);
@@ -388,7 +406,7 @@ const probeOMGEndpoints = async () => {
     ];
     for (const ep of filterTests) {
       try {
-        const r = await omgApiCall(ep);
+        const r = await withTimeout(omgApiCall(ep), 10000, ep);
         const count = Array.isArray(r?.data) ? r.data.length : (r?.data ? 1 : 0);
         const incTypes = [...new Set((r?.included || []).map(i => i.type))];
         push(`  ${ep} → ${count} records, included: [${incTypes.join(',')}]`);
@@ -409,7 +427,7 @@ const probeOMGEndpoints = async () => {
     ];
     for (const ep of nestedTests) {
       try {
-        const r = await omgApiCall(ep);
+        const r = await withTimeout(omgApiCall(ep), 10000, ep);
         const incTypes = [...new Set((r?.included || []).map(i => i.type))];
         push(`  ${ep} → included: [${incTypes.join(',')}] (${r?.included?.length || 0})`);
       } catch (err) {
@@ -419,12 +437,10 @@ const probeOMGEndpoints = async () => {
   }
 
   push('═══ OMG API PROBE END ═══');
-  // Show the report in an alert so the user can read without console diving
   const summary = report.join('\n');
-  console.log(summary);
-  // Also stash it on window for easy copy-paste
+  // Stash on window for easy copy-paste
   if (typeof window !== 'undefined') window.__omgProbeReport = summary;
-  alert('OMG API probe complete!\n\nSummary:\n\n' + summary + '\n\n(Also in console + window.__omgProbeReport)');
+  return summary;
 };
 
 const fetchOMGStores = async () => {
