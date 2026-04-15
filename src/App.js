@@ -2268,50 +2268,48 @@ export default function App(){
       }
       const saleResource = saleResp?.data || { id: omgId, attributes: {} };
 
-      // Orders for this store
-      const ordersResult = await tryPaginated([
-        `/sales/${omgId}/orders`,
-        `/orders?filter[sale_id]=${omgId}`,
-        `/orders?sale_id=${omgId}`,
-      ]);
-      let orders = ordersResult?.data || [];
-      // Quick diagnostic: log the first row's relationship keys so we can see
-      // what fields OMG actually serves. Helps verify the cross-sale filters
-      // below are looking at the right relationship names.
-      if (orders[0]) {
-        const relKeys = Object.keys(orders[0].relationships || {});
-        const attrKeys = Object.keys(orders[0].attributes || {}).filter(k => /sale|store/i.test(k));
-        console.log(`[OMG] order[0] relationships:`, relKeys, 'sale-ish attrs:', attrKeys);
-      }
-      // Defense-in-depth: some OMG fallback endpoints silently ignore query
-      // filters and return global data. Drop any order whose sale relationship
-      // (or sale_id attribute) doesn't match this store — otherwise items from
-      // unrelated sales leak into this store's detail view. Verify against
-      // multiple possible field names since OMG's shape varies by endpoint.
-      const orderBelongsToSale = (o) => {
-        const rels = o.relationships || {};
-        const relSaleId = rels.sale?.data?.id || rels.sales?.data?.id || rels.store?.data?.id;
-        if (relSaleId != null) return String(relSaleId) === String(omgId);
-        const attrs = o.attributes || {};
-        const attrSaleId = attrs.sale_id ?? attrs.saleId ?? attrs.store_id ?? attrs.storeId;
-        if (attrSaleId != null) return String(attrSaleId) === String(omgId);
-        return true; // no way to verify — trust the server's route scoping
-      };
-      const beforeOrders = orders.length;
-      orders = orders.filter(orderBelongsToSale);
-      if (orders.length !== beforeOrders) {
-        console.warn(`[OMG] Dropped ${beforeOrders - orders.length} order(s) from sale ${omgId} — sale relationship didn't match`);
+      // Orders for this store.
+      //
+      // The /probe confirmed OMG's API does not actually let us fetch a
+      // sale's orders directly:
+      //   - /sales/{id}/orders           → 404
+      //   - /orders?filter[sale_id]={id} → returns the first 100 global rows
+      //     (filter is silently ignored — the first page is the same 100
+      //     orders regardless of the filter value)
+      //   - /orders?include=sale         → works; each order carries
+      //     relationships.sale.data.id = "sale_XXXXX"
+      //
+      // The only correct strategy is: paginate /orders globally (sorted by
+      // updated_at desc so recent sales surface first) and filter client-side
+      // on relationships.sale.data.id. Expensive, but it's what the API
+      // requires. tryPaginated follows links.next for us.
+      const allOrdersResult = await tryPaginated([
+        `/orders?include=sale&sort=-updated_at&page[size]=200`,
+        `/orders?sort=-updated_at&page[size]=200`,
+        `/orders?include=sale&sort=-updated_at`,
+        `/orders?sort=-updated_at`,
+        `/orders?include=sale`,
+        `/orders`,
+      ], 100);
+      const rawOrders = allOrdersResult?.data || [];
+      let orders = rawOrders.filter(o => {
+        const sid = o.relationships?.sale?.data?.id;
+        return sid != null && String(sid) === String(omgId);
+      });
+      console.log(`[OMG] /orders scanned ${rawOrders.length} global rows → ${orders.length} matched sale ${omgId} (${store.store_name})`);
+      if (rawOrders.length > 0 && orders.length === 0) {
+        console.warn(`[OMG] Zero orders matched sale ${omgId}. First 5 raw sale ids seen:`,
+          rawOrders.slice(0, 5).map(o => o.relationships?.sale?.data?.id));
       }
 
       // Order products for this store.
-      // Strategy: try BULK first — it's historically the only OMG endpoint
-      // that actually returns order_products for this account (the per-order
-      // nested route returns empty or 404s). But the bulk endpoint's
-      // filter[sale_id] is unreliable and can leak rows from other sales, so
-      // every row goes through a strict post-filter that requires it to tie
-      // back to one of THIS sale's order ids. Per-order is then tried as a
-      // supplement in case the bulk path missed anything, with rows tagged by
-      // _sourceOrderId so the filter can trust them unconditionally.
+      //
+      // Same story as orders: /order_products?filter[sale_id] and
+      // filter[order_id] are silently ignored, and no nested route exists.
+      // We paginate /order_products globally and filter client-side against
+      // this sale's order id set (collected above from the global /orders
+      // pagination). The probe confirmed each order_product carries
+      // relationships.order.data.id = "ord_XXXXX", which is our match key.
       const productMap = {};
       const attrValueMap = {}; // attribute_value id → { name, parentAttrId }
       const productAttrMap = {}; // product_attribute id → { name }
@@ -2330,121 +2328,34 @@ export default function App(){
           }
         });
       };
-      const orderProductById = new Map(); // dedupe by op.id
-      const pushOP = (op) => {
-        if (!op?.id) return;
-        const existing = orderProductById.get(op.id);
-        if (!existing) { orderProductById.set(op.id, op); return; }
-        // Prefer the copy with _sourceOrderId (trusted) if only one has it.
-        if (op._sourceOrderId != null && existing._sourceOrderId == null) {
-          orderProductById.set(op.id, op);
-        }
-      };
-
-      // Primary: bulk endpoint (historically the only one that returns data).
-      const bulkResult = await tryPaginated([
-        `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values,product_attributes`,
-        `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values`,
-        `/order_products?filter[sale_id]=${omgId}&include=product`,
-        `/order_products?filter[sale_id]=${omgId}`,
-      ]);
-      if (bulkResult && bulkResult.data.length > 0) {
-        console.log(`[OMG] Bulk order_products returned ${bulkResult.data.length} rows (pre-filter)`);
-        bulkResult.data.forEach(pushOP);
-        captureIncluded(bulkResult.included);
-      }
-
-      // Supplement: per-order nested + filter routes. Rows are tagged with
-      // _sourceOrderId so the downstream filter can trust them unconditionally.
-      if (orders.length > 0) {
-        for (const o of orders) {
-          const opResult = await tryPaginated([
-            `/orders/${o.id}/order_products?include=product,attribute_values,product_attributes`,
-            `/orders/${o.id}/order_products?include=product,attribute_values`,
-            `/orders/${o.id}/order_products?include=product`,
-            `/orders/${o.id}/order_products`,
-            `/order_products?filter[order_id]=${o.id}&include=product,attribute_values,product_attributes`,
-            `/order_products?filter[order_id]=${o.id}&include=product,attribute_values`,
-            `/order_products?filter[order_id]=${o.id}&include=product`,
-            `/order_products?filter[order_id]=${o.id}`,
-          ], 5);
-          if (!opResult || opResult.data.length === 0) continue;
-          opResult.data.forEach(op => { op._sourceOrderId = o.id; pushOP(op); });
-          captureIncluded(opResult.included);
-        }
-      }
-      let orderProducts = [...orderProductById.values()];
-      console.log(`[OMG] Total unique order_products after bulk+per-order merge: ${orderProducts.length}`);
-
-      // One-shot diagnostic: dump the first row's shape so we can see what
-      // relationship/attribute fields OMG actually serves. Without this we're
-      // guessing at field names in the strict filter below.
-      if (orderProducts[0]) {
-        const sample = orderProducts[0];
-        console.log(`[OMG] order_product[0] relationships keys:`, Object.keys(sample.relationships || {}));
-        console.log(`[OMG] order_product[0] attributes keys:`, Object.keys(sample.attributes || {}));
-        // Log any key that looks like it references an order/sale/store
-        const relDump = {};
-        Object.entries(sample.relationships || {}).forEach(([k, v]) => {
-          if (/order|sale|store/i.test(k)) relDump[k] = v?.data?.id ?? v?.data ?? null;
-        });
-        const attrDump = {};
-        Object.entries(sample.attributes || {}).forEach(([k, v]) => {
-          if (/order|sale|store/i.test(k)) attrDump[k] = v;
-        });
-        console.log(`[OMG] order_product[0] sale/order refs:`, { rel: relDump, attr: attrDump });
-      }
-
-      // Defense-in-depth: verify every order_product belongs to THIS sale.
-      // Trust _sourceOrderId unconditionally (it was set by our own per-order
-      // fetch and can't be forged). For bulk rows, check every possible field
-      // name OMG might use for the order/sale reference. Keep the row only if
-      // SOMETHING positively ties it to this sale. Log the drop reasons so we
-      // can see if we need to teach the filter new field names.
+      let orderProducts = [];
       const myOrderIds = new Set(orders.map(o => String(o.id)).filter(Boolean));
-      const dropStats = { noSourceNoRel: 0, wrongOrder: 0, wrongSale: 0, kept: 0, trustedSource: 0 };
-      if (myOrderIds.size > 0 || orderProducts.length > 0) {
-        const beforeOP = orderProducts.length;
-        orderProducts = orderProducts.filter(op => {
-          if (op._sourceOrderId != null) {
-            const ok = myOrderIds.has(String(op._sourceOrderId));
-            if (ok) dropStats.trustedSource++;
-            return ok;
-          }
-          const rels = op.relationships || {};
-          const attrs = op.attributes || {};
-          // Check every plausible field name for order membership.
-          const orderCandidates = [
-            rels.order?.data?.id, rels.orders?.data?.id,
-            rels.customer_order?.data?.id, rels.parent_order?.data?.id,
-            attrs.order_id, attrs.orderId, attrs.parent_order_id,
-          ].filter(v => v != null).map(String);
-          if (orderCandidates.length > 0) {
-            const match = orderCandidates.some(id => myOrderIds.has(id));
-            if (match) { dropStats.kept++; return true; }
-            dropStats.wrongOrder++; return false;
-          }
-          // Fall back to sale/store membership.
-          const saleCandidates = [
-            rels.sale?.data?.id, rels.sales?.data?.id, rels.store?.data?.id,
-            attrs.sale_id, attrs.saleId, attrs.store_id, attrs.storeId,
-          ].filter(v => v != null).map(String);
-          if (saleCandidates.length > 0) {
-            const match = saleCandidates.some(id => id === String(omgId));
-            if (match) { dropStats.kept++; return true; }
-            dropStats.wrongSale++; return false;
-          }
-          // No verification possible at all — if we know our order set, drop
-          // the row defensively; otherwise keep it (zero-knowledge).
-          if (myOrderIds.size > 0) { dropStats.noSourceNoRel++; return false; }
-          dropStats.kept++; return true;
+      if (myOrderIds.size > 0) {
+        const allOPResult = await tryPaginated([
+          `/order_products?include=product,attribute_values,product_attributes&sort=-updated_at&page[size]=200`,
+          `/order_products?include=product,attribute_values&sort=-updated_at&page[size]=200`,
+          `/order_products?include=product&sort=-updated_at&page[size]=200`,
+          `/order_products?include=product,attribute_values,product_attributes&sort=-updated_at`,
+          `/order_products?include=product,attribute_values&sort=-updated_at`,
+          `/order_products?include=product&sort=-updated_at`,
+          `/order_products?sort=-updated_at`,
+          `/order_products?include=product,attribute_values,product_attributes`,
+          `/order_products?include=product`,
+          `/order_products`,
+        ], 200);
+        const rawOPs = allOPResult?.data || [];
+        orderProducts = rawOPs.filter(op => {
+          const orderId = op.relationships?.order?.data?.id;
+          return orderId != null && myOrderIds.has(String(orderId));
         });
-        const dropped = beforeOP - orderProducts.length;
-        if (dropped > 0) {
-          console.warn(`[OMG] Dropped ${dropped} order_product(s) for sale ${omgId} (${store.store_name}):`, dropStats);
-        } else {
-          console.log(`[OMG] Kept all ${orderProducts.length} order_products for sale ${omgId}:`, dropStats);
+        captureIncluded(allOPResult?.included);
+        console.log(`[OMG] /order_products scanned ${rawOPs.length} global rows → ${orderProducts.length} matched for ${myOrderIds.size} orders of sale ${omgId}`);
+        if (rawOPs.length > 0 && orderProducts.length === 0) {
+          console.warn(`[OMG] Zero order_products matched. First 5 raw order ids seen:`,
+            rawOPs.slice(0, 5).map(op => op.relationships?.order?.data?.id));
         }
+      } else {
+        console.warn(`[OMG] Skipping order_products fetch — no orders matched sale ${omgId}`);
       }
 
       // Build product included block for convertOMGStore
