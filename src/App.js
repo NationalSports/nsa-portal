@@ -2304,15 +2304,14 @@ export default function App(){
       }
 
       // Order products for this store.
-      // IMPORTANT: we deliberately AVOID the bulk /order_products?filter[sale_id]=...
-      // endpoint here. It's historically unreliable — OMG silently ignores
-      // filter[sale_id] under some conditions and returns global data, which
-      // is how items from unrelated sales end up leaking into a store's detail
-      // view. The per-order nested route `/orders/{id}/order_products` is
-      // route-scoped on the server and cannot return cross-sale rows, so we
-      // only use that path when we have orders to iterate. The bulk endpoint
-      // is kept ONLY as a last-resort fallback for stores with zero orders in
-      // our result set, and even then we strictly post-filter the response.
+      // Strategy: try BULK first — it's historically the only OMG endpoint
+      // that actually returns order_products for this account (the per-order
+      // nested route returns empty or 404s). But the bulk endpoint's
+      // filter[sale_id] is unreliable and can leak rows from other sales, so
+      // every row goes through a strict post-filter that requires it to tie
+      // back to one of THIS sale's order ids. Per-order is then tried as a
+      // supplement in case the bulk path missed anything, with rows tagged by
+      // _sourceOrderId so the filter can trust them unconditionally.
       const productMap = {};
       const attrValueMap = {}; // attribute_value id → { name, parentAttrId }
       const productAttrMap = {}; // product_attribute id → { name }
@@ -2331,67 +2330,120 @@ export default function App(){
           }
         });
       };
-      let orderProducts = [];
+      const orderProductById = new Map(); // dedupe by op.id
+      const pushOP = (op) => {
+        if (!op?.id) return;
+        const existing = orderProductById.get(op.id);
+        if (!existing) { orderProductById.set(op.id, op); return; }
+        // Prefer the copy with _sourceOrderId (trusted) if only one has it.
+        if (op._sourceOrderId != null && existing._sourceOrderId == null) {
+          orderProductById.set(op.id, op);
+        }
+      };
+
+      // Primary: bulk endpoint (historically the only one that returns data).
+      const bulkResult = await tryPaginated([
+        `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values,product_attributes`,
+        `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values`,
+        `/order_products?filter[sale_id]=${omgId}&include=product`,
+        `/order_products?filter[sale_id]=${omgId}`,
+      ]);
+      if (bulkResult && bulkResult.data.length > 0) {
+        console.log(`[OMG] Bulk order_products returned ${bulkResult.data.length} rows (pre-filter)`);
+        bulkResult.data.forEach(pushOP);
+        captureIncluded(bulkResult.included);
+      }
+
+      // Supplement: per-order nested + filter routes. Rows are tagged with
+      // _sourceOrderId so the downstream filter can trust them unconditionally.
       if (orders.length > 0) {
-        // Per-order path (route-scoped — safe). Iterate each order and fetch
-        // its order_products directly. Tag each row with its source order id
-        // so the cross-contamination filter below can verify membership even
-        // when OMG doesn't populate relationships.order on the row.
         for (const o of orders) {
           const opResult = await tryPaginated([
             `/orders/${o.id}/order_products?include=product,attribute_values,product_attributes`,
             `/orders/${o.id}/order_products?include=product,attribute_values`,
             `/orders/${o.id}/order_products?include=product`,
             `/orders/${o.id}/order_products`,
+            `/order_products?filter[order_id]=${o.id}&include=product,attribute_values,product_attributes`,
+            `/order_products?filter[order_id]=${o.id}&include=product,attribute_values`,
+            `/order_products?filter[order_id]=${o.id}&include=product`,
+            `/order_products?filter[order_id]=${o.id}`,
           ], 5);
-          if (!opResult) continue;
-          opResult.data.forEach(op => { op._sourceOrderId = o.id; });
-          orderProducts.push(...opResult.data);
+          if (!opResult || opResult.data.length === 0) continue;
+          opResult.data.forEach(op => { op._sourceOrderId = o.id; pushOP(op); });
           captureIncluded(opResult.included);
         }
-      } else {
-        // No orders — try the bulk endpoint as last resort (with post-filter).
-        const bulkResult = await tryPaginated([
-          `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values,product_attributes`,
-          `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values`,
-          `/order_products?filter[sale_id]=${omgId}&include=product`,
-          `/order_products?filter[sale_id]=${omgId}`,
-        ]);
-        if (bulkResult && bulkResult.data.length > 0) {
-          orderProducts = bulkResult.data;
-          captureIncluded(bulkResult.included);
-        }
+      }
+      let orderProducts = [...orderProductById.values()];
+      console.log(`[OMG] Total unique order_products after bulk+per-order merge: ${orderProducts.length}`);
+
+      // One-shot diagnostic: dump the first row's shape so we can see what
+      // relationship/attribute fields OMG actually serves. Without this we're
+      // guessing at field names in the strict filter below.
+      if (orderProducts[0]) {
+        const sample = orderProducts[0];
+        console.log(`[OMG] order_product[0] relationships keys:`, Object.keys(sample.relationships || {}));
+        console.log(`[OMG] order_product[0] attributes keys:`, Object.keys(sample.attributes || {}));
+        // Log any key that looks like it references an order/sale/store
+        const relDump = {};
+        Object.entries(sample.relationships || {}).forEach(([k, v]) => {
+          if (/order|sale|store/i.test(k)) relDump[k] = v?.data?.id ?? v?.data ?? null;
+        });
+        const attrDump = {};
+        Object.entries(sample.attributes || {}).forEach(([k, v]) => {
+          if (/order|sale|store/i.test(k)) attrDump[k] = v;
+        });
+        console.log(`[OMG] order_product[0] sale/order refs:`, { rel: relDump, attr: attrDump });
       }
 
       // Defense-in-depth: verify every order_product belongs to THIS sale.
-      // The per-order fetch path above tags each row with _sourceOrderId (the
-      // order we fetched it from) — that's the strictest check since it can't
-      // be forged by an unreliable filter endpoint. For rows that came from
-      // the bulk fallback (no _sourceOrderId), fall through to the relationship
-      // check. If neither check can run, drop the row rather than guess: the
-      // historical symptom is cross-sale leakage, so the safe default is to
-      // err on the side of excluding ambiguous rows.
+      // Trust _sourceOrderId unconditionally (it was set by our own per-order
+      // fetch and can't be forged). For bulk rows, check every possible field
+      // name OMG might use for the order/sale reference. Keep the row only if
+      // SOMETHING positively ties it to this sale. Log the drop reasons so we
+      // can see if we need to teach the filter new field names.
       const myOrderIds = new Set(orders.map(o => String(o.id)).filter(Boolean));
+      const dropStats = { noSourceNoRel: 0, wrongOrder: 0, wrongSale: 0, kept: 0, trustedSource: 0 };
       if (myOrderIds.size > 0 || orderProducts.length > 0) {
         const beforeOP = orderProducts.length;
         orderProducts = orderProducts.filter(op => {
-          if (op._sourceOrderId != null) return myOrderIds.has(String(op._sourceOrderId));
+          if (op._sourceOrderId != null) {
+            const ok = myOrderIds.has(String(op._sourceOrderId));
+            if (ok) dropStats.trustedSource++;
+            return ok;
+          }
           const rels = op.relationships || {};
-          const orderIdRel = rels.order?.data?.id || rels.orders?.data?.id;
-          if (orderIdRel != null) return myOrderIds.has(String(orderIdRel));
-          const saleIdRel = rels.sale?.data?.id || rels.sales?.data?.id || rels.store?.data?.id;
-          if (saleIdRel != null) return String(saleIdRel) === String(omgId);
           const attrs = op.attributes || {};
-          const attrOrderId = attrs.order_id ?? attrs.orderId;
-          if (attrOrderId != null) return myOrderIds.has(String(attrOrderId));
-          const attrSaleId = attrs.sale_id ?? attrs.saleId ?? attrs.store_id ?? attrs.storeId;
-          if (attrSaleId != null) return String(attrSaleId) === String(omgId);
-          // No way to verify and we have known orders — drop the row to
-          // avoid leaking cross-sale data.
-          return myOrderIds.size === 0;
+          // Check every plausible field name for order membership.
+          const orderCandidates = [
+            rels.order?.data?.id, rels.orders?.data?.id,
+            rels.customer_order?.data?.id, rels.parent_order?.data?.id,
+            attrs.order_id, attrs.orderId, attrs.parent_order_id,
+          ].filter(v => v != null).map(String);
+          if (orderCandidates.length > 0) {
+            const match = orderCandidates.some(id => myOrderIds.has(id));
+            if (match) { dropStats.kept++; return true; }
+            dropStats.wrongOrder++; return false;
+          }
+          // Fall back to sale/store membership.
+          const saleCandidates = [
+            rels.sale?.data?.id, rels.sales?.data?.id, rels.store?.data?.id,
+            attrs.sale_id, attrs.saleId, attrs.store_id, attrs.storeId,
+          ].filter(v => v != null).map(String);
+          if (saleCandidates.length > 0) {
+            const match = saleCandidates.some(id => id === String(omgId));
+            if (match) { dropStats.kept++; return true; }
+            dropStats.wrongSale++; return false;
+          }
+          // No verification possible at all — if we know our order set, drop
+          // the row defensively; otherwise keep it (zero-knowledge).
+          if (myOrderIds.size > 0) { dropStats.noSourceNoRel++; return false; }
+          dropStats.kept++; return true;
         });
-        if (orderProducts.length !== beforeOP) {
-          console.warn(`[OMG] Dropped ${beforeOP - orderProducts.length} order_product(s) not belonging to sale ${omgId} (${store.store_name})`);
+        const dropped = beforeOP - orderProducts.length;
+        if (dropped > 0) {
+          console.warn(`[OMG] Dropped ${dropped} order_product(s) for sale ${omgId} (${store.store_name}):`, dropStats);
+        } else {
+          console.log(`[OMG] Kept all ${orderProducts.length} order_products for sale ${omgId}:`, dropStats);
         }
       }
 
@@ -2487,7 +2539,15 @@ export default function App(){
       if (buyerIds.size > 0) updated.unique_buyers = buyerIds.size;
 
       setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
-      nf(`Synced ${store.store_name}: ${orders.length} orders, ${totalItems} items, $${salesTotal.toLocaleString()}`);
+      // Flag the suspicious "orders loaded but no items" case as a warning so
+      // the user doesn't think the sync succeeded when it actually fetched
+      // nothing useful. Check the browser console for [OMG] diagnostic logs.
+      const emptyItems = orders.length > 0 && totalItems === 0;
+      const toastType = emptyItems ? 'error' : 'success';
+      const toastMsg = emptyItems
+        ? `⚠ ${store.store_name}: ${orders.length} orders but 0 items loaded — OMG returned order headers but no line items. Check browser console for [OMG] diagnostics.`
+        : `Synced ${store.store_name}: ${orders.length} orders, ${totalItems} items, $${salesTotal.toLocaleString()}`;
+      nf(toastMsg, toastType);
       return updated;
     } catch (e) {
       console.error('[OMG] Failed to load detail for store', store.id, e);
@@ -2850,15 +2910,10 @@ export default function App(){
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);
-  // Auto-load OMG store details when a store is selected
-  React.useEffect(()=>{
-    if(!omgSel||omgSel._details_loaded||omgDetailLoading||!omgSel._omg_id)return;
-    setOmgDetailLoading(true);
-    console.log('[OMG] Auto-loading details for store', omgSel.id, omgSel._omg_id);
-    loadOMGStoreDetail(omgSel).then(updated=>{
-      setOmgSel(updated);setOmgDetailLoading(false);
-    }).catch(e=>{console.error('[OMG] Detail load failed:',e);setOmgDetailLoading(false)});
-  },[omgSel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // NOTE: Detail sync is MANUAL — the user clicks the "Load / Re-sync" button
+  // on the store detail view. We intentionally do NOT auto-fetch on open: auto
+  // fetching hid failures (a silent "Synced" toast with empty products) and
+  // wasted API calls every time a store was opened.
   const[estF,setEstF]=useState({status:'open',rep:'all',search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'active',rep:'all',search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
@@ -9946,12 +10001,15 @@ export default function App(){
           <div className="stat-card"><div className="stat-label">Margin</div><div className="stat-value" style={{color:pct>=30?'#166534':'#dc2626'}}>{pct}%</div></div>
         </div>
 
-        {/* Re-sync button — full-width row so it can't overflow on mobile */}
-        {s._omg_id&&<div style={{marginBottom:12,display:'flex',gap:8,flexWrap:'wrap'}}>
-          <button className="btn btn-primary" disabled={omgDetailLoading} style={{flex:'1 1 auto',minWidth:200}} onClick={()=>{
+        {/* Sync button — MANUAL. Label changes based on whether we've loaded
+            details yet. First-time load uses the non-force path; re-sync
+            after that uses force:true to bypass the _details_loaded cache. */}
+        {s._omg_id&&<div style={{marginBottom:12,display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+          <button className="btn btn-primary" disabled={omgDetailLoading} style={{flex:'1 1 auto',minWidth:200,background:s._details_loaded?undefined:'#166534'}} onClick={()=>{
             setOmgDetailLoading(true);
             loadOMGStoreDetail(s,{force:true}).then(u=>{setOmgSel(u);setOmgDetailLoading(false)}).catch(()=>setOmgDetailLoading(false));
-          }}>{omgDetailLoading?'⏳ Syncing this store…':'🔄 Re-sync this store from OMG'}</button>
+          }}>{omgDetailLoading?'⏳ Syncing this store…':(s._details_loaded?'🔄 Re-sync this store from OMG':'⬇ Load store details from OMG')}</button>
+          {s._details_loaded&&<div style={{fontSize:11,color:'#64748b'}}>Last synced: {s._last_synced?new Date(s._last_synced).toLocaleTimeString():'—'}</div>}
         </div>}
 
         <div className="card" style={{marginBottom:12}}><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -9960,15 +10018,19 @@ export default function App(){
             style={{fontSize:11,color:'#2563eb',textDecoration:'none',fontWeight:600}}>View in OMG Admin →</a>
         </div>
           <div className="card-body" style={{padding:0}}>
-            {omgDetailLoading && !s._details_loaded ? (
-              <div style={{padding:24,textAlign:'center',color:'#64748b',fontSize:13}}>Loading order details from OMG...</div>
+            {omgDetailLoading ? (
+              <div style={{padding:24,textAlign:'center',color:'#64748b',fontSize:13}}>⏳ Loading order details from OMG…</div>
+            ) : !s._details_loaded ? (
+              <div style={{padding:32,textAlign:'center'}}>
+                <div style={{fontSize:32,marginBottom:8}}>📦</div>
+                <div style={{fontSize:14,fontWeight:700,color:'#1e40af',marginBottom:4}}>Store details not loaded</div>
+                <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Click the green button above to fetch orders and line items from OMG.</div>
+              </div>
             ) : (s.products||[]).length === 0 ? (
-              <div style={{padding:24,textAlign:'center',color:'#94a3b8',fontSize:13}}>
-                {s._details_loaded ? 'No product data returned from OMG API' : 'Product details load when store data is available'}
-                {!s._details_loaded && !omgDetailLoading && s._omg_id && <button className="btn btn-sm btn-primary" style={{marginLeft:8}} onClick={()=>{
-                  setOmgDetailLoading(true);
-                  loadOMGStoreDetail(s).then(u=>{setOmgSel(u);setOmgDetailLoading(false)}).catch(()=>setOmgDetailLoading(false));
-                }}>Load Details</button>}
+              <div style={{padding:32,textAlign:'center'}}>
+                <div style={{fontSize:32,marginBottom:8}}>⚠️</div>
+                <div style={{fontSize:14,fontWeight:700,color:'#b45309',marginBottom:4}}>No line items returned from OMG</div>
+                <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>{s.orders||0} order header(s) loaded, but OMG didn't return any line items. Open the browser console and look for <code style={{background:'#f1f5f9',padding:'1px 4px',borderRadius:3}}>[OMG]</code> diagnostic logs, then hit Re-sync.</div>
               </div>
             ) : (
             <table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Deco</th><th>Retail</th><th>Cost</th><th>Deco $</th><th>Sizes</th><th>Units</th><th>Revenue</th><th>Margin</th></tr></thead>
