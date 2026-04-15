@@ -2213,88 +2213,114 @@ export default function App(){
   // Notification helper — defined early so callbacks below can reference it
   const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_dbNotify=nf;
 
-  // Load full details (orders + products) for a single OMG store on-demand
-  const loadOMGStoreDetail = async (store) => {
-    if (store._details_loaded) return store;
+  // Load full details (orders + products) for a single OMG store on-demand.
+  // Per-sale fetch: hits /sales/{id}/orders (with fallbacks), then
+  // /order_products?filter[sale_id]={id} (with per-order fallback). Paginates
+  // via links.next. Force=true re-fetches even if _details_loaded is set.
+  const loadOMGStoreDetail = async (store, { force = false } = {}) => {
+    if (!force && store._details_loaded) return store;
     const omgId = store._omg_id;
     if (!omgId) return store;
+    console.log(`[OMG] loadOMGStoreDetail: sale=${omgId} (${store.store_name})`);
     try {
-      // Fetch sale metadata (organization only — include=orders returns 400)
+      // Helper: try endpoints in order, paginate via links.next on the winner
+      const tryPaginated = async (endpoints, maxPages = 20) => {
+        for (const ep of endpoints) {
+          let first;
+          try { first = await omgApiCall(ep); }
+          catch (e) { console.log(`[OMG] ${ep} failed: ${e.message}`); continue; }
+          if (!first?.data) continue;
+          const data = [...first.data];
+          const included = [...(first.included || [])];
+          const seen = new Set(data.map(d => d.id));
+          let nextUrl = first?.links?.next || null;
+          let pages = 1;
+          while (nextUrl && pages < maxPages) {
+            let rel = nextUrl;
+            try { const u = new URL(nextUrl); rel = u.pathname.replace(/^\/v1/, '') + u.search; } catch { /* already relative */ }
+            let next;
+            try { next = await omgApiCall(rel); }
+            catch (e) { console.warn(`[OMG] page ${pages + 1} failed for ${ep}: ${e.message}`); break; }
+            const nd = next?.data || [];
+            const fresh = nd.filter(d => !seen.has(d.id));
+            if (fresh.length === 0) break;
+            fresh.forEach(d => seen.add(d.id));
+            data.push(...fresh);
+            included.push(...(next.included || []));
+            nextUrl = next?.links?.next || null;
+            pages++;
+          }
+          console.log(`[OMG]   ✓ ${ep}: ${data.length} records (${pages} page${pages > 1 ? 's' : ''})`);
+          return { data, included, ep };
+        }
+        return null;
+      };
+
+      // Sale metadata (organization sideload)
       let saleResp;
-      let included = [];
+      let saleIncluded = [];
       try {
         saleResp = await omgApiCall(`/sales/${omgId}?include=organization`);
-        included = saleResp?.included || [];
+        saleIncluded = saleResp?.included || [];
       } catch (e) {
         console.log('[OMG] Sale fetch failed, using basic:', e.message);
         try { saleResp = await omgApiCall(`/sales/${omgId}`); } catch { saleResp = null; }
       }
       const saleResource = saleResp?.data || { id: omgId, attributes: {} };
-      console.log('[OMG] Sale detail attributes:', Object.keys(saleResource.attributes || {}));
 
-      // Use omgFetchAllPages (supports links.next, cursor, and constructed cursor)
-      // Fetch ALL order_products with sideloaded products
+      // Orders for this store
+      const ordersResult = await tryPaginated([
+        `/sales/${omgId}/orders`,
+        `/orders?filter[sale_id]=${omgId}`,
+        `/orders?sale_id=${omgId}`,
+      ]);
+      const orders = ordersResult?.data || [];
+
+      // Order products for this store — prefer bulk filter, fall back per-order
       const productMap = {};
-      let allOrderProducts = [];
-      try {
-        // omgFetchAllPages only returns data; we need included too, so use custom pagination
-        const seenIds = new Set();
-        let nextUrl = '/order_products?include=product';
-        for (let page = 0; page < 50; page++) {
-          const resp = await omgApiCall(nextUrl);
-          const data = resp?.data || [];
-          if (data.length === 0) break;
-          const newRecords = data.filter(d => !seenIds.has(d.id));
-          if (newRecords.length === 0) break;
-          newRecords.forEach(d => seenIds.add(d.id));
-          allOrderProducts = allOrderProducts.concat(newRecords);
-          (resp?.included || []).forEach(i => {
-            if ((i.type === 'products' || i.type === 'product') && !productMap[i.id])
-              productMap[i.id] = i.attributes || {};
-          });
-          if (data.length < 100) break;
-          // Next page: links.next > cursor > constructed cursor
-          if (resp?.links?.next) {
-            try { const u = new URL(resp.links.next); nextUrl = u.pathname.replace(/^\/v1/, '') + u.search; continue; }
-            catch { nextUrl = resp.links.next; continue; }
+      let orderProducts = [];
+      const bulkResult = await tryPaginated([
+        `/order_products?filter[sale_id]=${omgId}&include=product`,
+        `/order_products?filter[sale_id]=${omgId}`,
+      ]);
+      if (bulkResult && bulkResult.data.length > 0) {
+        orderProducts = bulkResult.data;
+        bulkResult.included.forEach(i => {
+          if ((i.type === 'product' || i.type === 'products') && !productMap[i.id]) {
+            productMap[i.id] = i.attributes || {};
           }
-          const last = data[data.length - 1];
-          const cursor = last?.meta?.page?.cursor;
-          if (cursor) { nextUrl = `/order_products?include=product&page[after]=${cursor}`; continue; }
-          if (last?.id) { nextUrl = `/order_products?include=product&page[after]=${btoa(JSON.stringify({ id: last.id }))}`; continue; }
-          break;
-        }
-      } catch (e) { console.warn('[OMG] order_products fetch failed:', e.message); }
-
-      // Fetch ALL orders using omgFetchAllPages (handles links.next + cursor fallbacks)
-      const orderToSale = {};
-      let orders = [];
-      try {
-        const allOrders = await omgFetchAllPages('/orders');
-        allOrders.forEach(o => {
-          const saleId = o.relationships?.sale?.data?.id;
-          if (saleId) orderToSale[o.id] = saleId;
-          if (saleId === omgId) orders.push(o);
         });
-        console.log(`[OMG] Detail: ${allOrders.length} orders fetched, ${orders.length} for this store`);
-      } catch (e) { console.warn('[OMG] /orders fetch failed:', e.message); }
+      } else if (orders.length > 0) {
+        for (const o of orders) {
+          const opResult = await tryPaginated([
+            `/orders/${o.id}/order_products?include=product`,
+            `/orders/${o.id}/order_products`,
+            `/order_products?filter[order_id]=${o.id}&include=product`,
+            `/order_products?filter[order_id]=${o.id}`,
+          ], 5);
+          if (!opResult) continue;
+          orderProducts.push(...opResult.data);
+          opResult.included.forEach(i => {
+            if ((i.type === 'product' || i.type === 'products') && !productMap[i.id]) {
+              productMap[i.id] = i.attributes || {};
+            }
+          });
+        }
+      }
 
-      // Filter order_products to this sale via order→sale
-      const orderProducts = allOrderProducts.filter(op => {
-        const orderId = op.relationships?.order?.data?.id;
-        return orderId && orderToSale[orderId] === omgId;
-      });
+      // Build product included block for convertOMGStore
+      const productIncluded = Object.keys(productMap).map(id => ({ id, type: 'products', attributes: productMap[id] }));
+      console.log(`[OMG] Detail: ${orders.length} orders, ${orderProducts.length} order_products, ${productIncluded.length} products for sale ${omgId}`);
 
-      // Build product included for convertOMGStore
-      const usedProductIds = new Set(orderProducts.map(op => op.relationships?.product?.data?.id).filter(Boolean));
-      const productIncluded = [...usedProductIds].filter(id => productMap[id]).map(id => ({ id, type: 'products', attributes: productMap[id] }));
-
-      console.log(`[OMG] Detail: ${orders.length} orders, ${orderProducts.length} order_products (of ${allOrderProducts.length} total), ${usedProductIds.size} products for sale ${omgId}`);
-
-      const detail = { data: saleResource, included: [...included, ...productIncluded], orders, orderProducts: orderProducts.length > 0 ? [{ data: orderProducts, included: productIncluded }] : [] };
+      const detail = {
+        data: saleResource,
+        included: [...saleIncluded, ...productIncluded],
+        orders,
+        orderProducts: orderProducts.length > 0 ? [{ data: orderProducts, included: productIncluded }] : [],
+      };
       const updated = { ...convertOMGStore(detail, cust), _details_loaded: true };
 
-      // Compute totals
+      // Compute totals from order products
       let salesTotal = 0, totalItems = 0;
       orderProducts.forEach(op => {
         const qty = parseInt(op.attributes?.quantity || 0);
@@ -2313,6 +2339,7 @@ export default function App(){
       if (buyerIds.size > 0) updated.unique_buyers = buyerIds.size;
 
       setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
+      nf(`Synced ${store.store_name}: ${orders.length} orders, ${totalItems} items, $${salesTotal.toLocaleString()}`);
       return updated;
     } catch (e) {
       console.error('[OMG] Failed to load detail for store', store.id, e);
@@ -9773,8 +9800,14 @@ export default function App(){
 
         <div className="card" style={{marginBottom:12}}><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <h2>📦 Store Products</h2>
-          <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer"
-            style={{fontSize:11,color:'#2563eb',textDecoration:'none',fontWeight:600}}>View in OMG Admin →</a>
+          <div style={{display:'flex',alignItems:'center',gap:12}}>
+            {s._omg_id&&<button className="btn btn-sm btn-primary" disabled={omgDetailLoading} onClick={()=>{
+              setOmgDetailLoading(true);
+              loadOMGStoreDetail(s,{force:true}).then(u=>{setOmgSel(u);setOmgDetailLoading(false)}).catch(()=>setOmgDetailLoading(false));
+            }}>{omgDetailLoading?'Syncing…':'🔄 Re-sync this store'}</button>}
+            <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer"
+              style={{fontSize:11,color:'#2563eb',textDecoration:'none',fontWeight:600}}>View in OMG Admin →</a>
+          </div>
         </div>
           <div className="card-body" style={{padding:0}}>
             {omgDetailLoading && !s._details_loaded ? (
