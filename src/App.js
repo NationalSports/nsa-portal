@@ -2274,7 +2274,21 @@ export default function App(){
         `/orders?filter[sale_id]=${omgId}`,
         `/orders?sale_id=${omgId}`,
       ]);
-      const orders = ordersResult?.data || [];
+      let orders = ordersResult?.data || [];
+      // Defense-in-depth: some OMG fallback endpoints silently ignore query
+      // filters and return global data. Drop any order whose sale relationship
+      // doesn't match this store — otherwise items from unrelated sales leak
+      // into this store's detail view. When no sale relationship is present we
+      // trust the row (nothing to verify against).
+      const beforeOrders = orders.length;
+      orders = orders.filter(o => {
+        const saleRelId = o.relationships?.sale?.data?.id;
+        if (!saleRelId) return true;
+        return String(saleRelId) === String(omgId);
+      });
+      if (orders.length !== beforeOrders) {
+        console.warn(`[OMG] Dropped ${beforeOrders - orders.length} order(s) from sale ${omgId} — sale relationship didn't match`);
+      }
 
       // Order products for this store — prefer bulk filter, fall back per-order.
       // Include product + attribute_values + product_attributes so we can
@@ -2322,6 +2336,27 @@ export default function App(){
           if (!opResult) continue;
           orderProducts.push(...opResult.data);
           captureIncluded(opResult.included);
+        }
+      }
+
+      // Defense-in-depth: some OMG endpoints (notably the bulk
+      // /order_products?filter[sale_id]=... path) silently ignore the filter
+      // and return global data. Before we trust any of these rows, verify that
+      // each order_product points to one of THIS sale's orders. Without this
+      // check items from other stores leak into the current store's detail
+      // view (the "wrong items flowing into Poly Rodeo" symptom).
+      const myOrderIds = new Set(orders.map(o => String(o.id)).filter(Boolean));
+      if (myOrderIds.size > 0) {
+        const beforeOP = orderProducts.length;
+        orderProducts = orderProducts.filter(op => {
+          const orderIdRel = op.relationships?.order?.data?.id;
+          if (orderIdRel) return myOrderIds.has(String(orderIdRel));
+          const saleIdRel = op.relationships?.sale?.data?.id;
+          if (saleIdRel) return String(saleIdRel) === String(omgId);
+          return true; // no relationship info — can't verify, keep it
+        });
+        if (orderProducts.length !== beforeOP) {
+          console.warn(`[OMG] Dropped ${beforeOP - orderProducts.length} order_product(s) not belonging to sale ${omgId} (${store.store_name})`);
         }
       }
 
@@ -9910,7 +9945,20 @@ export default function App(){
                 <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:p.deco_type==='screen_print'?'#dbeafe':'#ede9fe',
                   color:p.deco_type==='screen_print'?'#1e40af':'#6d28d9'}}>{(p.deco_type||'').replace(/_/g,' ')}</span></td>
                 <td style={{textAlign:'right'}}>${p.retail}</td><td style={{textAlign:'right'}}>${p.cost}</td><td style={{textAlign:'right'}}>${p.deco_cost}</td>
-                <td style={{fontSize:9}}>{Object.entries(p.sizes||{}).map(([sz,q2])=>sz+':'+q2).join(' ')}</td>
+                <td>{(()=>{
+                  const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','OS','OSFA'];
+                  const entries=Object.entries(p.sizes||{}).sort((a,b)=>{
+                    const ai=sizeOrder.indexOf(a[0]),bi=sizeOrder.indexOf(b[0]);
+                    return (ai===-1?99:ai)-(bi===-1?99:bi);
+                  });
+                  if(entries.length===0)return <span style={{fontSize:10,color:'#94a3b8'}}>—</span>;
+                  return <div style={{display:'flex',flexWrap:'wrap',gap:4,maxWidth:280}}>{entries.map(([sz,q2])=>
+                    <span key={sz} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 7px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:10,fontSize:10,lineHeight:1.2}}>
+                      <span style={{color:'#64748b',fontWeight:600}}>{sz}</span>
+                      <span style={{color:'#1e40af',fontWeight:800}}>{q2}</span>
+                    </span>
+                  )}</div>;
+                })()}</td>
                 <td style={{fontWeight:700,textAlign:'center'}}>{q}</td>
                 <td style={{textAlign:'right',fontWeight:600}}>${rev.toLocaleString()}</td>
                 <td style={{textAlign:'right',color:mg>0?'#166534':'#dc2626'}}>${mg.toLocaleString()} <span style={{fontSize:9}}>({rev>0?Math.round(mg/rev*100):0}%)</span></td>

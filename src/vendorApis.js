@@ -695,16 +695,25 @@ const convertOMGStore = (omgResponse, nsaCustomers) => {
       }
     }
 
-    // Track unique products by SKU
-    const sku = opAttrs.sku || product?.style || op.id;
-    if (!productSummary[sku]) {
-      productSummary[sku] = {
-        sku, name: product?.name || '', style: product?.style || '',
+    // Build a display SKU — prefer the real product style/sku from the catalog.
+    // NEVER fall back to the order_product row id: those are opaque numeric db
+    // ids and show up in the UI as "crazy SKU numbers".
+    const displaySku = product?.style || product?.sku || opAttrs.sku || opAttrs.style
+      || (productRel?.id ? `OMG-${productRel.id}` : '—');
+
+    // Group by product relationship id so multiple variant rows (different
+    // sizes/colors) for the same product consolidate into a single line
+    // instead of fragmenting. Fall back to the display SKU when no product
+    // relationship is present.
+    const groupKey = productRel?.id ? `pid:${productRel.id}` : `sku:${displaySku}`;
+    if (!productSummary[groupKey]) {
+      productSummary[groupKey] = {
+        sku: displaySku, name: product?.name || '', style: product?.style || '',
         retail: basePrice, cost: product?.cogs || 0,
         deco_type: '', deco_cost: 0, qty: 0, image_url: imageUrl
       };
     }
-    productSummary[sku].qty += qty;
+    productSummary[groupKey].qty += qty;
   });
 
   // Count unique buyers from customer_info on orders
