@@ -215,7 +215,7 @@ export const threadHex=(name)=>{if(!name)return null;const n=name.toLowerCase().
 export const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes'];
 export const _firmDateCols=['item_desc','date','approved'];
 export const _issueCols=['id','status','description','priority','page','viewing','reported_by','role','timestamp','resolved_at','resolution'];
-export const _omgStoreCols=['id','store_name','customer_id','rep_id','status','open_date','close_date','orders','total_sales','fundraise_total','items_sold','unique_buyers'];
+export const _omgStoreCols=['id','store_name','customer_id','rep_id','status','open_date','close_date','orders','total_sales','fundraise_total','items_sold','unique_buyers','_omg_source','_omg_id','_omg_sale_code','_last_synced','subdomain','channel_type'];
 
 // ─── Team & Company Defaults ───
 export const DEFAULT_REPS=[
