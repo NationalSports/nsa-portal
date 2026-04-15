@@ -9798,16 +9798,18 @@ export default function App(){
           <div className="stat-card"><div className="stat-label">Margin</div><div className="stat-value" style={{color:pct>=30?'#166534':'#dc2626'}}>{pct}%</div></div>
         </div>
 
+        {/* Re-sync button — full-width row so it can't overflow on mobile */}
+        {s._omg_id&&<div style={{marginBottom:12,display:'flex',gap:8,flexWrap:'wrap'}}>
+          <button className="btn btn-primary" disabled={omgDetailLoading} style={{flex:'1 1 auto',minWidth:200}} onClick={()=>{
+            setOmgDetailLoading(true);
+            loadOMGStoreDetail(s,{force:true}).then(u=>{setOmgSel(u);setOmgDetailLoading(false)}).catch(()=>setOmgDetailLoading(false));
+          }}>{omgDetailLoading?'⏳ Syncing this store…':'🔄 Re-sync this store from OMG'}</button>
+        </div>}
+
         <div className="card" style={{marginBottom:12}}><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <h2>📦 Store Products</h2>
-          <div style={{display:'flex',alignItems:'center',gap:12}}>
-            {s._omg_id&&<button className="btn btn-sm btn-primary" disabled={omgDetailLoading} onClick={()=>{
-              setOmgDetailLoading(true);
-              loadOMGStoreDetail(s,{force:true}).then(u=>{setOmgSel(u);setOmgDetailLoading(false)}).catch(()=>setOmgDetailLoading(false));
-            }}>{omgDetailLoading?'Syncing…':'🔄 Re-sync this store'}</button>}
-            <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer"
-              style={{fontSize:11,color:'#2563eb',textDecoration:'none',fontWeight:600}}>View in OMG Admin →</a>
-          </div>
+          <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer"
+            style={{fontSize:11,color:'#2563eb',textDecoration:'none',fontWeight:600}}>View in OMG Admin →</a>
         </div>
           <div className="card-body" style={{padding:0}}>
             {omgDetailLoading && !s._details_loaded ? (
