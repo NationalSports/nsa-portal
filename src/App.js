@@ -444,7 +444,7 @@ const _dbLoad = async (opts={}) => {
     // Messages: attach read_by array and parse tagged_members
     const messages=msgRaw.map(m=>{const tm=m.tagged_members;const mapped={...m,text:m.body||m.text,ts:m.created_at||m.ts};delete mapped.body;return{...mapped,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
-    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>({sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',_artwork:p._artwork||[]}))}));
+    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>{const dt=(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||''}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,_artwork:p._artwork||[]}})}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations');
@@ -2178,10 +2178,10 @@ export default function App(){
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){
     _dbSave('omg_stores',[_pick(s,_omgStoreCols)]);
     // Also save products when they change
-    const oldProds=JSON.stringify((old?.products||[]).map(p=>p.sku+p.cost+p.deco_type+p.art_group+p.vendor_id).sort());
-    const newProds=JSON.stringify((s.products||[]).map(p=>p.sku+p.cost+p.deco_type+p.art_group+p.vendor_id).sort());
+    const oldProds=JSON.stringify((old?.products||[]).map(p=>p.sku+p.cost+(p.decorations||[]).map(d=>d.type+':'+d.art_group).join('|')+p.vendor_id).sort());
+    const newProds=JSON.stringify((s.products||[]).map(p=>p.sku+p.cost+(p.decorations||[]).map(d=>d.type+':'+d.art_group).join('|')+p.vendor_id).sort());
     if(oldProds!==newProds&&(s.products||[]).length>0){
-      const prods=(s.products||[]).map(p=>({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',_cost_source:p._cost_source||''}));
+      const prods=(s.products||[]).map(p=>({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:(p.decorations||[]).map(d=>d.type).join('|')||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',vendor_id:p.vendor_id||'',art_group:(p.decorations||[]).map(d=>d.art_group).join('|')||'',_cost_source:p._cost_source||''}));
       // Delete old products and insert fresh (handles SKU changes)
       if(supabase){supabase.from('omg_store_products').delete().eq('store_id',s.id).then(()=>{supabase.from('omg_store_products').insert(prods).then(r=>{if(r.error)console.error('[DB] omg products save:',r.error.message)})})}
     }
@@ -2970,6 +2970,7 @@ export default function App(){
             deco_type: '',
             deco_cost: 0,
             art_group: '',
+            decorations: [],
             sizes,
             image_url: imageUrl,
             _omg_product_id: meta.id,
@@ -3031,6 +3032,7 @@ export default function App(){
           vendor_id: existing.vendor_id || p.vendor_id,
           deco_type: existing.deco_type || p.deco_type,
           art_group: existing.art_group || p.art_group,
+          decorations: (existing.decorations||[]).length>0 ? existing.decorations : p.decorations || [],
           // Fresh from report: sizes, quantities, retail, colors, images
           _original_sku: p.sku, // track original for detecting user edits
         };
@@ -10133,18 +10135,19 @@ export default function App(){
             {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
               if(sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
               const generatedId=nextSOId(sos);
-              // Build art files from unique art_group labels
-              const artGroups=[...new Set((s.products||[]).map(p=>p.art_group).filter(Boolean))];
+              // Build art files from unique art_group labels across all decorations
+              const artGroups=[...new Set((s.products||[]).flatMap(p=>(p.decorations||[]).map(d=>d.art_group)).filter(Boolean))];
               const artFiles=artGroups.map((g,idx)=>{
-                const sample=(s.products||[]).find(p=>p.art_group===g);
-                return{id:'af_omg_'+idx,name:g,deco_type:sample?.deco_type||'screen_print',
+                const sampleDeco=(s.products||[]).flatMap(p=>(p.decorations||[]).filter(d=>d.art_group===g))[0];
+                return{id:'af_omg_'+idx,name:g,deco_type:sampleDeco?.type||'screen_print',
                   ink_colors:'',thread_colors:'',art_size:'',files:[],mockup_files:[],prod_files:[],
                   notes:'From OMG store '+s.store_name,status:'pending',uploaded:new Date().toLocaleDateString()};
               });
               // Build SO items from imported products
               const soItems=(s.products||[]).map(p=>{
                 const catP=prod.find(cp=>cp.sku===p.sku||cp.sku?.toLowerCase()===p.sku?.toLowerCase());
-                const artFileId=p.art_group?artFiles.find(af=>af.name===p.art_group)?.id||null:null;
+                const decos=(p.decorations||[]);
+                const positions=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve'];
                 return{
                   sku:p.sku,name:p.name,brand:p.manufacturer||catP?.brand||'',
                   color:p.color,product_id:catP?.id||null,vendor_id:p.vendor_id||catP?.vendor_id||null,
@@ -10154,8 +10157,8 @@ export default function App(){
                   sizes:p.sizes||{},
                   available_sizes:Object.keys(p.sizes||{}),
                   _colorImage:p.image_url||'',
-                  no_deco:!p.deco_type,
-                  decorations:p.deco_type?[{kind:'art',position:'Front Center',type:p.deco_type,art_file_id:artFileId,sell_override:0,sell_each:0,cost_each:0}]:[],
+                  no_deco:decos.length===0,
+                  decorations:decos.map((d,di)=>{const artFileId=d.art_group?artFiles.find(af=>af.name===d.art_group)?.id||null:null;return{kind:'art',position:positions[di]||'Position '+(di+1),type:d.type,art_file_id:artFileId,sell_override:0,sell_each:0,cost_each:0}}),
                   pick_lines:[],po_lines:[],
                 };
               });
@@ -10357,8 +10360,8 @@ export default function App(){
             ) : (
             <table><thead><tr><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Art Group</th><th>Retail</th><th>Cost</th><th>Sizes</th><th>Units</th><th>Revenue</th></tr></thead>
             <tbody>{(s.products||[]).map((p,i)=>{const q=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);
-              const setDeco=(type)=>{
-                const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,deco_type:pr.deco_type===type?'':type}:pr);
+              const updateDecos=(newDecos)=>{
+                const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,decorations:newDecos,deco_type:newDecos.map(d=>d.type).join('|'),art_group:newDecos.map(d=>d.art_group).join('|')}:pr);
                 const upd={...s,products:newProds};
                 setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
               };
@@ -10385,31 +10388,46 @@ export default function App(){
                     </span>}
                   </div></td>
                 <td style={{fontSize:11}}>{p.color}</td>
-                <td><div style={{display:'flex',gap:3}}>
-                  {[['SP','screen_print','#dbeafe','#1e40af'],['EMB','embroidery','#ede9fe','#6d28d9'],['HTV','heat_press','#fef3c7','#92400e']].map(([label,type,bg,fg])=>
-                    <button key={type} onClick={()=>setDeco(type)} style={{padding:'3px 8px',borderRadius:4,fontSize:10,fontWeight:800,border:p.deco_type===type?`2px solid ${fg}`:'2px solid transparent',background:p.deco_type===type?bg:'#f1f5f9',color:p.deco_type===type?fg:'#94a3b8',cursor:'pointer',transition:'all 0.1s'}}>{label}</button>
-                  )}
+                <td><div style={{display:'flex',flexDirection:'column',gap:2}}>
+                  {(p.decorations||[]).map((d,di)=>{const [label,bg,fg]=d.type==='screen_print'?['SP','#dbeafe','#1e40af']:d.type==='embroidery'?['EMB','#ede9fe','#6d28d9']:['HTV','#fef3c7','#92400e'];
+                    return <div key={di} style={{display:'flex',alignItems:'center',gap:2}}>
+                      <span style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:800,background:bg,color:fg,border:`2px solid ${fg}`}}>{label}</span>
+                      <button onClick={()=>updateDecos((p.decorations||[]).filter((_,j)=>j!==di))} style={{fontSize:12,color:'#94a3b8',cursor:'pointer',border:'none',background:'none',padding:'0 2px',lineHeight:1}}>&times;</button>
+                    </div>})}
+                  <div style={{display:'flex',gap:2}}>
+                    {[['SP','screen_print'],['EMB','embroidery'],['HTV','heat_press']].map(([label,type])=>
+                      <button key={type} onClick={()=>updateDecos([...(p.decorations||[]),{type,art_group:''}])}
+                        style={{padding:'2px 5px',borderRadius:3,fontSize:9,fontWeight:700,border:'1px dashed #cbd5e1',background:'#f8fafc',color:'#94a3b8',cursor:'pointer'}}>+{label}</button>
+                    )}
+                  </div>
                 </div></td>
                 <td>{(()=>{
-                  // Quick-add art group chips: SP-1, SP-2, EMB-1, etc.
-                  const decoPrefix=p.deco_type==='screen_print'?'SP':p.deco_type==='embroidery'?'EMB':p.deco_type==='heat_press'?'HTV':'ART';
-                  const relevantGroups=[...new Set((s.products||[]).map(pr=>pr.art_group).filter(Boolean))].filter(g=>g.startsWith(decoPrefix)).sort();
-                  const nextNum=relevantGroups.length>0?Math.max(...relevantGroups.map(g=>parseInt(g.split('-')[1])||0))+1:1;
-                  const nextGroup=`${decoPrefix}-${nextNum}`;
-                  return <div style={{display:'flex',flexWrap:'wrap',gap:3,alignItems:'center'}}>
-                    {relevantGroups.map(g=>{
-                      const active=p.art_group===g;
-                      const prefix=g.split('-')[0];
-                      const color=prefix==='SP'?'#1e40af':prefix==='EMB'?'#6d28d9':prefix==='HTV'?'#92400e':'#475569';
-                      const bg=prefix==='SP'?'#dbeafe':prefix==='EMB'?'#ede9fe':prefix==='HTV'?'#fef3c7':'#f1f5f9';
-                      return <button key={g} onClick={()=>updateProd('art_group',active?'':g)}
-                        style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:800,cursor:'pointer',
-                          border:active?`2px solid ${color}`:'1px solid #d1d5db',
-                          background:active?bg:'#fff',color:active?color:'#94a3b8'}}>{g}</button>;
+                  const decos=p.decorations||[];
+                  if(decos.length===0)return <span style={{fontSize:11,color:'#94a3b8'}}>—</span>;
+                  // Collect all art groups from all products' decorations in this store
+                  const allDecoGroups=(s.products||[]).flatMap(pr=>(pr.decorations||[]).map(d=>d.art_group)).filter(Boolean);
+                  const allGroups=[...new Set(allDecoGroups)].sort();
+                  return <div style={{display:'flex',flexDirection:'column',gap:2}}>
+                    {decos.map((d,di)=>{
+                      const prefix=d.type==='screen_print'?'SP':d.type==='embroidery'?'EMB':'HTV';
+                      const relevantGroups=allGroups.filter(g=>g.startsWith(prefix)).sort();
+                      const nextNum=relevantGroups.length>0?Math.max(...relevantGroups.map(g=>parseInt(g.split('-')[1])||0))+1:1;
+                      const nextGroup=`${prefix}-${nextNum}`;
+                      const color=prefix==='SP'?'#1e40af':prefix==='EMB'?'#6d28d9':'#92400e';
+                      const bg=prefix==='SP'?'#dbeafe':prefix==='EMB'?'#ede9fe':'#fef3c7';
+                      return <div key={di} style={{display:'flex',flexWrap:'wrap',gap:2,alignItems:'center'}}>
+                        {relevantGroups.map(g=>{
+                          const active=d.art_group===g;
+                          return <button key={g} onClick={()=>updateDecos((p.decorations||[]).map((dd,j)=>j===di?{...dd,art_group:active?'':g}:dd))}
+                            style={{padding:'2px 6px',borderRadius:3,fontSize:8,fontWeight:800,cursor:'pointer',
+                              border:active?`2px solid ${color}`:'1px solid #d1d5db',
+                              background:active?bg:'#fff',color:active?color:'#94a3b8'}}>{g}</button>;
+                        })}
+                        {!d.art_group&&<button onClick={()=>updateDecos((p.decorations||[]).map((dd,j)=>j===di?{...dd,art_group:relevantGroups[0]||nextGroup}:dd))}
+                          style={{padding:'2px 6px',borderRadius:3,fontSize:8,fontWeight:700,cursor:'pointer',
+                            border:'1px dashed #94a3b8',background:'#fff',color:'#64748b'}}>+ {relevantGroups[0]||nextGroup}</button>}
+                      </div>;
                     })}
-                    {p.deco_type&&!p.art_group&&<button onClick={()=>updateProd('art_group',relevantGroups[0]||nextGroup)}
-                      style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:700,cursor:'pointer',
-                        border:'1px dashed #94a3b8',background:'#fff',color:'#64748b'}}>+ {relevantGroups[0]||nextGroup}</button>}
                   </div>;
                 })()}</td>
                 <td style={{textAlign:'right',fontSize:12}}>${p.retail}</td>
