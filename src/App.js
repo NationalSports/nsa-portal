@@ -10391,42 +10391,30 @@ export default function App(){
                 <td><div style={{display:'flex',flexDirection:'column',gap:2}}>
                   {(p.decorations||[]).map((d,di)=>{const [label,bg,fg]=d.type==='screen_print'?['SP','#dbeafe','#1e40af']:d.type==='embroidery'?['EMB','#ede9fe','#6d28d9']:['HTV','#fef3c7','#92400e'];
                     return <div key={di} style={{display:'flex',alignItems:'center',gap:2}}>
-                      <span style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:800,background:bg,color:fg,border:`2px solid ${fg}`}}>{label}</span>
+                      <span style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:800,background:bg,color:fg,border:`2px solid ${fg}`}}>{d.art_group||label}</span>
                       <button onClick={()=>updateDecos((p.decorations||[]).filter((_,j)=>j!==di))} style={{fontSize:12,color:'#94a3b8',cursor:'pointer',border:'none',background:'none',padding:'0 2px',lineHeight:1}}>&times;</button>
                     </div>})}
                   <div style={{display:'flex',gap:2}}>
-                    {[['SP','screen_print'],['EMB','embroidery'],['HTV','heat_press']].map(([label,type])=>
-                      <button key={type} onClick={()=>updateDecos([...(p.decorations||[]),{type,art_group:''}])}
-                        style={{padding:'2px 5px',borderRadius:3,fontSize:9,fontWeight:700,border:'1px dashed #cbd5e1',background:'#f8fafc',color:'#94a3b8',cursor:'pointer'}}>+{label}</button>
+                    {[['SP','screen_print'],['EMB','embroidery'],['HTV','heat_press']].map(([label,type])=>{
+                      const pfx=type==='screen_print'?'SP':type==='embroidery'?'EMB':'HTV';
+                      const allAg=(s.products||[]).flatMap(pr=>(pr.decorations||[]).map(d=>d.art_group)).filter(Boolean);
+                      const nums=allAg.filter(g=>g.startsWith(pfx)).map(g=>parseInt(g.split('-')[1])||0);
+                      const nextName=`${pfx}-${nums.length>0?Math.max(...nums)+1:1}`;
+                      return <button key={type} onClick={()=>updateDecos([...(p.decorations||[]),{type,art_group:nextName}])}
+                        style={{padding:'2px 5px',borderRadius:3,fontSize:9,fontWeight:700,border:'1px dashed #cbd5e1',background:'#f8fafc',color:'#94a3b8',cursor:'pointer'}}>+{label}</button>}
                     )}
                   </div>
                 </div></td>
                 <td>{(()=>{
                   const decos=p.decorations||[];
                   if(decos.length===0)return <span style={{fontSize:11,color:'#94a3b8'}}>—</span>;
-                  // Collect all art groups from all products' decorations in this store
-                  const allDecoGroups=(s.products||[]).flatMap(pr=>(pr.decorations||[]).map(d=>d.art_group)).filter(Boolean);
-                  const allGroups=[...new Set(allDecoGroups)].sort();
                   return <div style={{display:'flex',flexDirection:'column',gap:2}}>
                     {decos.map((d,di)=>{
-                      const prefix=d.type==='screen_print'?'SP':d.type==='embroidery'?'EMB':'HTV';
-                      const relevantGroups=allGroups.filter(g=>g.startsWith(prefix)).sort();
-                      const nextNum=relevantGroups.length>0?Math.max(...relevantGroups.map(g=>parseInt(g.split('-')[1])||0))+1:1;
-                      const nextGroup=`${prefix}-${nextNum}`;
-                      const color=prefix==='SP'?'#1e40af':prefix==='EMB'?'#6d28d9':'#92400e';
-                      const bg=prefix==='SP'?'#dbeafe':prefix==='EMB'?'#ede9fe':'#fef3c7';
-                      return <div key={di} style={{display:'flex',flexWrap:'wrap',gap:2,alignItems:'center'}}>
-                        {relevantGroups.map(g=>{
-                          const active=d.art_group===g;
-                          return <button key={g} onClick={()=>updateDecos((p.decorations||[]).map((dd,j)=>j===di?{...dd,art_group:active?'':g}:dd))}
-                            style={{padding:'2px 6px',borderRadius:3,fontSize:8,fontWeight:800,cursor:'pointer',
-                              border:active?`2px solid ${color}`:'1px solid #d1d5db',
-                              background:active?bg:'#fff',color:active?color:'#94a3b8'}}>{g}</button>;
-                        })}
-                        {!d.art_group&&<button onClick={()=>updateDecos((p.decorations||[]).map((dd,j)=>j===di?{...dd,art_group:relevantGroups[0]||nextGroup}:dd))}
-                          style={{padding:'2px 6px',borderRadius:3,fontSize:8,fontWeight:700,cursor:'pointer',
-                            border:'1px dashed #94a3b8',background:'#fff',color:'#64748b'}}>+ {relevantGroups[0]||nextGroup}</button>}
-                      </div>;
+                      const color=d.type==='screen_print'?'#1e40af':d.type==='embroidery'?'#6d28d9':'#92400e';
+                      return <input key={di} type="text" value={d.art_group||''} placeholder="name..."
+                        onChange={e=>{const val=e.target.value;updateDecos((p.decorations||[]).map((dd,j)=>j===di?{...dd,art_group:val}:dd))}}
+                        style={{width:80,padding:'2px 5px',borderRadius:3,fontSize:9,fontWeight:700,border:`1px solid ${color}40`,color,background:'transparent',outline:'none'}}
+                        onFocus={e=>{e.target.style.borderColor=color}} onBlur={e=>{e.target.style.borderColor=color+'40'}}/>;
                     })}
                   </div>;
                 })()}</td>
