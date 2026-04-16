@@ -2429,148 +2429,119 @@ export default function App(){
 
       // ── Fetch line items for this sale's orders ──
       //
-      // OMG's API makes per-order line-item fetching extremely hard:
-      //   - Global /order_products only returns the first 200 rows; no
-      //     working pagination; sort=-updated_at sorts by the LINE ITEM's
-      //     timestamp so this sale's items may never appear.
-      //   - Nested /orders/{id}/order_products → 404.
-      //   - /orders/{id}?include=order_products → 400.
-      //   - /order_products?filter[order_id]= → SILENTLY IGNORED (returns
-      //     the same first 100 global rows regardless of the order_id).
+      // OMG's API has NO per-order line-item access:
+      //   - Nested /orders/{id}/order_products → 404
+      //   - /orders/{id}?include=order_products → 400
+      //   - /order_products?filter[order_id]= → SILENTLY IGNORED
+      //   - page[size] capped below 1000 (5000/2000/1000 → 400)
+      //   - Neither links.next nor page[number] pagination works
       //
-      // Strategy that actually works:
-      //   1. Try escalating page[size] on global /order_products (5000,
-      //      2000, 1000, 500, 200). If OMG accepts a large page size, we
-      //      get enough global rows to filter client-side for our orders.
-      //   2. If the biggest page still doesn't cover us, fall back to per-
-      //      order fetch with a VERIFIED probe (check that the returned
-      //      rows' relationships.order.data.id actually matches the probed
-      //      order — this catches silently-ignored filters).
-      //   3. Dedupe by order_product id at the end.
+      // Strategy: brute-force multiple windows into /order_products.
+      //   1. Try page[offset]-based pagination (untested until now)
+      //   2. Fetch with multiple sort orders — each gives a different
+      //      200-row slice of the global data
+      //   3. Merge all results, dedupe, filter by our order id set
       if (orders.length > 0) {
-        // Phase 1: Try large page sizes on global /order_products.
-        // If OMG serves page[size]=5000, one call can capture the entire
-        // dataset and we just filter client-side. Try largest first.
-        console.log(`[OMG] Phase 1: trying escalated page sizes on global /order_products…`);
-        const pageSizeVariants = [5000, 2000, 1000, 500, 200];
-        for (const ps of pageSizeVariants) {
-          let resp;
-          const url = `/order_products?include=product,attribute_values&page[size]=${ps}`;
-          try { resp = await omgApiCall(url); }
-          catch (e) { console.log(`[OMG]   ✗ page[size]=${ps}: ${e.message}`); continue; }
-          if (!resp?.data) { console.log(`[OMG]   ✗ page[size]=${ps}: no data`); continue; }
-          const rows = resp.data;
-          const matched = rows.filter(op => {
-            const orderId = op.relationships?.order?.data?.id;
-            return orderId != null && myOrderIds.has(String(orderId));
-          });
-          console.log(`[OMG]   page[size]=${ps}: got ${rows.length} rows, ${matched.length} matched our ${myOrderIds.size} orders`);
-          if (matched.length > 0) {
-            orderProducts = matched;
-            captureIncluded(resp.included);
-            // If we got fewer rows than requested, we likely have the full
-            // dataset. If we got exactly the requested size, there's
-            // probably more. Either way, take what we have.
-            console.log(`[OMG]   ✓ page[size]=${ps} produced ${matched.length} line items (${rows.length} total rows scanned)`);
+        const opMap = new Map(); // dedupe by op.id
+        const opIncluded = [];
+
+        // Determine max working page[size]
+        let maxPS = 200;
+        for (const ps of [500, 400, 300]) {
+          try {
+            const resp = await omgApiCall(`/order_products?page[size]=${ps}`);
+            if (resp?.data?.length > 0) { maxPS = ps; break; }
+          } catch { continue; }
+        }
+        console.log(`[OMG] Max working page[size] for /order_products: ${maxPS}`);
+
+        // Try page[offset]-based pagination first — if it works we can
+        // scan the ENTIRE dataset.
+        console.log(`[OMG] Trying page[offset] pagination (page[size]=${maxPS})…`);
+        let offsetWorks = false;
+        // Fetch first page
+        try {
+          const resp = await omgApiCall(`/order_products?include=product,attribute_values&page[size]=${maxPS}`);
+          const rows = resp?.data || [];
+          rows.forEach(op => { if (op.id) opMap.set(op.id, op); });
+          opIncluded.push(...(resp?.included || []));
+          console.log(`[OMG]   page 1: ${rows.length} rows (unique: ${opMap.size})`);
+        } catch (e) { console.log(`[OMG]   page 1 failed: ${e.message}`); }
+
+        // Try offset pagination for subsequent pages
+        for (let off = maxPS; off < maxPS * 200; off += maxPS) {
+          try {
+            const resp = await omgApiCall(`/order_products?include=product,attribute_values&page[offset]=${off}&page[limit]=${maxPS}`);
+            const rows = resp?.data || [];
+            if (rows.length === 0) { console.log(`[OMG]   page[offset]=${off}: empty — end of data`); break; }
+            const fresh = rows.filter(op => op.id && !opMap.has(op.id));
+            if (fresh.length === 0) {
+              console.log(`[OMG]   page[offset]=${off}: all duplicates — offset pagination not supported`);
+              break;
+            }
+            offsetWorks = true;
+            fresh.forEach(op => opMap.set(op.id, op));
+            opIncluded.push(...(resp?.included || []));
+            if (off <= maxPS * 3 || off % (maxPS * 10) === 0) {
+              console.log(`[OMG]   page[offset]=${off}: ${rows.length} rows, ${fresh.length} new (total: ${opMap.size})`);
+            }
+          } catch (e) {
+            console.log(`[OMG]   page[offset]=${off} failed: ${e.message} — stopping`);
             break;
           }
         }
-
-        // Phase 2: Per-order fetch if global scan didn't cover us.
-        // Only run if phase 1 found 0 matches.
-        if (orderProducts.length === 0) {
-          console.log(`[OMG] Phase 2: per-order fetch (global scan found 0 matches)…`);
-          const perOrderVariants = [
-            { name: 'nested+av',    url: (id) => `/orders/${id}/order_products?include=product,attribute_values`, isNested: true },
-            { name: 'nested+prod',  url: (id) => `/orders/${id}/order_products?include=product`, isNested: true },
-            { name: 'nested',       url: (id) => `/orders/${id}/order_products`, isNested: true },
-            { name: 'inc op+prod',  url: (id) => `/orders/${id}?include=order_products,product`, isNested: false },
-            { name: 'inc op',       url: (id) => `/orders/${id}?include=order_products`, isNested: false },
-            { name: 'filter oid',   url: (id) => `/order_products?filter[order_id]=${id}&include=product,attribute_values`, isNested: true },
-          ];
-          const extractOPs = (resp, isNested) => {
-            if (!resp) return [];
-            if (isNested) return Array.isArray(resp.data) ? resp.data : [];
-            return (resp.included || []).filter(i => i.type === 'order_products' || i.type === 'order_product');
-          };
-
-          // Probe: test variants against order[0]. CRITICAL: verify the
-          // returned rows actually belong to the probed order. OMG's
-          // filter[order_id] is silently ignored and returns global rows,
-          // so just checking "non-empty" isn't enough — we must confirm
-          // relationships.order.data.id === probeOrder.id.
-          const probeOrder = orders[0];
-          let workingVariant = null;
-          for (const v of perOrderVariants) {
-            const url = v.url(probeOrder.id);
-            let resp;
-            try { resp = await omgApiCall(url); }
-            catch (e) { console.log(`[OMG]   ✗ probe "${v.name}": ${e.message}`); continue; }
-            const ops = extractOPs(resp, v.isNested);
-            // Verify at least one row actually belongs to this order
-            const verified = ops.filter(op => {
-              const relOid = op.relationships?.order?.data?.id;
-              return relOid != null && String(relOid) === String(probeOrder.id);
-            });
-            if (verified.length > 0) {
-              console.log(`[OMG]   ✓ per-order variant "${v.name}": ${ops.length} rows, ${verified.length} verified for ${probeOrder.id}`);
-              workingVariant = v;
-              verified.forEach(op => { op._sourceOrderId = probeOrder.id; });
-              orderProducts.push(...verified);
-              captureIncluded(resp.included || []);
-              break;
-            } else {
-              const unrelatedCount = ops.filter(op => {
-                const relOid = op.relationships?.order?.data?.id;
-                return relOid && String(relOid) !== String(probeOrder.id);
-              }).length;
-              console.log(`[OMG]   ✗ probe "${v.name}": ${ops.length} rows but ${unrelatedCount} belong to other orders (filter ignored)`);
-            }
-          }
-
-          if (workingVariant) {
-            const remaining = orders.slice(1);
-            const BATCH = 8;
-            console.log(`[OMG] Per-order batch fetch: ${remaining.length} orders via "${workingVariant.name}" in batches of ${BATCH}…`);
-            for (let i = 0; i < remaining.length; i += BATCH) {
-              const batch = remaining.slice(i, i + BATCH);
-              const results = await Promise.all(batch.map(async (o) => {
-                const url = workingVariant.url(o.id);
-                try {
-                  const resp = await omgApiCall(url);
-                  const ops = extractOPs(resp, workingVariant.isNested);
-                  const verified = ops.filter(op => {
-                    const relOid = op.relationships?.order?.data?.id;
-                    return relOid != null && String(relOid) === String(o.id);
-                  });
-                  verified.forEach(op => { op._sourceOrderId = o.id; });
-                  return { ops: verified, included: resp.included || [] };
-                } catch (e) {
-                  return { ops: [], included: [] };
-                }
-              }));
-              results.forEach(r => {
-                orderProducts.push(...r.ops);
-                captureIncluded(r.included);
-              });
-              if ((i / BATCH) % 5 === 0) {
-                console.log(`[OMG]   progress: ${Math.min(i + BATCH, remaining.length)}/${remaining.length} orders, ${orderProducts.length} verified line items`);
-              }
-            }
-            console.log(`[OMG] Per-order fetch complete: ${orderProducts.length} verified line items from ${orders.length} orders via "${workingVariant.name}"`);
-          } else {
-            console.warn(`[OMG] No per-order variant returned verified data. Unable to load line items.`);
+        if (offsetWorks) {
+          console.log(`[OMG] ✓ Offset pagination worked! Total unique order_products: ${opMap.size}`);
+        } else {
+          // Offset didn't work — try bare offset= style
+          console.log(`[OMG] Trying bare offset= pagination…`);
+          for (let off = maxPS; off < maxPS * 200; off += maxPS) {
+            try {
+              const resp = await omgApiCall(`/order_products?include=product,attribute_values&offset=${off}&limit=${maxPS}`);
+              const rows = resp?.data || [];
+              if (rows.length === 0) break;
+              const fresh = rows.filter(op => op.id && !opMap.has(op.id));
+              if (fresh.length === 0) { console.log(`[OMG]   offset=${off}: all duplicates — stopping`); break; }
+              offsetWorks = true;
+              fresh.forEach(op => opMap.set(op.id, op));
+              opIncluded.push(...(resp?.included || []));
+              if (off <= maxPS * 3) console.log(`[OMG]   offset=${off}: ${rows.length} rows, ${fresh.length} new (total: ${opMap.size})`);
+            } catch { break; }
           }
         }
 
-        // Dedupe by order_product id (in case both phases contributed rows)
-        const seen = new Set();
-        orderProducts = orderProducts.filter(op => {
-          if (!op.id || seen.has(op.id)) return false;
-          seen.add(op.id);
-          return true;
+        // If neither offset scheme worked, fetch multiple sort windows
+        if (!offsetWorks) {
+          console.log(`[OMG] Offset pagination failed. Multi-window sort fetch…`);
+          const sortVariants = [
+            'sort=-updated_at', 'sort=updated_at',
+            'sort=-created_at', 'sort=created_at',
+            'sort=-id', 'sort=id',
+          ];
+          for (const sv of sortVariants) {
+            try {
+              const resp = await omgApiCall(`/order_products?include=product,attribute_values&${sv}&page[size]=${maxPS}`);
+              const rows = resp?.data || [];
+              const fresh = rows.filter(op => op.id && !opMap.has(op.id));
+              fresh.forEach(op => opMap.set(op.id, op));
+              opIncluded.push(...(resp?.included || []));
+              console.log(`[OMG]   ${sv}: ${rows.length} rows, ${fresh.length} new (total: ${opMap.size})`);
+            } catch (e) { console.log(`[OMG]   ${sv}: ${e.message}`); }
+          }
+        }
+
+        // Filter the merged set against our order ids
+        captureIncluded(opIncluded);
+        const allOPs = [...opMap.values()];
+        orderProducts = allOPs.filter(op => {
+          const orderId = op.relationships?.order?.data?.id;
+          return orderId != null && myOrderIds.has(String(orderId));
         });
-        console.log(`[OMG] Final: ${orderProducts.length} unique order_products for ${orders.length} orders of sale ${omgId}`);
+        const uniqOrdsInAll = new Set(allOPs.map(op => op.relationships?.order?.data?.id).filter(Boolean));
+        console.log(`[OMG] Scanned ${allOPs.length} unique global order_products (spanning ${uniqOrdsInAll.size} orders) → ${orderProducts.length} matched our ${myOrderIds.size} orders`);
+        if (orderProducts.length === 0 && allOPs.length > 0) {
+          console.warn(`[OMG] Zero matches. Our first 5 order ids:`, [...myOrderIds].slice(0, 5), 'Global first 5:', [...uniqOrdsInAll].slice(0, 5));
+        }
       } else {
         console.warn(`[OMG] Skipping order_products fetch — no orders matched sale ${omgId}`);
       }
