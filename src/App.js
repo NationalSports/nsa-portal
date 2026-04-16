@@ -2427,122 +2427,150 @@ export default function App(){
       let orderProducts = [];
       const myOrderIds = new Set(orders.map(o => String(o.id)).filter(Boolean));
 
-      // ── Per-order fetch ──
-      // Global /order_products pagination is fundamentally broken:
-      //   - /order_products?sort=-updated_at returns the first 200 rows
-      //     sorted by the LINE ITEM's updated_at, not the order's. So recent
-      //     sales whose line items haven't been touched recently never
-      //     appear in the first page.
-      //   - No working pagination scheme beyond page 1 (links.next absent,
-      //     page[number] / page[offset] ignored).
-      // Consequence: for POLY ROYAL RODEO (171 orders) the global scan
-      // found 0 matching order_products. We MUST fetch line items per
-      // order.
+      // ── Fetch line items for this sale's orders ──
       //
-      // We don't know which per-order endpoint shape OMG supports, so we
-      // probe variants against the first order to find a working one,
-      // then batch-fetch the remaining orders with that variant in
-      // parallel. If no variant works, we fall back to the global scan
-      // as a last resort.
+      // OMG's API makes per-order line-item fetching extremely hard:
+      //   - Global /order_products only returns the first 200 rows; no
+      //     working pagination; sort=-updated_at sorts by the LINE ITEM's
+      //     timestamp so this sale's items may never appear.
+      //   - Nested /orders/{id}/order_products → 404.
+      //   - /orders/{id}?include=order_products → 400.
+      //   - /order_products?filter[order_id]= → SILENTLY IGNORED (returns
+      //     the same first 100 global rows regardless of the order_id).
+      //
+      // Strategy that actually works:
+      //   1. Try escalating page[size] on global /order_products (5000,
+      //      2000, 1000, 500, 200). If OMG accepts a large page size, we
+      //      get enough global rows to filter client-side for our orders.
+      //   2. If the biggest page still doesn't cover us, fall back to per-
+      //      order fetch with a VERIFIED probe (check that the returned
+      //      rows' relationships.order.data.id actually matches the probed
+      //      order — this catches silently-ignored filters).
+      //   3. Dedupe by order_product id at the end.
       if (orders.length > 0) {
-        const perOrderVariants = [
-          // Nested routes — most likely to exist in a JSON:API
-          { name: 'nested+full',  url: (id) => `/orders/${id}/order_products?include=product,attribute_values,product_attributes`, isNested: true },
-          { name: 'nested+av',    url: (id) => `/orders/${id}/order_products?include=product,attribute_values`, isNested: true },
-          { name: 'nested+prod',  url: (id) => `/orders/${id}/order_products?include=product`, isNested: true },
-          { name: 'nested',       url: (id) => `/orders/${id}/order_products`, isNested: true },
-          // Single-level include on the order resource
-          { name: 'inc op+full',  url: (id) => `/orders/${id}?include=order_products,product,attribute_values`, isNested: false },
-          { name: 'inc op+prod',  url: (id) => `/orders/${id}?include=order_products,product`, isNested: false },
-          { name: 'inc op',       url: (id) => `/orders/${id}?include=order_products`, isNested: false },
-          // Query-filter fallback — probe said filter is ignored, but try
-          { name: 'filter oid',   url: (id) => `/order_products?filter[order_id]=${id}&include=product,attribute_values`, isNested: true },
-        ];
-        const extractOPs = (resp, isNested) => {
-          if (!resp) return { ops: [], included: [] };
-          if (isNested) {
-            return { ops: Array.isArray(resp.data) ? resp.data : [], included: resp.included || [] };
-          }
-          const ops = (resp.included || []).filter(i => i.type === 'order_products' || i.type === 'order_product');
-          return { ops, included: resp.included || [] };
-        };
-
-        // Probe phase: find a variant that returns line items for order[0].
-        // Costs at most ~8 requests — cheap compared to guessing wrong on
-        // 171 orders.
-        const probeOrder = orders[0];
-        let workingVariant = null;
-        const firstResults = { ops: [], included: [] };
-        for (const v of perOrderVariants) {
-          const url = v.url(probeOrder.id);
+        // Phase 1: Try large page sizes on global /order_products.
+        // If OMG serves page[size]=5000, one call can capture the entire
+        // dataset and we just filter client-side. Try largest first.
+        console.log(`[OMG] Phase 1: trying escalated page sizes on global /order_products…`);
+        const pageSizeVariants = [5000, 2000, 1000, 500, 200];
+        for (const ps of pageSizeVariants) {
           let resp;
+          const url = `/order_products?include=product,attribute_values&page[size]=${ps}`;
           try { resp = await omgApiCall(url); }
-          catch (e) { console.log(`[OMG]   ✗ per-order probe "${v.name}": ${url} → ${e.message}`); continue; }
-          const { ops, included } = extractOPs(resp, v.isNested);
-          if (ops.length > 0) {
-            console.log(`[OMG]   ✓ per-order variant "${v.name}" returned ${ops.length} line items for ${probeOrder.id}`);
-            workingVariant = v;
-            ops.forEach(op => { op._sourceOrderId = probeOrder.id; firstResults.ops.push(op); });
-            firstResults.included.push(...included);
-            break;
-          } else {
-            console.log(`[OMG]   ✗ per-order probe "${v.name}": 0 line items for ${probeOrder.id}`);
-          }
-        }
-
-        if (workingVariant) {
-          orderProducts.push(...firstResults.ops);
-          captureIncluded(firstResults.included);
-          // Batch-fetch the remaining orders with the working variant.
-          const remaining = orders.slice(1);
-          const BATCH = 8;
-          console.log(`[OMG] Per-order fetch: ${remaining.length} orders remaining in batches of ${BATCH}…`);
-          for (let i = 0; i < remaining.length; i += BATCH) {
-            const batch = remaining.slice(i, i + BATCH);
-            const results = await Promise.all(batch.map(async (o) => {
-              const url = workingVariant.url(o.id);
-              try {
-                const resp = await omgApiCall(url);
-                const { ops, included } = extractOPs(resp, workingVariant.isNested);
-                ops.forEach(op => { op._sourceOrderId = o.id; });
-                return { ops, included };
-              } catch (e) {
-                console.log(`[OMG]   ✗ ${url}: ${e.message}`);
-                return { ops: [], included: [] };
-              }
-            }));
-            results.forEach(r => {
-              orderProducts.push(...r.ops);
-              captureIncluded(r.included);
-            });
-            if ((i / BATCH) % 5 === 0) {
-              console.log(`[OMG]   per-order progress: ${Math.min(i + BATCH, remaining.length)}/${remaining.length} orders fetched, ${orderProducts.length} line items so far`);
-            }
-          }
-          console.log(`[OMG] Per-order fetch complete: ${orderProducts.length} line items from ${orders.length} orders via "${workingVariant.name}"`);
-        } else {
-          console.warn(`[OMG] No per-order endpoint variant returned data. Falling back to global /order_products scan (expected to miss most rows)…`);
-          let allOPResult = cache.orderProducts;
-          if (!allOPResult) {
-            console.log(`[OMG] Fetching global /order_products (cache miss)…`);
-            allOPResult = await fetchAllVariants([
-              `/order_products?include=product,attribute_values&sort=-updated_at&page[size]=200`,
-              `/order_products?include=product&sort=-updated_at&page[size]=200`,
-              `/order_products?sort=-updated_at&page[size]=200`,
-              `/order_products?include=product,attribute_values`,
-              `/order_products?include=product`,
-              `/order_products`,
-            ], 400);
-            cache.orderProducts = allOPResult;
-          }
-          const rawOPs = allOPResult?.data || [];
-          orderProducts = rawOPs.filter(op => {
+          catch (e) { console.log(`[OMG]   ✗ page[size]=${ps}: ${e.message}`); continue; }
+          if (!resp?.data) { console.log(`[OMG]   ✗ page[size]=${ps}: no data`); continue; }
+          const rows = resp.data;
+          const matched = rows.filter(op => {
             const orderId = op.relationships?.order?.data?.id;
             return orderId != null && myOrderIds.has(String(orderId));
           });
-          captureIncluded(allOPResult?.included);
-          console.log(`[OMG] Global fallback /order_products: scanned ${rawOPs.length} → ${orderProducts.length} matched`);
+          console.log(`[OMG]   page[size]=${ps}: got ${rows.length} rows, ${matched.length} matched our ${myOrderIds.size} orders`);
+          if (matched.length > 0) {
+            orderProducts = matched;
+            captureIncluded(resp.included);
+            // If we got fewer rows than requested, we likely have the full
+            // dataset. If we got exactly the requested size, there's
+            // probably more. Either way, take what we have.
+            console.log(`[OMG]   ✓ page[size]=${ps} produced ${matched.length} line items (${rows.length} total rows scanned)`);
+            break;
+          }
         }
+
+        // Phase 2: Per-order fetch if global scan didn't cover us.
+        // Only run if phase 1 found 0 matches.
+        if (orderProducts.length === 0) {
+          console.log(`[OMG] Phase 2: per-order fetch (global scan found 0 matches)…`);
+          const perOrderVariants = [
+            { name: 'nested+av',    url: (id) => `/orders/${id}/order_products?include=product,attribute_values`, isNested: true },
+            { name: 'nested+prod',  url: (id) => `/orders/${id}/order_products?include=product`, isNested: true },
+            { name: 'nested',       url: (id) => `/orders/${id}/order_products`, isNested: true },
+            { name: 'inc op+prod',  url: (id) => `/orders/${id}?include=order_products,product`, isNested: false },
+            { name: 'inc op',       url: (id) => `/orders/${id}?include=order_products`, isNested: false },
+            { name: 'filter oid',   url: (id) => `/order_products?filter[order_id]=${id}&include=product,attribute_values`, isNested: true },
+          ];
+          const extractOPs = (resp, isNested) => {
+            if (!resp) return [];
+            if (isNested) return Array.isArray(resp.data) ? resp.data : [];
+            return (resp.included || []).filter(i => i.type === 'order_products' || i.type === 'order_product');
+          };
+
+          // Probe: test variants against order[0]. CRITICAL: verify the
+          // returned rows actually belong to the probed order. OMG's
+          // filter[order_id] is silently ignored and returns global rows,
+          // so just checking "non-empty" isn't enough — we must confirm
+          // relationships.order.data.id === probeOrder.id.
+          const probeOrder = orders[0];
+          let workingVariant = null;
+          for (const v of perOrderVariants) {
+            const url = v.url(probeOrder.id);
+            let resp;
+            try { resp = await omgApiCall(url); }
+            catch (e) { console.log(`[OMG]   ✗ probe "${v.name}": ${e.message}`); continue; }
+            const ops = extractOPs(resp, v.isNested);
+            // Verify at least one row actually belongs to this order
+            const verified = ops.filter(op => {
+              const relOid = op.relationships?.order?.data?.id;
+              return relOid != null && String(relOid) === String(probeOrder.id);
+            });
+            if (verified.length > 0) {
+              console.log(`[OMG]   ✓ per-order variant "${v.name}": ${ops.length} rows, ${verified.length} verified for ${probeOrder.id}`);
+              workingVariant = v;
+              verified.forEach(op => { op._sourceOrderId = probeOrder.id; });
+              orderProducts.push(...verified);
+              captureIncluded(resp.included || []);
+              break;
+            } else {
+              const unrelatedCount = ops.filter(op => {
+                const relOid = op.relationships?.order?.data?.id;
+                return relOid && String(relOid) !== String(probeOrder.id);
+              }).length;
+              console.log(`[OMG]   ✗ probe "${v.name}": ${ops.length} rows but ${unrelatedCount} belong to other orders (filter ignored)`);
+            }
+          }
+
+          if (workingVariant) {
+            const remaining = orders.slice(1);
+            const BATCH = 8;
+            console.log(`[OMG] Per-order batch fetch: ${remaining.length} orders via "${workingVariant.name}" in batches of ${BATCH}…`);
+            for (let i = 0; i < remaining.length; i += BATCH) {
+              const batch = remaining.slice(i, i + BATCH);
+              const results = await Promise.all(batch.map(async (o) => {
+                const url = workingVariant.url(o.id);
+                try {
+                  const resp = await omgApiCall(url);
+                  const ops = extractOPs(resp, workingVariant.isNested);
+                  const verified = ops.filter(op => {
+                    const relOid = op.relationships?.order?.data?.id;
+                    return relOid != null && String(relOid) === String(o.id);
+                  });
+                  verified.forEach(op => { op._sourceOrderId = o.id; });
+                  return { ops: verified, included: resp.included || [] };
+                } catch (e) {
+                  return { ops: [], included: [] };
+                }
+              }));
+              results.forEach(r => {
+                orderProducts.push(...r.ops);
+                captureIncluded(r.included);
+              });
+              if ((i / BATCH) % 5 === 0) {
+                console.log(`[OMG]   progress: ${Math.min(i + BATCH, remaining.length)}/${remaining.length} orders, ${orderProducts.length} verified line items`);
+              }
+            }
+            console.log(`[OMG] Per-order fetch complete: ${orderProducts.length} verified line items from ${orders.length} orders via "${workingVariant.name}"`);
+          } else {
+            console.warn(`[OMG] No per-order variant returned verified data. Unable to load line items.`);
+          }
+        }
+
+        // Dedupe by order_product id (in case both phases contributed rows)
+        const seen = new Set();
+        orderProducts = orderProducts.filter(op => {
+          if (!op.id || seen.has(op.id)) return false;
+          seen.add(op.id);
+          return true;
+        });
+        console.log(`[OMG] Final: ${orderProducts.length} unique order_products for ${orders.length} orders of sale ${omgId}`);
       } else {
         console.warn(`[OMG] Skipping order_products fetch — no orders matched sale ${omgId}`);
       }
