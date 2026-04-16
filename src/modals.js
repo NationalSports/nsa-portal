@@ -251,20 +251,27 @@ function AddressAutocomplete({value,onChange,onPlaceSelect,placeholder,style,cla
   const inputRef=useRef(null);const acRef=useRef(null);
   useEffect(()=>{
     if(!inputRef.current||acRef.current)return;
-    if(!window.google?.maps?.places){return}
-    const ac=new window.google.maps.places.Autocomplete(inputRef.current,{types:['address'],componentRestrictions:{country:'us'},fields:['address_components','formatted_address']});
-    ac.addListener('place_changed',()=>{
-      const place=ac.getPlace();if(!place?.address_components)return;
-      const get=(type)=>{const c=place.address_components.find(x=>x.types.includes(type));return c||null};
-      const num=get('street_number')?.long_name||'';
-      const route=get('route')?.short_name||'';
-      const city=get('locality')?.long_name||get('sublocality_level_1')?.long_name||get('neighborhood')?.long_name||'';
-      const state=get('administrative_area_level_1')?.short_name||'';
-      const zip=get('postal_code')?.long_name||'';
-      const street=[num,route].filter(Boolean).join(' ');
-      onPlaceSelect({street,city,state,zip});
-    });
-    acRef.current=ac;
+    const init=()=>{
+      if(!window.google?.maps?.places||acRef.current)return false;
+      const ac=new window.google.maps.places.Autocomplete(inputRef.current,{types:['address'],componentRestrictions:{country:'us'},fields:['address_components','formatted_address']});
+      ac.addListener('place_changed',()=>{
+        const place=ac.getPlace();if(!place?.address_components)return;
+        const get=(type)=>{const c=place.address_components.find(x=>x.types.includes(type));return c||null};
+        const num=get('street_number')?.long_name||'';
+        const route=get('route')?.short_name||'';
+        const city=get('locality')?.long_name||get('sublocality_level_1')?.long_name||get('neighborhood')?.long_name||'';
+        const state=get('administrative_area_level_1')?.short_name||'';
+        const zip=get('postal_code')?.long_name||'';
+        const street=[num,route].filter(Boolean).join(' ');
+        onPlaceSelect({street,city,state,zip});
+      });
+      acRef.current=ac;return true;
+    };
+    if(!init()){
+      const iv=setInterval(()=>{if(init())clearInterval(iv)},500);
+      const to=setTimeout(()=>clearInterval(iv),10000);
+      return()=>{clearInterval(iv);clearTimeout(to)};
+    }
     return()=>{if(acRef.current){window.google.maps.event.clearInstanceListeners(acRef.current);acRef.current=null}};
   },[]);// eslint-disable-line
   return <input ref={inputRef} className={className||'form-input'} placeholder={placeholder||'Street'} value={value} onChange={e=>onChange(e.target.value)} style={style}/>;
