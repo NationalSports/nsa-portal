@@ -10087,17 +10087,39 @@ export default function App(){
                 {s.open_date&&<span style={{marginLeft:8,fontSize:11,color:'#64748b'}}>📅 {s.open_date} → {s.close_date}</span>}
               </div>
             </div>
-            {s.status==='closed'&&!sos.some(so=>so.omg_store_id===s.id)&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
-              // Create a new SO linked to this OMG store — user adds items manually from OMG admin data
+            {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
               if(sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
               const generatedId=nextSOId(sos);
+              // Build SO items from imported products — each product becomes a line item
+              const soItems=(s.products||[]).map(p=>{
+                // Match to catalog for vendor_id and product_id
+                const catP=prod.find(cp=>cp.sku===p.sku||cp.sku?.toLowerCase()===p.sku?.toLowerCase());
+                const totalQty=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);
+                // unit_sell = what customer paid per unit (retail from report)
+                // nsa_cost = wholesale cost (from catalog/SanMar/S&S lookup)
+                // deco is $0 — bundled into the store price
+                return{
+                  sku:p.sku,name:p.name,brand:p.manufacturer||catP?.brand||'',
+                  color:p.color,product_id:catP?.id||null,vendor_id:catP?.vendor_id||null,
+                  nsa_cost:p.cost||catP?.nsa_cost||0,
+                  retail_price:p.retail||0,
+                  unit_sell:p.retail||0,
+                  sizes:p.sizes||{},
+                  available_sizes:Object.keys(p.sizes||{}),
+                  _colorImage:p.image_url||'',
+                  no_deco:!p.deco_type,
+                  decorations:p.deco_type?[{kind:'art',position:'Front Center',type:p.deco_type,art_file_id:null,sell_override:0,sell_each:0,cost_each:0}]:[],
+                  pick_lines:[],po_lines:[],
+                };
+              });
               const newSO={id:generatedId,customer_id:s.customer_id,memo:'OMG Store: '+s.store_name+(s._omg_sale_code?' ('+s._omg_sale_code+')':''),status:'need_order',
                 created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
-                expected_date:'',production_notes:'Linked to OMG store '+s.id+'. View orders at: team.ordermygear.com/admin/sales/'+s._omg_id,
-                shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[],jobs:[],items:[],omg_store_id:s.id};
+                expected_date:'',production_notes:'OMG Store '+s.store_name+' — '+soItems.length+' items imported from report. Deco cost is $0 (bundled in store price).',
+                shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[],
+                jobs:[],items:soItems,omg_store_id:s.id};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
-              nf('Created SO for '+s.store_name+' — add items from OMG admin');
-            }}>📋 Create Sales Order</button>}
+              nf(`Created SO with ${soItems.length} items from ${s.store_name}`);
+            }}>📋 Create Sales Order ({(s.products||[]).length} items)</button>}
             {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
               ✅ Already pulled → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>}
           </div>
