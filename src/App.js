@@ -10126,9 +10126,9 @@ export default function App(){
         </div></div>
 
         <div className="stats-row" style={{marginBottom:12}}>
-          <div className="stat-card"><div className="stat-label">Orders</div><div className="stat-value">{s.orders||0}</div></div>
-          <div className="stat-card"><div className="stat-label">Total Sales</div><div className="stat-value" style={{color:'#1e40af'}}>${(s.total_sales||0).toLocaleString()}</div></div>
-          <div className="stat-card"><div className="stat-label">Fundraise</div><div className="stat-value" style={{color:'#166534'}}>${(s.fundraise_total||0).toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{(s.products||[]).reduce((a,p)=>a+Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0),0)}</div></div>
+          <div className="stat-card"><div className="stat-label">Product Revenue</div><div className="stat-value" style={{color:'#1e40af'}}>${(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0).toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Products</div><div className="stat-value">{(s.products||[]).length}</div></div>
           <div className="stat-card"><div className="stat-label">NSA Cost</div><div className="stat-value" style={{color:'#d97706'}}>${totalCost.toLocaleString()}</div></div>
           <div className="stat-card"><div className="stat-label">Margin</div><div className="stat-value" style={{color:pct>=30?'#166534':'#dc2626'}}>{pct}%</div></div>
         </div>
