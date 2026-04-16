@@ -2933,7 +2933,7 @@ export default function App(){
           let productQty = 0, productPaid = 0;
           const colors = new Set();
           rows.forEach(row => {
-            const rawSz = (row.size || 'OS').trim();
+            const rawSz = (row.size || 'OS').trim().replace(/["''″]+$/,'');
             const sz = SZ_NORM[rawSz.toUpperCase()] || (/^adult\b/i.test(rawSz)?'OSFA':rawSz);
             const qty = row.quantity || 0;
             sizes[sz] = (sizes[sz] || 0) + qty;
@@ -10436,7 +10436,8 @@ export default function App(){
                   </div>
                 </td>
                 <td>{(()=>{
-                  const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','OS','OSFA'];
+                  const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','OS','OSFA',
+                    '28','30','32','34','36','38','40','42','44','46','48','50','52','54'];
                   const entries=Object.entries(p.sizes||{})
                     .filter(([sz,q2])=>sz&&String(sz).trim()&&q2>0)
                     .sort((a,b)=>{
