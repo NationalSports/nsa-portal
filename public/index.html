@@ -7,6 +7,16 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>NSA Portal v2 FIXED</title>
+  <script>
+    (function(){
+      var k='%REACT_APP_GOOGLE_PLACES_API_KEY%';
+      if(k&&k.indexOf('REACT_APP_')===-1){
+        var s=document.createElement('script');
+        s.src='https://maps.googleapis.com/maps/api/js?key='+k+'&libraries=places';
+        s.async=true;s.defer=true;document.head.appendChild(s);
+      }
+    })();
+  </script>
 </head>
 <body>
   <div id="root"></div>

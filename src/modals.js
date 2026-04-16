@@ -247,6 +247,29 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
 
 // MODALS
 
+function AddressAutocomplete({value,onChange,onPlaceSelect,placeholder,style,className}){
+  const inputRef=useRef(null);const acRef=useRef(null);
+  useEffect(()=>{
+    if(!inputRef.current||acRef.current)return;
+    if(!window.google?.maps?.places){return}
+    const ac=new window.google.maps.places.Autocomplete(inputRef.current,{types:['address'],componentRestrictions:{country:'us'},fields:['address_components','formatted_address']});
+    ac.addListener('place_changed',()=>{
+      const place=ac.getPlace();if(!place?.address_components)return;
+      const get=(type)=>{const c=place.address_components.find(x=>x.types.includes(type));return c||null};
+      const num=get('street_number')?.long_name||'';
+      const route=get('route')?.short_name||'';
+      const city=get('locality')?.long_name||get('sublocality_level_1')?.long_name||get('neighborhood')?.long_name||'';
+      const state=get('administrative_area_level_1')?.short_name||'';
+      const zip=get('postal_code')?.long_name||'';
+      const street=[num,route].filter(Boolean).join(' ');
+      onPlaceSelect({street,city,state,zip});
+    });
+    acRef.current=ac;
+    return()=>{if(acRef.current){window.google.maps.event.clearInstanceListeners(acRef.current);acRef.current=null}};
+  },[]);// eslint-disable-line
+  return <input ref={inputRef} className={className||'form-input'} placeholder={placeholder||'Street'} value={value} onChange={e=>onChange(e.target.value)} style={style}/>;
+}
+
 function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase}){
   const b={parent_id:null,name:'',alpha_tag:'',contacts:[{name:'',email:'',phone:'',role:'Head Coach'}],shipping_city:'',shipping_state:'',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',tax_exempt:false,tax_rate:0};
   const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});const[tcLook,setTcLook]=useState({loading:false,msg:''});
@@ -286,7 +309,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase}){
       {i>0?<button className="btn btn-sm btn-secondary" onClick={()=>rmC(i)}><Icon name="trash" size={12}/></button>:<div/>}</div>)}
     <button className="btn btn-sm btn-secondary" onClick={addC}><Icon name="plus" size={12}/> Contact</button>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Shipping</div>
-    <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 60px 80px',gap:8}}><input className="form-input" placeholder="Street" value={f.shipping_address_line1||''} onChange={e=>sv('shipping_address_line1',e.target.value)}/><input className="form-input" placeholder="City *" value={f.shipping_city||''} onChange={e=>sv('shipping_city',e.target.value)} style={err.c?{borderColor:'#dc2626'}:{}}/><input className="form-input" placeholder="ST" value={f.shipping_state||''} onChange={e=>sv('shipping_state',e.target.value)} style={err.s?{borderColor:'#dc2626'}:{}}/><input className="form-input" placeholder="ZIP" value={f.shipping_zip||''} onChange={e=>sv('shipping_zip',e.target.value)}/></div>
+    <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 60px 80px',gap:8}}><AddressAutocomplete placeholder="Street" value={f.shipping_address_line1||''} onChange={v=>sv('shipping_address_line1',v)} onPlaceSelect={p=>{setF(x=>({...x,shipping_address_line1:p.street,shipping_city:p.city,shipping_state:p.state,shipping_zip:p.zip}))}}/><input className="form-input" placeholder="City *" value={f.shipping_city||''} onChange={e=>sv('shipping_city',e.target.value)} style={err.c?{borderColor:'#dc2626'}:{}}/><input className="form-input" placeholder="ST" value={f.shipping_state||''} onChange={e=>sv('shipping_state',e.target.value)} style={err.s?{borderColor:'#dc2626'}:{}}/><input className="form-input" placeholder="ZIP" value={f.shipping_zip||''} onChange={e=>sv('shipping_zip',e.target.value)}/></div>
     <div style={{fontSize:10,color:'#64748b',marginTop:8,marginBottom:4,fontStyle:'italic'}}>Billing address defaults to shipping address above.</div>
     {(f.alt_billing_addresses||[]).length>0&&<div style={{fontSize:10,fontWeight:600,color:'#64748b',marginTop:6,marginBottom:4}}>Alternate Addresses</div>}
     {(f.alt_billing_addresses||[]).map((ab,ai)=><div key={ai} style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,padding:'8px 10px',marginBottom:6}}>
@@ -299,7 +322,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase}){
         <button className="btn btn-sm btn-secondary" onClick={()=>sv('alt_billing_addresses',(f.alt_billing_addresses||[]).filter((_,i)=>i!==ai))} style={{padding:'2px 6px'}}><Icon name="trash" size={12}/></button>
       </div>
       <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 60px 80px',gap:6}}>
-        <input className="form-input" placeholder="Street" value={ab.street||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,street:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
+        <AddressAutocomplete placeholder="Street" value={ab.street||''} onChange={v=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,street:v};sv('alt_billing_addresses',a)}} onPlaceSelect={p=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,street:p.street,city:p.city,state:p.state,zip:p.zip};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
         <input className="form-input" placeholder="City" value={ab.city||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,city:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
         <input className="form-input" placeholder="ST" value={ab.state||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,state:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
         <input className="form-input" placeholder="ZIP" value={ab.zip||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,zip:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
