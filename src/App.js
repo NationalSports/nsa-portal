@@ -10173,7 +10173,7 @@ export default function App(){
                 // Parse known patterns from Dollar Report
                 const parseAmt=(pattern)=>{const m=text.match(pattern);return m?parseFloat(m[1].replace(/,/g,''))||0:0};
                 const shipping=parseAmt(/Shipping\s*\$?([\d,]+\.?\d*)/i);
-                const processing=parseAmt(/Processing\s*\$?([\d,]+\.?\d*)/i);
+                const processing=parseAmt(/(?:Online\s*)?Processing\s*(?:Fee)?\s*\$?([\d,]+\.?\d*)/i);
                 const tax=parseAmt(/Sales\s*Tax\s*\$?([\d,]+\.?\d*)/i);
                 const fundraise=parseAmt(/Fundrais(?:ing|e)\s*(?:Collected)?\s*\$?([\d,]+\.?\d*)/i);
                 const grandTotal=parseAmt(/Grand\s*Total[:\s]*\$?([\d,]+\.?\d*)/i);
