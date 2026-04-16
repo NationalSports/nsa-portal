@@ -10310,7 +10310,12 @@ export default function App(){
                 const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
               };
               return<tr key={i}>
-                <td style={{padding:4}}>{p.image_url?<img src={p.image_url} alt="" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0'}}/>:<span style={{color:'#cbd5e1',fontSize:20}}>📦</span>}</td>
+                <td style={{padding:4}}>{p.image_url?<img src={p.image_url} alt="" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',cursor:'pointer'}} onClick={e=>{
+                  e.stopPropagation();const overlay=document.createElement('div');
+                  overlay.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;cursor:pointer';
+                  overlay.innerHTML=`<img src="${p.image_url}" style="max-width:90vw;max-height:90vh;object-fit:contain;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.5)"/>`;
+                  overlay.onclick=()=>overlay.remove();document.body.appendChild(overlay);
+                }}/>:<span style={{color:'#cbd5e1',fontSize:20}}>📦</span>}</td>
                 <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{p.sku}</td>
                 <td><input type="text" value={p.name} onChange={e=>updateProd('name',e.target.value)} style={{fontSize:12,fontWeight:600,border:'none',background:'transparent',width:'100%',padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/>
                   <div style={{fontSize:10,color:'#94a3b8'}}>{p.manufacturer}{p.vendor_id&&<span style={{marginLeft:4,color:'#2563eb',fontWeight:600}}>→ {vend.find(v=>v.id===p.vendor_id)?.name||p.vendor_id}</span>}</div></td>
@@ -10321,13 +10326,30 @@ export default function App(){
                   )}
                 </div></td>
                 <td>{(()=>{
-                  // Collect unique art groups from all products for autocomplete
-                  const existing=[...new Set((s.products||[]).map(pr=>pr.art_group).filter(Boolean))];
-                  return <div style={{position:'relative'}}>
-                    <input type="text" value={p.art_group||''} placeholder="—" onChange={e=>updateProd('art_group',e.target.value)}
-                      list={`art-groups-${s.id}`}
-                      style={{width:90,padding:'3px 6px',border:'1px solid '+(p.art_group?'#86efac':'#e2e8f0'),borderRadius:4,fontSize:11,background:p.art_group?'#f0fdf4':'transparent'}}/>
-                    <datalist id={`art-groups-${s.id}`}>{existing.map(g=><option key={g} value={g}/>)}</datalist>
+                  // Quick-add art group chips: SP-1, SP-2, EMB-1, etc.
+                  const allGroups=[...new Set((s.products||[]).map(pr=>pr.art_group).filter(Boolean))].sort();
+                  const decoPrefix=p.deco_type==='screen_print'?'SP':p.deco_type==='embroidery'?'EMB':p.deco_type==='heat_press'?'HTV':'ART';
+                  const relevantGroups=allGroups.filter(g=>g.startsWith(decoPrefix));
+                  const nextNum=relevantGroups.length>0?Math.max(...relevantGroups.map(g=>parseInt(g.split('-')[1])||0))+1:1;
+                  const nextGroup=`${decoPrefix}-${nextNum}`;
+                  return <div style={{display:'flex',flexWrap:'wrap',gap:3,alignItems:'center'}}>
+                    {allGroups.map(g=>{
+                      const active=p.art_group===g;
+                      const prefix=g.split('-')[0];
+                      const color=prefix==='SP'?'#1e40af':prefix==='EMB'?'#6d28d9':prefix==='HTV'?'#92400e':'#475569';
+                      const bg=prefix==='SP'?'#dbeafe':prefix==='EMB'?'#ede9fe':prefix==='HTV'?'#fef3c7':'#f1f5f9';
+                      return <button key={g} onClick={()=>updateProd('art_group',active?'':g)}
+                        style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:800,cursor:'pointer',
+                          border:active?`2px solid ${color}`:'1px solid #d1d5db',
+                          background:active?bg:'#fff',color:active?color:'#94a3b8'}}>{g}</button>;
+                    })}
+                    {p.deco_type&&!p.art_group&&<button onClick={()=>updateProd('art_group',relevantGroups[0]||nextGroup)}
+                      style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:700,cursor:'pointer',
+                        border:'1px dashed #94a3b8',background:'#fff',color:'#64748b'}}>+ {relevantGroups[0]||nextGroup}</button>}
+                    {p.deco_type&&p.art_group&&<button onClick={()=>updateProd('art_group',nextGroup)}
+                      title="Create new art group"
+                      style={{padding:'2px 4px',borderRadius:3,fontSize:9,cursor:'pointer',
+                        border:'1px dashed #94a3b8',background:'#fff',color:'#94a3b8'}}>+</button>}
                   </div>;
                 })()}</td>
                 <td style={{textAlign:'right',fontSize:12}}>${p.retail}</td>
