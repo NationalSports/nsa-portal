@@ -2954,7 +2954,51 @@ export default function App(){
         });
       });
 
-      console.log(`[OMG Report] Imported ${products.length} products, ${totalQty} total units, $${totalSales} from report ${reportId}`);
+      console.log(`[OMG Report] Parsed ${products.length} products, ${totalQty} total units, $${totalSales} from report ${reportId}`);
+
+      // ── Auto-lookup wholesale costs ──
+      // Priority: 1) NSA catalog (covers Adidas, custom pricing)
+      //           2) SanMar API  3) S&S Activewear API
+      let matched = 0, apiLookups = 0;
+      for (const p of products) {
+        if (!p.sku) continue;
+        // 1) Check NSA catalog
+        const catMatch = prod.find(cp => cp.sku === p.sku || cp.sku?.toLowerCase() === p.sku?.toLowerCase());
+        if (catMatch && catMatch.nsa_cost > 0) {
+          p.cost = catMatch.nsa_cost;
+          p._cost_source = 'catalog';
+          matched++;
+          continue;
+        }
+        // 2) Try SanMar API
+        try {
+          apiLookups++;
+          const smResp = await sanmarGetPricing(p.sku);
+          const smPrice = smResp?.pricing?.[0]?.piecePrice || smResp?.PiecePrice || smResp?.pricing?.[0]?.PiecePrice;
+          if (smPrice && parseFloat(smPrice) > 0) {
+            p.cost = parseFloat(smPrice);
+            p._cost_source = 'sanmar';
+            matched++;
+            continue;
+          }
+        } catch { /* not a SanMar item */ }
+        // 3) Try S&S Activewear API
+        try {
+          apiLookups++;
+          const ssResp = await ssGetProducts({ style: p.sku });
+          const ssItem = Array.isArray(ssResp) ? ssResp[0] : ssResp;
+          const ssPrice = ssItem?.CustomerPrice || ssItem?.customerPrice || ssItem?.Price || ssItem?.price;
+          if (ssPrice && parseFloat(ssPrice) > 0) {
+            p.cost = parseFloat(ssPrice);
+            p._cost_source = 'ss';
+            matched++;
+            continue;
+          }
+        } catch { /* not an S&S item */ }
+        // No match — leave cost as 0, user fills in manually
+        p._cost_source = 'manual';
+      }
+      console.log(`[OMG Report] Cost lookup: ${matched}/${products.length} matched (${apiLookups} API calls). Sources: ${products.map(p=>p._cost_source).join(', ')}`);
 
       // Update the store with imported products
       const updated = {
@@ -10116,7 +10160,17 @@ export default function App(){
                     <button key={type} onClick={()=>setDeco(type)} style={{padding:'3px 8px',borderRadius:4,fontSize:10,fontWeight:800,border:p.deco_type===type?`2px solid ${fg}`:'2px solid transparent',background:p.deco_type===type?bg:'#f1f5f9',color:p.deco_type===type?fg:'#94a3b8',cursor:'pointer',transition:'all 0.1s'}}>{label}</button>
                   )}
                 </div></td>
-                <td style={{textAlign:'right',fontSize:12}}>${p.retail}</td><td style={{textAlign:'right',fontSize:12}}>${p.cost}</td>
+                <td style={{textAlign:'right',fontSize:12}}>${p.retail}</td>
+                <td style={{textAlign:'right',fontSize:12}}>
+                  {p.cost>0?<span>${p.cost.toFixed(2)} <span style={{fontSize:8,color:p._cost_source==='catalog'?'#22c55e':p._cost_source==='sanmar'?'#2563eb':p._cost_source==='ss'?'#7c3aed':'#94a3b8'}} title={`Cost from ${p._cost_source||'manual'}`}>{p._cost_source==='catalog'?'CAT':p._cost_source==='sanmar'?'SM':p._cost_source==='ss'?'SS':'?'}</span></span>
+                  :<span style={{color:'#dc2626',fontWeight:600,cursor:'pointer'}} title="Click to set cost" onClick={()=>{
+                    const val=prompt(`Enter wholesale cost for ${p.sku} ${p.name}:`);
+                    if(val!=null&&!isNaN(parseFloat(val))){
+                      const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,cost:parseFloat(val),_cost_source:'manual'}:pr);
+                      const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
+                    }
+                  }}>$0 ⚠</span>}
+                </td>
                 <td>{(()=>{
                   const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','OS','OSFA'];
                   const entries=Object.entries(p.sizes||{})
