@@ -11792,23 +11792,36 @@ export default function App(){
             </div>
             {manualShipModal.so.memo&&<div style={{fontSize:10,color:'#64748b',marginBottom:8,fontStyle:'italic'}}>{manualShipModal.so.memo}</div>}
 
-            {/* Remaining items */}
+            {/* Remaining items — editable sizes */}
             {(manualShipModal.remainItems||[]).length>0&&<div style={{marginBottom:12}}>
-              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Items on order (unshipped)</div>
+              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Items being shipped (adjust quantities)</div>
               <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
                 <thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
                   <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>SKU</th>
                   <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Item</th>
-                  <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Sizes</th>
+                  <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Sizes (click to edit)</th>
                   <th style={{padding:'3px 6px',textAlign:'center',fontSize:10,color:'#64748b'}}>Qty</th>
+                  <th style={{width:30}}></th>
                 </tr></thead>
                 <tbody>{(manualShipModal.remainItems||[]).map((it,ii)=>{
-                  const szStr=Object.entries(it.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=>sz+':'+v).join('  ');
+                  const itQty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
                   return<tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
                     <td style={{padding:'3px 6px',fontWeight:700,fontFamily:'monospace',color:'#1e40af'}}>{it.sku}</td>
                     <td style={{padding:'3px 6px',fontSize:10}}>{it.name}{it.color?' · '+it.color:''}</td>
-                    <td style={{padding:'3px 6px',fontSize:10,fontFamily:'monospace',color:'#64748b'}}>{szStr}</td>
-                    <td style={{padding:'3px 6px',textAlign:'center',fontWeight:700}}>{it.qty}</td>
+                    <td style={{padding:'3px 6px'}}>
+                      <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+                        {Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=><div key={sz} style={{display:'flex',alignItems:'center',gap:3,background:'#f1f5f9',borderRadius:4,padding:'2px 6px'}}>
+                          <span style={{fontSize:11,color:'#475569',fontWeight:700,minWidth:22}}>{sz}</span>
+                          <input type="number" min="0" value={v} style={{width:44,fontSize:12,textAlign:'center',padding:'3px 4px',border:'1px solid #cbd5e1',borderRadius:4,fontWeight:600}}
+                            onChange={e=>{const nv=parseInt(e.target.value)||0;const items=[...manualShipModal.remainItems];
+                              items[ii]={...items[ii],sizes:{...items[ii].sizes,[sz]:nv},qty:Object.entries({...items[ii].sizes,[sz]:nv}).reduce((a,[,val])=>a+val,0)};
+                              setManualShipModal({...manualShipModal,remainItems:items})}}/>
+                        </div>)}
+                      </div>
+                    </td>
+                    <td style={{padding:'3px 6px',textAlign:'center',fontWeight:700}}>{itQty}</td>
+                    <td><button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:12}} onClick={()=>{
+                      const items=[...manualShipModal.remainItems];items.splice(ii,1);setManualShipModal({...manualShipModal,remainItems:items})}}>×</button></td>
                   </tr>})}</tbody>
               </table>
             </div>}
@@ -11903,24 +11916,48 @@ export default function App(){
                       nf('Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · Cost: $'+cost.toFixed(2):''));
                       addWhAction({type:'manual_label_created',soId:so.id,customer:c2?.name||'',tracking:label.trackingNumber||'',carrier:label.carrierCode||manualShipModal.carrier,cost:cost?'$'+cost.toFixed(2):'',by:cu?.id||'warehouse'});
                       if(labelDownload){
-                        if(labelDownload.startsWith('data:application/pdf')){
-                          const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
-                          iframe.src=labelDownload;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){window.open(labelDownload,'_blank')}
-                            setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
-                        } else {const pw=window.open(labelDownload,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                        // Convert base64 to blob for reliable download/print
+                        if(labelDownload.startsWith('data:application/pdf;base64,')){
+                          try{
+                            const b64=labelDownload.replace('data:application/pdf;base64,','');
+                            const bin=atob(b64);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+                            const blob=new Blob([arr],{type:'application/pdf'});const blobUrl=URL.createObjectURL(blob);
+                            const a=document.createElement('a');a.href=blobUrl;a.download='shipping-label-'+so.id+'.pdf';a.click();
+                            nf('Label downloaded as PDF');
+                          }catch(e2){const a=document.createElement('a');a.href=labelDownload;a.download='label.pdf';a.click()}
+                        } else {window.open(labelDownload,'_blank')}
                       }
                     }catch(err){nf('Label creation failed: '+err.message,'error')}
                   }}>🏷️ Create Label</button>}
               </div>
-              {manualShipModal.labelUrl&&<div style={{display:'flex',gap:6,alignItems:'center'}}>
+              {manualShipModal.labelUrl&&<div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                 <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                   onClick={()=>{
-                    if(manualShipModal.labelUrl.startsWith('data:application/pdf')){
-                      const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
-                      iframe.src=manualShipModal.labelUrl;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){const a=document.createElement('a');a.href=manualShipModal.labelUrl;a.download='label.pdf';a.click()}
-                        setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
-                    } else {const pw=window.open(manualShipModal.labelUrl,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                    const url=manualShipModal.labelUrl;
+                    if(url.startsWith('data:application/pdf;base64,')){
+                      try{
+                        const b64=url.replace('data:application/pdf;base64,','');
+                        const bin=atob(b64);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+                        const blob=new Blob([arr],{type:'application/pdf'});const blobUrl=URL.createObjectURL(blob);
+                        const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
+                        iframe.src=blobUrl;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){window.open(blobUrl,'_blank')}
+                          setTimeout(()=>{try{document.body.removeChild(iframe);URL.revokeObjectURL(blobUrl)}catch{}},60000)};
+                      }catch(e){nf('Could not print — try downloading instead','error')}
+                    } else {const pw=window.open(url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
                   }}>🏷️ Print Label</button>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:10}}
+                  onClick={()=>{
+                    const url=manualShipModal.labelUrl;
+                    if(url.startsWith('data:application/pdf;base64,')){
+                      try{
+                        const b64=url.replace('data:application/pdf;base64,','');
+                        const bin=atob(b64);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+                        const blob=new Blob([arr],{type:'application/pdf'});const blobUrl=URL.createObjectURL(blob);
+                        const a=document.createElement('a');a.href=blobUrl;a.download='shipping-label-'+(manualShipModal.so?.id||'manual')+'.pdf';a.click();
+                        setTimeout(()=>URL.revokeObjectURL(blobUrl),5000);
+                      }catch(e){const a=document.createElement('a');a.href=url;a.download='label.pdf';a.click()}
+                    } else {const a=document.createElement('a');a.href=url;a.download='label.pdf';a.click()}
+                  }}>📄 Download Label</button>
                 <span style={{fontSize:10,color:'#166534',fontWeight:700}}>Label created</span>
               </div>}
               <div style={{display:'flex',gap:8}}>
