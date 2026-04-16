@@ -10106,6 +10106,7 @@ export default function App(){
   _pdCtx.current={vend,cust,ests,sos,invPOs,stockPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES};
   // Ship package modal: {grp, soMap:{soId:so}, boxes:[{items:[{sku,name,color,sizes:{}}],tracking_number:'',carrier:'',weight:5,notes:''}]}
   const[shipModal,setShipModal]=useState(null);
+  const[manualShipModal,setManualShipModal]=useState(null);
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
   const[decoCardFilter,setDecoCardFilter]=useState(null);// null|'ready'|'in_process'|'waiting'
   const[decoPersonF,setDecoPersonF]=useState('all');// filter by assigned decorator name
@@ -10512,6 +10513,8 @@ export default function App(){
         <select className="form-select" style={{width:140,fontSize:11}} value={whRepF} onChange={e=>setWhRepF(e.target.value)}>
           <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
         </select>
+        <button className="btn btn-sm" style={{fontSize:10,background:'#92400e',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
+          onClick={()=>setManualShipModal({soSearch:'',so:null,cust:null,carrier:'fedex',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}>⚡ Manual Ship</button>
         <div style={{display:'flex',gap:2,marginLeft:'auto'}}>
           {tabs.map(t=><button key={t.id} className={`btn btn-sm ${whTab===t.id?'btn-primary':'btn-secondary'}`}
             style={{background:whTab===t.id?t.color:'',borderColor:whTab===t.id?t.color:''}}
@@ -11719,7 +11722,345 @@ export default function App(){
             </div>
           </div>
         </div></div>}
+
       </>}
+
+      {/* ── MANUAL SHIP MODAL (renders on any warehouse tab) ── */}
+      {manualShipModal&&<div className="modal-overlay" onClick={()=>setManualShipModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
+        <div className="modal-header" style={{background:'linear-gradient(135deg,#92400e,#f59e0b)',color:'white'}}>
+          <h2 style={{margin:0,color:'white'}}>⚡ Manual Ship</h2>
+          <button className="modal-close" onClick={()=>setManualShipModal(null)} style={{color:'white'}}>×</button>
+        </div>
+        <div className="modal-body" style={{padding:16}}>
+          <div style={{padding:'6px 10px',background:'#fef3c7',borderRadius:6,marginBottom:12,fontSize:11,color:'#92400e',fontWeight:600,border:'1px solid #fcd34d'}}>
+            ⚠️ Manual override — use when items need to ship outside the normal workflow. Cost and tracking are entered manually.
+          </div>
+
+          {!manualShipModal.so?<>
+            {/* SO Search */}
+            <label style={{fontSize:12,fontWeight:700,color:'#334155',marginBottom:4,display:'block'}}>Search Sales Order</label>
+            <input className="form-input" placeholder="Type SO# or customer name..." value={manualShipModal.soSearch||''} autoFocus
+              style={{fontSize:12,marginBottom:8}}
+              onChange={e=>setManualShipModal({...manualShipModal,soSearch:e.target.value})}/>
+            {(()=>{
+              const q=(manualShipModal.soSearch||'').toLowerCase();
+              if(q.length<2)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>Type at least 2 characters to search</div>;
+              const results=sos.filter(so=>{
+                if(so.deleted_at)return false;
+                const st=calcSOStatus(so);
+                if(st==='complete')return false;
+                const c2=cust.find(cc=>cc.id===so.customer_id);
+                return so.id.toLowerCase().includes(q)||(c2?.name||'').toLowerCase().includes(q)||(so.memo||'').toLowerCase().includes(q);
+              }).slice(0,10);
+              if(results.length===0)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No matching orders</div>;
+              return<div style={{display:'grid',gap:4}}>
+                {results.map(so=>{
+                  const c2=cust.find(cc=>cc.id===so.customer_id);
+                  const st=calcSOStatus(so);
+                  const itemCount=safeItems(so).length;
+                  const jobCount=safeJobs(so).filter(j=>j.prod_status!=='draft').length;
+                  return<div key={so.id} style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0',cursor:'pointer'}}
+                    onClick={()=>{
+                      const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
+                        const key=it.sku+'|'+(it.color||'');if(!shippedBySz[key])shippedBySz[key]={};
+                        Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key][sz]=(shippedBySz[key][sz]||0)+safeNum(v)});
+                      })});
+                      const availItems=[];
+                      safeItems(so).forEach((item,ii)=>{
+                        const key=item.sku+'|'+(item.color||'');const shipped=shippedBySz[key]||{};
+                        const remainSz={};Object.entries(safeSizes(item)).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
+                        const qty=Object.values(remainSz).reduce((a,v)=>a+v,0);
+                        if(qty>0)availItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:remainSz,itemIdx:ii,qty});
+                      });
+                      setManualShipModal({...manualShipModal,so,cust:c2,availItems,shipItems:[],markShipped:{}});
+                    }}
+                    onMouseEnter={e=>{e.currentTarget.style.background='#eff6ff'}}
+                    onMouseLeave={e=>{e.currentTarget.style.background='#f8fafc'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:8}}>
+                      <span style={{fontWeight:800,color:'#1e40af',fontSize:12,fontFamily:'monospace'}}>{so.id}</span>
+                      <span style={{fontSize:11,color:'#334155'}}>{c2?.name||'Unknown'}</span>
+                      <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#f1f5f9',color:'#64748b'}}>{st}</span>
+                      <span style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>{itemCount} items · {jobCount} jobs</span>
+                    </div>
+                    {so.memo&&<div style={{fontSize:10,color:'#64748b',marginTop:2,fontStyle:'italic',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{so.memo}</div>}
+                  </div>})}
+              </div>;
+            })()}
+          </>:<>
+            {/* Selected SO */}
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+              <button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,color:'#64748b',padding:0}} onClick={()=>setManualShipModal({...manualShipModal,so:null,cust:null,availItems:[],shipItems:[],soSearch:''})}>←</button>
+              <span style={{fontWeight:800,color:'#1e40af',fontSize:14,fontFamily:'monospace'}}>{manualShipModal.so.id}</span>
+              <span style={{fontSize:12,fontWeight:600,color:'#334155'}}>{manualShipModal.cust?.name||'Unknown'}</span>
+              <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#f1f5f9',color:'#64748b'}}>{calcSOStatus(manualShipModal.so)}</span>
+            </div>
+            {manualShipModal.so.memo&&<div style={{fontSize:10,color:'#64748b',marginBottom:8,fontStyle:'italic'}}>{manualShipModal.so.memo}</div>}
+
+            {/* Items being shipped — select from SO or describe manually */}
+            {(manualShipModal.shipItems||[]).length>0&&<div style={{marginBottom:8}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Items being shipped</div>
+              <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
+                <thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+                  <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>SKU</th>
+                  <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Item</th>
+                  <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Sizes</th>
+                  <th style={{padding:'3px 6px',textAlign:'center',fontSize:10,color:'#64748b'}}>Qty</th>
+                  <th style={{width:30}}></th>
+                </tr></thead>
+                <tbody>{(manualShipModal.shipItems||[]).map((it,ii)=>{
+                  const itQty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                  return<tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
+                    <td style={{padding:'3px 6px',fontWeight:700,fontFamily:'monospace',color:'#1e40af'}}>{it.sku}</td>
+                    <td style={{padding:'3px 6px',fontSize:10}}>{it.name}{it.color?' · '+it.color:''}</td>
+                    <td style={{padding:'3px 6px'}}>
+                      <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+                        {Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=><div key={sz} style={{display:'flex',alignItems:'center',gap:3,background:'#f1f5f9',borderRadius:4,padding:'2px 6px'}}>
+                          <span style={{fontSize:11,color:'#475569',fontWeight:700,minWidth:22}}>{sz}</span>
+                          <input type="number" min="0" value={v} style={{width:44,fontSize:12,textAlign:'center',padding:'3px 4px',border:'1px solid #cbd5e1',borderRadius:4,fontWeight:600}}
+                            onChange={e=>{const nv=parseInt(e.target.value)||0;const items=[...manualShipModal.shipItems];
+                              items[ii]={...items[ii],sizes:{...items[ii].sizes,[sz]:nv},qty:Object.entries({...items[ii].sizes,[sz]:nv}).reduce((a,[,val])=>a+val,0)};
+                              setManualShipModal({...manualShipModal,shipItems:items})}}/>
+                        </div>)}
+                      </div>
+                    </td>
+                    <td style={{padding:'3px 6px',textAlign:'center',fontWeight:700}}>{itQty}</td>
+                    <td><button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:12}} onClick={()=>{
+                      const items=[...manualShipModal.shipItems];items.splice(ii,1);setManualShipModal({...manualShipModal,shipItems:items})}}>×</button></td>
+                  </tr>})}</tbody>
+              </table>
+            </div>}
+
+            {/* Add items from SO */}
+            {(()=>{
+              const avail=(manualShipModal.availItems||[]).filter(ai=>{
+                const inShip=(manualShipModal.shipItems||[]).find(si=>si.itemIdx===ai.itemIdx);
+                return !inShip;
+              });
+              return<div style={{marginBottom:12,padding:8,background:'#eff6ff',borderRadius:6,border:'1px dashed #93c5fd'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:avail.length>0?6:0}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#1e40af',textTransform:'uppercase'}}>Add items from order</div>
+                  {avail.length>0&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 10px',background:'#166534',color:'white',border:'none',borderRadius:4,fontWeight:700}}
+                    onClick={()=>{setManualShipModal({...manualShipModal,shipItems:[...(manualShipModal.shipItems||[]),...avail.map(ai=>({...ai,sizes:{...ai.sizes}}))]})}}
+                  >+ Add All</button>}
+                </div>
+                {avail.length===0?<div style={{fontSize:10,color:'#64748b',padding:'4px 0'}}>{(manualShipModal.availItems||[]).length===0?'No unshipped items on this order':'All items added'}</div>:
+                <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
+                  <tbody>{avail.map((ai,aii)=>{
+                    const szStr=Object.entries(ai.sizes).filter(([,v])=>v>0).sort((a,b)=>{const a2=SZ_ORD.indexOf(a[0].toUpperCase()),b2=SZ_ORD.indexOf(b[0].toUpperCase());return(a2<0?99:a2)-(b2<0?99:b2)}).map(([sz,v])=>sz+':'+v).join(' ');
+                    return<tr key={aii} style={{borderBottom:'1px solid #dbeafe'}}>
+                      <td style={{padding:'3px 6px',fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{ai.sku}</td>
+                      <td style={{padding:'3px 6px',fontSize:10}}>{ai.name}{ai.color?' · '+ai.color:''}</td>
+                      <td style={{padding:'3px 6px',fontSize:10,color:'#475569'}}>{szStr}</td>
+                      <td style={{padding:'3px 6px',textAlign:'center',fontWeight:700}}>{ai.qty}</td>
+                      <td style={{padding:'3px 6px'}}><button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#2563eb',color:'white',border:'none',borderRadius:4}}
+                        onClick={()=>{setManualShipModal({...manualShipModal,shipItems:[...(manualShipModal.shipItems||[]),{...ai,sizes:{...ai.sizes}}]})}}>+ Add</button></td>
+                    </tr>})}</tbody>
+                </table>}
+              </div>;
+            })()}
+
+            {/* Description for items not on the order */}
+            <div style={{marginBottom:12}}>
+              <label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2,textTransform:'uppercase'}}>Item description (if not on SO)</label>
+              <input className="form-input" value={manualShipModal.itemDesc||''} placeholder="e.g. Sample jerseys, extra supplies, replacement item..."
+                style={{fontSize:11}}
+                onChange={e=>setManualShipModal({...manualShipModal,itemDesc:e.target.value})}/>
+            </div>
+
+            {/* Jobs to mark as shipped */}
+            {(()=>{
+              const jobs=safeJobs(manualShipModal.so).filter(j=>j.prod_status!=='draft'&&j.prod_status!=='shipped');
+              if(jobs.length===0)return null;
+              return<div style={{marginBottom:12}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Mark jobs as shipped (optional)</div>
+                <div style={{display:'grid',gap:4}}>
+                  {jobs.map(j=><label key={j.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0',cursor:'pointer',fontSize:11}}>
+                    <input type="checkbox" checked={!!manualShipModal.markShipped[j.id]}
+                      onChange={e=>setManualShipModal({...manualShipModal,markShipped:{...manualShipModal.markShipped,[j.id]:e.target.checked}})}/>
+                    <span style={{fontWeight:700}}>{j.art_name||'Job'}</span>
+                    <span style={{color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')||''}</span>
+                    <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,
+                      background:j.prod_status==='completed'?'#dcfce7':j.prod_status==='in_process'?'#dbeafe':j.prod_status==='ready'?'#fef3c7':'#f1f5f9',
+                      color:j.prod_status==='completed'?'#166534':j.prod_status==='in_process'?'#1e40af':j.prod_status==='ready'?'#92400e':'#64748b'}}>
+                      {j.prod_status}</span>
+                    <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{j.total_units} units</span>
+                  </label>)}
+                </div>
+              </div>;
+            })()}
+
+            {/* Package & Shipping details */}
+            <div style={{display:'grid',gap:8,marginBottom:12}}>
+              <div style={{display:'flex',gap:8,alignItems:'flex-end'}}>
+                <div style={{flex:1}}>
+                  <label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Carrier</label>
+                  <select className="form-select" value={manualShipModal.carrier||'fedex'} style={{width:'100%',fontSize:11}}
+                    onChange={e=>setManualShipModal({...manualShipModal,carrier:e.target.value})}>
+                    <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="rep_delivery">Rep Delivery</option><option value="other">Other</option>
+                  </select>
+                </div>
+                <div style={{flex:2}}>
+                  <label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Tracking Number</label>
+                  <input className="form-input" value={manualShipModal.tracking||''} placeholder="Enter tracking number or create label below..."
+                    style={{fontSize:11,fontFamily:'monospace'}}
+                    onChange={e=>setManualShipModal({...manualShipModal,tracking:e.target.value})}/>
+                </div>
+              </div>
+              <div style={{display:'flex',gap:8,alignItems:'flex-end'}}>
+                <div>
+                  <label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Weight (lbs)</label>
+                  <input className="form-input" type="number" min="0.1" step="0.5" value={manualShipModal.weight===''||manualShipModal.weight===undefined?'':manualShipModal.weight} placeholder="5"
+                    style={{width:70,fontSize:11}}
+                    onChange={e=>setManualShipModal({...manualShipModal,weight:e.target.value===''?'':parseFloat(e.target.value)})}/>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:3}}>
+                  <label style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:2}}>Box (in)</label>
+                  <input className="form-input" type="number" min="1" placeholder="L" value={(manualShipModal.dimensions||{}).length||''} style={{width:48,fontSize:11,padding:'4px 4px',textAlign:'center'}}
+                    onChange={e=>setManualShipModal({...manualShipModal,dimensions:{...(manualShipModal.dimensions||{}),length:e.target.value}})}/>
+                  <span style={{fontSize:10,color:'#94a3b8'}}>×</span>
+                  <input className="form-input" type="number" min="1" placeholder="W" value={(manualShipModal.dimensions||{}).width||''} style={{width:48,fontSize:11,padding:'4px 4px',textAlign:'center'}}
+                    onChange={e=>setManualShipModal({...manualShipModal,dimensions:{...(manualShipModal.dimensions||{}),width:e.target.value}})}/>
+                  <span style={{fontSize:10,color:'#94a3b8'}}>×</span>
+                  <input className="form-input" type="number" min="1" placeholder="H" value={(manualShipModal.dimensions||{}).height||''} style={{width:48,fontSize:11,padding:'4px 4px',textAlign:'center'}}
+                    onChange={e=>setManualShipModal({...manualShipModal,dimensions:{...(manualShipModal.dimensions||{}),height:e.target.value}})}/>
+                </div>
+                {ssConnected&&manualShipModal.carrier!=='rep_delivery'&&manualShipModal.carrier!=='other'&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',whiteSpace:'nowrap',fontWeight:700}}
+                  onClick={async()=>{
+                    try{
+                      const so=manualShipModal.so;
+                      const c2=manualShipModal.cust;
+                      if(!c2){nf('No customer found','error');return}
+                      const w=parseFloat(manualShipModal.weight)||5;
+                      if(!w||w<=0){nf('Please enter package weight','error');return}
+                      const dims=manualShipModal.dimensions||{};
+                      if(!dims.length||!dims.width||!dims.height){nf('Please enter box dimensions (L × W × H)','error');return}
+                      nf('Creating ShipStation label...');
+                      const label=await createShipStationLabel(so,c2,(manualShipModal.shipItems||[]),w,manualShipModal.carrier||'fedex','fedex_ground',dims);
+                      const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
+                      const labelUrl=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
+                      const labelDownload=label.labelDownload||labelUrl||null;
+                      setManualShipModal(prev=>({...prev,
+                        tracking:label.trackingNumber||prev.tracking||'',
+                        carrier:label.carrierCode||prev.carrier,
+                        cost:cost!=null?cost.toString():prev.cost,
+                        labelUrl:labelDownload,
+                        shipstationShipmentId:label.shipmentId||null
+                      }));
+                      nf('Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · Cost: $'+cost.toFixed(2):''));
+                      addWhAction({type:'manual_label_created',soId:so.id,customer:c2?.name||'',tracking:label.trackingNumber||'',carrier:label.carrierCode||manualShipModal.carrier,cost:cost?'$'+cost.toFixed(2):'',by:cu?.id||'warehouse'});
+                      if(labelDownload){
+                        // Convert base64 to blob for reliable download/print
+                        if(labelDownload.startsWith('data:application/pdf;base64,')){
+                          try{
+                            const b64=labelDownload.replace('data:application/pdf;base64,','');
+                            const bin=atob(b64);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+                            const blob=new Blob([arr],{type:'application/pdf'});const blobUrl=URL.createObjectURL(blob);
+                            const a=document.createElement('a');a.href=blobUrl;a.download='shipping-label-'+so.id+'.pdf';a.click();
+                            nf('Label downloaded as PDF');
+                          }catch(e2){const a=document.createElement('a');a.href=labelDownload;a.download='label.pdf';a.click()}
+                        } else {window.open(labelDownload,'_blank')}
+                      }
+                    }catch(err){nf('Label creation failed: '+err.message,'error')}
+                  }}>🏷️ Create Label</button>}
+              </div>
+              {manualShipModal.labelUrl&&<div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+                <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                  onClick={()=>{
+                    const url=manualShipModal.labelUrl;
+                    if(url.startsWith('data:application/pdf;base64,')){
+                      try{
+                        const b64=url.replace('data:application/pdf;base64,','');
+                        const bin=atob(b64);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+                        const blob=new Blob([arr],{type:'application/pdf'});const blobUrl=URL.createObjectURL(blob);
+                        const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
+                        iframe.src=blobUrl;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){window.open(blobUrl,'_blank')}
+                          setTimeout(()=>{try{document.body.removeChild(iframe);URL.revokeObjectURL(blobUrl)}catch{}},60000)};
+                      }catch(e){nf('Could not print — try downloading instead','error')}
+                    } else {const pw=window.open(url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                  }}>🏷️ Print Label</button>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:10}}
+                  onClick={()=>{
+                    const url=manualShipModal.labelUrl;
+                    if(url.startsWith('data:application/pdf;base64,')){
+                      try{
+                        const b64=url.replace('data:application/pdf;base64,','');
+                        const bin=atob(b64);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+                        const blob=new Blob([arr],{type:'application/pdf'});const blobUrl=URL.createObjectURL(blob);
+                        const a=document.createElement('a');a.href=blobUrl;a.download='shipping-label-'+(manualShipModal.so?.id||'manual')+'.pdf';a.click();
+                        setTimeout(()=>URL.revokeObjectURL(blobUrl),5000);
+                      }catch(e){const a=document.createElement('a');a.href=url;a.download='label.pdf';a.click()}
+                    } else {const a=document.createElement('a');a.href=url;a.download='label.pdf';a.click()}
+                  }}>📄 Download Label</button>
+                <span style={{fontSize:10,color:'#166534',fontWeight:700}}>Label created</span>
+              </div>}
+              <div style={{display:'flex',gap:8}}>
+                <div style={{flex:1}}>
+                  <label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Shipping Cost ($)</label>
+                  <input className="form-input" type="number" min="0" step="0.01" value={manualShipModal.cost} placeholder="0.00"
+                    style={{fontSize:11}}
+                    onChange={e=>setManualShipModal({...manualShipModal,cost:e.target.value})}/>
+                </div>
+                <div style={{flex:2}}>
+                  <label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Notes</label>
+                  <input className="form-input" value={manualShipModal.notes||''} placeholder="Reason for manual ship..."
+                    style={{fontSize:11}}
+                    onChange={e=>setManualShipModal({...manualShipModal,notes:e.target.value})}/>
+                </div>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12}}>
+              <button className="btn btn-primary" style={{background:'#92400e',borderColor:'#92400e',fontWeight:800}}
+                onClick={()=>{
+                  const so=manualShipModal.so;
+                  const cost=parseFloat(manualShipModal.cost)||0;
+                  const trackUrl2=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
+                  const shipItems=(manualShipModal.shipItems||[]).map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:{...it.sizes}}));
+                  if(manualShipModal.itemDesc)shipItems.push({sku:'MANUAL',name:manualShipModal.itemDesc,color:'',sizes:{}});
+                  const shipment={
+                    id:'MSHP-'+Date.now(),
+                    tracking_number:manualShipModal.tracking||'',
+                    carrier:manualShipModal.carrier||'',
+                    ship_date:new Date().toLocaleDateString(),
+                    tracking_url:manualShipModal.tracking?trackUrl2(manualShipModal.tracking):'',
+                    label_url:manualShipModal.labelUrl||null,
+                    shipstation_shipment_id:manualShipModal.shipstationShipmentId||null,
+                    shipping_cost:cost,
+                    weight:parseFloat(manualShipModal.weight)||5,
+                    manual:true,
+                    items:shipItems,
+                    notes:(manualShipModal.notes?'[MANUAL] '+manualShipModal.notes:'[MANUAL]'),
+                    created_by:cu?.id||'',
+                    created_at:new Date().toLocaleString()
+                  };
+                  const allShipments=[...(so._shipments||[]),shipment];
+                  const updatedJobs=safeJobs(so).map(jj=>{
+                    if(manualShipModal.markShipped[jj.id])return{...jj,prod_status:'shipped'};
+                    return jj;
+                  });
+                  const allJobsShipped=updatedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
+                  const existingShipCost=safeNum(so._shipping_cost||so._shipstation_cost||0);
+                  const totalShipCost=existingShipCost+cost;
+                  const updated={...so,jobs:updatedJobs,_shipments:allShipments,
+                    _shipped:allJobsShipped,_shipping_status:allJobsShipped?'shipped':'partial',
+                    _tracking_number:shipment.tracking_number||so._tracking_number||'',
+                    _carrier:shipment.carrier||so._carrier||'',
+                    _ship_date:shipment.ship_date,
+                    _tracking_url:shipment.tracking_url||so._tracking_url||'',
+                    _shipping_cost:totalShipCost,_shipstation_cost:totalShipCost,
+                    updated_at:new Date().toLocaleString()};
+                  savSO(updated);
+                  const markedCount=Object.values(manualShipModal.markShipped).filter(Boolean).length;
+                  nf('Manual ship recorded for '+(manualShipModal.cust?.name||so.id)+(cost?' · Cost: $'+cost.toFixed(2):'')+(markedCount?' · '+markedCount+' job'+(markedCount!==1?'s':'')+' marked shipped':''));
+                  addWhAction({type:'manual_ship',soId:so.id,customer:manualShipModal.cust?.name||'',tracking:manualShipModal.tracking||'',carrier:manualShipModal.carrier||'',cost:cost?'$'+cost.toFixed(2):'',jobsMarked:markedCount,notes:manualShipModal.notes||'',itemDesc:manualShipModal.itemDesc||'',by:cu?.id||'warehouse'});
+                  setManualShipModal(null);
+                }}>⚡ Confirm Manual Ship</button>
+              <button className="btn btn-secondary" onClick={()=>setManualShipModal(null)}>Cancel</button>
+            </div>
+          </>}
+        </div>
+      </div></div>}
 
       {/* ── AWAITING PICKUP TAB ── */}
       {whTab==='pickup'&&<>
