@@ -21,3 +21,7 @@ supabase/.temp/
 # test reports (generated)
 test-reports/
 test-results/
+
+# python cache
+__pycache__/
+*.pyc

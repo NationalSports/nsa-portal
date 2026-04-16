@@ -123,6 +123,38 @@ export const printDoc=opts=>{
 };
 export const nextInvId=invs=>{const nums=(invs||[]).map(i=>{const m=String(i.id).match(/(\d+)$/);return m?parseInt(m[1]):0});return'INV-'+(Math.max(0,...nums)+1)};
 
+// ── M&R Hot Folder queueing ──
+// Called after a production file is uploaded. Only queues .ai (screen print) and .dst (embroidery).
+// Non-blocking: returns {ok, queue_id?, ticket_pdf_url?, error?} but callers should ignore errors.
+export async function queueProductionFile(supabase,{so_id,art_id,art_name,deco_type,file_url,file_name}){
+  try{
+    if(!supabase||!so_id||!art_id||!file_url||!file_name)return{ok:false,error:'missing fields'};
+    const ext=(file_name.split('.').pop()||'').toLowerCase();
+    const isScreen=deco_type==='screen_print'&&ext==='ai';
+    const isEmb=deco_type==='embroidery'&&ext==='dst';
+    if(!isScreen&&!isEmb)return{ok:false,skipped:true};
+    const barcode_value=`${so_id}-${art_id}`;
+    const {data:row,error}=await supabase.from('production_queue').insert({
+      so_id,art_id,art_name:art_name||null,deco_type,
+      file_url,file_name,file_ext:ext,barcode_value,
+    }).select().single();
+    if(error)return{ok:false,error:error.message};
+    // Fire-and-forget ticket generation — failure doesn't block bridge delivery.
+    try{
+      const r=await supabase.functions.invoke('generate-job-ticket',{body:{queue_id:row.id}});
+      const d=r?.data;
+      const url=(d&&typeof d==='object'&&d.ticket_pdf_url)||null;
+      return{ok:true,queue_id:row.id,ticket_pdf_url:url};
+    }catch(e){
+      console.warn('[queueProductionFile] ticket gen failed:',e);
+      return{ok:true,queue_id:row.id};
+    }
+  }catch(e){
+    console.warn('[queueProductionFile]',e);
+    return{ok:false,error:e?.message||String(e)};
+  }
+}
+
 // ── Supabase Edge Function helper ──
 export async function invokeEdgeFn(supabase,fnName,body){
   const r=await supabase.functions.invoke(fnName,{body});
