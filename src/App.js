@@ -10306,8 +10306,23 @@ export default function App(){
                     if(catCost>0){
                       console.log(`[Cost] Catalog match: ${p.sku} → ${catMatch.sku} @ $${catCost}`);
                       p.cost=catCost;p._cost_source='catalog';if(catMatch.vendor_id&&!p.vendor_id)p.vendor_id=catMatch.vendor_id;found++;continue
-                    } else if(catMatch) {
-                      console.log(`[Cost] Catalog found ${p.sku} → ${catMatch.sku} but nsa_cost=${catMatch.nsa_cost} (${typeof catMatch.nsa_cost})`);
+                    }
+                    // Fallback: query Supabase directly if in-memory search missed it
+                    if(supabase&&!catMatch){
+                      try{
+                        const{data:dbMatch}=await supabase.from('products').select('sku,nsa_cost,vendor_id').ilike('sku',skuClean).limit(1);
+                        const dbCost=dbMatch?.[0]?parseFloat(dbMatch[0].nsa_cost)||0:0;
+                        if(dbCost>0){
+                          console.log(`[Cost] DB fallback match: ${p.sku} → ${dbMatch[0].sku} @ $${dbCost}`);
+                          p.cost=dbCost;p._cost_source='catalog';if(dbMatch[0].vendor_id&&!p.vendor_id)p.vendor_id=dbMatch[0].vendor_id;found++;continue
+                        } else if(dbMatch?.[0]) {
+                          console.log(`[Cost] DB found ${p.sku} but nsa_cost=${dbMatch[0].nsa_cost}`);
+                          if(dbMatch[0].vendor_id&&!p.vendor_id)p.vendor_id=dbMatch[0].vendor_id;
+                        }
+                      }catch(e){console.log(`[Cost] DB query failed for ${p.sku}: ${e.message}`)}
+                    }
+                    if(catMatch){
+                      console.log(`[Cost] Catalog found ${p.sku} → ${catMatch.sku} but nsa_cost=${catMatch.nsa_cost}`);
                       if(catMatch.vendor_id&&!p.vendor_id)p.vendor_id=catMatch.vendor_id;
                     } else { console.log(`[Cost] No catalog match for "${p.sku}" — checked ${prod.length} products`) }
                     // 2) Try SanMar
