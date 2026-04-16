@@ -2424,159 +2424,10 @@ export default function App(){
           }
         });
       };
+      // Order products are now imported from OMG shared reports (not the
+      // broken V1 API). The report import flow is in the UI below.
+      // loadOMGStoreDetail only handles orders/metadata.
       let orderProducts = [];
-      const myOrderIds = new Set(orders.map(o => String(o.id)).filter(Boolean));
-
-      // ── Fetch line items for this sale's orders ──
-      //
-      // OMG's API is extremely limited for per-sale line items. Confirmed
-      // broken: nested routes (404), include=order_products (400),
-      // filter[order_id] (silently ignored), page[number] (duplicates),
-      // page[size]>500 (400). Only page[size]=500 and bare /order_products
-      // work, returning the first 100-500 rows in default order.
-      //
-      // Strategy: try every filter/pagination scheme we can think of.
-      // One of these MUST work — we just haven't found the right syntax.
-      if (orders.length > 0) {
-        const opMap = new Map();
-        const opInc = [];
-        const addOPs = (resp) => {
-          if (!resp) return 0;
-          const rows = resp.data || [];
-          const fresh = rows.filter(op => op.id && !opMap.has(op.id));
-          fresh.forEach(op => opMap.set(op.id, op));
-          opInc.push(...(resp.included || []));
-          return fresh.length;
-        };
-
-        // Helper: fetch and check if results actually belong to our orders
-        const fetchAndVerify = async (url, label) => {
-          try {
-            const resp = await omgApiCall(url);
-            const rows = resp?.data || [];
-            const matched = rows.filter(op => {
-              const oid = op.relationships?.order?.data?.id;
-              return oid != null && myOrderIds.has(String(oid));
-            });
-            console.log(`[OMG]   ${label}: ${rows.length} rows, ${matched.length} matched our orders`);
-            if (matched.length > 0) {
-              addOPs(resp);
-              return matched.length;
-            }
-            return 0;
-          } catch (e) {
-            console.log(`[OMG]   ${label}: ${e.message}`);
-            return -1; // error, not just empty
-          }
-        };
-
-        // === Attempt 1: JSON:API relationship filters ===
-        // filter[order_id] is an attribute filter that OMG ignores. But
-        // filter[order] or filter[order.id] are RELATIONSHIP filters —
-        // a different syntax that might actually work.
-        console.log(`[OMG] Attempt 1: relationship filter syntaxes…`);
-        const sampleOrder = orders[0].id;
-        const relFilterVariants = [
-          `/order_products?filter[order]=${sampleOrder}&include=product,attribute_values`,
-          `/order_products?filter[order.id]=${sampleOrder}&include=product,attribute_values`,
-          `/order_products?filter[order_id]=${sampleOrder}&include=product,attribute_values&page[size]=500`,
-        ];
-        let relFilterWorks = false;
-        for (const url of relFilterVariants) {
-          const count = await fetchAndVerify(url, url.split('?')[1].split('&')[0]);
-          if (count > 0) {
-            relFilterWorks = true;
-            console.log(`[OMG] ✓ Relationship filter works! Fetching for all orders…`);
-            // Batch-fetch all orders with this filter
-            const filterBase = url.replace(sampleOrder, 'ORDER_ID');
-            const BATCH = 5;
-            for (let i = 1; i < orders.length; i += BATCH) {
-              const batch = orders.slice(i, i + BATCH);
-              await Promise.all(batch.map(async o => {
-                const batchUrl = filterBase.replace('ORDER_ID', o.id);
-                try {
-                  const resp = await omgApiCall(batchUrl);
-                  addOPs(resp);
-                } catch {}
-              }));
-              if (i % 25 === 0) console.log(`[OMG]   rel-filter progress: ${i}/${orders.length}, ${opMap.size} items`);
-            }
-            break;
-          }
-          if (count === 0) {
-            console.log(`[OMG]   ^ filter returned data but none matched — filter is ignored`);
-          }
-        }
-
-        // === Attempt 2: page[offset] pagination (retry — last time was network error) ===
-        if (!relFilterWorks && opMap.size === 0) {
-          console.log(`[OMG] Attempt 2: page[offset] pagination with page[size]=500…`);
-          let offsetOK = false;
-          for (let off = 0; off < 500 * 200; off += 500) {
-            const url = off === 0
-              ? `/order_products?include=product,attribute_values&page[size]=500`
-              : `/order_products?include=product,attribute_values&page[size]=500&page[offset]=${off}`;
-            try {
-              const resp = await omgApiCall(url);
-              const rows = resp?.data || [];
-              if (rows.length === 0) { console.log(`[OMG]   offset=${off}: empty — end of data`); break; }
-              const fresh = rows.filter(op => op.id && !opMap.has(op.id));
-              if (fresh.length === 0 && off > 0) { console.log(`[OMG]   offset=${off}: all duplicates — stopping`); break; }
-              if (off > 0 && fresh.length > 0) offsetOK = true;
-              fresh.forEach(op => opMap.set(op.id, op));
-              opInc.push(...(resp.included || []));
-              if (off === 0 || off <= 2000 || off % 5000 === 0) {
-                console.log(`[OMG]   offset=${off}: ${rows.length} rows, ${fresh.length} new (total: ${opMap.size})`);
-              }
-            } catch (e) {
-              console.log(`[OMG]   offset=${off}: ${e.message}`);
-              // Network error — wait 2s and retry once
-              await new Promise(r => setTimeout(r, 2000));
-              try {
-                const resp = await omgApiCall(url);
-                const rows = resp?.data || [];
-                if (rows.length === 0) break;
-                const fresh = rows.filter(op => op.id && !opMap.has(op.id));
-                if (fresh.length === 0 && off > 0) break;
-                if (off > 0 && fresh.length > 0) offsetOK = true;
-                fresh.forEach(op => opMap.set(op.id, op));
-                opInc.push(...(resp.included || []));
-                console.log(`[OMG]   offset=${off} retry: ${rows.length} rows, ${fresh.length} new (total: ${opMap.size})`);
-              } catch { console.log(`[OMG]   offset=${off} retry failed — stopping`); break; }
-            }
-          }
-          if (offsetOK) console.log(`[OMG] ✓ Offset pagination worked! Total: ${opMap.size}`);
-        }
-
-        // === Attempt 3: Multi-sort windows as last resort ===
-        if (opMap.size === 0) {
-          console.log(`[OMG] Attempt 3: multi-sort window fetch…`);
-          const sorts = ['', 'sort=-updated_at', 'sort=updated_at', 'sort=-created_at', 'sort=created_at', 'sort=-id', 'sort=id'];
-          for (const sv of sorts) {
-            const qs = sv ? `include=product,attribute_values&${sv}&page[size]=500` : `include=product,attribute_values&page[size]=500`;
-            try {
-              const resp = await omgApiCall(`/order_products?${qs}`);
-              const n = addOPs(resp);
-              console.log(`[OMG]   ${sv||'(default)'}: ${(resp?.data||[]).length} rows, ${n} new (total: ${opMap.size})`);
-            } catch (e) { console.log(`[OMG]   ${sv}: ${e.message}`); }
-          }
-        }
-
-        // Filter against our order ids
-        captureIncluded(opInc);
-        const allOPs = [...opMap.values()];
-        orderProducts = allOPs.filter(op => {
-          const oid = op.relationships?.order?.data?.id;
-          return oid != null && myOrderIds.has(String(oid));
-        });
-        console.log(`[OMG] Scanned ${allOPs.length} unique order_products → ${orderProducts.length} matched our ${myOrderIds.size} orders`);
-        if (orderProducts.length === 0 && allOPs.length > 0) {
-          const theirs = new Set(allOPs.map(op => op.relationships?.order?.data?.id).filter(Boolean));
-          console.warn(`[OMG] Zero matches. Our IDs: ${[...myOrderIds].slice(0,3).join(', ')} | Theirs: ${[...theirs].slice(0,3).join(', ')}`);
-        }
-      } else {
-        console.warn(`[OMG] Skipping order_products — no orders matched`);
-      }
 
       // Build product included block for convertOMGStore
       const productIncluded = Object.keys(productMap).map(id => ({ id, type: 'products', attributes: productMap[id] }));
@@ -3041,10 +2892,94 @@ export default function App(){
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);
-  // NOTE: Detail sync is MANUAL — the user clicks the "Load / Re-sync" button
-  // on the store detail view. We intentionally do NOT auto-fetch on open: auto
-  // fetching hid failures (a silent "Synced" toast with empty products) and
-  // wasted API calls every time a store was opened.
+  const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);
+
+  // Import products from an OMG shared report URL.
+  // Fetches report JSON via Netlify proxy, parses products with SKUs, sizes,
+  // quantities, prices, and mockup images. Replaces the broken V1 API sync.
+  const importOMGReport = async (store, reportUrl) => {
+    // Extract UUID from various URL formats
+    const urlStr = (reportUrl || '').trim();
+    const uuidMatch = urlStr.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+    if (!uuidMatch) { nf('Invalid report URL — expected an OMG report link with a UUID', 'error'); return null; }
+    const reportId = uuidMatch[1];
+
+    setOmgReportLoading(true);
+    try {
+      const resp = await fetch(`/.netlify/functions/omg-report-proxy?id=${reportId}`);
+      if (!resp.ok) throw new Error(`Report fetch failed: ${resp.status}`);
+      const report = await resp.json();
+      if (!report?.reports?.length) throw new Error('Report JSON has no data');
+
+      // Parse all sections → products
+      const products = [];
+      let totalQty = 0, totalSales = 0;
+      (report.reports || []).forEach(r => {
+        (r.sections || []).forEach(section => {
+          const meta = section.meta || {};
+          const rows = section.rows || [];
+          // Aggregate sizes across all rows for this product
+          const sizes = {};
+          let productQty = 0, productPaid = 0;
+          const colors = new Set();
+          rows.forEach(row => {
+            const sz = row.size || 'OS';
+            const qty = row.quantity || 0;
+            sizes[sz] = (sizes[sz] || 0) + qty;
+            productQty += qty;
+            productPaid += (row.paid || 0);
+            if (row.color) colors.add(row.color);
+          });
+          // Get artwork image
+          const artwork = (meta.artwork || [])[0];
+          const imageUrl = artwork?.link || artwork?.thumbnail || '';
+
+          products.push({
+            sku: meta.sku || '',
+            name: meta.name || '',
+            manufacturer: meta.manufacturer || '',
+            category: meta.category || '',
+            color: [...colors].join(', '),
+            retail: meta.base_price || 0,
+            cost: meta.cogs || 0,
+            deco_type: '',
+            deco_cost: 0,
+            sizes,
+            image_url: imageUrl,
+            _omg_product_id: meta.id,
+            _artwork: meta.artwork || [],
+          });
+          totalQty += productQty;
+          totalSales += productPaid;
+        });
+      });
+
+      console.log(`[OMG Report] Imported ${products.length} products, ${totalQty} total units, $${totalSales} from report ${reportId}`);
+
+      // Update the store with imported products
+      const updated = {
+        ...store,
+        products,
+        _report_url: urlStr,
+        _report_id: reportId,
+        _report_imported_at: new Date().toISOString(),
+        _details_loaded: true,
+        items_sold: totalQty,
+      };
+      if (totalSales > 0) updated.total_sales = totalSales;
+
+      setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
+      setOmgSel(updated);
+      nf(`Imported ${products.length} products from OMG report (${totalQty} total items)`);
+      return updated;
+    } catch (e) {
+      console.error('[OMG Report] Import failed:', e);
+      nf('Report import failed: ' + e.message, 'error');
+      return null;
+    } finally {
+      setOmgReportLoading(false);
+    }
+  };
   const[estF,setEstF]=useState({status:'open',rep:'all',search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'active',rep:'all',search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
@@ -10132,47 +10067,56 @@ export default function App(){
           <div className="stat-card"><div className="stat-label">Margin</div><div className="stat-value" style={{color:pct>=30?'#166534':'#dc2626'}}>{pct}%</div></div>
         </div>
 
-        {/* Sync button — MANUAL. Label changes based on whether we've loaded
-            details yet. First-time load uses the non-force path; re-sync
-            after that uses force:true to bypass the _details_loaded cache. */}
-        {s._omg_id&&<div style={{marginBottom:12,display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
-          <button className="btn btn-primary" disabled={omgDetailLoading} style={{flex:'1 1 auto',minWidth:200,background:s._details_loaded?undefined:'#166534'}} onClick={()=>{
-            setOmgDetailLoading(true);
-            loadOMGStoreDetail(s,{force:true}).then(u=>{setOmgSel(u);setOmgDetailLoading(false)}).catch(()=>setOmgDetailLoading(false));
-          }}>{omgDetailLoading?'⏳ Syncing this store…':(s._details_loaded?'🔄 Re-sync this store from OMG':'⬇ Load store details from OMG')}</button>
-          {s._details_loaded&&<div style={{fontSize:11,color:'#64748b'}}>Last synced: {s._last_synced?new Date(s._last_synced).toLocaleTimeString():'—'}</div>}
-        </div>}
-
-        <div className="card" style={{marginBottom:12}}><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <h2>📦 Store Products</h2>
-          <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer"
-            style={{fontSize:11,color:'#2563eb',textDecoration:'none',fontWeight:600}}>View in OMG Admin →</a>
-        </div>
+        {/* Import from OMG Report */}
+        <div className="card" style={{marginBottom:12,border:(s.products||[]).length===0&&s.status==='closed'?'2px solid #166534':undefined}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h2>{(s.products||[]).length>0?'📦 Store Products':'📋 Import from OMG Report'}</h2>
+            <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer"
+              style={{fontSize:11,color:'#2563eb',textDecoration:'none',fontWeight:600}}>View in OMG Admin →</a>
+          </div>
           <div className="card-body" style={{padding:0}}>
-            {omgDetailLoading ? (
-              <div style={{padding:24,textAlign:'center',color:'#64748b',fontSize:13}}>⏳ Loading order details from OMG…</div>
-            ) : !s._details_loaded ? (
-              <div style={{padding:32,textAlign:'center'}}>
-                <div style={{fontSize:32,marginBottom:8}}>📦</div>
-                <div style={{fontSize:14,fontWeight:700,color:'#1e40af',marginBottom:4}}>Store details not loaded</div>
-                <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Click the green button above to fetch orders and line items from OMG.</div>
+            {/* Report URL input — always visible at top when no products, collapsible after import */}
+            {((s.products||[]).length===0||s._report_url)&&<div style={{padding:16,borderBottom:'1px solid #e2e8f0',background:(s.products||[]).length===0?'#f0fdf4':'#f8fafc'}}>
+              {(s.products||[]).length===0&&<div style={{marginBottom:12}}>
+                <div style={{fontSize:15,fontWeight:700,color:'#166534',marginBottom:4}}>{s.status==='closed'?'Store closed — ready for pull':'Paste the OMG report to load products'}</div>
+                <div style={{fontSize:12,color:'#64748b'}}>Share the report from OMG admin and paste the link below.</div>
+              </div>}
+              <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                <input type="text" placeholder="https://report.ordermygear.com/..." value={omgReportUrl||s._report_url||''} onChange={e=>setOmgReportUrl(e.target.value)}
+                  style={{flex:1,padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:6,fontSize:13,fontFamily:'monospace'}}/>
+                <button className="btn btn-primary" disabled={omgReportLoading} style={{background:'#166534',whiteSpace:'nowrap'}} onClick={()=>{
+                  importOMGReport(s, omgReportUrl||s._report_url);
+                }}>{omgReportLoading?'⏳ Importing…':(s._report_url?'Re-import':'Import')}</button>
               </div>
+              {s._report_imported_at&&<div style={{fontSize:11,color:'#64748b',marginTop:6}}>Last imported: {new Date(s._report_imported_at).toLocaleString()}</div>}
+            </div>}
+
+            {omgReportLoading ? (
+              <div style={{padding:32,textAlign:'center',color:'#64748b',fontSize:13}}>⏳ Importing products from OMG report…</div>
             ) : (s.products||[]).length === 0 ? (
               <div style={{padding:32,textAlign:'center'}}>
-                <div style={{fontSize:32,marginBottom:8}}>⚠️</div>
-                <div style={{fontSize:14,fontWeight:700,color:'#b45309',marginBottom:4}}>No line items returned from OMG</div>
-                <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>{s.orders||0} order header(s) loaded, but OMG didn't return any line items. Open the browser console and look for <code style={{background:'#f1f5f9',padding:'1px 4px',borderRadius:3}}>[OMG]</code> diagnostic logs, then hit Re-sync.</div>
+                <div style={{fontSize:40,marginBottom:8}}>📦</div>
+                <div style={{fontSize:13,color:'#94a3b8'}}>Products will appear here after importing the OMG report.</div>
               </div>
             ) : (
-            <table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Deco</th><th>Retail</th><th>Cost</th><th>Deco $</th><th>Sizes</th><th>Units</th><th>Revenue</th><th>Margin</th></tr></thead>
-            <tbody>{(s.products||[]).map((p,i)=>{const q=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);const mg=rev-cost;
-              const catP=prod.find(cp=>cp.sku===p.sku);
+            <table><thead><tr><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Retail</th><th>Cost</th><th>Sizes</th><th>Units</th><th>Revenue</th></tr></thead>
+            <tbody>{(s.products||[]).map((p,i)=>{const q=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);
+              const setDeco=(type)=>{
+                const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,deco_type:pr.deco_type===type?'':type}:pr);
+                const upd={...s,products:newProds};
+                setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
+              };
               return<tr key={i}>
-                <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku} {catP&&<span style={{fontSize:8,color:'#22c55e'}}>✓</span>}</td>
-                <td>{p.name}</td><td style={{fontSize:11}}>{p.color}</td>
-                <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:p.deco_type==='screen_print'?'#dbeafe':'#ede9fe',
-                  color:p.deco_type==='screen_print'?'#1e40af':'#6d28d9'}}>{(p.deco_type||'').replace(/_/g,' ')}</span></td>
-                <td style={{textAlign:'right'}}>${p.retail}</td><td style={{textAlign:'right'}}>${p.cost}</td><td style={{textAlign:'right'}}>${p.deco_cost}</td>
+                <td style={{padding:4}}>{p.image_url?<img src={p.image_url} alt="" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0'}}/>:<span style={{color:'#cbd5e1',fontSize:20}}>📦</span>}</td>
+                <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{p.sku}</td>
+                <td><div style={{fontSize:12,fontWeight:600}}>{p.name}</div>{p.manufacturer&&<div style={{fontSize:10,color:'#94a3b8'}}>{p.manufacturer}</div>}</td>
+                <td style={{fontSize:11}}>{p.color}</td>
+                <td><div style={{display:'flex',gap:3}}>
+                  {[['SP','screen_print','#dbeafe','#1e40af'],['EMB','embroidery','#ede9fe','#6d28d9'],['HTV','heat_press','#fef3c7','#92400e']].map(([label,type,bg,fg])=>
+                    <button key={type} onClick={()=>setDeco(type)} style={{padding:'3px 8px',borderRadius:4,fontSize:10,fontWeight:800,border:p.deco_type===type?`2px solid ${fg}`:'2px solid transparent',background:p.deco_type===type?bg:'#f1f5f9',color:p.deco_type===type?fg:'#94a3b8',cursor:'pointer',transition:'all 0.1s'}}>{label}</button>
+                  )}
+                </div></td>
+                <td style={{textAlign:'right',fontSize:12}}>${p.retail}</td><td style={{textAlign:'right',fontSize:12}}>${p.cost}</td>
                 <td>{(()=>{
                   const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','OS','OSFA'];
                   const entries=Object.entries(p.sizes||{})
@@ -10194,8 +10138,7 @@ export default function App(){
                   </table>;
                 })()}</td>
                 <td style={{fontWeight:700,textAlign:'center'}}>{q}</td>
-                <td style={{textAlign:'right',fontWeight:600}}>${rev.toLocaleString()}</td>
-                <td style={{textAlign:'right',color:mg>0?'#166534':'#dc2626'}}>${mg.toLocaleString()} <span style={{fontSize:9}}>({rev>0?Math.round(mg/rev*100):0}%)</span></td>
+                <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>${rev.toLocaleString()}</td>
               </tr>})}</tbody></table>
             )}
           </div>
