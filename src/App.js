@@ -2429,121 +2429,153 @@ export default function App(){
 
       // ── Fetch line items for this sale's orders ──
       //
-      // OMG's API has NO per-order line-item access:
-      //   - Nested /orders/{id}/order_products → 404
-      //   - /orders/{id}?include=order_products → 400
-      //   - /order_products?filter[order_id]= → SILENTLY IGNORED
-      //   - page[size] capped below 1000 (5000/2000/1000 → 400)
-      //   - Neither links.next nor page[number] pagination works
+      // OMG's API is extremely limited for per-sale line items. Confirmed
+      // broken: nested routes (404), include=order_products (400),
+      // filter[order_id] (silently ignored), page[number] (duplicates),
+      // page[size]>500 (400). Only page[size]=500 and bare /order_products
+      // work, returning the first 100-500 rows in default order.
       //
-      // Strategy: brute-force multiple windows into /order_products.
-      //   1. Try page[offset]-based pagination (untested until now)
-      //   2. Fetch with multiple sort orders — each gives a different
-      //      200-row slice of the global data
-      //   3. Merge all results, dedupe, filter by our order id set
+      // Strategy: try every filter/pagination scheme we can think of.
+      // One of these MUST work — we just haven't found the right syntax.
       if (orders.length > 0) {
-        const opMap = new Map(); // dedupe by op.id
-        const opIncluded = [];
+        const opMap = new Map();
+        const opInc = [];
+        const addOPs = (resp) => {
+          if (!resp) return 0;
+          const rows = resp.data || [];
+          const fresh = rows.filter(op => op.id && !opMap.has(op.id));
+          fresh.forEach(op => opMap.set(op.id, op));
+          opInc.push(...(resp.included || []));
+          return fresh.length;
+        };
 
-        // Determine max working page[size]
-        let maxPS = 200;
-        for (const ps of [500, 400, 300]) {
+        // Helper: fetch and check if results actually belong to our orders
+        const fetchAndVerify = async (url, label) => {
           try {
-            const resp = await omgApiCall(`/order_products?page[size]=${ps}`);
-            if (resp?.data?.length > 0) { maxPS = ps; break; }
-          } catch { continue; }
-        }
-        console.log(`[OMG] Max working page[size] for /order_products: ${maxPS}`);
-
-        // Try page[offset]-based pagination first — if it works we can
-        // scan the ENTIRE dataset.
-        console.log(`[OMG] Trying page[offset] pagination (page[size]=${maxPS})…`);
-        let offsetWorks = false;
-        // Fetch first page
-        try {
-          const resp = await omgApiCall(`/order_products?include=product,attribute_values&page[size]=${maxPS}`);
-          const rows = resp?.data || [];
-          rows.forEach(op => { if (op.id) opMap.set(op.id, op); });
-          opIncluded.push(...(resp?.included || []));
-          console.log(`[OMG]   page 1: ${rows.length} rows (unique: ${opMap.size})`);
-        } catch (e) { console.log(`[OMG]   page 1 failed: ${e.message}`); }
-
-        // Try offset pagination for subsequent pages
-        for (let off = maxPS; off < maxPS * 200; off += maxPS) {
-          try {
-            const resp = await omgApiCall(`/order_products?include=product,attribute_values&page[offset]=${off}&page[limit]=${maxPS}`);
+            const resp = await omgApiCall(url);
             const rows = resp?.data || [];
-            if (rows.length === 0) { console.log(`[OMG]   page[offset]=${off}: empty — end of data`); break; }
-            const fresh = rows.filter(op => op.id && !opMap.has(op.id));
-            if (fresh.length === 0) {
-              console.log(`[OMG]   page[offset]=${off}: all duplicates — offset pagination not supported`);
-              break;
+            const matched = rows.filter(op => {
+              const oid = op.relationships?.order?.data?.id;
+              return oid != null && myOrderIds.has(String(oid));
+            });
+            console.log(`[OMG]   ${label}: ${rows.length} rows, ${matched.length} matched our orders`);
+            if (matched.length > 0) {
+              addOPs(resp);
+              return matched.length;
             }
-            offsetWorks = true;
-            fresh.forEach(op => opMap.set(op.id, op));
-            opIncluded.push(...(resp?.included || []));
-            if (off <= maxPS * 3 || off % (maxPS * 10) === 0) {
-              console.log(`[OMG]   page[offset]=${off}: ${rows.length} rows, ${fresh.length} new (total: ${opMap.size})`);
-            }
+            return 0;
           } catch (e) {
-            console.log(`[OMG]   page[offset]=${off} failed: ${e.message} — stopping`);
+            console.log(`[OMG]   ${label}: ${e.message}`);
+            return -1; // error, not just empty
+          }
+        };
+
+        // === Attempt 1: JSON:API relationship filters ===
+        // filter[order_id] is an attribute filter that OMG ignores. But
+        // filter[order] or filter[order.id] are RELATIONSHIP filters —
+        // a different syntax that might actually work.
+        console.log(`[OMG] Attempt 1: relationship filter syntaxes…`);
+        const sampleOrder = orders[0].id;
+        const relFilterVariants = [
+          `/order_products?filter[order]=${sampleOrder}&include=product,attribute_values`,
+          `/order_products?filter[order.id]=${sampleOrder}&include=product,attribute_values`,
+          `/order_products?filter[order_id]=${sampleOrder}&include=product,attribute_values&page[size]=500`,
+        ];
+        let relFilterWorks = false;
+        for (const url of relFilterVariants) {
+          const count = await fetchAndVerify(url, url.split('?')[1].split('&')[0]);
+          if (count > 0) {
+            relFilterWorks = true;
+            console.log(`[OMG] ✓ Relationship filter works! Fetching for all orders…`);
+            // Batch-fetch all orders with this filter
+            const filterBase = url.replace(sampleOrder, 'ORDER_ID');
+            const BATCH = 5;
+            for (let i = 1; i < orders.length; i += BATCH) {
+              const batch = orders.slice(i, i + BATCH);
+              await Promise.all(batch.map(async o => {
+                const batchUrl = filterBase.replace('ORDER_ID', o.id);
+                try {
+                  const resp = await omgApiCall(batchUrl);
+                  addOPs(resp);
+                } catch {}
+              }));
+              if (i % 25 === 0) console.log(`[OMG]   rel-filter progress: ${i}/${orders.length}, ${opMap.size} items`);
+            }
             break;
           }
-        }
-        if (offsetWorks) {
-          console.log(`[OMG] ✓ Offset pagination worked! Total unique order_products: ${opMap.size}`);
-        } else {
-          // Offset didn't work — try bare offset= style
-          console.log(`[OMG] Trying bare offset= pagination…`);
-          for (let off = maxPS; off < maxPS * 200; off += maxPS) {
-            try {
-              const resp = await omgApiCall(`/order_products?include=product,attribute_values&offset=${off}&limit=${maxPS}`);
-              const rows = resp?.data || [];
-              if (rows.length === 0) break;
-              const fresh = rows.filter(op => op.id && !opMap.has(op.id));
-              if (fresh.length === 0) { console.log(`[OMG]   offset=${off}: all duplicates — stopping`); break; }
-              offsetWorks = true;
-              fresh.forEach(op => opMap.set(op.id, op));
-              opIncluded.push(...(resp?.included || []));
-              if (off <= maxPS * 3) console.log(`[OMG]   offset=${off}: ${rows.length} rows, ${fresh.length} new (total: ${opMap.size})`);
-            } catch { break; }
+          if (count === 0) {
+            console.log(`[OMG]   ^ filter returned data but none matched — filter is ignored`);
           }
         }
 
-        // If neither offset scheme worked, fetch multiple sort windows
-        if (!offsetWorks) {
-          console.log(`[OMG] Offset pagination failed. Multi-window sort fetch…`);
-          const sortVariants = [
-            'sort=-updated_at', 'sort=updated_at',
-            'sort=-created_at', 'sort=created_at',
-            'sort=-id', 'sort=id',
-          ];
-          for (const sv of sortVariants) {
+        // === Attempt 2: page[offset] pagination (retry — last time was network error) ===
+        if (!relFilterWorks && opMap.size === 0) {
+          console.log(`[OMG] Attempt 2: page[offset] pagination with page[size]=500…`);
+          let offsetOK = false;
+          for (let off = 0; off < 500 * 200; off += 500) {
+            const url = off === 0
+              ? `/order_products?include=product,attribute_values&page[size]=500`
+              : `/order_products?include=product,attribute_values&page[size]=500&page[offset]=${off}`;
             try {
-              const resp = await omgApiCall(`/order_products?include=product,attribute_values&${sv}&page[size]=${maxPS}`);
+              const resp = await omgApiCall(url);
               const rows = resp?.data || [];
+              if (rows.length === 0) { console.log(`[OMG]   offset=${off}: empty — end of data`); break; }
               const fresh = rows.filter(op => op.id && !opMap.has(op.id));
+              if (fresh.length === 0 && off > 0) { console.log(`[OMG]   offset=${off}: all duplicates — stopping`); break; }
+              if (off > 0 && fresh.length > 0) offsetOK = true;
               fresh.forEach(op => opMap.set(op.id, op));
-              opIncluded.push(...(resp?.included || []));
-              console.log(`[OMG]   ${sv}: ${rows.length} rows, ${fresh.length} new (total: ${opMap.size})`);
+              opInc.push(...(resp.included || []));
+              if (off === 0 || off <= 2000 || off % 5000 === 0) {
+                console.log(`[OMG]   offset=${off}: ${rows.length} rows, ${fresh.length} new (total: ${opMap.size})`);
+              }
+            } catch (e) {
+              console.log(`[OMG]   offset=${off}: ${e.message}`);
+              // Network error — wait 2s and retry once
+              await new Promise(r => setTimeout(r, 2000));
+              try {
+                const resp = await omgApiCall(url);
+                const rows = resp?.data || [];
+                if (rows.length === 0) break;
+                const fresh = rows.filter(op => op.id && !opMap.has(op.id));
+                if (fresh.length === 0 && off > 0) break;
+                if (off > 0 && fresh.length > 0) offsetOK = true;
+                fresh.forEach(op => opMap.set(op.id, op));
+                opInc.push(...(resp.included || []));
+                console.log(`[OMG]   offset=${off} retry: ${rows.length} rows, ${fresh.length} new (total: ${opMap.size})`);
+              } catch { console.log(`[OMG]   offset=${off} retry failed — stopping`); break; }
+            }
+          }
+          if (offsetOK) console.log(`[OMG] ✓ Offset pagination worked! Total: ${opMap.size}`);
+        }
+
+        // === Attempt 3: Multi-sort windows as last resort ===
+        if (opMap.size === 0) {
+          console.log(`[OMG] Attempt 3: multi-sort window fetch…`);
+          const sorts = ['', 'sort=-updated_at', 'sort=updated_at', 'sort=-created_at', 'sort=created_at', 'sort=-id', 'sort=id'];
+          for (const sv of sorts) {
+            const qs = sv ? `include=product,attribute_values&${sv}&page[size]=500` : `include=product,attribute_values&page[size]=500`;
+            try {
+              const resp = await omgApiCall(`/order_products?${qs}`);
+              const n = addOPs(resp);
+              console.log(`[OMG]   ${sv||'(default)'}: ${(resp?.data||[]).length} rows, ${n} new (total: ${opMap.size})`);
             } catch (e) { console.log(`[OMG]   ${sv}: ${e.message}`); }
           }
         }
 
-        // Filter the merged set against our order ids
-        captureIncluded(opIncluded);
+        // Filter against our order ids
+        captureIncluded(opInc);
         const allOPs = [...opMap.values()];
         orderProducts = allOPs.filter(op => {
-          const orderId = op.relationships?.order?.data?.id;
-          return orderId != null && myOrderIds.has(String(orderId));
+          const oid = op.relationships?.order?.data?.id;
+          return oid != null && myOrderIds.has(String(oid));
         });
-        const uniqOrdsInAll = new Set(allOPs.map(op => op.relationships?.order?.data?.id).filter(Boolean));
-        console.log(`[OMG] Scanned ${allOPs.length} unique global order_products (spanning ${uniqOrdsInAll.size} orders) → ${orderProducts.length} matched our ${myOrderIds.size} orders`);
+        console.log(`[OMG] Scanned ${allOPs.length} unique order_products → ${orderProducts.length} matched our ${myOrderIds.size} orders`);
         if (orderProducts.length === 0 && allOPs.length > 0) {
-          console.warn(`[OMG] Zero matches. Our first 5 order ids:`, [...myOrderIds].slice(0, 5), 'Global first 5:', [...uniqOrdsInAll].slice(0, 5));
+          const theirs = new Set(allOPs.map(op => op.relationships?.order?.data?.id).filter(Boolean));
+          console.warn(`[OMG] Zero matches. Our IDs: ${[...myOrderIds].slice(0,3).join(', ')} | Theirs: ${[...theirs].slice(0,3).join(', ')}`);
         }
       } else {
-        console.warn(`[OMG] Skipping order_products fetch — no orders matched sale ${omgId}`);
+        console.warn(`[OMG] Skipping order_products — no orders matched`);
       }
 
       // Build product included block for convertOMGStore
