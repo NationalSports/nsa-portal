@@ -319,11 +319,17 @@ export let CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Foot
 export const COLOR_CATEGORIES=['Black','White','Red','Navy','Royal','Dark Green','Cardinal','Maroon','Light Grey','Dark Grey','Vegas Gold','Athletic Gold','Orange'];
 
 export const EXTRA_SIZES=['XXS','XS','3XL','4XL','5XL','6XL','LT','XLT','2XLT','3XLT'];
-export const SZ_ORD=['XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','LT','XLT','2XLT','3XLT','OSFA'];
+export const SZ_ORD=['XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','LT','XLT','2XLT','3XLT','OSFA',
+  '28','30','32','34','36','38','40','42','44','46','48','50','52','54'];
 export const SZ_NORM={'XXS':'XXS','2XS':'XXS','SM':'S','SML':'S','SMALL':'S','MD':'M','MED':'M','MEDIUM':'M','LG':'L','LRG':'L','LARGE':'L',
   'XLG':'XL','XLARGE':'XL','X-LARGE':'XL','XXL':'2XL','2X':'2XL','2XLARGE':'2XL','2X-LARGE':'2XL',
   'XXXL':'3XL','3X':'3XL','3XLARGE':'3XL','3X-LARGE':'3XL','XXXXL':'4XL','4X':'4XL','4XLARGE':'4XL','4X-LARGE':'4XL',
-  '5X':'5XL','6X':'6XL','LT':'LT','XLT':'XLT','2XLT':'2XLT','3XLT':'3XLT'};
+  '5X':'5XL','6X':'6XL','LT':'LT','XLT':'XLT','2XLT':'2XLT','3XLT':'3XLT',
+  'MENS SMALL':'S','MENS MEDIUM':'M','MENS LARGE':'L','MENS XL':'XL','MENS XXL':'2XL',
+  'WOMENS SMALL':'S','WOMENS MEDIUM':'M','WOMENS LARGE':'L','WOMENS XL':'XL',
+  'YOUTH SMALL':'YS','YOUTH MEDIUM':'YM','YOUTH LARGE':'YL','YOUTH XL':'YXL',
+  'BOYS SMALL':'YS','BOYS MEDIUM':'YM','BOYS LARGE':'YL','GIRLS SMALL':'YS','GIRLS MEDIUM':'YM','GIRLS LARGE':'YL',
+  'NONE':'OSFA','ONE SIZE':'OSFA','OS':'OSFA','N/A':'OSFA'};
 
 // Status color/label map
 export const SC={

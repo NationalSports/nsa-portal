@@ -2933,7 +2933,8 @@ export default function App(){
           let productQty = 0, productPaid = 0;
           const colors = new Set();
           rows.forEach(row => {
-            const sz = row.size || 'OS';
+            const rawSz = (row.size || 'OS').trim();
+            const sz = SZ_NORM[rawSz.toUpperCase()] || (/^adult\b/i.test(rawSz)?'OSFA':rawSz);
             const qty = row.quantity || 0;
             sizes[sz] = (sizes[sz] || 0) + qty;
             productQty += qty;
