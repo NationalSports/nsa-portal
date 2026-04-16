@@ -2934,6 +2934,9 @@ export default function App(){
           const artwork = (meta.artwork || [])[0];
           const imageUrl = artwork?.link || artwork?.thumbnail || '';
 
+          // Skip items with 0 sales — no one ordered them
+          if (productQty === 0) return;
+
           products.push({
             sku: meta.sku || '',
             name: meta.name || '',
@@ -2944,6 +2947,7 @@ export default function App(){
             cost: meta.cogs || 0,
             deco_type: '',
             deco_cost: 0,
+            art_group: '',
             sizes,
             image_url: imageUrl,
             _omg_product_id: meta.id,
@@ -2981,7 +2985,7 @@ export default function App(){
             matched++;
             continue;
           }
-        } catch { /* not a SanMar item */ }
+        } catch (e) { console.log(`[OMG Report] SanMar lookup failed for ${p.sku}: ${e.message}`); }
         // 3) Try S&S Activewear API
         try {
           apiLookups++;
@@ -2994,7 +2998,7 @@ export default function App(){
             matched++;
             continue;
           }
-        } catch { /* not an S&S item */ }
+        } catch (e) { console.log(`[OMG Report] S&S lookup failed for ${p.sku}: ${e.message}`); }
         // No match — leave cost as 0, user fills in manually
         p._cost_source = 'manual';
       }
@@ -10090,14 +10094,18 @@ export default function App(){
             {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
               if(sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
               const generatedId=nextSOId(sos);
-              // Build SO items from imported products — each product becomes a line item
+              // Build art files from unique art_group labels
+              const artGroups=[...new Set((s.products||[]).map(p=>p.art_group).filter(Boolean))];
+              const artFiles=artGroups.map((g,idx)=>{
+                const sample=(s.products||[]).find(p=>p.art_group===g);
+                return{id:'af_omg_'+idx,name:g,deco_type:sample?.deco_type||'screen_print',
+                  ink_colors:'',thread_colors:'',art_size:'',files:[],mockup_files:[],prod_files:[],
+                  notes:'From OMG store '+s.store_name,status:'pending',uploaded:new Date().toLocaleDateString()};
+              });
+              // Build SO items from imported products
               const soItems=(s.products||[]).map(p=>{
-                // Match to catalog for vendor_id and product_id
                 const catP=prod.find(cp=>cp.sku===p.sku||cp.sku?.toLowerCase()===p.sku?.toLowerCase());
-                const totalQty=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);
-                // unit_sell = what customer paid per unit (retail from report)
-                // nsa_cost = wholesale cost (from catalog/SanMar/S&S lookup)
-                // deco is $0 — bundled into the store price
+                const artFileId=p.art_group?artFiles.find(af=>af.name===p.art_group)?.id||null:null;
                 return{
                   sku:p.sku,name:p.name,brand:p.manufacturer||catP?.brand||'',
                   color:p.color,product_id:catP?.id||null,vendor_id:catP?.vendor_id||null,
@@ -10108,7 +10116,7 @@ export default function App(){
                   available_sizes:Object.keys(p.sizes||{}),
                   _colorImage:p.image_url||'',
                   no_deco:!p.deco_type,
-                  decorations:p.deco_type?[{kind:'art',position:'Front Center',type:p.deco_type,art_file_id:null,sell_override:0,sell_each:0,cost_each:0}]:[],
+                  decorations:p.deco_type?[{kind:'art',position:'Front Center',type:p.deco_type,art_file_id:artFileId,sell_override:0,sell_each:0,cost_each:0}]:[],
                   pick_lines:[],po_lines:[],
                 };
               });
@@ -10121,7 +10129,7 @@ export default function App(){
                   +(s._omg_grand_total?'\nGrand total: $'+s._omg_grand_total.toFixed(2):''),
                 shipping_type:'flat',shipping_value:s._omg_shipping||0,
                 tax_rate:0,
-                ship_to_id:'default',firm_dates:[],art_files:[],
+                ship_to_id:'default',firm_dates:[],art_files:artFiles,
                 jobs:[],items:soItems,omg_store_id:s.id,
                 _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_grand_total:s._omg_grand_total||0};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
@@ -10206,6 +10214,18 @@ export default function App(){
               </div>
             )}
           </div>
+          {/* Totals validation */}
+          {s._omg_grand_total>0&&(()=>{
+            const productRev=totalRetail;
+            const computed=productRev+(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0)+(s._omg_fundraise||0);
+            const diff=Math.abs(computed-s._omg_grand_total);
+            const match=diff<1;
+            return <div style={{padding:'8px 16px',borderTop:'1px solid #e2e8f0',fontSize:11,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <span>Product Revenue (${productRev.toLocaleString()}) + Fees (${((s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0)+(s._omg_fundraise||0)).toLocaleString()}) = ${computed.toLocaleString()}</span>
+              {match?<span style={{color:'#166534',fontWeight:700}}>✓ Matches Grand Total</span>
+                :<span style={{color:'#dc2626',fontWeight:700}}>⚠ Off by ${diff.toFixed(2)} from Grand Total (${s._omg_grand_total.toLocaleString()})</span>}
+            </div>;
+          })()}
         </div></div>}
 
         {/* Import from OMG Report */}
@@ -10240,7 +10260,7 @@ export default function App(){
                 <div style={{fontSize:13,color:'#94a3b8'}}>Products will appear here after importing the OMG report.</div>
               </div>
             ) : (
-            <table><thead><tr><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Retail</th><th>Cost</th><th>Sizes</th><th>Units</th><th>Revenue</th></tr></thead>
+            <table><thead><tr><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Art Group</th><th>Retail</th><th>Cost</th><th>Sizes</th><th>Units</th><th>Revenue</th></tr></thead>
             <tbody>{(s.products||[]).map((p,i)=>{const q=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);
               const setDeco=(type)=>{
                 const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,deco_type:pr.deco_type===type?'':type}:pr);
@@ -10261,6 +10281,16 @@ export default function App(){
                     <button key={type} onClick={()=>setDeco(type)} style={{padding:'3px 8px',borderRadius:4,fontSize:10,fontWeight:800,border:p.deco_type===type?`2px solid ${fg}`:'2px solid transparent',background:p.deco_type===type?bg:'#f1f5f9',color:p.deco_type===type?fg:'#94a3b8',cursor:'pointer',transition:'all 0.1s'}}>{label}</button>
                   )}
                 </div></td>
+                <td>{(()=>{
+                  // Collect unique art groups from all products for autocomplete
+                  const existing=[...new Set((s.products||[]).map(pr=>pr.art_group).filter(Boolean))];
+                  return <div style={{position:'relative'}}>
+                    <input type="text" value={p.art_group||''} placeholder="—" onChange={e=>updateProd('art_group',e.target.value)}
+                      list={`art-groups-${s.id}`}
+                      style={{width:90,padding:'3px 6px',border:'1px solid '+(p.art_group?'#86efac':'#e2e8f0'),borderRadius:4,fontSize:11,background:p.art_group?'#f0fdf4':'transparent'}}/>
+                    <datalist id={`art-groups-${s.id}`}>{existing.map(g=><option key={g} value={g}/>)}</datalist>
+                  </div>;
+                })()}</td>
                 <td style={{textAlign:'right',fontSize:12}}>${p.retail}</td>
                 <td style={{textAlign:'right',fontSize:12}}>
                   <div style={{display:'flex',alignItems:'center',justifyContent:'flex-end',gap:2}}>
