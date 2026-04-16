@@ -10140,18 +10140,68 @@ export default function App(){
           <div className="stat-card"><div className="stat-label">Margin</div><div className="stat-value" style={{color:pct>=30?'#166534':'#dc2626'}}>{pct}%</div></div>
         </div>
 
-        {/* OMG Store Financials — from Dollar Report (manual entry, carries to SO) */}
+        {/* OMG Store Financials — OCR from Dollar Report screenshot or manual entry */}
         {(s.products||[]).length>0&&<div className="card" style={{marginBottom:12}}><div style={{padding:16}}>
-          <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Store Financials <span style={{fontSize:11,color:'#64748b',fontWeight:400}}>— from OMG Dollar Report (carries to Sales Order)</span></div>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12}}>
-            {[['_omg_shipping','Shipping Collected',s._omg_shipping],['_omg_processing','Processing Fees',s._omg_processing],['_omg_tax','Sales Tax Collected',s._omg_tax],['_omg_grand_total','Grand Total',s._omg_grand_total]].map(([key,label,val])=>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Store Financials <span style={{fontSize:11,color:'#64748b',fontWeight:400}}>— screenshot the OMG Dollar Report and drop here, or enter manually</span></div>
+          {/* Drop zone for Dollar Report screenshot */}
+          <div style={{marginBottom:12,border:'2px dashed #cbd5e1',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f8fafc',transition:'all 0.2s'}}
+            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#2563eb';e.currentTarget.style.background='#eff6ff'}}
+            onDragLeave={e=>{e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc'}}
+            onDrop={async e=>{
+              e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc';
+              const file=e.dataTransfer.files?.[0];if(!file||!file.type.startsWith('image/'))return nf('Drop an image file','error');
+              nf('Reading screenshot…');
+              try{
+                const{createWorker}=await import('tesseract.js');
+                const worker=await createWorker('eng');
+                const{data:{text}}=await worker.recognize(file);
+                await worker.terminate();
+                console.log('[OCR] Dollar Report text:',text);
+                // Parse known patterns from Dollar Report
+                const parseAmt=(pattern)=>{const m=text.match(pattern);return m?parseFloat(m[1].replace(/,/g,''))||0:0};
+                const shipping=parseAmt(/Shipping\s*\$?([\d,]+\.?\d*)/i);
+                const processing=parseAmt(/Processing\s*\$?([\d,]+\.?\d*)/i);
+                const tax=parseAmt(/Sales\s*Tax\s*\$?([\d,]+\.?\d*)/i);
+                const fundraise=parseAmt(/Fundrais(?:ing|e)\s*(?:Collected)?\s*\$?([\d,]+\.?\d*)/i);
+                const grandTotal=parseAmt(/Grand\s*Total[:\s]*\$?([\d,]+\.?\d*)/i);
+                const upd={...s,_omg_shipping:shipping,_omg_processing:processing,_omg_tax:tax,_omg_fundraise:fundraise,_omg_grand_total:grandTotal};
+                setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
+                nf(`Extracted: Shipping $${shipping} | Processing $${processing} | Tax $${tax} | Fundraise $${fundraise} | Grand Total $${grandTotal}`);
+                // Auto-add fundraise to customer promo funds
+                if(fundraise>0&&s.customer_id){
+                  const custMatch=cust.find(cx=>cx.id===s.customer_id);
+                  if(custMatch){
+                    const progId='pp_omg_'+s._omg_sale_code+'_'+Date.now();
+                    const prog={id:progId,customer_id:s.customer_id,type:'fixed',fixed_amount:fundraise,spend_percentage:0,is_active:true,
+                      notes:'OMG Fundraise from '+s.store_name+' ('+s._omg_sale_code+')',created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
+                    await _dbSavePromoProgram(prog);
+                    const updCust={...custMatch,promo_programs:[...(custMatch.promo_programs||[]),prog]};
+                    setCust(prev=>prev.map(cx=>cx.id===s.customer_id?updCust:cx));
+                    nf(`Added $${fundraise.toFixed(2)} fundraise to ${custMatch.name} promo funds`);
+                  }
+                }
+              }catch(err){console.error('[OCR]',err);nf('OCR failed: '+err.message,'error')}
+            }}
+            onClick={()=>{
+              const inp=document.createElement('input');inp.type='file';inp.accept='image/*';
+              inp.onchange=e=>{const f=e.target.files?.[0];if(f){const dt=new DataTransfer();dt.items.add(f);const dropEvt=new DragEvent('drop',{dataTransfer:dt});document.querySelector('[data-ocr-drop]')?.dispatchEvent(dropEvt)}};
+              inp.click();
+            }}
+            data-ocr-drop="true"
+          >
+            <div style={{fontSize:24,marginBottom:4}}>📸</div>
+            <div style={{fontSize:12,fontWeight:600,color:'#475569'}}>Drop Dollar Report screenshot here</div>
+            <div style={{fontSize:11,color:'#94a3b8'}}>or click to select — extracts Shipping, Processing, Tax, Fundraising, Grand Total</div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10}}>
+            {[['_omg_shipping','Shipping'],['_omg_processing','Processing'],['_omg_tax','Sales Tax'],['_omg_fundraise','Fundraise'],['_omg_grand_total','Grand Total']].map(([key,label])=>
               <div key={key}>
-                <div style={{fontSize:11,color:'#64748b',marginBottom:4}}>{label}</div>
-                <div style={{display:'flex',alignItems:'center',gap:4}}>
-                  <span style={{color:'#64748b'}}>$</span>
-                  <input type="number" step="0.01" value={val||''} placeholder="0.00"
+                <div style={{fontSize:10,color:'#64748b',marginBottom:3}}>{label}</div>
+                <div style={{display:'flex',alignItems:'center',gap:3}}>
+                  <span style={{color:'#94a3b8',fontSize:12}}>$</span>
+                  <input type="number" step="0.01" value={s[key]||''} placeholder="0"
                     onChange={e=>{const upd={...s,[key]:parseFloat(e.target.value)||0};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)}}
-                    style={{width:'100%',padding:'6px 8px',border:'1px solid #d1d5db',borderRadius:4,fontSize:13,fontFamily:'monospace'}}/>
+                    style={{width:'100%',padding:'4px 6px',border:'1px solid #d1d5db',borderRadius:4,fontSize:12,fontFamily:'monospace'}}/>
                 </div>
               </div>
             )}
