@@ -10114,9 +10114,16 @@ export default function App(){
               });
               const newSO={id:generatedId,customer_id:s.customer_id,memo:'OMG Store: '+s.store_name+(s._omg_sale_code?' ('+s._omg_sale_code+')':''),status:'need_order',
                 created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
-                expected_date:'',production_notes:'OMG Store '+s.store_name+' — '+soItems.length+' items imported from report. Deco cost is $0 (bundled in store price).',
-                shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[],
-                jobs:[],items:soItems,omg_store_id:s.id};
+                expected_date:'',production_notes:'OMG Store '+s.store_name+' — '+soItems.length+' items imported from report. Deco cost is $0 (bundled in store price).'
+                  +(s._omg_shipping?'\nShipping collected: $'+s._omg_shipping.toFixed(2):'')
+                  +(s._omg_processing?'\nProcessing fees: $'+s._omg_processing.toFixed(2):'')
+                  +(s._omg_tax?'\nSales tax collected: $'+s._omg_tax.toFixed(2):'')
+                  +(s._omg_grand_total?'\nGrand total: $'+s._omg_grand_total.toFixed(2):''),
+                shipping_type:'flat',shipping_value:s._omg_shipping||0,
+                tax_rate:0,
+                ship_to_id:'default',firm_dates:[],art_files:[],
+                jobs:[],items:soItems,omg_store_id:s.id,
+                _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_grand_total:s._omg_grand_total||0};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
               nf(`Created SO with ${soItems.length} items from ${s.store_name}`);
             }}>📋 Create Sales Order ({(s.products||[]).length} items)</button>}
@@ -10127,11 +10134,29 @@ export default function App(){
 
         <div className="stats-row" style={{marginBottom:12}}>
           <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{(s.products||[]).reduce((a,p)=>a+Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0),0)}</div></div>
-          <div className="stat-card"><div className="stat-label">Product Revenue</div><div className="stat-value" style={{color:'#1e40af'}}>${(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0).toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Product Revenue</div><div className="stat-value" style={{color:'#1e40af'}}>${totalRetail.toLocaleString()}</div></div>
           <div className="stat-card"><div className="stat-label">Products</div><div className="stat-value">{(s.products||[]).length}</div></div>
           <div className="stat-card"><div className="stat-label">NSA Cost</div><div className="stat-value" style={{color:'#d97706'}}>${totalCost.toLocaleString()}</div></div>
           <div className="stat-card"><div className="stat-label">Margin</div><div className="stat-value" style={{color:pct>=30?'#166534':'#dc2626'}}>{pct}%</div></div>
         </div>
+
+        {/* OMG Store Financials — from Dollar Report (manual entry, carries to SO) */}
+        {(s.products||[]).length>0&&<div className="card" style={{marginBottom:12}}><div style={{padding:16}}>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Store Financials <span style={{fontSize:11,color:'#64748b',fontWeight:400}}>— from OMG Dollar Report (carries to Sales Order)</span></div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12}}>
+            {[['_omg_shipping','Shipping Collected',s._omg_shipping],['_omg_processing','Processing Fees',s._omg_processing],['_omg_tax','Sales Tax Collected',s._omg_tax],['_omg_grand_total','Grand Total',s._omg_grand_total]].map(([key,label,val])=>
+              <div key={key}>
+                <div style={{fontSize:11,color:'#64748b',marginBottom:4}}>{label}</div>
+                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                  <span style={{color:'#64748b'}}>$</span>
+                  <input type="number" step="0.01" value={val||''} placeholder="0.00"
+                    onChange={e=>{const upd={...s,[key]:parseFloat(e.target.value)||0};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)}}
+                    style={{width:'100%',padding:'6px 8px',border:'1px solid #d1d5db',borderRadius:4,fontSize:13,fontFamily:'monospace'}}/>
+                </div>
+              </div>
+            )}
+          </div>
+        </div></div>}
 
         {/* Import from OMG Report */}
         <div className="card" style={{marginBottom:12,border:(s.products||[]).length===0&&s.status==='closed'?'2px solid #166534':undefined}}>
