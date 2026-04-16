@@ -10256,39 +10256,45 @@ export default function App(){
       }
     };
     return(<>
-      {/* OMG API Sync */}
-      <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
-        <button className="btn btn-primary" onClick={syncOMGStores} disabled={omgSyncing} style={{fontSize:12}}>
-          {omgSyncing ? 'Syncing...' : 'Sync from OMG'}
-        </button>
-        <button className="btn btn-secondary" onClick={runOMGProbe} disabled={omgProbing} style={{fontSize:12}}>
-          {omgProbing ? 'Probing...' : 'Probe API'}
-        </button>
-        {omgProbeLines.length > 0 && !omgProbing && (
-          <button className="btn btn-sm btn-secondary" onClick={()=>setOmgProbeLines([])} style={{fontSize:11}}>Clear</button>
-        )}
-        <div style={{fontSize:11,color:'#64748b'}}>
-          Last synced: {omgLastSync ? new Date(omgLastSync).toLocaleString() : 'Never'}
+      {/* Add Store from Report */}
+      <div className="card" style={{marginBottom:12,border:'2px solid #166534'}}>
+        <div style={{padding:16}}>
+          <div style={{fontSize:15,fontWeight:700,color:'#166534',marginBottom:4}}>Add Store from OMG Report</div>
+          <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Paste the shared report link from OMG to create a new store with products, sizes, and artwork.</div>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <input type="text" placeholder="https://report.ordermygear.com/..." value={omgReportUrl} onChange={e=>setOmgReportUrl(e.target.value)}
+              style={{flex:1,padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:6,fontSize:13,fontFamily:'monospace'}}/>
+            <button className="btn btn-primary" disabled={omgReportLoading||!omgReportUrl.trim()} style={{background:'#166534',whiteSpace:'nowrap'}} onClick={async()=>{
+              // Create a new store shell, then import the report into it
+              const urlStr=omgReportUrl.trim();
+              const uuidMatch=urlStr.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+              if(!uuidMatch){nf('Invalid report URL — needs a valid OMG report link','error');return}
+              setOmgReportLoading(true);
+              try{
+                const resp=await fetch(`/.netlify/functions/omg-report-proxy?id=${uuidMatch[1]}`);
+                if(!resp.ok)throw new Error('Report fetch failed: '+resp.status);
+                const report=await resp.json();
+                const saleCode=report.options?.filter?.find(f=>f.key==='sale_code')?.value||'';
+                const storeName=report.details?.title||'OMG Store '+saleCode;
+                const storeId='OMG-sale_'+saleCode;
+                // Check if store already exists
+                if(omgStores.find(s=>s.id===storeId)){
+                  nf('Store already exists — opening it','error');
+                  setOmgSel(omgStores.find(s=>s.id===storeId));setOmgReportLoading(false);return;
+                }
+                // Create shell store
+                const shell={id:storeId,store_name:storeName,status:'open',_omg_source:true,_omg_id:'sale_'+saleCode,_omg_sale_code:saleCode,
+                  _last_synced:new Date().toISOString(),products:[],orders:0,total_sales:0,fundraise_total:0,items_sold:0,unique_buyers:0,
+                  subdomain:'',channel_type:'pop-up',_report_url:urlStr};
+                setOmgStores(prev=>[shell,...prev]);
+                // Now import report into it
+                const updated=await importOMGReport(shell,urlStr);
+                if(updated){setOmgSel(updated);setOmgReportUrl('')}
+              }catch(e){nf('Failed: '+e.message,'error')}finally{setOmgReportLoading(false)}
+            }}>{omgReportLoading?'⏳ Importing…':'+ Add Store'}</button>
+          </div>
         </div>
       </div>
-
-      {/* Probe results panel — streams results as they come in (works on mobile, no alert/console needed) */}
-      {omgProbeLines.length > 0 && (
-        <div style={{marginBottom:12,padding:12,background:'#0f172a',color:'#e2e8f0',borderRadius:8,fontFamily:'monospace',fontSize:11,maxHeight:320,overflowY:'auto',whiteSpace:'pre-wrap',wordBreak:'break-word'}}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,position:'sticky',top:0,background:'#0f172a',paddingBottom:4,borderBottom:'1px solid #334155'}}>
-            <div style={{fontWeight:700,color:'#22d3ee'}}>OMG API Probe {omgProbing?'(running...)':'(done)'}</div>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{
-              const text = omgProbeLines.join('\n');
-              if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(()=>nf('Probe output copied to clipboard'),()=>nf('Copy failed — long-press the text to select','error'));
-              else nf('Clipboard not available — long-press text to select','error');
-            }}>Copy</button>
-          </div>
-          {omgProbeLines.map((line,i)=>{
-            const highlight = line.includes('🎯') ? {color:'#fbbf24',fontWeight:700} : line.includes('⚠') || line.includes('✗') ? {color:'#f87171'} : line.includes('✓') ? {color:'#4ade80'} : line.startsWith('→') ? {color:'#94a3b8'} : {};
-            return <div key={i} style={highlight}>{line}</div>;
-          })}
-        </div>
-      )}
 
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
