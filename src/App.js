@@ -2960,87 +2960,32 @@ export default function App(){
 
       console.log(`[OMG Report] Parsed ${products.length} products, ${totalQty} total units, $${totalSales} from report ${reportId}`);
 
-      // ── Auto-lookup wholesale costs + vendor assignment ──
-      // Priority: 1) NSA catalog  2) SanMar API  3) S&S API
-      // Also maps manufacturer → vendor for PO routing.
-      //
-      // Manufacturer → vendor/distributor mapping. Brands are distributed
-      // by specific vendors: SanMar carries Port & Company, Comfort Colors,
-      // Gildan, Sport-Tek, District, etc. S&S carries Independent Trading,
-      // Next Level, Bella+Canvas, Badger, etc.
+      // ── Catalog + manufacturer → vendor mapping (instant, no API calls) ──
       const mfgToVendor = (mfg) => {
         if (!mfg) return null;
         const m = mfg.toLowerCase();
-        // SanMar brands
-        if (/comfort\s*colors|port\s*(&|and)\s*company|port\s*authority|sport-?tek|gildan|hanes|champion|district|cornerstone|allmade|rabbit\s*skins|jerzees/i.test(m)) {
+        if (/comfort\s*colors|port\s*(&|and)\s*company|port\s*authority|sport-?tek|gildan|hanes|champion|district|cornerstone|allmade|rabbit\s*skins|jerzees/i.test(m))
           return vend.find(v => /sanmar/i.test(v.name))?.id || null;
-        }
-        // S&S Activewear brands
-        if (/independent\s*trading|next\s*level|bella\s*canvas|tultex|lat|american\s*apparel|alternative|econscious|threadfast/i.test(m)) {
+        if (/independent\s*trading|next\s*level|bella\s*canvas|tultex|lat|american\s*apparel|alternative|econscious|threadfast/i.test(m))
           return vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
-        }
-        // Richardson
         if (/richardson/i.test(m)) return vend.find(v => /richardson/i.test(v.name))?.id || null;
-        // Otto Cap
         if (/otto/i.test(m)) return vend.find(v => /otto/i.test(v.name))?.id || vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
-        // Adidas
         if (/adidas/i.test(m)) return vend.find(v => /adidas/i.test(v.name))?.id || null;
-        // Under Armour
         if (/under\s*armou?r/i.test(m)) return vend.find(v => /under\s*armou?r/i.test(v.name))?.id || null;
-        // Badger
         if (/badger/i.test(m)) return vend.find(v => /badger/i.test(v.name))?.id || vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
+        if (/momentec/i.test(m)) return vend.find(v => /momentec/i.test(v.name))?.id || null;
         return null;
       };
-
-      let matched = 0, apiLookups = 0, vendorMatched = 0;
       for (const p of products) {
         if (!p.sku) continue;
-        // 1) Check NSA catalog
         const catMatch = prod.find(cp => cp.sku === p.sku || cp.sku?.toLowerCase() === p.sku?.toLowerCase());
         if (catMatch) {
-          if (catMatch.nsa_cost > 0) { p.cost = catMatch.nsa_cost; p._cost_source = 'catalog'; matched++; }
-          if (catMatch.vendor_id) { p.vendor_id = catMatch.vendor_id; vendorMatched++; }
-          if (p.cost > 0 && p.vendor_id) continue;
+          if (catMatch.nsa_cost > 0) { p.cost = catMatch.nsa_cost; p._cost_source = 'catalog'; }
+          if (catMatch.vendor_id) p.vendor_id = catMatch.vendor_id;
         }
-        // 2) Try manufacturer → vendor mapping
-        if (!p.vendor_id) {
-          const vendId = mfgToVendor(p.manufacturer);
-          if (vendId) { p.vendor_id = vendId; vendorMatched++; }
-        }
-        // 3) Try SanMar API (also confirms vendor = SanMar)
-        if (p.cost <= 0) {
-          try {
-            apiLookups++;
-            const smResp = await sanmarGetPricing(p.sku);
-            const smPrice = smResp?.pricing?.[0]?.piecePrice || smResp?.PiecePrice || smResp?.pricing?.[0]?.PiecePrice;
-            if (smPrice && parseFloat(smPrice) > 0) {
-              p.cost = parseFloat(smPrice);
-              p._cost_source = 'sanmar';
-              if (!p.vendor_id) { p.vendor_id = vend.find(v => /sanmar/i.test(v.name))?.id || null; vendorMatched++; }
-              matched++;
-              continue;
-            }
-          } catch (e) { console.log(`[OMG Report] SanMar lookup failed for ${p.sku}: ${e.message}`); }
-        }
-        // 4) Try S&S Activewear API
-        if (p.cost <= 0) {
-          try {
-            apiLookups++;
-            const ssResp = await ssGetProducts({ style: p.sku });
-            const ssItem = Array.isArray(ssResp) ? ssResp[0] : ssResp;
-            const ssPrice = ssItem?.CustomerPrice || ssItem?.customerPrice || ssItem?.Price || ssItem?.price;
-            if (ssPrice && parseFloat(ssPrice) > 0) {
-              p.cost = parseFloat(ssPrice);
-              p._cost_source = 'ss';
-              if (!p.vendor_id) { p.vendor_id = vend.find(v => /s.s\s*active/i.test(v.name))?.id || null; vendorMatched++; }
-              matched++;
-              continue;
-            }
-          } catch (e) { console.log(`[OMG Report] S&S lookup failed for ${p.sku}: ${e.message}`); }
-        }
-        if (p.cost <= 0) p._cost_source = 'manual';
+        if (!p.vendor_id) p.vendor_id = mfgToVendor(p.manufacturer);
       }
-      console.log(`[OMG Report] Cost: ${matched}/${products.length} matched. Vendors: ${vendorMatched}/${products.length} mapped. Sources: ${products.map(p=>(p._cost_source||'?')+'→'+(p.vendor_id||'none')).join(', ')}`);
+      console.log(`[OMG Report] Catalog/vendor mapping done. ${products.filter(p=>p.cost>0).length} with cost, ${products.filter(p=>p.vendor_id).length} with vendor.`);
 
       // Update the store with imported products
       const updated = {
@@ -10287,7 +10232,33 @@ export default function App(){
                   importOMGReport(s, omgReportUrl||s._report_url);
                 }}>{omgReportLoading?'⏳ Importing…':(s._report_url?'Re-import':'Import')}</button>
               </div>
-              {s._report_imported_at&&<div style={{fontSize:11,color:'#64748b',marginTop:6}}>Last imported: {new Date(s._report_imported_at).toLocaleString()}</div>}
+              {s._report_imported_at&&<div style={{display:'flex',alignItems:'center',gap:8,marginTop:6}}>
+                <div style={{fontSize:11,color:'#64748b'}}>Last imported: {new Date(s._report_imported_at).toLocaleString()}</div>
+                {(s.products||[]).some(p=>!p.cost||p.cost<=0)&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#fef3c7',color:'#92400e',border:'1px solid #fbbf24'}} onClick={async()=>{
+                  const missing=(s.products||[]).filter(p=>!p.cost||p.cost<=0);
+                  nf(`Looking up costs for ${missing.length} items…`);
+                  let found=0;
+                  for(const p of missing){
+                    if(!p.sku)continue;
+                    // Try SanMar
+                    try{
+                      const r=await sanmarGetPricing(p.sku);
+                      const price=r?.pricing?.[0]?.piecePrice||r?.PiecePrice||r?.pricing?.[0]?.PiecePrice;
+                      if(price&&parseFloat(price)>0){p.cost=parseFloat(price);p._cost_source='sanmar';found++;continue}
+                    }catch(e){console.log(`[Cost] SanMar ${p.sku}: ${e.message}`)}
+                    // Try S&S
+                    try{
+                      const r=await ssGetProducts({style:p.sku});
+                      const item=Array.isArray(r)?r[0]:r;
+                      const price=item?.CustomerPrice||item?.customerPrice||item?.Price||item?.price;
+                      if(price&&parseFloat(price)>0){p.cost=parseFloat(price);p._cost_source='ss';found++;continue}
+                    }catch(e){console.log(`[Cost] S&S ${p.sku}: ${e.message}`)}
+                  }
+                  const upd={...s,products:[...(s.products||[])]};
+                  setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
+                  nf(`Found costs for ${found}/${missing.length} items`+(found<missing.length?' — check console for errors':''));
+                }}>🔍 Lookup Missing Costs ({(s.products||[]).filter(p=>!p.cost||p.cost<=0).length})</button>}
+              </div>}
             </div>}
 
             {omgReportLoading ? (
