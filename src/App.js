@@ -444,7 +444,7 @@ const _dbLoad = async (opts={}) => {
     // Messages: attach read_by array and parse tagged_members
     const messages=msgRaw.map(m=>{const tm=m.tagged_members;const mapped={...m,text:m.body||m.text,ts:m.created_at||m.ts};delete mapped.body;return{...mapped,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
-    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>({sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes||{}}))}));
+    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>({sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',_artwork:p._artwork||[]}))}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations');
@@ -492,7 +492,7 @@ const _dbSeed = async (d) => {
   // Seed OMG stores
   if(d.omg_stores?.length){
     await supabase.from('omg_stores').upsert(d.omg_stores.map(s=>_pick(s,_omgStoreCols)),{onConflict:'id'});
-    const allProds=[];d.omg_stores.forEach(s=>(s.products||[]).forEach(p=>allProds.push({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes})));
+    const allProds=[];d.omg_stores.forEach(s=>(s.products||[]).forEach(p=>allProds.push({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes,image_url:p.image_url||'',manufacturer:p.manufacturer||''})));
     if(allProds.length) await supabase.from('omg_store_products').upsert(allProds,{onConflict:'store_id,sku'});
   }
 };
@@ -10247,10 +10247,14 @@ export default function App(){
                 const upd={...s,products:newProds};
                 setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
               };
+              const updateProd=(key,val)=>{
+                const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,[key]:val}:pr);
+                const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
+              };
               return<tr key={i}>
                 <td style={{padding:4}}>{p.image_url?<img src={p.image_url} alt="" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0'}}/>:<span style={{color:'#cbd5e1',fontSize:20}}>📦</span>}</td>
                 <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{p.sku}</td>
-                <td><div style={{fontSize:12,fontWeight:600}}>{p.name}</div>{p.manufacturer&&<div style={{fontSize:10,color:'#94a3b8'}}>{p.manufacturer}</div>}</td>
+                <td><input type="text" value={p.name} onChange={e=>updateProd('name',e.target.value)} style={{fontSize:12,fontWeight:600,border:'none',background:'transparent',width:'100%',padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/>{p.manufacturer&&<div style={{fontSize:10,color:'#94a3b8'}}>{p.manufacturer}</div>}</td>
                 <td style={{fontSize:11}}>{p.color}</td>
                 <td><div style={{display:'flex',gap:3}}>
                   {[['SP','screen_print','#dbeafe','#1e40af'],['EMB','embroidery','#ede9fe','#6d28d9'],['HTV','heat_press','#fef3c7','#92400e']].map(([label,type,bg,fg])=>
@@ -10259,14 +10263,12 @@ export default function App(){
                 </div></td>
                 <td style={{textAlign:'right',fontSize:12}}>${p.retail}</td>
                 <td style={{textAlign:'right',fontSize:12}}>
-                  {p.cost>0?<span>${p.cost.toFixed(2)} <span style={{fontSize:8,color:p._cost_source==='catalog'?'#22c55e':p._cost_source==='sanmar'?'#2563eb':p._cost_source==='ss'?'#7c3aed':'#94a3b8'}} title={`Cost from ${p._cost_source||'manual'}`}>{p._cost_source==='catalog'?'CAT':p._cost_source==='sanmar'?'SM':p._cost_source==='ss'?'SS':'?'}</span></span>
-                  :<span style={{color:'#dc2626',fontWeight:600,cursor:'pointer'}} title="Click to set cost" onClick={()=>{
-                    const val=prompt(`Enter wholesale cost for ${p.sku} ${p.name}:`);
-                    if(val!=null&&!isNaN(parseFloat(val))){
-                      const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,cost:parseFloat(val),_cost_source:'manual'}:pr);
-                      const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
-                    }
-                  }}>$0 ⚠</span>}
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'flex-end',gap:2}}>
+                    <span style={{color:'#94a3b8',fontSize:11}}>$</span>
+                    <input type="number" step="0.01" value={p.cost||''} placeholder="0" onChange={e=>updateProd('cost',parseFloat(e.target.value)||0)}
+                      style={{width:55,padding:'2px 4px',border:'1px solid '+(p.cost>0?'#d1d5db':'#fca5a5'),borderRadius:3,fontSize:12,fontFamily:'monospace',textAlign:'right',background:p.cost>0?'transparent':'#fef2f2'}}/>
+                    {p._cost_source&&p.cost>0&&<span style={{fontSize:7,color:p._cost_source==='catalog'?'#22c55e':p._cost_source==='sanmar'?'#2563eb':p._cost_source==='ss'?'#7c3aed':'#94a3b8'}}>{p._cost_source==='catalog'?'CAT':p._cost_source==='sanmar'?'SM':p._cost_source==='ss'?'SS':'?'}</span>}
+                  </div>
                 </td>
                 <td>{(()=>{
                   const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','OS','OSFA'];
