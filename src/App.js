@@ -2960,49 +2960,87 @@ export default function App(){
 
       console.log(`[OMG Report] Parsed ${products.length} products, ${totalQty} total units, $${totalSales} from report ${reportId}`);
 
-      // ── Auto-lookup wholesale costs ──
-      // Priority: 1) NSA catalog (covers Adidas, custom pricing)
-      //           2) SanMar API  3) S&S Activewear API
-      let matched = 0, apiLookups = 0;
+      // ── Auto-lookup wholesale costs + vendor assignment ──
+      // Priority: 1) NSA catalog  2) SanMar API  3) S&S API
+      // Also maps manufacturer → vendor for PO routing.
+      //
+      // Manufacturer → vendor/distributor mapping. Brands are distributed
+      // by specific vendors: SanMar carries Port & Company, Comfort Colors,
+      // Gildan, Sport-Tek, District, etc. S&S carries Independent Trading,
+      // Next Level, Bella+Canvas, Badger, etc.
+      const mfgToVendor = (mfg) => {
+        if (!mfg) return null;
+        const m = mfg.toLowerCase();
+        // SanMar brands
+        if (/comfort\s*colors|port\s*(&|and)\s*company|port\s*authority|sport-?tek|gildan|hanes|champion|district|cornerstone|allmade|rabbit\s*skins|jerzees/i.test(m)) {
+          return vend.find(v => /sanmar/i.test(v.name))?.id || null;
+        }
+        // S&S Activewear brands
+        if (/independent\s*trading|next\s*level|bella\s*canvas|tultex|lat|american\s*apparel|alternative|econscious|threadfast/i.test(m)) {
+          return vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
+        }
+        // Richardson
+        if (/richardson/i.test(m)) return vend.find(v => /richardson/i.test(v.name))?.id || null;
+        // Otto Cap
+        if (/otto/i.test(m)) return vend.find(v => /otto/i.test(v.name))?.id || vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
+        // Adidas
+        if (/adidas/i.test(m)) return vend.find(v => /adidas/i.test(v.name))?.id || null;
+        // Under Armour
+        if (/under\s*armou?r/i.test(m)) return vend.find(v => /under\s*armou?r/i.test(v.name))?.id || null;
+        // Badger
+        if (/badger/i.test(m)) return vend.find(v => /badger/i.test(v.name))?.id || vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
+        return null;
+      };
+
+      let matched = 0, apiLookups = 0, vendorMatched = 0;
       for (const p of products) {
         if (!p.sku) continue;
         // 1) Check NSA catalog
         const catMatch = prod.find(cp => cp.sku === p.sku || cp.sku?.toLowerCase() === p.sku?.toLowerCase());
-        if (catMatch && catMatch.nsa_cost > 0) {
-          p.cost = catMatch.nsa_cost;
-          p._cost_source = 'catalog';
-          matched++;
-          continue;
+        if (catMatch) {
+          if (catMatch.nsa_cost > 0) { p.cost = catMatch.nsa_cost; p._cost_source = 'catalog'; matched++; }
+          if (catMatch.vendor_id) { p.vendor_id = catMatch.vendor_id; vendorMatched++; }
+          if (p.cost > 0 && p.vendor_id) continue;
         }
-        // 2) Try SanMar API
-        try {
-          apiLookups++;
-          const smResp = await sanmarGetPricing(p.sku);
-          const smPrice = smResp?.pricing?.[0]?.piecePrice || smResp?.PiecePrice || smResp?.pricing?.[0]?.PiecePrice;
-          if (smPrice && parseFloat(smPrice) > 0) {
-            p.cost = parseFloat(smPrice);
-            p._cost_source = 'sanmar';
-            matched++;
-            continue;
-          }
-        } catch (e) { console.log(`[OMG Report] SanMar lookup failed for ${p.sku}: ${e.message}`); }
-        // 3) Try S&S Activewear API
-        try {
-          apiLookups++;
-          const ssResp = await ssGetProducts({ style: p.sku });
-          const ssItem = Array.isArray(ssResp) ? ssResp[0] : ssResp;
-          const ssPrice = ssItem?.CustomerPrice || ssItem?.customerPrice || ssItem?.Price || ssItem?.price;
-          if (ssPrice && parseFloat(ssPrice) > 0) {
-            p.cost = parseFloat(ssPrice);
-            p._cost_source = 'ss';
-            matched++;
-            continue;
-          }
-        } catch (e) { console.log(`[OMG Report] S&S lookup failed for ${p.sku}: ${e.message}`); }
-        // No match — leave cost as 0, user fills in manually
-        p._cost_source = 'manual';
+        // 2) Try manufacturer → vendor mapping
+        if (!p.vendor_id) {
+          const vendId = mfgToVendor(p.manufacturer);
+          if (vendId) { p.vendor_id = vendId; vendorMatched++; }
+        }
+        // 3) Try SanMar API (also confirms vendor = SanMar)
+        if (p.cost <= 0) {
+          try {
+            apiLookups++;
+            const smResp = await sanmarGetPricing(p.sku);
+            const smPrice = smResp?.pricing?.[0]?.piecePrice || smResp?.PiecePrice || smResp?.pricing?.[0]?.PiecePrice;
+            if (smPrice && parseFloat(smPrice) > 0) {
+              p.cost = parseFloat(smPrice);
+              p._cost_source = 'sanmar';
+              if (!p.vendor_id) { p.vendor_id = vend.find(v => /sanmar/i.test(v.name))?.id || null; vendorMatched++; }
+              matched++;
+              continue;
+            }
+          } catch (e) { console.log(`[OMG Report] SanMar lookup failed for ${p.sku}: ${e.message}`); }
+        }
+        // 4) Try S&S Activewear API
+        if (p.cost <= 0) {
+          try {
+            apiLookups++;
+            const ssResp = await ssGetProducts({ style: p.sku });
+            const ssItem = Array.isArray(ssResp) ? ssResp[0] : ssResp;
+            const ssPrice = ssItem?.CustomerPrice || ssItem?.customerPrice || ssItem?.Price || ssItem?.price;
+            if (ssPrice && parseFloat(ssPrice) > 0) {
+              p.cost = parseFloat(ssPrice);
+              p._cost_source = 'ss';
+              if (!p.vendor_id) { p.vendor_id = vend.find(v => /s.s\s*active/i.test(v.name))?.id || null; vendorMatched++; }
+              matched++;
+              continue;
+            }
+          } catch (e) { console.log(`[OMG Report] S&S lookup failed for ${p.sku}: ${e.message}`); }
+        }
+        if (p.cost <= 0) p._cost_source = 'manual';
       }
-      console.log(`[OMG Report] Cost lookup: ${matched}/${products.length} matched (${apiLookups} API calls). Sources: ${products.map(p=>p._cost_source).join(', ')}`);
+      console.log(`[OMG Report] Cost: ${matched}/${products.length} matched. Vendors: ${vendorMatched}/${products.length} mapped. Sources: ${products.map(p=>(p._cost_source||'?')+'→'+(p.vendor_id||'none')).join(', ')}`);
 
       // Update the store with imported products
       const updated = {
@@ -10274,7 +10312,8 @@ export default function App(){
               return<tr key={i}>
                 <td style={{padding:4}}>{p.image_url?<img src={p.image_url} alt="" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0'}}/>:<span style={{color:'#cbd5e1',fontSize:20}}>📦</span>}</td>
                 <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{p.sku}</td>
-                <td><input type="text" value={p.name} onChange={e=>updateProd('name',e.target.value)} style={{fontSize:12,fontWeight:600,border:'none',background:'transparent',width:'100%',padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/>{p.manufacturer&&<div style={{fontSize:10,color:'#94a3b8'}}>{p.manufacturer}</div>}</td>
+                <td><input type="text" value={p.name} onChange={e=>updateProd('name',e.target.value)} style={{fontSize:12,fontWeight:600,border:'none',background:'transparent',width:'100%',padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/>
+                  <div style={{fontSize:10,color:'#94a3b8'}}>{p.manufacturer}{p.vendor_id&&<span style={{marginLeft:4,color:'#2563eb',fontWeight:600}}>→ {vend.find(v=>v.id===p.vendor_id)?.name||p.vendor_id}</span>}</div></td>
                 <td style={{fontSize:11}}>{p.color}</td>
                 <td><div style={{display:'flex',gap:3}}>
                   {[['SP','screen_print','#dbeafe','#1e40af'],['EMB','embroidery','#ede9fe','#6d28d9'],['HTV','heat_press','#fef3c7','#92400e']].map(([label,type,bg,fg])=>
