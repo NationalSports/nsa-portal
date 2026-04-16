@@ -444,7 +444,7 @@ const _dbLoad = async (opts={}) => {
     // Messages: attach read_by array and parse tagged_members
     const messages=msgRaw.map(m=>{const tm=m.tagged_members;const mapped={...m,text:m.body||m.text,ts:m.created_at||m.ts};delete mapped.body;return{...mapped,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
-    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>({sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',_artwork:p._artwork||[]}))}));
+    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>({sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',_artwork:p._artwork||[]}))}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations');
@@ -2175,7 +2175,17 @@ export default function App(){
   React.useEffect(()=>{_diffSave(sos,'sos',s=>_dbSaveSO(s))},[sos]);
   React.useEffect(()=>{_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
   React.useEffect(()=>{_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
-  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){_dbSave('omg_stores',[_pick(s,_omgStoreCols)])}});_dbSnap.current.omg=omgStores}},[omgStores]);
+  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){
+    _dbSave('omg_stores',[_pick(s,_omgStoreCols)]);
+    // Also save products when they change
+    const oldProds=JSON.stringify((old?.products||[]).map(p=>p.sku+p.cost+p.deco_type+p.art_group+p.vendor_id).sort());
+    const newProds=JSON.stringify((s.products||[]).map(p=>p.sku+p.cost+p.deco_type+p.art_group+p.vendor_id).sort());
+    if(oldProds!==newProds&&(s.products||[]).length>0){
+      const prods=(s.products||[]).map(p=>({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',_cost_source:p._cost_source||''}));
+      // Delete old products and insert fresh (handles SKU changes)
+      if(supabase){supabase.from('omg_store_products').delete().eq('store_id',s.id).then(()=>{supabase.from('omg_store_products').insert(prods).then(r=>{if(r.error)console.error('[DB] omg products save:',r.error.message)})})}
+    }
+  }});_dbSnap.current.omg=omgStores}},[omgStores]);
 
   // ─── Automatic retry for failed saves (every 60s, sequential to avoid overwhelming Supabase) ───
   React.useEffect(()=>{
