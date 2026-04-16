@@ -11761,14 +11761,14 @@ export default function App(){
                         const key=it.sku+'|'+(it.color||'');if(!shippedBySz[key])shippedBySz[key]={};
                         Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key][sz]=(shippedBySz[key][sz]||0)+safeNum(v)});
                       })});
-                      const remainItems=[];
+                      const availItems=[];
                       safeItems(so).forEach((item,ii)=>{
                         const key=item.sku+'|'+(item.color||'');const shipped=shippedBySz[key]||{};
                         const remainSz={};Object.entries(safeSizes(item)).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
                         const qty=Object.values(remainSz).reduce((a,v)=>a+v,0);
-                        if(qty>0)remainItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:remainSz,itemIdx:ii,qty});
+                        if(qty>0)availItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:remainSz,itemIdx:ii,qty});
                       });
-                      setManualShipModal({...manualShipModal,so,cust:c2,remainItems,markShipped:{}});
+                      setManualShipModal({...manualShipModal,so,cust:c2,availItems,shipItems:[],markShipped:{}});
                     }}
                     onMouseEnter={e=>{e.currentTarget.style.background='#eff6ff'}}
                     onMouseLeave={e=>{e.currentTarget.style.background='#f8fafc'}}>
@@ -11785,25 +11785,25 @@ export default function App(){
           </>:<>
             {/* Selected SO */}
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
-              <button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,color:'#64748b',padding:0}} onClick={()=>setManualShipModal({...manualShipModal,so:null,cust:null,remainItems:[],soSearch:''})}>←</button>
+              <button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,color:'#64748b',padding:0}} onClick={()=>setManualShipModal({...manualShipModal,so:null,cust:null,availItems:[],shipItems:[],soSearch:''})}>←</button>
               <span style={{fontWeight:800,color:'#1e40af',fontSize:14,fontFamily:'monospace'}}>{manualShipModal.so.id}</span>
               <span style={{fontSize:12,fontWeight:600,color:'#334155'}}>{manualShipModal.cust?.name||'Unknown'}</span>
               <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#f1f5f9',color:'#64748b'}}>{calcSOStatus(manualShipModal.so)}</span>
             </div>
             {manualShipModal.so.memo&&<div style={{fontSize:10,color:'#64748b',marginBottom:8,fontStyle:'italic'}}>{manualShipModal.so.memo}</div>}
 
-            {/* Remaining items — editable sizes */}
-            {(manualShipModal.remainItems||[]).length>0&&<div style={{marginBottom:12}}>
-              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Items being shipped (adjust quantities)</div>
+            {/* Items being shipped — select from SO or describe manually */}
+            {(manualShipModal.shipItems||[]).length>0&&<div style={{marginBottom:8}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Items being shipped</div>
               <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
                 <thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
                   <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>SKU</th>
                   <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Item</th>
-                  <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Sizes (click to edit)</th>
+                  <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Sizes</th>
                   <th style={{padding:'3px 6px',textAlign:'center',fontSize:10,color:'#64748b'}}>Qty</th>
                   <th style={{width:30}}></th>
                 </tr></thead>
-                <tbody>{(manualShipModal.remainItems||[]).map((it,ii)=>{
+                <tbody>{(manualShipModal.shipItems||[]).map((it,ii)=>{
                   const itQty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
                   return<tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
                     <td style={{padding:'3px 6px',fontWeight:700,fontFamily:'monospace',color:'#1e40af'}}>{it.sku}</td>
@@ -11813,22 +11813,51 @@ export default function App(){
                         {Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=><div key={sz} style={{display:'flex',alignItems:'center',gap:3,background:'#f1f5f9',borderRadius:4,padding:'2px 6px'}}>
                           <span style={{fontSize:11,color:'#475569',fontWeight:700,minWidth:22}}>{sz}</span>
                           <input type="number" min="0" value={v} style={{width:44,fontSize:12,textAlign:'center',padding:'3px 4px',border:'1px solid #cbd5e1',borderRadius:4,fontWeight:600}}
-                            onChange={e=>{const nv=parseInt(e.target.value)||0;const items=[...manualShipModal.remainItems];
+                            onChange={e=>{const nv=parseInt(e.target.value)||0;const items=[...manualShipModal.shipItems];
                               items[ii]={...items[ii],sizes:{...items[ii].sizes,[sz]:nv},qty:Object.entries({...items[ii].sizes,[sz]:nv}).reduce((a,[,val])=>a+val,0)};
-                              setManualShipModal({...manualShipModal,remainItems:items})}}/>
+                              setManualShipModal({...manualShipModal,shipItems:items})}}/>
                         </div>)}
                       </div>
                     </td>
                     <td style={{padding:'3px 6px',textAlign:'center',fontWeight:700}}>{itQty}</td>
                     <td><button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:12}} onClick={()=>{
-                      const items=[...manualShipModal.remainItems];items.splice(ii,1);setManualShipModal({...manualShipModal,remainItems:items})}}>×</button></td>
+                      const items=[...manualShipModal.shipItems];items.splice(ii,1);setManualShipModal({...manualShipModal,shipItems:items})}}>×</button></td>
                   </tr>})}</tbody>
               </table>
             </div>}
 
+            {/* Add items from SO */}
+            {(()=>{
+              const avail=(manualShipModal.availItems||[]).filter(ai=>{
+                const inShip=(manualShipModal.shipItems||[]).find(si=>si.itemIdx===ai.itemIdx);
+                return !inShip;
+              });
+              return<div style={{marginBottom:12,padding:8,background:'#eff6ff',borderRadius:6,border:'1px dashed #93c5fd'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:avail.length>0?6:0}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#1e40af',textTransform:'uppercase'}}>Add items from order</div>
+                  {avail.length>0&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 10px',background:'#166534',color:'white',border:'none',borderRadius:4,fontWeight:700}}
+                    onClick={()=>{setManualShipModal({...manualShipModal,shipItems:[...(manualShipModal.shipItems||[]),...avail.map(ai=>({...ai,sizes:{...ai.sizes}}))]})}}
+                  >+ Add All</button>}
+                </div>
+                {avail.length===0?<div style={{fontSize:10,color:'#64748b',padding:'4px 0'}}>{(manualShipModal.availItems||[]).length===0?'No unshipped items on this order':'All items added'}</div>:
+                <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
+                  <tbody>{avail.map((ai,aii)=>{
+                    const szStr=Object.entries(ai.sizes).filter(([,v])=>v>0).sort((a,b)=>{const a2=SZ_ORD.indexOf(a[0].toUpperCase()),b2=SZ_ORD.indexOf(b[0].toUpperCase());return(a2<0?99:a2)-(b2<0?99:b2)}).map(([sz,v])=>sz+':'+v).join(' ');
+                    return<tr key={aii} style={{borderBottom:'1px solid #dbeafe'}}>
+                      <td style={{padding:'3px 6px',fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{ai.sku}</td>
+                      <td style={{padding:'3px 6px',fontSize:10}}>{ai.name}{ai.color?' · '+ai.color:''}</td>
+                      <td style={{padding:'3px 6px',fontSize:10,color:'#475569'}}>{szStr}</td>
+                      <td style={{padding:'3px 6px',textAlign:'center',fontWeight:700}}>{ai.qty}</td>
+                      <td style={{padding:'3px 6px'}}><button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#2563eb',color:'white',border:'none',borderRadius:4}}
+                        onClick={()=>{setManualShipModal({...manualShipModal,shipItems:[...(manualShipModal.shipItems||[]),{...ai,sizes:{...ai.sizes}}]})}}>+ Add</button></td>
+                    </tr>})}</tbody>
+                </table>}
+              </div>;
+            })()}
+
             {/* Description for items not on the order */}
             <div style={{marginBottom:12}}>
-              <label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2,textTransform:'uppercase'}}>Item Description (if not on SO)</label>
+              <label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2,textTransform:'uppercase'}}>Item description (if not on SO)</label>
               <input className="form-input" value={manualShipModal.itemDesc||''} placeholder="e.g. Sample jerseys, extra supplies, replacement item..."
                 style={{fontSize:11}}
                 onChange={e=>setManualShipModal({...manualShipModal,itemDesc:e.target.value})}/>
@@ -11902,7 +11931,7 @@ export default function App(){
                       const dims=manualShipModal.dimensions||{};
                       if(!dims.length||!dims.width||!dims.height){nf('Please enter box dimensions (L × W × H)','error');return}
                       nf('Creating ShipStation label...');
-                      const label=await createShipStationLabel(so,c2,(manualShipModal.remainItems||[]),w,manualShipModal.carrier||'fedex','fedex_ground',dims);
+                      const label=await createShipStationLabel(so,c2,(manualShipModal.shipItems||[]),w,manualShipModal.carrier||'fedex','fedex_ground',dims);
                       const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
                       const labelUrl=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
                       const labelDownload=label.labelDownload||labelUrl||null;
@@ -11983,7 +12012,7 @@ export default function App(){
                   const so=manualShipModal.so;
                   const cost=parseFloat(manualShipModal.cost)||0;
                   const trackUrl2=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
-                  const shipItems=(manualShipModal.remainItems||[]).map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:{...it.sizes}}));
+                  const shipItems=(manualShipModal.shipItems||[]).map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:{...it.sizes}}));
                   if(manualShipModal.itemDesc)shipItems.push({sku:'MANUAL',name:manualShipModal.itemDesc,color:'',sizes:{}});
                   const shipment={
                     id:'MSHP-'+Date.now(),
