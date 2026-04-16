@@ -10053,14 +10053,14 @@ export default function App(){
       if(omgFilter.dateRange!=='all'){
         const days={'30d':30,'90d':90,'6m':180,'1y':365}[omgFilter.dateRange]||30;
         const cutoff=new Date(Date.now()-days*86400000);
-        const storeDate=s.close_date?new Date(s.close_date):s.open_date?new Date(s.open_date):null;
-        if(!storeDate||storeDate<cutoff)return false;
+        const storeDate=s.close_date?new Date(s.close_date):s.open_date?new Date(s.open_date):s._last_synced?new Date(s._last_synced):null;
+        if(storeDate&&storeDate<cutoff)return false;
       }
       return true;
     });
-    const totalSales=filtered.reduce((a,s)=>a+(s.total_sales||0),0);
-    const totalFund=filtered.reduce((a,s)=>a+(s.fundraise_total||0),0);
-    const totalOrders=filtered.reduce((a,s)=>a+(s.orders||0),0);
+    const totalSales=filtered.reduce((a,s)=>{const pr=(s.products||[]).reduce((a2,p)=>{const q=Object.values(p.sizes||{}).reduce((a3,v)=>a3+v,0);return a2+q*p.retail},0);return a+(pr||s.total_sales||0)},0);
+    const totalUnits=filtered.reduce((a,s)=>a+(s.products||[]).reduce((a2,p)=>a2+Object.values(p.sizes||{}).reduce((a3,v)=>a3+v,0),0),0);
+    const totalFund=filtered.reduce((a,s)=>a+(s._omg_fundraise||s.fundraise_total||0),0);
 
     // Store detail view
     if(omgSel){
@@ -10394,7 +10394,7 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Total Stores</div><div className="stat-value">{filtered.length}</div></div>
         <div className="stat-card"><div className="stat-label">Total Sales</div><div className="stat-value" style={{color:'#1e40af'}}>${(totalSales/1000).toFixed(1)}k</div></div>
         <div className="stat-card"><div className="stat-label">Fundraised</div><div className="stat-value" style={{color:'#166534'}}>${(totalFund/1000).toFixed(1)}k</div></div>
-        <div className="stat-card"><div className="stat-label">Orders</div><div className="stat-value">{totalOrders}</div></div>
+        <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{totalUnits}</div></div>
         <div className="stat-card"><div className="stat-label">Open Now</div><div className="stat-value" style={{color:'#d97706'}}>{filtered.filter(s=>s.status==='open').length}</div></div>
       </div>
 
