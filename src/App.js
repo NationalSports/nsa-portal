@@ -10318,7 +10318,12 @@ export default function App(){
                 }}/>:<span style={{color:'#cbd5e1',fontSize:20}}>📦</span>}</td>
                 <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{p.sku}</td>
                 <td><input type="text" value={p.name} onChange={e=>updateProd('name',e.target.value)} style={{fontSize:12,fontWeight:600,border:'none',background:'transparent',width:'100%',padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/>
-                  <div style={{fontSize:10,color:'#94a3b8'}}>{p.manufacturer}{p.vendor_id&&<span style={{marginLeft:4,color:'#2563eb',fontWeight:600}}>→ {vend.find(v=>v.id===p.vendor_id)?.name||p.vendor_id}</span>}</div></td>
+                  <div style={{fontSize:10,color:'#94a3b8',display:'flex',alignItems:'center',gap:3}}>{p.manufacturer||'—'}
+                    {p.vendor_id?<span style={{color:'#2563eb',fontWeight:600}}>→ {vend.find(v=>v.id===p.vendor_id)?.name||p.vendor_id}</span>
+                    :<select value="" onChange={e=>{if(e.target.value)updateProd('vendor_id',e.target.value)}} style={{fontSize:10,padding:'1px 2px',border:'1px solid #fca5a5',borderRadius:3,color:'#dc2626',background:'#fef2f2',cursor:'pointer'}}>
+                      <option value="">→ vendor?</option>{vend.filter(v=>v.is_active).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+                    </select>}
+                  </div></td>
                 <td style={{fontSize:11}}>{p.color}</td>
                 <td><div style={{display:'flex',gap:3}}>
                   {[['SP','screen_print','#dbeafe','#1e40af'],['EMB','embroidery','#ede9fe','#6d28d9'],['HTV','heat_press','#fef3c7','#92400e']].map(([label,type,bg,fg])=>
@@ -10346,10 +10351,6 @@ export default function App(){
                     {p.deco_type&&!p.art_group&&<button onClick={()=>updateProd('art_group',relevantGroups[0]||nextGroup)}
                       style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:700,cursor:'pointer',
                         border:'1px dashed #94a3b8',background:'#fff',color:'#64748b'}}>+ {relevantGroups[0]||nextGroup}</button>}
-                    {p.deco_type&&p.art_group&&<button onClick={()=>updateProd('art_group',nextGroup)}
-                      title="Create new art group"
-                      style={{padding:'2px 4px',borderRadius:3,fontSize:9,cursor:'pointer',
-                        border:'1px dashed #94a3b8',background:'#fff',color:'#94a3b8'}}>+</button>}
                   </div>;
                 })()}</td>
                 <td style={{textAlign:'right',fontSize:12}}>${p.retail}</td>
