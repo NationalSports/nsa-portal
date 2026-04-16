@@ -10262,23 +10262,27 @@ export default function App(){
                   let found=0;
                   for(const p of missing){
                     if(!p.sku)continue;
-                    // Try SanMar
+                    // 1) Check NSA catalog first
+                    const catMatch=prod.find(cp=>cp.sku===p.sku||cp.sku?.toLowerCase()===p.sku?.toLowerCase());
+                    if(catMatch&&catMatch.nsa_cost>0){p.cost=catMatch.nsa_cost;p._cost_source='catalog';if(catMatch.vendor_id&&!p.vendor_id)p.vendor_id=catMatch.vendor_id;found++;continue}
+                    // 2) Try SanMar
                     try{
                       const r=await sanmarGetPricing(p.sku);
                       const price=r?.pricing?.[0]?.piecePrice||r?.PiecePrice||r?.pricing?.[0]?.PiecePrice;
                       if(price&&parseFloat(price)>0){p.cost=parseFloat(price);p._cost_source='sanmar';found++;continue}
                     }catch(e){console.log(`[Cost] SanMar ${p.sku}: ${e.message}`)}
-                    // Try S&S
+                    // 3) Try S&S
                     try{
                       const r=await ssGetProducts({style:p.sku});
                       const item=Array.isArray(r)?r[0]:r;
                       const price=item?.CustomerPrice||item?.customerPrice||item?.Price||item?.price;
                       if(price&&parseFloat(price)>0){p.cost=parseFloat(price);p._cost_source='ss';found++;continue}
                     }catch(e){console.log(`[Cost] S&S ${p.sku}: ${e.message}`)}
+                    console.log(`[Cost] No match for ${p.sku} (${p.name}) in catalog, SanMar, or S&S`);
                   }
                   const upd={...s,products:[...(s.products||[])]};
                   setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
-                  nf(`Found costs for ${found}/${missing.length} items`+(found<missing.length?' — check console for errors':''));
+                  nf(`Found costs for ${found}/${missing.length} items`+(found<missing.length?' — remaining need manual entry':''));
                 }}>🔍 Lookup Missing Costs ({(s.products||[]).filter(p=>!p.cost||p.cost<=0).length})</button>}
               </div>}
             </div>}
