@@ -10145,13 +10145,13 @@ export default function App(){
           </div>
         </div></div>
 
-        <div className="stats-row" style={{marginBottom:12}}>
+        {(()=>{const fees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);return<div className="stats-row" style={{marginBottom:12}}>
           <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{(s.products||[]).reduce((a,p)=>a+Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0),0)}</div></div>
           <div className="stat-card"><div className="stat-label">Product Revenue</div><div className="stat-value" style={{color:'#1e40af'}}>${totalRetail.toLocaleString()}</div></div>
-          <div className="stat-card"><div className="stat-label">Products</div><div className="stat-value">{(s.products||[]).length}</div></div>
+          <div className="stat-card"><div className="stat-label">Fees</div><div className="stat-value" style={{color:'#dc2626'}}>${fees>0?fees.toLocaleString():'—'}</div><div style={{fontSize:9,color:'#94a3b8'}}>{fees>0?'Ship+Process+Tax':''}</div></div>
           <div className="stat-card"><div className="stat-label">NSA Cost</div><div className="stat-value" style={{color:'#d97706'}}>${totalCost.toLocaleString()}</div></div>
           <div className="stat-card"><div className="stat-label">Margin</div><div className="stat-value" style={{color:pct>=30?'#166534':'#dc2626'}}>{pct}%</div></div>
-        </div>
+        </div>})()}
 
         {/* OMG Store Financials — OCR from Dollar Report screenshot or manual entry */}
         {(s.products||[]).length>0&&<div className="card" style={{marginBottom:12}}><div style={{padding:16}}>
