@@ -281,7 +281,7 @@ const fetchAdidasInventoryBulk = async (skus) => {
 };
 
 // Standalone Adidas B2B inventory row component (used in ProductDetail and other stable components)
-function AdidasB2BRow({sku, brand, sizes, showSz, inv}) {
+function AdidasB2BRow({sku, brand, displaySizes, inv}) {
   const [ai, setAi] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
   React.useEffect(() => {
@@ -295,17 +295,17 @@ function AdidasB2BRow({sku, brand, sizes, showSz, inv}) {
   const b2bTotal = Object.values(ai.sizes).reduce((a, s) => a + (s.qty || 0), 0);
   const ls = ai.lastSynced ? new Date(ai.lastSynced) : null;
   const staleHrs = ls ? (Date.now() - ls.getTime()) / 3600000 : 999;
-  return (<div style={{marginTop:6,borderLeft:'3px solid #059669',paddingLeft:4}}>
-    <div style={{fontSize:9,fontWeight:700,color:'#059669',marginBottom:2}}>Adidas B2B:</div>
+  return (<div style={{marginTop:6}}>
+    <div style={{fontSize:9,fontWeight:700,color:'#059669',marginBottom:2,borderLeft:'3px solid #059669',paddingLeft:4}}>Adidas B2B:</div>
     <div style={{display:'flex',gap:2,flexWrap:'wrap',alignItems:'center'}}>
-      {[...new Set(sizes||[])].filter(sz => showSz ? showSz(sz, inv?.[sz]) || (ai.sizes[sz]?.qty > 0) : true).map(sz => {
+      {(displaySizes||[]).map(sz => {
         const v = ai.sizes[sz]?.qty || 0;
         const ft = ai.sizes[sz]?.futureDate;
-        return <div key={sz} className={`size-cell ${v > 10 ? 'in-stock' : v > 0 ? 'low-stock' : 'no-stock'}`} style={{minWidth:44}} title={ft ? 'Expected: ' + ft + ' (' + (ai.sizes[sz]?.futureQty || 0) + ' units)' : ''}>
+        return <div key={sz} className={`size-cell ${v > 10 ? 'in-stock' : v > 0 ? 'low-stock' : 'no-stock'}`} style={{width:44}} title={ft ? 'Expected: ' + ft + ' (' + (ai.sizes[sz]?.futureQty || 0) + ' units)' : ''}>
           <div className="size-label">{sz}</div><div className="size-qty">{v}</div>
         </div>;
       })}
-      <div className="size-cell total" style={{minWidth:44}}><div className="size-label">TOT</div><div className="size-qty">{b2bTotal}</div></div>
+      <div className="size-cell total" style={{width:44}}><div className="size-label">TOT</div><div className="size-qty">{b2bTotal}</div></div>
     </div>
     {ls && <div style={{fontSize:9,color:staleHrs > 48 ? '#d97706' : '#94a3b8',marginTop:2}}>{staleHrs > 48 ? '⚠ ' : ''}Last synced: {ls.toLocaleDateString() + ' ' + ls.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</div>}
   </div>);
@@ -4509,6 +4509,8 @@ export default function App(){
     const maxUnits=Math.max(...monthlyData.map(m=>m.units),1);
     const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));_dbSaveProduct(ep);setEditing(false);nf('Product updated')};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
+    const _coreSz=['XS','S','M','L','XL','2XL','3XL','4XL'];
+    const _displaySz=SZ_ORD.filter(sz=>_coreSz.includes(sz)||((ep.available_sizes||[]).includes(sz)&&(ep._inv?.[sz]||0)>0));
     return(<div>
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
       <div className="card" style={{marginBottom:16}}><div className="card-body">
@@ -4557,10 +4559,10 @@ export default function App(){
                 <span>Sell: <strong>${rQ(ep.nsa_cost*1.65).toFixed(2)}</strong></span>
               </div>
               <div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
-                {[...new Set(ep.available_sizes)].filter(sz=>showSz(sz,ep._inv?.[sz])).map(sz=>{const val=ep._inv?.[sz]||0;return<div key={sz} className={`size-cell ${val>10?'in-stock':val>0?'low-stock':'no-stock'}`} style={{minWidth:44}}><div className="size-label">{sz}</div><div className="size-qty">{val}</div></div>})}
-                <div className="size-cell total" style={{minWidth:44}}><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div>
+                {_displaySz.map(sz=>{const val=ep._inv?.[sz]||0;return<div key={sz} className={`size-cell ${val>10?'in-stock':val>0?'low-stock':'no-stock'}`} style={{width:44}}><div className="size-label">{sz}</div><div className="size-qty">{val}</div></div>})}
+                <div className="size-cell total" style={{width:44}}><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div>
               </div>
-              <AdidasB2BRow sku={ep.sku} brand={ep.brand} sizes={ep.available_sizes} showSz={showSz} inv={ep._inv}/>
+              <AdidasB2BRow sku={ep.sku} brand={ep.brand} displaySizes={_displaySz} inv={ep._inv}/>
             </>:<>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
                 <div><label className="form-label">SKU</label><input className="form-input" value={ep.sku} onChange={e=>setEp(x=>({...x,sku:e.target.value}))}/></div>
