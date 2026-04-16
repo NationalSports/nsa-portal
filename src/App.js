@@ -10335,13 +10335,12 @@ export default function App(){
                 </div></td>
                 <td>{(()=>{
                   // Quick-add art group chips: SP-1, SP-2, EMB-1, etc.
-                  const allGroups=[...new Set((s.products||[]).map(pr=>pr.art_group).filter(Boolean))].sort();
                   const decoPrefix=p.deco_type==='screen_print'?'SP':p.deco_type==='embroidery'?'EMB':p.deco_type==='heat_press'?'HTV':'ART';
-                  const relevantGroups=allGroups.filter(g=>g.startsWith(decoPrefix));
+                  const relevantGroups=[...new Set((s.products||[]).map(pr=>pr.art_group).filter(Boolean))].filter(g=>g.startsWith(decoPrefix)).sort();
                   const nextNum=relevantGroups.length>0?Math.max(...relevantGroups.map(g=>parseInt(g.split('-')[1])||0))+1:1;
                   const nextGroup=`${decoPrefix}-${nextNum}`;
                   return <div style={{display:'flex',flexWrap:'wrap',gap:3,alignItems:'center'}}>
-                    {allGroups.map(g=>{
+                    {relevantGroups.map(g=>{
                       const active=p.art_group===g;
                       const prefix=g.split('-')[0];
                       const color=prefix==='SP'?'#1e40af':prefix==='EMB'?'#6d28d9':prefix==='HTV'?'#92400e':'#475569';
