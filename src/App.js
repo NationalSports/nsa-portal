@@ -3002,7 +3002,8 @@ export default function App(){
         if (!p.sku) continue;
         const catMatch = prod.find(cp => cp.sku === p.sku || cp.sku?.toLowerCase() === p.sku?.toLowerCase());
         if (catMatch) {
-          if (catMatch.nsa_cost > 0) { p.cost = catMatch.nsa_cost; p._cost_source = 'catalog'; }
+          const catCost=parseFloat(catMatch.nsa_cost)||0;
+          if (catCost > 0) { p.cost = catCost; p._cost_source = 'catalog'; }
           if (catMatch.vendor_id) p.vendor_id = catMatch.vendor_id;
         }
         if (!p.vendor_id) p.vendor_id = mfgToVendor(p.manufacturer);
@@ -10269,9 +10270,13 @@ export default function App(){
                       const cpSku=(cp.sku||'').trim().toUpperCase();
                       return cpSku===skuClean||cpSku.includes(skuClean)||skuClean.includes(cpSku);
                     });
-                    if(catMatch&&catMatch.nsa_cost>0){
-                      console.log(`[Cost] Catalog match: ${p.sku} → ${catMatch.sku} @ $${catMatch.nsa_cost}`);
-                      p.cost=catMatch.nsa_cost;p._cost_source='catalog';if(catMatch.vendor_id&&!p.vendor_id)p.vendor_id=catMatch.vendor_id;found++;continue
+                    const catCost=catMatch?parseFloat(catMatch.nsa_cost)||0:0;
+                    if(catCost>0){
+                      console.log(`[Cost] Catalog match: ${p.sku} → ${catMatch.sku} @ $${catCost}`);
+                      p.cost=catCost;p._cost_source='catalog';if(catMatch.vendor_id&&!p.vendor_id)p.vendor_id=catMatch.vendor_id;found++;continue
+                    } else if(catMatch) {
+                      console.log(`[Cost] Catalog found ${p.sku} → ${catMatch.sku} but nsa_cost=${catMatch.nsa_cost} (${typeof catMatch.nsa_cost})`);
+                      if(catMatch.vendor_id&&!p.vendor_id)p.vendor_id=catMatch.vendor_id;
                     } else { console.log(`[Cost] No catalog match for "${p.sku}" — checked ${prod.length} products`) }
                     // 2) Try SanMar
                     try{
