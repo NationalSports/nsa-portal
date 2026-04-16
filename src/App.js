@@ -2973,6 +2973,7 @@ export default function App(){
             sizes,
             image_url: imageUrl,
             _omg_product_id: meta.id,
+            _original_sku: sku,
             _artwork: meta.artwork || [],
           });
           totalQty += productQty;
@@ -3010,10 +3011,35 @@ export default function App(){
       }
       console.log(`[OMG Report] Catalog/vendor mapping done. ${products.filter(p=>p.cost>0).length} with cost, ${products.filter(p=>p.vendor_id).length} with vendor.`);
 
-      // Update the store with imported products
+      // Merge with existing data — preserve manual edits (SKU corrections,
+      // costs, deco types, art groups, vendors) from previous imports.
+      // Match by _omg_product_id (stable) or original SKU position.
+      const existingProducts = store.products || [];
+      const mergedProducts = products.map((p, idx) => {
+        // Find existing product by OMG product ID or by position
+        const existing = existingProducts.find(ep => ep._omg_product_id && ep._omg_product_id === p._omg_product_id)
+          || existingProducts[idx];
+        if (!existing) return p;
+        // Preserve manual edits, take fresh data for quantities
+        return {
+          ...p,
+          // Preserve user edits if they were changed from the original
+          sku: existing.sku !== existing._original_sku && existing.sku ? existing.sku : p.sku,
+          name: existing.name || p.name,
+          cost: existing.cost > 0 ? existing.cost : p.cost,
+          _cost_source: existing.cost > 0 ? existing._cost_source : p._cost_source,
+          vendor_id: existing.vendor_id || p.vendor_id,
+          deco_type: existing.deco_type || p.deco_type,
+          art_group: existing.art_group || p.art_group,
+          // Fresh from report: sizes, quantities, retail, colors, images
+          _original_sku: p.sku, // track original for detecting user edits
+        };
+      });
+
+      // Update the store with merged products
       const updated = {
         ...store,
-        products,
+        products: mergedProducts,
         _report_url: urlStr,
         _report_id: reportId,
         _report_imported_at: new Date().toISOString(),
@@ -3021,6 +3047,12 @@ export default function App(){
         items_sold: totalQty,
       };
       if (totalSales > 0) updated.total_sales = totalSales;
+      // Preserve financials
+      if (!updated._omg_shipping && store._omg_shipping) updated._omg_shipping = store._omg_shipping;
+      if (!updated._omg_processing && store._omg_processing) updated._omg_processing = store._omg_processing;
+      if (!updated._omg_tax && store._omg_tax) updated._omg_tax = store._omg_tax;
+      if (!updated._omg_fundraise && store._omg_fundraise) updated._omg_fundraise = store._omg_fundraise;
+      if (!updated._omg_grand_total && store._omg_grand_total) updated._omg_grand_total = store._omg_grand_total;
 
       setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
       setOmgSel(updated);
