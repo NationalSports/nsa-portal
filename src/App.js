@@ -10263,9 +10263,16 @@ export default function App(){
                   let found=0;
                   for(const p of missing){
                     if(!p.sku)continue;
-                    // 1) Check NSA catalog first
-                    const catMatch=prod.find(cp=>cp.sku===p.sku||cp.sku?.toLowerCase()===p.sku?.toLowerCase());
-                    if(catMatch&&catMatch.nsa_cost>0){p.cost=catMatch.nsa_cost;p._cost_source='catalog';if(catMatch.vendor_id&&!p.vendor_id)p.vendor_id=catMatch.vendor_id;found++;continue}
+                    // 1) Check NSA catalog first — try exact, then trimmed, then partial
+                    const skuClean=p.sku.trim().toUpperCase();
+                    const catMatch=prod.find(cp=>{
+                      const cpSku=(cp.sku||'').trim().toUpperCase();
+                      return cpSku===skuClean||cpSku.includes(skuClean)||skuClean.includes(cpSku);
+                    });
+                    if(catMatch&&catMatch.nsa_cost>0){
+                      console.log(`[Cost] Catalog match: ${p.sku} → ${catMatch.sku} @ $${catMatch.nsa_cost}`);
+                      p.cost=catMatch.nsa_cost;p._cost_source='catalog';if(catMatch.vendor_id&&!p.vendor_id)p.vendor_id=catMatch.vendor_id;found++;continue
+                    } else { console.log(`[Cost] No catalog match for "${p.sku}" — checked ${prod.length} products`) }
                     // 2) Try SanMar
                     try{
                       const r=await sanmarGetPricing(p.sku);
