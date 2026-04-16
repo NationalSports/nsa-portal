@@ -2937,8 +2937,20 @@ export default function App(){
           // Skip items with 0 sales — no one ordered them
           if (productQty === 0) return;
 
+          // Fix bad SKUs: if SKU looks like a product name (has spaces or
+          // is very long), try to extract a real SKU from parentheses in
+          // the color or name fields, e.g. "Black/White (HT3973)" → HT3973
+          let sku = meta.sku || '';
+          const skuLooksBad = sku.includes(' ') || sku.length > 15;
+          if (skuLooksBad) {
+            const colorStr = [...colors].join(' ');
+            const nameStr = meta.name || '';
+            const parenMatch = (colorStr + ' ' + nameStr).match(/\(([A-Za-z0-9]{4,10})\)/);
+            if (parenMatch) sku = parenMatch[1].toUpperCase();
+          }
+
           products.push({
-            sku: meta.sku || '',
+            sku,
             name: meta.name || '',
             manufacturer: meta.manufacturer || '',
             category: meta.category || '',
@@ -10287,7 +10299,7 @@ export default function App(){
                   overlay.innerHTML=`<img src="${p.image_url}" style="max-width:90vw;max-height:90vh;object-fit:contain;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.5)"/>`;
                   overlay.onclick=()=>overlay.remove();document.body.appendChild(overlay);
                 }}/>:<span style={{color:'#cbd5e1',fontSize:20}}>📦</span>}</td>
-                <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{p.sku}</td>
+                <td><input type="text" value={p.sku} onChange={e=>updateProd('sku',e.target.value)} style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12,border:'none',background:'transparent',width:90,padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/></td>
                 <td><input type="text" value={p.name} onChange={e=>updateProd('name',e.target.value)} style={{fontSize:12,fontWeight:600,border:'none',background:'transparent',width:'100%',padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/>
                   <div style={{fontSize:10,color:'#94a3b8',display:'flex',alignItems:'center',gap:3}}>{p.manufacturer||'—'}
                     {p.vendor_id?<span style={{color:'#2563eb',fontWeight:600}}>→ {vend.find(v=>v.id===p.vendor_id)?.name||p.vendor_id}</span>
