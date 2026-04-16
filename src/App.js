@@ -10076,7 +10076,8 @@ export default function App(){
       const s=omgSel;const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
       const totalCost=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
       const totalRetail=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
-      const margin=totalRetail-totalCost;const pct=totalRetail>0?Math.round(margin/totalRetail*100):0;
+      const storeFees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);
+      const margin=totalRetail-totalCost-storeFees;const pct=totalRetail>0?Math.round(margin/totalRetail*100):0;
 
       return(<>
         <button className="btn btn-sm btn-secondary" onClick={()=>setOmgSel(null)} style={{marginBottom:12}}>← Back to All Stores</button>
