@@ -295,17 +295,17 @@ function AdidasB2BRow({sku, brand, sizes, showSz, inv}) {
   const b2bTotal = Object.values(ai.sizes).reduce((a, s) => a + (s.qty || 0), 0);
   const ls = ai.lastSynced ? new Date(ai.lastSynced) : null;
   const staleHrs = ls ? (Date.now() - ls.getTime()) / 3600000 : 999;
-  return (<div style={{marginTop:6}}>
-    <div style={{display:'flex',gap:2,flexWrap:'wrap',alignItems:'center',paddingLeft:2,borderLeft:'3px solid #059669'}}>
-      <span style={{fontSize:9,fontWeight:700,color:'#059669',marginRight:4}}>Adidas B2B:</span>
+  return (<div style={{marginTop:6,borderLeft:'3px solid #059669',paddingLeft:4}}>
+    <div style={{fontSize:9,fontWeight:700,color:'#059669',marginBottom:2}}>Adidas B2B:</div>
+    <div style={{display:'flex',gap:2,flexWrap:'wrap',alignItems:'center'}}>
       {[...new Set(sizes||[])].filter(sz => showSz ? showSz(sz, inv?.[sz]) || (ai.sizes[sz]?.qty > 0) : true).map(sz => {
         const v = ai.sizes[sz]?.qty || 0;
         const ft = ai.sizes[sz]?.futureDate;
-        return <div key={sz} className={`size-cell ${v > 10 ? 'in-stock' : v > 0 ? 'low-stock' : 'no-stock'}`} title={ft ? 'Expected: ' + ft + ' (' + (ai.sizes[sz]?.futureQty || 0) + ' units)' : ''}>
+        return <div key={sz} className={`size-cell ${v > 10 ? 'in-stock' : v > 0 ? 'low-stock' : 'no-stock'}`} style={{minWidth:44}} title={ft ? 'Expected: ' + ft + ' (' + (ai.sizes[sz]?.futureQty || 0) + ' units)' : ''}>
           <div className="size-label">{sz}</div><div className="size-qty">{v}</div>
         </div>;
       })}
-      <div className="size-cell total"><div className="size-label">TOT</div><div className="size-qty">{b2bTotal}</div></div>
+      <div className="size-cell total" style={{minWidth:44}}><div className="size-label">TOT</div><div className="size-qty">{b2bTotal}</div></div>
     </div>
     {ls && <div style={{fontSize:9,color:staleHrs > 48 ? '#d97706' : '#94a3b8',marginTop:2}}>{staleHrs > 48 ? '⚠ ' : ''}Last synced: {ls.toLocaleDateString() + ' ' + ls.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</div>}
   </div>);
@@ -1513,7 +1513,7 @@ const parseNetSuitePdfMulti=(pages,docType,products)=>{
 const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();return SZ_NORM[u]||u};
 const rQ=v=>Math.round(v*4)/4;
 const rT=v=>Math.round(v*10)/10;
-const showSz=(s,inv)=>{const c=['S','M','L','XL','2XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
+const showSz=(s,inv)=>{const c=['XS','S','M','L','XL','2XL','3XL','4XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
 // Deco vendor price lookup: (pricingList, vendorName, decoType, params) => cost per piece or null
 // params: {qty, stitches, colors, underbase, fleece, mesh, dtf_size}
 const _decoVendorPrice=(pricingList,vendorId,decoType,params={})=>{
@@ -4557,8 +4557,8 @@ export default function App(){
                 <span>Sell: <strong>${rQ(ep.nsa_cost*1.65).toFixed(2)}</strong></span>
               </div>
               <div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
-                {[...new Set(ep.available_sizes)].filter(sz=>showSz(sz,ep._inv?.[sz])).map(sz=>{const val=ep._inv?.[sz]||0;return<div key={sz} className={`size-cell ${val>10?'in-stock':val>0?'low-stock':'no-stock'}`}><div className="size-label">{sz}</div><div className="size-qty">{val}</div></div>})}
-                <div className="size-cell total"><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div>
+                {[...new Set(ep.available_sizes)].filter(sz=>showSz(sz,ep._inv?.[sz])).map(sz=>{const val=ep._inv?.[sz]||0;return<div key={sz} className={`size-cell ${val>10?'in-stock':val>0?'low-stock':'no-stock'}`} style={{minWidth:44}}><div className="size-label">{sz}</div><div className="size-qty">{val}</div></div>})}
+                <div className="size-cell total" style={{minWidth:44}}><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div>
               </div>
               <AdidasB2BRow sku={ep.sku} brand={ep.brand} sizes={ep.available_sizes} showSz={showSz} inv={ep._inv}/>
             </>:<>
@@ -4769,12 +4769,13 @@ export default function App(){
           <div className="size-cell total"><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div></div>
         {(()=>{if(p.brand!=='Adidas')return null;const ai=adidasInvBulk[p.sku];if(!ai)return null;const hasSz=Object.keys(ai.sizes||{}).length>0;if(!hasSz)return null;
           const b2bTotal=Object.values(ai.sizes).reduce((a,s)=>a+(s.qty||0),0);const ls=ai.lastSynced?new Date(ai.lastSynced):null;const staleHrs=ls?(Date.now()-ls.getTime())/3600000:999;
-          return<div style={{display:'flex',gap:2,marginTop:3,flexWrap:'wrap',alignItems:'center',paddingLeft:2,borderLeft:'3px solid #059669'}}>
-            <span style={{fontSize:9,fontWeight:700,color:'#059669',marginRight:4,whiteSpace:'nowrap'}}>B2B:</span>
+          return<div style={{marginTop:3,paddingLeft:2,borderLeft:'3px solid #059675'}}>
+            <div style={{fontSize:9,fontWeight:700,color:'#059669',marginBottom:1}}>B2B:</div>
+            <div style={{display:'flex',gap:2,flexWrap:'wrap',alignItems:'center'}}>
             {[...new Set(p.available_sizes)].filter(sz=>showSz(sz,p._inv?.[sz])||(ai.sizes[sz]?.qty>0)).map(sz=>{const v=ai.sizes[sz]?.qty||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{opacity:0.85}}><div className="size-label">{sz}</div><div className="size-qty">{v}</div></div>})}
             <div className="size-cell total" style={{opacity:0.85}}><div className="size-label">TOT</div><div className="size-qty">{b2bTotal}</div></div>
             {ls&&<span style={{fontSize:9,color:staleHrs>48?'#d97706':'#94a3b8',marginLeft:6}}>{staleHrs>48?'⚠ ':''}Synced: {ls.toLocaleDateString()}</span>}
-          </div>})()}
+          </div></div>})()}
         </div></div></div>)})}
   {fP.length===0&&!prodSearching&&<div className="empty">No products</div>}
   {prodSearching&&<div style={{textAlign:'center',padding:20,color:'#64748b',fontSize:13}}>Searching...</div>}
