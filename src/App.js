@@ -10146,7 +10146,7 @@ export default function App(){
                 const artFileId=p.art_group?artFiles.find(af=>af.name===p.art_group)?.id||null:null;
                 return{
                   sku:p.sku,name:p.name,brand:p.manufacturer||catP?.brand||'',
-                  color:p.color,product_id:catP?.id||null,vendor_id:catP?.vendor_id||null,
+                  color:p.color,product_id:catP?.id||null,vendor_id:p.vendor_id||catP?.vendor_id||null,
                   nsa_cost:p.cost||catP?.nsa_cost||0,
                   retail_price:p.retail||0,
                   unit_sell:p.retail||0,
