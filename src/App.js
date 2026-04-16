@@ -10398,11 +10398,18 @@ export default function App(){
                   <div style={{display:'flex',gap:2}}>
                     {[['SP','screen_print'],['EMB','embroidery'],['HTV','heat_press']].map(([label,type])=>{
                       const pfx=type==='screen_print'?'SP':type==='embroidery'?'EMB':'HTV';
-                      const allAg=(s.products||[]).flatMap(pr=>(pr.decorations||[]).map(d=>d.art_group)).filter(Boolean);
-                      const nums=allAg.filter(g=>g.startsWith(pfx)).map(g=>parseInt(g.split('-')[1])||0);
+                      const allAg=[...new Set((s.products||[]).flatMap(pr=>(pr.decorations||[]).map(d=>d.art_group)).filter(Boolean))];
+                      const existing=allAg.filter(g=>g.startsWith(pfx)).sort();
+                      const nums=existing.map(g=>parseInt(g.split('-')[1])||0);
                       const nextName=`${pfx}-${nums.length>0?Math.max(...nums)+1:1}`;
-                      return <button key={type} onClick={()=>updateDecos([...(p.decorations||[]),{type,art_group:nextName}])}
-                        style={{padding:'2px 5px',borderRadius:3,fontSize:9,fontWeight:700,border:'1px dashed #cbd5e1',background:'#f8fafc',color:'#94a3b8',cursor:'pointer'}}>+{label}</button>}
+                      return <div key={type} style={{position:'relative',display:'inline-block'}}>
+                        <select value="" onChange={e=>{if(e.target.value)updateDecos([...(p.decorations||[]),{type,art_group:e.target.value}])}}
+                          style={{padding:'2px 4px',borderRadius:3,fontSize:9,fontWeight:700,border:'1px dashed #cbd5e1',background:'#f8fafc',color:'#94a3b8',cursor:'pointer',width:46,appearance:'none',textAlign:'center'}}>
+                          <option value="">+{label}</option>
+                          {existing.map(g=><option key={g} value={g}>{g}</option>)}
+                          <option value={nextName}>+ {nextName} (new)</option>
+                        </select>
+                      </div>}
                     )}
                   </div>
                 </div></td>
