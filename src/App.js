@@ -281,7 +281,7 @@ const fetchAdidasInventoryBulk = async (skus) => {
 };
 
 // Standalone Adidas B2B inventory row component (used in ProductDetail and other stable components)
-function AdidasB2BRow({sku, brand, sizes, showSz, inv}) {
+function AdidasB2BRow({sku, brand, displaySizes, inv}) {
   const [ai, setAi] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
   React.useEffect(() => {
@@ -296,16 +296,16 @@ function AdidasB2BRow({sku, brand, sizes, showSz, inv}) {
   const ls = ai.lastSynced ? new Date(ai.lastSynced) : null;
   const staleHrs = ls ? (Date.now() - ls.getTime()) / 3600000 : 999;
   return (<div style={{marginTop:6}}>
-    <div style={{display:'flex',gap:2,flexWrap:'wrap',alignItems:'center',paddingLeft:2,borderLeft:'3px solid #059669'}}>
-      <span style={{fontSize:9,fontWeight:700,color:'#059669',marginRight:4}}>Adidas B2B:</span>
-      {[...new Set(sizes||[])].filter(sz => showSz ? showSz(sz, inv?.[sz]) || (ai.sizes[sz]?.qty > 0) : true).map(sz => {
+    <div style={{fontSize:9,fontWeight:700,color:'#059669',marginBottom:2,borderLeft:'3px solid #059669',paddingLeft:4}}>Adidas B2B:</div>
+    <div style={{display:'flex',gap:2,flexWrap:'wrap',alignItems:'center'}}>
+      {(displaySizes||[]).map(sz => {
         const v = ai.sizes[sz]?.qty || 0;
         const ft = ai.sizes[sz]?.futureDate;
-        return <div key={sz} className={`size-cell ${v > 10 ? 'in-stock' : v > 0 ? 'low-stock' : 'no-stock'}`} title={ft ? 'Expected: ' + ft + ' (' + (ai.sizes[sz]?.futureQty || 0) + ' units)' : ''}>
+        return <div key={sz} className={`size-cell ${v > 10 ? 'in-stock' : v > 0 ? 'low-stock' : 'no-stock'}`} style={{width:44}} title={ft ? 'Expected: ' + ft + ' (' + (ai.sizes[sz]?.futureQty || 0) + ' units)' : ''}>
           <div className="size-label">{sz}</div><div className="size-qty">{v}</div>
         </div>;
       })}
-      <div className="size-cell total"><div className="size-label">TOT</div><div className="size-qty">{b2bTotal}</div></div>
+      <div className="size-cell total" style={{width:44}}><div className="size-label">TOT</div><div className="size-qty">{b2bTotal}</div></div>
     </div>
     {ls && <div style={{fontSize:9,color:staleHrs > 48 ? '#d97706' : '#94a3b8',marginTop:2}}>{staleHrs > 48 ? '⚠ ' : ''}Last synced: {ls.toLocaleDateString() + ' ' + ls.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</div>}
   </div>);
@@ -1513,7 +1513,7 @@ const parseNetSuitePdfMulti=(pages,docType,products)=>{
 const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();return SZ_NORM[u]||u};
 const rQ=v=>Math.round(v*4)/4;
 const rT=v=>Math.round(v*10)/10;
-const showSz=(s,inv)=>{const c=['S','M','L','XL','2XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
+const showSz=(s,inv)=>{const c=['XS','S','M','L','XL','2XL','3XL','4XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
 // Deco vendor price lookup: (pricingList, vendorName, decoType, params) => cost per piece or null
 // params: {qty, stitches, colors, underbase, fleece, mesh, dtf_size}
 const _decoVendorPrice=(pricingList,vendorId,decoType,params={})=>{
@@ -1660,6 +1660,9 @@ export default function App(){
   // OMG API sync state
   const[omgSyncing,setOmgSyncing]=useState(false);
   const[omgLastSync,setOmgLastSync]=useState(null);
+  // OMG API probe state (diagnostic panel — streams results as they come in)
+  const[omgProbing,setOmgProbing]=useState(false);
+  const[omgProbeLines,setOmgProbeLines]=useState([]);
   const[dbLoading,setDbLoading]=useState(!!supabase);const[dbError,setDbError]=useState(null);const _dbReady=useRef(false);const _dbLoadSuccess=useRef(false);
   const[failedSaveCount,setFailedSaveCount]=useState(_dbSaveFailedIds.size);_onFailedIdsChange=setFailedSaveCount;
   const[cacheFull,setCacheFull]=useState(_lsQuotaWarned);_onCacheFullChange=setCacheFull;
@@ -2210,88 +2213,192 @@ export default function App(){
   // Notification helper — defined early so callbacks below can reference it
   const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_dbNotify=nf;
 
-  // Load full details (orders + products) for a single OMG store on-demand
-  const loadOMGStoreDetail = async (store) => {
-    if (store._details_loaded) return store;
+  // Load full details (orders + products) for a single OMG store on-demand.
+  // Per-sale fetch: hits /sales/{id}/orders (with fallbacks), then
+  // /order_products?filter[sale_id]={id} (with per-order fallback). Paginates
+  // via links.next. Force=true re-fetches even if _details_loaded is set.
+  const loadOMGStoreDetail = async (store, { force = false } = {}) => {
+    if (!force && store._details_loaded) return store;
     const omgId = store._omg_id;
     if (!omgId) return store;
+    console.log(`[OMG] loadOMGStoreDetail: sale=${omgId} (${store.store_name})`);
     try {
-      // Fetch sale metadata (organization only — include=orders returns 400)
+      // Helper: try endpoints in order, paginate via links.next on the winner
+      const tryPaginated = async (endpoints, maxPages = 20) => {
+        for (const ep of endpoints) {
+          let first;
+          try { first = await omgApiCall(ep); }
+          catch (e) { console.log(`[OMG] ${ep} failed: ${e.message}`); continue; }
+          if (!first?.data) continue;
+          const data = [...first.data];
+          const included = [...(first.included || [])];
+          const seen = new Set(data.map(d => d.id));
+          let nextUrl = first?.links?.next || null;
+          let pages = 1;
+          while (nextUrl && pages < maxPages) {
+            let rel = nextUrl;
+            try { const u = new URL(nextUrl); rel = u.pathname.replace(/^\/v1/, '') + u.search; } catch { /* already relative */ }
+            let next;
+            try { next = await omgApiCall(rel); }
+            catch (e) { console.warn(`[OMG] page ${pages + 1} failed for ${ep}: ${e.message}`); break; }
+            const nd = next?.data || [];
+            const fresh = nd.filter(d => !seen.has(d.id));
+            if (fresh.length === 0) break;
+            fresh.forEach(d => seen.add(d.id));
+            data.push(...fresh);
+            included.push(...(next.included || []));
+            nextUrl = next?.links?.next || null;
+            pages++;
+          }
+          console.log(`[OMG]   ✓ ${ep}: ${data.length} records (${pages} page${pages > 1 ? 's' : ''})`);
+          return { data, included, ep };
+        }
+        return null;
+      };
+
+      // Sale metadata (organization sideload)
       let saleResp;
-      let included = [];
+      let saleIncluded = [];
       try {
         saleResp = await omgApiCall(`/sales/${omgId}?include=organization`);
-        included = saleResp?.included || [];
+        saleIncluded = saleResp?.included || [];
       } catch (e) {
         console.log('[OMG] Sale fetch failed, using basic:', e.message);
         try { saleResp = await omgApiCall(`/sales/${omgId}`); } catch { saleResp = null; }
       }
       const saleResource = saleResp?.data || { id: omgId, attributes: {} };
-      console.log('[OMG] Sale detail attributes:', Object.keys(saleResource.attributes || {}));
 
-      // Use omgFetchAllPages (supports links.next, cursor, and constructed cursor)
-      // Fetch ALL order_products with sideloaded products
+      // Orders for this store
+      const ordersResult = await tryPaginated([
+        `/sales/${omgId}/orders`,
+        `/orders?filter[sale_id]=${omgId}`,
+        `/orders?sale_id=${omgId}`,
+      ]);
+      const orders = ordersResult?.data || [];
+
+      // Order products for this store — prefer bulk filter, fall back per-order.
+      // Include product + attribute_values + product_attributes so we can
+      // reconstruct sizes. (Nested includes don't work on OMG, but multiple
+      // top-level includes do.)
       const productMap = {};
-      let allOrderProducts = [];
-      try {
-        // omgFetchAllPages only returns data; we need included too, so use custom pagination
-        const seenIds = new Set();
-        let nextUrl = '/order_products?include=product';
-        for (let page = 0; page < 50; page++) {
-          const resp = await omgApiCall(nextUrl);
-          const data = resp?.data || [];
-          if (data.length === 0) break;
-          const newRecords = data.filter(d => !seenIds.has(d.id));
-          if (newRecords.length === 0) break;
-          newRecords.forEach(d => seenIds.add(d.id));
-          allOrderProducts = allOrderProducts.concat(newRecords);
-          (resp?.included || []).forEach(i => {
-            if ((i.type === 'products' || i.type === 'product') && !productMap[i.id])
-              productMap[i.id] = i.attributes || {};
-          });
-          if (data.length < 100) break;
-          // Next page: links.next > cursor > constructed cursor
-          if (resp?.links?.next) {
-            try { const u = new URL(resp.links.next); nextUrl = u.pathname.replace(/^\/v1/, '') + u.search; continue; }
-            catch { nextUrl = resp.links.next; continue; }
+      const attrValueMap = {}; // attribute_value id → { name, parentAttrId }
+      const productAttrMap = {}; // product_attribute id → { name }
+      const captureIncluded = (arr) => {
+        (arr || []).forEach(i => {
+          const t = i.type;
+          if ((t === 'product' || t === 'products') && !productMap[i.id]) {
+            productMap[i.id] = i.attributes || {};
+          } else if ((t === 'attribute_value' || t === 'attribute_values') && !attrValueMap[i.id]) {
+            const parentAttrId = i.relationships?.product_attribute?.data?.id
+              || i.relationships?.product_attributes?.data?.id
+              || null;
+            attrValueMap[i.id] = { name: i.attributes?.name || i.attributes?.value || '', parentAttrId };
+          } else if ((t === 'product_attribute' || t === 'product_attributes') && !productAttrMap[i.id]) {
+            productAttrMap[i.id] = { name: i.attributes?.name || '' };
           }
-          const last = data[data.length - 1];
-          const cursor = last?.meta?.page?.cursor;
-          if (cursor) { nextUrl = `/order_products?include=product&page[after]=${cursor}`; continue; }
-          if (last?.id) { nextUrl = `/order_products?include=product&page[after]=${btoa(JSON.stringify({ id: last.id }))}`; continue; }
-          break;
-        }
-      } catch (e) { console.warn('[OMG] order_products fetch failed:', e.message); }
-
-      // Fetch ALL orders using omgFetchAllPages (handles links.next + cursor fallbacks)
-      const orderToSale = {};
-      let orders = [];
-      try {
-        const allOrders = await omgFetchAllPages('/orders');
-        allOrders.forEach(o => {
-          const saleId = o.relationships?.sale?.data?.id;
-          if (saleId) orderToSale[o.id] = saleId;
-          if (saleId === omgId) orders.push(o);
         });
-        console.log(`[OMG] Detail: ${allOrders.length} orders fetched, ${orders.length} for this store`);
-      } catch (e) { console.warn('[OMG] /orders fetch failed:', e.message); }
+      };
+      let orderProducts = [];
+      const bulkResult = await tryPaginated([
+        `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values,product_attributes`,
+        `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values`,
+        `/order_products?filter[sale_id]=${omgId}&include=product`,
+        `/order_products?filter[sale_id]=${omgId}`,
+      ]);
+      if (bulkResult && bulkResult.data.length > 0) {
+        orderProducts = bulkResult.data;
+        captureIncluded(bulkResult.included);
+      } else if (orders.length > 0) {
+        for (const o of orders) {
+          const opResult = await tryPaginated([
+            `/orders/${o.id}/order_products?include=product,attribute_values,product_attributes`,
+            `/orders/${o.id}/order_products?include=product,attribute_values`,
+            `/orders/${o.id}/order_products?include=product`,
+            `/orders/${o.id}/order_products`,
+            `/order_products?filter[order_id]=${o.id}&include=product,attribute_values,product_attributes`,
+            `/order_products?filter[order_id]=${o.id}&include=product`,
+            `/order_products?filter[order_id]=${o.id}`,
+          ], 5);
+          if (!opResult) continue;
+          orderProducts.push(...opResult.data);
+          captureIncluded(opResult.included);
+        }
+      }
 
-      // Filter order_products to this sale via order→sale
-      const orderProducts = allOrderProducts.filter(op => {
-        const orderId = op.relationships?.order?.data?.id;
-        return orderId && orderToSale[orderId] === omgId;
-      });
+      // Build product included block for convertOMGStore
+      const productIncluded = Object.keys(productMap).map(id => ({ id, type: 'products', attributes: productMap[id] }));
+      console.log(`[OMG] Detail: ${orders.length} orders, ${orderProducts.length} order_products, ${productIncluded.length} products for sale ${omgId}`);
 
-      // Build product included for convertOMGStore
-      const usedProductIds = new Set(orderProducts.map(op => op.relationships?.product?.data?.id).filter(Boolean));
-      const productIncluded = [...usedProductIds].filter(id => productMap[id]).map(id => ({ id, type: 'products', attributes: productMap[id] }));
-
-      console.log(`[OMG] Detail: ${orders.length} orders, ${orderProducts.length} order_products (of ${allOrderProducts.length} total), ${usedProductIds.size} products for sale ${omgId}`);
-
-      const detail = { data: saleResource, included: [...included, ...productIncluded], orders, orderProducts: orderProducts.length > 0 ? [{ data: orderProducts, included: productIncluded }] : [] };
+      const detail = {
+        data: saleResource,
+        included: [...saleIncluded, ...productIncluded],
+        orders,
+        orderProducts: orderProducts.length > 0 ? [{ data: orderProducts, included: productIncluded }] : [],
+      };
       const updated = { ...convertOMGStore(detail, cust), _details_loaded: true };
 
-      // Compute totals
+      // ── Aggregate sizes per product ──
+      // Each order_product carries attribute_values (size, color, etc). We
+      // match each value to its parent product_attribute to identify the size
+      // one (product_attribute.name matches /size/i). Fallback: if no parent
+      // type info is available, treat short value names (≤4 chars, alphanumeric)
+      // as sizes heuristically.
+      const isSizeAttrId = (parentAttrId) => {
+        const attr = parentAttrId ? productAttrMap[parentAttrId] : null;
+        return attr && /size/i.test(attr.name || '');
+      };
+      const looksLikeSize = (v) => typeof v === 'string' && /^(X{0,4}S|S|M|L|X{0,4}L|\d?XL|OSFA|OS|Y[XS]{0,3}[SML]|\d{1,3})$/i.test(v.trim());
+      const sizeByProduct = {}; // productId → { sizeName: qty }
+      orderProducts.forEach(op => {
+        const qty = parseInt(op.attributes?.quantity || 0) || 0;
+        if (qty === 0) return;
+        const productId = op.relationships?.product?.data?.id;
+        if (!productId) return;
+        // Find this OP's attribute_values
+        const avRels = op.relationships?.attribute_values?.data || op.relationships?.attributes?.data || [];
+        const avList = Array.isArray(avRels) ? avRels : (avRels ? [avRels] : []);
+        let sizeName = null;
+        for (const rel of avList) {
+          const av = attrValueMap[rel.id];
+          if (!av) continue;
+          if (isSizeAttrId(av.parentAttrId)) { sizeName = av.name; break; }
+          if (!sizeName && looksLikeSize(av.name)) sizeName = av.name;
+        }
+        // Last resort: check inline op.attributes.product_attributes if present
+        if (!sizeName && op.attributes?.product_attributes) {
+          const pa = op.attributes.product_attributes;
+          if (Array.isArray(pa)) {
+            const sizeEntry = pa.find(x => /size/i.test(x?.name || x?.type || ''));
+            if (sizeEntry) sizeName = sizeEntry.value || sizeEntry.name;
+          } else if (typeof pa === 'object') {
+            for (const [k, v] of Object.entries(pa)) {
+              if (/size/i.test(k)) { sizeName = typeof v === 'string' ? v : (v?.name || v?.value); break; }
+            }
+          }
+        }
+        if (!sizeName) sizeName = 'OS';
+        if (!sizeByProduct[productId]) sizeByProduct[productId] = {};
+        sizeByProduct[productId][sizeName] = (sizeByProduct[productId][sizeName] || 0) + qty;
+      });
+
+      // Override sizes on the products returned from convertOMGStore.
+      // convertOMGStore groups by SKU; we indexed by productId. Look up the
+      // productId for each row by matching via the productMap.style/sku.
+      const productIdBySku = {};
+      Object.entries(productMap).forEach(([pid, pattrs]) => {
+        const sku = pattrs?.style || pattrs?.sku;
+        if (sku && !productIdBySku[sku]) productIdBySku[sku] = pid;
+      });
+      if (updated.products) {
+        updated.products = updated.products.map(p => {
+          const pid = productIdBySku[p.sku];
+          if (pid && sizeByProduct[pid]) return { ...p, sizes: sizeByProduct[pid] };
+          return p;
+        });
+      }
+      console.log(`[OMG] Sizes aggregated for ${Object.keys(sizeByProduct).length} products (${Object.keys(attrValueMap).length} attribute_values, ${Object.keys(productAttrMap).length} product_attributes in cache)`);
+
+      // Compute totals from order products
       let salesTotal = 0, totalItems = 0;
       orderProducts.forEach(op => {
         const qty = parseInt(op.attributes?.quantity || 0);
@@ -2310,6 +2417,7 @@ export default function App(){
       if (buyerIds.size > 0) updated.unique_buyers = buyerIds.size;
 
       setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
+      nf(`Synced ${store.store_name}: ${orders.length} orders, ${totalItems} items, $${salesTotal.toLocaleString()}`);
       return updated;
     } catch (e) {
       console.error('[OMG] Failed to load detail for store', store.id, e);
@@ -2989,132 +3097,160 @@ export default function App(){
       const stores = omgStoresData.data;
       // Log first store's full data to help debug what fields are available
       if (stores.length > 0) {
-        console.log('[OMG] Sample store ALL attributes:', JSON.stringify(stores[0].attributes));
-        console.log('[OMG] Sample store ALL relationship keys:', Object.keys(stores[0].relationships || {}));
+        console.log('[OMG] Sample store — full resource:', stores[0]);
+        console.log('[OMG] Sample store — attributes:', stores[0].attributes);
+        console.log('[OMG] Sample store — relationships:', stores[0].relationships);
+        console.log('[OMG] Sample store ALL attribute keys:', Object.keys(stores[0].attributes || {}));
+        // Check if totals are already baked in on the sale resource
+        const a = stores[0].attributes || {};
+        const totalKeys = Object.keys(a).filter(k =>
+          /sales|revenue|amount|total|gross|items|quantity|units|orders|fund|buyers|count/i.test(k));
+        if (totalKeys.length) console.log('[OMG] 🎯 Possible pre-computed total fields:', totalKeys.map(k => `${k}=${a[k]}`).join(', '));
         // Log all included resource types
         const incTypes = [...new Set((omgStoresData.included || []).map(i => i.type))];
         console.log('[OMG] Included resource types:', incTypes);
       }
-      // ── Strategy ──
-      // 1. Fetch order_products?include=product → get qty + product prices
-      // 2. Fetch ALL /orders (paginated) → build order→sale map
-      // 3. Link order_products to stores via order→sale
+      // ── Strategy (per-sale, not global) ──
+      // The previous approach paginated /orders and /order_products globally,
+      // then tried to match records to stores in-memory. With a 50-page cap
+      // (~5000 records), the fetched window was unrelated to the recent stores
+      // we care about — result: every record "unmatched". Now we iterate each
+      // recent store and fetch ONLY its orders + order_products.
       const saleTotals = {};
-      const productMap = {}; // product_id → { base_price, ... }
-      const orderToSale = {}; // order_id → sale_id
       const ordersBySale = {}; // sale_id → [order resources]
 
-      // Helper: paginate an endpoint, collecting data + calling a callback per page
-      // Uses 3 strategies: links.next, meta.page.cursor, constructed cursor from ID
-      const fetchAllPagesWithCallback = async (endpoint, onPage, maxPages = 50) => {
-        let allData = [];
-        const seenIds = new Set();
-        const basePath = endpoint.split('?')[0];
-        const baseQuery = endpoint.includes('?') ? '&' + endpoint.split('?')[1] : '';
-        let nextUrl = endpoint;
-        for (let page = 0; page < maxPages; page++) {
-          let resp;
-          try { resp = await omgApiCall(nextUrl); } catch (e) {
-            console.warn(`[OMG] Page ${page + 1} failed for ${basePath}:`, e.message);
-            break;
+      // Shortcut: if the sale resource already carries totals, skip the chain
+      const saleHasTotals = (attrs) => {
+        const keys = ['total_sales','sales_total','revenue','items_sold','total_items','orders_count','order_count'];
+        return keys.some(k => attrs?.[k] !== undefined && attrs?.[k] !== null);
+      };
+      const skipChain = stores.length > 0 && saleHasTotals(stores[0].attributes);
+      if (skipChain) {
+        console.log('[OMG] ✓ Sale resource has pre-computed totals — skipping order_products chain');
+      }
+
+      // Helper: try a list of endpoints, return the first that responds with data.
+      // Once an endpoint works, paginate it (up to maxPages) and merge data + included.
+      const tryEndpointsPaginated = async (endpoints, maxPages = 20) => {
+        for (const ep of endpoints) {
+          let firstResp;
+          try {
+            firstResp = await omgApiCall(ep);
+          } catch (e) {
+            console.log(`[OMG] ${ep} failed: ${e.message}`);
+            continue;
           }
-          const data = resp?.data || [];
-          if (data.length === 0) break;
-          const newRecords = data.filter(d => !seenIds.has(d.id));
-          if (newRecords.length === 0) break;
-          newRecords.forEach(d => seenIds.add(d.id));
-          allData = allData.concat(newRecords);
-          if (onPage) onPage(resp, newRecords);
-          if (data.length < 100) break;
-          // Strategy 1: links.next
-          if (resp?.links?.next) {
+          if (!firstResp?.data) continue;
+          const allData = [...firstResp.data];
+          const allIncluded = [...(firstResp.included || [])];
+          const seenIds = new Set(allData.map(d => d.id));
+          // Continue paginating if there's a links.next
+          let nextUrl = firstResp?.links?.next || null;
+          let pages = 1;
+          while (nextUrl && pages < maxPages) {
+            let relativeUrl = nextUrl;
             try {
-              const u = new URL(resp.links.next);
-              nextUrl = u.pathname.replace(/^\/v1/, '') + u.search;
-              continue;
-            } catch {
-              nextUrl = resp.links.next.startsWith('/') ? resp.links.next : '/' + resp.links.next;
-              continue;
+              const u = new URL(nextUrl);
+              relativeUrl = u.pathname.replace(/^\/v1/, '') + u.search;
+            } catch { /* already relative */ }
+            let nextResp;
+            try {
+              nextResp = await omgApiCall(relativeUrl);
+            } catch (e) {
+              console.warn(`[OMG] Pagination page ${pages + 1} failed for ${ep}: ${e.message}`);
+              break;
             }
+            const nextData = nextResp?.data || [];
+            const newRecords = nextData.filter(d => !seenIds.has(d.id));
+            if (newRecords.length === 0) break;
+            newRecords.forEach(d => seenIds.add(d.id));
+            allData.push(...newRecords);
+            allIncluded.push(...(nextResp.included || []));
+            nextUrl = nextResp?.links?.next || null;
+            pages++;
           }
-          // Strategy 2: cursor from last record's meta
-          const lastRecord = data[data.length - 1];
-          const cursor = lastRecord?.meta?.page?.cursor;
-          if (cursor) {
-            nextUrl = `${basePath}?page[after]=${cursor}${baseQuery}`;
-            continue;
-          }
-          // Strategy 3: construct cursor from last record ID
-          if (lastRecord?.id) {
-            const constructedCursor = btoa(JSON.stringify({ id: lastRecord.id }));
-            nextUrl = `${basePath}?page[after]=${constructedCursor}${baseQuery}`;
-            continue;
-          }
-          break;
+          return { data: allData, included: allIncluded, ep };
         }
-        return allData;
+        return null;
       };
 
-      // Step 1: Fetch ALL order_products with include=product (paginated)
-      let allOrderProducts = [];
-      try {
-        allOrderProducts = await fetchAllPagesWithCallback(
-          '/order_products?include=product',
-          (resp) => {
-            (resp?.included || []).forEach(i => {
-              if ((i.type === 'products' || i.type === 'product') && !productMap[i.id]) {
+      if (!skipChain) {
+        // Iterate each recent store and fetch its orders + order_products directly.
+        // This caps work to the stores we actually care about.
+        let totalOrders = 0, totalOrderProducts = 0, storesWithData = 0;
+        for (const store of stores) {
+          const saleId = store.id;
+          // Fetch this store's orders. Try a few endpoint shapes for compatibility.
+          const ordersResult = await tryEndpointsPaginated([
+            `/sales/${saleId}/orders`,
+            `/orders?filter[sale_id]=${saleId}`,
+            `/orders?sale_id=${saleId}`,
+          ]);
+          if (!ordersResult) {
+            console.warn(`[OMG] No orders fetched for sale ${saleId}`);
+            continue;
+          }
+          const orderList = ordersResult.data;
+          if (!orderList.length) continue;
+          ordersBySale[saleId] = orderList;
+          totalOrders += orderList.length;
+
+          // Fetch order_products for each of this store's orders. Prefer a
+          // bulk filter when supported; fall back to per-order if necessary.
+          const storeOrderProducts = [];
+          const productMap = {};
+          const bulkResult = await tryEndpointsPaginated([
+            `/order_products?filter[sale_id]=${saleId}&include=product`,
+            `/order_products?filter[sale_id]=${saleId}`,
+          ]);
+          if (bulkResult && bulkResult.data.length > 0) {
+            storeOrderProducts.push(...bulkResult.data);
+            bulkResult.included.forEach(i => {
+              if ((i.type === 'product' || i.type === 'products') && !productMap[i.id]) {
                 productMap[i.id] = i.attributes || {};
               }
             });
+          } else {
+            // Per-order fallback
+            for (const o of orderList) {
+              const opResult = await tryEndpointsPaginated([
+                `/orders/${o.id}/order_products?include=product`,
+                `/orders/${o.id}/order_products`,
+                `/order_products?filter[order_id]=${o.id}&include=product`,
+                `/order_products?filter[order_id]=${o.id}`,
+              ], 5);
+              if (!opResult) continue;
+              storeOrderProducts.push(...opResult.data);
+              opResult.included.forEach(i => {
+                if ((i.type === 'product' || i.type === 'products') && !productMap[i.id]) {
+                  productMap[i.id] = i.attributes || {};
+                }
+              });
+            }
           }
-        );
-      } catch (e) { console.warn('[OMG] order_products fetch failed:', e.message); }
-      console.log(`[OMG] Fetched ${allOrderProducts.length} order_products, ${Object.keys(productMap).length} products`);
+          totalOrderProducts += storeOrderProducts.length;
 
-      // Step 2: Fetch ALL /orders (paginated) to build complete order→sale map
-      try {
-        const allOrders = await fetchAllPagesWithCallback('/orders');
-        allOrders.forEach(o => {
-          const saleId = o.relationships?.sale?.data?.id;
-          if (saleId) {
-            orderToSale[o.id] = saleId;
-            if (!ordersBySale[saleId]) ordersBySale[saleId] = [];
-            ordersBySale[saleId].push(o);
+          // Aggregate totals for this store
+          const totals = { totalItems: 0, totalSales: 0, orderCount: orderList.length };
+          const orderIds = new Set();
+          storeOrderProducts.forEach(op => {
+            const qty = parseInt(op.attributes?.quantity || 0);
+            const productId = op.relationships?.product?.data?.id;
+            const product = productId ? productMap[productId] : null;
+            const price = product ? parseFloat(product.base_price || 0) : 0;
+            totals.totalItems += qty;
+            totals.totalSales += price * qty;
+            const orderId = op.relationships?.order?.data?.id;
+            if (orderId) orderIds.add(orderId);
+          });
+          if (orderIds.size > 0) totals.orderCount = orderIds.size;
+          if (totals.totalItems > 0 || totals.orderCount > 0 || totals.totalSales > 0) {
+            saleTotals[saleId] = totals;
+            storesWithData++;
           }
-        });
-        console.log(`[OMG] Fetched ${allOrders.length} orders, ${Object.keys(orderToSale).length} mapped to sales`);
-      } catch (e) { console.warn('[OMG] /orders fetch failed:', e.message); }
-
-      // Check coverage
-      const allOrderIds = new Set(allOrderProducts.map(op => op.relationships?.order?.data?.id).filter(Boolean));
-      const unmappedCount = [...allOrderIds].filter(id => !orderToSale[id]).length;
-      if (unmappedCount > 0) {
-        console.warn(`[OMG] ${unmappedCount} of ${allOrderIds.size} unique order IDs still unmapped`);
+        }
+        console.log(`[OMG] Per-sale sync: ${stores.length} stores iterated | ${totalOrders} orders | ${totalOrderProducts} order_products | ${storesWithData} stores with data`);
       }
-
-      // Step 3: Compute totals — link via order→sale
-      const storeIds = new Set(stores.map(s => s.id));
-      let matched = 0, unmatched = 0;
-      const orderIdsPerSale = {};
-      allOrderProducts.forEach(op => {
-        const orderId = op.relationships?.order?.data?.id;
-        const productId = op.relationships?.product?.data?.id;
-        const saleId = orderId ? orderToSale[orderId] : null;
-        if (!saleId || !storeIds.has(saleId)) { unmatched++; return; }
-        matched++;
-        const product = productId ? productMap[productId] : null;
-        const price = product ? parseFloat(product.base_price || 0) : 0;
-        const qty = parseInt(op.attributes?.quantity || 0);
-        if (!saleTotals[saleId]) saleTotals[saleId] = { totalItems: 0, totalSales: 0, orderCount: 0 };
-        saleTotals[saleId].totalItems += qty;
-        saleTotals[saleId].totalSales += price * qty;
-        if (!orderIdsPerSale[saleId]) orderIdsPerSale[saleId] = new Set();
-        if (orderId) orderIdsPerSale[saleId].add(orderId);
-      });
-      for (const [saleId, orderIds] of Object.entries(orderIdsPerSale)) {
-        if (saleTotals[saleId]) saleTotals[saleId].orderCount = orderIds.size;
-      }
-      console.log(`[OMG] Totals: ${Object.keys(saleTotals).length} stores with data | ${matched} matched, ${unmatched} unmatched OPs`);
 
       // Convert store list data and populate with computed totals
       const convertedStores = stores.map(store => {
@@ -4373,6 +4509,8 @@ export default function App(){
     const maxUnits=Math.max(...monthlyData.map(m=>m.units),1);
     const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));_dbSaveProduct(ep);setEditing(false);nf('Product updated')};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
+    const _coreSz=['XS','S','M','L','XL','2XL','3XL','4XL'];
+    const _displaySz=SZ_ORD.filter(sz=>_coreSz.includes(sz)||((ep.available_sizes||[]).includes(sz)&&(ep._inv?.[sz]||0)>0));
     return(<div>
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
       <div className="card" style={{marginBottom:16}}><div className="card-body">
@@ -4421,10 +4559,10 @@ export default function App(){
                 <span>Sell: <strong>${rQ(ep.nsa_cost*1.65).toFixed(2)}</strong></span>
               </div>
               <div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
-                {[...new Set(ep.available_sizes)].filter(sz=>showSz(sz,ep._inv?.[sz])).map(sz=>{const val=ep._inv?.[sz]||0;return<div key={sz} className={`size-cell ${val>10?'in-stock':val>0?'low-stock':'no-stock'}`}><div className="size-label">{sz}</div><div className="size-qty">{val}</div></div>})}
-                <div className="size-cell total"><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div>
+                {_displaySz.map(sz=>{const val=ep._inv?.[sz]||0;return<div key={sz} className={`size-cell ${val>10?'in-stock':val>0?'low-stock':'no-stock'}`} style={{width:44}}><div className="size-label">{sz}</div><div className="size-qty">{val}</div></div>})}
+                <div className="size-cell total" style={{width:44}}><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div>
               </div>
-              <AdidasB2BRow sku={ep.sku} brand={ep.brand} sizes={ep.available_sizes} showSz={showSz} inv={ep._inv}/>
+              <AdidasB2BRow sku={ep.sku} brand={ep.brand} displaySizes={_displaySz} inv={ep._inv}/>
             </>:<>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
                 <div><label className="form-label">SKU</label><input className="form-input" value={ep.sku} onChange={e=>setEp(x=>({...x,sku:e.target.value}))}/></div>
@@ -4633,12 +4771,13 @@ export default function App(){
           <div className="size-cell total"><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div></div>
         {(()=>{if(p.brand!=='Adidas')return null;const ai=adidasInvBulk[p.sku];if(!ai)return null;const hasSz=Object.keys(ai.sizes||{}).length>0;if(!hasSz)return null;
           const b2bTotal=Object.values(ai.sizes).reduce((a,s)=>a+(s.qty||0),0);const ls=ai.lastSynced?new Date(ai.lastSynced):null;const staleHrs=ls?(Date.now()-ls.getTime())/3600000:999;
-          return<div style={{display:'flex',gap:2,marginTop:3,flexWrap:'wrap',alignItems:'center',paddingLeft:2,borderLeft:'3px solid #059669'}}>
-            <span style={{fontSize:9,fontWeight:700,color:'#059669',marginRight:4,whiteSpace:'nowrap'}}>B2B:</span>
+          return<div style={{marginTop:3,paddingLeft:2,borderLeft:'3px solid #059675'}}>
+            <div style={{fontSize:9,fontWeight:700,color:'#059669',marginBottom:1}}>B2B:</div>
+            <div style={{display:'flex',gap:2,flexWrap:'wrap',alignItems:'center'}}>
             {[...new Set(p.available_sizes)].filter(sz=>showSz(sz,p._inv?.[sz])||(ai.sizes[sz]?.qty>0)).map(sz=>{const v=ai.sizes[sz]?.qty||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{opacity:0.85}}><div className="size-label">{sz}</div><div className="size-qty">{v}</div></div>})}
             <div className="size-cell total" style={{opacity:0.85}}><div className="size-label">TOT</div><div className="size-qty">{b2bTotal}</div></div>
             {ls&&<span style={{fontSize:9,color:staleHrs>48?'#d97706':'#94a3b8',marginLeft:6}}>{staleHrs>48?'⚠ ':''}Synced: {ls.toLocaleDateString()}</span>}
-          </div>})()}
+          </div></div>})()}
         </div></div></div>)})}
   {fP.length===0&&!prodSearching&&<div className="empty">No products</div>}
   {prodSearching&&<div style={{textAlign:'center',padding:20,color:'#64748b',fontSize:13}}>Searching...</div>}
@@ -9741,6 +9880,14 @@ export default function App(){
           <div className="stat-card"><div className="stat-label">Margin</div><div className="stat-value" style={{color:pct>=30?'#166534':'#dc2626'}}>{pct}%</div></div>
         </div>
 
+        {/* Re-sync button — full-width row so it can't overflow on mobile */}
+        {s._omg_id&&<div style={{marginBottom:12,display:'flex',gap:8,flexWrap:'wrap'}}>
+          <button className="btn btn-primary" disabled={omgDetailLoading} style={{flex:'1 1 auto',minWidth:200}} onClick={()=>{
+            setOmgDetailLoading(true);
+            loadOMGStoreDetail(s,{force:true}).then(u=>{setOmgSel(u);setOmgDetailLoading(false)}).catch(()=>setOmgDetailLoading(false));
+          }}>{omgDetailLoading?'⏳ Syncing this store…':'🔄 Re-sync this store from OMG'}</button>
+        </div>}
+
         <div className="card" style={{marginBottom:12}}><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <h2>📦 Store Products</h2>
           <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer"
@@ -9797,19 +9944,54 @@ export default function App(){
       </>);
     }
 
+    const runOMGProbe = async () => {
+      if (omgProbing) return;
+      setOmgProbing(true);
+      setOmgProbeLines(['▶ Starting probe — this hits ~30 endpoints and may take a minute...']);
+      try {
+        await probeOMGEndpoints((line) => {
+          setOmgProbeLines(prev => [...prev, line]);
+        });
+      } catch (e) {
+        setOmgProbeLines(prev => [...prev, '✗ Probe crashed: ' + (e?.message || String(e))]);
+      } finally {
+        setOmgProbing(false);
+      }
+    };
     return(<>
       {/* OMG API Sync */}
-      <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center'}}>
+      <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
         <button className="btn btn-primary" onClick={syncOMGStores} disabled={omgSyncing} style={{fontSize:12}}>
           {omgSyncing ? 'Syncing...' : 'Sync from OMG'}
         </button>
-        <button className="btn btn-secondary" onClick={probeOMGEndpoints} style={{fontSize:12}}>
-          Probe API
+        <button className="btn btn-secondary" onClick={runOMGProbe} disabled={omgProbing} style={{fontSize:12}}>
+          {omgProbing ? 'Probing...' : 'Probe API'}
         </button>
+        {omgProbeLines.length > 0 && !omgProbing && (
+          <button className="btn btn-sm btn-secondary" onClick={()=>setOmgProbeLines([])} style={{fontSize:11}}>Clear</button>
+        )}
         <div style={{fontSize:11,color:'#64748b'}}>
           Last synced: {omgLastSync ? new Date(omgLastSync).toLocaleString() : 'Never'}
         </div>
       </div>
+
+      {/* Probe results panel — streams results as they come in (works on mobile, no alert/console needed) */}
+      {omgProbeLines.length > 0 && (
+        <div style={{marginBottom:12,padding:12,background:'#0f172a',color:'#e2e8f0',borderRadius:8,fontFamily:'monospace',fontSize:11,maxHeight:320,overflowY:'auto',whiteSpace:'pre-wrap',wordBreak:'break-word'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,position:'sticky',top:0,background:'#0f172a',paddingBottom:4,borderBottom:'1px solid #334155'}}>
+            <div style={{fontWeight:700,color:'#22d3ee'}}>OMG API Probe {omgProbing?'(running...)':'(done)'}</div>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{
+              const text = omgProbeLines.join('\n');
+              if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(()=>nf('Probe output copied to clipboard'),()=>nf('Copy failed — long-press the text to select','error'));
+              else nf('Clipboard not available — long-press text to select','error');
+            }}>Copy</button>
+          </div>
+          {omgProbeLines.map((line,i)=>{
+            const highlight = line.includes('🎯') ? {color:'#fbbf24',fontWeight:700} : line.includes('⚠') || line.includes('✗') ? {color:'#f87171'} : line.includes('✓') ? {color:'#4ade80'} : line.startsWith('→') ? {color:'#94a3b8'} : {};
+            return <div key={i} style={highlight}>{line}</div>;
+          })}
+        </div>
+      )}
 
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
