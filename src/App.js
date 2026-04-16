@@ -10320,9 +10320,12 @@ export default function App(){
                 <td><input type="text" value={p.name} onChange={e=>updateProd('name',e.target.value)} style={{fontSize:12,fontWeight:600,border:'none',background:'transparent',width:'100%',padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/>
                   <div style={{fontSize:10,color:'#94a3b8',display:'flex',alignItems:'center',gap:3}}>{p.manufacturer||'—'}
                     {p.vendor_id?<span style={{color:'#2563eb',fontWeight:600}}>→ {vend.find(v=>v.id===p.vendor_id)?.name||p.vendor_id}</span>
-                    :<select value="" onChange={e=>{if(e.target.value)updateProd('vendor_id',e.target.value)}} style={{fontSize:10,padding:'1px 2px',border:'1px solid #fca5a5',borderRadius:3,color:'#dc2626',background:'#fef2f2',cursor:'pointer'}}>
-                      <option value="">→ vendor?</option>{vend.filter(v=>v.is_active).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
-                    </select>}
+                    :<span style={{position:'relative',display:'inline-block'}}>
+                      <input type="text" placeholder="→ vendor?" list={`vend-${s.id}-${i}`}
+                        onChange={e=>{const match=vend.find(v=>v.name.toLowerCase()===e.target.value.toLowerCase());if(match){updateProd('vendor_id',match.id);e.target.value=''}}}
+                        style={{fontSize:10,width:70,padding:'1px 3px',border:'1px solid #fca5a5',borderRadius:3,color:'#dc2626',background:'#fef2f2'}}/>
+                      <datalist id={`vend-${s.id}-${i}`}>{vend.filter(v=>v.is_active).map(v=><option key={v.id} value={v.name}/>)}</datalist>
+                    </span>}
                   </div></td>
                 <td style={{fontSize:11}}>{p.color}</td>
                 <td><div style={{display:'flex',gap:3}}>
