@@ -4173,10 +4173,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               totalCost+=qty*batchUnitCost;
               batchItems.push({sku:pit.sku,name:pit.name,color:pit.color,sizes,qty,unit_cost:batchUnitCost,item_idx:pit._idx});
             });
-            const bp={id:'BPO-'+Date.now(),vendor_key:batchKey,vendor_name:batchConfig.name,so_id:o.id,so_memo:o.memo||'',customer:cust?.alpha_tag||cust?.name||'',po_id:autoPoId,
+            const bpId='BPO-'+Date.now();
+            const bp={id:bpId,vendor_key:batchKey,vendor_name:batchConfig.name,so_id:o.id,so_memo:o.memo||'',customer:cust?.alpha_tag||cust?.name||'',po_id:autoPoId,
               items:batchItems,total_cost:totalCost,created_by:cu.id,created_by_name:cu.name,created_at:new Date().toLocaleString()};
+            // Also persist a source PO line on the order so the SO shows its own PO# (e.g. PO-3005-DHF),
+            // not just the eventual bulk batch PO. The line stays in "queued" status until the batch is submitted.
+            const updatedItems=o.items.map(it=>({...it,pick_lines:[...(it.pick_lines||[])],po_lines:[...(it.po_lines||[])]}));
+            batchItems.forEach(bit=>{
+              const idx=bit.item_idx;if(idx==null||!updatedItems[idx])return;
+              const poLine={po_id:autoPoId,vendor:vn,status:'queued',created_at:new Date().toLocaleDateString(),memo:'Batch queue — '+batchConfig.name,received:{},shipments:[],unit_cost:bit.unit_cost,batch_queue_id:bpId};
+              Object.entries(bit.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
+              const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
+              if(hasQty)updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
+            });
+            const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+            setO(updated);onSave(updated);setPOCounter(c=>c+1);
             if(onBatchPO)onBatchPO(prev=>[...prev,bp]);
-            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});nf('Added to '+batchConfig.name+' batch queue ($'+totalCost.toFixed(2)+')');
+            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')');
           }}><Icon name="package" size={14}/> Add to Batch ({poItems.filter((_,vi)=>!poExcluded[vi]).length})</button>}
           {poItems.length>0&&(preexistingPO||!batchConfig?.batchOnly)&&<button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{}} disabled={poItems.every((_,vi)=>poExcluded[vi])} onClick={()=>{
           if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}

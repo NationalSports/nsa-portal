@@ -6816,8 +6816,10 @@ export default function App(){
                 <button className="btn btn-primary" style={{background:'#22c55e',borderColor:'#22c55e',padding:'8px 20px'}} onClick={()=>{
                   // Update submitted batch status
                   if(batchMatch)setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:'received',received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
-                  // Update PO lines on SOs to received
-                  const matchedLines=allPOLines.filter(pl=>pl.poId.toLowerCase()===poId.toLowerCase());
+                  // Update PO lines on SOs to received — match by po_id OR batch_po_number so
+                  // the NSA-#### scan also finds the source POs (PO-####-TAG) grouped under it.
+                  const lcPoId=poId.toLowerCase();
+                  const matchedLines=allPOLines.filter(pl=>pl.poId.toLowerCase()===lcPoId||(pl.poLine?.batch_po_number||'').toLowerCase()===lcPoId);
                   matchedLines.forEach(ml=>{
                     const so=sos.find(s=>s.id===ml.soId);if(!so)return;
                     const updItems=[...safeItems(so)];
@@ -6900,7 +6902,10 @@ export default function App(){
                   <span style={{fontWeight:700}}>${bp.total_cost.toFixed(2)}</span>
                   <span style={{fontSize:10,color:'#94a3b8'}}>{bp.created_by_name?.split(' ')[0]}</span>
                   <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'2px 6px',fontSize:10}} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
-                  <button className="btn btn-sm" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'2px 6px'}} onClick={()=>{if(!window.confirm('Remove this batch PO from queue?'))return;setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id))}}>\u2715</button>
+                  <button className="btn btn-sm" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'2px 6px'}} onClick={()=>{if(!window.confirm('Remove this batch PO from queue?'))return;
+                    const so=sos.find(s=>s.id===bp.so_id);
+                    if(so){const updatedItems=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()})}
+                    setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id))}}>\u2715</button>
                 </div>
               </div>
               {!isEditing&&<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
@@ -6924,8 +6929,23 @@ export default function App(){
                       const newSizes={};let newQty=0;
                       itSzs.forEach(([sz])=>{const el=document.getElementById('bq-edit-'+bp.id+'-'+ii+'-'+sz);const v=el?Math.max(0,parseInt(el.value)||0):0;if(v>0){newSizes[sz]=v;newQty+=v}});
                       return{...it,sizes:newSizes,qty:newQty}}).filter(it=>it.qty>0);
-                    if(updatedItems.length===0){setBatchPOs(prev=>prev.filter(b=>b.id!==bp.id));setEditingBatchId(null);nf('Batch PO removed (all quantities zeroed)');return}
+                    const so=sos.find(s=>s.id===bp.so_id);
+                    if(updatedItems.length===0){
+                      if(so){const items2=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:items2,updated_at:new Date().toLocaleString()})}
+                      setBatchPOs(prev=>prev.filter(b=>b.id!==bp.id));setEditingBatchId(null);nf('Batch PO removed (all quantities zeroed)');return}
                     const newTotal=updatedItems.reduce((a,it)=>a+it.qty*it.unit_cost,0);
+                    // Sync the SO po_line sizes so the source PO on the sales order matches the queue edits.
+                    if(so){
+                      const sizeMapByIdx={};updatedItems.forEach(it=>{if(it.item_idx!=null)sizeMapByIdx[it.item_idx]=it.sizes});
+                      const items2=safeItems(so).map((it,idx)=>{const pls=(it.po_lines||[]).map(pl=>{
+                        if(pl.batch_queue_id!==bp.id)return pl;
+                        const cleared={...pl};Object.keys(cleared).forEach(k=>{if(typeof cleared[k]==='number'&&!['unit_cost'].includes(k))delete cleared[k]});
+                        const newSz=sizeMapByIdx[idx]||{};Object.entries(newSz).forEach(([sz,v])=>{if(v>0)cleared[sz]=v});
+                        return cleared;
+                      }).filter(pl=>{if(pl.batch_queue_id!==bp.id)return true;return Object.entries(pl).some(([k,v])=>typeof v==='number'&&v>0&&k!=='unit_cost')});
+                      return{...it,po_lines:pls}});
+                      savSO({...so,items:items2,updated_at:new Date().toLocaleString()});
+                    }
                     setBatchPOs(prev=>prev.map(b=>b.id===bp.id?{...b,items:updatedItems,total_cost:newTotal}:b));
                     setEditingBatchId(null);nf('Batch PO updated');
                   }}>Save</button>
@@ -6943,7 +6963,10 @@ export default function App(){
               </div>
               <div style={{display:'flex',flexDirection:'column',gap:6}}>
                 <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(nextPO);nf('Copied '+nextPO)}}>{'📋'} Copy PO#</button>
-                <button className="btn btn-sm btn-secondary" onClick={()=>{if(window.confirm('Clear all '+vg.pos.length+' POs?'))setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk))}}>Clear</button>
+                <button className="btn btn-sm btn-secondary" onClick={()=>{if(!window.confirm('Clear all '+vg.pos.length+' POs?'))return;
+                  const bpIds=new Set(vg.pos.map(p=>p.id));const soIds=new Set(vg.pos.map(p=>p.so_id));
+                  soIds.forEach(sid=>{const so=sos.find(s=>s.id===sid);if(!so)return;const items2=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>!bpIds.has(pl.batch_queue_id))}));savSO({...so,items:items2,updated_at:new Date().toLocaleString()})});
+                  setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk))}}>Clear</button>
               </div>
             </div>
             <button style={{width:'100%',padding:'12px 20px',borderRadius:8,border:'none',cursor:'pointer',fontWeight:800,fontSize:14,
@@ -6956,13 +6979,24 @@ export default function App(){
                 setSubmittedBatches(prev=>[sb,...prev]);
                 vg.pos.forEach(bp=>{
                   const so=sos.find(s=>s.id===bp.so_id);if(!so)return;
-                  const updatedItems=safeItems(so).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
-                  bp.items.forEach(bpIt=>{
-                    const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
-                    const poLine={po_id:poNum,vendor:vg.name,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+vg.pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
-                    Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
-                    updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
+                  let promoted=false;
+                  const updatedItems=safeItems(so).map(it=>{
+                    const pls=(it.po_lines||[]).map(pl=>{
+                      if(pl.batch_queue_id===bp.id){promoted=true;return{...pl,status:'waiting',batch_po_number:poNum,memo:'Batch '+poNum+' — '+vg.name}}
+                      return pl;
+                    });
+                    return{...it,po_lines:pls};
                   });
+                  // Backstop: if no queued lines matched (legacy batch entries created before the
+                  // source-PO promotion was in place), fall back to creating a line with po_id=poNum.
+                  if(!promoted){
+                    bp.items.forEach(bpIt=>{
+                      const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
+                      const poLine={po_id:poNum,vendor:vg.name,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+vg.pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
+                      Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
+                      updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
+                    });
+                  }
                   savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
                 });
                 setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk));
