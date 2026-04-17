@@ -14999,14 +14999,122 @@ export default function App(){
     // Sports Inc / Adidas / UA supplier bill format parser
     // Key: only extract items from the ITEM TABLE SECTION (between header row and totals row)
     // Parse a single invoice section (lines belonging to one invoice within a PDF)
+    // ── DECORATION VENDOR PARSERS ──
+    // These invoices are charge-based (screen print, embroidery, fulfillment, shipping, etc.)
+    // rather than SKU/size-based goods. Each bill has a single PO that links back to an
+    // outside-decoration po_line on a Sales Order. Total cost (less freight) is attributed to
+    // that po_line's _bill_cost; freight is posted to the SO's outbound shipping.
+    const _normalizeDecoPO=v=>{const s=String(v||'').trim();if(!s)return '';const stripped=s.replace(/^PO[\s#:]*/i,'').trim();return /^\d+$/.test(stripped)?'PO'+stripped:s};
+
+    const _parseOlympicBill=(bill,lines,fullText)=>{
+      bill.kind='decoration';bill.supplier='Olympic Embroidery';
+      const text=fullText||lines.join('\n');
+      // Invoice # (Olympic format: "Invoice #" column then number on next row)
+      const invM=text.match(/Invoice\s*#\s*[\r\n]+\s*[\d\/]+\s+(\d{3,})/i)||text.match(/\bInvoice\s*#?\s*(\d{4,})/i);
+      if(invM)bill.doc_number=invM[1];
+      // Date (either in header "3/23/2026" next to Invoice #, or "Date" labeled)
+      const dateM=text.match(/Date\s*[\r\n]+\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i)||text.match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/);
+      if(dateM)bill.doc_date=dateM[1];
+      // P.O. No. — the value is in the cell below the header
+      const poM=text.match(/P\.?\s*O\.?\s*No\.?\s*[\r\n\t ]+[\s\S]{0,80}?(\d{3,})/i);
+      if(poM)bill.po_number=_normalizeDecoPO(poM[1]);
+      // Tracking — "Tracking #: 1Z..." inline in description
+      const tM=text.match(/Tracking\s*#?\s*:?\s*([A-Z0-9]{8,30})/i);
+      if(tM)bill.tracking=tM[1];
+      // Balance Due (preferred) / Total
+      const balM=text.match(/Balance\s+Due\s*\$?\s*([\d,]+\.\d{2})/i);
+      const totM=text.match(/\bTotal\s*\$?\s*([\d,]+\.\d{2})/i);
+      bill.doc_total=balM?parseFloat(balM[1].replace(/,/g,'')):(totM?parseFloat(totM[1].replace(/,/g,'')):0);
+      // Line items — rows in the Quantity/Item/.../Rate/Amount table
+      for(let i=0;i<lines.length;i++){
+        const ln=lines[i];
+        // Qty at start, Rate and Amount at end (two monies)
+        const m=ln.match(/^\s*(\d{1,4})\s+(.+?)\s+(\d+(?:\.\d{1,2})?)\s+(\d+(?:\.\d{1,2})?)\s*$/);
+        if(m){
+          const qty=parseInt(m[1]),rate=parseFloat(m[3]),amt=parseFloat(m[4]);
+          if(qty>0&&qty<10000&&amt>=0)bill.items.push({desc:m[2].trim(),qty,rate,amount:amt});
+        }
+      }
+      if(!bill.po_number)bill.warnings.push('PO number not found');
+      if(!bill.doc_total)bill.warnings.push('Could not detect total');
+    };
+
+    const _parseFrontierBill=(bill,lines,fullText)=>{
+      bill.kind='decoration';bill.supplier='Frontier Screenprinting';
+      const text=fullText||lines.join('\n');
+      const invM=text.match(/INVOICE\s*#\s*(\d{4,})/i);if(invM)bill.doc_number=invM[1];
+      const dateM=text.match(/\bDATE\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);if(dateM)bill.doc_date=dateM[1];
+      const dueM=text.match(/DUE\s+DATE\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);if(dueM)bill.due_date=dueM[1];
+      const poM=text.match(/P\.?\s*O\.?\s*NUMBER\s*[\r\n\t ]+\s*(PO?\s*\d+|\d+)/i);
+      if(poM)bill.po_number=_normalizeDecoPO(poM[1]);
+      // Totals — look for BALANCE DUE first, then TOTAL
+      const balM=text.match(/BALANCE\s+DUE\s*\$?\s*([\d,]+\.\d{2})/i);
+      const totM=text.match(/\bTOTAL\s+([\d,]+\.\d{2})/i);
+      bill.doc_total=balM?parseFloat(balM[1].replace(/,/g,'')):(totM?parseFloat(totM[1].replace(/,/g,'')):0);
+      // Freight — Frontier lists a "Shipping" activity row
+      for(let i=0;i<lines.length;i++){
+        const ln=lines[i];
+        // Row format: QTY ACTIVITY DESCRIPTION RATE AMOUNT
+        const m=ln.match(/^\s*(\d{1,4})\s+([A-Za-z][\w\-\/ ]*?)\s{2,}(.+?)\s+(\d+(?:\.\d{1,2})?)\s+(\d+(?:\.\d{1,2})?)\s*$/);
+        if(m){
+          const qty=parseInt(m[1]),activity=m[2].trim(),rate=parseFloat(m[4]),amt=parseFloat(m[5]);
+          const isShip=/shipping|freight/i.test(activity);
+          bill.items.push({desc:activity+' — '+m[3].trim(),qty,rate,amount:amt,_isShipping:isShip});
+          if(isShip)bill.freight+=amt;
+          // Tracking in shipping description
+          if(isShip){const tM=m[3].match(/\b(\d{12,22})\b/);if(tM&&!bill.tracking)bill.tracking=tM[1]}
+        }
+      }
+      if(!bill.po_number)bill.warnings.push('PO number not found');
+      if(!bill.doc_total)bill.warnings.push('Could not detect total');
+    };
+
+    const _parseSilverScreenBill=(bill,lines,fullText)=>{
+      bill.kind='decoration';bill.supplier='Silver Screen Printing';
+      const text=fullText||lines.join('\n');
+      const invM=text.match(/\bInvoice\s+(\d{4,})/i);if(invM)bill.doc_number=invM[1];
+      const dateM=text.match(/\bDATE\s*[\r\n]+\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i)||text.match(/\bDATE\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
+      if(dateM)bill.doc_date=dateM[1];
+      const dueM=text.match(/DUE\s+DATE\s*[\r\n]+\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i)||text.match(/DUE\s+DATE\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
+      if(dueM)bill.due_date=dueM[1];
+      const poM=text.match(/P\.?\s*O\.?\s*NUMBER\s*[\r\n\t ]+\s*(PO?\s*\d+|\d+)/i);
+      if(poM)bill.po_number=_normalizeDecoPO(poM[1]);
+      const dueTotM=text.match(/TOTAL\s+DUE\s*\$?\s*([\d,]+\.\d{2})/i);
+      const pleaseM=text.match(/PLEASE\s+PAY\s*\$?\s*([\d,]+\.\d{2})/i);
+      const totM=text.match(/\bTOTAL\s+([\d,]+\.\d{2})/i);
+      bill.doc_total=dueTotM?parseFloat(dueTotM[1].replace(/,/g,'')):(pleaseM?parseFloat(pleaseM[1].replace(/,/g,'')):(totM?parseFloat(totM[1].replace(/,/g,'')):0));
+      // Line rows — ACTIVITY DESCRIPTION QTY RATE AMOUNT (amount may have T suffix for taxable)
+      for(let i=0;i<lines.length;i++){
+        const ln=lines[i];
+        const m=ln.match(/^\s*([A-Za-z][\w\- ]*?)\s{2,}(.+?)\s+(\d{1,4})\s+(\d+(?:\.\d{1,2})?)\s+(\d+(?:\.\d{1,2})?)T?\s*$/);
+        if(m){
+          const activity=m[1].trim(),qty=parseInt(m[3]),rate=parseFloat(m[4]),amt=parseFloat(m[5]);
+          if(qty>0&&qty<10000)bill.items.push({desc:activity+' — '+m[2].trim(),qty,rate,amount:amt});
+        }
+      }
+      if(!bill.po_number)bill.warnings.push('PO number not found');
+      if(!bill.doc_total)bill.warnings.push('Could not detect total');
+    };
+
     const parseSingleInvoice=(lines,sharedFields,fullText)=>{
       const bill={po_number:sharedFields.po_number||'',tracking:sharedFields.tracking||'',supplier:sharedFields.supplier||'',vendor:sharedFields.vendor||'',doc_number:'',doc_date:'',due_date:'',ship_date:'',
-        items:[],merchandise_total:0,freight:0,si_upcharge:0,doc_total:0,warnings:[],rawText:fullText,
+        items:[],merchandise_total:0,freight:0,si_upcharge:0,doc_total:0,warnings:[],rawText:fullText,kind:'goods',
         matchedPO:null,matchedPOSource:null};
 
       // Helper: extract last monetary value after a label on a line
       const extractTotal=(line,re,nextLine)=>{const m=line.match(re);if(!m)return null;const rest=line.slice(m.index+m[0].length);const nums=(rest.match(/[\d,]+\.\d{1,2}/g)||[]);if(nums.length>0)return parseFloat(nums[nums.length-1].replace(/,/g,''))||0;if(nextLine){const nm=nextLine.match(/^\s*([\d,]+\.\d{1,2})\s*$/);if(nm)return parseFloat(nm[1].replace(/,/g,''))||0}return null};
 
+      // ── DECORATION VENDOR DISPATCH ──
+      const _headText=(fullText||lines.join('\n')).slice(0,2000);
+      if(/olympic\s*embroidery|olympicembroidery\.com/i.test(_headText)){
+        _parseOlympicBill(bill,lines,fullText);
+      }else if(/frontier\s*screenprinting/i.test(_headText)){
+        _parseFrontierBill(bill,lines,fullText);
+      }else if(/silverscreen|silver\s*screen\s*printing/i.test(_headText)){
+        _parseSilverScreenBill(bill,lines,fullText);
+      }
+
+      if(bill.kind!=='decoration'){
       // ── PASS 1: Extract header fields & find item table boundaries ──
       let itemSectionStart=-1,itemSectionEnd=-1;
       for(let li=0;li<lines.length;li++){
@@ -15171,6 +15279,7 @@ export default function App(){
       if(!bill.po_number)bill.warnings.push('PO number not found');
       if(!bill.doc_total&&!bill.merchandise_total)bill.warnings.push('Could not detect totals');
       if(bill.items.length===0&&itemSectionStart>=0)bill.warnings.push('No line items detected in item table — check raw text');
+      }// end goods-invoice parsing block
 
       // Match vendor from system vendors
       if(bill.supplier){
@@ -15368,9 +15477,52 @@ export default function App(){
       });
     };
 
+    // Apply a decoration bill (Olympic / Frontier / Silver Screen) to the matched SO PO line.
+    // Total cost (minus freight) is attributed to the deco po_line's _bill_cost.
+    // Freight is posted to the SO's outbound shipping (_shipping_cost).
+    const _applyDecorationBillToSO=(bill,soId)=>{
+      if(!soId)return;
+      const poLc=(bill.po_number||'').toLowerCase().replace(/\s+/g,'');
+      if(!poLc)return;
+      const freight=safeNum(bill.freight||0);
+      const decoCost=Math.round((safeNum(bill.doc_total||0)-freight)*100)/100;
+      setSOs(prev=>prev.map(s=>{
+        if(s.id!==soId)return s;
+        let hit=false;
+        const updatedItems=(s.items||[]).map(it=>{
+          if(!it.po_lines?.length)return it;
+          return{...it,po_lines:it.po_lines.map(po=>{
+            const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
+            if(pid!==poLc&&!pid.startsWith(poLc))return po;
+            hit=true;
+            const trackNums=[...(po.tracking_numbers||[])];
+            if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+            const prevBillCost=safeNum(po._bill_cost||0);
+            return{...po,tracking_numbers:trackNums,
+              _bill_cost:Math.round((prevBillCost+decoCost)*100)/100,
+              _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,supplier:bill.supplier,cost:decoCost,freight,tracking:bill.tracking}]};
+          })};
+        });
+        if(!hit)return s;
+        const prevShip=safeNum(s._shipping_cost||0);
+        const updatedSO={...s,items:updatedItems,updated_at:new Date().toLocaleString()};
+        if(freight>0)updatedSO._shipping_cost=Math.round((prevShip+freight)*100)/100;
+        _dbSaveSO(updatedSO);
+        return updatedSO;
+      }));
+    };
+
     const applyBillToSO=(bill)=>{
       if(bill._applied)return;
       bill._applied=true;
+      // Decoration bills — route to dedicated apply (total cost → deco po_line; freight → outbound)
+      if(bill.kind==='decoration'){
+        if(bill.matchedPOSource==='so_po'&&bill.matchedPO){
+          const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
+          _applyDecorationBillToSO(bill,soId);
+        }
+        return;
+      }
       if(bill.matchedPOSource==='batch'&&bill.matchedPO){
         const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
         const billedSizes={};
@@ -16505,23 +16657,37 @@ export default function App(){
                 </div>
                 {/* Line items */}
                 {bill.items.length>0&&<div style={{padding:'0 14px'}}>
-                  <table style={{fontSize:11,marginTop:8,marginBottom:8}}>
-                    <thead><tr><th style={{textAlign:'left'}}>SKU</th><th>Size</th><th>Color</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Unit Price</th><th style={{textAlign:'right'}}>Extension</th><th style={{textAlign:'left',maxWidth:180}}>Description</th></tr></thead>
-                    <tbody>{bill.items.map((it,ii)=><tr key={ii}>
-                      <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
-                      <td style={{textAlign:'center',fontWeight:600}}>{it.size}</td>
-                      <td style={{color:'#64748b'}}>{it.color||'—'}</td>
-                      <td style={{textAlign:'right',fontWeight:700}}>{it.qty}</td>
-                      <td style={{textAlign:'right'}}>${it.unit_price.toFixed(2)}</td>
-                      <td style={{textAlign:'right',fontWeight:600}}>${it.extension.toFixed(2)}</td>
-                      <td style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#64748b',fontSize:10}}>{it.desc||'—'}</td>
-                    </tr>)}</tbody>
-                  </table>
+                  {bill.kind==='decoration'?
+                    <table style={{fontSize:11,marginTop:8,marginBottom:8}}>
+                      <thead><tr><th style={{textAlign:'left',maxWidth:320}}>Activity / Description</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Rate</th><th style={{textAlign:'right'}}>Amount</th></tr></thead>
+                      <tbody>{bill.items.map((it,ii)=><tr key={ii}>
+                        <td style={{maxWidth:320,color:'#334155'}}>{it.desc||'—'}{it._isShipping?<span style={{marginLeft:6,fontSize:9,padding:'1px 5px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>SHIPPING</span>:null}</td>
+                        <td style={{textAlign:'right',fontWeight:700}}>{it.qty}</td>
+                        <td style={{textAlign:'right'}}>${Number(it.rate||0).toFixed(2)}</td>
+                        <td style={{textAlign:'right',fontWeight:600}}>${Number(it.amount||0).toFixed(2)}</td>
+                      </tr>)}</tbody>
+                    </table>:
+                    <table style={{fontSize:11,marginTop:8,marginBottom:8}}>
+                      <thead><tr><th style={{textAlign:'left'}}>SKU</th><th>Size</th><th>Color</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Unit Price</th><th style={{textAlign:'right'}}>Extension</th><th style={{textAlign:'left',maxWidth:180}}>Description</th></tr></thead>
+                      <tbody>{bill.items.map((it,ii)=><tr key={ii}>
+                        <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
+                        <td style={{textAlign:'center',fontWeight:600}}>{it.size}</td>
+                        <td style={{color:'#64748b'}}>{it.color||'—'}</td>
+                        <td style={{textAlign:'right',fontWeight:700}}>{it.qty}</td>
+                        <td style={{textAlign:'right'}}>${it.unit_price.toFixed(2)}</td>
+                        <td style={{textAlign:'right',fontWeight:600}}>${it.extension.toFixed(2)}</td>
+                        <td style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#64748b',fontSize:10}}>{it.desc||'—'}</td>
+                      </tr>)}</tbody>
+                    </table>
+                  }
                 </div>}
                 {bill.items.length===0&&<div style={{padding:'12px 14px',fontSize:12,color:'#d97706'}}>No line items detected — totals will be used as a single line</div>}
                 {/* Totals */}
                 <div style={{display:'flex',gap:0,borderTop:'1px solid #f1f5f9'}}>
-                  {[['Merchandise',bill.merchandise_total,'merchandise_total'],['Freight',bill.freight,'freight'],['SI Upcharge',bill.si_upcharge,'si_upcharge'],['Doc Total',bill.doc_total,'doc_total']].map(([label,val,key],i)=>
+                  {(bill.kind==='decoration'
+                    ?[['Doc Total',bill.doc_total,'doc_total'],['Freight (→ Outbound)',bill.freight,'freight']]
+                    :[['Merchandise',bill.merchandise_total,'merchandise_total'],['Freight',bill.freight,'freight'],['SI Upcharge',bill.si_upcharge,'si_upcharge'],['Doc Total',bill.doc_total,'doc_total']]
+                  ).map(([label,val,key],i)=>
                     <div key={i} style={{flex:1,padding:'10px 14px',borderRight:'1px solid #f1f5f9',textAlign:'center'}}>
                       <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>{label}</div>
                       <input className="form-input" type="number" step="0.01" style={{width:'100%',fontSize:14,fontWeight:800,textAlign:'center',color:val>0?'#166534':'#94a3b8',padding:'2px 4px'}}
