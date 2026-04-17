@@ -17145,6 +17145,73 @@ export default function App(){
         </div>
       </div>
 
+      {/* System Health */}
+      {(()=>{
+        const orphans=[];const missingDeco=[];
+        const ACTIVE=new Set(['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice']);
+        sos.forEach(so=>{
+          if(so.deleted_at)return;
+          const items=safeItems(so);
+          const decoArtIds=new Set();
+          items.forEach(it=>safeDecos(it).forEach(d=>{if(d.art_file_id)decoArtIds.add(d.art_file_id)}));
+          safeJobs(so).forEach(j=>{
+            const m=j.key&&j.key.match(/::([^@|]+)@/);
+            const artId=j.art_file_id||(m?m[1]:null);
+            if(artId&&!decoArtIds.has(artId))orphans.push({so:so.id,memo:so.memo||'',job:j.id,art:j.art_name||''});
+          });
+          if(!ACTIVE.has(so.status))return;
+          if(items.length===0)return;
+          const missing=items.filter(it=>!it.no_deco&&safeDecos(it).length===0);
+          if(missing.length/items.length>0.5){
+            missingDeco.push({so:so.id,memo:so.memo||'',status:so.status,missing:missing.length,total:items.length});
+          }
+        });
+        const totalIssues=orphans.length+missingDeco.length;
+        const Row=({label,desc,count,ok,rows})=>(
+          <div style={{padding:12,marginBottom:8,background:ok?'#f0fdf4':'#fef2f2',borderRadius:8,borderLeft:`4px solid ${ok?'#16a34a':'#dc2626'}`}}>
+            <div style={{fontWeight:600,fontSize:13}}>{ok?'✅':'⚠️'} {label}</div>
+            <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{desc}</div>
+            <div style={{fontSize:12,marginTop:4}}><strong>{count}</strong> {ok?'OK':(count===1?'issue':'issues')+' detected'}</div>
+            {!ok&&rows.length>0&&(
+              <details style={{marginTop:6}}>
+                <summary style={{cursor:'pointer',fontSize:12,color:'#dc2626'}}>Show details</summary>
+                <div style={{marginTop:6,fontSize:11,maxHeight:200,overflowY:'auto'}}>
+                  {rows.map((r,i)=><div key={i} style={{padding:'4px 0',borderBottom:'1px solid #fecaca'}}><strong>{r.so}</strong> {r.memo&&`— ${r.memo}`} <span style={{color:'#64748b'}}>· {r.detail}</span></div>)}
+                </div>
+              </details>
+            )}
+          </div>
+        );
+        const buildEmailHtml=()=>`<div style="font-family:sans-serif;max-width:640px"><h2>🩺 NSA Portal — System Health Report</h2><p style="color:#64748b">Generated: ${new Date().toLocaleString()}</p><h3 style="margin-top:24px">Orphan Jobs: ${orphans.length}</h3><p style="font-size:13px;color:#64748b">Jobs whose decoration was removed (still on the Art Dashboard but not on the SO).</p>${orphans.length?'<ul>'+orphans.map(o=>`<li><strong>${o.so}</strong> — ${o.job} (${o.art})${o.memo?` — ${o.memo}`:''}</li>`).join('')+'</ul>':'<p>None ✅</p>'}<h3 style="margin-top:24px">Active SOs Missing Most Decorations: ${missingDeco.length}</h3><p style="font-size:13px;color:#64748b">SOs in active status with &gt;50% of items missing decorations (and not flagged as no_deco).</p>${missingDeco.length?'<ul>'+missingDeco.map(m=>`<li><strong>${m.so}</strong> (${m.status}) — ${m.missing}/${m.total} items missing deco${m.memo?` — ${m.memo}`:''}</li>`).join('')+'</ul>':'<p>None ✅</p>'}</div>`;
+        const sendReport=async()=>{
+          const email=(document.getElementById('health-email-input')||{}).value;
+          if(!email||!email.includes('@')){nf('Enter a valid email address','warn');return}
+          const r=await sendBrevoEmail({to:[{email}],subject:`NSA System Health — ${totalIssues} issue${totalIssues===1?'':'s'}`,htmlContent:buildEmailHtml(),senderName:'NSA Portal Health Check'});
+          if(r.ok)nf('📧 Health report emailed to '+email);
+          else nf('Email failed: '+r.error,'error');
+        };
+        return(
+          <div className="card" style={{marginBottom:16,borderLeft:`4px solid ${totalIssues===0?'#16a34a':'#dc2626'}`}}>
+            <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <h2>🩺 System Health</h2>
+              <span style={{fontSize:12,color:totalIssues===0?'#16a34a':'#dc2626',fontWeight:600}}>{totalIssues===0?'All checks passing':`${totalIssues} issue${totalIssues===1?'':'s'}`}</span>
+            </div>
+            <div className="card-body">
+              <Row label="Orphan Jobs" desc="Jobs whose decoration was removed — show on Art Dashboard but not on the SO." count={orphans.length} ok={orphans.length===0} rows={orphans.map(o=>({so:o.so,memo:o.memo,detail:`${o.job}: ${o.art}`}))}/>
+              <Row label="Active SOs Missing Most Decorations" desc="Active SOs where >50% of items have no decoration and are not marked as no_deco. Some legitimate (blanks), but a sudden spike means the save-guard regressed." count={missingDeco.length} ok={missingDeco.length===0} rows={missingDeco.map(m=>({so:m.so,memo:m.memo,detail:`${m.status} · ${m.missing}/${m.total} items missing deco`}))}/>
+              <div style={{marginTop:12,padding:12,background:'#f8fafc',borderRadius:8}}>
+                <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>📧 Email this report</div>
+                <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Send a snapshot of these checks to yourself or a teammate.</div>
+                <div style={{display:'flex',gap:8}}>
+                  <input id="health-email-input" type="email" placeholder="email address" defaultValue={cu&&cu.email||''} style={{flex:1,padding:'6px 10px',border:'1px solid #cbd5e1',borderRadius:6,fontSize:13}}/>
+                  <button className="btn btn-sm btn-secondary" onClick={sendReport}>📧 Send Report</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Google Drive Backup */}
       <div className="card" style={{marginBottom:16,borderLeft:'4px solid #4285f4'}}>
         <div className="card-header">
