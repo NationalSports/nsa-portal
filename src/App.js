@@ -15006,34 +15006,70 @@ export default function App(){
     // that po_line's _bill_cost; freight is posted to the SO's outbound shipping.
     const _normalizeDecoPO=v=>{const s=String(v||'').trim();if(!s)return '';const stripped=s.replace(/^PO[\s#:]*/i,'').trim();return /^\d+$/.test(stripped)?'PO'+stripped:s};
 
+    // Find a PO value near a "P.O. NUMBER" / "P.O. No." label.
+    // PDF.js outputs tab-separated columns so the label can share a row with another header
+    // (e.g. Frontier: "P.O. NUMBER\tJOB NAME") with the value one row below ("PO8097\t..").
+    const _findLabeledPO=(lines,labelRe)=>{
+      for(let i=0;i<lines.length;i++){
+        if(!labelRe.test(lines[i]))continue;
+        // Same line (after label and/or in a later tab column)
+        const parts=lines[i].split('\t').map(p=>p.trim());
+        for(const p of parts){const m=p.match(/^(PO\s*\d{3,}|\d{3,})$/i);if(m)return m[1]}
+        const sameM=lines[i].match(/P\.?\s*O\.?\s*(?:NUMBER|No\.?)\s*[:\s]+(PO\s*\d{3,}|\d{3,})/i);
+        if(sameM)return sameM[1];
+        // Next 1-4 lines: check first column (i.e. below the label cell)
+        for(let j=i+1;j<Math.min(i+5,lines.length);j++){
+          const nParts=lines[j].split('\t').map(p=>p.trim());
+          const first=nParts[0]||'';
+          const m=first.match(/^(PO\s*\d{3,}|\d{3,})$/i);
+          if(m)return m[1];
+        }
+      }
+      return '';
+    };
+
+    // Tab-aware line-item row parser. Each vendor specifies the column positions of
+    // qty / rate / amount (negative = from-end). Returns undefined for non-item rows.
+    const _parseDecoRow=(line,cfg)=>{
+      const parts=line.split('\t').map(p=>p.trim());
+      if(parts.length<(cfg.minCols||3))return null;
+      const at=i=>parts[i<0?parts.length+i:i];
+      const qtyStr=at(cfg.qty)||'';
+      const rateStr=at(cfg.rate)||'';
+      const amtStr=(at(cfg.amount)||'').replace(/T$/,'');// strip SilverScreen taxable marker
+      if(!/^\d{1,4}$/.test(qtyStr))return null;
+      if(!/^\d+(?:\.\d{1,2})?$/.test(rateStr))return null;
+      if(!/^\d+(?:\.\d{1,2})?$/.test(amtStr))return null;
+      const qty=parseInt(qtyStr),rate=parseFloat(rateStr),amount=parseFloat(amtStr);
+      if(qty<=0||qty>100000)return null;
+      // Reserved cells: qty, rate, amount, and activity — everything else becomes the description.
+      const norm=i=>i<0?parts.length+i:i;
+      const reserved=new Set([cfg.qty,cfg.rate,cfg.amount,cfg.activityIdx].filter(i=>i!=null).map(norm));
+      const descParts=parts.map((p,i)=>reserved.has(i)?null:p).filter(p=>p&&p.length>0);
+      const activity=(cfg.activityIdx!=null?at(cfg.activityIdx):'')||'';
+      const desc=descParts.join(' · ').trim();
+      return{qty,rate,amount,activity,desc,parts};
+    };
+
     const _parseOlympicBill=(bill,lines,fullText)=>{
       bill.kind='decoration';bill.supplier='Olympic Embroidery';
       const text=fullText||lines.join('\n');
-      // Invoice # (Olympic format: "Invoice #" column then number on next row)
       const invM=text.match(/Invoice\s*#\s*[\r\n]+\s*[\d\/]+\s+(\d{3,})/i)||text.match(/\bInvoice\s*#?\s*(\d{4,})/i);
       if(invM)bill.doc_number=invM[1];
-      // Date (either in header "3/23/2026" next to Invoice #, or "Date" labeled)
       const dateM=text.match(/Date\s*[\r\n]+\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i)||text.match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/);
       if(dateM)bill.doc_date=dateM[1];
-      // P.O. No. — the value is in the cell below the header
-      const poM=text.match(/P\.?\s*O\.?\s*No\.?\s*[\r\n\t ]+[\s\S]{0,80}?(\d{3,})/i);
-      if(poM)bill.po_number=_normalizeDecoPO(poM[1]);
-      // Tracking — "Tracking #: 1Z..." inline in description
+      const po=_findLabeledPO(lines,/P\.?\s*O\.?\s*(?:NUMBER|No\.?)\b/i);
+      if(po)bill.po_number=_normalizeDecoPO(po);
       const tM=text.match(/Tracking\s*#?\s*:?\s*([A-Z0-9]{8,30})/i);
       if(tM)bill.tracking=tM[1];
-      // Balance Due (preferred) / Total
       const balM=text.match(/Balance\s+Due\s*\$?\s*([\d,]+\.\d{2})/i);
       const totM=text.match(/\bTotal\s*\$?\s*([\d,]+\.\d{2})/i);
       bill.doc_total=balM?parseFloat(balM[1].replace(/,/g,'')):(totM?parseFloat(totM[1].replace(/,/g,'')):0);
-      // Line items — rows in the Quantity/Item/.../Rate/Amount table
-      for(let i=0;i<lines.length;i++){
-        const ln=lines[i];
-        // Qty at start, Rate and Amount at end (two monies)
-        const m=ln.match(/^\s*(\d{1,4})\s+(.+?)\s+(\d+(?:\.\d{1,2})?)\s+(\d+(?:\.\d{1,2})?)\s*$/);
-        if(m){
-          const qty=parseInt(m[1]),rate=parseFloat(m[3]),amt=parseFloat(m[4]);
-          if(qty>0&&qty<10000&&amt>=0)bill.items.push({desc:m[2].trim(),qty,rate,amount:amt});
-        }
+      // Olympic layout: Qty | Item | Color | Size | Description | Rate | Amount
+      for(const ln of lines){
+        const row=_parseDecoRow(ln,{qty:0,rate:-2,amount:-1,activityIdx:1,minCols:3});
+        if(!row)continue;
+        bill.items.push({desc:(row.activity||'').trim()+(row.desc?' — '+row.desc:''),qty:row.qty,rate:row.rate,amount:row.amount});
       }
       if(!bill.po_number)bill.warnings.push('PO number not found');
       if(!bill.doc_total)bill.warnings.push('Could not detect total');
@@ -15045,25 +15081,19 @@ export default function App(){
       const invM=text.match(/INVOICE\s*#\s*(\d{4,})/i);if(invM)bill.doc_number=invM[1];
       const dateM=text.match(/\bDATE\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);if(dateM)bill.doc_date=dateM[1];
       const dueM=text.match(/DUE\s+DATE\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);if(dueM)bill.due_date=dueM[1];
-      const poM=text.match(/P\.?\s*O\.?\s*NUMBER\s*[\r\n\t ]+\s*(PO?\s*\d+|\d+)/i);
-      if(poM)bill.po_number=_normalizeDecoPO(poM[1]);
-      // Totals — look for BALANCE DUE first, then TOTAL
+      const po=_findLabeledPO(lines,/P\.?\s*O\.?\s*NUMBER\b/i);
+      if(po)bill.po_number=_normalizeDecoPO(po);
       const balM=text.match(/BALANCE\s+DUE\s*\$?\s*([\d,]+\.\d{2})/i);
       const totM=text.match(/\bTOTAL\s+([\d,]+\.\d{2})/i);
       bill.doc_total=balM?parseFloat(balM[1].replace(/,/g,'')):(totM?parseFloat(totM[1].replace(/,/g,'')):0);
-      // Freight — Frontier lists a "Shipping" activity row
-      for(let i=0;i<lines.length;i++){
-        const ln=lines[i];
-        // Row format: QTY ACTIVITY DESCRIPTION RATE AMOUNT
-        const m=ln.match(/^\s*(\d{1,4})\s+([A-Za-z][\w\-\/ ]*?)\s{2,}(.+?)\s+(\d+(?:\.\d{1,2})?)\s+(\d+(?:\.\d{1,2})?)\s*$/);
-        if(m){
-          const qty=parseInt(m[1]),activity=m[2].trim(),rate=parseFloat(m[4]),amt=parseFloat(m[5]);
-          const isShip=/shipping|freight/i.test(activity);
-          bill.items.push({desc:activity+' — '+m[3].trim(),qty,rate,amount:amt,_isShipping:isShip});
-          if(isShip)bill.freight+=amt;
-          // Tracking in shipping description
-          if(isShip){const tM=m[3].match(/\b(\d{12,22})\b/);if(tM&&!bill.tracking)bill.tracking=tM[1]}
-        }
+      // Frontier layout: Qty | Activity | Description | Rate | Amount
+      for(const ln of lines){
+        const row=_parseDecoRow(ln,{qty:0,rate:-2,amount:-1,activityIdx:1,minCols:3});
+        if(!row)continue;
+        const activity=(row.activity||'').trim();
+        const isShip=/shipping|freight/i.test(activity);
+        bill.items.push({desc:activity+(row.desc?' — '+row.desc:''),qty:row.qty,rate:row.rate,amount:row.amount,_isShipping:isShip});
+        if(isShip){bill.freight+=row.amount;const tM=row.desc.match(/\b(\d{12,22})\b/);if(tM&&!bill.tracking)bill.tracking=tM[1]}
       }
       if(!bill.po_number)bill.warnings.push('PO number not found');
       if(!bill.doc_total)bill.warnings.push('Could not detect total');
@@ -15077,20 +15107,20 @@ export default function App(){
       if(dateM)bill.doc_date=dateM[1];
       const dueM=text.match(/DUE\s+DATE\s*[\r\n]+\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i)||text.match(/DUE\s+DATE\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
       if(dueM)bill.due_date=dueM[1];
-      const poM=text.match(/P\.?\s*O\.?\s*NUMBER\s*[\r\n\t ]+\s*(PO?\s*\d+|\d+)/i);
-      if(poM)bill.po_number=_normalizeDecoPO(poM[1]);
+      const po=_findLabeledPO(lines,/P\.?\s*O\.?\s*NUMBER\b/i);
+      if(po)bill.po_number=_normalizeDecoPO(po);
       const dueTotM=text.match(/TOTAL\s+DUE\s*\$?\s*([\d,]+\.\d{2})/i);
       const pleaseM=text.match(/PLEASE\s+PAY\s*\$?\s*([\d,]+\.\d{2})/i);
       const totM=text.match(/\bTOTAL\s+([\d,]+\.\d{2})/i);
       bill.doc_total=dueTotM?parseFloat(dueTotM[1].replace(/,/g,'')):(pleaseM?parseFloat(pleaseM[1].replace(/,/g,'')):(totM?parseFloat(totM[1].replace(/,/g,'')):0));
-      // Line rows — ACTIVITY DESCRIPTION QTY RATE AMOUNT (amount may have T suffix for taxable)
-      for(let i=0;i<lines.length;i++){
-        const ln=lines[i];
-        const m=ln.match(/^\s*([A-Za-z][\w\- ]*?)\s{2,}(.+?)\s+(\d{1,4})\s+(\d+(?:\.\d{1,2})?)\s+(\d+(?:\.\d{1,2})?)T?\s*$/);
-        if(m){
-          const activity=m[1].trim(),qty=parseInt(m[3]),rate=parseFloat(m[4]),amt=parseFloat(m[5]);
-          if(qty>0&&qty<10000)bill.items.push({desc:activity+' — '+m[2].trim(),qty,rate,amount:amt});
-        }
+      // SilverScreen layout: Activity | Description | Qty | Rate | Amount (amount may have T suffix)
+      for(const ln of lines){
+        const row=_parseDecoRow(ln,{qty:-3,rate:-2,amount:-1,activityIdx:0,minCols:4});
+        if(!row)continue;
+        const activity=(row.activity||'').trim();
+        if(!/^[A-Za-z]/.test(activity))continue;// filter out rows where first cell is not a label
+        if(/^SUBTOTAL|^TOTAL|^TAX|^BALANCE/i.test(activity))continue;
+        bill.items.push({desc:activity+(row.desc?' — '+row.desc:''),qty:row.qty,rate:row.rate,amount:row.amount});
       }
       if(!bill.po_number)bill.warnings.push('PO number not found');
       if(!bill.doc_total)bill.warnings.push('Could not detect total');
