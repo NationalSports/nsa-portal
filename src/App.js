@@ -6740,6 +6740,7 @@ export default function App(){
               <div style={{textAlign:'right'}}>
                 <div style={{fontSize:24,fontWeight:900}}>{totalUnits}</div>
                 <div style={{fontSize:11,opacity:0.7}}>total units · {poItems.length} line{poItems.length!==1?'s':''}</div>
+                {submittedInfo&&typeof submittedInfo.total_cost==='number'&&<div style={{fontSize:16,fontWeight:800,marginTop:2}}>${submittedInfo.total_cost.toFixed(2)}</div>}
                 {submittedInfo&&<span className={`badge ${statusBadge}`} style={{marginTop:4}}>{submittedInfo.status||'waiting'}</span>}
               </div>
             </div>
@@ -6772,6 +6773,11 @@ export default function App(){
                 {[...new Set(poItems.map(it=>it.soId))].map(sid=>{const it=poItems.find(p=>p.soId===sid);
                   return<span key={sid} style={{fontSize:10,padding:'2px 8px',background:'#eff6ff',borderRadius:6,color:'#1e40af',fontWeight:600}}>{sid} <span style={{color:'#64748b',fontWeight:400}}>{it?.customer}</span></span>})}
               </div>
+              {isBatch&&batchMatch.source_pos?.some(sp=>sp.po_id)&&<><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginTop:8,marginBottom:4}}>SOURCE PO NUMBERS</div>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                {batchMatch.source_pos.filter(sp=>sp.po_id).map(sp=>
+                  <span key={sp.po_id} style={{fontSize:10,padding:'2px 8px',background:'#f5f3ff',borderRadius:6,color:'#7c3aed',fontWeight:700,fontFamily:'monospace'}}>{sp.po_id} <span style={{color:'#94a3b8',fontWeight:400}}>${sp.total_cost?.toFixed(2)||'0.00'}</span></span>)}
+              </div></>}
             </div>
           </div>
 
@@ -6932,7 +6938,7 @@ export default function App(){
                 const poNum=nextPO;
                 const sb={po_number:poNum,vendor_key:vk,vendor_name:vg.name,total_cost:total,total_units:totalUnits,
                   submitted_at:new Date().toLocaleString(),submitted_by:cu.name,status:'waiting',
-                  source_pos:vg.pos.map(bp=>({so_id:bp.so_id,so_memo:bp.so_memo,customer:bp.customer,items:bp.items,total_cost:bp.total_cost}))};
+                  source_pos:vg.pos.map(bp=>({so_id:bp.so_id,so_memo:bp.so_memo,customer:bp.customer,items:bp.items,total_cost:bp.total_cost,po_id:bp.po_id||''}))};
                 setSubmittedBatches(prev=>[sb,...prev]);
                 vg.pos.forEach(bp=>{
                   const so=sos.find(s=>s.id===bp.so_id);if(!so)return;
