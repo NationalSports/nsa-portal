@@ -164,8 +164,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // S&S: fetch products for this style, find matching color
         try{
           let data;
-          try{let sid=null;try{const st=await ssApiCall('/Styles?style='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];if(sa.length>0)sid=sa[0].styleID}catch(e){}
-            if(sid){data=await ssApiCall('/Products?styleID='+encodeURIComponent(sid))}else{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}}
+          try{let sid=null;try{const st=await ssApiCall('/Styles?search='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];const exact=sa.find(s=>String(s.partNumber||s.styleName||'').toLowerCase()===String(sku).toLowerCase());if(exact)sid=exact.styleID;else if(sa.length>0)sid=sa[0].styleID}catch(e){}
+            if(sid){data=await ssApiCall('/Products/?style='+encodeURIComponent(sid))}else{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}}
           catch(e){data=[]}
           const items=Array.isArray(data)?data:data?[data]:[];
           const colorLower=(color||'').toLowerCase();
@@ -417,8 +417,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         let data;
         try{
           let sid=null;
-          try{const st=await ssApiCall('/Styles?style='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];if(sa.length>0)sid=sa[0].styleID}catch(e){}
-          if(sid){data=await ssApiCall('/Products?styleID='+encodeURIComponent(sid))}
+          try{const st=await ssApiCall('/Styles?search='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];const exact=sa.find(s=>String(s.partNumber||s.styleName||'').toLowerCase()===String(sku).toLowerCase());if(exact)sid=exact.styleID;else if(sa.length>0)sid=sa[0].styleID}catch(e){}
+          if(sid){data=await ssApiCall('/Products/?style='+encodeURIComponent(sid))}
           else{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}
         }catch(e){
           try{const padded=sku.length<5&&/^\d+$/.test(sku)?sku.padStart(5,'0'):sku;data=await ssApiCall('/Products?style='+encodeURIComponent(padded))}
