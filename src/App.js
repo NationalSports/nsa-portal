@@ -6716,11 +6716,12 @@ export default function App(){
         // Flat items: every line item on this PO
         const poItems=[];
         if(isBatch){
-          batchMatch.source_pos.forEach(sp=>{sp.items.forEach(it=>{poItems.push({sku:it.sku,name:it.name,color:it.color||'',sizes:it.sizes,qty:it.qty,soId:sp.so_id,customer:sp.customer,soMemo:sp.so_memo})})});
+          batchMatch.source_pos.forEach(sp=>{sp.items.forEach(it=>{const unit=typeof it.unit_cost==='number'?it.unit_cost:0;poItems.push({sku:it.sku,name:it.name,color:it.color||'',sizes:it.sizes,qty:it.qty,soId:sp.so_id,customer:sp.customer,soMemo:sp.so_memo,srcPoId:sp.po_id||'',unitCost:unit,lineCost:unit*it.qty})})});
         } else {
           matchedPO.lines.forEach(pl=>{
             const szs={};Object.entries(pl.poLine).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k))szs[k]=v});
-            poItems.push({sku:pl.item.sku,name:safeStr(pl.item.name),color:pl.item.color||'',sizes:szs,qty:Object.values(szs).reduce((a,v)=>a+v,0),soId:pl.soId,customer:pl.customer,soMemo:pl.soMemo,_pl:pl});
+            const unit=typeof pl.poLine.unit_cost==='number'?pl.poLine.unit_cost:0;const qty=Object.values(szs).reduce((a,v)=>a+v,0);
+            poItems.push({sku:pl.item.sku,name:safeStr(pl.item.name),color:pl.item.color||'',sizes:szs,qty,soId:pl.soId,customer:pl.customer,soMemo:pl.soMemo,_pl:pl,srcPoId:pl.poId||'',unitCost:unit,lineCost:unit*qty});
           });
         }
         const totalUnits=poItems.reduce((a,it)=>a+it.qty,0);
@@ -6730,6 +6731,9 @@ export default function App(){
         return<div className="card" style={{marginBottom:16,borderLeft:'4px solid #2563eb'}}>
           {/* PO Header */}
           <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'16px 20px',borderRadius:'8px 8px 0 0'}}>
+            <div style={{marginBottom:10}}>
+              <button onClick={()=>setBatchScan('')} style={{background:'rgba(255,255,255,0.15)',border:'1px solid rgba(255,255,255,0.3)',color:'white',padding:'4px 10px',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:600,display:'inline-flex',alignItems:'center',gap:4}}>← Back</button>
+            </div>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
               <div>
                 <div style={{fontSize:10,opacity:0.6,fontWeight:600}}>PURCHASE ORDER</div>
@@ -6750,19 +6754,23 @@ export default function App(){
           <div className="card-body" style={{padding:0}}>
             <table><thead><tr>
               <th style={{width:30}}>#</th>
+              <th>Source PO#</th>
               <th>SKU</th><th>Product</th><th>Color</th>
               <th>Sizes Ordered</th><th>Total</th>
+              <th>Cost</th>
               <th>Receive</th>
             </tr></thead><tbody>
             {poItems.map((it,i)=>{
               const szEntries=Object.entries(it.sizes).filter(([,v])=>v>0);
               return<tr key={i} id={'po-recv-row-'+i}>
                 <td style={{fontWeight:700,color:'#94a3b8',fontSize:11}}>{i+1}</td>
+                <td style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:11}}>{it.srcPoId||'—'}</td>
                 <td style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
                 <td style={{fontSize:12}}>{it.name}</td>
                 <td style={{fontSize:12,color:'#64748b'}}>{it.color||'—'}</td>
                 <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><span key={sz} style={{padding:'2px 6px',background:'#f1f5f9',borderRadius:4,fontSize:10,fontWeight:700}}>{sz}: {v}</span>)}</div></td>
                 <td style={{fontWeight:800,fontSize:14}}>{it.qty}</td>
+                <td style={{fontSize:12,color:'#166534',fontWeight:700,whiteSpace:'nowrap'}}>{it.lineCost>0?('$'+it.lineCost.toFixed(2)):'—'}{it.unitCost>0&&<div style={{fontSize:10,color:'#94a3b8',fontWeight:500}}>${it.unitCost.toFixed(2)}/ea</div>}</td>
                 <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:8,fontWeight:700,color:'#64748b'}}>{sz}</div><input id={'rcv-'+i+'-'+sz} type="number" className="form-input" style={{width:40,padding:'3px 4px',textAlign:'center',fontSize:12,fontWeight:700}} defaultValue={v} min={0}/></div>)}</div></td>
               </tr>})}
             </tbody></table>
