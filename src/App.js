@@ -10398,9 +10398,9 @@ export default function App(){
                   <div style={{display:'flex',gap:2}}>
                     {[['SP','screen_print'],['EMB','embroidery'],['HTV','heat_press']].map(([label,type])=>{
                       const pfx=type==='screen_print'?'SP':type==='embroidery'?'EMB':'HTV';
-                      const allAg=[...new Set((s.products||[]).flatMap(pr=>(pr.decorations||[]).map(d=>d.art_group)).filter(Boolean))];
-                      const existing=allAg.filter(g=>g.startsWith(pfx)).sort();
-                      const nums=existing.map(g=>parseInt(g.split('-')[1])||0);
+                      const existing=[...new Set((s.products||[]).flatMap(pr=>(pr.decorations||[]).filter(d=>d.type===type).map(d=>d.art_group)).filter(Boolean))].sort();
+                      const prefixed=existing.filter(g=>g.startsWith(pfx));
+                      const nums=prefixed.map(g=>parseInt(g.split('-')[1])||0);
                       const nextName=`${pfx}-${nums.length>0?Math.max(...nums)+1:1}`;
                       return <div key={type} style={{position:'relative',display:'inline-block'}}>
                         <select value="" onChange={e=>{if(e.target.value)updateDecos([...(p.decorations||[]),{type,art_group:e.target.value}])}}
