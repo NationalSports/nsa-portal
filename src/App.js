@@ -10774,7 +10774,7 @@ export default function App(){
                   </div>})}
                 {(()=>{const totPulling=szKeys.reduce((a,sz)=>a+(pullQtys[sz]||0),0);
                   return<div style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:'2px solid #e2e8f0',background:'#f8fafc'}}>
-                    <div style={{fontSize:11,fontWeight:800,color:'#64748b',marginBottom:2}}>TOT</div>
+                    <div style={{fontSize:11,fontWeight:800,color:'#64748b',marginBottom:2}}>QTY</div>
                     <div style={{fontSize:22,fontWeight:900,color:'#d97706',lineHeight:1}}>{t.needsPull}</div>
                     <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>of {t.totalOrdered}</div>
                     {t.needsPull>0&&<>
