@@ -12,3 +12,7 @@
 # S&S Activewear pricing sync — daily at 5:00 AM CT (11:00 UTC)
 [functions."ss-pricing-sync"]
   schedule = "0 11 * * *"
+
+# System Health alert — every 2 hours, emails Steve if orphan jobs detected
+[functions."so-health-alert"]
+  schedule = "0 */2 * * *"
