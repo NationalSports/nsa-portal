@@ -5848,8 +5848,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po.po_id);
 
       return<div className="modal-overlay" onClick={()=>setEditPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:750,maxHeight:'90vh',overflow:'auto'}}>
-        <div className="modal-header"><h2>PO — {po.po_id||'PO'}</h2>
+        <div className="modal-header"><h2>PO — {po.po_id||'PO'}{po.batch_po_number&&<span style={{fontSize:12,fontWeight:600,color:'#7c3aed',marginLeft:10}}>· part of {po.batch_po_number}</span>}</h2>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
+            {po.status==='queued'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#fef3c7',color:'#b45309'}}>Queued in batch</span>}
+            {po.batch_po_number&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#f5f3ff',color:'#7c3aed',fontFamily:'monospace'}}>Batch: {po.batch_po_number}</span>}
             {isDropShip&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
             <span className={`badge ${poStatus==='received'||poStatus==='shipped'?'badge-green':poStatus==='partial'?'badge-amber':'badge-gray'}`}>{poStatus==='shipped'?'Shipped':poStatus==='received'?'Fully Received':poStatus==='partial'?(isDropShip?totalBilled+'/'+totalOrdered+' Billed':'Partial — '+totalOpen+' open'):'Waiting'}</span>
             <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{setPoFullPage({po,item,allLines,soId:o.id,soItems:o.items});setEditPO(null)}}>View Full Page</button>
@@ -6176,6 +6178,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <button className="btn btn-secondary btn-sm" onClick={()=>setPoFullPage(null)}>&larr; Back</button>
               <h1 style={{margin:0,fontSize:22}}>{po.po_id} {poFullPage.customerTag||''}</h1>
               <span className={`badge ${poStatus==='received'||poStatus==='shipped'?'badge-green':poStatus==='partial'?'badge-amber':'badge-gray'}`} style={{fontSize:11}}>{poStatus==='shipped'?'Shipped':poStatus==='received'?'Fully Received':poStatus==='partial'?'Partial':'Waiting'}</span>
+              {po.status==='queued'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#fef3c7',color:'#b45309'}}>Queued in batch</span>}
+              {po.batch_po_number&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#f5f3ff',color:'#7c3aed',fontFamily:'monospace'}}>Batch: {po.batch_po_number}</span>}
               {isDropShipFP&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
               {po.po_type==='outside_deco'&&<span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>}
               <button className="btn btn-sm btn-secondary" style={{marginLeft:8,fontSize:11}} onClick={()=>{setEditPO({lineIdx:allLines?.[0]?.lineIdx||0,poIdx:soItems?.[allLines?.[0]?.lineIdx]?.po_lines?.findIndex(p=>p.po_id===po.po_id)||0,po,allLines:allLines||[{lineIdx:0,poIdx:0}]});setPoFullPage(null)}}>Edit PO</button>
