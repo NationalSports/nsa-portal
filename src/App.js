@@ -7282,6 +7282,7 @@ export default function App(){
                     const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*pDepPct*100)/100;pSubTotal+=lineAmt;
                     let itemName=(it.name||'')+(it.color?' - '+it.color:'');
                     if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+                    if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
                     pRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
                     safeDecos(it).forEach(d=>{
                       const cq=d.kind==='art'&&d.art_file_id?_pAQ2[d.art_file_id]:qty;const dp2=dP(d,qty,pSoArt,cq);
@@ -7798,6 +7799,7 @@ export default function App(){
                     const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*siDepPct*100)/100;siSubTotal+=lineAmt;
                     let itemName=(it.name||'')+(it.color?' - '+it.color:'');
                     if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+                    if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
                     siRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$si(unitPrice),style:'text-align:right'},{value:_$si(lineAmt),style:'text-align:right;font-weight:600'}]});
                     safeDecos(it).forEach(d=>{
                       const cq=d.kind==='art'&&d.art_file_id?_siAQ[d.art_file_id]:qty;const dp2=dP(d,qty,siSoArt,cq);
@@ -8062,6 +8064,7 @@ export default function App(){
                     const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*fDepPct*100)/100;fSubTotal+=lineAmt;
                     let itemName=(it.name||'')+(it.color?' - '+it.color:'');
                     if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+                    if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
                     fRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$f(unitPrice),style:'text-align:right'},{value:_$f(lineAmt),style:'text-align:right;font-weight:600'}]});
                     safeDecos(it).forEach(d=>{
                       const cq=d.kind==='art'&&d.art_file_id?_fAQ[d.art_file_id]:qty;const dp2=dP(d,qty,fSoArt,cq);
@@ -19308,7 +19311,7 @@ export default function App(){
               const newEst={id:estId,customer_id:reorderCust,status:'draft',default_markup:c?.custom_multiplier||1.65,
                 shipping_type:source.shipping_type||'flat',shipping_value:source.shipping_value||0,
                 items:(source.items||[]).map(it=>({sku:it.sku||'',name:it.name||'',brand:it.brand||'',color:it.color||'',
-                  nsa_cost:it.nsa_cost||0,unit_sell:it.unit_sell||0,sizes:it.sizes||{},no_deco:it.no_deco||false,
+                  nsa_cost:it.nsa_cost||0,unit_sell:it.unit_sell||0,sizes:it.sizes||{},no_deco:it.no_deco||false,notes:it.notes||null,
                   decorations:(it.decorations||[]).map(d=>({...d}))})),
                 art_files:(source.art_files||[]).map(a=>({...a})),created_at:new Date().toISOString()};
               setEsts(prev=>[newEst,...prev]);nf('Created '+estId+' — cloned '+((source.items||[]).length)+' items');
