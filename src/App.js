@@ -444,7 +444,7 @@ const _dbLoad = async (opts={}) => {
     // Messages: attach read_by array and parse tagged_members
     const messages=msgRaw.map(m=>{const tm=m.tagged_members;const mapped={...m,text:m.body||m.text,ts:m.created_at||m.ts};delete mapped.body;return{...mapped,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
-    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>({sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes||{}}))}));
+    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>{const dt=(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||''}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,_artwork:p._artwork||[]}})}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations');
@@ -492,7 +492,7 @@ const _dbSeed = async (d) => {
   // Seed OMG stores
   if(d.omg_stores?.length){
     await supabase.from('omg_stores').upsert(d.omg_stores.map(s=>_pick(s,_omgStoreCols)),{onConflict:'id'});
-    const allProds=[];d.omg_stores.forEach(s=>(s.products||[]).forEach(p=>allProds.push({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes})));
+    const allProds=[];d.omg_stores.forEach(s=>(s.products||[]).forEach(p=>allProds.push({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes,image_url:p.image_url||'',manufacturer:p.manufacturer||''})));
     if(allProds.length) await supabase.from('omg_store_products').upsert(allProds,{onConflict:'store_id,sku'});
   }
 };
@@ -2175,7 +2175,17 @@ export default function App(){
   React.useEffect(()=>{_diffSave(sos,'sos',s=>_dbSaveSO(s))},[sos]);
   React.useEffect(()=>{_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
   React.useEffect(()=>{_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
-  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){_dbSave('omg_stores',[_pick(s,_omgStoreCols)])}});_dbSnap.current.omg=omgStores}},[omgStores]);
+  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){
+    _dbSave('omg_stores',[_pick(s,_omgStoreCols)]);
+    // Also save products when they change
+    const oldProds=JSON.stringify((old?.products||[]).map(p=>p.sku+p.cost+(p.decorations||[]).map(d=>d.type+':'+d.art_group).join('|')+p.vendor_id).sort());
+    const newProds=JSON.stringify((s.products||[]).map(p=>p.sku+p.cost+(p.decorations||[]).map(d=>d.type+':'+d.art_group).join('|')+p.vendor_id).sort());
+    if(oldProds!==newProds&&(s.products||[]).length>0){
+      const prods=(s.products||[]).map(p=>({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:(p.decorations||[]).map(d=>d.type).join('|')||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',vendor_id:p.vendor_id||'',art_group:(p.decorations||[]).map(d=>d.art_group).join('|')||'',_cost_source:p._cost_source||''}));
+      // Delete old products and insert fresh (handles SKU changes)
+      if(supabase){supabase.from('omg_store_products').delete().eq('store_id',s.id).then(()=>{supabase.from('omg_store_products').insert(prods).then(r=>{if(r.error)console.error('[DB] omg products save:',r.error.message)})})}
+    }
+  }});_dbSnap.current.omg=omgStores}},[omgStores]);
 
   // ─── Automatic retry for failed saves (every 60s, sequential to avoid overwhelming Supabase) ───
   React.useEffect(()=>{
@@ -2268,18 +2278,144 @@ export default function App(){
       }
       const saleResource = saleResp?.data || { id: omgId, attributes: {} };
 
-      // Orders for this store
-      const ordersResult = await tryPaginated([
-        `/sales/${omgId}/orders`,
-        `/orders?filter[sale_id]=${omgId}`,
-        `/orders?sale_id=${omgId}`,
-      ]);
-      const orders = ordersResult?.data || [];
+      // Orders for this store.
+      //
+      // The /probe confirmed OMG's API does not actually let us fetch a
+      // sale's orders directly:
+      //   - /sales/{id}/orders           → 404
+      //   - /orders?filter[sale_id]={id} → returns the first 100 global rows
+      //     (filter is silently ignored — the first page is the same 100
+      //     orders regardless of the filter value)
+      //   - /orders?include=sale         → works; each order carries
+      //     relationships.sale.data.id = "sale_XXXXX"
+      //
+      // So the only correct strategy is: paginate /orders globally and
+      // filter client-side on relationships.sale.data.id.
+      //
+      // Two subtleties the previous version got wrong:
+      //   1. tryPaginated falls through on ERROR but not on an empty 200
+      //      response, so if OMG accepts a param combination but returns
+      //      {data:[]}, we'd stop without trying simpler variants.
+      //   2. tryPaginated only follows links.next; if OMG doesn't populate
+      //      it we'd stop at page 1. We now fall back to manually
+      //      incrementing ?page[number]= as well.
+      //
+      // We also cache the global result across stores so opening 10 stores
+      // in a row doesn't re-paginate the same universe.
+      const fetchAll = async (endpoint, maxPages = 200) => {
+        let first;
+        try { first = await omgApiCall(endpoint); }
+        catch (e) { console.log(`[OMG]   ✗ ${endpoint}: ${e.message}`); return null; }
+        if (!first || !first.data) { console.log(`[OMG]   ✗ ${endpoint}: no data field`); return null; }
+        const allData = [...first.data];
+        const allIncluded = [...(first.included || [])];
+        const seen = new Set(allData.map(d => d.id));
+        const hasLinksNext = !!first?.links?.next;
+        console.log(`[OMG]   ${endpoint} page 1: ${first.data.length} rows, links.next=${hasLinksNext}`);
+        let pages = 1;
+        // Prefer links.next when OMG provides it
+        let nextUrl = first?.links?.next || null;
+        if (nextUrl) {
+          while (nextUrl && pages < maxPages) {
+            let rel = nextUrl;
+            try { const u = new URL(nextUrl); rel = u.pathname.replace(/^\/v1/, '') + u.search; } catch {}
+            let next;
+            try { next = await omgApiCall(rel); }
+            catch (e) { console.warn(`[OMG]   page ${pages + 1} (links.next) failed: ${e.message}`); break; }
+            const nd = next?.data || [];
+            if (nd.length === 0) break;
+            const fresh = nd.filter(d => !seen.has(d.id));
+            if (fresh.length === 0) break;
+            fresh.forEach(d => seen.add(d.id));
+            allData.push(...fresh);
+            allIncluded.push(...(next.included || []));
+            nextUrl = next?.links?.next || null;
+            pages++;
+          }
+        } else if (first.data.length > 0) {
+          // Fall back: manually increment ?page[number]= until we stop
+          // getting fresh rows. If the scheme isn't supported we'll see
+          // immediate duplicates and bail.
+          const sep = endpoint.includes('?') ? '&' : '?';
+          for (let p = 2; p <= maxPages; p++) {
+            const url = `${endpoint}${sep}page[number]=${p}`;
+            let next;
+            try { next = await omgApiCall(url); }
+            catch (e) { console.log(`[OMG]   manual page ${p} failed: ${e.message}`); break; }
+            const nd = next?.data || [];
+            if (nd.length === 0) break;
+            const fresh = nd.filter(d => !seen.has(d.id));
+            if (fresh.length === 0) {
+              console.log(`[OMG]   manual page ${p}: all duplicates — page[number] pagination not supported, stopping`);
+              break;
+            }
+            fresh.forEach(d => seen.add(d.id));
+            allData.push(...fresh);
+            allIncluded.push(...(next.included || []));
+            pages++;
+          }
+        }
+        console.log(`[OMG]   ✓ ${endpoint}: ${allData.length} total rows across ${pages} page(s)`);
+        return { data: allData, included: allIncluded };
+      };
+      const fetchAllVariants = async (endpoints, maxPages = 200) => {
+        for (const ep of endpoints) {
+          const result = await fetchAll(ep, maxPages);
+          if (result && result.data.length > 0) return { ...result, ep };
+        }
+        return null;
+      };
 
-      // Order products for this store — prefer bulk filter, fall back per-order.
-      // Include product + attribute_values + product_attributes so we can
-      // reconstruct sizes. (Nested includes don't work on OMG, but multiple
-      // top-level includes do.)
+      // Session cache — shared across loadOMGStoreDetail calls so opening
+      // multiple stores in a row doesn't re-paginate the universe. Cleared
+      // when the user clicks the store-level Re-sync button (force=true)
+      // or when the session starts.
+      window._omgGlobalCache = window._omgGlobalCache || { orders: null, orderProducts: null };
+      const cache = window._omgGlobalCache;
+      if (force) { cache.orders = null; cache.orderProducts = null; }
+
+      let allOrdersResult = cache.orders;
+      if (!allOrdersResult) {
+        console.log(`[OMG] Fetching global /orders (cache miss)…`);
+        allOrdersResult = await fetchAllVariants([
+          `/orders?include=sale&sort=-updated_at&page[size]=200`,
+          `/orders?include=sale&sort=-updated_at`,
+          `/orders?sort=-updated_at&page[size]=200`,
+          `/orders?sort=-updated_at`,
+          `/orders?include=sale&page[size]=200`,
+          `/orders?include=sale`,
+          `/orders?page[size]=200`,
+          `/orders`,
+        ], 200);
+        cache.orders = allOrdersResult;
+      } else {
+        console.log(`[OMG] Using cached global /orders (${allOrdersResult.data.length} rows)`);
+      }
+      const rawOrders = allOrdersResult?.data || [];
+
+      // Flexible sale-id matcher: OMG uses prefixed ids like "sale_W353C"
+      // but the store row might store the bare code. Accept either.
+      const myIdStr = String(omgId);
+      const myIdBare = myIdStr.replace(/^sale_/, '');
+      const matchSale = (sid) => {
+        if (sid == null) return false;
+        const s = String(sid);
+        return s === myIdStr || s === myIdBare || s === `sale_${myIdBare}`;
+      };
+      let orders = rawOrders.filter(o => matchSale(o.relationships?.sale?.data?.id));
+      console.log(`[OMG] /orders scanned ${rawOrders.length} global rows → ${orders.length} matched sale ${omgId} (${store.store_name})`);
+      if (rawOrders.length > 0 && orders.length === 0) {
+        const uniqSales = new Set(rawOrders.map(o => o.relationships?.sale?.data?.id).filter(Boolean));
+        console.warn(`[OMG] Zero orders matched. Raw scan spans ${uniqSales.size} unique sales. Target sale present: ${uniqSales.has(myIdStr) || uniqSales.has(myIdBare)}. First 10 raw sale ids:`,
+          [...uniqSales].slice(0, 10));
+      }
+
+      // Order products for this store.
+      //
+      // Same story as orders: /order_products?filter[sale_id] and
+      // filter[order_id] are silently ignored, and no nested route exists.
+      // We paginate /order_products globally and filter client-side against
+      // this sale's order id set (collected above).
       const productMap = {};
       const attrValueMap = {}; // attribute_value id → { name, parentAttrId }
       const productAttrMap = {}; // product_attribute id → { name }
@@ -2298,32 +2434,10 @@ export default function App(){
           }
         });
       };
+      // Order products are now imported from OMG shared reports (not the
+      // broken V1 API). The report import flow is in the UI below.
+      // loadOMGStoreDetail only handles orders/metadata.
       let orderProducts = [];
-      const bulkResult = await tryPaginated([
-        `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values,product_attributes`,
-        `/order_products?filter[sale_id]=${omgId}&include=product,attribute_values`,
-        `/order_products?filter[sale_id]=${omgId}&include=product`,
-        `/order_products?filter[sale_id]=${omgId}`,
-      ]);
-      if (bulkResult && bulkResult.data.length > 0) {
-        orderProducts = bulkResult.data;
-        captureIncluded(bulkResult.included);
-      } else if (orders.length > 0) {
-        for (const o of orders) {
-          const opResult = await tryPaginated([
-            `/orders/${o.id}/order_products?include=product,attribute_values,product_attributes`,
-            `/orders/${o.id}/order_products?include=product,attribute_values`,
-            `/orders/${o.id}/order_products?include=product`,
-            `/orders/${o.id}/order_products`,
-            `/order_products?filter[order_id]=${o.id}&include=product,attribute_values,product_attributes`,
-            `/order_products?filter[order_id]=${o.id}&include=product`,
-            `/order_products?filter[order_id]=${o.id}`,
-          ], 5);
-          if (!opResult) continue;
-          orderProducts.push(...opResult.data);
-          captureIncluded(opResult.included);
-        }
-      }
 
       // Build product included block for convertOMGStore
       const productIncluded = Object.keys(productMap).map(id => ({ id, type: 'products', attributes: productMap[id] }));
@@ -2417,7 +2531,15 @@ export default function App(){
       if (buyerIds.size > 0) updated.unique_buyers = buyerIds.size;
 
       setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
-      nf(`Synced ${store.store_name}: ${orders.length} orders, ${totalItems} items, $${salesTotal.toLocaleString()}`);
+      // Flag the suspicious "orders loaded but no items" case as a warning so
+      // the user doesn't think the sync succeeded when it actually fetched
+      // nothing useful. Check the browser console for [OMG] diagnostic logs.
+      const emptyItems = orders.length > 0 && totalItems === 0;
+      const toastType = emptyItems ? 'error' : 'success';
+      const toastMsg = emptyItems
+        ? `⚠ ${store.store_name}: ${orders.length} orders but 0 items loaded — OMG returned order headers but no line items. Check browser console for [OMG] diagnostics.`
+        : `Synced ${store.store_name}: ${orders.length} orders, ${totalItems} items, $${salesTotal.toLocaleString()}`;
+      nf(toastMsg, toastType);
       return updated;
     } catch (e) {
       console.error('[OMG] Failed to load detail for store', store.id, e);
@@ -2780,15 +2902,173 @@ export default function App(){
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);
-  // Auto-load OMG store details when a store is selected
-  React.useEffect(()=>{
-    if(!omgSel||omgSel._details_loaded||omgDetailLoading||!omgSel._omg_id)return;
-    setOmgDetailLoading(true);
-    console.log('[OMG] Auto-loading details for store', omgSel.id, omgSel._omg_id);
-    loadOMGStoreDetail(omgSel).then(updated=>{
-      setOmgSel(updated);setOmgDetailLoading(false);
-    }).catch(e=>{console.error('[OMG] Detail load failed:',e);setOmgDetailLoading(false)});
-  },[omgSel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);
+
+  // Import products from an OMG shared report URL.
+  // Fetches report JSON via Netlify proxy, parses products with SKUs, sizes,
+  // quantities, prices, and mockup images. Replaces the broken V1 API sync.
+  const importOMGReport = async (store, reportUrl) => {
+    // Extract UUID from various URL formats
+    const urlStr = (reportUrl || '').trim();
+    const uuidMatch = urlStr.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+    if (!uuidMatch) { nf('Invalid report URL — expected an OMG report link with a UUID', 'error'); return null; }
+    const reportId = uuidMatch[1];
+
+    setOmgReportLoading(true);
+    try {
+      const resp = await fetch(`/.netlify/functions/omg-report-proxy?id=${reportId}`);
+      if (!resp.ok) throw new Error(`Report fetch failed: ${resp.status}`);
+      const report = await resp.json();
+      if (!report?.reports?.length) throw new Error('Report JSON has no data');
+
+      // Parse all sections → products
+      const products = [];
+      let totalQty = 0, totalSales = 0;
+      (report.reports || []).forEach(r => {
+        (r.sections || []).forEach(section => {
+          const meta = section.meta || {};
+          const rows = section.rows || [];
+          // Aggregate sizes across all rows for this product
+          const sizes = {};
+          let productQty = 0, productPaid = 0;
+          const colors = new Set();
+          rows.forEach(row => {
+            const rawSz = (row.size || 'OS').trim().replace(/["''″]+$/,'');
+            const sz = SZ_NORM[rawSz.toUpperCase()] || (/^adult\b/i.test(rawSz)?'OSFA':rawSz);
+            const qty = row.quantity || 0;
+            sizes[sz] = (sizes[sz] || 0) + qty;
+            productQty += qty;
+            productPaid += (row.paid || 0);
+            if (row.color) colors.add(row.color);
+          });
+          // Get artwork image
+          const artwork = (meta.artwork || [])[0];
+          const imageUrl = artwork?.link || artwork?.thumbnail || '';
+
+          // Skip items with 0 sales — no one ordered them
+          if (productQty === 0) return;
+
+          // Fix bad SKUs: if SKU looks like a product name (has spaces or
+          // is very long), try to extract a real SKU from parentheses in
+          // the color or name fields, e.g. "Black/White (HT3973)" → HT3973
+          let sku = meta.sku || '';
+          const skuLooksBad = sku.includes(' ') || sku.length > 15;
+          if (skuLooksBad) {
+            const colorStr = [...colors].join(' ');
+            const nameStr = meta.name || '';
+            const parenMatch = (colorStr + ' ' + nameStr).match(/\(([A-Za-z0-9]{4,10})\)/);
+            if (parenMatch) sku = parenMatch[1].toUpperCase();
+          }
+
+          products.push({
+            sku,
+            name: meta.name || '',
+            manufacturer: meta.manufacturer || '',
+            category: meta.category || '',
+            color: [...colors].join(', '),
+            retail: meta.base_price || 0,
+            cost: meta.cogs || 0,
+            deco_type: '',
+            deco_cost: 0,
+            art_group: '',
+            decorations: [],
+            sizes,
+            image_url: imageUrl,
+            _omg_product_id: meta.id,
+            _original_sku: sku,
+            _artwork: meta.artwork || [],
+          });
+          totalQty += productQty;
+          totalSales += productPaid;
+        });
+      });
+
+      console.log(`[OMG Report] Parsed ${products.length} products, ${totalQty} total units, $${totalSales} from report ${reportId}`);
+
+      // ── Catalog + manufacturer → vendor mapping (instant, no API calls) ──
+      const mfgToVendor = (mfg) => {
+        if (!mfg) return null;
+        const m = mfg.toLowerCase();
+        if (/comfort\s*colors|port\s*(&|and)\s*company|port\s*authority|sport-?tek|gildan|hanes|champion|district|cornerstone|allmade|rabbit\s*skins|jerzees/i.test(m))
+          return vend.find(v => /sanmar/i.test(v.name))?.id || null;
+        if (/independent\s*trading|next\s*level|bella\s*canvas|tultex|lat|american\s*apparel|alternative|econscious|threadfast/i.test(m))
+          return vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
+        if (/richardson/i.test(m)) return vend.find(v => /richardson/i.test(v.name))?.id || null;
+        if (/otto/i.test(m)) return vend.find(v => /otto/i.test(v.name))?.id || vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
+        if (/adidas/i.test(m)) return vend.find(v => /adidas/i.test(v.name))?.id || null;
+        if (/under\s*armou?r/i.test(m)) return vend.find(v => /under\s*armou?r/i.test(v.name))?.id || null;
+        if (/badger/i.test(m)) return vend.find(v => /badger/i.test(v.name))?.id || vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
+        if (/momentec/i.test(m)) return vend.find(v => /momentec/i.test(v.name))?.id || null;
+        return null;
+      };
+      for (const p of products) {
+        if (!p.sku) continue;
+        const catMatch = prod.find(cp => cp.sku === p.sku || cp.sku?.toLowerCase() === p.sku?.toLowerCase());
+        if (catMatch) {
+          const catCost=parseFloat(catMatch.nsa_cost)||0;
+          if (catCost > 0) { p.cost = catCost; p._cost_source = 'catalog'; }
+          if (catMatch.vendor_id) p.vendor_id = catMatch.vendor_id;
+        }
+        if (!p.vendor_id) p.vendor_id = mfgToVendor(p.manufacturer);
+      }
+      console.log(`[OMG Report] Catalog/vendor mapping done. ${products.filter(p=>p.cost>0).length} with cost, ${products.filter(p=>p.vendor_id).length} with vendor.`);
+
+      // Merge with existing data — preserve manual edits (SKU corrections,
+      // costs, deco types, art groups, vendors) from previous imports.
+      // Match by _omg_product_id (stable) or original SKU position.
+      const existingProducts = store.products || [];
+      const mergedProducts = products.map((p, idx) => {
+        // Find existing product by OMG product ID or by position
+        const existing = existingProducts.find(ep => ep._omg_product_id && ep._omg_product_id === p._omg_product_id)
+          || existingProducts[idx];
+        if (!existing) return p;
+        // Preserve manual edits, take fresh data for quantities
+        return {
+          ...p,
+          // Preserve user edits if they were changed from the original
+          sku: existing.sku !== existing._original_sku && existing.sku ? existing.sku : p.sku,
+          name: existing.name || p.name,
+          cost: existing.cost > 0 ? existing.cost : p.cost,
+          _cost_source: existing.cost > 0 ? existing._cost_source : p._cost_source,
+          vendor_id: existing.vendor_id || p.vendor_id,
+          deco_type: existing.deco_type || p.deco_type,
+          art_group: existing.art_group || p.art_group,
+          decorations: (existing.decorations||[]).length>0 ? existing.decorations : p.decorations || [],
+          // Fresh from report: sizes, quantities, retail, colors, images
+          _original_sku: p.sku, // track original for detecting user edits
+        };
+      });
+
+      // Update the store with merged products
+      const updated = {
+        ...store,
+        products: mergedProducts,
+        _report_url: urlStr,
+        _report_id: reportId,
+        _report_imported_at: new Date().toISOString(),
+        _details_loaded: true,
+        items_sold: totalQty,
+      };
+      if (totalSales > 0) updated.total_sales = totalSales;
+      // Preserve financials
+      if (!updated._omg_shipping && store._omg_shipping) updated._omg_shipping = store._omg_shipping;
+      if (!updated._omg_processing && store._omg_processing) updated._omg_processing = store._omg_processing;
+      if (!updated._omg_tax && store._omg_tax) updated._omg_tax = store._omg_tax;
+      if (!updated._omg_fundraise && store._omg_fundraise) updated._omg_fundraise = store._omg_fundraise;
+      if (!updated._omg_grand_total && store._omg_grand_total) updated._omg_grand_total = store._omg_grand_total;
+
+      setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
+      setOmgSel(updated);
+      nf(`Imported ${products.length} products from OMG report (${totalQty} total items)`);
+      return updated;
+    } catch (e) {
+      console.error('[OMG Report] Import failed:', e);
+      nf('Report import failed: ' + e.message, 'error');
+      return null;
+    } finally {
+      setOmgReportLoading(false);
+    }
+  };
   const[estF,setEstF]=useState({status:'open',rep:'all',search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'active',rep:'all',search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
@@ -9822,21 +10102,22 @@ export default function App(){
       if(omgFilter.dateRange!=='all'){
         const days={'30d':30,'90d':90,'6m':180,'1y':365}[omgFilter.dateRange]||30;
         const cutoff=new Date(Date.now()-days*86400000);
-        const storeDate=s.close_date?new Date(s.close_date):s.open_date?new Date(s.open_date):null;
-        if(!storeDate||storeDate<cutoff)return false;
+        const storeDate=s.close_date?new Date(s.close_date):s.open_date?new Date(s.open_date):s._last_synced?new Date(s._last_synced):null;
+        if(storeDate&&storeDate<cutoff)return false;
       }
       return true;
     });
-    const totalSales=filtered.reduce((a,s)=>a+(s.total_sales||0),0);
-    const totalFund=filtered.reduce((a,s)=>a+(s.fundraise_total||0),0);
-    const totalOrders=filtered.reduce((a,s)=>a+(s.orders||0),0);
+    const totalSales=filtered.reduce((a,s)=>{const pr=(s.products||[]).reduce((a2,p)=>{const q=Object.values(p.sizes||{}).reduce((a3,v)=>a3+v,0);return a2+q*p.retail},0);return a+(pr||s.total_sales||0)},0);
+    const totalUnits=filtered.reduce((a,s)=>a+(s.products||[]).reduce((a2,p)=>a2+Object.values(p.sizes||{}).reduce((a3,v)=>a3+v,0),0),0);
+    const totalFund=filtered.reduce((a,s)=>a+(s._omg_fundraise||s.fundraise_total||0),0);
 
     // Store detail view
     if(omgSel){
       const s=omgSel;const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
       const totalCost=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
       const totalRetail=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
-      const margin=totalRetail-totalCost;const pct=totalRetail>0?Math.round(margin/totalRetail*100):0;
+      const storeFees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);
+      const margin=totalRetail-totalCost-storeFees;const pct=totalRetail>0?Math.round(margin/totalRetail*100):0;
 
       return(<>
         <button className="btn btn-sm btn-secondary" onClick={()=>setOmgSel(null)} style={{marginBottom:12}}>← Back to All Stores</button>
@@ -9856,68 +10137,336 @@ export default function App(){
                 {s.open_date&&<span style={{marginLeft:8,fontSize:11,color:'#64748b'}}>📅 {s.open_date} → {s.close_date}</span>}
               </div>
             </div>
-            {s.status==='closed'&&!sos.some(so=>so.omg_store_id===s.id)&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
-              // Create a new SO linked to this OMG store — user adds items manually from OMG admin data
+            {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
               if(sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
               const generatedId=nextSOId(sos);
+              // Build art files from unique art_group labels across all decorations
+              const artGroups=[...new Set((s.products||[]).flatMap(p=>(p.decorations||[]).map(d=>d.art_group)).filter(Boolean))];
+              const artFiles=artGroups.map((g,idx)=>{
+                const sampleDeco=(s.products||[]).flatMap(p=>(p.decorations||[]).filter(d=>d.art_group===g))[0];
+                return{id:'af_omg_'+idx,name:g,deco_type:sampleDeco?.type||'screen_print',
+                  ink_colors:'',thread_colors:'',art_size:'',files:[],mockup_files:[],prod_files:[],
+                  notes:'From OMG store '+s.store_name,status:'pending',uploaded:new Date().toLocaleDateString()};
+              });
+              // Build SO items from imported products
+              const soItems=(s.products||[]).map(p=>{
+                const catP=prod.find(cp=>cp.sku===p.sku||cp.sku?.toLowerCase()===p.sku?.toLowerCase());
+                const decos=(p.decorations||[]);
+                const positions=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve'];
+                return{
+                  sku:p.sku,name:p.name,brand:p.manufacturer||catP?.brand||'',
+                  color:p.color,product_id:catP?.id||null,vendor_id:p.vendor_id||catP?.vendor_id||null,
+                  nsa_cost:p.cost||catP?.nsa_cost||0,
+                  retail_price:p.retail||0,
+                  unit_sell:p.retail||0,
+                  sizes:p.sizes||{},
+                  available_sizes:Object.keys(p.sizes||{}),
+                  _colorImage:p.image_url||'',
+                  no_deco:decos.length===0,
+                  decorations:decos.map((d,di)=>{const artFileId=d.art_group?artFiles.find(af=>af.name===d.art_group)?.id||null:null;return{kind:'art',position:positions[di]||'Position '+(di+1),type:d.type,art_file_id:artFileId,sell_override:0,sell_each:0,cost_each:0}}),
+                  pick_lines:[],po_lines:[],
+                };
+              });
               const newSO={id:generatedId,customer_id:s.customer_id,memo:'OMG Store: '+s.store_name+(s._omg_sale_code?' ('+s._omg_sale_code+')':''),status:'need_order',
                 created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
-                expected_date:'',production_notes:'Linked to OMG store '+s.id+'. View orders at: team.ordermygear.com/admin/sales/'+s._omg_id,
-                shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[],jobs:[],items:[],omg_store_id:s.id};
+                expected_date:'',production_notes:'OMG Store '+s.store_name+' — '+soItems.length+' items imported from report. Deco cost is $0 (bundled in store price).'
+                  +(s._omg_shipping?'\nShipping collected: $'+s._omg_shipping.toFixed(2):'')
+                  +(s._omg_processing?'\nProcessing fees: $'+s._omg_processing.toFixed(2):'')
+                  +(s._omg_tax?'\nSales tax collected: $'+s._omg_tax.toFixed(2):'')
+                  +(s._omg_grand_total?'\nGrand total: $'+s._omg_grand_total.toFixed(2):''),
+                shipping_type:'flat',shipping_value:s._omg_shipping||0,
+                tax_rate:0,
+                ship_to_id:'default',firm_dates:[],art_files:artFiles,
+                jobs:[],items:soItems,omg_store_id:s.id,
+                _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_grand_total:s._omg_grand_total||0};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
-              nf('Created SO for '+s.store_name+' — add items from OMG admin');
-            }}>📋 Create Sales Order</button>}
+              nf(`Created SO with ${soItems.length} items from ${s.store_name}`);
+            }}>📋 Create Sales Order ({(s.products||[]).length} items)</button>}
             {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
               ✅ Already pulled → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>}
+            {s.status!=='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{padding:'6px 12px',background:'#eff6ff',borderRadius:6,fontSize:11,color:'#1e40af',fontWeight:600,cursor:'pointer'}}
+                onClick={()=>{const so=sos.find(x=>x.omg_store_id===s.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}}>
+                📋 View SO → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>
+            </div>}
           </div>
         </div></div>
 
-        <div className="stats-row" style={{marginBottom:12}}>
-          <div className="stat-card"><div className="stat-label">Orders</div><div className="stat-value">{s.orders||0}</div></div>
-          <div className="stat-card"><div className="stat-label">Total Sales</div><div className="stat-value" style={{color:'#1e40af'}}>${(s.total_sales||0).toLocaleString()}</div></div>
-          <div className="stat-card"><div className="stat-label">Fundraise</div><div className="stat-value" style={{color:'#166534'}}>${(s.fundraise_total||0).toLocaleString()}</div></div>
+        {(()=>{const fees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);return<div className="stats-row" style={{marginBottom:12}}>
+          <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{(s.products||[]).reduce((a,p)=>a+Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0),0)}</div></div>
+          <div className="stat-card"><div className="stat-label">Product Revenue</div><div className="stat-value" style={{color:'#1e40af'}}>${totalRetail.toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Fees</div><div className="stat-value" style={{color:'#dc2626'}}>${fees>0?fees.toLocaleString():'—'}</div><div style={{fontSize:9,color:'#94a3b8'}}>{fees>0?'Ship+Process+Tax':''}</div></div>
           <div className="stat-card"><div className="stat-label">NSA Cost</div><div className="stat-value" style={{color:'#d97706'}}>${totalCost.toLocaleString()}</div></div>
           <div className="stat-card"><div className="stat-label">Margin</div><div className="stat-value" style={{color:pct>=30?'#166534':'#dc2626'}}>{pct}%</div></div>
-        </div>
+        </div>})()}
 
-        {/* Re-sync button — full-width row so it can't overflow on mobile */}
-        {s._omg_id&&<div style={{marginBottom:12,display:'flex',gap:8,flexWrap:'wrap'}}>
-          <button className="btn btn-primary" disabled={omgDetailLoading} style={{flex:'1 1 auto',minWidth:200}} onClick={()=>{
-            setOmgDetailLoading(true);
-            loadOMGStoreDetail(s,{force:true}).then(u=>{setOmgSel(u);setOmgDetailLoading(false)}).catch(()=>setOmgDetailLoading(false));
-          }}>{omgDetailLoading?'⏳ Syncing this store…':'🔄 Re-sync this store from OMG'}</button>
-        </div>}
+        {/* OMG Store Financials — OCR from Dollar Report screenshot or manual entry */}
+        {(s.products||[]).length>0&&<div className="card" style={{marginBottom:12}}><div style={{padding:16}}>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Store Financials <span style={{fontSize:11,color:'#64748b',fontWeight:400}}>— screenshot the OMG Dollar Report and drop here, or enter manually</span></div>
+          {/* Drop zone for Dollar Report screenshot */}
+          <div style={{marginBottom:12,border:'2px dashed #cbd5e1',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f8fafc',transition:'all 0.2s'}}
+            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#2563eb';e.currentTarget.style.background='#eff6ff'}}
+            onDragLeave={e=>{e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc'}}
+            onDrop={async e=>{
+              e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc';
+              const file=e.dataTransfer.files?.[0];if(!file||!file.type.startsWith('image/'))return nf('Drop an image file','error');
+              nf('Reading screenshot…');
+              try{
+                const{createWorker}=await import('tesseract.js');
+                const worker=await createWorker('eng');
+                const{data:{text}}=await worker.recognize(file);
+                await worker.terminate();
+                console.log('[OCR] Dollar Report text:',text);
+                // Parse known patterns from Dollar Report
+                const parseAmt=(pattern)=>{const m=text.match(pattern);return m?parseFloat(m[1].replace(/,/g,''))||0:0};
+                const shipping=parseAmt(/Shipping\s*\$?([\d,]+\.?\d*)/i);
+                const processing=parseAmt(/(?:Online\s*)?Processing\s*(?:Fee)?\s*\$?([\d,]+\.?\d*)/i);
+                const tax=parseAmt(/Sales\s*Tax\s*\$?([\d,]+\.?\d*)/i);
+                const fundraise=parseAmt(/Fundrais(?:ing|e)\s*(?:Collected)?\s*\$?([\d,]+\.?\d*)/i);
+                const grandTotal=parseAmt(/Grand\s*Total[:\s]*\$?([\d,]+\.?\d*)/i);
+                const upd={...s,_omg_shipping:shipping,_omg_processing:processing,_omg_tax:tax,_omg_fundraise:fundraise,_omg_grand_total:grandTotal};
+                setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
+                nf(`Extracted: Shipping $${shipping} | Processing $${processing} | Tax $${tax} | Fundraise $${fundraise} | Grand Total $${grandTotal}`);
+                // Auto-add fundraise to customer promo funds
+                if(fundraise>0&&s.customer_id){
+                  const custMatch=cust.find(cx=>cx.id===s.customer_id);
+                  if(custMatch){
+                    const progId='pp_omg_'+s._omg_sale_code+'_'+Date.now();
+                    const prog={id:progId,customer_id:s.customer_id,type:'fixed',fixed_amount:fundraise,spend_percentage:0,is_active:true,
+                      notes:'OMG Fundraise from '+s.store_name+' ('+s._omg_sale_code+')',created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
+                    await _dbSavePromoProgram(prog);
+                    const updCust={...custMatch,promo_programs:[...(custMatch.promo_programs||[]),prog]};
+                    setCust(prev=>prev.map(cx=>cx.id===s.customer_id?updCust:cx));
+                    nf(`Added $${fundraise.toFixed(2)} fundraise to ${custMatch.name} promo funds`);
+                  }
+                }
+              }catch(err){console.error('[OCR]',err);nf('OCR failed: '+err.message,'error')}
+            }}
+            onClick={()=>{
+              const inp=document.createElement('input');inp.type='file';inp.accept='image/*';
+              inp.onchange=e=>{const f=e.target.files?.[0];if(f){const dt=new DataTransfer();dt.items.add(f);const dropEvt=new DragEvent('drop',{dataTransfer:dt});document.querySelector('[data-ocr-drop]')?.dispatchEvent(dropEvt)}};
+              inp.click();
+            }}
+            data-ocr-drop="true"
+          >
+            <div style={{fontSize:24,marginBottom:4}}>📸</div>
+            <div style={{fontSize:12,fontWeight:600,color:'#475569'}}>Drop Dollar Report screenshot here</div>
+            <div style={{fontSize:11,color:'#94a3b8'}}>or click to select — extracts Shipping, Processing, Tax, Fundraising, Grand Total</div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10}}>
+            {[['_omg_shipping','Shipping'],['_omg_processing','Processing'],['_omg_tax','Sales Tax'],['_omg_fundraise','Fundraise'],['_omg_grand_total','Grand Total']].map(([key,label])=>
+              <div key={key}>
+                <div style={{fontSize:10,color:'#64748b',marginBottom:3}}>{label}</div>
+                <div style={{display:'flex',alignItems:'center',gap:3}}>
+                  <span style={{color:'#94a3b8',fontSize:12}}>$</span>
+                  <input type="number" step="0.01" value={s[key]||''} placeholder="0"
+                    onChange={e=>{const upd={...s,[key]:parseFloat(e.target.value)||0};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)}}
+                    style={{width:'100%',padding:'4px 6px',border:'1px solid #d1d5db',borderRadius:4,fontSize:12,fontFamily:'monospace'}}/>
+                </div>
+              </div>
+            )}
+          </div>
+          {/* Totals validation */}
+          {s._omg_grand_total>0&&(()=>{
+            const productRev=totalRetail;
+            const computed=productRev+(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0)+(s._omg_fundraise||0);
+            const diff=Math.abs(computed-s._omg_grand_total);
+            const match=diff<1;
+            return <div style={{padding:'8px 16px',borderTop:'1px solid #e2e8f0',fontSize:11,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <span>Product Revenue (${productRev.toLocaleString()}) + Fees (${((s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0)+(s._omg_fundraise||0)).toLocaleString()}) = ${computed.toLocaleString()}</span>
+              {match?<span style={{color:'#166534',fontWeight:700}}>✓ Matches Grand Total</span>
+                :<span style={{color:'#dc2626',fontWeight:700}}>⚠ Off by ${diff.toFixed(2)} from Grand Total (${s._omg_grand_total.toLocaleString()})</span>}
+            </div>;
+          })()}
+        </div></div>}
 
-        <div className="card" style={{marginBottom:12}}><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <h2>📦 Store Products</h2>
-          <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer"
-            style={{fontSize:11,color:'#2563eb',textDecoration:'none',fontWeight:600}}>View in OMG Admin →</a>
-        </div>
+        {/* Import from OMG Report */}
+        <div className="card" style={{marginBottom:12,border:(s.products||[]).length===0&&s.status==='closed'?'2px solid #166534':undefined}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h2>{(s.products||[]).length>0?'📦 Store Products':'📋 Import from OMG Report'}</h2>
+            <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer"
+              style={{fontSize:11,color:'#2563eb',textDecoration:'none',fontWeight:600}}>View in OMG Admin →</a>
+          </div>
           <div className="card-body" style={{padding:0}}>
-            {omgDetailLoading && !s._details_loaded ? (
-              <div style={{padding:24,textAlign:'center',color:'#64748b',fontSize:13}}>Loading order details from OMG...</div>
+            {/* Report URL input — always visible at top when no products, collapsible after import */}
+            {((s.products||[]).length===0||s._report_url)&&<div style={{padding:16,borderBottom:'1px solid #e2e8f0',background:(s.products||[]).length===0?'#f0fdf4':'#f8fafc'}}>
+              {(s.products||[]).length===0&&<div style={{marginBottom:12}}>
+                <div style={{fontSize:15,fontWeight:700,color:'#166534',marginBottom:4}}>{s.status==='closed'?'Store closed — ready for pull':'Paste the OMG report to load products'}</div>
+                <div style={{fontSize:12,color:'#64748b'}}>Share the report from OMG admin and paste the link below.</div>
+              </div>}
+              <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                <input type="text" placeholder="https://report.ordermygear.com/..." value={omgReportUrl||s._report_url||''} onChange={e=>setOmgReportUrl(e.target.value)}
+                  style={{flex:1,padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:6,fontSize:13,fontFamily:'monospace'}}/>
+                <button className="btn btn-primary" disabled={omgReportLoading} style={{background:'#166534',whiteSpace:'nowrap'}} onClick={()=>{
+                  importOMGReport(s, omgReportUrl||s._report_url);
+                }}>{omgReportLoading?'⏳ Importing…':(s._report_url?'Re-import':'Import')}</button>
+              </div>
+              {s._report_imported_at&&<div style={{display:'flex',alignItems:'center',gap:8,marginTop:6}}>
+                <div style={{fontSize:11,color:'#64748b'}}>Last imported: {new Date(s._report_imported_at).toLocaleString()}</div>
+                {(s.products||[]).some(p=>!p.cost||p.cost<=0)&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#fef3c7',color:'#92400e',border:'1px solid #fbbf24'}} onClick={async()=>{
+                  const missing=(s.products||[]).filter(p=>!p.cost||p.cost<=0);
+                  nf(`Looking up costs for ${missing.length} items…`);
+                  let found=0;
+                  for(const p of missing){
+                    if(!p.sku)continue;
+                    // 1) Check NSA catalog first — try exact, then trimmed, then partial
+                    const skuClean=p.sku.trim().toUpperCase();
+                    const catMatch=prod.find(cp=>{
+                      const cpSku=(cp.sku||'').trim().toUpperCase();
+                      return cpSku===skuClean||cpSku.includes(skuClean)||skuClean.includes(cpSku);
+                    });
+                    const catCost=catMatch?parseFloat(catMatch.nsa_cost)||0:0;
+                    if(catCost>0){
+                      console.log(`[Cost] Catalog match: ${p.sku} → ${catMatch.sku} @ $${catCost}`);
+                      p.cost=catCost;p._cost_source='catalog';if(catMatch.vendor_id&&!p.vendor_id)p.vendor_id=catMatch.vendor_id;found++;continue
+                    }
+                    // Fallback: query Supabase directly if in-memory search missed it
+                    if(supabase&&!catMatch){
+                      try{
+                        const{data:dbMatch}=await supabase.from('products').select('sku,nsa_cost,vendor_id').ilike('sku',skuClean).limit(1);
+                        const dbCost=dbMatch?.[0]?parseFloat(dbMatch[0].nsa_cost)||0:0;
+                        if(dbCost>0){
+                          console.log(`[Cost] DB fallback match: ${p.sku} → ${dbMatch[0].sku} @ $${dbCost}`);
+                          p.cost=dbCost;p._cost_source='catalog';if(dbMatch[0].vendor_id&&!p.vendor_id)p.vendor_id=dbMatch[0].vendor_id;found++;continue
+                        } else if(dbMatch?.[0]) {
+                          console.log(`[Cost] DB found ${p.sku} but nsa_cost=${dbMatch[0].nsa_cost}`);
+                          if(dbMatch[0].vendor_id&&!p.vendor_id)p.vendor_id=dbMatch[0].vendor_id;
+                        }
+                      }catch(e){console.log(`[Cost] DB query failed for ${p.sku}: ${e.message}`)}
+                    }
+                    if(catMatch){
+                      console.log(`[Cost] Catalog found ${p.sku} → ${catMatch.sku} but nsa_cost=${catMatch.nsa_cost}`);
+                      if(catMatch.vendor_id&&!p.vendor_id)p.vendor_id=catMatch.vendor_id;
+                    } else { console.log(`[Cost] No catalog match for "${p.sku}" — checked ${prod.length} products`) }
+                    // 2) Try SanMar
+                    try{
+                      const r=await sanmarGetPricing(p.sku);
+                      const price=r?.pricing?.[0]?.piecePrice||r?.PiecePrice||r?.pricing?.[0]?.PiecePrice;
+                      if(price&&parseFloat(price)>0){p.cost=parseFloat(price);p._cost_source='sanmar';found++;continue}
+                    }catch(e){console.log(`[Cost] SanMar ${p.sku}: ${e.message}`)}
+                    // 3) Try S&S
+                    try{
+                      const r=await ssGetProducts({style:p.sku});
+                      const item=Array.isArray(r)?r[0]:r;
+                      const price=item?.CustomerPrice||item?.customerPrice||item?.Price||item?.price;
+                      if(price&&parseFloat(price)>0){p.cost=parseFloat(price);p._cost_source='ss';found++;continue}
+                    }catch(e){console.log(`[Cost] S&S ${p.sku}: ${e.message}`)}
+                    console.log(`[Cost] No match for ${p.sku} (${p.name}) in catalog, SanMar, or S&S`);
+                  }
+                  const upd={...s,products:[...(s.products||[])]};
+                  setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
+                  nf(`Found costs for ${found}/${missing.length} items`+(found<missing.length?' — remaining need manual entry':''));
+                }}>🔍 Lookup Missing Costs ({(s.products||[]).filter(p=>!p.cost||p.cost<=0).length})</button>}
+              </div>}
+            </div>}
+
+            {omgReportLoading ? (
+              <div style={{padding:32,textAlign:'center',color:'#64748b',fontSize:13}}>⏳ Importing products from OMG report…</div>
             ) : (s.products||[]).length === 0 ? (
-              <div style={{padding:24,textAlign:'center',color:'#94a3b8',fontSize:13}}>
-                {s._details_loaded ? 'No product data returned from OMG API' : 'Product details load when store data is available'}
-                {!s._details_loaded && !omgDetailLoading && s._omg_id && <button className="btn btn-sm btn-primary" style={{marginLeft:8}} onClick={()=>{
-                  setOmgDetailLoading(true);
-                  loadOMGStoreDetail(s).then(u=>{setOmgSel(u);setOmgDetailLoading(false)}).catch(()=>setOmgDetailLoading(false));
-                }}>Load Details</button>}
+              <div style={{padding:32,textAlign:'center'}}>
+                <div style={{fontSize:40,marginBottom:8}}>📦</div>
+                <div style={{fontSize:13,color:'#94a3b8'}}>Products will appear here after importing the OMG report.</div>
               </div>
             ) : (
-            <table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Deco</th><th>Retail</th><th>Cost</th><th>Deco $</th><th>Sizes</th><th>Units</th><th>Revenue</th><th>Margin</th></tr></thead>
-            <tbody>{(s.products||[]).map((p,i)=>{const q=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);const mg=rev-cost;
-              const catP=prod.find(cp=>cp.sku===p.sku);
+            <table><thead><tr><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Art Group</th><th>Retail</th><th>Cost</th><th>Sizes</th><th>Units</th><th>Revenue</th></tr></thead>
+            <tbody>{(s.products||[]).map((p,i)=>{const q=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);
+              const updateDecos=(newDecos)=>{
+                const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,decorations:newDecos,deco_type:newDecos.map(d=>d.type).join('|'),art_group:newDecos.map(d=>d.art_group).join('|')}:pr);
+                const upd={...s,products:newProds};
+                setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
+              };
+              const updateProd=(key,val)=>{
+                const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,[key]:val}:pr);
+                const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
+              };
               return<tr key={i}>
-                <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku} {catP&&<span style={{fontSize:8,color:'#22c55e'}}>✓</span>}</td>
-                <td>{p.name}</td><td style={{fontSize:11}}>{p.color}</td>
-                <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:p.deco_type==='screen_print'?'#dbeafe':'#ede9fe',
-                  color:p.deco_type==='screen_print'?'#1e40af':'#6d28d9'}}>{(p.deco_type||'').replace(/_/g,' ')}</span></td>
-                <td style={{textAlign:'right'}}>${p.retail}</td><td style={{textAlign:'right'}}>${p.cost}</td><td style={{textAlign:'right'}}>${p.deco_cost}</td>
-                <td style={{fontSize:9}}>{Object.entries(p.sizes||{}).map(([sz,q2])=>sz+':'+q2).join(' ')}</td>
+                <td style={{padding:4}}>{p.image_url?<img src={p.image_url} alt="" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',cursor:'pointer'}} onClick={e=>{
+                  e.stopPropagation();const overlay=document.createElement('div');
+                  overlay.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;cursor:pointer';
+                  overlay.innerHTML=`<img src="${p.image_url}" style="max-width:90vw;max-height:90vh;object-fit:contain;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.5)"/>`;
+                  overlay.onclick=()=>overlay.remove();document.body.appendChild(overlay);
+                }}/>:<span style={{color:'#cbd5e1',fontSize:20}}>📦</span>}</td>
+                <td><input type="text" value={p.sku} onChange={e=>updateProd('sku',e.target.value)} style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12,border:'none',background:'transparent',width:90,padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/></td>
+                <td><input type="text" value={p.name} onChange={e=>updateProd('name',e.target.value)} style={{fontSize:12,fontWeight:600,border:'none',background:'transparent',width:'100%',padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/>
+                  <div style={{fontSize:10,color:'#94a3b8',display:'flex',alignItems:'center',gap:3}}>{p.manufacturer||'—'}
+                    {p.vendor_id?<span style={{color:'#2563eb',fontWeight:600}}>→ {vend.find(v=>v.id===p.vendor_id)?.name||p.vendor_id}</span>
+                    :<span style={{position:'relative',display:'inline-block'}}>
+                      <input type="text" placeholder="→ vendor?" list={`vend-${s.id}-${i}`}
+                        onChange={e=>{const match=vend.find(v=>v.name.toLowerCase()===e.target.value.toLowerCase());if(match){updateProd('vendor_id',match.id);e.target.value=''}}}
+                        style={{fontSize:10,width:70,padding:'1px 3px',border:'1px solid #fca5a5',borderRadius:3,color:'#dc2626',background:'#fef2f2'}}/>
+                      <datalist id={`vend-${s.id}-${i}`}>{vend.filter(v=>v.is_active).map(v=><option key={v.id} value={v.name}/>)}</datalist>
+                    </span>}
+                  </div></td>
+                <td style={{fontSize:11}}>{p.color}</td>
+                <td><div style={{display:'flex',flexDirection:'column',gap:2}}>
+                  {(p.decorations||[]).map((d,di)=>{const [label,bg,fg]=d.type==='screen_print'?['SP','#dbeafe','#1e40af']:d.type==='embroidery'?['EMB','#ede9fe','#6d28d9']:['HTV','#fef3c7','#92400e'];
+                    return <div key={di} style={{display:'flex',alignItems:'center',gap:2}}>
+                      <span style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:800,background:bg,color:fg,border:`2px solid ${fg}`}}>{d.art_group||label}</span>
+                      <button onClick={()=>updateDecos((p.decorations||[]).filter((_,j)=>j!==di))} style={{fontSize:12,color:'#94a3b8',cursor:'pointer',border:'none',background:'none',padding:'0 2px',lineHeight:1}}>&times;</button>
+                    </div>})}
+                  <div style={{display:'flex',gap:2}}>
+                    {[['SP','screen_print'],['EMB','embroidery'],['HTV','heat_press']].map(([label,type])=>{
+                      const pfx=type==='screen_print'?'SP':type==='embroidery'?'EMB':'HTV';
+                      const existing=[...new Set((s.products||[]).flatMap(pr=>(pr.decorations||[]).filter(d=>d.type===type).map(d=>d.art_group)).filter(Boolean))].sort();
+                      const prefixed=existing.filter(g=>g.startsWith(pfx));
+                      const nums=prefixed.map(g=>parseInt(g.split('-')[1])||0);
+                      const nextName=`${pfx}-${nums.length>0?Math.max(...nums)+1:1}`;
+                      return <div key={type} style={{position:'relative',display:'inline-block'}}>
+                        <select value="" onChange={e=>{if(e.target.value)updateDecos([...(p.decorations||[]),{type,art_group:e.target.value}])}}
+                          style={{padding:'2px 4px',borderRadius:3,fontSize:9,fontWeight:700,border:'1px dashed #cbd5e1',background:'#f8fafc',color:'#94a3b8',cursor:'pointer',width:46,appearance:'none',textAlign:'center'}}>
+                          <option value="">+{label}</option>
+                          {existing.map(g=><option key={g} value={g}>{g}</option>)}
+                          <option value={nextName}>+ {nextName} (new)</option>
+                        </select>
+                      </div>}
+                    )}
+                  </div>
+                </div></td>
+                <td>{(()=>{
+                  const decos=p.decorations||[];
+                  if(decos.length===0)return <span style={{fontSize:11,color:'#94a3b8'}}>—</span>;
+                  return <div style={{display:'flex',flexDirection:'column',gap:2}}>
+                    {decos.map((d,di)=>{
+                      const color=d.type==='screen_print'?'#1e40af':d.type==='embroidery'?'#6d28d9':'#92400e';
+                      return <input key={di} type="text" value={d.art_group||''} placeholder="name..."
+                        onChange={e=>{const val=e.target.value;updateDecos((p.decorations||[]).map((dd,j)=>j===di?{...dd,art_group:val}:dd))}}
+                        style={{width:80,padding:'2px 5px',borderRadius:3,fontSize:9,fontWeight:700,border:`1px solid ${color}40`,color,background:'transparent',outline:'none'}}
+                        onFocus={e=>{e.target.style.borderColor=color}} onBlur={e=>{e.target.style.borderColor=color+'40'}}/>;
+                    })}
+                  </div>;
+                })()}</td>
+                <td style={{textAlign:'right',fontSize:12}}>${p.retail}</td>
+                <td style={{textAlign:'right',fontSize:12}}>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'flex-end',gap:2}}>
+                    <span style={{color:'#94a3b8',fontSize:11}}>$</span>
+                    <input type="number" step="0.01" value={p.cost||''} placeholder="0" onChange={e=>updateProd('cost',parseFloat(e.target.value)||0)}
+                      style={{width:55,padding:'2px 4px',border:'1px solid '+(p.cost>0?'#d1d5db':'#fca5a5'),borderRadius:3,fontSize:12,fontFamily:'monospace',textAlign:'right',background:p.cost>0?'transparent':'#fef2f2'}}/>
+                    {p._cost_source&&p.cost>0&&<span style={{fontSize:7,color:p._cost_source==='catalog'?'#22c55e':p._cost_source==='sanmar'?'#2563eb':p._cost_source==='ss'?'#7c3aed':'#94a3b8'}}>{p._cost_source==='catalog'?'CAT':p._cost_source==='sanmar'?'SM':p._cost_source==='ss'?'SS':'?'}</span>}
+                  </div>
+                </td>
+                <td>{(()=>{
+                  const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','OS','OSFA',
+                    '28','30','32','34','36','38','40','42','44','46','48','50','52','54'];
+                  const entries=Object.entries(p.sizes||{})
+                    .filter(([sz,q2])=>sz&&String(sz).trim()&&q2>0)
+                    .sort((a,b)=>{
+                      const ai=sizeOrder.indexOf(a[0]),bi=sizeOrder.indexOf(b[0]);
+                      return (ai===-1?99:ai)-(bi===-1?99:bi);
+                    });
+                  if(entries.length===0)return <span style={{fontSize:11,color:'#94a3b8'}}>—</span>;
+                  return <table style={{borderCollapse:'separate',borderSpacing:0,fontSize:11,border:'1px solid #e2e8f0',borderRadius:6,overflow:'hidden'}}>
+                    <tbody>
+                      <tr>{entries.map(([sz])=>
+                        <td key={sz} style={{padding:'3px 8px',background:'#f1f5f9',color:'#475569',fontWeight:700,textAlign:'center',borderRight:'1px solid #e2e8f0',letterSpacing:0.3,textTransform:'uppercase',fontSize:10}}>{sz}</td>
+                      )}</tr>
+                      <tr>{entries.map(([sz,q2])=>
+                        <td key={sz} style={{padding:'3px 8px',color:'#1e40af',fontWeight:800,textAlign:'center',borderTop:'1px solid #e2e8f0',borderRight:'1px solid #e2e8f0',background:'#fff'}}>{q2}</td>
+                      )}</tr>
+                    </tbody>
+                  </table>;
+                })()}</td>
                 <td style={{fontWeight:700,textAlign:'center'}}>{q}</td>
-                <td style={{textAlign:'right',fontWeight:600}}>${rev.toLocaleString()}</td>
-                <td style={{textAlign:'right',color:mg>0?'#166534':'#dc2626'}}>${mg.toLocaleString()} <span style={{fontSize:9}}>({rev>0?Math.round(mg/rev*100):0}%)</span></td>
+                <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>${rev.toLocaleString()}</td>
               </tr>})}</tbody></table>
             )}
           </div>
@@ -9959,39 +10508,45 @@ export default function App(){
       }
     };
     return(<>
-      {/* OMG API Sync */}
-      <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
-        <button className="btn btn-primary" onClick={syncOMGStores} disabled={omgSyncing} style={{fontSize:12}}>
-          {omgSyncing ? 'Syncing...' : 'Sync from OMG'}
-        </button>
-        <button className="btn btn-secondary" onClick={runOMGProbe} disabled={omgProbing} style={{fontSize:12}}>
-          {omgProbing ? 'Probing...' : 'Probe API'}
-        </button>
-        {omgProbeLines.length > 0 && !omgProbing && (
-          <button className="btn btn-sm btn-secondary" onClick={()=>setOmgProbeLines([])} style={{fontSize:11}}>Clear</button>
-        )}
-        <div style={{fontSize:11,color:'#64748b'}}>
-          Last synced: {omgLastSync ? new Date(omgLastSync).toLocaleString() : 'Never'}
+      {/* Add Store from Report */}
+      <div className="card" style={{marginBottom:12,border:'2px solid #166534'}}>
+        <div style={{padding:16}}>
+          <div style={{fontSize:15,fontWeight:700,color:'#166534',marginBottom:4}}>Add Store from OMG Report</div>
+          <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Paste the shared report link from OMG to create a new store with products, sizes, and artwork.</div>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <input type="text" placeholder="https://report.ordermygear.com/..." value={omgReportUrl} onChange={e=>setOmgReportUrl(e.target.value)}
+              style={{flex:1,padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:6,fontSize:13,fontFamily:'monospace'}}/>
+            <button className="btn btn-primary" disabled={omgReportLoading||!omgReportUrl.trim()} style={{background:'#166534',whiteSpace:'nowrap'}} onClick={async()=>{
+              // Create a new store shell, then import the report into it
+              const urlStr=omgReportUrl.trim();
+              const uuidMatch=urlStr.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+              if(!uuidMatch){nf('Invalid report URL — needs a valid OMG report link','error');return}
+              setOmgReportLoading(true);
+              try{
+                const resp=await fetch(`/.netlify/functions/omg-report-proxy?id=${uuidMatch[1]}`);
+                if(!resp.ok)throw new Error('Report fetch failed: '+resp.status);
+                const report=await resp.json();
+                const saleCode=report.options?.filter?.find(f=>f.key==='sale_code')?.value||'';
+                const storeName=report.details?.title||'OMG Store '+saleCode;
+                const storeId='OMG-sale_'+saleCode;
+                // Check if store already exists
+                if(omgStores.find(s=>s.id===storeId)){
+                  nf('Store already exists — opening it','error');
+                  setOmgSel(omgStores.find(s=>s.id===storeId));setOmgReportLoading(false);return;
+                }
+                // Create shell store
+                const shell={id:storeId,store_name:storeName,status:'open',_omg_source:true,_omg_id:'sale_'+saleCode,_omg_sale_code:saleCode,
+                  _last_synced:new Date().toISOString(),products:[],orders:0,total_sales:0,fundraise_total:0,items_sold:0,unique_buyers:0,
+                  subdomain:'',channel_type:'pop-up',_report_url:urlStr};
+                setOmgStores(prev=>[shell,...prev]);
+                // Now import report into it
+                const updated=await importOMGReport(shell,urlStr);
+                if(updated){setOmgSel(updated);setOmgReportUrl('')}
+              }catch(e){nf('Failed: '+e.message,'error')}finally{setOmgReportLoading(false)}
+            }}>{omgReportLoading?'⏳ Importing…':'+ Add Store'}</button>
+          </div>
         </div>
       </div>
-
-      {/* Probe results panel — streams results as they come in (works on mobile, no alert/console needed) */}
-      {omgProbeLines.length > 0 && (
-        <div style={{marginBottom:12,padding:12,background:'#0f172a',color:'#e2e8f0',borderRadius:8,fontFamily:'monospace',fontSize:11,maxHeight:320,overflowY:'auto',whiteSpace:'pre-wrap',wordBreak:'break-word'}}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,position:'sticky',top:0,background:'#0f172a',paddingBottom:4,borderBottom:'1px solid #334155'}}>
-            <div style={{fontWeight:700,color:'#22d3ee'}}>OMG API Probe {omgProbing?'(running...)':'(done)'}</div>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{
-              const text = omgProbeLines.join('\n');
-              if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(()=>nf('Probe output copied to clipboard'),()=>nf('Copy failed — long-press the text to select','error'));
-              else nf('Clipboard not available — long-press text to select','error');
-            }}>Copy</button>
-          </div>
-          {omgProbeLines.map((line,i)=>{
-            const highlight = line.includes('🎯') ? {color:'#fbbf24',fontWeight:700} : line.includes('⚠') || line.includes('✗') ? {color:'#f87171'} : line.includes('✓') ? {color:'#4ade80'} : line.startsWith('→') ? {color:'#94a3b8'} : {};
-            return <div key={i} style={highlight}>{line}</div>;
-          })}
-        </div>
-      )}
 
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
@@ -10016,7 +10571,7 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Total Stores</div><div className="stat-value">{filtered.length}</div></div>
         <div className="stat-card"><div className="stat-label">Total Sales</div><div className="stat-value" style={{color:'#1e40af'}}>${(totalSales/1000).toFixed(1)}k</div></div>
         <div className="stat-card"><div className="stat-label">Fundraised</div><div className="stat-value" style={{color:'#166534'}}>${(totalFund/1000).toFixed(1)}k</div></div>
-        <div className="stat-card"><div className="stat-label">Orders</div><div className="stat-value">{totalOrders}</div></div>
+        <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{totalUnits}</div></div>
         <div className="stat-card"><div className="stat-label">Open Now</div><div className="stat-value" style={{color:'#d97706'}}>{filtered.filter(s=>s.status==='open').length}</div></div>
       </div>
 
