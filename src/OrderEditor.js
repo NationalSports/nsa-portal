@@ -4095,6 +4095,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div><label className="form-label">Expected Return</label><input className="form-input" type="date" id={'dpo-date-'+poId}/></div>
             </div>
             <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" id={'dpo-dropship-'+poId}/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school, skip warehouse receive</span></label></div>
+            {allItems.length>1&&<div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8,fontSize:11}}>
+              <span style={{color:'#64748b',fontWeight:600}}>{allItems.length} item{allItems.length!==1?'s':''} available</span>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 10px'}} onClick={()=>{allItems.forEach((_,vi)=>{const el=document.getElementById('dpo-sel-'+vi);if(el)el.checked=true})}}>Select All</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 10px'}} onClick={()=>{allItems.forEach((_,vi)=>{const el=document.getElementById('dpo-sel-'+vi);if(el)el.checked=false})}}>Deselect All</button>
+            </div>}
             {allItems.map((it,vi)=>{const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
               const soQ=szList.reduce((a,[,v])=>a+v,0);
               const prefilledCost=dv?_decoVendorPrice(decoVendorPricing,dv.id,'embroidery',{qty:soQ}):null;
