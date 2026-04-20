@@ -23,6 +23,7 @@ const _syncDbMaxIds=async()=>{if(!supabase)return;try{const[e,s,i]=await Promise
 const nextEstId=ests=>'EST-'+(Math.max(_maxNum(ests),_dbMaxIds.est)+1);
 const nextSOId=sos=>'SO-'+(Math.max(_maxNum(sos),_dbMaxIds.so)+1);
 const nextInvId=invs=>'INV-'+(Math.max(_maxNum(invs),_dbMaxIds.inv)+1);
+const fmtCreatedAt=s=>{if(!s)return'—';if(String(s).includes(','))return String(s).split(',')[0];const d=new Date(s);return isNaN(d)?String(s):d.toLocaleDateString('en-US')};
 const isDualRunJob=(j)=>j&&j.items&&j.items.length>1&&j.items.some(gi=>gi.run_order);
 const mapColorCategory=color=>{if(!color)return'';const c=color.toLowerCase();if(/white|natural|cream|ivory/.test(c))return'White';if(/black|charcoal/.test(c))return'Black';if(/navy|blue|royal|columbia|carolina/.test(c))return'Blue';if(/red|cardinal|scarlet|crimson/.test(c))return'Red';if(/green|forest|kelly|lime|hunter/.test(c))return'Green';if(/grey|gray|heather|silver|graphite/.test(c))return'Grey';if(/gold|yellow|vegas|athletic/.test(c))return'Gold';if(/orange|texas/.test(c))return'Orange';if(/purple|maroon|wine|burgundy/.test(c))return'Purple';if(/pink|fuchsia/.test(c))return'Pink';if(/brown|tan|khaki|sand|coyote/.test(c))return'Brown';return''};
 // Dedup products by SKU — merges duplicates, prefers the copy with images
@@ -4563,7 +4564,7 @@ export default function App(){
       </div>
       <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>ID</th><th>Created</th><th>Customer</th><th>Memo</th><th>Items</th><th style={{textAlign:'right'}}>Total</th><th>Rep</th><th>Status</th><th>SO</th><th>Email</th><th></th></tr></thead><tbody>
       {fe.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const rep=REPS.find(r=>r.id===e.created_by);const linkedSO=e.status==='converted'?sos.find(s=>s.estimate_id===e.id):null;return(<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>{setEEst(e);setEEstC(c)}}>
-        <td style={{fontWeight:700,color:'#1e40af'}}>{e.id}</td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{(e.created_at||'').split(',')[0]||'—'}</td><td>{c?<>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></>:'--'}</td>
+        <td style={{fontWeight:700,color:'#1e40af'}}>{e.id}</td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtCreatedAt(e.created_at)}</td><td>{c?<>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></>:'--'}</td>
         <td style={{fontSize:12}}>{e.memo}</td><td>{e.items?.length||0}</td>
         <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>{(()=>{const t=(e.items||[]).reduce((a,it)=>{const sqq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const qq=sqq>0?sqq:safeNum(it.est_qty);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</td>
         <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></td>
@@ -4638,7 +4639,7 @@ export default function App(){
       const displayStatus=calcSOStatus(so);
       const statusLabel={booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
       return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
-      <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}{so.order_type==='booking'&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700,verticalAlign:'middle'}}>B</span>}</td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{(so.created_at||'').split(',')[0]||'—'}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}{so.po_number&&<span style={{fontSize:9,marginLeft:6,padding:'1px 5px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700,fontFamily:'monospace'}}>PO# {so.po_number}</span>}</td><td>{so.order_type==='booking'&&so.expected_ship_date?<span>{so.expected_ship_date}<div style={{fontSize:9,color:'#94a3b8'}}>ship date</div></span>:(so.expected_date||'--')}</td>
+      <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}{so.order_type==='booking'&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700,verticalAlign:'middle'}}>B</span>}</td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtCreatedAt(so.created_at)}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}{so.po_number&&<span style={{fontSize:9,marginLeft:6,padding:'1px 5px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700,fontFamily:'monospace'}}>PO# {so.po_number}</span>}</td><td>{so.order_type==='booking'&&so.expected_ship_date?<span>{so.expected_ship_date}<div style={{fontSize:9,color:'#94a3b8'}}>ship date</div></span>:(so.expected_date||'--')}</td>
       <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></td>
       <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>{(()=>{const t=safeItems(so).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,so.art_files||[],qq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</td>
       <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} \u2713</span>:<span style={{fontSize:11,color:'#d97706'}}>\u2014</span>}</td>
@@ -6577,7 +6578,7 @@ export default function App(){
               <td style={{textAlign:'right',fontWeight:600,color:po.totalOpen>0?'#d97706':'#059669'}}>{po.totalOpen}</td>
               <td style={{textAlign:'right',fontWeight:700,color:'#334155'}}>{po.poTotal>0?'$'+po.poTotal.toFixed(2):'—'}</td>
               <td><span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status==='received'?'Received':po.status==='partial'?'Partial':'Waiting'}</span></td>
-              <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{(po.created_at||'').split(',')[0]||'—'}</td>
+              <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtCreatedAt(po.created_at)}</td>
               <td style={{fontSize:11,color:'#64748b'}}>{po.expected_date||'—'}</td>
             </tr>})}
           </tbody>
@@ -8044,7 +8045,7 @@ export default function App(){
           const repObj=REPS.find(r=>r.id===inv._rep);
           return<tr key={inv.id} style={{background:inv._overdue?'#fef2f2':undefined,cursor:'pointer'}} onClick={()=>setViewInvoice(inv)}>
             <td style={{fontWeight:700,color:'#1e40af',fontSize:12,cursor:'pointer',textDecoration:'underline'}}>{inv.id}</td>
-            <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{(inv.created_at||'').split(',')[0]||'—'}</td>
+            <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtCreatedAt(inv.created_at)}</td>
             <td style={{fontSize:12}}>{inv._cname}</td>
             <td style={{fontSize:11,color:'#7c3aed',cursor:inv.so_id?'pointer':'default',textDecoration:inv.so_id?'underline':'none'}}
               onClick={e=>{e.stopPropagation();if(inv.so_id){const so=sos.find(s=>s.id===inv.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}}>{inv.so_id||'—'}</td>
