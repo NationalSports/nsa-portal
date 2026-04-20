@@ -6,7 +6,7 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, BATCH_VENDORS, EXTRA_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm } from './safeHelpers';
-import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks } from './components';
+import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks, ImgGallery } from './components';
 import { CustModal } from './modals';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, nextInvId, _brevoKey } from './utils';
@@ -164,8 +164,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // S&S: fetch products for this style, find matching color
         try{
           let data;
-          try{let sid=null;try{const st=await ssApiCall('/Styles?style='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];if(sa.length>0)sid=sa[0].styleID}catch(e){}
-            if(sid){data=await ssApiCall('/Products?styleID='+encodeURIComponent(sid))}else{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}}
+          try{let sid=null;try{const st=await ssApiCall('/Styles?search='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];const exact=sa.find(s=>String(s.partNumber||s.styleName||'').toLowerCase()===String(sku).toLowerCase());if(exact)sid=exact.styleID;else if(sa.length>0)sid=sa[0].styleID}catch(e){}
+            if(sid){data=await ssApiCall('/Products/?style='+encodeURIComponent(sid))}else{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}}
           catch(e){data=[]}
           const items=Array.isArray(data)?data:data?[data]:[];
           const colorLower=(color||'').toLowerCase();
@@ -417,8 +417,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         let data;
         try{
           let sid=null;
-          try{const st=await ssApiCall('/Styles?style='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];if(sa.length>0)sid=sa[0].styleID}catch(e){}
-          if(sid){data=await ssApiCall('/Products?styleID='+encodeURIComponent(sid))}
+          try{const st=await ssApiCall('/Styles?search='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];const exact=sa.find(s=>String(s.partNumber||s.styleName||'').toLowerCase()===String(sku).toLowerCase());if(exact)sid=exact.styleID;else if(sa.length>0)sid=sa[0].styleID}catch(e){}
+          if(sid){data=await ssApiCall('/Products/?style='+encodeURIComponent(sid))}
           else{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}
         }catch(e){
           try{const padded=sku.length<5&&/^\d+$/.test(sku)?sku.padStart(5,'0'):sku;data=await ssApiCall('/Products?style='+encodeURIComponent(padded))}
@@ -4105,7 +4105,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const vItems=vendorMap[showPO]||[];const vn=D_V.find(v=>v.id===showPO)?.name||showPO;
       const autoPoId='PO-'+poCounter+(cust?.alpha_tag?'-'+cust.alpha_tag:'');
       const poId=preexistingPO?preexistingPOId:autoPoId;
-      const batchKey=Object.keys(BATCH_VENDORS).find(k=>vn.toLowerCase().includes(k)||showPO.toLowerCase().includes(k));
+      const batchKey=Object.keys(BATCH_VENDORS).find(k=>{const bvName=BATCH_VENDORS[k].name.toLowerCase();const vnL=vn.toLowerCase();return vnL===bvName||vnL.includes(k)||showPO.toLowerCase().includes(k)});
       const isBatchEligible=!!batchKey;
       const isAdidas=batchKey==='adidas';
       const batchConfig=batchKey?BATCH_VENDORS[batchKey]:null;
@@ -4174,10 +4174,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               totalCost+=qty*batchUnitCost;
               batchItems.push({sku:pit.sku,name:pit.name,color:pit.color,sizes,qty,unit_cost:batchUnitCost,item_idx:pit._idx});
             });
-            const bp={id:'BPO-'+Date.now(),vendor_key:batchKey,vendor_name:batchConfig.name,so_id:o.id,so_memo:o.memo||'',customer:cust?.alpha_tag||cust?.name||'',
+            const bpId='BPO-'+Date.now();
+            const bp={id:bpId,vendor_key:batchKey,vendor_name:batchConfig.name,so_id:o.id,so_memo:o.memo||'',customer:cust?.alpha_tag||cust?.name||'',po_id:autoPoId,
               items:batchItems,total_cost:totalCost,created_by:cu.id,created_by_name:cu.name,created_at:new Date().toLocaleString()};
+            // Also persist a source PO line on the order so the SO shows its own PO# (e.g. PO-3005-DHF),
+            // not just the eventual bulk batch PO. The line stays in "queued" status until the batch is submitted.
+            const updatedItems=o.items.map(it=>({...it,pick_lines:[...(it.pick_lines||[])],po_lines:[...(it.po_lines||[])]}));
+            batchItems.forEach(bit=>{
+              const idx=bit.item_idx;if(idx==null||!updatedItems[idx])return;
+              const poLine={po_id:autoPoId,vendor:vn,status:'queued',created_at:new Date().toLocaleDateString(),memo:'Batch queue — '+batchConfig.name,received:{},shipments:[],unit_cost:bit.unit_cost,batch_queue_id:bpId};
+              Object.entries(bit.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
+              const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
+              if(hasQty)updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
+            });
+            // Queue the batch entry BEFORE saving the SO so its app_state write is in flight
+            // before the SO save's post-guard poll runs; avoids a poll clobbering the queue.
             if(onBatchPO)onBatchPO(prev=>[...prev,bp]);
-            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});nf('Added to '+batchConfig.name+' batch queue ($'+totalCost.toFixed(2)+')');
+            const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+            setO(updated);onSave(updated);setPOCounter(c=>c+1);
+            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')');
           }}><Icon name="package" size={14}/> Add to Batch ({poItems.filter((_,vi)=>!poExcluded[vi]).length})</button>}
           {poItems.length>0&&(preexistingPO||!batchConfig?.batchOnly)&&<button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{}} disabled={poItems.every((_,vi)=>poExcluded[vi])} onClick={()=>{
           if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
@@ -5836,8 +5851,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po.po_id);
 
       return<div className="modal-overlay" onClick={()=>setEditPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:750,maxHeight:'90vh',overflow:'auto'}}>
-        <div className="modal-header"><h2>PO — {po.po_id||'PO'}</h2>
+        <div className="modal-header"><h2>PO — {po.po_id||'PO'}{po.batch_po_number&&<span style={{fontSize:12,fontWeight:600,color:'#7c3aed',marginLeft:10}}>· part of {po.batch_po_number}</span>}</h2>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
+            {po.status==='queued'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#fef3c7',color:'#b45309'}}>Queued in batch</span>}
+            {po.batch_po_number&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#f5f3ff',color:'#7c3aed',fontFamily:'monospace'}}>Batch: {po.batch_po_number}</span>}
             {isDropShip&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
             <span className={`badge ${poStatus==='received'||poStatus==='shipped'?'badge-green':poStatus==='partial'?'badge-amber':'badge-gray'}`}>{poStatus==='shipped'?'Shipped':poStatus==='received'?'Fully Received':poStatus==='partial'?(isDropShip?totalBilled+'/'+totalOrdered+' Billed':'Partial — '+totalOpen+' open'):'Waiting'}</span>
             <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{setPoFullPage({po,item,allLines,soId:o.id,soItems:o.items});setEditPO(null)}}>View Full Page</button>
@@ -6164,6 +6181,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <button className="btn btn-secondary btn-sm" onClick={()=>setPoFullPage(null)}>&larr; Back</button>
               <h1 style={{margin:0,fontSize:22}}>{po.po_id} {poFullPage.customerTag||''}</h1>
               <span className={`badge ${poStatus==='received'||poStatus==='shipped'?'badge-green':poStatus==='partial'?'badge-amber':'badge-gray'}`} style={{fontSize:11}}>{poStatus==='shipped'?'Shipped':poStatus==='received'?'Fully Received':poStatus==='partial'?'Partial':'Waiting'}</span>
+              {po.status==='queued'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#fef3c7',color:'#b45309'}}>Queued in batch</span>}
+              {po.batch_po_number&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#f5f3ff',color:'#7c3aed',fontFamily:'monospace'}}>Batch: {po.batch_po_number}</span>}
               {isDropShipFP&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
               {po.po_type==='outside_deco'&&<span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>}
               <button className="btn btn-sm btn-secondary" style={{marginLeft:8,fontSize:11}} onClick={()=>{setEditPO({lineIdx:allLines?.[0]?.lineIdx||0,poIdx:soItems?.[allLines?.[0]?.lineIdx]?.po_lines?.findIndex(p=>p.po_id===po.po_id)||0,po,allLines:allLines||[{lineIdx:0,poIdx:0}]});setPoFullPage(null)}}>Edit PO</button>

@@ -13,7 +13,7 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm } from './safeHelpers';
-import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks } from './components';
+import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, sendBrevoEmail } from './utils';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
@@ -1078,7 +1078,7 @@ const _dbSavePendingIds=new Set();
 // Track recent saves by this client — prevents false "modified by another user" conflicts from own realtime echo
 const _dbRecentSaves={};// {id: timestamp}
 // Legacy compat — keep old _dbSave for team_members and other simple tables
-const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
+const _dbSave = (table, data) => { if(supabase && data) return supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
 // ─── Cloudinary Config ───
 const CLOUDINARY_CLOUD='dwlyljyuz';
 const CLOUDINARY_PRESET='ml_default_nsaportal';
@@ -1108,45 +1108,7 @@ const ImgUpload=({url,onUpload,size=48,onError})=>{const[drag,setDrag]=React.use
     :err?<span style={{fontSize:size>40?14:10,color:'#dc2626'}}>!</span>
     :<span style={{fontSize:size>40?18:12,opacity:0.3}}>📷</span>}
   </div>};
-// Multi-image gallery with drag-and-drop (for product images)
-const ImgGallery=({images=[],onUpdate,onError,maxImages=10})=>{
-  const[uploading,setUploading]=React.useState(false);const[drag,setDrag]=React.useState(false);
-  const doUpload=async(files)=>{
-    const imgFiles=Array.from(files).filter(f=>f.type.startsWith('image/'));
-    if(imgFiles.length===0){if(onError)onError('Please select image files');return}
-    if((images||[]).length+imgFiles.length>maxImages){if(onError)onError('Max '+maxImages+' images');return}
-    setUploading(true);
-    const newUrls=[];
-    for(const f of imgFiles){
-      try{const u=await cloudUpload(f);newUrls.push(u)}catch(e){if(onError)onError('Upload failed: '+e.message)}
-    }
-    if(newUrls.length>0)onUpdate([...(images||[]),...newUrls]);
-    setUploading(false);
-  };
-  const removeImg=(idx)=>onUpdate((images||[]).filter((_,i)=>i!==idx));
-  const moveImg=(from,to)=>{const arr=[...(images||[])];const[item]=arr.splice(from,1);arr.splice(to,0,item);onUpdate(arr)};
-  return<div>
-    <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:6}}>
-      {(images||[]).map((url,i)=><div key={i} style={{width:72,height:72,borderRadius:6,border:'1px solid #e2e8f0',overflow:'hidden',position:'relative',background:'#f8fafc'}}>
-        <img src={url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}} onError={e=>{e.target.style.display='none'}}/>
-        <div style={{position:'absolute',top:0,right:0,display:'flex',gap:1}}>
-          {i>0&&<button style={{background:'rgba(0,0,0,0.5)',color:'white',border:'none',cursor:'pointer',fontSize:9,padding:'1px 3px',borderRadius:2}} onClick={()=>moveImg(i,i-1)}>◀</button>}
-          <button style={{background:'rgba(220,38,38,0.8)',color:'white',border:'none',cursor:'pointer',fontSize:10,padding:'1px 4px',borderRadius:2}} onClick={()=>removeImg(i)}>×</button>
-        </div>
-        <div style={{position:'absolute',bottom:0,left:0,background:'rgba(0,0,0,0.5)',color:'white',fontSize:8,padding:'1px 4px'}}>{i===0?'Primary':i+1}</div>
-      </div>)}
-    </div>
-    {/* Drop zone for adding images */}
-    <div style={{border:drag?'2px dashed #3b82f6':'2px dashed #d1d5db',borderRadius:8,padding:uploading?'8px':'12px 16px',textAlign:'center',
-      background:drag?'#eff6ff':'#fafafa',cursor:'pointer',transition:'all 0.15s'}}
-      onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)}
-      onDrop={e=>{e.preventDefault();setDrag(false);doUpload(e.dataTransfer.files)}}
-      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.multiple=true;inp.onchange=()=>doUpload(inp.files);inp.click()}}>
-      {uploading?<span style={{fontSize:11,color:'#3b82f6',fontWeight:600}}>Uploading...</span>
-      :<><div style={{fontSize:11,color:drag?'#2563eb':'#64748b',fontWeight:600}}>{drag?'Drop images here':'Click or drag & drop images'}</div>
-        <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>{(images||[]).length}/{maxImages} images · JPG, PNG, WebP</div></>}
-    </div>
-  </div>};
+// ImgGallery moved to components.js so OrderEditor can share it
 // ── PDF.js Setup (for NetSuite PDF import) ──
 const PDFJS_CDN='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174';
 let _pdfjsLoaded=false;
@@ -2583,7 +2545,10 @@ export default function App(){
     }));
   },[sos,ests]);
   // Batch POs, submitted batches, changelog, SO history — sync to localStorage + Supabase app_state table
-  const _saveAppState=(key,val)=>{_lsSet('nsa_'+key,JSON.stringify(val));if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}])};
+  // Wrap the DB write in _dbSavingGuard so polls/realtime reloads defer until it lands —
+  // otherwise a concurrent SO save (also guarded) can release the guard first and let a
+  // poll overwrite freshly-set batch_pos / submitted_batches state with stale DB data.
+  const _saveAppState=(key,val)=>{_lsSet('nsa_'+key,JSON.stringify(val));if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSavingGuard(()=>_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}]))};
   React.useEffect(()=>{_saveAppState('batch_pos',batchPOs)},[batchPOs]);
   React.useEffect(()=>{_saveAppState('submitted_batches',submittedBatches)},[submittedBatches]);
   React.useEffect(()=>{_saveAppState('batch_counter',batchCounter)},[batchCounter]);
@@ -6722,11 +6687,12 @@ export default function App(){
         // Flat items: every line item on this PO
         const poItems=[];
         if(isBatch){
-          batchMatch.source_pos.forEach(sp=>{sp.items.forEach(it=>{poItems.push({sku:it.sku,name:it.name,color:it.color||'',sizes:it.sizes,qty:it.qty,soId:sp.so_id,customer:sp.customer,soMemo:sp.so_memo})})});
+          batchMatch.source_pos.forEach(sp=>{sp.items.forEach(it=>{const unit=typeof it.unit_cost==='number'?it.unit_cost:0;poItems.push({sku:it.sku,name:it.name,color:it.color||'',sizes:it.sizes,qty:it.qty,soId:sp.so_id,customer:sp.customer,soMemo:sp.so_memo,srcPoId:sp.po_id||'',unitCost:unit,lineCost:unit*it.qty})})});
         } else {
           matchedPO.lines.forEach(pl=>{
             const szs={};Object.entries(pl.poLine).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k))szs[k]=v});
-            poItems.push({sku:pl.item.sku,name:safeStr(pl.item.name),color:pl.item.color||'',sizes:szs,qty:Object.values(szs).reduce((a,v)=>a+v,0),soId:pl.soId,customer:pl.customer,soMemo:pl.soMemo,_pl:pl});
+            const unit=typeof pl.poLine.unit_cost==='number'?pl.poLine.unit_cost:0;const qty=Object.values(szs).reduce((a,v)=>a+v,0);
+            poItems.push({sku:pl.item.sku,name:safeStr(pl.item.name),color:pl.item.color||'',sizes:szs,qty,soId:pl.soId,customer:pl.customer,soMemo:pl.soMemo,_pl:pl,srcPoId:pl.poId||'',unitCost:unit,lineCost:unit*qty});
           });
         }
         const totalUnits=poItems.reduce((a,it)=>a+it.qty,0);
@@ -6736,6 +6702,9 @@ export default function App(){
         return<div className="card" style={{marginBottom:16,borderLeft:'4px solid #2563eb'}}>
           {/* PO Header */}
           <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'16px 20px',borderRadius:'8px 8px 0 0'}}>
+            <div style={{marginBottom:10}}>
+              <button onClick={()=>setBatchScan('')} style={{background:'rgba(255,255,255,0.15)',border:'1px solid rgba(255,255,255,0.3)',color:'white',padding:'4px 10px',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:600,display:'inline-flex',alignItems:'center',gap:4}}>← Back</button>
+            </div>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
               <div>
                 <div style={{fontSize:10,opacity:0.6,fontWeight:600}}>PURCHASE ORDER</div>
@@ -6746,6 +6715,7 @@ export default function App(){
               <div style={{textAlign:'right'}}>
                 <div style={{fontSize:24,fontWeight:900}}>{totalUnits}</div>
                 <div style={{fontSize:11,opacity:0.7}}>total units · {poItems.length} line{poItems.length!==1?'s':''}</div>
+                {submittedInfo&&typeof submittedInfo.total_cost==='number'&&<div style={{fontSize:16,fontWeight:800,marginTop:2}}>${submittedInfo.total_cost.toFixed(2)}</div>}
                 {submittedInfo&&<span className={`badge ${statusBadge}`} style={{marginTop:4}}>{submittedInfo.status||'waiting'}</span>}
               </div>
             </div>
@@ -6755,19 +6725,23 @@ export default function App(){
           <div className="card-body" style={{padding:0}}>
             <table><thead><tr>
               <th style={{width:30}}>#</th>
+              <th>Source PO#</th>
               <th>SKU</th><th>Product</th><th>Color</th>
               <th>Sizes Ordered</th><th>Total</th>
+              <th>Cost</th>
               <th>Receive</th>
             </tr></thead><tbody>
             {poItems.map((it,i)=>{
               const szEntries=Object.entries(it.sizes).filter(([,v])=>v>0);
               return<tr key={i} id={'po-recv-row-'+i}>
                 <td style={{fontWeight:700,color:'#94a3b8',fontSize:11}}>{i+1}</td>
+                <td style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:11}}>{it.srcPoId||'—'}</td>
                 <td style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
                 <td style={{fontSize:12}}>{it.name}</td>
                 <td style={{fontSize:12,color:'#64748b'}}>{it.color||'—'}</td>
                 <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><span key={sz} style={{padding:'2px 6px',background:'#f1f5f9',borderRadius:4,fontSize:10,fontWeight:700}}>{sz}: {v}</span>)}</div></td>
                 <td style={{fontWeight:800,fontSize:14}}>{it.qty}</td>
+                <td style={{fontSize:12,color:'#166534',fontWeight:700,whiteSpace:'nowrap'}}>{it.lineCost>0?('$'+it.lineCost.toFixed(2)):'—'}{it.unitCost>0&&<div style={{fontSize:10,color:'#94a3b8',fontWeight:500}}>${it.unitCost.toFixed(2)}/ea</div>}</td>
                 <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:8,fontWeight:700,color:'#64748b'}}>{sz}</div><input id={'rcv-'+i+'-'+sz} type="number" className="form-input" style={{width:40,padding:'3px 4px',textAlign:'center',fontSize:12,fontWeight:700}} defaultValue={v} min={0}/></div>)}</div></td>
               </tr>})}
             </tbody></table>
@@ -6778,6 +6752,11 @@ export default function App(){
                 {[...new Set(poItems.map(it=>it.soId))].map(sid=>{const it=poItems.find(p=>p.soId===sid);
                   return<span key={sid} style={{fontSize:10,padding:'2px 8px',background:'#eff6ff',borderRadius:6,color:'#1e40af',fontWeight:600}}>{sid} <span style={{color:'#64748b',fontWeight:400}}>{it?.customer}</span></span>})}
               </div>
+              {isBatch&&batchMatch.source_pos?.some(sp=>sp.po_id)&&<><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginTop:8,marginBottom:4}}>SOURCE PO NUMBERS</div>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                {batchMatch.source_pos.filter(sp=>sp.po_id).map(sp=>
+                  <span key={sp.po_id} style={{fontSize:10,padding:'2px 8px',background:'#f5f3ff',borderRadius:6,color:'#7c3aed',fontWeight:700,fontFamily:'monospace'}}>{sp.po_id} <span style={{color:'#94a3b8',fontWeight:400}}>${sp.total_cost?.toFixed(2)||'0.00'}</span></span>)}
+              </div></>}
             </div>
           </div>
 
@@ -6802,8 +6781,10 @@ export default function App(){
                 <button className="btn btn-primary" style={{background:'#22c55e',borderColor:'#22c55e',padding:'8px 20px'}} onClick={()=>{
                   // Update submitted batch status
                   if(batchMatch)setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:'received',received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
-                  // Update PO lines on SOs to received
-                  const matchedLines=allPOLines.filter(pl=>pl.poId.toLowerCase()===poId.toLowerCase());
+                  // Update PO lines on SOs to received — match by po_id OR batch_po_number so
+                  // the NSA-#### scan also finds the source POs (PO-####-TAG) grouped under it.
+                  const lcPoId=poId.toLowerCase();
+                  const matchedLines=allPOLines.filter(pl=>pl.poId.toLowerCase()===lcPoId||(pl.poLine?.batch_po_number||'').toLowerCase()===lcPoId);
                   matchedLines.forEach(ml=>{
                     const so=sos.find(s=>s.id===ml.soId);if(!so)return;
                     const updItems=[...safeItems(so)];
@@ -6881,12 +6862,15 @@ export default function App(){
           <div className="card-body" style={{padding:0}}>
             {vg.pos.map((bp,bpi)=>{const isEditing=editingBatchId===bp.id;return<div key={bp.id} style={{padding:'12px 16px',borderBottom:bpi<vg.pos.length-1?'1px solid #f1f5f9':'none',background:isEditing?'#f5f3ff':'transparent'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-                <div><span style={{fontWeight:700,color:'#1e40af'}}>{bp.so_id}</span><span style={{fontSize:12,color:'#64748b',marginLeft:8}}>{bp.customer} — {bp.so_memo}</span></div>
+                <div>{bp.po_id&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:12,marginRight:8}}>{bp.po_id}</span>}<span style={{fontWeight:700,color:'#1e40af'}}>{bp.so_id}</span><span style={{fontSize:12,color:'#64748b',marginLeft:8}}>{bp.customer} — {bp.so_memo}</span></div>
                 <div style={{display:'flex',alignItems:'center',gap:8}}>
                   <span style={{fontWeight:700}}>${bp.total_cost.toFixed(2)}</span>
                   <span style={{fontSize:10,color:'#94a3b8'}}>{bp.created_by_name?.split(' ')[0]}</span>
                   <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'2px 6px',fontSize:10}} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
-                  <button className="btn btn-sm" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'2px 6px'}} onClick={()=>{if(!window.confirm('Remove this batch PO from queue?'))return;setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id))}}>\u2715</button>
+                  <button className="btn btn-sm" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'2px 6px'}} onClick={()=>{if(!window.confirm('Remove this batch PO from queue?'))return;
+                    const so=sos.find(s=>s.id===bp.so_id);
+                    if(so){const updatedItems=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()})}
+                    setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id))}}>\u2715</button>
                 </div>
               </div>
               {!isEditing&&<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
@@ -6910,8 +6894,23 @@ export default function App(){
                       const newSizes={};let newQty=0;
                       itSzs.forEach(([sz])=>{const el=document.getElementById('bq-edit-'+bp.id+'-'+ii+'-'+sz);const v=el?Math.max(0,parseInt(el.value)||0):0;if(v>0){newSizes[sz]=v;newQty+=v}});
                       return{...it,sizes:newSizes,qty:newQty}}).filter(it=>it.qty>0);
-                    if(updatedItems.length===0){setBatchPOs(prev=>prev.filter(b=>b.id!==bp.id));setEditingBatchId(null);nf('Batch PO removed (all quantities zeroed)');return}
+                    const so=sos.find(s=>s.id===bp.so_id);
+                    if(updatedItems.length===0){
+                      if(so){const items2=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:items2,updated_at:new Date().toLocaleString()})}
+                      setBatchPOs(prev=>prev.filter(b=>b.id!==bp.id));setEditingBatchId(null);nf('Batch PO removed (all quantities zeroed)');return}
                     const newTotal=updatedItems.reduce((a,it)=>a+it.qty*it.unit_cost,0);
+                    // Sync the SO po_line sizes so the source PO on the sales order matches the queue edits.
+                    if(so){
+                      const sizeMapByIdx={};updatedItems.forEach(it=>{if(it.item_idx!=null)sizeMapByIdx[it.item_idx]=it.sizes});
+                      const items2=safeItems(so).map((it,idx)=>{const pls=(it.po_lines||[]).map(pl=>{
+                        if(pl.batch_queue_id!==bp.id)return pl;
+                        const cleared={...pl};Object.keys(cleared).forEach(k=>{if(typeof cleared[k]==='number'&&!['unit_cost'].includes(k))delete cleared[k]});
+                        const newSz=sizeMapByIdx[idx]||{};Object.entries(newSz).forEach(([sz,v])=>{if(v>0)cleared[sz]=v});
+                        return cleared;
+                      }).filter(pl=>{if(pl.batch_queue_id!==bp.id)return true;return Object.entries(pl).some(([k,v])=>typeof v==='number'&&v>0&&k!=='unit_cost')});
+                      return{...it,po_lines:pls}});
+                      savSO({...so,items:items2,updated_at:new Date().toLocaleString()});
+                    }
                     setBatchPOs(prev=>prev.map(b=>b.id===bp.id?{...b,items:updatedItems,total_cost:newTotal}:b));
                     setEditingBatchId(null);nf('Batch PO updated');
                   }}>Save</button>
@@ -6929,7 +6928,10 @@ export default function App(){
               </div>
               <div style={{display:'flex',flexDirection:'column',gap:6}}>
                 <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(nextPO);nf('Copied '+nextPO)}}>{'📋'} Copy PO#</button>
-                <button className="btn btn-sm btn-secondary" onClick={()=>{if(window.confirm('Clear all '+vg.pos.length+' POs?'))setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk))}}>Clear</button>
+                <button className="btn btn-sm btn-secondary" onClick={()=>{if(!window.confirm('Clear all '+vg.pos.length+' POs?'))return;
+                  const bpIds=new Set(vg.pos.map(p=>p.id));const soIds=new Set(vg.pos.map(p=>p.so_id));
+                  soIds.forEach(sid=>{const so=sos.find(s=>s.id===sid);if(!so)return;const items2=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>!bpIds.has(pl.batch_queue_id))}));savSO({...so,items:items2,updated_at:new Date().toLocaleString()})});
+                  setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk))}}>Clear</button>
               </div>
             </div>
             <button style={{width:'100%',padding:'12px 20px',borderRadius:8,border:'none',cursor:'pointer',fontWeight:800,fontSize:14,
@@ -6938,17 +6940,28 @@ export default function App(){
                 const poNum=nextPO;
                 const sb={po_number:poNum,vendor_key:vk,vendor_name:vg.name,total_cost:total,total_units:totalUnits,
                   submitted_at:new Date().toLocaleString(),submitted_by:cu.name,status:'waiting',
-                  source_pos:vg.pos.map(bp=>({so_id:bp.so_id,so_memo:bp.so_memo,customer:bp.customer,items:bp.items,total_cost:bp.total_cost}))};
+                  source_pos:vg.pos.map(bp=>({so_id:bp.so_id,so_memo:bp.so_memo,customer:bp.customer,items:bp.items,total_cost:bp.total_cost,po_id:bp.po_id||''}))};
                 setSubmittedBatches(prev=>[sb,...prev]);
                 vg.pos.forEach(bp=>{
                   const so=sos.find(s=>s.id===bp.so_id);if(!so)return;
-                  const updatedItems=safeItems(so).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
-                  bp.items.forEach(bpIt=>{
-                    const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
-                    const poLine={po_id:poNum,vendor:vg.name,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+vg.pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
-                    Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
-                    updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
+                  let promoted=false;
+                  const updatedItems=safeItems(so).map(it=>{
+                    const pls=(it.po_lines||[]).map(pl=>{
+                      if(pl.batch_queue_id===bp.id){promoted=true;return{...pl,status:'waiting',batch_po_number:poNum,memo:'Batch '+poNum+' — '+vg.name}}
+                      return pl;
+                    });
+                    return{...it,po_lines:pls};
                   });
+                  // Backstop: if no queued lines matched (legacy batch entries created before the
+                  // source-PO promotion was in place), fall back to creating a line with po_id=poNum.
+                  if(!promoted){
+                    bp.items.forEach(bpIt=>{
+                      const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
+                      const poLine={po_id:poNum,vendor:vg.name,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+vg.pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
+                      Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
+                      updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
+                    });
+                  }
                   savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
                 });
                 setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk));
@@ -6957,7 +6970,7 @@ export default function App(){
                 setPg('batch_pos');
               }}>{'🚀'} Order {nextPO} for {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
-              Contains: {vg.pos.map(bp=>bp.so_id+' ('+bp.customer+')').join(' · ')}
+              Contains: {vg.pos.map(bp=>(bp.po_id?bp.po_id+' / ':'')+bp.so_id+' ('+bp.customer+')').join(' · ')}
             </div>
           </div>
         </div>})}
