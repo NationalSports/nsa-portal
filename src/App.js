@@ -15570,7 +15570,7 @@ export default function App(){
       const t=p._manualTarget;
       if(!t||!t.soId||p.kind!=='decoration')return false;
       if(t.mode==='existing')return t.itemIdx!=null&&t.poLineIdx!=null;
-      if(t.mode==='create')return t.itemIdx!=null;
+      if(t.mode==='create')return true;// applies to SO — no per-item pick required
       return false;
     };
 
@@ -15618,12 +15618,17 @@ export default function App(){
                 _bill_details:[...(po._bill_details||[]),billDetail]};
             })};
           });
-        }else if(t.mode==='create'&&t.itemIdx!=null){
+        }else if(t.mode==='create'){
+          // Attach the new po_line to the first item on the SO — decoration bills cover the
+          // whole job, so which item holds the po_line doesn't matter for cost aggregation
+          // (outside-deco cost is already consolidated by po_id at the SO level).
+          const targetIdx=t.itemIdx??0;
+          if(!(s.items||[])[targetIdx])return s;
           const newPO={po_id:bill.po_number,po_type:'outside_deco',vendor:bill.supplier,deco_vendor:bill.supplier,deco_type:t.decoType||'screen_print',
             _bill_cost:decoCost,_bill_details:[billDetail],
             tracking_numbers:bill.tracking?[bill.tracking]:[],
             status:'received',created_at:new Date().toLocaleString()};
-          nextItems=(s.items||[]).map((it,ii)=>ii!==t.itemIdx?it:{...it,po_lines:[...(it.po_lines||[]),newPO]});
+          nextItems=(s.items||[]).map((it,ii)=>ii!==targetIdx?it:{...it,po_lines:[...(it.po_lines||[]),newPO]});
         }else return s;
         const updated={...s,items:nextItems,updated_at:new Date().toLocaleString()};
         if(freight>0){const prevShip=safeNum(s._shipping_cost||0);updated._shipping_cost=Math.round((prevShip+freight)*100)/100}
@@ -16884,17 +16889,11 @@ export default function App(){
                       {so&&<>
                         <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Mode</label>
                         <select className="form-input" style={{width:170,fontSize:11,padding:'3px 6px'}} value={t.mode||'existing'}
-                          onChange={e=>setT({...t,mode:e.target.value,itemIdx:null,poLineIdx:null,decoType:e.target.value==='create'?defaultDeco:null})}>
+                          onChange={e=>setT({...t,mode:e.target.value,itemIdx:e.target.value==='create'?0:null,poLineIdx:null,decoType:e.target.value==='create'?defaultDeco:null})}>
                           <option value="existing">Attach to existing PO line</option>
                           <option value="create">Create new deco PO line</option>
                         </select>
                         {t.mode==='create'?<>
-                          <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Item</label>
-                          <select className="form-input" style={{width:240,fontSize:11,padding:'3px 6px'}} value={t.itemIdx??''}
-                            onChange={e=>setT({...t,itemIdx:e.target.value===''?null:parseInt(e.target.value)})}>
-                            <option value="">— pick item —</option>
-                            {(so.items||[]).map((it,ii)=><option key={ii} value={ii}>{(it.sku||'')+' '+(it.name||'')+(it.color?' · '+it.color:'')}</option>)}
-                          </select>
                           <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Type</label>
                           <select className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={t.decoType||defaultDeco}
                             onChange={e=>setT({...t,decoType:e.target.value})}>
@@ -16903,6 +16902,7 @@ export default function App(){
                             <option value="heat_transfer">Heat Transfer</option>
                             <option value="dtf">DTF</option>
                           </select>
+                          {(so.items||[]).length===0&&<span style={{fontSize:10,color:'#dc2626'}}>SO has no items — can't create PO line</span>}
                         </>:<>
                           <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>PO Line</label>
                           <select className="form-input" style={{width:460,fontSize:11,padding:'3px 6px'}}
