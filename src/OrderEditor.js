@@ -6374,8 +6374,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div className="card-body"><p style={{margin:0,fontSize:13,color:'#475569'}}>{po.memo}</p></div>
           </div>}
 
-          {/* Receive Shipment — inline on full page, click-to-add multi-item */}
-          {totalOpen>0&&!isDropShipFP&&(()=>{
+          {/* Receive Shipment — inline on full page, click-to-add multi-item.
+              Hidden for decoration POs (service, not size-based goods). */}
+          {totalOpen>0&&!isDropShipFP&&!isDecoPO&&(()=>{
             const allFpRecvLines=(allLines||[{lineIdx:0}]).map((ln,li)=>{
               const it=soItems?.[ln.lineIdx];const p=it?.po_lines?.find(pl=>pl.po_id===po.po_id);if(!it||!p)return null;
               const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&typeof p[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
