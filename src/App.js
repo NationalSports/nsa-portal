@@ -4561,9 +4561,9 @@ export default function App(){
         <span style={{fontSize:11,color:'#64748b'}}>{fe.length}{fe.length!==ests.length?' of '+ests.length:''} estimates</span>
         <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button>
       </div>
-      <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>ID</th><th>Customer</th><th>Memo</th><th>Items</th><th style={{textAlign:'right'}}>Total</th><th>Rep</th><th>Status</th><th>SO</th><th>Email</th><th></th></tr></thead><tbody>
+      <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>ID</th><th>Created</th><th>Customer</th><th>Memo</th><th>Items</th><th style={{textAlign:'right'}}>Total</th><th>Rep</th><th>Status</th><th>SO</th><th>Email</th><th></th></tr></thead><tbody>
       {fe.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const rep=REPS.find(r=>r.id===e.created_by);const linkedSO=e.status==='converted'?sos.find(s=>s.estimate_id===e.id):null;return(<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>{setEEst(e);setEEstC(c)}}>
-        <td style={{fontWeight:700,color:'#1e40af'}}>{e.id}</td><td>{c?<>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></>:'--'}</td>
+        <td style={{fontWeight:700,color:'#1e40af'}}>{e.id}</td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{(e.created_at||'').split(',')[0]||'—'}</td><td>{c?<>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></>:'--'}</td>
         <td style={{fontSize:12}}>{e.memo}</td><td>{e.items?.length||0}</td>
         <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>{(()=>{const t=(e.items||[]).reduce((a,it)=>{const sqq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const qq=sqq>0?sqq:safeNum(it.est_qty);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</td>
         <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></td>
@@ -4624,7 +4624,7 @@ export default function App(){
         <span style={{fontSize:11,color:'#64748b'}}>{fSOs.length}{fSOs.length!==sos.length?' of '+sos.length:''} orders</span>
       </div>
 
-    <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Rep</th><th style={{textAlign:'right'}}>Total</th><th>Art</th><th>Items</th><th>Msgs</th><th>Ship</th><th>Status</th>{canDelete&&<th></th>}</tr></thead><tbody>
+    <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Created</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Rep</th><th style={{textAlign:'right'}}>Total</th><th>Art</th><th>Items</th><th>Msgs</th><th>Ship</th><th>Status</th>{canDelete&&<th></th>}</tr></thead><tbody>
     {fSOs.map(so=>{const c=cust.find(x=>x.id===so.customer_id);const ac=(so.art_files||[]).length;const aa=(so.art_files||[]).filter(f=>f.status==='approved').length;const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by));
       // Item fulfillment progress (for Items column)
       const allItems=so.items||[];let totalSz=0,pickedSz=0,poSz=0,rcvdSz=0;
@@ -4638,7 +4638,7 @@ export default function App(){
       const displayStatus=calcSOStatus(so);
       const statusLabel={booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
       return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
-      <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}{so.order_type==='booking'&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700,verticalAlign:'middle'}}>B</span>}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}{so.po_number&&<span style={{fontSize:9,marginLeft:6,padding:'1px 5px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700,fontFamily:'monospace'}}>PO# {so.po_number}</span>}</td><td>{so.order_type==='booking'&&so.expected_ship_date?<span>{so.expected_ship_date}<div style={{fontSize:9,color:'#94a3b8'}}>ship date</div></span>:(so.expected_date||'--')}</td>
+      <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}{so.order_type==='booking'&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700,verticalAlign:'middle'}}>B</span>}</td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{(so.created_at||'').split(',')[0]||'—'}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}{so.po_number&&<span style={{fontSize:9,marginLeft:6,padding:'1px 5px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700,fontFamily:'monospace'}}>PO# {so.po_number}</span>}</td><td>{so.order_type==='booking'&&so.expected_ship_date?<span>{so.expected_ship_date}<div style={{fontSize:9,color:'#94a3b8'}}>ship date</div></span>:(so.expected_date||'--')}</td>
       <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></td>
       <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>{(()=>{const t=safeItems(so).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,so.art_files||[],qq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</td>
       <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} \u2713</span>:<span style={{fontSize:11,color:'#d97706'}}>\u2014</span>}</td>
@@ -6562,7 +6562,7 @@ export default function App(){
       {/* Table */}
       <div className="card"><div className="card-body" style={{padding:0,overflow:'auto'}}>
         <table className="data-table">
-          <thead><tr><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='po_id'?'date_desc':'po_id'}))}>PO #</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='vendor'?'date_desc':'vendor'}))}>Vendor</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='customer'?'date_desc':'customer'}))}>Customer</th><th>SO</th><th>Item</th><th style={{textAlign:'right'}}>Ordered</th><th style={{textAlign:'right'}}>Received</th><th style={{textAlign:'right'}}>Open</th><th style={{textAlign:'right'}}>Total</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='status'?'date_desc':'status'}))}>Status</th><th>Date</th><th>Expected</th></tr></thead>
+          <thead><tr><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='po_id'?'date_desc':'po_id'}))}>PO #</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='vendor'?'date_desc':'vendor'}))}>Vendor</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='customer'?'date_desc':'customer'}))}>Customer</th><th>SO</th><th>Item</th><th style={{textAlign:'right'}}>Ordered</th><th style={{textAlign:'right'}}>Received</th><th style={{textAlign:'right'}}>Open</th><th style={{textAlign:'right'}}>Total</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='status'?'date_desc':'status'}))}>Status</th><th>Created</th><th>Expected</th></tr></thead>
           <tbody>{fPOs.length===0?<tr><td colSpan={12} style={{textAlign:'center',color:'#94a3b8',padding:32}}>No purchase orders{activeFilters?' match filters':' found'}</td></tr>:
             fPOs.map((po,i)=>{const openPoPage=()=>{if(po.source==='batch'){setBatchScan(po.po_id);setPg('batch_pos')}else if(po.so){
               const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders');
@@ -6577,7 +6577,7 @@ export default function App(){
               <td style={{textAlign:'right',fontWeight:600,color:po.totalOpen>0?'#d97706':'#059669'}}>{po.totalOpen}</td>
               <td style={{textAlign:'right',fontWeight:700,color:'#334155'}}>{po.poTotal>0?'$'+po.poTotal.toFixed(2):'—'}</td>
               <td><span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status==='received'?'Received':po.status==='partial'?'Partial':'Waiting'}</span></td>
-              <td style={{fontSize:11,color:'#64748b'}}>{po.created_at}</td>
+              <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{(po.created_at||'').split(',')[0]||'—'}</td>
               <td style={{fontSize:11,color:'#64748b'}}>{po.expected_date||'—'}</td>
             </tr>})}
           </tbody>
@@ -7935,6 +7935,7 @@ export default function App(){
     fi.sort((a,b)=>{let va,vb;
       if(invSort.f==='id'){va=a.id;vb=b.id}
       else if(invSort.f==='customer'){va=a._cname;vb=b._cname}
+      else if(invSort.f==='created_at'){va=a.created_at||'';vb=b.created_at||''}
       else if(invSort.f==='date'){va=parseD(a.date);vb=parseD(b.date)}
       else if(invSort.f==='due_date'){va=parseD(a.due_date);vb=parseD(b.due_date)}
       else if(invSort.f==='age'){va=a._age;vb=b._age}
@@ -8026,6 +8027,7 @@ export default function App(){
         {fi.length===0?<div className="empty" style={{padding:30}}>No invoices match filters</div>:
         <table><thead><tr>
           <SH label="Invoice" field="id"/>
+          <SH label="Created" field="created_at"/>
           <SH label="Customer" field="customer"/>
           <th style={{fontSize:11}}>SO</th>
           <th style={{fontSize:11}}>Rep</th>
@@ -8042,6 +8044,7 @@ export default function App(){
           const repObj=REPS.find(r=>r.id===inv._rep);
           return<tr key={inv.id} style={{background:inv._overdue?'#fef2f2':undefined,cursor:'pointer'}} onClick={()=>setViewInvoice(inv)}>
             <td style={{fontWeight:700,color:'#1e40af',fontSize:12,cursor:'pointer',textDecoration:'underline'}}>{inv.id}</td>
+            <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{(inv.created_at||'').split(',')[0]||'—'}</td>
             <td style={{fontSize:12}}>{inv._cname}</td>
             <td style={{fontSize:11,color:'#7c3aed',cursor:inv.so_id?'pointer':'default',textDecoration:inv.so_id?'underline':'none'}}
               onClick={e=>{e.stopPropagation();if(inv.so_id){const so=sos.find(s=>s.id===inv.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}}>{inv.so_id||'—'}</td>
