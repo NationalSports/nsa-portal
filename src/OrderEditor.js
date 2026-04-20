@@ -950,7 +950,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const isAU=b=>{const l=(b||'').toLowerCase();return l==='adidas'||l==='under armour'||l==='new balance'};const tD={A:0.4,B:0.35,C:0.3};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
   const addP=p=>{const au=isAU(p.brand);const sell=au?rQ(p.retail_price*(1-(tD[cust?.adidas_ua_tier||'B']||0.35))):rQ(p.nsa_cost*(o.default_markup||1.65));
-    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,vendor_id:p.vendor_id||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...p.available_sizes],_colors:p._colors||null,sizes:{},qty_only:false,decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:null}]:[]}]);setShowAdd(false);setPS('')};
+    const avail=(p.available_sizes&&p.available_sizes.length)?[...p.available_sizes]:['S','M','L','XL','2XL'];
+    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,vendor_id:p.vendor_id||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:p._colors||null,sizes:{},qty_only:false,decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:null}]:[]}]);setShowAdd(false);setPS('')};
   const uI=(i,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?{...it,[k]:v}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};const rmI=i=>{const item=safeItems(o)[i];if(item&&isSO){const pos=safePOs(item);if(pos.length>0){const hasReceived=pos.some(po=>Object.values(po.received||{}).some(v=>v>0));const hasBilled=pos.some(po=>Object.values(po.billed||{}).some(v=>v>0));if(hasReceived||hasBilled){nf('Cannot delete — this item has '+(hasReceived?'received':'')+(hasReceived&&hasBilled?' and ':'')+(hasBilled?'billed':'')+' PO quantities. Remove billing/receiving first.','error');return}nf('Cannot delete — this item has PO(s). Delete the PO(s) first before removing the item.','error');return}}sv('items',safeItems(o).filter((_,x)=>x!==i))};
   const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' with all sizes & decorations')};
   const copyIWithSku=(i,p)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];clone.product_id=p.id;clone.sku=p.sku;clone.name=p.name;clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=p.nsa_cost;clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.available_sizes=[...p.available_sizes];clone._colors=p._colors||null;const au=isAU(p.brand);clone.unit_sell=au?rQ(p.retail_price*(1-(tD[cust?.adidas_ua_tier||'B']||0.35))):rQ(p.nsa_cost*(o.default_markup||1.65));sv('items',[...o.items,clone]);setCopySkuModal(null);nf('📋 Copied decorations from '+it.sku+' → '+p.sku)};
@@ -969,8 +970,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     uI(i,'sizes',newSizes);
     if(newTotal>0&&item.est_qty)uI(i,'est_qty',0);
   };
-  const addSzToItem=(i,sz)=>{const it=o.items[i];if(!it.available_sizes.includes(sz))uI(i,'available_sizes',[...it.available_sizes,sz]);setShowSzPicker(null)};
-  const removeSzFromItem=(i,sz)=>{const it=o.items[i];if(safeNum(it.sizes[sz])>0){nf('Cannot remove '+sz+' — it has quantity. Set to 0 first.','error');return}const newSizes={...it.sizes};delete newSizes[sz];uI(i,'sizes',newSizes);uI(i,'available_sizes',it.available_sizes.filter(s=>s!==sz));setShowSzPicker(null)};
+  const addSzToItem=(i,sz)=>{const it=o.items[i];const cur=it.available_sizes||[];if(!cur.includes(sz))uI(i,'available_sizes',[...cur,sz]);setShowSzPicker(null)};
+  const removeSzFromItem=(i,sz)=>{const it=o.items[i];if(safeNum(it.sizes[sz])>0){nf('Cannot remove '+sz+' — it has quantity. Set to 0 first.','error');return}const newSizes={...it.sizes};delete newSizes[sz];uI(i,'sizes',newSizes);uI(i,'available_sizes',(it.available_sizes||[]).filter(s=>s!==sz));setShowSzPicker(null)};
   const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['4"','6"','8"','10"']};
   const addArtDeco=i=>{const it=o.items[i];sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null}]}:x))};
   const addNumDeco=i=>{const it=o.items[i];sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'numbers',position:'Back Center',num_method:'screen_print',num_size:'6"',two_color:false,sell_override:null,custom_font_art_id:null,roster:{}}]}:x))};
@@ -1633,7 +1634,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const pCost=(()=>{if(item._sizeCosts&&szQty>0){let c=0;Object.entries(safeSizes(item)).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)c+=n*(item._sizeCosts[sz]||item.nsa_cost)});return c}return qty*item.nsa_cost})();
       const pMg=pRev-pCost;
       const iR=pRev+dR;const iC=pCost+dC;const mg=iR-iC;
-      const szs=(item.available_sizes||['S','M','L','XL','2XL']).filter(s=>SZ_ORD.includes(s)).sort((a,b)=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b));
+      const szs=((item.available_sizes&&item.available_sizes.length)?item.available_sizes:['S','M','L','XL','2XL']).filter(s=>SZ_ORD.includes(s)).sort((a,b)=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b));
       const addable=EXTRA_SIZES.filter(s=>!(item.available_sizes||[]).includes(s));
       const removable=EXTRA_SIZES.filter(s=>(item.available_sizes||[]).includes(s));
       return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:12,transition:'box-shadow 0.3s'}}>
@@ -1688,7 +1689,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:8,color:'#059669',minHeight:11}}>...</div>:null;const b2bStk=ai.sizes?.[sz]?.qty;if(b2bStk==null)return<div style={{fontSize:8,color:'transparent',minHeight:11}}>&nbsp;</div>;const need=item.sizes[sz]||0;const color=b2bStk<=0?'#dc2626':(need>0&&b2bStk<need)?'#ca8a04':'#166534';return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:color}} title={'Adidas B2B stock: '+b2bStk+(ai.sizes[sz]?.futureDate?' (restock '+ai.sizes[sz].futureDate+')':'')}>{b2bStk} b2b</div>})()}
               {item._sizeCosts&&<div style={{fontSize:7,fontWeight:700,minHeight:10,color:'#b45309'}}>{(()=>{const sc=item._sizeCosts[sz];if(!sc||Math.abs(sc-item.nsa_cost)<0.01)return'\u00A0';return'$'+sc.toFixed(2)})()}</div>}
               </div>)}
-            <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div>
+            <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>QTY</div>
               <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div>
             </div>
             </>}
@@ -5757,7 +5758,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
             <input style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={pk[sz]} onChange={e=>setEditPick(p=>({...p,pick:{...p.pick,[sz]:parseInt(e.target.value)||0}}))}/>
           </div>)}
-          <div style={{textAlign:'center',borderLeft:'2px solid #e2e8f0',paddingLeft:8}}><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>TOT</div><div style={{fontSize:18,fontWeight:800}}>{pkTotal}</div></div>
+          <div style={{textAlign:'center',borderLeft:'2px solid #e2e8f0',paddingLeft:8}}><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>QTY</div><div style={{fontSize:18,fontWeight:800}}>{pkTotal}</div></div>
         </div>
         {/* QR / Print Label */}
         <div style={{padding:12,border:'1px dashed #d1d5db',borderRadius:8,background:'#fafafa'}}>
