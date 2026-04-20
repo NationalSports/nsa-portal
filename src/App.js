@@ -15624,7 +15624,8 @@ export default function App(){
           // (outside-deco cost is already consolidated by po_id at the SO level).
           const targetIdx=t.itemIdx??0;
           if(!(s.items||[])[targetIdx])return s;
-          const newPO={po_id:bill.po_number,po_type:'outside_deco',vendor:bill.supplier,deco_vendor:bill.supplier,deco_type:t.decoType||'screen_print',
+          const inferredType=/embroidery/i.test(bill.supplier||'')?'embroidery':'screen_print';
+          const newPO={po_id:bill.po_number,po_type:'outside_deco',vendor:bill.supplier,deco_vendor:bill.supplier,deco_type:t.decoType||inferredType,
             _bill_cost:decoCost,_bill_details:[billDetail],
             tracking_numbers:bill.tracking?[bill.tracking]:[],
             status:'received',created_at:new Date().toLocaleString()};
@@ -16894,14 +16895,6 @@ export default function App(){
                           <option value="create">Create new deco PO line</option>
                         </select>
                         {t.mode==='create'?<>
-                          <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Type</label>
-                          <select className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={t.decoType||defaultDeco}
-                            onChange={e=>setT({...t,decoType:e.target.value})}>
-                            <option value="screen_print">Screen Print</option>
-                            <option value="embroidery">Embroidery</option>
-                            <option value="heat_transfer">Heat Transfer</option>
-                            <option value="dtf">DTF</option>
-                          </select>
                           {(so.items||[]).length===0&&<span style={{fontSize:10,color:'#dc2626'}}>SO has no items — can't create PO line</span>}
                         </>:<>
                           <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>PO Line</label>
