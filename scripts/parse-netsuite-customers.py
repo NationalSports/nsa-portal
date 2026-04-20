@@ -74,6 +74,14 @@ EXCLUDED_NAME_SUBSTRINGS = [
     "dominican",
 ]
 
+# User-approved invented parents. Key is (root lowercase, city lowercase,
+# state lowercase, inst) where `inst` is the institution type to force onto
+# the invented parent AND all matching sub rows. Value is the parent name to
+# create. Add entries here as the user resolves ambiguous clusters.
+INVENTED_PARENTS: dict[tuple[str, str, str, str], str] = {
+    ("exeter", "exeter", "ca", "hs"): "Exeter Union High School",
+}
+
 # Sport/role suffix patterns — strip from a name to get the org root.
 SPORT_PATTERNS = [
     r"(Boys|Girls|Boy's|Girl's|Men's|Women's)\s+(Basketball|Volleyball|Soccer|Track(?:\s*&?\s*Field)?|Lacrosse|Golf|Tennis|Swimming|Water Polo|Baseball|Softball|Cross Country|Wrestling|Football|Rugby)$",
@@ -232,6 +240,45 @@ def main():
                 r["Name"] = first
                 r["_name_recovered_from_address"] = True
 
+    # Dedup pass — collapse obvious duplicates BEFORE clustering.
+    # Key 1: NetSuite Internal ID when present.
+    # Key 2: (name_lower, address1_lower, city_lower, state_lower) when all non-empty.
+    # Within a duplicate group, keep the row with the most populated fields.
+    def populated_score(r):
+        fields = ["Primary Contact", "Phone", "Email", "Address", "Address 1",
+                  "Address 2", "City", "State/Province", "Zip Code"]
+        return sum(1 for k in fields if (r.get(k) or "").strip())
+
+    from collections import defaultdict as _dd
+    by_internal = _dd(list)
+    by_addr = _dd(list)
+    for r in records:
+        iid = (r.get("Internal ID") or "").strip()
+        if iid:
+            by_internal[iid].append(r)
+        name = (r.get("Name") or "").strip().lower()
+        a1 = (r.get("Address 1") or "").strip().lower()
+        city = (r.get("City") or "").strip().lower()
+        state = (r.get("State/Province") or "").strip().lower()
+        if name and a1 and city and state:
+            by_addr[(name, a1, city, state)].append(r)
+
+    drop_set = set()
+    dup_log = []
+    for key, rows_grp in list(by_internal.items()) + list(by_addr.items()):
+        if len(rows_grp) < 2:
+            continue
+        ranked = sorted(rows_grp, key=lambda x: (-populated_score(x), x.get("Name", "")))
+        keeper = ranked[0]
+        for loser in ranked[1:]:
+            if id(loser) == id(keeper) or id(loser) in drop_set:
+                continue
+            drop_set.add(id(loser))
+            dup_log.append((loser, keeper, key))
+
+    if drop_set:
+        records = [r for r in records if id(r) not in drop_set]
+
     # Exclusion filter
     def excluded(name: str) -> str | None:
         n = name.lower()
@@ -262,6 +309,54 @@ def main():
         r["_rep"] = r.get("Sales Rep", "").strip()
         r["_real_email"] = is_real_email(r.get("Email", ""))
         r["_has_addr"] = has_address(r)
+
+    # User-approved invented parents: synthesize an anchor row and force every
+    # matching (root, city, state) row into the same institution type.
+    synthetic = []
+    for (root_l, city_l, state_l, inst_target), parent_name in INVENTED_PARENTS.items():
+        matches = [r for r in records
+                   if r["_root"].lower() == root_l
+                   and r["_city"] == city_l
+                   and r["_state"] == state_l]
+        if not matches:
+            continue
+        # Pull a representative address from the fullest matching row.
+        proto = max(matches, key=lambda x: sum(1 for k in ("Address 1","City","State/Province","Zip Code") if x.get(k,"").strip()))
+        syn = {
+            "Internal ID": "",
+            "ID": "",
+            "Name": parent_name,
+            "Duplicate": "",
+            "Primary Contact": "",
+            "Category": "",
+            "Primary Subsidiary": proto.get("Primary Subsidiary", ""),
+            "Sales Rep": proto.get("Sales Rep", ""),
+            "Partner": "",
+            "Status": "CUSTOMER-Closed Won",
+            "Phone": "",
+            "Email": "",
+            "Address": "",
+            "Address 1": proto.get("Address 1", ""),
+            "Address 2": proto.get("Address 2", ""),
+            "City": proto.get("City", ""),
+            "State/Province": proto.get("State/Province", ""),
+            "Zip Code": proto.get("Zip Code", ""),
+            "_name": parent_name,
+            "_root": root_l.title(),
+            "_inst": inst_target,
+            "_anchor": True,
+            "_city": city_l,
+            "_state": state_l,
+            "_rep": proto.get("Sales Rep", ""),
+            "_real_email": False,
+            "_has_addr": bool(proto.get("Address 1", "").strip() and proto.get("City", "").strip() and proto.get("Zip Code", "").strip()),
+            "_synthetic": True,
+        }
+        synthetic.append(syn)
+        # Force matching rows into the same institution type so they cluster.
+        for m in matches:
+            m["_inst"] = inst_target
+    records.extend(synthetic)
 
     # Promote: a plain sport row ("Atascadero Football", inst=other) should live
     # in the HS cluster IFF a HS anchor with the same root+city exists in the
@@ -476,7 +571,7 @@ def main():
         w.writeheader()
         w.writerows(review_rows)
 
-    # Excluded list — things we dropped on purpose (per user rules).
+    # Excluded list — things we dropped on purpose (per user rules + dedup).
     with (OUT_DIR / "customers_excluded.csv").open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["netsuite_internal_id", "netsuite_id", "name", "sales_rep",
@@ -490,6 +585,16 @@ def main():
                 r.get("City", ""),
                 r.get("State/Province", ""),
                 r.get("_excluded_reason", ""),
+            ])
+        for loser, keeper, key in dup_log:
+            w.writerow([
+                loser.get("Internal ID", ""),
+                loser.get("ID", ""),
+                loser.get("Name", ""),
+                loser.get("Sales Rep", ""),
+                loser.get("City", ""),
+                loser.get("State/Province", ""),
+                f"dedup drop (keeper name: {keeper.get('Name','')})",
             ])
 
     # Cluster decisions report
@@ -520,6 +625,8 @@ def main():
     pcount = sum(1 for x in upload_rows if x["account_type"] == "parent")
     scount = sum(1 for x in upload_rows if x["account_type"] == "sub")
     print(f"excluded rows (by name rule): {len(excluded_rows)}")
+    print(f"duplicates dropped:           {len(dup_log)}")
+    print(f"synthetic parents added:      {len(synthetic)}")
     print(f"total rows in upload:         {len(upload_rows)}")
     print(f"  parents/standalone:         {pcount}")
     print(f"  subs:                       {scount}")

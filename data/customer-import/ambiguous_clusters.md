@@ -3,56 +3,12 @@
 These are look-alike groups where the conservative rule left rows as
 standalone. Review and tell Claude which should become parent/sub.
 
-## exeter (OTHER) — exeter, ca
-
-- Reason: 36 sport/activity rows share root 'exeter' in exeter/ca but no school anchor exists
-- Reps: Kevin McCormack
-- Rows (36):
-  - Exeter Baseball
-  - Exeter Baseball
-  - Exeter Beach Volleyball
-  - Exeter Beach Volleyball
-  - Exeter Boys Basketball
-  - Exeter Boys Basketball
-  - Exeter Boys Soccer
-  - Exeter Boys Soccer
-  - Exeter Boys Tennis
-  - Exeter Boys Tennis
-  - Exeter Cheer
-  - Exeter Cheer
-  - Exeter Cross Country
-  - Exeter Cross Country
-  - Exeter Football
-  - Exeter Football
-  - Exeter Girls Basketball
-  - Exeter Girls Basketball
-  - Exeter Girls Soccer
-  - Exeter Girls Soccer
-  - Exeter Girls Tennis
-  - Exeter Girls Tennis
-  - Exeter Girls Water Polo
-  - Exeter Girls Water Polo
-  - Exeter Golf
-  - Exeter Golf
-  - Exeter Softball
-  - Exeter Softball
-  - Exeter Swimming
-  - Exeter Swimming
-  - Exeter Track & Field
-  - Exeter Track & Field
-  - Exeter Volleyball
-  - Exeter Volleyball
-  - Exeter Wrestling
-  - Exeter Wrestling
-
 ## orange lutheran (OTHER) — orange, ca
 
-- Reason: 25 sport/activity rows share root 'orange lutheran' in orange/ca but no school anchor exists
+- Reason: 23 sport/activity rows share root 'orange lutheran' in orange/ca but no school anchor exists
 - Reps: Chase Koissian, Gayle Peterson, Jered Hunt, Steve Peterson
-- Rows (25):
+- Rows (23):
   - Orange Lutheran ASB
-  - Orange Lutheran Boy's Tennis
-  - Orange Lutheran Boy's Tennis
   - Orange Lutheran Boy's Tennis
   - Orange Lutheran Girl's Water Polo
   - Orange Lutheran Baseball
@@ -166,22 +122,6 @@ standalone. Review and tell Claude which should become parent/sub.
   - Fairfield Tennis
   - Fairfield Athletics
 
-## long beach state (OTHER) — long beach, ca
-
-- Reason: 10 sport/activity rows share root 'long beach state' in long beach/ca but no school anchor exists
-- Reps: Chase Koissian
-- Rows (10):
-  - Long Beach State Golf
-  - Long Beach State Softball
-  - Long Beach State Softball
-  - Long Beach State Athletics
-  - Long Beach State Soccer
-  - Long Beach State Baseball
-  - Long Beach State Basketball
-  - Long Beach State Women's Basketball
-  - Long Beach State Women's Tennis
-  - Long Beach State Women's Water Polo
-
 ## san joaquin memorial (OTHER) — fresno, ca
 
 - Reason: 9 sport/activity rows share root 'san joaquin memorial' in fresno/ca but no school anchor exists
@@ -197,19 +137,20 @@ standalone. Review and tell Claude which should become parent/sub.
   - San Joaquin Memorial Soccer
   - San Joaquin Memorial Softball
 
-## sacramento city (COL) — sacramento, ca
+## long beach state (OTHER) — long beach, ca
 
-- Reason: 8 COL rows for 'sacramento city' — no umbrella record exists; consider creating one
-- Reps: Jeff Bianchini
-- Rows (8):
-  - Sacramento City College Baseball
-  - Sacramento City College Baseball
-  - Sacramento City College Golf
-  - Sacramento City College Softball
-  - Sacramento City College Volleyball
-  - Sacramento City College Volleyball
-  - Sacramento City College Volleyball
-  - Sacramento City College Volleyball
+- Reason: 9 sport/activity rows share root 'long beach state' in long beach/ca but no school anchor exists
+- Reps: Chase Koissian
+- Rows (9):
+  - Long Beach State Golf
+  - Long Beach State Softball
+  - Long Beach State Athletics
+  - Long Beach State Soccer
+  - Long Beach State Baseball
+  - Long Beach State Basketball
+  - Long Beach State Women's Basketball
+  - Long Beach State Women's Tennis
+  - Long Beach State Women's Water Polo
 
 ## santa ana (HS) — santa ana, ca
 
@@ -237,19 +178,6 @@ standalone. Review and tell Claude which should become parent/sub.
   - Corona Del Mar HS Men's Soccer
   - Corona Del Mar HS Swim
   - Corona Del Mar HS Water Polo
-
-## santa barbara (HS) — santa barbara, ca
-
-- Reason: 7 HS rows for 'santa barbara' — no umbrella record exists; consider creating one
-- Reps: Jered Hunt, Steve Peterson
-- Rows (7):
-  - Santa Barbara HS Girls Basketball
-  - Santa Barbara HS Volleyball
-  - Santa Barbara HS Football
-  - Santa Barbara HS Basketball
-  - Santa Barbara HS Football
-  - Santa Barbara HS Wrestling
-  - Santa Barbara HS Water Polo
 
 ## santana (HS) — santee, ca
 
@@ -288,27 +216,17 @@ standalone. Review and tell Claude which should become parent/sub.
   - Saddleback HS Baseball
   - Saddleback HS Track
 
-## clarksville (OTHER) — clarksville, tx
+## santa barbara (HS) — santa barbara, ca
 
-- Reason: 5 sport/activity rows share root 'clarksville' in clarksville/tx but no school anchor exists
-- Reps: Jered Hunt, John Morris
-- Rows (5):
-  - Clarksville Athletics
-  - Clarksville Athletics
-  - Clarksville Football
-  - Clarksville Volleyball
-  - Clarksville Volleyball
-
-## edgewood (HS) — west covina, ca
-
-- Reason: 5 HS rows for 'edgewood' — no umbrella record exists; consider creating one
-- Reps: Jered Hunt
-- Rows (5):
-  - Edgewood HS Track
-  - Edgewood HS Soccer
-  - Edgewood HS Girl's Soccer
-  - Edgewood HS Boy's Basketball
-  - Edgewood HS Soccer
+- Reason: 6 HS rows for 'santa barbara' — no umbrella record exists; consider creating one
+- Reps: Jered Hunt, Steve Peterson
+- Rows (6):
+  - Santa Barbara HS Girls Basketball
+  - Santa Barbara HS Volleyball
+  - Santa Barbara HS Football
+  - Santa Barbara HS Basketball
+  - Santa Barbara HS Wrestling
+  - Santa Barbara HS Water Polo
 
 ## galt (HS) — galt, ca
 
@@ -321,39 +239,6 @@ standalone. Review and tell Claude which should become parent/sub.
   - Galt HS Softball
   - Galt HS Wrestling
 
-## lake tahoe school (OTHER) — incline village, nv
-
-- Reason: 5 sport/activity rows share root 'lake tahoe school' in incline village/nv but no school anchor exists
-- Reps: Tim Kelly
-- Rows (5):
-  - Lake Tahoe School Cross Country
-  - Lake Tahoe School
-  - Lake Tahoe School Girl's Basketball
-  - Lake Tahoe School
-  - Lake Tahoe School Track & Field
-
-## magnolia (HS) — anaheim, ca
-
-- Reason: 5 HS rows for 'magnolia' — no umbrella record exists; consider creating one
-- Reps: Chase Koissian, Jered Hunt
-- Rows (5):
-  - Magnolia HS Girls Volleyball
-  - Magnolia HS Girls Volleyball
-  - Magnolia HS Boy's Volleyball
-  - Magnolia HS - Football
-  - Magnolia HS Boy's Volleyball
-
-## orange (HS) — orange, ca
-
-- Reason: 5 HS rows for 'orange' — no umbrella record exists; consider creating one
-- Reps: Aaron Mason, Chase Koissian, Jered Hunt
-- Rows (5):
-  - Orange HS Boys Basketball
-  - Orange HS Boys Soccer
-  - Orange HS Boys Basketball
-  - Orange HS Baseball
-  - Orange HS Softball
-
 ## portola (HS) — irvine, ca
 
 - Reason: 5 HS rows for 'portola' — no umbrella record exists; consider creating one
@@ -365,17 +250,6 @@ standalone. Review and tell Claude which should become parent/sub.
   - Portola HS Wrestling
   - Portola HS Track
 
-## san diego city (COL) — san diego, ca
-
-- Reason: 5 COL rows for 'san diego city' — no umbrella record exists; consider creating one
-- Reps: Mike Mercuriali
-- Rows (5):
-  - San Diego City College Men's Soccer
-  - San Diego City College Tennis
-  - San Diego City College Volleyball
-  - San Diego City College Volleyball
-  - San Diego City College Women's Soccer
-
 ## troy (HS) — fullerton, ca
 
 - Reason: 5 HS rows for 'troy' — no umbrella record exists; consider creating one
@@ -386,17 +260,6 @@ standalone. Review and tell Claude which should become parent/sub.
   - Troy HS Football
   - Troy HS Wrestling
   - Troy HS Girl's Volleyball
-
-## valhalla (OTHER) — el cajon, ca
-
-- Reason: 5 sport/activity rows share root 'valhalla' in el cajon/ca but no school anchor exists
-- Reps: Mike Mercuriali
-- Rows (5):
-  - Valhalla Athletics
-  - Valhalla Athletics
-  - Valhalla Boys Soccer
-  - Valhalla Boys Soccer
-  - Valhalla Girl's Soccer
 
 ## bellflower (HS) — bellflower, ca
 
@@ -418,6 +281,16 @@ standalone. Review and tell Claude which should become parent/sub.
   - Desert Pines HS Girls Soccer
   - Desert Pines HS Girls Volleyball
 
+## edgewood (HS) — west covina, ca
+
+- Reason: 4 HS rows for 'edgewood' — no umbrella record exists; consider creating one
+- Reps: Jered Hunt
+- Rows (4):
+  - Edgewood HS Track
+  - Edgewood HS Soccer
+  - Edgewood HS Girl's Soccer
+  - Edgewood HS Boy's Basketball
+
 ## el modena (HS) — orange, ca
 
 - Reason: 4 HS rows for 'el modena' — no umbrella record exists; consider creating one
@@ -428,15 +301,15 @@ standalone. Review and tell Claude which should become parent/sub.
   - El Modena HS Softball
   - El Modena HS Wrestling
 
-## hilltop (HS) — chula vista, ca
+## lake tahoe school (OTHER) — incline village, nv
 
-- Reason: 4 HS rows for 'hilltop' — no umbrella record exists; consider creating one
-- Reps: Mike Mercuriali
+- Reason: 4 sport/activity rows share root 'lake tahoe school' in incline village/nv but no school anchor exists
+- Reps: Tim Kelly
 - Rows (4):
-  - Hilltop High School Boys Soccer
-  - Hilltop High School Girls Soccer
-  - Hilltop High School Girls Soccer
-  - Hilltop High School Golf
+  - Lake Tahoe School Cross Country
+  - Lake Tahoe School
+  - Lake Tahoe School Girl's Basketball
+  - Lake Tahoe School Track & Field
 
 ## norwalk (HS) — norwalk, ca
 
@@ -448,35 +321,35 @@ standalone. Review and tell Claude which should become parent/sub.
   - Norwalk HS Girls Soccer
   - Norwalk HS Tennis
 
-## reedley (HS) — reedley, ca
+## orange (HS) — orange, ca
 
-- Reason: 4 HS rows for 'reedley' — no umbrella record exists; consider creating one
-- Reps: Kevin McCormack
+- Reason: 4 HS rows for 'orange' — no umbrella record exists; consider creating one
+- Reps: Chase Koissian, Jered Hunt
 - Rows (4):
-  - Reedley HS Boys Tennis
-  - Reedley HS Football
-  - Reedley HS Football
-  - Reedley HS Volleyball
+  - Orange HS Boys Basketball
+  - Orange HS Boys Soccer
+  - Orange HS Baseball
+  - Orange HS Softball
 
-## sanger (HS) — sanger, ca
+## sacramento city (COL) — sacramento, ca
 
-- Reason: 4 HS rows for 'sanger' — no umbrella record exists; consider creating one
-- Reps: Jered Hunt, Steve Peterson
+- Reason: 4 COL rows for 'sacramento city' — no umbrella record exists; consider creating one
+- Reps: Jeff Bianchini
 - Rows (4):
-  - Sanger HS Girls Basketball
-  - Sanger HS Volleyball
-  - Sanger HS Volleyball
-  - Sanger HS Basketball
+  - Sacramento City College Baseball
+  - Sacramento City College Golf
+  - Sacramento City College Softball
+  - Sacramento City College Volleyball
 
-## sjm (OTHER) — fresno, ca
+## san diego city (COL) — san diego, ca
 
-- Reason: 4 sport/activity rows share root 'sjm' in fresno/ca but no school anchor exists
-- Reps: Kelly Bean, Steve Peterson
+- Reason: 4 COL rows for 'san diego city' — no umbrella record exists; consider creating one
+- Reps: Mike Mercuriali
 - Rows (4):
-  - SJM
-  - SJM
-  - SJM Golf
-  - SJM Golf
+  - San Diego City College Men's Soccer
+  - San Diego City College Tennis
+  - San Diego City College Volleyball
+  - San Diego City College Women's Soccer
 
 ## sonora (HS) — la habra, ca
 
@@ -507,56 +380,6 @@ standalone. Review and tell Claude which should become parent/sub.
   - Westminster HS Flag Football
   - Westminster HS Volleyball
   - Westminster HS Softball
-
-## warren (HS) — downey, ca
-
-- Reason: 4 HS rows for 'warren' — no umbrella record exists; consider creating one
-- Reps: Aaron Mason, Chase Koissian
-- Rows (4):
-  - Warren HS Girls Basketball
-  - Warren HS Girls Basketball
-  - Warren HS Girls Basketball
-  - Warren HS Track
-
-## sacramento performance volleyball club (OTHER) — sacramento, ca
-
-- Reason: 4 sport/activity rows share root 'sacramento performance volleyball club' in sacramento/ca but no school anchor exists
-- Reps: (none)
-- Rows (4):
-  - Sacramento Performance Volleyball Club
-  - Sacramento Performance Volleyball Club
-  - Sacramento Performance Volleyball Club
-  - Sacramento Performance Volleyball Club
-
-## francisco rios (OTHER) — ?, ?
-
-- Reason: 4 sport/activity rows share root 'francisco rios' in / but no school anchor exists
-- Reps: Jered Hunt
-- Rows (4):
-  - Francisco Rios
-  - Francisco Rios
-  - Francisco Rios
-  - Francisco Rios
-
-## cal poly slo dance team (OTHER) — san luis obispo, ca
-
-- Reason: 4 sport/activity rows share root 'cal poly slo dance team' in san luis obispo/ca but no school anchor exists
-- Reps: Gayle Peterson
-- Rows (4):
-  - Cal Poly SLO Dance Team
-  - Cal Poly SLO Dance Team
-  - Cal Poly SLO Dance Team
-  - Cal Poly SLO Dance Team
-
-## temple city (OTHER) — ?, ?
-
-- Reason: 4 sport/activity rows share root 'temple city' in / but no school anchor exists
-- Reps: Jered Hunt
-- Rows (4):
-  - Temple City Football
-  - Temple City Football
-  - Temple City Football
-  - Temple City Football
 
 ## j serra (OTHER) — san juan capistrano, ca
 
@@ -595,15 +418,6 @@ standalone. Review and tell Claude which should become parent/sub.
   - Buena Park HS Boy's Volleyball
   - Buena Park HS Softball
 
-## bullard (HS) — fresno, ca
-
-- Reason: 3 HS rows for 'bullard' — no umbrella record exists; consider creating one
-- Reps: Jered Hunt
-- Rows (3):
-  - Bullard HS Girls Soccer
-  - Bullard HS Girls Volleyball
-  - Bullard HS Girls Volleyball
-
 ## cerritos (HS) — cerritos, ca
 
 - Reason: 3 HS rows for 'cerritos' — no umbrella record exists; consider creating one
@@ -622,6 +436,15 @@ standalone. Review and tell Claude which should become parent/sub.
   - Christian High School Volleyball
   - Christian HS Soccer
 
+## clarksville (OTHER) — clarksville, tx
+
+- Reason: 3 sport/activity rows share root 'clarksville' in clarksville/tx but no school anchor exists
+- Reps: Jered Hunt, John Morris
+- Rows (3):
+  - Clarksville Athletics
+  - Clarksville Football
+  - Clarksville Volleyball
+
 ## clovis north (OTHER) — clovis, ca
 
 - Reason: 3 sport/activity rows share root 'clovis north' in clovis/ca but no school anchor exists
@@ -630,33 +453,6 @@ standalone. Review and tell Claude which should become parent/sub.
   - Clovis North Cross Country
   - Clovis North Football
   - Clovis North Track & Field
-
-## coach wakefield (OTHER) — ?, ?
-
-- Reason: 3 sport/activity rows share root 'coach wakefield' in / but no school anchor exists
-- Reps: Jered Hunt
-- Rows (3):
-  - Coach Wakefield
-  - Coach Wakefield
-  - Coach Wakefield
-
-## colfax high (OTHER) — colfax, ca
-
-- Reason: 3 sport/activity rows share root 'colfax high' in colfax/ca but no school anchor exists
-- Reps: Jeff Bianchini
-- Rows (3):
-  - Colfax High Basketball
-  - Colfax High Football
-  - Colfax High Football
-
-## cuesta cross country & track and field (OTHER) — san luis obispo, ca
-
-- Reason: 3 sport/activity rows share root 'cuesta cross country & track and field' in san luis obispo/ca but no school anchor exists
-- Reps: Kelly Bean
-- Rows (3):
-  - Cuesta Cross Country & Track and Field
-  - Cuesta Cross Country & Track and Field
-  - Cuesta Cross Country & Track and Field
 
 ## el dorado (HS) — placentia, ca
 
@@ -676,15 +472,6 @@ standalone. Review and tell Claude which should become parent/sub.
   - Esperanza HS Baseball
   - Esperanza HS Wrestling
 
-## fairfield (HS) — fairfield, ca
-
-- Reason: 3 HS rows for 'fairfield' — no umbrella record exists; consider creating one
-- Reps: Jered Hunt, Mike Mercuriali
-- Rows (3):
-  - Fairfield High School Girls Soccer
-  - Fairfield High School Girls Soccer
-  - Fairfield HS Wrestling
-
 ## gardena (HS) — gardena, ca
 
 - Reason: 3 HS rows for 'gardena' — no umbrella record exists; consider creating one
@@ -694,14 +481,14 @@ standalone. Review and tell Claude which should become parent/sub.
   - Gardena HS Girls Soccer
   - Gardena HS Girls Volleyball
 
-## ibprofun running club (OTHER) — ?, ?
+## hilltop (HS) — chula vista, ca
 
-- Reason: 3 sport/activity rows share root 'ibprofun running club' in / but no school anchor exists
-- Reps: Kevin McCormack
+- Reason: 3 HS rows for 'hilltop' — no umbrella record exists; consider creating one
+- Reps: Mike Mercuriali
 - Rows (3):
-  - IBPROFUN Running Club
-  - IBPROFUN Running Club
-  - IBPROFUN Running Club
+  - Hilltop High School Boys Soccer
+  - Hilltop High School Girls Soccer
+  - Hilltop High School Golf
 
 ## j serra (HS) — san juan capistrano, ca
 
@@ -721,15 +508,6 @@ standalone. Review and tell Claude which should become parent/sub.
   - Katella HS Girl's Soccer
   - Katella HS Softball
 
-## la costa canyon (HS) — carlsbad, ca
-
-- Reason: 3 HS rows for 'la costa canyon' — no umbrella record exists; consider creating one
-- Reps: Mike Mercuriali
-- Rows (3):
-  - La Costa Canyon High School Football
-  - La Costa Canyon High School Girl's Soccer
-  - La Costa Canyon High School Girl's Soccer
-
 ## lancaster (HS) — lancaster, ca
 
 - Reason: 3 HS rows for 'lancaster' — no umbrella record exists; consider creating one
@@ -748,23 +526,14 @@ standalone. Review and tell Claude which should become parent/sub.
   - Liberty HS Softball
   - Liberty HS Girl's Volleyball
 
-## liz fabian (OTHER) — temecula, ca
+## magnolia (HS) — anaheim, ca
 
-- Reason: 3 sport/activity rows share root 'liz fabian' in temecula/ca but no school anchor exists
-- Reps: Mike Mercuriali
+- Reason: 3 HS rows for 'magnolia' — no umbrella record exists; consider creating one
+- Reps: Chase Koissian, Jered Hunt
 - Rows (3):
-  - Liz Fabian
-  - Liz Fabian
-  - Liz Fabian
-
-## mission hills (HS) — san marcos, ca
-
-- Reason: 3 HS rows for 'mission hills' — no umbrella record exists; consider creating one
-- Reps: Jered Hunt
-- Rows (3):
-  - Mission Hills HS Boys Soccer
-  - Mission Hills HS Boys Soccer
-  - Mission Hills HS Boys Soccer
+  - Magnolia HS Girls Volleyball
+  - Magnolia HS Boy's Volleyball
+  - Magnolia HS - Football
 
 ## morro bay (OTHER) — morro bay, ca
 
@@ -784,41 +553,23 @@ standalone. Review and tell Claude which should become parent/sub.
   - Orange Lutheran High School Admissions
   - Orange Lutheran HS Rugby
 
-## rebels sc (OTHER) — chula vista, ca
+## reedley (HS) — reedley, ca
 
-- Reason: 3 sport/activity rows share root 'rebels sc' in chula vista/ca but no school anchor exists
-- Reps: Mike Mercuriali
+- Reason: 3 HS rows for 'reedley' — no umbrella record exists; consider creating one
+- Reps: Kevin McCormack
 - Rows (3):
-  - Rebels SC
-  - Rebels SC
-  - Rebels SC
+  - Reedley HS Boys Tennis
+  - Reedley HS Football
+  - Reedley HS Volleyball
 
-## san ysidro (HS) — san diego, ca
+## sanger (HS) — sanger, ca
 
-- Reason: 3 HS rows for 'san ysidro' — no umbrella record exists; consider creating one
-- Reps: Jered Hunt, Mike Mercuriali
+- Reason: 3 HS rows for 'sanger' — no umbrella record exists; consider creating one
+- Reps: Jered Hunt, Steve Peterson
 - Rows (3):
-  - San Ysidro High School Boys Soccer
-  - San Ysidro High School Girls Soccer
-  - San Ysidro HS Baseball
-
-## sosc - orange (OTHER) — huntington beach, ca
-
-- Reason: 3 sport/activity rows share root 'sosc - orange' in huntington beach/ca but no school anchor exists
-- Reps: Kelly Bean
-- Rows (3):
-  - SOSC - Orange
-  - SOSC - Orange
-  - SOSC - Orange
-
-## sosc - ventura (OTHER) — ventura, ca
-
-- Reason: 3 sport/activity rows share root 'sosc - ventura' in ventura/ca but no school anchor exists
-- Reps: Kelly Bean
-- Rows (3):
-  - SOSC - Ventura
-  - SOSC - Ventura
-  - SOSC - Ventura
+  - Sanger HS Girls Basketball
+  - Sanger HS Volleyball
+  - Sanger HS Basketball
 
 ## st. francis (OTHER) — ?, ?
 
@@ -847,14 +598,14 @@ standalone. Review and tell Claude which should become parent/sub.
   - Sweetwater High School Football
   - Sweetwater High School Girls Soccer
 
-## university city (HS) — san diego, ca
+## valhalla (OTHER) — el cajon, ca
 
-- Reason: 3 HS rows for 'university city' — no umbrella record exists; consider creating one
+- Reason: 3 sport/activity rows share root 'valhalla' in el cajon/ca but no school anchor exists
 - Reps: Mike Mercuriali
 - Rows (3):
-  - University City High School Girls Soccer
-  - University City High School Soccer
-  - University City High School Soccer
+  - Valhalla Athletics
+  - Valhalla Boys Soccer
+  - Valhalla Girl's Soccer
 
 ## vanguard (OTHER) — costa mesa, ca
 
@@ -864,60 +615,6 @@ standalone. Review and tell Claude which should become parent/sub.
   - Vanguard Athletics
   - Vanguard Baseball
   - Vanguard Softball
-
-## pioneer (HS) — whittier, ca
-
-- Reason: 3 HS rows for 'pioneer' — no umbrella record exists; consider creating one
-- Reps: Jered Hunt
-- Rows (3):
-  - Pioneer HS Softball
-  - Pioneer HS Softball
-  - Pioneer HS Softball
-
-## saugus (HS) — santa clarita, ca
-
-- Reason: 3 HS rows for 'saugus' — no umbrella record exists; consider creating one
-- Reps: Chase Koissian
-- Rows (3):
-  - Saugus HS Boy's Volleyball
-  - Saugus HS Girl's Volleyball
-  - Saugus HS Girl's Volleyball
-
-## doug moss (OTHER) — ?, ?
-
-- Reason: 3 sport/activity rows share root 'doug moss' in / but no school anchor exists
-- Reps: Jered Hunt
-- Rows (3):
-  - Doug Moss
-  - Doug Moss
-  - Doug Moss
-
-## thousand oaks (HS) — thousand oaks, ca
-
-- Reason: 3 HS rows for 'thousand oaks' — no umbrella record exists; consider creating one
-- Reps: Jered Hunt
-- Rows (3):
-  - Thousand Oaks HS Baseball
-  - Thousand Oaks HS Baseball
-  - Thousand Oaks HS Baseball
-
-## ucsb hockey (OTHER) — santa barbara, ca
-
-- Reason: 3 sport/activity rows share root 'ucsb hockey' in santa barbara/ca but no school anchor exists
-- Reps: Jered Hunt
-- Rows (3):
-  - UCSB Hockey
-  - UCSB Hockey
-  - UCSB Hockey
-
-## anthony white (OTHER) — ?, ?
-
-- Reason: 3 sport/activity rows share root 'anthony white' in / but no school anchor exists
-- Reps: Jered Hunt
-- Rows (3):
-  - Anthony White
-  - Anthony White
-  - Anthony White
 
 ## irvine (HS) — irvine, ca
 
@@ -978,13 +675,13 @@ standalone. Review and tell Claude which should become parent/sub.
   - Bonita HS Girls Volleyball
   - Bonita HS Water Polo
 
-## bonita vista (HS) — chula vista, ca
+## bullard (HS) — fresno, ca
 
-- Reason: 2 HS rows for 'bonita vista' — no umbrella record exists; consider creating one
-- Reps: Mike Mercuriali
+- Reason: 2 HS rows for 'bullard' — no umbrella record exists; consider creating one
+- Reps: Jered Hunt
 - Rows (2):
-  - Bonita Vista High School Girl's Soccer
-  - Bonita Vista HS Boys Soccer
+  - Bullard HS Girls Soccer
+  - Bullard HS Girls Volleyball
 
 ## clairemont (HS) — san diego, ca
 
@@ -1026,21 +723,13 @@ standalone. Review and tell Claude which should become parent/sub.
   - Downey HS Girl's Basketball
   - Downey HS Boy's Basketball
 
-## eastmark (HS) — mesa, az
+## fairfield (HS) — fairfield, ca
 
-- Reason: 2 HS rows for 'eastmark' — no umbrella record exists; consider creating one
-- Reps: Mike Mercuriali
+- Reason: 2 HS rows for 'fairfield' — no umbrella record exists; consider creating one
+- Reps: Jered Hunt, Mike Mercuriali
 - Rows (2):
-  - Eastmark High School Boys Soccer
-  - Eastmark High School Boys Soccer
-
-## el capitan (HS) — lakeside, ca
-
-- Reason: 2 HS rows for 'el capitan' — no umbrella record exists; consider creating one
-- Reps: Mike Mercuriali
-- Rows (2):
-  - El Capitan High School Boys Soccer
-  - El Capitan High School Girl's Soccer
+  - Fairfield High School Girls Soccer
+  - Fairfield HS Wrestling
 
 ## folsom lake (COL) — folsom, ca
 
@@ -1074,14 +763,6 @@ standalone. Review and tell Claude which should become parent/sub.
   - Godinez HS Flag Football
   - Godinez HS Softball
 
-## grand terrace (HS) — grand terrace, ca
-
-- Reason: 2 HS rows for 'grand terrace' — no umbrella record exists; consider creating one
-- Reps: Jered Hunt
-- Rows (2):
-  - Grand Terrace HS Football
-  - Grand Terrace HS Boys Basketball
-
 ## hilmar (HS) — hilmar, ca
 
 - Reason: 2 HS rows for 'hilmar' — no umbrella record exists; consider creating one
@@ -1106,6 +787,14 @@ standalone. Review and tell Claude which should become parent/sub.
   - Indio HS Basketball
   - Indio HS Football
 
+## la costa canyon (HS) — carlsbad, ca
+
+- Reason: 2 HS rows for 'la costa canyon' — no umbrella record exists; consider creating one
+- Reps: Mike Mercuriali
+- Rows (2):
+  - La Costa Canyon High School Football
+  - La Costa Canyon High School Girl's Soccer
+
 ## la quinta (HS) — westminster, ca
 
 - Reason: 2 HS rows for 'la quinta' — no umbrella record exists; consider creating one
@@ -1113,14 +802,6 @@ standalone. Review and tell Claude which should become parent/sub.
 - Rows (2):
   - La Quinta HS Track
   - La Quinta HS Water Polo
-
-## laguna beach (HS) — laguna beach, ca
-
-- Reason: 2 HS rows for 'laguna beach' — no umbrella record exists; consider creating one
-- Reps: Chase Koissian, Mike Mercuriali
-- Rows (2):
-  - Laguna Beach HS Girls Soccer
-  - Laguna Beach HS Baseball
 
 ## laguna hills (HS) — laguna hills, ca
 
@@ -1137,14 +818,6 @@ standalone. Review and tell Claude which should become parent/sub.
 - Rows (2):
   - Lincoln High School Boys Basketball
   - Lincoln HS Football
-
-## los alamitos (HS) — los alamitos, ca
-
-- Reason: 2 HS rows for 'los alamitos' — no umbrella record exists; consider creating one
-- Reps: Chase Koissian
-- Rows (2):
-  - Los Alamitos HS Baseball
-  - Los Alamitos HS Baseball
 
 ## montgomery (HS) — san diego, ca
 
@@ -1178,14 +851,6 @@ standalone. Review and tell Claude which should become parent/sub.
   - Orange Coast College Baseball
   - Orange Coast College Softball
 
-## point loma (HS) — san diego, ca
-
-- Reason: 2 HS rows for 'point loma' — no umbrella record exists; consider creating one
-- Reps: Mike Mercuriali
-- Rows (2):
-  - Point Loma HS Boys Soccer
-  - Point Loma HS Boys Soccer
-
 ## rubidoux (HS) — riverside, ca
 
 - Reason: 2 HS rows for 'rubidoux' — no umbrella record exists; consider creating one
@@ -1194,22 +859,6 @@ standalone. Review and tell Claude which should become parent/sub.
   - Rubidoux HS Girl's Volleyball
   - Rubidoux HS Track
 
-## san dieguito (HS) — encinitas, ca
-
-- Reason: 2 HS rows for 'san dieguito' — no umbrella record exists; consider creating one
-- Reps: Mike Mercuriali
-- Rows (2):
-  - San Dieguito HS Boys Soccer
-  - San Dieguito HS Boys Soccer
-
-## san juan (HS) — citrus heights, ca
-
-- Reason: 2 HS rows for 'san juan' — no umbrella record exists; consider creating one
-- Reps: Jeff Bianchini
-- Rows (2):
-  - San Juan High School Football
-  - San Juan High School Football
-
 ## san marino (HS) — san marino, ca
 
 - Reason: 2 HS rows for 'san marino' — no umbrella record exists; consider creating one
@@ -1217,6 +866,14 @@ standalone. Review and tell Claude which should become parent/sub.
 - Rows (2):
   - San Marino HS Football
   - San Marino HS Golf
+
+## san ysidro (HS) — san diego, ca
+
+- Reason: 2 HS rows for 'san ysidro' — no umbrella record exists; consider creating one
+- Reps: Jered Hunt, Mike Mercuriali
+- Rows (2):
+  - San Ysidro High School Girls Soccer
+  - San Ysidro HS Baseball
 
 ## santa monica (COL) — santa monica, ca
 
@@ -1250,14 +907,6 @@ standalone. Review and tell Claude which should become parent/sub.
   - Savanna HS Football
   - Savanna HS Wrestling
 
-## spirit academy (HS) — tustin, ca
-
-- Reason: 2 HS rows for 'spirit academy' — no umbrella record exists; consider creating one
-- Reps: Jered Hunt
-- Rows (2):
-  - Spirit Academy HS Volleyball
-  - Spirit Academy HS Volleyball
-
 ## tustin (HS) — tustin, ca
 
 - Reason: 2 HS rows for 'tustin' — no umbrella record exists; consider creating one
@@ -1266,13 +915,13 @@ standalone. Review and tell Claude which should become parent/sub.
   - Tustin HS Mens Soccer
   - Tustin HS Girl's Soccer
 
-## vista (HS) — oceanside, ca
+## university city (HS) — san diego, ca
 
-- Reason: 2 HS rows for 'vista' — no umbrella record exists; consider creating one
+- Reason: 2 HS rows for 'university city' — no umbrella record exists; consider creating one
 - Reps: Mike Mercuriali
 - Rows (2):
-  - Vista High School: Boys Soccer
-  - Vista High School: Girls Soccer
+  - University City High School Girls Soccer
+  - University City High School Soccer
 
 ## walnut (HS) — walnut, ca
 
@@ -1290,6 +939,14 @@ standalone. Review and tell Claude which should become parent/sub.
   - West Hills High School Boys Soccer
   - West Hills High School Girls Soccer
 
+## warren (HS) — downey, ca
+
+- Reason: 2 HS rows for 'warren' — no umbrella record exists; consider creating one
+- Reps: Aaron Mason, Chase Koissian
+- Rows (2):
+  - Warren HS Girls Basketball
+  - Warren HS Track
+
 ## valencia (HS) — valencia, ca
 
 - Reason: 2 HS rows for 'valencia' — no umbrella record exists; consider creating one
@@ -1298,29 +955,13 @@ standalone. Review and tell Claude which should become parent/sub.
   - Valencia HS Dance
   - Valencia HS Basketball
 
-## grand terrace (HS) — colton, ca
+## saugus (HS) — santa clarita, ca
 
-- Reason: 2 HS rows for 'grand terrace' — no umbrella record exists; consider creating one
-- Reps: Jered Hunt
+- Reason: 2 HS rows for 'saugus' — no umbrella record exists; consider creating one
+- Reps: Chase Koissian
 - Rows (2):
-  - Grand Terrace HS Boys Basketball
-  - Grand Terrace HS Boys Basketball
-
-## sonora (HS) — ?, ?
-
-- Reason: 2 HS rows for 'sonora' — no umbrella record exists; consider creating one
-- Reps: Jered Hunt
-- Rows (2):
-  - Sonora HS Boy's Basketball
-  - Sonora HS Boy's Basketball
-
-## saddleback (HS) — ?, ?
-
-- Reason: 2 HS rows for 'saddleback' — no umbrella record exists; consider creating one
-- Reps: Jered Hunt
-- Rows (2):
-  - Saddleback HS Football
-  - Saddleback HS Football
+  - Saugus HS Boy's Volleyball
+  - Saugus HS Girl's Volleyball
 
 ## westcliff (COL) — irvine, ca
 
