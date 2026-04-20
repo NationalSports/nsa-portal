@@ -12,6 +12,7 @@
     "imagetracerjs": "^1.2.6",
     "lucide-react": "^0.263.1",
     "papaparse": "^5.4.1",
+    "puppeteer": "^24.41.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.21.0",
