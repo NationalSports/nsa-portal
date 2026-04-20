@@ -15507,6 +15507,77 @@ export default function App(){
       });
     };
 
+    // A bill is ready to push to the portal when it has either an auto-matched PO or a
+    // complete manual decoration target (SO + existing po_line, or SO + item for create).
+    const _billIsReadyToPush=b=>{
+      if(!b||!b.selected||b.portalStatus)return false;
+      const p=b.parsed;if(!p)return false;
+      if(p.matchedPOSource)return true;
+      const t=p._manualTarget;
+      if(!t||!t.soId||p.kind!=='decoration')return false;
+      if(t.mode==='existing')return t.itemIdx!=null&&t.poLineIdx!=null;
+      if(t.mode==='create')return t.itemIdx!=null;
+      return false;
+    };
+
+    // Re-run PO matching against current state (used after user edits the PO field in review).
+    const rematchBill=(bill)=>{
+      const updated={...bill,matchedPO:null,matchedPOSource:null};
+      if(!bill.po_number)return updated;
+      const poLc=bill.po_number.toLowerCase().replace(/\s+/g,'');
+      const batchMatch=submittedBatches.find(sb=>sb.po_number&&sb.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
+      if(batchMatch){updated.matchedPO=batchMatch;updated.matchedPOSource='batch';return updated}
+      const invMatch=invPOs.find(p=>p.po_number&&p.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
+      if(invMatch){updated.matchedPO=invMatch;updated.matchedPOSource='inv_po';return updated}
+      for(const so of sos){for(const it of (so.items||[])){for(const po of (it.po_lines||[])){
+        const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
+        const pmemo=(po.memo||'').toLowerCase().replace(/\s+/g,'');
+        if(pid===poLc||pid.startsWith(poLc)||pmemo.includes(poLc)){
+          updated.matchedPO={so_id:so.id,po_id:po.po_id,po,item:it,so};
+          updated.matchedPOSource='so_po';return updated;
+        }
+      }}}
+      return updated;
+    };
+
+    // Apply a decoration bill manually when the user has picked an SO + target po_line (or "create new").
+    // target = {soId, mode:'existing', itemIdx, poLineIdx}  OR  {soId, mode:'create', itemIdx, decoType}
+    const _applyDecorationBillManually=(bill)=>{
+      const t=bill._manualTarget;
+      if(!t||!t.soId)return;
+      const freight=safeNum(bill.freight||0);
+      const decoCost=Math.round((safeNum(bill.doc_total||0)-freight)*100)/100;
+      const billDetail={doc:bill.doc_number,date:bill.doc_date,supplier:bill.supplier,cost:decoCost,freight,tracking:bill.tracking};
+      setSOs(prev=>prev.map(s=>{
+        if(s.id!==t.soId)return s;
+        let nextItems;
+        if(t.mode==='existing'&&t.itemIdx!=null&&t.poLineIdx!=null){
+          nextItems=(s.items||[]).map((it,ii)=>{
+            if(ii!==t.itemIdx)return it;
+            return{...it,po_lines:(it.po_lines||[]).map((po,pi)=>{
+              if(pi!==t.poLineIdx)return po;
+              const trackNums=[...(po.tracking_numbers||[])];
+              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+              const prevBillCost=safeNum(po._bill_cost||0);
+              return{...po,tracking_numbers:trackNums,
+                _bill_cost:Math.round((prevBillCost+decoCost)*100)/100,
+                _bill_details:[...(po._bill_details||[]),billDetail]};
+            })};
+          });
+        }else if(t.mode==='create'&&t.itemIdx!=null){
+          const newPO={po_id:bill.po_number,vendor:bill.supplier,deco_vendor:bill.supplier,deco_type:t.decoType||'screen_print',
+            _bill_cost:decoCost,_bill_details:[billDetail],
+            tracking_numbers:bill.tracking?[bill.tracking]:[],
+            status:'received',created_at:new Date().toLocaleString()};
+          nextItems=(s.items||[]).map((it,ii)=>ii!==t.itemIdx?it:{...it,po_lines:[...(it.po_lines||[]),newPO]});
+        }else return s;
+        const updated={...s,items:nextItems,updated_at:new Date().toLocaleString()};
+        if(freight>0){const prevShip=safeNum(s._shipping_cost||0);updated._shipping_cost=Math.round((prevShip+freight)*100)/100}
+        _dbSaveSO(updated);
+        return updated;
+      }));
+    };
+
     // Apply a decoration bill (Olympic / Frontier / Silver Screen) to the matched SO PO line.
     // Total cost (minus freight) is attributed to the deco po_line's _bill_cost.
     // Freight is posted to the SO's outbound shipping (_shipping_cost).
@@ -15547,6 +15618,7 @@ export default function App(){
       bill._applied=true;
       // Decoration bills — route to dedicated apply (total cost → deco po_line; freight → outbound)
       if(bill.kind==='decoration'){
+        if(bill._manualTarget?.soId){_applyDecorationBillManually(bill);return}
         if(bill.matchedPOSource==='so_po'&&bill.matchedPO){
           const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
           _applyDecorationBillToSO(bill,soId);
@@ -15607,7 +15679,7 @@ export default function App(){
 
     // Push bills to Portal (apply to SOs)
     const pushBillsToPortal=()=>{
-      const selected=billImport.parsed.filter(b=>b.selected&&!b.portalStatus&&b.parsed?.matchedPOSource);
+      const selected=billImport.parsed.filter(_billIsReadyToPush);
       if(!selected.length){nf('No matched bills selected to push','error');return}
       let applied=0;
       selected.forEach(b=>{
@@ -16609,9 +16681,9 @@ export default function App(){
           <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center'}}>
             <button className="btn btn-secondary" onClick={()=>setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}>← Upload More</button>
             <span style={{fontSize:14,fontWeight:700,flex:1}}>{billImport.parsed.length} Bill(s) Parsed</span>
-            <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={billImport.uploading||!billImport.parsed.some(b=>b.selected&&!b.portalStatus&&b.parsed?.matchedPOSource)}
+            <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={billImport.uploading||!billImport.parsed.some(_billIsReadyToPush)}
               onClick={pushBillsToPortal}>
-              Push {billImport.parsed.filter(b=>b.selected&&!b.portalStatus&&b.parsed?.matchedPOSource).length} to Portal
+              Push {billImport.parsed.filter(_billIsReadyToPush).length} to Portal
             </button>
             <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} disabled={billImport.uploading||!billImport.parsed.some(b=>b.selected&&!b.qbStatus)}
               onClick={pushBillsToQB}>
@@ -16676,7 +16748,7 @@ export default function App(){
                   <div style={{display:'flex',gap:6,alignItems:'center',flex:1,flexWrap:'wrap'}}>
                     <label style={{fontSize:10,fontWeight:600}}>PO</label>
                     <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.po_number}
-                      onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,po_number:e.target.value}}:p)}))}/>
+                      onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:rematchBill({...p.parsed,po_number:e.target.value})}:p)}))}/>
                     <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Vendor</label>
                     <input className="form-input" style={{width:120,fontSize:11,padding:'3px 6px'}} value={bill.vendor||bill.supplier}
                       onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,vendor:e.target.value,supplier:e.target.value}}:p)}))}/>
@@ -16729,6 +16801,64 @@ export default function App(){
                 {bill.warnings.length>0&&<div style={{padding:'6px 14px',background:'#fef3c7'}}>
                   {bill.warnings.map((w,wi)=><div key={wi} style={{fontSize:10,color:'#92400e'}}>&#9888; {w}</div>)}
                 </div>}
+                {/* Manual SO assignment — only for unmatched decoration bills */}
+                {bill.kind==='decoration'&&!poMatch&&(()=>{
+                  const t=bill._manualTarget||{};
+                  const setT=nt=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_manualTarget:nt}}:p)}));
+                  const so=t.soId?sos.find(s=>s.id===t.soId):null;
+                  const decoLines=[];
+                  if(so)(so.items||[]).forEach((it,ii)=>(it.po_lines||[]).forEach((po,pi)=>{
+                    if(po.deco_vendor||po.deco_type||/embroidery|screen|print|deco/i.test(po.vendor||''))
+                      decoLines.push({itemIdx:ii,poLineIdx:pi,label:(po.po_id||'(no PO)')+' · '+(it.sku||'')+' '+(it.name||'')+(it.color?' · '+it.color:'')+' — '+(po.deco_vendor||po.vendor||po.deco_type||'')});
+                  }));
+                  const defaultDeco=/embroidery/i.test(bill.supplier||'')?'embroidery':'screen_print';
+                  return<div style={{padding:'10px 14px',background:'#fff7ed',borderTop:'1px solid #fed7aa'}}>
+                    <div style={{fontSize:11,fontWeight:700,color:'#9a3412',marginBottom:6}}>Assign this decoration bill to a Sales Order:</div>
+                    <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                      <label style={{fontSize:10,fontWeight:600,color:'#9a3412'}}>SO</label>
+                      <input className="form-input" list={`so-list-${bi}`} style={{width:220,fontSize:11,padding:'3px 6px'}}
+                        placeholder="Search SO # or customer..." value={t.soId||''}
+                        onChange={e=>{const v=e.target.value.split(' — ')[0].trim();setT({soId:v,mode:t.mode||'existing'})}}/>
+                      <datalist id={`so-list-${bi}`}>
+                        {sos.slice(0,500).map(s=><option key={s.id} value={`${s.id} — ${s.customer_name||''}`}>{s.id} — {s.customer_name||''}</option>)}
+                      </datalist>
+                      {t.soId&&!so&&<span style={{fontSize:10,color:'#dc2626'}}>SO not found</span>}
+                      {so&&<>
+                        <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Mode</label>
+                        <select className="form-input" style={{width:170,fontSize:11,padding:'3px 6px'}} value={t.mode||'existing'}
+                          onChange={e=>setT({...t,mode:e.target.value,itemIdx:null,poLineIdx:null,decoType:e.target.value==='create'?defaultDeco:null})}>
+                          <option value="existing">Attach to existing PO line</option>
+                          <option value="create">Create new deco PO line</option>
+                        </select>
+                        {t.mode==='create'?<>
+                          <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Item</label>
+                          <select className="form-input" style={{width:240,fontSize:11,padding:'3px 6px'}} value={t.itemIdx??''}
+                            onChange={e=>setT({...t,itemIdx:e.target.value===''?null:parseInt(e.target.value)})}>
+                            <option value="">— pick item —</option>
+                            {(so.items||[]).map((it,ii)=><option key={ii} value={ii}>{(it.sku||'')+' '+(it.name||'')+(it.color?' · '+it.color:'')}</option>)}
+                          </select>
+                          <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Type</label>
+                          <select className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={t.decoType||defaultDeco}
+                            onChange={e=>setT({...t,decoType:e.target.value})}>
+                            <option value="screen_print">Screen Print</option>
+                            <option value="embroidery">Embroidery</option>
+                            <option value="heat_transfer">Heat Transfer</option>
+                            <option value="dtf">DTF</option>
+                          </select>
+                        </>:<>
+                          <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>PO Line</label>
+                          <select className="form-input" style={{width:460,fontSize:11,padding:'3px 6px'}}
+                            value={t.itemIdx!=null&&t.poLineIdx!=null?`${t.itemIdx}:${t.poLineIdx}`:''}
+                            onChange={e=>{const v=e.target.value;if(!v)return setT({...t,itemIdx:null,poLineIdx:null});const[ii,pi]=v.split(':').map(Number);setT({...t,itemIdx:ii,poLineIdx:pi})}}>
+                            <option value="">— pick PO line —</option>
+                            {decoLines.map((d,di)=><option key={di} value={`${d.itemIdx}:${d.poLineIdx}`}>{d.label}</option>)}
+                          </select>
+                          {decoLines.length===0&&<span style={{fontSize:10,color:'#dc2626'}}>No decoration PO lines on this SO — switch to Create mode</span>}
+                        </>}
+                      </>}
+                    </div>
+                  </div>;
+                })()}
                 {/* Raw text toggle */}
                 <div style={{padding:'6px 14px',borderTop:'1px solid #f1f5f9'}}>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}}
