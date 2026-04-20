@@ -6206,6 +6206,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const grandTotal=poItems.reduce((a,{item:it,po:p})=>{
         const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&typeof p[k]==='number');
         const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.unit_cost!=null?safeNum(p.unit_cost):safeNum(it.nsa_cost);return a+qty*uc},0);
+      // Decoration PO (service, not per-size goods): sum _bill_cost across po_lines for the
+      // deco total; sum _bill_details[].freight for the shipping attributed to this PO.
+      const isDecoPO=po.po_type==='outside_deco';
+      const decoBillDetails=isDecoPO?poItems.flatMap(({po:p})=>p._bill_details||[]):[];
+      const decoCostTotal=isDecoPO?poItems.reduce((a,{po:p})=>a+safeNum(p._bill_cost||0),0):0;
+      const decoShipTotal=isDecoPO?decoBillDetails.reduce((a,bd)=>a+safeNum(bd.freight||0),0):0;
+      const decoGrand=decoCostTotal+decoShipTotal;
       return<div className="po-fullpage">
         <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
@@ -6228,17 +6235,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {/* PO Total Summary */}
           <div className="card" style={{marginBottom:16,background:'#0f172a',color:'white'}}>
             <div className="card-body" style={{display:'flex',justifyContent:'space-around',textAlign:'center',padding:'16px 12px'}}>
-              <div><div style={{fontSize:11,opacity:0.7}}>Total Units</div><div style={{fontSize:24,fontWeight:800}}>{totalOrdered}</div></div>
-              {isDropShipFP?<div><div style={{fontSize:11,opacity:0.7}}>Billed</div><div style={{fontSize:24,fontWeight:800,color:totalBilledFP>=totalOrdered?'#4ade80':'#fbbf24'}}>{totalBilledFP}</div></div>
-              :<div><div style={{fontSize:11,opacity:0.7}}>Received</div><div style={{fontSize:24,fontWeight:800,color:'#4ade80'}}>{totalReceived}</div></div>}
-              {!isDropShipFP&&<div><div style={{fontSize:11,opacity:0.7}}>Open</div><div style={{fontSize:24,fontWeight:800,color:totalOpen>0?'#fbbf24':'#4ade80'}}>{totalOpen}</div></div>}
-              <div><div style={{fontSize:11,opacity:0.7}}>Unit Cost</div><div style={{fontSize:24,fontWeight:800}}>${unitCost.toFixed(2)}</div></div>
-              <div><div style={{fontSize:11,opacity:0.7}}>PO Total</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>${grandTotal.toFixed(2)}</div></div>
+              {isDecoPO?<>
+                <div><div style={{fontSize:11,opacity:0.7}}>Decoration</div><div style={{fontSize:24,fontWeight:800}}>${decoCostTotal.toFixed(2)}</div></div>
+                <div><div style={{fontSize:11,opacity:0.7}}>Shipping</div><div style={{fontSize:24,fontWeight:800,color:'#fbbf24'}}>${decoShipTotal.toFixed(2)}</div></div>
+                <div><div style={{fontSize:11,opacity:0.7}}>Bills Applied</div><div style={{fontSize:24,fontWeight:800,color:'#4ade80'}}>{decoBillDetails.length}</div></div>
+                <div><div style={{fontSize:11,opacity:0.7}}>PO Total</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>${decoGrand.toFixed(2)}</div></div>
+              </>:<>
+                <div><div style={{fontSize:11,opacity:0.7}}>Total Units</div><div style={{fontSize:24,fontWeight:800}}>{totalOrdered}</div></div>
+                {isDropShipFP?<div><div style={{fontSize:11,opacity:0.7}}>Billed</div><div style={{fontSize:24,fontWeight:800,color:totalBilledFP>=totalOrdered?'#4ade80':'#fbbf24'}}>{totalBilledFP}</div></div>
+                :<div><div style={{fontSize:11,opacity:0.7}}>Received</div><div style={{fontSize:24,fontWeight:800,color:'#4ade80'}}>{totalReceived}</div></div>}
+                {!isDropShipFP&&<div><div style={{fontSize:11,opacity:0.7}}>Open</div><div style={{fontSize:24,fontWeight:800,color:totalOpen>0?'#fbbf24':'#4ade80'}}>{totalOpen}</div></div>}
+                <div><div style={{fontSize:11,opacity:0.7}}>Unit Cost</div><div style={{fontSize:24,fontWeight:800}}>${unitCost.toFixed(2)}</div></div>
+                <div><div style={{fontSize:11,opacity:0.7}}>PO Total</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>${grandTotal.toFixed(2)}</div></div>
+              </>}
             </div>
           </div>
 
-          {/* Items on this PO */}
-          <div className="card" style={{marginBottom:16}}>
+          {/* Items on this PO — hidden for decoration POs (they're a service, not per-size goods) */}
+          {!isDecoPO&&<div className="card" style={{marginBottom:16}}>
             <div className="card-header"><h2>Line Items</h2></div>
             <div className="card-body">
               <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
@@ -6271,10 +6285,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </tbody>
               </table>
             </div>
-          </div>
+          </div>}
 
-          {/* Size Breakdown */}
-          <div className="card" style={{marginBottom:16}}>
+          {/* Size Breakdown — hidden for decoration POs */}
+          {!isDecoPO&&<div className="card" style={{marginBottom:16}}>
             <div className="card-header"><h2>Size Breakdown</h2></div>
             <div className="card-body">
               <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
@@ -6288,7 +6302,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </tbody>
               </table>
             </div>
-          </div>
+          </div>}
 
           {/* Tracking Numbers from Bill Uploads */}
           {trackNumsFP.length>0&&(()=>{const trackUrl=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};return<div className="card" style={{marginBottom:16,borderLeft:'3px solid #1e40af'}}>

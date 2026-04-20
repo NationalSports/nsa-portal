@@ -15837,27 +15837,41 @@ export default function App(){
         }
         const amt=bill.doc_total||bill.merchandise_total+bill.freight+(bill.si_upcharge||0);
         const lineItems=[];
-        // Merchandise line
-        if(bill.merchandise_total>0){
-          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.merchandise_total,
-            Description:'Merchandise — PO '+bill.po_number+(bill.items.length?' ('+bill.items.length+' items)':''),
-            AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
-        }else if(amt>0&&!bill.freight){
-          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:amt,
-            Description:'Vendor bill — PO '+bill.po_number,
-            AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
-        }
-        // Freight line
-        if(bill.freight>0){
-          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.freight,
-            Description:'Freight charge — PO '+bill.po_number,
-            AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.freight_account||'Shipping and delivery expense')}});
-        }
-        // SI Upcharge line
-        if(bill.si_upcharge>0){
-          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.si_upcharge,
-            Description:'SI Upcharge — PO '+bill.po_number,
-            AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
+        if(bill.kind==='decoration'){
+          // Decoration bills: deco cost line (doc_total minus freight) + freight line.
+          // merchandise_total is 0 on these, so the goods-bill path would skip the cost entirely.
+          const decoAmt=Math.round(((bill.doc_total||0)-(bill.freight||0))*100)/100;
+          if(decoAmt>0){
+            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:decoAmt,
+              Description:'Outside decoration — PO '+bill.po_number+(bill.supplier?' — '+bill.supplier:''),
+              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.deco_account||qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
+          }
+          if(bill.freight>0){
+            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.freight,
+              Description:'Shipping — PO '+bill.po_number,
+              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.freight_account||'Shipping and delivery expense')}});
+          }
+        }else{
+          // Goods bills (Adidas / UA / etc.) — merchandise + freight + SI upcharge lines.
+          if(bill.merchandise_total>0){
+            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.merchandise_total,
+              Description:'Merchandise — PO '+bill.po_number+(bill.items.length?' ('+bill.items.length+' items)':''),
+              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
+          }else if(amt>0&&!bill.freight){
+            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:amt,
+              Description:'Vendor bill — PO '+bill.po_number,
+              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
+          }
+          if(bill.freight>0){
+            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.freight,
+              Description:'Freight charge — PO '+bill.po_number,
+              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.freight_account||'Shipping and delivery expense')}});
+          }
+          if(bill.si_upcharge>0){
+            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.si_upcharge,
+              Description:'SI Upcharge — PO '+bill.po_number,
+              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
+          }
         }
         if(lineItems.length===0){
           setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:'No amounts to bill'}:p)}));
