@@ -211,11 +211,12 @@ function calcTotals(o, cust) {
       rev += eq * dp.sell;
       cost += eq * dp.cost;
     });
-    (it.po_lines || []).filter(pl => pl.po_type === 'outside_deco').forEach(pl => {
-      if (safeNum(pl._bill_cost) > 0) { cost += safeNum(pl._bill_cost); return; }
-      const poQty = Object.entries(pl).filter(([k, v]) => typeof v === 'number' && !['unit_cost'].includes(k)).reduce((a, [, v]) => a + v, 0);
-      cost += poQty * safeNum(pl.unit_cost);
-    });
+  });
+  // Outside-deco POs live at the SO level (so.deco_pos), not per-item
+  (o.deco_pos || []).forEach(dp => {
+    const bc = safeNum(dp._bill_cost);
+    if (bc > 0) { cost += bc; return; }
+    cost += safeNum(dp.qty || 0) * safeNum(dp.unit_cost || 0);
   });
   const ship = o.shipping_type === 'pct' ? rev * (o.shipping_value || 0) / 100 : (o.shipping_value || 0);
   const tax = rev * (cust?.tax_rate || 0);

@@ -7567,60 +7567,24 @@ export default function App(){
             });
           });
           // Outside deco — aggregate one line per outside-deco PO (or per pending vendor/type).
-          const _outsideGroups={};
-          safeItems(so).forEach(it=>{
-            const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
-            if(!qty)return;
-            const matchesInv=invSkus.length===0||invSkus.some(s=>s===it.sku||(it.sku+' '+it.name).includes(s));
-            if(!matchesInv)return;
-            const outsidePOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
-            const aqMap2={};safeItems(so).forEach(sit=>{const sq2=Object.values(safeSizes(sit)).reduce((a2,v2)=>a2+safeNum(v2),0);safeDecos(sit).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){aqMap2[d2.art_file_id]=(aqMap2[d2.art_file_id]||0)+sq2}})});
-            const outsideDecos=safeDecos(it).filter(d=>d.kind==='outside_deco'||outsidePOs.length>0);
-            outsideDecos.forEach(d=>{
-              const cq=d.kind==='art'&&d.art_file_id?aqMap2[d.art_file_id]:qty;
-              const dp=dP(d,qty,af,cq);const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);
-              const expected=eqD*dp.cost;if(!expected&&outsidePOs.length===0)return;
-              const artF=af.find(a=>a.id===d.art_file_id);
-              const decoName=artF?.name||d.deco_type?.replace(/_/g,' ')||'Decoration';
-              if(outsidePOs.length>0){
-                const share=expected/outsidePOs.length;
-                outsidePOs.forEach(pl=>{
-                  const key=pl.po_id||('__nopo__'+(pl.deco_vendor||'')+'__'+(pl.deco_type||''));
-                  if(!_outsideGroups[key])_outsideGroups[key]={poId:pl.po_id||'',vendor:pl.deco_vendor||d.vendor||'—',decoType:pl.deco_type||d.deco_type||'',expected:0,actual:0,qty:0,skus:new Set(),artNames:new Set(),poLines:[],statuses:new Set()};
-                  _outsideGroups[key].expected+=share;
-                  _outsideGroups[key].qty+=qty/outsidePOs.length;
-                  if(it.sku)_outsideGroups[key].skus.add(it.sku);
-                  _outsideGroups[key].artNames.add(decoName);
-                });
-              }else{
-                const key='__pending__'+(d.vendor||'')+'__'+(d.deco_type||'');
-                if(!_outsideGroups[key])_outsideGroups[key]={poId:'',vendor:d.vendor||'Pending — no PO',decoType:d.deco_type||'',expected:0,actual:0,qty:0,skus:new Set(),artNames:new Set(),poLines:[],statuses:new Set()};
-                _outsideGroups[key].expected+=expected;
-                _outsideGroups[key].qty+=qty;
-                if(it.sku)_outsideGroups[key].skus.add(it.sku);
-                _outsideGroups[key].artNames.add(decoName);
-              }
-            });
-            outsidePOs.forEach(pl=>{
-              const key=pl.po_id||('__nopo__'+(pl.deco_vendor||'')+'__'+(pl.deco_type||''));
-              if(!_outsideGroups[key])_outsideGroups[key]={poId:pl.po_id||'',vendor:pl.deco_vendor||'—',decoType:pl.deco_type||'',expected:0,actual:0,qty:0,skus:new Set(),artNames:new Set(),poLines:[],statuses:new Set()};
-              if(safeNum(pl._bill_cost)>0)_outsideGroups[key].actual+=safeNum(pl._bill_cost);
-              _outsideGroups[key].poLines.push(pl);
-              _outsideGroups[key].statuses.add(pl.status||'waiting');
-              if(it.sku)_outsideGroups[key].skus.add(it.sku);
-            });
-          });
-          Object.values(_outsideGroups).forEach(g=>{
-            if(g.expected===0&&g.actual===0)return;
-            const dtLabel=g.decoType?g.decoType.replace(/_/g,' '):'';
-            const label='Outside Deco'+(dtLabel?' — '+dtLabel:'')+(g.artNames.size?' · '+[...g.artNames].slice(0,2).join(', '):'');
+          // Outside deco — one row per SO-level deco PO (so.deco_pos)
+          (so.deco_pos||[]).forEach(dp=>{
+            const qty=safeNum(dp.qty||0);
+            const unitCost=safeNum(dp.unit_cost||0);
+            const expected=safeNum(dp.expected_cost||qty*unitCost);
+            const actual=safeNum(dp._bill_cost||0);
+            if(expected===0&&actual===0)return;
+            const skus=(dp.item_idxs||[]).map(ii=>safeItems(so)[ii]?.sku).filter(Boolean);
+            if(invSkus.length>0&&!skus.some(s=>invSkus.includes(s)))return;
+            const dtLabel=dp.deco_type?dp.deco_type.replace(/_/g,' '):'';
             costLines.push({category:'Outside Deco',
-              sku:[...g.skus].filter(Boolean).join(', ')||'—',
-              name:label,vendor:g.vendor,qty:Math.round(g.qty),
-              expected:Math.round(g.expected*100)/100,
-              actual:Math.round(g.actual*100)/100,
-              poCount:g.poLines.length,poIds:g.poId||'',
-              allReceived:g.poLines.length>0&&[...g.statuses].every(s=>s==='received')});
+              sku:skus.join(', ')||'—',
+              name:'Outside Deco'+(dtLabel?' — '+dtLabel:''),
+              vendor:dp.vendor||'—',qty,
+              expected:Math.round(expected*100)/100,
+              actual:Math.round(actual*100)/100,
+              poCount:1,poIds:dp.po_id||'',
+              allReceived:dp.status==='received'});
           });
           if(costLines.length===0)return null;
           const totalExpected=costLines.reduce((a,l)=>a+l.expected,0);
@@ -9697,9 +9661,9 @@ export default function App(){
       safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
         rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);
         safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);rev+=qty*dp2.sell;cost+=qty*dp2.cost});
-        // Outside deco POs
-        (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost').reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)});
       });
+      // Outside deco POs — SO-level cost bucket
+      (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
       // Shipping revenue (charged to customer)
       const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
       // Outbound shipping cost from ShipStation — fallback to shipment records
@@ -9778,8 +9742,8 @@ export default function App(){
         safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
           rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);
           safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);rev+=qty*dp2.sell;cost+=qty*dp2.cost});
-          (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost').reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)});
         });
+        (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
         const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
         const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
         const inboundFreight=safeNum(so._inbound_freight||0);
@@ -9811,9 +9775,10 @@ export default function App(){
             productCost+=qty*safeNum(it.nsa_cost);
             const sellP=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;promoRev+=qty*sellP;
             safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,soAf,cq);decoCost+=qty*dp2.cost;promoRev+=qty*rQ(dp2.sell*1.25)});
-            (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)).reduce((a,[,v])=>a+v,0);decoCost+=poQty*safeNum(pl.unit_cost)});
           }
         });
+        // Outside deco POs — only if promo-qualifying items are covered. Simpler: add all SO deco.
+        (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);const c=bc>0?bc:safeNum(dp.qty||0)*safeNum(dp.unit_cost||0);decoCost+=c});
         const totalRev=promoRev;const baseShip=so.shipping_type==='pct'?totalRev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
         const shipCost=rQ(baseShip*1.25);
         const totalCost=productCost+decoCost+shipCost;
@@ -15406,7 +15371,22 @@ export default function App(){
           const invMatch=invPOs.find(p=>p.po_number&&p.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
           if(invMatch){bill.matchedPO=invMatch;bill.matchedPOSource='inv_po'}
         }
-        // Also search SO item PO lines (match by po_id or memo — use startsWith to handle suffixed PO IDs like "PO4133 OLUF")
+        // Check SO-level decoration POs (so.deco_pos) first — cost buckets for outside decorators
+        if(!bill.matchedPO){
+          for(const so of sos){
+            for(const dp of (so.deco_pos||[])){
+              const pid=(dp.po_id||'').toLowerCase().replace(/\s+/g,'');
+              if(pid===poLc||pid.startsWith(poLc)){
+                bill.matchedPO={so_id:so.id,po_id:dp.po_id,deco_po:dp,so};
+                bill.matchedPOSource='so_deco_po';
+                break;
+              }
+            }
+            if(bill.matchedPO)break;
+          }
+        }
+        // Fallback: SO item PO lines (blanks goods POs — match by po_id or memo, startsWith to
+        // handle suffixed PO IDs like "PO4133 OLUF")
         if(!bill.matchedPO){
           for(const so of sos){
             for(const it of (so.items||[])){
@@ -15593,7 +15573,7 @@ export default function App(){
       if(p.matchedPOSource)return true;
       const t=p._manualTarget;
       if(!t||!t.soId||p.kind!=='decoration')return false;
-      if(t.mode==='existing')return t.itemIdx!=null&&t.poLineIdx!=null;
+      if(t.mode==='existing')return !!t.decoPoId;
       if(t.mode==='create')return true;// applies to SO — no per-item pick required
       return false;
     };
@@ -15607,6 +15587,15 @@ export default function App(){
       if(batchMatch){updated.matchedPO=batchMatch;updated.matchedPOSource='batch';return updated}
       const invMatch=invPOs.find(p=>p.po_number&&p.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
       if(invMatch){updated.matchedPO=invMatch;updated.matchedPOSource='inv_po';return updated}
+      // Check SO-level decoration POs first (so.deco_pos) — these are the new-style cost buckets
+      for(const so of sos){for(const dp of (so.deco_pos||[])){
+        const pid=(dp.po_id||'').toLowerCase().replace(/\s+/g,'');
+        if(pid===poLc||pid.startsWith(poLc)){
+          updated.matchedPO={so_id:so.id,po_id:dp.po_id,deco_po:dp,so};
+          updated.matchedPOSource='so_deco_po';return updated;
+        }
+      }}
+      // Fallback: item-level po_lines (blanks goods POs)
       for(const so of sos){for(const it of (so.items||[])){for(const po of (it.po_lines||[])){
         const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
         const pmemo=(po.memo||'').toLowerCase().replace(/\s+/g,'');
@@ -15620,6 +15609,7 @@ export default function App(){
 
     // Apply a decoration bill manually when the user has picked an SO + target po_line (or "create new").
     // target = {soId, mode:'existing', itemIdx, poLineIdx}  OR  {soId, mode:'create', itemIdx, decoType}
+    // target = {soId, mode:'existing', decoPoId}  OR  {soId, mode:'create'}
     const _applyDecorationBillManually=(bill)=>{
       const t=bill._manualTarget;
       if(!t||!t.soId)return;
@@ -15628,86 +15618,79 @@ export default function App(){
       const billDetail={doc:bill.doc_number,date:bill.doc_date,supplier:bill.supplier,cost:decoCost,freight,tracking:bill.tracking};
       setSOs(prev=>prev.map(s=>{
         if(s.id!==t.soId)return s;
-        let nextItems;
-        if(t.mode==='existing'&&t.itemIdx!=null&&t.poLineIdx!=null){
-          nextItems=(s.items||[]).map((it,ii)=>{
-            if(ii!==t.itemIdx)return it;
-            return{...it,po_lines:(it.po_lines||[]).map((po,pi)=>{
-              if(pi!==t.poLineIdx)return po;
-              const trackNums=[...(po.tracking_numbers||[])];
-              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
-              const prevBillCost=safeNum(po._bill_cost||0);
-              return{...po,tracking_numbers:trackNums,
-                _bill_cost:Math.round((prevBillCost+decoCost)*100)/100,
-                _bill_details:[...(po._bill_details||[]),billDetail]};
-            })};
+        let nextDecoPos=s.deco_pos||[];
+        if(t.mode==='existing'&&t.decoPoId){
+          nextDecoPos=nextDecoPos.map(dp=>{
+            if(dp.id!==t.decoPoId)return dp;
+            const trackNums=[...(dp.tracking_numbers||[])];
+            if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+            return{...dp,tracking_numbers:trackNums,
+              _bill_cost:Math.round((safeNum(dp._bill_cost||0)+decoCost)*100)/100,
+              _bill_details:[...(dp._bill_details||[]),billDetail],
+              status:'billed'};
           });
         }else if(t.mode==='create'){
-          // Attach the new po_line to the first item on the SO — decoration bills cover the
-          // whole job, so which item holds the po_line doesn't matter for cost aggregation
-          // (outside-deco cost is already consolidated by po_id at the SO level).
-          const targetIdx=t.itemIdx??0;
-          if(!(s.items||[])[targetIdx])return s;
+          // Create a new SO-level deco PO from the bill. Cost-bucket only — no item selection;
+          // reps can edit item_idxs later on the PO page if they want item badges.
           const inferredType=/embroidery/i.test(bill.supplier||'')?'embroidery':'screen_print';
-          const newPO={po_id:bill.po_number,po_type:'outside_deco',vendor:bill.supplier,deco_vendor:bill.supplier,deco_type:t.decoType||inferredType,
+          const newDecoPO={id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
+            po_id:bill.po_number,vendor:bill.supplier,deco_vendor_id:null,deco_type:inferredType,
+            item_idxs:[],qty:0,unit_cost:0,expected_cost:0,
+            notes:'Created from supplier bill',drop_ship:undefined,expected_date:'',preexisting:true,
+            status:'billed',created_at:new Date().toLocaleDateString(),
             _bill_cost:decoCost,_bill_details:[billDetail],
-            tracking_numbers:bill.tracking?[bill.tracking]:[],
-            status:'received',created_at:new Date().toLocaleString()};
-          nextItems=(s.items||[]).map((it,ii)=>ii!==targetIdx?it:{...it,po_lines:[...(it.po_lines||[]),newPO]});
+            tracking_numbers:bill.tracking?[bill.tracking]:[]};
+          nextDecoPos=[...nextDecoPos,newDecoPO];
         }else return s;
-        const updated={...s,items:nextItems,updated_at:new Date().toLocaleString()};
+        const updated={...s,deco_pos:nextDecoPos,updated_at:new Date().toLocaleString()};
         if(freight>0){const prevShip=safeNum(s._shipping_cost||0);updated._shipping_cost=Math.round((prevShip+freight)*100)/100}
         _dbSaveSO(updated);
         return updated;
       }));
     };
 
-    // Apply a decoration bill (Olympic / Frontier / Silver Screen) to the matched SO PO line.
-    // Total cost (minus freight) is attributed to the deco po_line's _bill_cost.
+    // Apply a decoration bill to the matched SO-level deco PO (so.deco_pos entry).
+    // Total cost (minus freight) is attributed to the deco PO's _bill_cost.
     // Freight is posted to the SO's outbound shipping (_shipping_cost).
-    const _applyDecorationBillToSO=(bill,soId)=>{
+    const _applyDecorationBillToSO=(bill,soId,decoPoId)=>{
       if(!soId)return;
-      const poLc=(bill.po_number||'').toLowerCase().replace(/\s+/g,'');
-      if(!poLc)return;
       const freight=safeNum(bill.freight||0);
       const decoCost=Math.round((safeNum(bill.doc_total||0)-freight)*100)/100;
+      const billDetail={doc:bill.doc_number,date:bill.doc_date,supplier:bill.supplier,cost:decoCost,freight,tracking:bill.tracking};
+      const poLc=(bill.po_number||'').toLowerCase().replace(/\s+/g,'');
       setSOs(prev=>prev.map(s=>{
         if(s.id!==soId)return s;
-        let costApplied=false;
-        const updatedItems=(s.items||[]).map(it=>{
-          if(!it.po_lines?.length)return it;
-          return{...it,po_lines:it.po_lines.map(po=>{
-            const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
-            if(pid!==poLc&&!pid.startsWith(poLc))return po;
-            // Tracking attaches to every matching po_line (useful for shipping visibility)
-            const trackNums=[...(po.tracking_numbers||[])];
-            if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
-            // Cost attaches to the first matching po_line only — avoids double-counting when
-            // multiple items share the same decoration PO (same po_id across several items).
-            if(costApplied)return{...po,tracking_numbers:trackNums};
-            costApplied=true;
-            const prevBillCost=safeNum(po._bill_cost||0);
-            return{...po,tracking_numbers:trackNums,
-              _bill_cost:Math.round((prevBillCost+decoCost)*100)/100,
-              _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,supplier:bill.supplier,cost:decoCost,freight,tracking:bill.tracking}]};
-          })};
+        let hit=false;
+        const nextDecoPos=(s.deco_pos||[]).map(dp=>{
+          const matches=decoPoId?dp.id===decoPoId:(()=>{const pid=(dp.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===poLc||pid.startsWith(poLc)})();
+          if(!matches)return dp;
+          hit=true;
+          const trackNums=[...(dp.tracking_numbers||[])];
+          if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+          return{...dp,tracking_numbers:trackNums,
+            _bill_cost:Math.round((safeNum(dp._bill_cost||0)+decoCost)*100)/100,
+            _bill_details:[...(dp._bill_details||[]),billDetail],
+            status:'billed'};
         });
-        if(!costApplied)return s;
-        const prevShip=safeNum(s._shipping_cost||0);
-        const updatedSO={...s,items:updatedItems,updated_at:new Date().toLocaleString()};
-        if(freight>0)updatedSO._shipping_cost=Math.round((prevShip+freight)*100)/100;
-        _dbSaveSO(updatedSO);
-        return updatedSO;
+        if(!hit)return s;
+        const updated={...s,deco_pos:nextDecoPos,updated_at:new Date().toLocaleString()};
+        if(freight>0){const prevShip=safeNum(s._shipping_cost||0);updated._shipping_cost=Math.round((prevShip+freight)*100)/100}
+        _dbSaveSO(updated);
+        return updated;
       }));
     };
 
     const applyBillToSO=(bill)=>{
       if(bill._applied)return;
       bill._applied=true;
-      // Decoration bills — route to dedicated apply (total cost → deco po_line; freight → outbound)
+      // Decoration bills — route to dedicated apply (total cost → deco PO; freight → outbound)
       if(bill.kind==='decoration'){
         if(bill._manualTarget?.soId){_applyDecorationBillManually(bill);return}
-        if(bill.matchedPOSource==='so_po'&&bill.matchedPO){
+        if(bill.matchedPOSource==='so_deco_po'&&bill.matchedPO){
+          const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
+          _applyDecorationBillToSO(bill,soId,bill.matchedPO.deco_po?.id);
+        }else if(bill.matchedPOSource==='so_po'&&bill.matchedPO){
+          // Fallback: matched an old-style po_line (legacy data). No-op for new flow.
           const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
           _applyDecorationBillToSO(bill,soId);
         }
@@ -16815,10 +16798,10 @@ export default function App(){
                   <span style={{fontSize:14}}>&#128279;</span>
                   <div style={{flex:1}}>
                     <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>
-                      Matched to {poSrc==='batch'?'Batch PO':poSrc==='so_po'?'Sales Order PO':'Inventory PO'}: {poMatch.po_number||poMatch.po_id||''}
+                      Matched to {poSrc==='batch'?'Batch PO':poSrc==='so_po'||poSrc==='so_deco_po'?'Sales Order PO':'Inventory PO'}: {poMatch.po_number||poMatch.po_id||''}
                       {poSrc==='batch'&&poMatch.vendor_name&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.vendor_name}</span>}
                       {poSrc==='inv_po'&&poMatch.vendor_name&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.vendor_name}</span>}
-                      {poSrc==='so_po'&&poMatch.so_id&&(()=>{const soCust=cust.find(cc=>cc.id===poMatch.so?.customer_id);return<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.so_id}{soCust?.name?' · '+soCust.name:''}</span>})()}
+                      {(poSrc==='so_po'||poSrc==='so_deco_po')&&poMatch.so_id&&(()=>{const soCust=cust.find(cc=>cc.id===poMatch.so?.customer_id);return<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.so_id}{soCust?.name?' · '+soCust.name:''}</span>})()}
                     </div>
                     <div style={{fontSize:11,color:'#475569',marginTop:2}}>
                       {poSrc==='batch'&&<>Units: {poMatch.total_units||'?'} | Cost: ${(poMatch.total_cost||0).toFixed(2)}
@@ -16832,6 +16815,7 @@ export default function App(){
                       </>}
                       {poSrc==='so_po'&&<>{poMatch.item?.sku||''} {poMatch.item?.name||''} | {poMatch.so_id}
                       </>}
+                      {poSrc==='so_deco_po'&&<>Decoration PO · {poMatch.deco_po?.vendor||''}{poMatch.deco_po?.deco_type?' · '+poMatch.deco_po.deco_type.replace(/_/g,' '):''} · Expected ${safeNum(poMatch.deco_po?.expected_cost||0).toFixed(2)}</>}
                     </div>
                   </div>
                 </div>}
@@ -16908,12 +16892,7 @@ export default function App(){
                   const t=bill._manualTarget||{};
                   const setT=nt=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_manualTarget:nt}}:p)}));
                   const so=t.soId?sos.find(s=>s.id===t.soId):null;
-                  const decoLines=[];
-                  if(so)(so.items||[]).forEach((it,ii)=>(it.po_lines||[]).forEach((po,pi)=>{
-                    if(po.deco_vendor||po.deco_type||/embroidery|screen|print|deco/i.test(po.vendor||''))
-                      decoLines.push({itemIdx:ii,poLineIdx:pi,label:(po.po_id||'(no PO)')+' · '+(it.sku||'')+' '+(it.name||'')+(it.color?' · '+it.color:'')+' — '+(po.deco_vendor||po.vendor||po.deco_type||'')});
-                  }));
-                  const defaultDeco=/embroidery/i.test(bill.supplier||'')?'embroidery':'screen_print';
+                  const decoPOs=so?(so.deco_pos||[]):[];
                   return<div style={{padding:'10px 14px',background:'#fff7ed',borderTop:'1px solid #fed7aa'}}>
                     <div style={{fontSize:11,fontWeight:700,color:'#9a3412',marginBottom:6}}>Assign this decoration bill to a Sales Order:</div>
                     <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
@@ -16923,38 +16902,31 @@ export default function App(){
                         onChange={e=>{
                           const v=e.target.value.split(' — ')[0].trim();
                           const nextSO=sos.find(s=>s.id===v);
-                          let hasDecoLine=false;
-                          if(nextSO)(nextSO.items||[]).forEach(it=>(it.po_lines||[]).forEach(pl=>{if(pl.deco_vendor||pl.deco_type||/embroidery|screen|print|deco/i.test(pl.vendor||''))hasDecoLine=true}));
-                          // Auto-select Create mode when the picked SO has no existing deco PO lines.
-                          const mode=hasDecoLine?(t.mode||'existing'):'create';
-                          setT({soId:v,mode,itemIdx:mode==='create'?0:null,poLineIdx:null,decoType:mode==='create'?defaultDeco:null});
+                          const hasDecoPO=!!(nextSO&&(nextSO.deco_pos||[]).length>0);
+                          const mode=hasDecoPO?(t.mode||'existing'):'create';
+                          setT({soId:v,mode,decoPoId:null});
                         }}/>
                       <datalist id={`so-list-${bi}`}>
                         {sos.slice(0,500).map(s=>{const c=cust.find(cc=>cc.id===s.customer_id);const cn=c?.name||s.customer_name||'';return<option key={s.id} value={`${s.id} — ${cn}`}>{s.id} — {cn}</option>})}
                       </datalist>
                       {t.soId&&!so&&<span style={{fontSize:10,color:'#dc2626'}}>SO not found</span>}
-                      {so&&(decoLines.length>0?<>
+                      {so&&(decoPOs.length>0?<>
                         <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Mode</label>
-                        <select className="form-input" style={{width:170,fontSize:11,padding:'3px 6px'}} value={t.mode||'existing'}
-                          onChange={e=>setT({...t,mode:e.target.value,itemIdx:e.target.value==='create'?0:null,poLineIdx:null,decoType:e.target.value==='create'?defaultDeco:null})}>
-                          <option value="existing">Attach to existing PO line</option>
-                          <option value="create">Create new deco PO line</option>
+                        <select className="form-input" style={{width:180,fontSize:11,padding:'3px 6px'}} value={t.mode||'existing'}
+                          onChange={e=>setT({...t,mode:e.target.value,decoPoId:null})}>
+                          <option value="existing">Attach to existing deco PO</option>
+                          <option value="create">Create new deco PO</option>
                         </select>
-                        {t.mode==='create'?<>
-                          {(so.items||[]).length===0&&<span style={{fontSize:10,color:'#dc2626'}}>SO has no items — can't create PO line</span>}
-                        </>:<>
-                          <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>PO Line</label>
-                          <select className="form-input" style={{width:460,fontSize:11,padding:'3px 6px'}}
-                            value={t.itemIdx!=null&&t.poLineIdx!=null?`${t.itemIdx}:${t.poLineIdx}`:''}
-                            onChange={e=>{const v=e.target.value;if(!v)return setT({...t,itemIdx:null,poLineIdx:null});const[ii,pi]=v.split(':').map(Number);setT({...t,itemIdx:ii,poLineIdx:pi})}}>
-                            <option value="">— pick PO line —</option>
-                            {decoLines.map((d,di)=><option key={di} value={`${d.itemIdx}:${d.poLineIdx}`}>{d.label}</option>)}
+                        {t.mode!=='create'&&<>
+                          <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Deco PO</label>
+                          <select className="form-input" style={{width:420,fontSize:11,padding:'3px 6px'}}
+                            value={t.decoPoId||''}
+                            onChange={e=>setT({...t,decoPoId:e.target.value||null})}>
+                            <option value="">— pick deco PO —</option>
+                            {decoPOs.map(dp=><option key={dp.id} value={dp.id}>{(dp.po_id||'(no PO)')+' — '+(dp.vendor||'')+(dp.deco_type?' · '+dp.deco_type.replace(/_/g,' '):'')+' — $'+(safeNum(dp.expected_cost||dp.qty*dp.unit_cost)||0).toFixed(2)+' exp'}</option>)}
                           </select>
                         </>}
-                      </>:<>
-                        <span style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Will create new deco PO on this SO</span>
-                        {(so.items||[]).length===0&&<span style={{fontSize:10,color:'#dc2626'}}>SO has no items — can't create PO line</span>}
-                      </>)}
+                      </>:<span style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Will create new deco PO on this SO</span>)}
                     </div>
                   </div>;
                 })()}

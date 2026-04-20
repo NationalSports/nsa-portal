@@ -43,7 +43,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     React.useEffect(()=>{if(initTab)setTab(initTab)},[initTab]);
     React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
     React.useEffect(()=>{if(scrollToJob!=null){setTab('jobs');setSelJob(scrollToJob);setTimeout(()=>{const el=document.getElementById('so-job-'+scrollToJob);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)}},[scrollToJob]);
-    React.useEffect(()=>{if(openPOId){const items=safeItems(o);for(let i=0;i<items.length;i++){const poIdx=(items[i].po_lines||[]).findIndex(p=>p.po_id===openPOId);if(poIdx>=0){const poLine=items[i].po_lines[poIdx];const allLines=items.map((_,idx)=>({lineIdx:idx})).filter(ln=>items[ln.lineIdx]?.po_lines?.some(p=>p.po_id===openPOId));setPoFullPage({po:poLine,item:items[i],allLines,soId:o.id,soItems:items});break}}}},[openPOId]);
+    React.useEffect(()=>{if(openPOId){
+      // Check SO-level deco_pos first — decoration POs are cost buckets, not per-item line items.
+      const decoPO=(o.deco_pos||[]).find(dp=>dp.po_id===openPOId);
+      if(decoPO){setPoFullPage({decoPo:decoPO,soId:o.id,soItems:safeItems(o)});return}
+      // Fallback: item-level po_lines (blanks POs).
+      const items=safeItems(o);for(let i=0;i<items.length;i++){const poIdx=(items[i].po_lines||[]).findIndex(p=>p.po_id===openPOId);if(poIdx>=0){const poLine=items[i].po_lines[poIdx];const allLines=items.map((_,idx)=>({lineIdx:idx})).filter(ln=>items[ln.lineIdx]?.po_lines?.some(p=>p.po_id===openPOId));setPoFullPage({po:poLine,item:items[i],allLines,soId:o.id,soItems:items});break}}
+    }},[openPOId]);
     const origRef=React.useRef(JSON.stringify(o));
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const actionsRef=useRef(null);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=4000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>{let max=3000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const m=parseInt((po.po_id||'').replace('PO-',''))||0;if(m>max)max=m})));return max+1});
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');const[pickSel,setPickSel]=useState({});/* selected item indexes for IF multi-select */
@@ -995,7 +1001,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Use per-size sells/costs when available (vendor items have _sizeCosts/_sizeSells for 2XL+ upcharges)
     if(it._sizeCosts&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0){rev+=n*(it._sizeSells?.[sz]||safeNum(it.unit_sell));cost+=n*(it._sizeCosts[sz]||safeNum(it.nsa_cost))}})}else{rev+=q*safeNum(it.unit_sell);cost+=q*safeNum(it.nsa_cost)}
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=eq*dp.cost});
-    (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{if(safeNum(pl._bill_cost)>0){cost+=safeNum(pl._bill_cost);return}const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)).reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});
+    });
+    // Outside-deco POs live at SO level (so.deco_pos), not under items
+    (o.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const tax=rev*taxRate;
     return{rev,cost,ship,tax,taxRate,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust]); // eslint-disable-line
 
@@ -1648,7 +1656,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   :item.is_custom?<input className="form-input" value={item.color||''} onChange={e=>uI(idx,'color',e.target.value)} style={{fontSize:12,width:100}} placeholder="Color"/>
                   :<span className="badge badge-gray">{item.color}</span>}
                 {item.is_custom&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Custom</span>}
-                {(item.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').map(pl=><span key={pl.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={pl.deco_vendor+' — '+pl.deco_type?.replace(/_/g,' ')} onClick={()=>setTab('items')}>{pl.po_id}</span>)}
+                {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={dp.vendor+' — '+dp.deco_type?.replace(/_/g,' ')} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>{dp.po_id} · {dp.vendor}</span>)}
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
                 {o.promo_applied&&<label style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',background:item.is_promo?'#fef3c7':'#f1f5f9',color:item.is_promo?'#92400e':'#94a3b8',border:item.is_promo?'1px solid #fde68a':'1px solid #e2e8f0'}}><input type="checkbox" checked={item.is_promo||false} onChange={e=>{const checked=e.target.checked;if(checked){uI(idx,'_pre_promo_sell',item.unit_sell);uI(idx,'unit_sell',safeNum(item.retail_price)||safeNum(item.nsa_cost)*2);uI(idx,'is_promo',true)}else{uI(idx,'unit_sell',item._pre_promo_sell!=null?item._pre_promo_sell:item.unit_sell);uI(idx,'_pre_promo_sell',undefined);uI(idx,'is_promo',false)}}} style={{width:12,height:12}}/> Promo{item.is_promo&&item.retail_price?' ($'+item.retail_price+')':''}</label>}</div>
               <div style={{display:'flex',alignItems:'center',gap:8,marginTop:4,flexWrap:'wrap'}}>
@@ -2701,6 +2709,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`} style={{fontSize:10}}>{po.status==='received'?'Received':po.status==='partial'?'Partial':'Waiting'}</span>
             <span style={{fontSize:11,color:'#64748b'}}>{po.totalRcvd}/{po.totalOrd} received</span>
           </div>)}</div>
+        <div style={{padding:12,background:'#faf5ff',borderRadius:8,border:'1px solid #ede9fe'}}><div style={{fontWeight:600,marginBottom:4,color:'#7c3aed'}}>Decoration POs <span style={{fontSize:10,fontWeight:400,color:'#94a3b8'}}>— outside-decorator cost buckets (not line-item orders)</span></div>
+          {(o.deco_pos||[]).length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No decoration POs yet</div>:
+          (o.deco_pos||[]).map(dp=>{const expected=safeNum(dp.expected_cost||dp.qty*dp.unit_cost);const actual=safeNum(dp._bill_cost||0);return<div key={dp.id||dp.po_id} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #ede9fe',cursor:'pointer',flexWrap:'wrap'}} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>
+            <span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:12}}>{dp.po_id}</span>
+            <span style={{fontSize:11,color:'#64748b'}}>{dp.vendor||'—'}</span>
+            {dp.deco_type&&<span style={{fontSize:10,padding:'2px 6px',borderRadius:3,background:'#ede9fe',color:'#7c3aed',fontWeight:600}}>{dp.deco_type.replace(/_/g,' ')}</span>}
+            <span className={`badge ${dp.status==='billed'||dp.status==='received'?'badge-green':dp.status==='ordered'?'badge-blue':'badge-gray'}`} style={{fontSize:10}}>{(dp.status||'waiting').replace(/^./,c=>c.toUpperCase())}</span>
+            <span style={{fontSize:11,color:'#64748b'}}>Expected ${expected.toFixed(2)}{actual>0?' · Actual $'+actual.toFixed(2):''}</span>
+            {(dp.item_idxs||[]).length>0&&<span style={{fontSize:10,color:'#94a3b8'}}>{(dp.item_idxs||[]).length} item{(dp.item_idxs||[]).length!==1?'s':''}</span>}
+          </div>})}</div>
         <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Invoices</div>
           {linkedInvs.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No invoices linked yet</div>:
           linkedInvs.map(inv=><div key={inv.id} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #f1f5f9',cursor:onNavInvoice?'pointer':'default'}} onClick={()=>onNavInvoice&&onNavInvoice(inv)}>
@@ -3015,63 +3033,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }
           });
         });
-        // Outside deco — aggregate across items, one cost line per outside-deco PO (fallback:
-        // group by vendor+decoType when no PO is set up yet). Expected is the sum of quoted
-        // decoration cost for items using that PO; Actual is the bill's _bill_cost (—, when
-        // no bill applied yet).
-        const outsideGroups={};
-        safeItems(o).forEach(it=>{
-          const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
-          if(!qty)return;
-          const outsidePOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
-          const outsideDecos=safeDecos(it).filter(d=>d.kind==='outside_deco'||outsidePOs.length>0);
-          outsideDecos.forEach(d=>{
-            const dp=dP(d,qty,af,qty);const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);
-            const expected=eqD*dp.cost;if(!expected&&outsidePOs.length===0)return;
-            const artF=af.find(a=>a.id===d.art_file_id);
-            const decoName=artF?.name||d.deco_type?.replace(/_/g,' ')||'Decoration';
-            if(outsidePOs.length>0){
-              const share=expected/outsidePOs.length;
-              outsidePOs.forEach(pl=>{
-                const key=pl.po_id||('__nopo__'+(pl.deco_vendor||'')+'__'+(pl.deco_type||''));
-                if(!outsideGroups[key])outsideGroups[key]={poId:pl.po_id||'',vendor:pl.deco_vendor||d.vendor||'—',decoType:pl.deco_type||d.deco_type||'',expected:0,actual:0,qty:0,skus:new Set(),artNames:new Set(),poLines:[],statuses:new Set()};
-                outsideGroups[key].expected+=share;
-                outsideGroups[key].qty+=qty/outsidePOs.length;
-                if(it.sku)outsideGroups[key].skus.add(it.sku);
-                outsideGroups[key].artNames.add(decoName);
-              });
-            }else{
-              const key='__pending__'+(d.vendor||'')+'__'+(d.deco_type||'');
-              if(!outsideGroups[key])outsideGroups[key]={poId:'',vendor:d.vendor||'Pending — no PO',decoType:d.deco_type||'',expected:0,actual:0,qty:0,skus:new Set(),artNames:new Set(),poLines:[],statuses:new Set()};
-              outsideGroups[key].expected+=expected;
-              outsideGroups[key].qty+=qty;
-              if(it.sku)outsideGroups[key].skus.add(it.sku);
-              outsideGroups[key].artNames.add(decoName);
-            }
-          });
-          outsidePOs.forEach(pl=>{
-            const key=pl.po_id||('__nopo__'+(pl.deco_vendor||'')+'__'+(pl.deco_type||''));
-            if(!outsideGroups[key])outsideGroups[key]={poId:pl.po_id||'',vendor:pl.deco_vendor||'—',decoType:pl.deco_type||'',expected:0,actual:0,qty:0,skus:new Set(),artNames:new Set(),poLines:[],statuses:new Set()};
-            if(safeNum(pl._bill_cost)>0)outsideGroups[key].actual+=safeNum(pl._bill_cost);
-            outsideGroups[key].poLines.push(pl);
-            outsideGroups[key].statuses.add(pl.status||'waiting');
-            if(it.sku)outsideGroups[key].skus.add(it.sku);
-          });
-        });
-        Object.values(outsideGroups).forEach(g=>{
-          if(g.expected===0&&g.actual===0)return;
-          const dtLabel=g.decoType?g.decoType.replace(/_/g,' '):'';
-          const label='Outside Deco'+(dtLabel?' — '+dtLabel:'')+(g.artNames.size?' · '+[...g.artNames].slice(0,2).join(', '):'');
+        // Outside deco — one row per SO-level deco PO (so.deco_pos). Expected = qty × unit_cost
+        // from the PO (price-list driven); Actual = _bill_cost (—, when no bill applied yet).
+        (o.deco_pos||[]).forEach(dp=>{
+          const qty=safeNum(dp.qty||0);
+          const unitCost=safeNum(dp.unit_cost||0);
+          const expected=safeNum(dp.expected_cost||qty*unitCost);
+          const actual=safeNum(dp._bill_cost||0);
+          if(expected===0&&actual===0)return;
+          const skus=(dp.item_idxs||[]).map(ii=>safeItems(o)[ii]?.sku).filter(Boolean);
+          const dtLabel=dp.deco_type?dp.deco_type.replace(/_/g,' '):'';
           costLines.push({category:'Outside Deco',
-            sku:[...g.skus].filter(Boolean).join(', ')||'—',
-            name:label,
-            vendor:g.vendor,
-            qty:Math.round(g.qty),
-            expected:Math.round(g.expected*100)/100,
-            actual:Math.round(g.actual*100)/100,
-            poCount:g.poLines.length,
-            poIds:g.poId||'',
-            allReceived:g.poLines.length>0&&[...g.statuses].every(s=>s==='received')});
+            sku:skus.join(', ')||'—',
+            name:'Outside Deco'+(dtLabel?' — '+dtLabel:''),
+            vendor:dp.vendor||'—',
+            qty,
+            expected:Math.round(expected*100)/100,
+            actual:Math.round(actual*100)/100,
+            poCount:1,
+            poIds:dp.po_id||'',
+            allReceived:dp.status==='received'});
         });
         if(costLines.length===0)return<div className="card"><div className="card-body"><div className="empty">No cost data — add items first</div></div></div>;
         const hasActuals=costLines.some(l=>l.actual>0);
@@ -4077,52 +4058,55 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const autoPoId='DPO-'+poCounter+(cust?.alpha_tag?'-'+cust.alpha_tag:'');
         const poId=preexistingPO?preexistingPOId:autoPoId;
         const dv=decoVendors.find(v=>v.name===decoVendor);
+        const _initialDpoQty=allItems.reduce((a,it)=>a+Object.values(safeSizes(it)).reduce((b,v)=>b+safeNum(v),0),0);
+        const _initialDpoCost=dv?_decoVendorPrice(decoVendorPricing,dv.id,'embroidery',{qty:_initialDpoQty}):null;
+        const _recalcDpo=()=>{
+          let qty=0;const selected=[];
+          allItems.forEach((it,vi)=>{if(document.getElementById('dpo-sel-'+vi)?.checked){qty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);selected.push(vi)}});
+          const dt=document.getElementById('dpo-type-'+poId)?.value||'embroidery';
+          const price=dv?_decoVendorPrice(decoVendorPricing,dv.id,dt,{qty}):null;
+          const qtyEl=document.getElementById('dpo-total-qty');if(qtyEl)qtyEl.value=qty;
+          const ucEl=document.getElementById('dpo-unit-cost');
+          if(ucEl&&(ucEl.dataset.auto==='1'||!ucEl.value||ucEl.value==='0'||ucEl.value==='0.00')&&price!==null){ucEl.value=price.toFixed(2);ucEl.dataset.auto='1'}
+          const uc=parseFloat(ucEl?.value)||0;
+          const expEl=document.getElementById('dpo-expected-cost');if(expEl)expEl.value=(qty*uc).toFixed(2);
+        };
         return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
           <div className="modal-header"><h2 style={{color:'#7c3aed'}}>🎨 Deco PO — {decoVendor}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
           <div className="modal-body">
             {!preexistingPO?<div style={{padding:10,background:'#faf5ff',border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,fontSize:12,color:'#6d28d9'}}>
-              Sending items to <strong>{decoVendor}</strong> for outside decoration. PO #{poId||'—'} will be saved to this SO for cost tracking and commission calculation.
+              <strong>{decoVendor}</strong> decoration PO — associates this decorator's bill (and commission) with this sales order. This is a cost bucket, not an order for physical items; pick which items on the SO this PO covers so we can price it and badge them.
             </div>:<div style={{padding:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,marginBottom:12}}>
               <div style={{fontSize:12,fontWeight:700,color:'#d97706'}}>Preexisting PO Mode — Enter the PO number from the decorator's bill (or elsewhere). This will not affect sequential PO numbering.</div>
             </div>}
             <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" checked={preexistingPO} onChange={e=>{setPreexistingPO(e.target.checked);if(!e.target.checked)setPreexistingPOId('')}}/><span style={{fontWeight:600,color:'#d97706'}}>Preexisting PO</span><span style={{fontSize:11,color:'#64748b'}}>— Apply an existing PO number (bypasses sequential numbering)</span></label></div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
               <div><label className="form-label">PO Number</label>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO7514" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b'}}/>:<input className="form-input" value={autoPoId} readOnly style={{color:'#7c3aed',fontWeight:700}}/>}</div>
-              <div><label className="form-label">Deco Type</label><select className="form-select" id={'dpo-type-'+poId} onChange={e=>{
-                if(!dv)return;const dt=e.target.value;allItems.forEach((_,vi)=>{const soQ=Object.values(safeSizes(allItems[vi])).reduce((a,v)=>a+safeNum(v),0);const cost=_decoVendorPrice(decoVendorPricing,dv.id,dt,{qty:soQ});const el=document.getElementById('dpo-cost-'+vi);if(el&&cost!==null)el.value=cost.toFixed(2)});
-              }}>
+              <div><label className="form-label">Deco Type</label><select className="form-select" id={'dpo-type-'+poId} defaultValue="embroidery" onChange={()=>{const ucEl=document.getElementById('dpo-unit-cost');if(ucEl)ucEl.dataset.auto='1';_recalcDpo()}}>
                 <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
               <div><label className="form-label">Expected Return</label><input className="form-input" type="date" id={'dpo-date-'+poId}/></div>
             </div>
             <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" id={'dpo-dropship-'+poId}/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school, skip warehouse receive</span></label></div>
+            <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:6}}>Items covered by this PO</div>
             {allItems.length>1&&<div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8,fontSize:11}}>
               <span style={{color:'#64748b',fontWeight:600}}>{allItems.length} item{allItems.length!==1?'s':''} available</span>
-              <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 10px'}} onClick={()=>{allItems.forEach((_,vi)=>{const el=document.getElementById('dpo-sel-'+vi);if(el)el.checked=true})}}>Select All</button>
-              <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 10px'}} onClick={()=>{allItems.forEach((_,vi)=>{const el=document.getElementById('dpo-sel-'+vi);if(el)el.checked=false})}}>Deselect All</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 10px'}} onClick={()=>{allItems.forEach((_,vi)=>{const el=document.getElementById('dpo-sel-'+vi);if(el)el.checked=true});_recalcDpo()}}>Select All</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 10px'}} onClick={()=>{allItems.forEach((_,vi)=>{const el=document.getElementById('dpo-sel-'+vi);if(el)el.checked=false});_recalcDpo()}}>Deselect All</button>
             </div>}
-            {allItems.map((it,vi)=>{const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
-              const soQ=szList.reduce((a,[,v])=>a+v,0);
-              const prefilledCost=dv?_decoVendorPrice(decoVendorPricing,dv.id,'embroidery',{qty:soQ}):null;
-              return<div key={vi} style={{padding:12,border:'1px solid #ede9fe',borderRadius:6,marginBottom:8,background:'#faf5ff'}}>
-                <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8}}>
-                  <label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',flex:1}}>
-                    <input type="checkbox" id={'dpo-sel-'+vi} defaultChecked style={{width:16,height:16}}/>
-                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{it.sku}</span>
-                    <strong>{it.name}</strong><span style={{color:'#64748b'}}>— {it.color}</span>
-                  </label>
-                  <span style={{fontWeight:700}}>SO Qty: {soQ}</span>
-                </div>
-                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                  <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Send Qty:</span>
-                  {szList.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                    <input id={'dpo-qty-'+vi+'-'+sz} style={{width:42,textAlign:'center',border:'1px solid #ddd6fe',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={v}/></div>)}
-                  <div style={{borderLeft:'2px solid #ede9fe',paddingLeft:8,marginLeft:4}}>
-                    <div style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Unit Cost{prefilledCost!==null&&<span style={{color:'#7c3aed',marginLeft:4}}>(auto)</span>}</div>
-                    <input id={'dpo-cost-'+vi} style={{width:60,textAlign:'center',border:'1px solid '+(prefilledCost!==null?'#7c3aed':'#ddd6fe'),borderRadius:4,padding:'4px 2px',fontSize:13,fontWeight:700}} defaultValue={prefilledCost!==null?prefilledCost.toFixed(2):'0.00'}/>
-                  </div>
-                </div>
+            {allItems.map((it,vi)=>{const soQ=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+              return<div key={vi} style={{padding:'8px 12px',border:'1px solid #ede9fe',borderRadius:6,marginBottom:6,background:'#faf5ff',display:'flex',alignItems:'center',gap:8}}>
+                <input type="checkbox" id={'dpo-sel-'+vi} defaultChecked style={{width:16,height:16}} onChange={_recalcDpo}/>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{it.sku}</span>
+                <strong style={{flex:1}}>{it.name}</strong>
+                <span style={{color:'#64748b',fontSize:12}}>{it.color}</span>
+                <span style={{fontSize:11,fontWeight:700,color:'#475569'}}>SO Qty: {soQ}</span>
               </div>})}
-            <div style={{marginTop:8}}><label className="form-label">Notes / Instructions for Decorator</label><textarea className="form-input" rows={2} placeholder="Thread colors, PMS colors, placement notes..." id={'dpo-notes-'+poId} style={{resize:'vertical'}}/></div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginTop:12,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+              <div><label className="form-label" style={{fontSize:10}}>Total Qty (price-list lookup)</label><input className="form-input" id="dpo-total-qty" readOnly defaultValue={_initialDpoQty} style={{fontWeight:700,color:'#1e40af'}}/></div>
+              <div><label className="form-label" style={{fontSize:10}}>Unit Cost {_initialDpoCost!==null&&<span style={{color:'#7c3aed',fontWeight:600}}>(from price list · editable)</span>}</label><input className="form-input" id="dpo-unit-cost" type="number" step="0.01" defaultValue={_initialDpoCost!==null?_initialDpoCost.toFixed(2):''} placeholder="0.00" data-auto={_initialDpoCost!==null?'1':'0'} style={{fontWeight:700,color:'#7c3aed'}} onChange={e=>{e.target.dataset.auto='0';_recalcDpo()}}/></div>
+              <div><label className="form-label" style={{fontSize:10}}>Expected Cost (qty × rate)</label><input className="form-input" id="dpo-expected-cost" readOnly defaultValue={_initialDpoCost!==null?(_initialDpoQty*_initialDpoCost).toFixed(2):'0.00'} style={{fontWeight:800,color:'#166534'}}/></div>
+            </div>
+            <div style={{marginTop:12}}><label className="form-label">Notes / Instructions for Decorator</label><textarea className="form-input" rows={2} placeholder="Thread colors, PMS colors, placement notes..." id={'dpo-notes-'+poId} style={{resize:'vertical'}}/></div>
           </div>
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('')}}>← Back</button>
@@ -4130,35 +4114,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
               if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
               const effectivePoId=preexistingPO?preexistingPOId.trim():autoPoId;
-              const updatedItems=o.items.map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
               const decoType=document.getElementById('dpo-type-'+poId)?.value||'embroidery';
               const returnDate=document.getElementById('dpo-date-'+poId)?.value||'';
               const notes=document.getElementById('dpo-notes-'+poId)?.value||'';
               const isDropShip=document.getElementById('dpo-dropship-'+poId)?.checked||false;
-              let totalQty=0,totalCost=0;
-              allItems.forEach((it,vi)=>{
-                const selected=document.getElementById('dpo-sel-'+vi)?.checked;
-                if(!selected)return;
-                const idx=it._idx;const poLine={po_id:effectivePoId,status:preexistingPO?'ordered':'waiting',po_type:'outside_deco',deco_vendor:decoVendor,deco_type:decoType,drop_ship:isDropShip||undefined,
-                  expected_date:returnDate,created_at:new Date().toLocaleDateString(),memo:preexistingPO?(notes?notes+' · Preexisting PO':'Preexisting PO'):notes,received:{},shipments:[]};
-                if(preexistingPO)poLine.preexisting=true;
-                const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
-                const unitCost=parseFloat(document.getElementById('dpo-cost-'+vi)?.value)||0;
-                let itemQty=0;
-                szList.forEach(([sz])=>{
-                  const el=document.getElementById('dpo-qty-'+vi+'-'+sz);
-                  const qty=el?Math.max(0,parseInt(el.value)||0):0;
-                  if(qty>0){poLine[sz]=qty;itemQty+=qty}
-                });
-                poLine.unit_cost=unitCost;
-                if(itemQty>0){updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];totalQty+=itemQty;totalCost+=itemQty*unitCost}
-              });
-              if(totalQty===0){nf('No items selected or no quantities entered','error');return}
-              const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+              const itemIdxs=[];let totalQty=0;
+              allItems.forEach((it,vi)=>{if(document.getElementById('dpo-sel-'+vi)?.checked){itemIdxs.push(it._idx);totalQty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)}});
+              if(itemIdxs.length===0){nf('Pick at least one item for this PO','error');return}
+              const unitCost=parseFloat(document.getElementById('dpo-unit-cost')?.value)||0;
+              const expectedCost=Math.round(totalQty*unitCost*100)/100;
+              const newDecoPO={id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
+                po_id:effectivePoId,vendor:decoVendor,deco_vendor_id:dv?.id||null,deco_type:decoType,
+                item_idxs:itemIdxs,qty:totalQty,unit_cost:unitCost,expected_cost:expectedCost,
+                notes,drop_ship:isDropShip||undefined,expected_date:returnDate,preexisting:preexistingPO||undefined,
+                status:preexistingPO?'ordered':'waiting',created_at:new Date().toLocaleDateString(),
+                _bill_cost:0,_bill_details:[],tracking_numbers:[]};
+              const updated={...o,deco_pos:[...(o.deco_pos||[]),newDecoPO],updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);
               if(!preexistingPO)setPOCounter(c=>c+1);
               setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');
-              nf('🎨 '+effectivePoId+' '+(preexistingPO?'applied':'sent')+' to '+decoVendor+' — '+totalQty+' units ($'+totalCost.toFixed(2)+')');
+              nf('🎨 '+effectivePoId+' '+(preexistingPO?'applied':'sent')+' to '+decoVendor+' — '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+' ($'+expectedCost.toFixed(2)+')');
             }}>🎨 {preexistingPO?'Apply Preexisting PO':'Create Deco PO — Send to '+decoVendor}</button>
           </div>
         </div></div>;
@@ -6203,6 +6178,72 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
     {/* PO FULL PAGE VIEW */}
     {poFullPage&&(()=>{
+      // Decoration POs (so.deco_pos) — cost buckets, not per-item line items. Render a
+      // simplified view: header, totals card, bills history, tracking, notes. Reuse the
+      // outer wrapper by synthesizing a fake "po" shape so the existing JSX below works.
+      if(poFullPage.decoPo){
+        const dp=poFullPage.decoPo;const soId=poFullPage.soId;const soItems=poFullPage.soItems||[];
+        const expected=safeNum(dp.expected_cost||dp.qty*dp.unit_cost);
+        const actual=safeNum(dp._bill_cost||0);
+        const coveredItems=(dp.item_idxs||[]).map(ii=>soItems[ii]).filter(Boolean);
+        return<div className="po-fullpage">
+          <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
+              <div style={{display:'flex',alignItems:'center',gap:12}}>
+                <button className="btn btn-secondary btn-sm" onClick={()=>setPoFullPage(null)}>&larr; Back</button>
+                <h1 style={{margin:0,fontSize:22}}>{dp.po_id}</h1>
+                <span className={`badge ${dp.status==='billed'||dp.status==='received'?'badge-green':dp.status==='ordered'?'badge-blue':'badge-gray'}`} style={{fontSize:11}}>{(dp.status||'waiting').replace(/^./,c=>c.toUpperCase())}</span>
+                <span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>
+                {dp.preexisting&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>Preexisting</span>}
+                {dp.drop_ship&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>Drop Ship</span>}
+              </div>
+              <div style={{textAlign:'right'}}>
+                <div style={{fontSize:11,color:'#64748b'}}>SO: <span style={{fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={()=>setPoFullPage(null)} title="Back to Sales Order">{soId}</span></div>
+                <div style={{fontSize:11,color:'#64748b'}}>Vendor: <strong>{dp.vendor||'—'}</strong></div>
+                {dp.deco_type&&<div style={{fontSize:11,color:'#64748b'}}>Type: {dp.deco_type.replace(/_/g,' ')}</div>}
+                {dp.created_at&&<div style={{fontSize:10,color:'#94a3b8'}}>Created: {dp.created_at}</div>}
+                {dp.expected_date&&<div style={{fontSize:10,color:'#94a3b8'}}>Expected return: {dp.expected_date}</div>}
+              </div>
+            </div>
+            <div className="card" style={{marginBottom:16,background:'#0f172a',color:'white'}}>
+              <div className="card-body" style={{display:'flex',justifyContent:'space-around',textAlign:'center',padding:'16px 12px'}}>
+                <div><div style={{fontSize:11,opacity:0.7}}>Units Covered</div><div style={{fontSize:24,fontWeight:800}}>{dp.qty||0}</div></div>
+                <div><div style={{fontSize:11,opacity:0.7}}>Unit Cost</div><div style={{fontSize:24,fontWeight:800}}>${safeNum(dp.unit_cost).toFixed(2)}</div></div>
+                <div><div style={{fontSize:11,opacity:0.7}}>Expected</div><div style={{fontSize:24,fontWeight:800,color:'#fbbf24'}}>${expected.toFixed(2)}</div></div>
+                <div><div style={{fontSize:11,opacity:0.7}}>Actual (billed)</div><div style={{fontSize:24,fontWeight:800,color:actual>0?'#4ade80':'#94a3b8'}}>${actual.toFixed(2)}</div></div>
+                <div><div style={{fontSize:11,opacity:0.7}}>Bills</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>{(dp._bill_details||[]).length}</div></div>
+              </div>
+            </div>
+            {coveredItems.length>0&&<div className="card" style={{marginBottom:16}}>
+              <div className="card-header"><h2>Items covered (for price-list lookup and badges)</h2></div>
+              <div className="card-body"><div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+                {coveredItems.map((it,i)=><span key={i} style={{padding:'6px 10px',borderRadius:6,background:'#faf5ff',border:'1px solid #ede9fe',fontSize:12}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed'}}>{it.sku}</span>{' '}<strong>{it.name}</strong>{it.color?' — '+it.color:''}</span>)}
+              </div></div>
+            </div>}
+            {dp.notes&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Notes</h2></div><div className="card-body"><div style={{fontSize:13,whiteSpace:'pre-wrap'}}>{dp.notes}</div></div></div>}
+            {(dp.tracking_numbers||[]).length>0&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #1e40af'}}>
+              <div className="card-header" style={{background:'#eff6ff'}}><h2 style={{color:'#1e40af'}}>Tracking Numbers</h2></div>
+              <div className="card-body"><div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+                {dp.tracking_numbers.map((tn,i)=><span key={i} style={{fontFamily:'monospace',fontSize:12,padding:'4px 10px',borderRadius:6,background:'#eff6ff',color:'#1e40af',fontWeight:700}}>{tn}</span>)}
+              </div></div>
+            </div>}
+            {(dp._bill_details||[]).length>0&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #166534'}}>
+              <div className="card-header" style={{background:'#f0fdf4'}}><h2 style={{color:'#166534'}}>Billing Details ({dp._bill_details.length})</h2></div>
+              <div className="card-body"><table style={{width:'100%',fontSize:12}}>
+                <thead><tr style={{borderBottom:'1px solid #e2e8f0'}}><th style={{padding:'4px 8px',textAlign:'left'}}>Doc #</th><th style={{padding:'4px 8px',textAlign:'left'}}>Date</th><th style={{padding:'4px 8px',textAlign:'left'}}>Supplier</th><th style={{padding:'4px 8px',textAlign:'right'}}>Cost</th><th style={{padding:'4px 8px',textAlign:'right'}}>Freight</th><th style={{padding:'4px 8px',textAlign:'left'}}>Tracking</th></tr></thead>
+                <tbody>{dp._bill_details.map((bd,bi)=><tr key={bi} style={{borderBottom:'1px solid #f1f5f9'}}>
+                  <td style={{padding:'4px 8px',fontFamily:'monospace'}}>{bd.doc||'—'}</td>
+                  <td style={{padding:'4px 8px'}}>{bd.date||'—'}</td>
+                  <td style={{padding:'4px 8px'}}>{bd.supplier||'—'}</td>
+                  <td style={{padding:'4px 8px',textAlign:'right',fontWeight:700,color:'#166534'}}>${safeNum(bd.cost).toFixed(2)}</td>
+                  <td style={{padding:'4px 8px',textAlign:'right',color:'#64748b'}}>{bd.freight?'$'+safeNum(bd.freight).toFixed(2):'—'}</td>
+                  <td style={{padding:'4px 8px',fontFamily:'monospace',fontSize:11}}>{bd.tracking||'—'}</td>
+                </tr>)}</tbody>
+              </table></div>
+            </div>}
+          </div>
+        </div>;
+      }
       const{po,item,allLines,soId,soItems}=poFullPage;
       const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&typeof po[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
       const received=po.received||{};const cancelled=po.cancelled||{};const shipments=po.shipments||[];
