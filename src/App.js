@@ -16818,7 +16818,7 @@ export default function App(){
                       Matched to {poSrc==='batch'?'Batch PO':poSrc==='so_po'?'Sales Order PO':'Inventory PO'}: {poMatch.po_number||poMatch.po_id||''}
                       {poSrc==='batch'&&poMatch.vendor_name&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.vendor_name}</span>}
                       {poSrc==='inv_po'&&poMatch.vendor_name&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.vendor_name}</span>}
-                      {poSrc==='so_po'&&poMatch.so_id&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.so_id}</span>}
+                      {poSrc==='so_po'&&poMatch.so_id&&(()=>{const soCust=cust.find(cc=>cc.id===poMatch.so?.customer_id);return<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.so_id}{soCust?.name?' · '+soCust.name:''}</span>})()}
                     </div>
                     <div style={{fontSize:11,color:'#475569',marginTop:2}}>
                       {poSrc==='batch'&&<>Units: {poMatch.total_units||'?'} | Cost: ${(poMatch.total_cost||0).toFixed(2)}
