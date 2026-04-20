@@ -7554,6 +7554,7 @@ export default function App(){
               const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const expectedDeco=eqD*dp.cost;
               const matchingDPOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
               const actualDeco=matchingDPOs.reduce((a,pl)=>{
+                if(safeNum(pl._bill_cost)>0)return a+safeNum(pl._bill_cost);
                 const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0);
                 return a+poQty*safeNum(pl.unit_cost)},0);
               const artF=af.find(a=>a.id===d.art_file_id);
@@ -15565,7 +15566,7 @@ export default function App(){
             })};
           });
         }else if(t.mode==='create'&&t.itemIdx!=null){
-          const newPO={po_id:bill.po_number,vendor:bill.supplier,deco_vendor:bill.supplier,deco_type:t.decoType||'screen_print',
+          const newPO={po_id:bill.po_number,po_type:'outside_deco',vendor:bill.supplier,deco_vendor:bill.supplier,deco_type:t.decoType||'screen_print',
             _bill_cost:decoCost,_bill_details:[billDetail],
             tracking_numbers:bill.tracking?[bill.tracking]:[],
             status:'received',created_at:new Date().toLocaleString()};

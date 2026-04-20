@@ -995,7 +995,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Use per-size sells/costs when available (vendor items have _sizeCosts/_sizeSells for 2XL+ upcharges)
     if(it._sizeCosts&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0){rev+=n*(it._sizeSells?.[sz]||safeNum(it.unit_sell));cost+=n*(it._sizeCosts[sz]||safeNum(it.nsa_cost))}})}else{rev+=q*safeNum(it.unit_sell);cost+=q*safeNum(it.nsa_cost)}
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=eq*dp.cost});
-    (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)).reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});
+    (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{if(safeNum(pl._bill_cost)>0){cost+=safeNum(pl._bill_cost);return}const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)).reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const tax=rev*taxRate;
     return{rev,cost,ship,tax,taxRate,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust]); // eslint-disable-line
 
@@ -3001,6 +3001,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const expectedDeco=eqD*dp.cost;
             const matchingDPOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
             const actualDeco=matchingDPOs.reduce((a,pl)=>{
+              if(safeNum(pl._bill_cost)>0)return a+safeNum(pl._bill_cost);
               const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0);
               return a+poQty*safeNum(pl.unit_cost)},0);
             const artF=af.find(a=>a.id===d.art_file_id);

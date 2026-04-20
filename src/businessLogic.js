@@ -212,6 +212,7 @@ function calcTotals(o, cust) {
       cost += eq * dp.cost;
     });
     (it.po_lines || []).filter(pl => pl.po_type === 'outside_deco').forEach(pl => {
+      if (safeNum(pl._bill_cost) > 0) { cost += safeNum(pl._bill_cost); return; }
       const poQty = Object.entries(pl).filter(([k, v]) => typeof v === 'number' && !['unit_cost'].includes(k)).reduce((a, [, v]) => a + v, 0);
       cost += poQty * safeNum(pl.unit_cost);
     });
