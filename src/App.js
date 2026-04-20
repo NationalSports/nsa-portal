@@ -16920,12 +16920,20 @@ export default function App(){
                       <label style={{fontSize:10,fontWeight:600,color:'#9a3412'}}>SO</label>
                       <input className="form-input" list={`so-list-${bi}`} style={{width:220,fontSize:11,padding:'3px 6px'}}
                         placeholder="Search SO # or customer..." value={t.soId||''}
-                        onChange={e=>{const v=e.target.value.split(' — ')[0].trim();setT({soId:v,mode:t.mode||'existing'})}}/>
+                        onChange={e=>{
+                          const v=e.target.value.split(' — ')[0].trim();
+                          const nextSO=sos.find(s=>s.id===v);
+                          let hasDecoLine=false;
+                          if(nextSO)(nextSO.items||[]).forEach(it=>(it.po_lines||[]).forEach(pl=>{if(pl.deco_vendor||pl.deco_type||/embroidery|screen|print|deco/i.test(pl.vendor||''))hasDecoLine=true}));
+                          // Auto-select Create mode when the picked SO has no existing deco PO lines.
+                          const mode=hasDecoLine?(t.mode||'existing'):'create';
+                          setT({soId:v,mode,itemIdx:mode==='create'?0:null,poLineIdx:null,decoType:mode==='create'?defaultDeco:null});
+                        }}/>
                       <datalist id={`so-list-${bi}`}>
                         {sos.slice(0,500).map(s=>{const c=cust.find(cc=>cc.id===s.customer_id);const cn=c?.name||s.customer_name||'';return<option key={s.id} value={`${s.id} — ${cn}`}>{s.id} — {cn}</option>})}
                       </datalist>
                       {t.soId&&!so&&<span style={{fontSize:10,color:'#dc2626'}}>SO not found</span>}
-                      {so&&<>
+                      {so&&(decoLines.length>0?<>
                         <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Mode</label>
                         <select className="form-input" style={{width:170,fontSize:11,padding:'3px 6px'}} value={t.mode||'existing'}
                           onChange={e=>setT({...t,mode:e.target.value,itemIdx:e.target.value==='create'?0:null,poLineIdx:null,decoType:e.target.value==='create'?defaultDeco:null})}>
@@ -16942,9 +16950,11 @@ export default function App(){
                             <option value="">— pick PO line —</option>
                             {decoLines.map((d,di)=><option key={di} value={`${d.itemIdx}:${d.poLineIdx}`}>{d.label}</option>)}
                           </select>
-                          {decoLines.length===0&&<span style={{fontSize:10,color:'#dc2626'}}>No decoration PO lines on this SO — switch to Create mode</span>}
                         </>}
-                      </>}
+                      </>:<>
+                        <span style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Will create new deco PO on this SO</span>
+                        {(so.items||[]).length===0&&<span style={{fontSize:10,color:'#dc2626'}}>SO has no items — can't create PO line</span>}
+                      </>)}
                     </div>
                   </div>;
                 })()}
