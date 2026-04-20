@@ -6531,7 +6531,17 @@ export default function App(){
         const st=totalOpen<=0&&totalRcvd>0?'received':totalRcvd>0?'partial':'waiting';
         const uc=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(it.nsa_cost);const poTotal=totalOrd*uc;
         allPOs.push({po_id:po.po_id||`${so.id}-PO-${pli+1}`,vendor:po.vendor||'',status:st,so_id:so.id,so,customer:c2?.alpha_tag||c2?.name||'',soMemo:so.memo,itemSku:it.sku||'',itemName:it.name||'',totalOrd,totalRcvd,totalCncl,totalOpen,created_at:po.created_at||so.created_at||'',expected_date:po.expected_date||'',memo:po.memo||'',source:'so',lineIdx:idx,unitCost:uc,poTotal,poLineIdx:pli})
-      })})});
+      })});
+      // SO-level decoration POs — cost buckets, no size breakdown
+      (so.deco_pos||[]).forEach(dp=>{
+        const totalOrd=safeNum(dp.qty||0);
+        const expected=safeNum(dp.expected_cost||totalOrd*dp.unit_cost);
+        const actual=safeNum(dp._bill_cost||0);
+        const st=dp.status||'waiting';
+        const skus=(dp.item_idxs||[]).map(ii=>safeItems(so)[ii]?.sku).filter(Boolean);
+        allPOs.push({po_id:dp.po_id,vendor:dp.vendor||'',status:st,so_id:so.id,so,customer:c2?.alpha_tag||c2?.name||'',soMemo:so.memo,itemSku:skus.join(', '),itemName:'Decoration'+(dp.deco_type?' — '+dp.deco_type.replace(/_/g,' '):''),totalOrd,totalRcvd:st==='received'||st==='billed'?totalOrd:0,totalCncl:0,totalOpen:st==='received'||st==='billed'?0:totalOrd,created_at:dp.created_at||so.created_at||'',expected_date:dp.expected_date||'',memo:dp.notes||'',source:'deco',unitCost:safeNum(dp.unit_cost||0),poTotal:actual>0?actual:expected,isDeco:true,decoPoId:dp.id});
+      });
+    });
     // Add submitted batches
     submittedBatches.forEach(sb=>{
       const totalOrd=sb.total_units||0;const st=sb.status||'waiting';
@@ -20536,8 +20546,10 @@ export default function App(){
             // Build IF index from all SOs
             const allPicks=[];sos.forEach(so=>{safeItems(so).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&pk.pick_id.toLowerCase().includes(s)&&!allPicks.find(x=>x.pick_id===pk.pick_id)){allPicks.push({pick_id:pk.pick_id,so_id:so.id,so,status:pk.status||'pick'})}})})});
             const rpk=allPicks.slice(0,4);
-            // Build PO index from all SO po_lines + submitted batches
-            const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{if((po.po_id||'').toLowerCase().includes(s)||(po.vendor||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor:po.vendor,status:po.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||''})}})})});
+            // Build PO index from all SO po_lines + SO-level deco_pos + submitted batches
+            const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{if((po.po_id||'').toLowerCase().includes(s)||(po.vendor||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor:po.vendor,status:po.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||''})}})});
+              (so.deco_pos||[]).forEach(dp=>{if((dp.po_id||'').toLowerCase().includes(s)||(dp.vendor||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===dp.po_id))allPOs.push({po_id:dp.po_id,vendor:dp.vendor||'',status:dp.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||'',isDeco:true})}});
+            });
             submittedBatches.forEach(sb=>{if((sb.po_number||'').toLowerCase().includes(s)||(sb.vendor_name||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===sb.po_number))allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name,status:sb.status||'waiting',so_id:(sb.source_pos||[])[0]?.so_id||'',so:sos.find(x=>x.id===((sb.source_pos||[])[0]?.so_id)),customer:(sb.source_pos||[])[0]?.customer||'',isBatch:true})}});
             const rpo=allPOs.slice(0,4);
             // Build Jobs index from all SOs
