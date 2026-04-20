@@ -15105,6 +15105,28 @@ export default function App(){
       return{qty,rate,amount,activity,desc,parts};
     };
 
+    // Regex fallback for when PDF.js emits columns with spaces instead of tabs
+    // (happens when column x-gap is < 15 units). Handles two layouts:
+    //   'qty-first' — Frontier / Olympic: QTY ... RATE AMOUNT
+    //   'activity-first' — Silver Screen: ACTIVITY ... QTY RATE AMOUNT
+    const _parseDecoRowRegex=(line,layout)=>{
+      if(layout==='qty-first'){
+        const m=line.match(/^\s*(\d{1,4})\s+([A-Za-z][^\n]*?)\s+(\d+\.\d{2})\s+(\d+\.\d{2})T?\s*$/);
+        if(!m)return null;
+        const qty=parseInt(m[1]);if(qty<=0||qty>100000)return null;
+        const middle=m[2].trim();
+        const firstSeg=middle.split(/\s{2,}|\t/)[0].trim();
+        return{qty,rate:parseFloat(m[3]),amount:parseFloat(m[4]),activity:firstSeg||middle,desc:middle,parts:[m[1],middle,m[3],m[4]]};
+      }
+      if(layout==='activity-first'){
+        const m=line.match(/^\s*([A-Za-z][A-Za-z0-9\-\/ ]{1,40}?)\s{2,}(.+?)\s+(\d{1,4})\s+(\d+\.\d{2})\s+(\d+\.\d{2})T?\s*$/);
+        if(!m)return null;
+        const qty=parseInt(m[3]);if(qty<=0||qty>100000)return null;
+        return{qty,rate:parseFloat(m[4]),amount:parseFloat(m[5]),activity:m[1].trim(),desc:m[2].trim(),parts:[m[1],m[2],m[3],m[4],m[5]]};
+      }
+      return null;
+    };
+
     const _parseOlympicBill=(bill,lines,fullText)=>{
       bill.kind='decoration';bill.supplier='Olympic Embroidery';
       const text=fullText||lines.join('\n');
@@ -15121,7 +15143,7 @@ export default function App(){
       bill.doc_total=balM?parseFloat(balM[1].replace(/,/g,'')):(totM?parseFloat(totM[1].replace(/,/g,'')):0);
       // Olympic layout: Qty | Item | Color | Size | Description | Rate | Amount
       for(const ln of lines){
-        const row=_parseDecoRow(ln,{qty:0,rate:-2,amount:-1,activityIdx:1,minCols:3});
+        const row=_parseDecoRow(ln,{qty:0,rate:-2,amount:-1,activityIdx:1,minCols:3})||_parseDecoRowRegex(ln,'qty-first');
         if(!row)continue;
         bill.items.push({desc:(row.activity||'').trim()+(row.desc?' — '+row.desc:''),qty:row.qty,rate:row.rate,amount:row.amount});
       }
@@ -15142,12 +15164,14 @@ export default function App(){
       bill.doc_total=balM?parseFloat(balM[1].replace(/,/g,'')):(totM?parseFloat(totM[1].replace(/,/g,'')):0);
       // Frontier layout: Qty | Activity | Description | Rate | Amount
       for(const ln of lines){
-        const row=_parseDecoRow(ln,{qty:0,rate:-2,amount:-1,activityIdx:1,minCols:3});
+        const row=_parseDecoRow(ln,{qty:0,rate:-2,amount:-1,activityIdx:1,minCols:3})||_parseDecoRowRegex(ln,'qty-first');
         if(!row)continue;
         const activity=(row.activity||'').trim();
-        const isShip=/shipping|freight/i.test(activity);
-        bill.items.push({desc:activity+(row.desc?' — '+row.desc:''),qty:row.qty,rate:row.rate,amount:row.amount,_isShipping:isShip});
-        if(isShip){bill.freight+=row.amount;const tM=row.desc.match(/\b(\d{12,22})\b/);if(tM&&!bill.tracking)bill.tracking=tM[1]}
+        // Skip column headers / summary rows that accidentally match (start with QTY/SUBTOTAL/etc)
+        if(/^(QTY|ACTIVITY|DESCRIPTION|RATE|AMOUNT|SUBTOTAL|TOTAL|TAX|BALANCE)\b/i.test(activity))continue;
+        const isShip=/shipping|freight/i.test(activity)||/shipping|freight/i.test(row.desc||'');
+        bill.items.push({desc:activity+(row.desc&&row.desc!==activity?' — '+row.desc:''),qty:row.qty,rate:row.rate,amount:row.amount,_isShipping:isShip});
+        if(isShip){bill.freight+=row.amount;const tM=(row.desc||'').match(/\b(\d{12,22})\b/);if(tM&&!bill.tracking)bill.tracking=tM[1]}
       }
       if(!bill.po_number)bill.warnings.push('PO number not found');
       if(!bill.doc_total)bill.warnings.push('Could not detect total');
@@ -15169,12 +15193,12 @@ export default function App(){
       bill.doc_total=dueTotM?parseFloat(dueTotM[1].replace(/,/g,'')):(pleaseM?parseFloat(pleaseM[1].replace(/,/g,'')):(totM?parseFloat(totM[1].replace(/,/g,'')):0));
       // SilverScreen layout: Activity | Description | Qty | Rate | Amount (amount may have T suffix)
       for(const ln of lines){
-        const row=_parseDecoRow(ln,{qty:-3,rate:-2,amount:-1,activityIdx:0,minCols:4});
+        const row=_parseDecoRow(ln,{qty:-3,rate:-2,amount:-1,activityIdx:0,minCols:4})||_parseDecoRowRegex(ln,'activity-first');
         if(!row)continue;
         const activity=(row.activity||'').trim();
         if(!/^[A-Za-z]/.test(activity))continue;// filter out rows where first cell is not a label
-        if(/^SUBTOTAL|^TOTAL|^TAX|^BALANCE/i.test(activity))continue;
-        bill.items.push({desc:activity+(row.desc?' — '+row.desc:''),qty:row.qty,rate:row.rate,amount:row.amount});
+        if(/^(SUBTOTAL|TOTAL|TAX|BALANCE|ACTIVITY|DESCRIPTION|QTY|RATE|AMOUNT)\b/i.test(activity))continue;
+        bill.items.push({desc:activity+(row.desc&&row.desc!==activity?' — '+row.desc:''),qty:row.qty,rate:row.rate,amount:row.amount});
       }
       if(!bill.po_number)bill.warnings.push('PO number not found');
       if(!bill.doc_total)bill.warnings.push('Could not detect total');
