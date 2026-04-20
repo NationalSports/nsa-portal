@@ -13,7 +13,7 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm } from './safeHelpers';
-import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks } from './components';
+import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, sendBrevoEmail } from './utils';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
@@ -1108,45 +1108,7 @@ const ImgUpload=({url,onUpload,size=48,onError})=>{const[drag,setDrag]=React.use
     :err?<span style={{fontSize:size>40?14:10,color:'#dc2626'}}>!</span>
     :<span style={{fontSize:size>40?18:12,opacity:0.3}}>📷</span>}
   </div>};
-// Multi-image gallery with drag-and-drop (for product images)
-const ImgGallery=({images=[],onUpdate,onError,maxImages=10})=>{
-  const[uploading,setUploading]=React.useState(false);const[drag,setDrag]=React.useState(false);
-  const doUpload=async(files)=>{
-    const imgFiles=Array.from(files).filter(f=>f.type.startsWith('image/'));
-    if(imgFiles.length===0){if(onError)onError('Please select image files');return}
-    if((images||[]).length+imgFiles.length>maxImages){if(onError)onError('Max '+maxImages+' images');return}
-    setUploading(true);
-    const newUrls=[];
-    for(const f of imgFiles){
-      try{const u=await cloudUpload(f);newUrls.push(u)}catch(e){if(onError)onError('Upload failed: '+e.message)}
-    }
-    if(newUrls.length>0)onUpdate([...(images||[]),...newUrls]);
-    setUploading(false);
-  };
-  const removeImg=(idx)=>onUpdate((images||[]).filter((_,i)=>i!==idx));
-  const moveImg=(from,to)=>{const arr=[...(images||[])];const[item]=arr.splice(from,1);arr.splice(to,0,item);onUpdate(arr)};
-  return<div>
-    <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:6}}>
-      {(images||[]).map((url,i)=><div key={i} style={{width:72,height:72,borderRadius:6,border:'1px solid #e2e8f0',overflow:'hidden',position:'relative',background:'#f8fafc'}}>
-        <img src={url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}} onError={e=>{e.target.style.display='none'}}/>
-        <div style={{position:'absolute',top:0,right:0,display:'flex',gap:1}}>
-          {i>0&&<button style={{background:'rgba(0,0,0,0.5)',color:'white',border:'none',cursor:'pointer',fontSize:9,padding:'1px 3px',borderRadius:2}} onClick={()=>moveImg(i,i-1)}>◀</button>}
-          <button style={{background:'rgba(220,38,38,0.8)',color:'white',border:'none',cursor:'pointer',fontSize:10,padding:'1px 4px',borderRadius:2}} onClick={()=>removeImg(i)}>×</button>
-        </div>
-        <div style={{position:'absolute',bottom:0,left:0,background:'rgba(0,0,0,0.5)',color:'white',fontSize:8,padding:'1px 4px'}}>{i===0?'Primary':i+1}</div>
-      </div>)}
-    </div>
-    {/* Drop zone for adding images */}
-    <div style={{border:drag?'2px dashed #3b82f6':'2px dashed #d1d5db',borderRadius:8,padding:uploading?'8px':'12px 16px',textAlign:'center',
-      background:drag?'#eff6ff':'#fafafa',cursor:'pointer',transition:'all 0.15s'}}
-      onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)}
-      onDrop={e=>{e.preventDefault();setDrag(false);doUpload(e.dataTransfer.files)}}
-      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.multiple=true;inp.onchange=()=>doUpload(inp.files);inp.click()}}>
-      {uploading?<span style={{fontSize:11,color:'#3b82f6',fontWeight:600}}>Uploading...</span>
-      :<><div style={{fontSize:11,color:drag?'#2563eb':'#64748b',fontWeight:600}}>{drag?'Drop images here':'Click or drag & drop images'}</div>
-        <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>{(images||[]).length}/{maxImages} images · JPG, PNG, WebP</div></>}
-    </div>
-  </div>};
+// ImgGallery moved to components.js so OrderEditor can share it
 // ── PDF.js Setup (for NetSuite PDF import) ──
 const PDFJS_CDN='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174';
 let _pdfjsLoaded=false;
