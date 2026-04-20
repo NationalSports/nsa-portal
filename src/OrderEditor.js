@@ -4074,16 +4074,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const decoVendor=showPO.replace('deco:','');
         const allItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>{
           const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return q>0});
-        const poId='DPO-'+poCounter+(cust?.alpha_tag?'-'+cust.alpha_tag:'');
+        const autoPoId='DPO-'+poCounter+(cust?.alpha_tag?'-'+cust.alpha_tag:'');
+        const poId=preexistingPO?preexistingPOId:autoPoId;
         const dv=decoVendors.find(v=>v.name===decoVendor);
         return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
           <div className="modal-header"><h2 style={{color:'#7c3aed'}}>🎨 Deco PO — {decoVendor}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
           <div className="modal-body">
-            <div style={{padding:10,background:'#faf5ff',border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,fontSize:12,color:'#6d28d9'}}>
-              Sending items to <strong>{decoVendor}</strong> for outside decoration. PO #{poId} will be saved to this SO for cost tracking and commission calculation.
-            </div>
+            {!preexistingPO?<div style={{padding:10,background:'#faf5ff',border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,fontSize:12,color:'#6d28d9'}}>
+              Sending items to <strong>{decoVendor}</strong> for outside decoration. PO #{poId||'—'} will be saved to this SO for cost tracking and commission calculation.
+            </div>:<div style={{padding:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,marginBottom:12}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#d97706'}}>Preexisting PO Mode — Enter the PO number from the decorator's bill (or elsewhere). This will not affect sequential PO numbering.</div>
+            </div>}
+            <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" checked={preexistingPO} onChange={e=>{setPreexistingPO(e.target.checked);if(!e.target.checked)setPreexistingPOId('')}}/><span style={{fontWeight:600,color:'#d97706'}}>Preexisting PO</span><span style={{fontSize:11,color:'#64748b'}}>— Apply an existing PO number (bypasses sequential numbering)</span></label></div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
-              <div><label className="form-label">PO Number</label><input className="form-input" value={poId} readOnly style={{color:'#7c3aed',fontWeight:700}}/></div>
+              <div><label className="form-label">PO Number</label>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO7514" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b'}}/>:<input className="form-input" value={autoPoId} readOnly style={{color:'#7c3aed',fontWeight:700}}/>}</div>
               <div><label className="form-label">Deco Type</label><select className="form-select" id={'dpo-type-'+poId} onChange={e=>{
                 if(!dv)return;const dt=e.target.value;allItems.forEach((_,vi)=>{const soQ=Object.values(safeSizes(allItems[vi])).reduce((a,v)=>a+safeNum(v),0);const cost=_decoVendorPrice(decoVendorPricing,dv.id,dt,{qty:soQ});const el=document.getElementById('dpo-cost-'+vi);if(el&&cost!==null)el.value=cost.toFixed(2)});
               }}>
@@ -4116,9 +4120,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{marginTop:8}}><label className="form-label">Notes / Instructions for Decorator</label><textarea className="form-input" rows={2} placeholder="Thread colors, PMS colors, placement notes..." id={'dpo-notes-'+poId} style={{resize:'vertical'}}/></div>
           </div>
           <div className="modal-footer">
-            <button className="btn btn-secondary" onClick={()=>setShowPO('select')}>← Back</button>
-            <button className="btn btn-secondary" onClick={()=>setShowPO(null)}>Cancel</button>
-            <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
+            <button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('')}}>← Back</button>
+            <button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('')}}>Cancel</button>
+            <button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
+              if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
+              const effectivePoId=preexistingPO?preexistingPOId.trim():autoPoId;
               const updatedItems=o.items.map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
               const decoType=document.getElementById('dpo-type-'+poId)?.value||'embroidery';
               const returnDate=document.getElementById('dpo-date-'+poId)?.value||'';
@@ -4128,8 +4134,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               allItems.forEach((it,vi)=>{
                 const selected=document.getElementById('dpo-sel-'+vi)?.checked;
                 if(!selected)return;
-                const idx=it._idx;const poLine={po_id:poId,status:'waiting',po_type:'outside_deco',deco_vendor:decoVendor,deco_type:decoType,drop_ship:isDropShip||undefined,
-                  expected_date:returnDate,created_at:new Date().toLocaleDateString(),memo:notes,received:{},shipments:[]};
+                const idx=it._idx;const poLine={po_id:effectivePoId,status:preexistingPO?'ordered':'waiting',po_type:'outside_deco',deco_vendor:decoVendor,deco_type:decoType,drop_ship:isDropShip||undefined,
+                  expected_date:returnDate,created_at:new Date().toLocaleDateString(),memo:preexistingPO?(notes?notes+' · Preexisting PO':'Preexisting PO'):notes,received:{},shipments:[]};
+                if(preexistingPO)poLine.preexisting=true;
                 const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
                 const unitCost=parseFloat(document.getElementById('dpo-cost-'+vi)?.value)||0;
                 let itemQty=0;
@@ -4144,9 +4151,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               if(totalQty===0){nf('No items selected or no quantities entered','error');return}
               const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);
-              setPOCounter(c=>c+1);setShowPO(null);
-              nf('🎨 '+poId+' sent to '+decoVendor+' — '+totalQty+' units ($'+totalCost.toFixed(2)+')');
-            }}>🎨 Create Deco PO — Send to {decoVendor}</button>
+              if(!preexistingPO)setPOCounter(c=>c+1);
+              setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');
+              nf('🎨 '+effectivePoId+' '+(preexistingPO?'applied':'sent')+' to '+decoVendor+' — '+totalQty+' units ($'+totalCost.toFixed(2)+')');
+            }}>🎨 {preexistingPO?'Apply Preexisting PO':'Create Deco PO — Send to '+decoVendor}</button>
           </div>
         </div></div>;
       }
