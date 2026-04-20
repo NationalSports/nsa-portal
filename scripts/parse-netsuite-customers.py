@@ -82,11 +82,22 @@ INVENTED_PARENTS: dict[tuple[str, str, str, str], str] = {
     ("exeter", "exeter", "ca", "hs"): "Exeter Union High School",
 }
 
+# Manual sub assignments. Key = customer Name (exact), Value = parent Name
+# (exact). Applied after clustering so user can override specific rows without
+# touching the general rules. Great for edge cases where rep/address differs
+# from the school's canonical values.
+MANUAL_SUB_ASSIGNMENTS: dict[str, str] = {
+    "Amador Girls Lacrosse (Boosters)": "Amador Valley High School",
+    "Bakersfield Football": "Bakersfield High School",
+    "Bakersfield Girls Basketball": "Bakersfield High School",
+    "Bakersfield Track": "Bakersfield High School",
+}
+
 # Sport/role suffix patterns — strip from a name to get the org root.
 SPORT_PATTERNS = [
-    r"(Boys|Girls|Boy's|Girl's|Men's|Women's)\s+(Basketball|Volleyball|Soccer|Track(?:\s*&?\s*Field)?|Lacrosse|Golf|Tennis|Swimming|Water Polo|Baseball|Softball|Cross Country|Wrestling|Football|Rugby)$",
-    r"(Track\s*&?\s*Field|Cross Country|Water Polo|Sports Medicine|Flag Football|Beach Volleyball)$",
-    r"(Football|Basketball|Baseball|Softball|Volleyball|Soccer|Tennis|Golf|Wrestling|Swimming|Cheer(?:\s*&\s*Stunt)?|Dance|Drill Team|Band|Choir|Badminton|Lacrosse|Rugby|Track|Boosters?|Booster Club|Leadership|ASB|Athletics|Stunt|Intramurals?|PE|Store|Student Affairs|Foundation|Maintenance|Fundraiser|Sports)$",
+    r"(Boys|Girls|Boy's|Girl's|Men's|Women's)\s+(Basketball|Volleyball|Soccer|Track(?:\s*&?\s*Field)?|Lacrosse|Golf|Tennis|Swim(?:ming)?|Water Polo|Baseball|Softball|Cross Country|Wrestling|Football|Rugby|Beach Volleyball)$",
+    r"(Track\s*&?\s*(?:&|and)?\s*Field|Cross Country|Water Polo|Sports Medicine|Flag Football|Beach Volleyball|Field Hockey|Aquatics)$",
+    r"(Football|Basketball|Baseball|Softball|Volleyball|Soccer|Tennis|Golf|Wrestling|Swim(?:ming)?|Cheer(?:\s*&\s*Stunt)?|Dance|Drill Team|Band|Choir|Badminton|Lacrosse|Rugby|Track|Boosters?|Booster Club|Leadership|ASB|Athletics|Stunt|Intramurals?|PE|Store|Student Affairs|Foundation|Maintenance|Fundraiser|Sports|Admissions|Admin|Advancement|ESports|Spirit)$",
 ]
 
 # Institution tokens — different institution types stay in SEPARATE clusters.
@@ -97,6 +108,9 @@ INSTITUTIONS = [
     ("hs",   r"High School Athletics$"),
     ("hs",   r"High School$"),
     ("hs",   r"\bHS\b$"),
+    ("hs",   r"Academy$"),            # most "X Academy" rows are HS-level charter/magnet schools
+    ("hs",   r"Charter School$"),
+    ("hs",   r"Charter Academy$"),
     ("ms",   r"Middle School$"),
     ("es",   r"Elementary School$"),
     ("es",   r"Elementary$"),
@@ -115,6 +129,8 @@ INSTITUTION_IN_NAME = [
     ("es",   r"\bElementary\b"),
     ("hs",   r"\bHigh School\b"),
     ("hs",   r"\bHS\b"),
+    ("hs",   r"\bAcademy\b"),
+    ("hs",   r"\bCharter School\b"),
     ("col",  r"\b(College|University)\b"),
 ]
 
@@ -239,6 +255,26 @@ def main():
             if first and first.lower() != "united states":
                 r["Name"] = first
                 r["_name_recovered_from_address"] = True
+
+    # Colon-split rule: a name like "Bishop Alemany HS: Admissions" means the
+    # prefix before ":" is the parent's name and the full row is a sub. Rewrite
+    # the row's Name (dropping the colon) and stash the parent hint. Parent will
+    # be resolved later (existing anchor, invented parent, or standalone fallback).
+    for r in records:
+        name = (r.get("Name") or "").strip()
+        if ":" not in name:
+            continue
+        prefix, suffix = name.split(":", 1)
+        prefix = prefix.strip()
+        suffix = suffix.strip()
+        if not prefix or not suffix:
+            continue
+        if suffix.lower().startswith(prefix.lower()):
+            new_name = suffix
+        else:
+            new_name = f"{prefix} {suffix}"
+        r["Name"] = new_name
+        r["_colon_parent_hint"] = prefix
 
     # Dedup pass — collapse obvious duplicates BEFORE clustering.
     # Key 1: NetSuite Internal ID when present.
@@ -377,12 +413,17 @@ def main():
             elif types == {"col"}:
                 r["_inst"] = "col"
 
-    # Cluster key now includes institution, so MS / HS / College stay separate.
+    # Cluster key includes institution + locality. Prefer the zip code as the
+    # locality signal when available — sidesteps spelling drift between rows
+    # (e.g. "Las Vegas" vs "North Las Vegas" for the same school).
     groups = defaultdict(list)
     for r in records:
-        if r["_root"]:
-            key = (r["_root"].lower(), r["_inst"], r["_city"], r["_state"])
-            groups[key].append(r)
+        if not r["_root"]:
+            continue
+        zipc = (r.get("Zip Code") or "").strip()
+        locality = zipc if zipc else r["_city"]
+        key = (r["_root"].lower(), r["_inst"], locality, r["_state"])
+        groups[key].append(r)
 
     # Decide parent per group
     # rec["_role"] = "parent" | "sub" | "standalone"
@@ -426,40 +467,85 @@ def main():
                 "decision": "auto-attached (anchor exists)",
             })
         else:
-            # No anchor in this cluster.
-            if inst == "other":
-                # Sports-only cluster with no school row present.
-                # Conservative: leave flat, flag if >=3 similar rows (user wants to review).
+            # No anchor. Auto-invent a parent if we have 2+ rows with a clear
+            # shared pattern — the user can always re-parent in the UI if wrong.
+            if len(rows) >= 2:
+                # Pick a parent name from the dominant institution hint.
+                names_lower = [r["_name"].lower() for r in rows]
+                n_hs       = sum(1 for n in names_lower if re.search(r"\bhigh school\b", n))
+                n_hs_abbr  = sum(1 for n in names_lower if re.search(r"\bhs\b", n))
+                n_acad     = sum(1 for n in names_lower if re.search(r"\bacademy\b", n))
+                n_ms       = sum(1 for n in names_lower if re.search(r"\bmiddle school\b", n))
+                n_es       = sum(1 for n in names_lower if re.search(r"\belementary\b", n))
+                n_col      = sum(1 for n in names_lower if re.search(r"\b(college|university)\b", n))
+                # Pretty-case the root.
+                pretty_root = " ".join(w.capitalize() for w in root_l.split())
+                if n_col > 0:
+                    invented_name = f"{pretty_root} College"
+                elif n_acad > 0:
+                    # If ANY row calls it an "Academy", prefer that — academy is
+                    # the specific institution name (overrides HS majority).
+                    invented_name = f"{pretty_root} Academy"
+                elif n_ms > 0 and n_ms >= max(n_hs, n_hs_abbr, n_es):
+                    invented_name = f"{pretty_root} Middle School"
+                elif n_es > 0 and n_es >= max(n_hs, n_hs_abbr, n_ms):
+                    invented_name = f"{pretty_root} Elementary"
+                else:
+                    # Default for HS variants and sport-only rows.
+                    invented_name = f"{pretty_root} High School"
+                # Avoid colliding with an existing row's name.
+                existing_names = {r["_name"].lower() for r in records}
+                if invented_name.lower() in existing_names:
+                    invented_name = f"{pretty_root} ({inst.upper()})"
+                # Build synthetic parent from the best-address member.
+                proto = max(rows, key=lambda x: sum(1 for k in ("Address 1","City","State/Province","Zip Code") if x.get(k,"").strip()))
+                syn = {
+                    "Internal ID": "", "ID": "", "Name": invented_name,
+                    "Duplicate": "", "Primary Contact": "", "Category": "",
+                    "Primary Subsidiary": proto.get("Primary Subsidiary", ""),
+                    "Sales Rep": proto.get("Sales Rep", ""),
+                    "Partner": "", "Status": "CUSTOMER-Closed Won", "Phone": "", "Email": "",
+                    "Address": "",
+                    "Address 1": proto.get("Address 1", ""), "Address 2": proto.get("Address 2", ""),
+                    "City": proto.get("City", ""), "State/Province": proto.get("State/Province", ""),
+                    "Zip Code": proto.get("Zip Code", ""),
+                    "_name": invented_name, "_root": pretty_root,
+                    "_inst": inst if inst != "other" else "hs",
+                    "_anchor": True, "_city": city, "_state": state,
+                    "_rep": proto.get("Sales Rep", ""),
+                    "_real_email": False,
+                    "_has_addr": bool(proto.get("Address 1", "").strip() and proto.get("City", "").strip() and proto.get("Zip Code", "").strip()),
+                    "_synthetic": True, "_auto_invented": True,
+                    "_role": "parent", "_parent_name": "",
+                }
+                records.append(syn)
+                synthetic.append(syn)
                 for r in rows:
-                    r["_role"] = "standalone"
-                    r["_parent_name"] = ""
-                if len(rows) >= 3:
-                    ambiguous.append({
-                        "root": root_l,
-                        "inst": inst,
-                        "city": city,
-                        "state": state,
-                        "rows": [r["_name"] for r in rows],
-                        "reps": sorted({r["_rep"] for r in rows if r["_rep"]}),
-                        "reason": f"{len(rows)} sport/activity rows share root '{root_l}' in {city}/{state} but no school anchor exists",
-                    })
+                    r["_role"] = "sub"
+                    r["_parent_name"] = invented_name
+                cluster_log.append({
+                    "root": root_l,
+                    "inst": syn["_inst"],
+                    "city": city,
+                    "state": state,
+                    "parent": invented_name,
+                    "subs": [r["_name"] for r in rows],
+                    "reps": sorted({r["_rep"] for r in rows if r["_rep"]}),
+                    "decision": "auto-invented parent",
+                })
             else:
-                # Rows all marked with same institution type (e.g. all 'hs') but no anchor
-                # row exists (no "{root} High School" record). Could create one, but
-                # conservative policy says ask the user.
                 for r in rows:
                     r["_role"] = "standalone"
                     r["_parent_name"] = ""
-                if len(rows) >= 2:
-                    ambiguous.append({
-                        "root": root_l,
-                        "inst": inst,
-                        "city": city,
-                        "state": state,
-                        "rows": [r["_name"] for r in rows],
-                        "reps": sorted({r["_rep"] for r in rows if r["_rep"]}),
-                        "reason": f"{len(rows)} {inst.upper()} rows for '{root_l}' — no umbrella record exists; consider creating one",
-                    })
+
+    # Apply manual sub-assignment overrides (user has final say on specific rows).
+    manual_applied = 0
+    for r in records:
+        target = MANUAL_SUB_ASSIGNMENTS.get(r.get("_name", ""))
+        if target:
+            r["_role"] = "sub"
+            r["_parent_name"] = target
+            manual_applied += 1
 
     # ---------- build output rows ----------
 
@@ -627,6 +713,7 @@ def main():
     print(f"excluded rows (by name rule): {len(excluded_rows)}")
     print(f"duplicates dropped:           {len(dup_log)}")
     print(f"synthetic parents added:      {len(synthetic)}")
+    print(f"manual sub overrides applied: {manual_applied}")
     print(f"total rows in upload:         {len(upload_rows)}")
     print(f"  parents/standalone:         {pcount}")
     print(f"  subs:                       {scount}")
