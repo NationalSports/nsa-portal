@@ -6900,7 +6900,7 @@ export default function App(){
           <div className="card-body" style={{padding:0}}>
             {vg.pos.map((bp,bpi)=>{const isEditing=editingBatchId===bp.id;return<div key={bp.id} style={{padding:'12px 16px',borderBottom:bpi<vg.pos.length-1?'1px solid #f1f5f9':'none',background:isEditing?'#f5f3ff':'transparent'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-                <div><span style={{fontWeight:700,color:'#1e40af'}}>{bp.so_id}</span><span style={{fontSize:12,color:'#64748b',marginLeft:8}}>{bp.customer} — {bp.so_memo}</span></div>
+                <div>{bp.po_id&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:12,marginRight:8}}>{bp.po_id}</span>}<span style={{fontWeight:700,color:'#1e40af'}}>{bp.so_id}</span><span style={{fontSize:12,color:'#64748b',marginLeft:8}}>{bp.customer} — {bp.so_memo}</span></div>
                 <div style={{display:'flex',alignItems:'center',gap:8}}>
                   <span style={{fontWeight:700}}>${bp.total_cost.toFixed(2)}</span>
                   <span style={{fontSize:10,color:'#94a3b8'}}>{bp.created_by_name?.split(' ')[0]}</span>
@@ -7008,7 +7008,7 @@ export default function App(){
                 setPg('batch_pos');
               }}>{'🚀'} Order {nextPO} for {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
-              Contains: {vg.pos.map(bp=>bp.so_id+' ('+bp.customer+')').join(' · ')}
+              Contains: {vg.pos.map(bp=>(bp.po_id?bp.po_id+' / ':'')+bp.so_id+' ('+bp.customer+')').join(' · ')}
             </div>
           </div>
         </div>})}
