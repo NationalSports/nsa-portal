@@ -14906,6 +14906,7 @@ export default function App(){
       {key:'payment_terms',label:'Payment Terms'},
       {key:'tax_rate',label:'Tax Rate (decimal)'},
       {key:'primary_rep_id',label:'Rep ID'},
+      {key:'netsuite_internal_id',label:'NetSuite Internal ID'},
     ];
     const VEND_FIELDS=[
       {key:'name',label:'Name *',required:true},
@@ -14953,6 +14954,7 @@ export default function App(){
         payment_terms:['payment_terms','terms','net_terms'],
         tax_rate:['tax_rate','tax','sales_tax'],
         primary_rep_id:['rep','rep_id','sales_rep','rep_name','sales_rep_name'],
+        netsuite_internal_id:['netsuite_internal_id','netsuite_id','ns_id','ns_internal_id','internal_id'],
         account_type:['account_type','type','acct_type','parent_sub','parent_or_sub'],
         parent_name:['parent','parent_name','parent_account','parent_company','parent_school'],
         sku:['sku','item_number','style','item','part_number','style_number','article','articlenumber','styleno','material','materialid'],
@@ -15050,6 +15052,7 @@ export default function App(){
           payment_terms:normalizeTerms(rawTerms),
           tax_rate:parseFloat(row[colMap.tax_rate])||0,
           primary_rep_id:resolveRepId(rawRep),
+          netsuite_internal_id:(row[colMap.netsuite_internal_id]||'').trim()||null,
           is_active:true,_oe:0,_os:0,_oi:0,_ob:0
         };
         added.push(c);
@@ -15103,6 +15106,7 @@ export default function App(){
           payment_terms:normalizeTerms(rawTerms)||parent?.payment_terms||'net30',
           tax_rate:parseFloat(row[colMap.tax_rate])||parent?.tax_rate||0,
           primary_rep_id:resolveRepId(rawRep)||parent?.primary_rep_id||cu.id,
+          netsuite_internal_id:(row[colMap.netsuite_internal_id]||'').trim()||null,
           is_active:true,_oe:0,_os:0,_oi:0,_ob:0
         };
         added.push(c);
