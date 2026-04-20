@@ -1078,7 +1078,7 @@ const _dbSavePendingIds=new Set();
 // Track recent saves by this client — prevents false "modified by another user" conflicts from own realtime echo
 const _dbRecentSaves={};// {id: timestamp}
 // Legacy compat — keep old _dbSave for team_members and other simple tables
-const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
+const _dbSave = (table, data) => { if(supabase && data) return supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
 // ─── Cloudinary Config ───
 const CLOUDINARY_CLOUD='dwlyljyuz';
 const CLOUDINARY_PRESET='ml_default_nsaportal';
@@ -2583,7 +2583,10 @@ export default function App(){
     }));
   },[sos,ests]);
   // Batch POs, submitted batches, changelog, SO history — sync to localStorage + Supabase app_state table
-  const _saveAppState=(key,val)=>{_lsSet('nsa_'+key,JSON.stringify(val));if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}])};
+  // Wrap the DB write in _dbSavingGuard so polls/realtime reloads defer until it lands —
+  // otherwise a concurrent SO save (also guarded) can release the guard first and let a
+  // poll overwrite freshly-set batch_pos / submitted_batches state with stale DB data.
+  const _saveAppState=(key,val)=>{_lsSet('nsa_'+key,JSON.stringify(val));if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSavingGuard(()=>_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}]))};
   React.useEffect(()=>{_saveAppState('batch_pos',batchPOs)},[batchPOs]);
   React.useEffect(()=>{_saveAppState('submitted_batches',submittedBatches)},[submittedBatches]);
   React.useEffect(()=>{_saveAppState('batch_counter',batchCounter)},[batchCounter]);

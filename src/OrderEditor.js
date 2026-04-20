@@ -4186,9 +4186,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
               if(hasQty)updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
             });
+            // Queue the batch entry BEFORE saving the SO so its app_state write is in flight
+            // before the SO save's post-guard poll runs; avoids a poll clobbering the queue.
+            if(onBatchPO)onBatchPO(prev=>[...prev,bp]);
             const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
             setO(updated);onSave(updated);setPOCounter(c=>c+1);
-            if(onBatchPO)onBatchPO(prev=>[...prev,bp]);
             setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')');
           }}><Icon name="package" size={14}/> Add to Batch ({poItems.filter((_,vi)=>!poExcluded[vi]).length})</button>}
           {poItems.length>0&&(preexistingPO||!batchConfig?.batchOnly)&&<button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{}} disabled={poItems.every((_,vi)=>poExcluded[vi])} onClick={()=>{
