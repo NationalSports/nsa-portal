@@ -1170,7 +1170,7 @@ const parseNetSuitePdf=(text,docType,products)=>{
   const result={docNumber:'',date:'',customerName:'',terms:'',memo:'',subtotal:0,tax:0,shipping:0,total:0,lineItems:[],rawText:text,confidence:'low',warnings:[]};
   const _products=products||[];
   const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
-  const SZ_RE=/[-\s](XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)$/i;
+  const SZ_RE=/[-\s](XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.5)?)$/i;
 
   // ── Extract document number ──
   const docPatterns=[
@@ -1358,8 +1358,8 @@ const parseNetSuitePdf=(text,docType,products)=>{
     let color='';
     // NSA descriptions use both - and – (en-dash): "Adidas Creator Tee - Black - S" or "Pant – White Pins"
     const DASH=/\s*[-–—]\s*/;
-    const SIZE_WORDS=/^(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)$/i;
-    const colorSizeMatch=description.match(/\s*[-–—]\s*([A-Za-z][A-Za-z\s,\/]+?)\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)\s*$/i);
+    const SIZE_WORDS=/^(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.5)?)$/i;
+    const colorSizeMatch=description.match(/\s*[-–—]\s*([A-Za-z][A-Za-z\s,\/]+?)\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.5)?)\s*$/i);
     if(colorSizeMatch)color=colorSizeMatch[1].trim();
     else{
       // Try: "Name – Color" or "Name – Color Variant" (no size at end)
@@ -1373,7 +1373,7 @@ const parseNetSuitePdf=(text,docType,products)=>{
       const slashColorMatch=description.match(new RegExp('\\b((?:'+COLOR_ALT+')\\s*\\/\\s*\\w+)','i'));
       if(slashColorMatch)color=slashColorMatch[1].trim();
       // Pattern: known color word at end after a space (no dash), e.g. "Hood Black/White"
-      if(!color){const kcm=description.replace(/\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)\s*$/i,'').match(new RegExp('\\s('+COLOR_ALT+')\\s*$','i'));if(kcm)color=kcm[1].trim()}
+      if(!color){const kcm=description.replace(/\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.5)?)\s*$/i,'').match(new RegExp('\\s('+COLOR_ALT+')\\s*$','i'));if(kcm)color=kcm[1].trim()}
     }
     // Simplify compound colors: "Black/White" → "Black", "Power Red/Wh" → "Power Red"
     if(color&&color.includes('/'))color=color.split('/')[0].trim();
