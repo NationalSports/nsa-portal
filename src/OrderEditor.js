@@ -2996,25 +2996,82 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             allReceived:blankPOs.length>0&&blankPOs.every(p=>p.status==='received'),
             _catProduct:catProduct,_productId:it.product_id,_vendorId:it.vendor_id,_brand:it.brand,_color:it.color,_imageUrl:it.image_url,
             billedUnitCost,catalogCost});
+          // In-house deco only — outside deco is aggregated below at SO level (one row per
+          // outside-deco PO / vendor), since a decorator's bill covers multiple items as a
+          // single purchase. Splitting it per-item doesn't match how the cost lands.
           safeDecos(it).forEach(d=>{
+            const matchingDPOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
+            const isOutside=d.kind==='outside_deco'||matchingDPOs.length>0;
+            if(isOutside)return;
             const dp=dP(d,qty,af,qty);
             const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const expectedDeco=eqD*dp.cost;
-            const matchingDPOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
-            const actualDeco=matchingDPOs.reduce((a,pl)=>{
-              if(safeNum(pl._bill_cost)>0)return a+safeNum(pl._bill_cost);
-              const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0);
-              return a+poQty*safeNum(pl.unit_cost)},0);
             const artF=af.find(a=>a.id===d.art_file_id);
-            const isOutside=d.kind==='outside_deco'||matchingDPOs.length>0;
-            if(dp.cost>0||actualDeco>0){
-              costLines.push({category:isOutside?'Outside Deco':'In-House Deco',
+            if(dp.cost>0){
+              costLines.push({category:'In-House Deco',
                 sku:it.sku,name:artF?.name||d.deco_type?.replace(/_/g,' ')||'Decoration',
-                vendor:isOutside?(matchingDPOs[0]?.deco_vendor||d.vendor||'—'):'NSA In-House',
-                qty,expected:expectedDeco,actual:isOutside?actualDeco:expectedDeco,
-                poCount:matchingDPOs.length,poIds:matchingDPOs.map(p=>p.po_id).filter(Boolean).join(', '),
-                allReceived:matchingDPOs.length>0&&matchingDPOs.every(p=>p.status==='received')});
+                vendor:'NSA In-House',
+                qty,expected:expectedDeco,actual:expectedDeco,
+                poCount:0,poIds:'',allReceived:true});
             }
           });
+        });
+        // Outside deco — aggregate across items, one cost line per outside-deco PO (fallback:
+        // group by vendor+decoType when no PO is set up yet). Expected is the sum of quoted
+        // decoration cost for items using that PO; Actual is the bill's _bill_cost (—, when
+        // no bill applied yet).
+        const outsideGroups={};
+        safeItems(o).forEach(it=>{
+          const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+          if(!qty)return;
+          const outsidePOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
+          const outsideDecos=safeDecos(it).filter(d=>d.kind==='outside_deco'||outsidePOs.length>0);
+          outsideDecos.forEach(d=>{
+            const dp=dP(d,qty,af,qty);const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);
+            const expected=eqD*dp.cost;if(!expected&&outsidePOs.length===0)return;
+            const artF=af.find(a=>a.id===d.art_file_id);
+            const decoName=artF?.name||d.deco_type?.replace(/_/g,' ')||'Decoration';
+            if(outsidePOs.length>0){
+              const share=expected/outsidePOs.length;
+              outsidePOs.forEach(pl=>{
+                const key=pl.po_id||('__nopo__'+(pl.deco_vendor||'')+'__'+(pl.deco_type||''));
+                if(!outsideGroups[key])outsideGroups[key]={poId:pl.po_id||'',vendor:pl.deco_vendor||d.vendor||'—',decoType:pl.deco_type||d.deco_type||'',expected:0,actual:0,qty:0,skus:new Set(),artNames:new Set(),poLines:[],statuses:new Set()};
+                outsideGroups[key].expected+=share;
+                outsideGroups[key].qty+=qty/outsidePOs.length;
+                if(it.sku)outsideGroups[key].skus.add(it.sku);
+                outsideGroups[key].artNames.add(decoName);
+              });
+            }else{
+              const key='__pending__'+(d.vendor||'')+'__'+(d.deco_type||'');
+              if(!outsideGroups[key])outsideGroups[key]={poId:'',vendor:d.vendor||'Pending — no PO',decoType:d.deco_type||'',expected:0,actual:0,qty:0,skus:new Set(),artNames:new Set(),poLines:[],statuses:new Set()};
+              outsideGroups[key].expected+=expected;
+              outsideGroups[key].qty+=qty;
+              if(it.sku)outsideGroups[key].skus.add(it.sku);
+              outsideGroups[key].artNames.add(decoName);
+            }
+          });
+          outsidePOs.forEach(pl=>{
+            const key=pl.po_id||('__nopo__'+(pl.deco_vendor||'')+'__'+(pl.deco_type||''));
+            if(!outsideGroups[key])outsideGroups[key]={poId:pl.po_id||'',vendor:pl.deco_vendor||'—',decoType:pl.deco_type||'',expected:0,actual:0,qty:0,skus:new Set(),artNames:new Set(),poLines:[],statuses:new Set()};
+            if(safeNum(pl._bill_cost)>0)outsideGroups[key].actual+=safeNum(pl._bill_cost);
+            outsideGroups[key].poLines.push(pl);
+            outsideGroups[key].statuses.add(pl.status||'waiting');
+            if(it.sku)outsideGroups[key].skus.add(it.sku);
+          });
+        });
+        Object.values(outsideGroups).forEach(g=>{
+          if(g.expected===0&&g.actual===0)return;
+          const dtLabel=g.decoType?g.decoType.replace(/_/g,' '):'';
+          const label='Outside Deco'+(dtLabel?' — '+dtLabel:'')+(g.artNames.size?' · '+[...g.artNames].slice(0,2).join(', '):'');
+          costLines.push({category:'Outside Deco',
+            sku:[...g.skus].filter(Boolean).join(', ')||'—',
+            name:label,
+            vendor:g.vendor,
+            qty:Math.round(g.qty),
+            expected:Math.round(g.expected*100)/100,
+            actual:Math.round(g.actual*100)/100,
+            poCount:g.poLines.length,
+            poIds:g.poId||'',
+            allReceived:g.poLines.length>0&&[...g.statuses].every(s=>s==='received')});
         });
         if(costLines.length===0)return<div className="card"><div className="card-body"><div className="empty">No cost data — add items first</div></div></div>;
         const hasActuals=costLines.some(l=>l.actual>0);

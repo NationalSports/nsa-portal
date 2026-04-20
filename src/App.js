@@ -7548,26 +7548,79 @@ export default function App(){
               poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
               allReceived:blankPOs.length>0&&blankPOs.every(p=>p.status==='received')});
             const aqMap={};safeItems(so).forEach(sit=>{const sq2=Object.values(safeSizes(sit)).reduce((a2,v2)=>a2+safeNum(v2),0);safeDecos(sit).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){aqMap[d2.art_file_id]=(aqMap[d2.art_file_id]||0)+sq2}})});
+            // In-house deco only — outside deco aggregated below at SO level.
             safeDecos(it).forEach(d=>{
+              const matchingDPOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
+              const isOutside=d.kind==='outside_deco'||matchingDPOs.length>0;
+              if(isOutside)return;
               const cq=d.kind==='art'&&d.art_file_id?aqMap[d.art_file_id]:qty;
               const dp=dP(d,qty,af,cq);
               const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const expectedDeco=eqD*dp.cost;
-              const matchingDPOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
-              const actualDeco=matchingDPOs.reduce((a,pl)=>{
-                if(safeNum(pl._bill_cost)>0)return a+safeNum(pl._bill_cost);
-                const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0);
-                return a+poQty*safeNum(pl.unit_cost)},0);
               const artF=af.find(a=>a.id===d.art_file_id);
-              const isOutside=d.kind==='outside_deco'||matchingDPOs.length>0;
-              if(dp.cost>0||actualDeco>0){
-                costLines.push({category:isOutside?'Outside Deco':'In-House Deco',
+              if(dp.cost>0){
+                costLines.push({category:'In-House Deco',
                   sku:it.sku,name:artF?.name||d.deco_type?.replace(/_/g,' ')||'Decoration',
-                  vendor:isOutside?(matchingDPOs[0]?.deco_vendor||d.vendor||'—'):'NSA In-House',
-                  qty,expected:expectedDeco,actual:isOutside?actualDeco:expectedDeco,
-                  poCount:matchingDPOs.length,poIds:matchingDPOs.map(p=>p.po_id).filter(Boolean).join(', '),
-                  allReceived:matchingDPOs.length>0&&matchingDPOs.every(p=>p.status==='received')});
+                  vendor:'NSA In-House',
+                  qty,expected:expectedDeco,actual:expectedDeco,
+                  poCount:0,poIds:'',allReceived:true});
               }
             });
+          });
+          // Outside deco — aggregate one line per outside-deco PO (or per pending vendor/type).
+          const _outsideGroups={};
+          safeItems(so).forEach(it=>{
+            const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+            if(!qty)return;
+            const matchesInv=invSkus.length===0||invSkus.some(s=>s===it.sku||(it.sku+' '+it.name).includes(s));
+            if(!matchesInv)return;
+            const outsidePOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
+            const aqMap2={};safeItems(so).forEach(sit=>{const sq2=Object.values(safeSizes(sit)).reduce((a2,v2)=>a2+safeNum(v2),0);safeDecos(sit).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){aqMap2[d2.art_file_id]=(aqMap2[d2.art_file_id]||0)+sq2}})});
+            const outsideDecos=safeDecos(it).filter(d=>d.kind==='outside_deco'||outsidePOs.length>0);
+            outsideDecos.forEach(d=>{
+              const cq=d.kind==='art'&&d.art_file_id?aqMap2[d.art_file_id]:qty;
+              const dp=dP(d,qty,af,cq);const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);
+              const expected=eqD*dp.cost;if(!expected&&outsidePOs.length===0)return;
+              const artF=af.find(a=>a.id===d.art_file_id);
+              const decoName=artF?.name||d.deco_type?.replace(/_/g,' ')||'Decoration';
+              if(outsidePOs.length>0){
+                const share=expected/outsidePOs.length;
+                outsidePOs.forEach(pl=>{
+                  const key=pl.po_id||('__nopo__'+(pl.deco_vendor||'')+'__'+(pl.deco_type||''));
+                  if(!_outsideGroups[key])_outsideGroups[key]={poId:pl.po_id||'',vendor:pl.deco_vendor||d.vendor||'—',decoType:pl.deco_type||d.deco_type||'',expected:0,actual:0,qty:0,skus:new Set(),artNames:new Set(),poLines:[],statuses:new Set()};
+                  _outsideGroups[key].expected+=share;
+                  _outsideGroups[key].qty+=qty/outsidePOs.length;
+                  if(it.sku)_outsideGroups[key].skus.add(it.sku);
+                  _outsideGroups[key].artNames.add(decoName);
+                });
+              }else{
+                const key='__pending__'+(d.vendor||'')+'__'+(d.deco_type||'');
+                if(!_outsideGroups[key])_outsideGroups[key]={poId:'',vendor:d.vendor||'Pending — no PO',decoType:d.deco_type||'',expected:0,actual:0,qty:0,skus:new Set(),artNames:new Set(),poLines:[],statuses:new Set()};
+                _outsideGroups[key].expected+=expected;
+                _outsideGroups[key].qty+=qty;
+                if(it.sku)_outsideGroups[key].skus.add(it.sku);
+                _outsideGroups[key].artNames.add(decoName);
+              }
+            });
+            outsidePOs.forEach(pl=>{
+              const key=pl.po_id||('__nopo__'+(pl.deco_vendor||'')+'__'+(pl.deco_type||''));
+              if(!_outsideGroups[key])_outsideGroups[key]={poId:pl.po_id||'',vendor:pl.deco_vendor||'—',decoType:pl.deco_type||'',expected:0,actual:0,qty:0,skus:new Set(),artNames:new Set(),poLines:[],statuses:new Set()};
+              if(safeNum(pl._bill_cost)>0)_outsideGroups[key].actual+=safeNum(pl._bill_cost);
+              _outsideGroups[key].poLines.push(pl);
+              _outsideGroups[key].statuses.add(pl.status||'waiting');
+              if(it.sku)_outsideGroups[key].skus.add(it.sku);
+            });
+          });
+          Object.values(_outsideGroups).forEach(g=>{
+            if(g.expected===0&&g.actual===0)return;
+            const dtLabel=g.decoType?g.decoType.replace(/_/g,' '):'';
+            const label='Outside Deco'+(dtLabel?' — '+dtLabel:'')+(g.artNames.size?' · '+[...g.artNames].slice(0,2).join(', '):'');
+            costLines.push({category:'Outside Deco',
+              sku:[...g.skus].filter(Boolean).join(', ')||'—',
+              name:label,vendor:g.vendor,qty:Math.round(g.qty),
+              expected:Math.round(g.expected*100)/100,
+              actual:Math.round(g.actual*100)/100,
+              poCount:g.poLines.length,poIds:g.poId||'',
+              allReceived:g.poLines.length>0&&[...g.statuses].every(s=>s==='received')});
           });
           if(costLines.length===0)return null;
           const totalExpected=costLines.reduce((a,l)=>a+l.expected,0);
@@ -15590,22 +15643,26 @@ export default function App(){
       const decoCost=Math.round((safeNum(bill.doc_total||0)-freight)*100)/100;
       setSOs(prev=>prev.map(s=>{
         if(s.id!==soId)return s;
-        let hit=false;
+        let costApplied=false;
         const updatedItems=(s.items||[]).map(it=>{
           if(!it.po_lines?.length)return it;
           return{...it,po_lines:it.po_lines.map(po=>{
             const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
             if(pid!==poLc&&!pid.startsWith(poLc))return po;
-            hit=true;
+            // Tracking attaches to every matching po_line (useful for shipping visibility)
             const trackNums=[...(po.tracking_numbers||[])];
             if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+            // Cost attaches to the first matching po_line only — avoids double-counting when
+            // multiple items share the same decoration PO (same po_id across several items).
+            if(costApplied)return{...po,tracking_numbers:trackNums};
+            costApplied=true;
             const prevBillCost=safeNum(po._bill_cost||0);
             return{...po,tracking_numbers:trackNums,
               _bill_cost:Math.round((prevBillCost+decoCost)*100)/100,
               _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,supplier:bill.supplier,cost:decoCost,freight,tracking:bill.tracking}]};
           })};
         });
-        if(!hit)return s;
+        if(!costApplied)return s;
         const prevShip=safeNum(s._shipping_cost||0);
         const updatedSO={...s,items:updatedItems,updated_at:new Date().toLocaleString()};
         if(freight>0)updatedSO._shipping_cost=Math.round((prevShip+freight)*100)/100;
@@ -16821,7 +16878,7 @@ export default function App(){
                         placeholder="Search SO # or customer..." value={t.soId||''}
                         onChange={e=>{const v=e.target.value.split(' — ')[0].trim();setT({soId:v,mode:t.mode||'existing'})}}/>
                       <datalist id={`so-list-${bi}`}>
-                        {sos.slice(0,500).map(s=><option key={s.id} value={`${s.id} — ${s.customer_name||''}`}>{s.id} — {s.customer_name||''}</option>)}
+                        {sos.slice(0,500).map(s=>{const c=cust.find(cc=>cc.id===s.customer_id);const cn=c?.name||s.customer_name||'';return<option key={s.id} value={`${s.id} — ${cn}`}>{s.id} — {cn}</option>})}
                       </datalist>
                       {t.soId&&!so&&<span style={{fontSize:10,color:'#dc2626'}}>SO not found</span>}
                       {so&&<>
