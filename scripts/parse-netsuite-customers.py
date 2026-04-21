@@ -74,6 +74,37 @@ EXCLUDED_NAME_SUBSTRINGS = [
     "dominican",
 ]
 
+# Specific NetSuite Internal IDs to drop (duplicates, unwanted rows). Keyed by
+# string because that's how they appear in the source file.
+EXCLUDED_INTERNAL_IDS: set[str] = {
+    "3858",  # NorCal Baseball dup #1
+    "3893",  # NorCal Baseball dup #2 — user asked to drop both
+}
+
+# Name-level abbreviation expansion — applied globally before classification.
+# Keeps the CSV looking clean and helps clustering (e.g. "Flag FB" wasn't in
+# the sport-word list; now it becomes "Flag Football" which is).
+ABBREVIATION_REWRITES: list[tuple[str, str]] = [
+    (r"\bFlag\s*FB\b", "Flag Football"),
+    (r"\bWomen'?sLax\b", "Women's Lacrosse"),
+    (r"\bMen'?sLax\b", "Men's Lacrosse"),
+    (r"\b(LAX|Lax)\b", "Lacrosse"),
+    (r"(?<=\s)XC(?=\s|$)", "Cross Country"),
+    (r"(?<=\s)VB(?=\s|$)", "Volleyball"),
+    (r"(?<=\s)BB(?=\s|$)", "Basketball"),
+]
+
+# Specific row renames. Key = name as it appears in the source, Value = new
+# name. Applied after abbreviation rewrites so both sides of the key can use
+# the expanded form.
+MANUAL_RENAMES: dict[str, str] = {
+    "Dana Hills HS Flag Football": "Dana Hills High School",
+    "Mira Costa HS Hockey": "Mira Costa High School",
+    "Hercules HS Flag Football": "Hercules High School",
+    "University HS Security": "University High School",
+    "Fullerton HS Flag Football": "Fullerton High School",
+}
+
 # User-approved invented parents. Key is (root lowercase, city lowercase,
 # state lowercase, inst) where `inst` is the institution type to force onto
 # the invented parent AND all matching sub rows. Value is the parent name to
@@ -102,6 +133,57 @@ MANUAL_SUB_ASSIGNMENTS: dict[str, str] = {
     # Concordia Irvine: pull the Heritage Garden under the Athletics parent.
     "Concordia Heritage Garden": "Concordia University Athletics",
     "Concordia University Track and Field": "Concordia University Athletics",
+    # Seton Catholic HS orphans (Vancouver WA).
+    "Seton Drama Department": "Seton Catholic High School",
+    "Seton Fishing": "Seton Catholic High School",
+    "Seton Softball": "Seton Catholic High School",
+    "Seton Track and Cross Country": "Seton Catholic High School",
+    "Seton Track & Cross Country": "Seton Catholic High School",
+    # Mission College (Santa Clara) — merge Saratoga orphan.
+    "Mission College Women's Basketball": "Mission College",
+    # Ridgeview HS (Bakersfield) — merge the Club orphan into Athletics.
+    "The Ridgeview High School Athletics Club": "Ridgeview HS Athletics",
+    # Single-token stems (too risky for auto-demote) — explicit manual.
+    "Helix Campus Supervision": "Helix High School",
+    "Dana Hills Girl's Water Polo": "Dana Hills High School",
+    "Dana Hills Boy's Swim Team": "Dana Hills High School",
+}
+
+# Cluster merges flatten a secondary parent into a primary parent.
+# Every sub currently pointing to `src` is re-parented to `dst`, and `src`
+# itself becomes a sub of `dst`.
+CLUSTER_MERGES: dict[str, str] = {
+    # Helix HS → one parent
+    "Helix High School Athletics": "Helix High School",
+    "Helix High School Girls Lacrosse": "Helix High School",
+    "Helix (HS)": "Helix High School",  # collision-fallback auto-invent
+    # Chapman University — collapse the two anchors + Women's Soccer + the
+    # auto-invented "Chapman College" (collision fallback) into one.
+    "Chapman University Women's Lacrosse": "Chapman University Athletics",
+    "Chapman University Women's Soccer": "Chapman University Athletics",
+    "Chapman College": "Chapman University Athletics",
+    # Cal Poly — the user wants one parent for SLO + Cal Poly variants
+    "Cal Poly Cross Country & Track and Field": "Cal Poly Athletics",
+    "Cal Poly Racing": "Cal Poly Athletics",
+    "Cal Poly Women's Baseball": "Cal Poly Athletics",
+    "Cal Poly Friday Club": "Cal Poly Athletics",
+    "Cal Poly Rodeo": "Cal Poly Athletics",
+    "Cal Poly SLO Cheer": "Cal Poly Athletics",
+    "Cal Poly SLO Dance Team": "Cal Poly Athletics",
+    # Concordia — Katy TX is the separate standalone; merge into the main umbrella.
+    # (User wants all Concordia together.)
+    "Concordia University": "Concordia University Athletics",
+    # University of Redlands — zip typo split the Womens rows into their own cluster.
+    "University Of Redlands College": "University of Redlands Athletics",
+    # College of San Mateo — collapse Athletics + Women's BB into one umbrella.
+    "College of San Mateo Athletics": "College of San Mateo",
+    "College of San Mateo Women's Basketball": "College of San Mateo",
+}
+
+# Tagged name swap: for pairs where the "older" NS ID should be the parent of
+# the "newer" one (user confirmed for Santa Ana College).
+NAME_SWAP_TAKE_LOWER_ID: set[str] = {
+    "Santa Ana College",
 }
 
 # Sport/role suffix patterns — strip from a name to get the org root.
@@ -182,6 +264,22 @@ def classify(name: str) -> tuple[str, str]:
     """
     s = name.strip()
 
+    # Special form: "University of X" / "College of X" — the institution word
+    # leads the name and is part of the org name itself. Root = "University of
+    # {WordAfterOf}" plus an optional second word only if that word is NOT a
+    # sport/role (otherwise the root over-captures, e.g. "University of
+    # Redlands Football"). Keeps "University of California Riverside" intact.
+    m = re.match(r"^((?:The\s+)?(?:University|College)\s+of\s+\S+)\b",
+                 s, flags=re.IGNORECASE)
+    if m:
+        head = m.group(1)
+        rest = s[len(head):].strip()
+        if rest:
+            next_word = rest.split()[0]
+            if not re.fullmatch(r"(?i)(" + SUB_ROLE_WORDS + r"|women'?s|men'?s|boys?|girls?|high|school|hs|college|university|academy|athletics)", next_word):
+                head = head + " " + next_word
+        return head.strip(), "col"
+
     # 1) Try to strip a single institution suffix (from the tail) — that tells us the type.
     stripped, inst = _strip_once(s, INSTITUTIONS)
     if inst:
@@ -250,6 +348,10 @@ def alpha_tag(name: str) -> str:
 def main():
     records = load_records()
 
+    # Drop rows by NetSuite Internal ID (user-flagged rows to remove).
+    records = [r for r in records
+               if (r.get("Internal ID") or "").strip() not in EXCLUDED_INTERNAL_IDS]
+
     # NetSuite export glitches that leave Name blank. Recover in priority order:
     #   1) ID column contains the name (name landed there, ~864 rows).
     #   2) First line of the free-text "Address" field is the org name (~2 rows).
@@ -266,6 +368,18 @@ def main():
             if first and first.lower() != "united states":
                 r["Name"] = first
                 r["_name_recovered_from_address"] = True
+
+    # Apply abbreviation rewrites + manual renames NOW — after name recovery so
+    # rows whose "Name" was originally blank (and recovered from ID / Address)
+    # also get the rewrites.
+    for r in records:
+        name = (r.get("Name") or "").strip()
+        for pat, repl in ABBREVIATION_REWRITES:
+            name = re.sub(pat, repl, name)
+        if name in MANUAL_RENAMES:
+            name = MANUAL_RENAMES[name]
+        if name != (r.get("Name") or "").strip():
+            r["Name"] = name
 
     # Colon-split rule: a name like "Bishop Alemany HS: Admissions" means the
     # prefix before ":" is the parent's name and the full row is a sub. Rewrite
@@ -299,6 +413,8 @@ def main():
     from collections import defaultdict as _dd
     by_internal = _dd(list)
     by_addr = _dd(list)
+    by_name_zip = _dd(list)
+    by_name = _dd(list)  # same-name regardless of locality (weakest signal)
     for r in records:
         iid = (r.get("Internal ID") or "").strip()
         if iid:
@@ -307,12 +423,20 @@ def main():
         a1 = (r.get("Address 1") or "").strip().lower()
         city = (r.get("City") or "").strip().lower()
         state = (r.get("State/Province") or "").strip().lower()
+        zipc = (r.get("Zip Code") or "").strip().lower()
         if name and a1 and city and state:
             by_addr[(name, a1, city, state)].append(r)
+        # Secondary: same name + zip + state (catches dupes where one has blank address)
+        if name and zipc and state and len(zipc) >= 4:
+            by_name_zip[(name, zipc, state)].append(r)
+        # Weakest: identical name when at least one row has NO locality info —
+        # almost always a true duplicate where one row is just missing data.
+        if name:
+            by_name[name].append(r)
 
     drop_set = set()
     dup_log = []
-    for key, rows_grp in list(by_internal.items()) + list(by_addr.items()):
+    for key, rows_grp in list(by_internal.items()) + list(by_addr.items()) + list(by_name_zip.items()):
         if len(rows_grp) < 2:
             continue
         ranked = sorted(rows_grp, key=lambda x: (-populated_score(x), x.get("Name", "")))
@@ -322,6 +446,25 @@ def main():
                 continue
             drop_set.add(id(loser))
             dup_log.append((loser, keeper, key))
+
+    # Name-only dedup: drop a row when another row has the exact same name
+    # AND the other row has real address data while this one has ~none. This
+    # catches ghost records like a blank "University High School" that sit
+    # alongside the real one.
+    for name, rows_grp in by_name.items():
+        if len(rows_grp) < 2:
+            continue
+        ranked = sorted(rows_grp, key=lambda x: (-populated_score(x), x.get("Name", "")))
+        keeper = ranked[0]
+        keeper_score = populated_score(keeper)
+        if keeper_score < 4:
+            continue  # not enough signal that the keeper is authoritative
+        for loser in ranked[1:]:
+            if id(loser) == id(keeper) or id(loser) in drop_set:
+                continue
+            if populated_score(loser) <= 1:
+                drop_set.add(id(loser))
+                dup_log.append((loser, keeper, ("name-only", name)))
 
     if drop_set:
         records = [r for r in records if id(r) not in drop_set]
@@ -560,6 +703,37 @@ def main():
             r["_parent_name"] = target
             manual_applied += 1
 
+    # Cluster merges: demote `src` parent to a sub of `dst`, and re-parent
+    # every existing child of `src` directly to `dst` (flatten).
+    merges_applied = 0
+    for src_name, dst_name in CLUSTER_MERGES.items():
+        src = next((r for r in records if r.get("_name") == src_name), None)
+        dst = next((r for r in records if r.get("_name") == dst_name), None)
+        if not src or not dst:
+            continue
+        # Re-parent everyone under src → dst
+        for r in records:
+            if r.get("_parent_name") == src_name:
+                r["_parent_name"] = dst_name
+        # Demote src to sub of dst
+        src["_role"] = "sub"
+        src["_parent_name"] = dst_name
+        merges_applied += 1
+
+    # Name swap: for specific duplicate names, make the lower-ID row the canonical
+    # parent and demote the higher-ID row to a sub of it.
+    for dup_name in NAME_SWAP_TAKE_LOWER_ID:
+        candidates = [r for r in records if r.get("_name") == dup_name]
+        if len(candidates) < 2:
+            continue
+        candidates.sort(key=lambda x: int(x.get("Internal ID") or "99999999"))
+        keeper = candidates[0]
+        keeper["_role"] = "parent"
+        keeper["_parent_name"] = ""
+        for other in candidates[1:]:
+            other["_role"] = "sub"
+            other["_parent_name"] = keeper["_name"]
+
     # Drop auto-invented parents that end up with zero subs (happens when manual
     # overrides pull all their children elsewhere). Invented parents have no
     # NetSuite Internal ID and _auto_invented flag.
@@ -588,11 +762,22 @@ def main():
     # Rows that will end up as "account_type=parent" in the CSV = cluster parents
     # AND standalones (both render as parent in the output).
     parents_all = [r for r in records if r.get("_role") in ("parent", "standalone")]
+    # Generic single-word stems that cause unrelated orgs to collapse. Skip
+    # them for prefix-demotion (use MANUAL_SUB_ASSIGNMENTS for those cases).
+    GENERIC_SINGLE_WORDS = {
+        "university", "college", "orange", "central", "los", "san", "the",
+        "saint", "st", "st.", "west", "east", "north", "south", "cal",
+        "new", "academy", "charter", "christian", "public", "community",
+    }
     umbrella_parents = []
     for p in parents_all:
         stem = umbrella_stem(p["_name"])
-        if stem:
-            umbrella_parents.append((p, stem))
+        if not stem:
+            continue
+        toks = stem.split()
+        if len(toks) == 1 and toks[0].lower() in GENERIC_SINGLE_WORDS:
+            continue
+        umbrella_parents.append((p, stem))
 
     children_of = defaultdict(int)
     for r in records:
@@ -798,6 +983,7 @@ def main():
     print(f"duplicates dropped:           {len(dup_log)}")
     print(f"synthetic parents added:      {len(synthetic)}")
     print(f"manual sub overrides applied: {manual_applied}")
+    print(f"cluster merges applied:       {merges_applied}")
     print(f"prefix-demoted to sub:        {demoted}")
     print(f"total rows in upload:         {len(upload_rows)}")
     print(f"  parents/standalone:         {pcount}")

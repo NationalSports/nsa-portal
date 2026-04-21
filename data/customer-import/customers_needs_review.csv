@@ -249,7 +249,7 @@ United States",Ridgecrest,CA,93555,,missing structured address
 3512,214,Chapman University Basketball,Jered Hunt,yes,,,,,"Chapman University Basketball 
 1 University Dr 
 Orange CA 92866
-United States",Orange,CA,92866,Chapman University Women'sLax,no customer email
+United States",Orange,CA,92866,Chapman University Athletics,no customer email
 3622,286,Chase Koissian,Chase Koissian,yes,yes,,,,,,,,,no customer email; missing structured address
 3350,112,Chico State University Basketball,John Miller,yes,,,,,"The University Foundation, California State University, Chico
 25 Main Street
@@ -266,7 +266,7 @@ United States",,,,,missing structured address
 3937,Christian High School Soccer,Christian HS Soccer,Gayle Peterson,yes,,,,,"Christian HS Soccer
 2100 Greenfield Dr.
 El Cajon CA 92019
-United States",El Cajon,CA,92019,Christian High School,no customer email
+United States",El Cajon,CA,92019,,no customer email
 4965,5146,CIF,Steve Peterson,yes,,yes,kevin@nationalsportsapparel.com,,"Matt Sozinho
 CIF
 764 P street #105 
@@ -354,12 +354,12 @@ United States",Chapel Hill,NC,27517,,no customer email
 2480,509,College of San Mateo,,,yes,,wolf@smccd.edu,,"College of San Mateo
 College of San Mateo
 United States",,,,,missing structured address
-3439,163,College of San Mateo Water Polo,Steve Peterson,,yes,,silvaa@smccd.edu,,,,,,,missing structured address
-4311,1268,College of San Mateo Bookstore,Steve Peterson,,yes,,silvaa@smccd.edu,,,,,,,missing structured address
+3439,163,College of San Mateo Water Polo,Steve Peterson,,yes,,silvaa@smccd.edu,,,,,,College of San Mateo,missing structured address
+4311,1268,College of San Mateo Bookstore,Steve Peterson,,yes,,silvaa@smccd.edu,,,,,,College of San Mateo,missing structured address
 4223,1202,College of San Mateo Track & Field,Steve Peterson,yes,,,,(650) 574-6462,"College of San Mateo Track & Field
 1700 W. Hillsdale Blvd.
 San Mateo CA 94402
-United States",San Mateo,CA,94402,,no customer email
+United States",San Mateo,CA,94402,College of San Mateo,no customer email
 4204,1187,College Park HS Football,Jered Hunt,yes,,,,,"Jack Schram
 College Park HS Football
 201 Viking Dr
@@ -426,8 +426,8 @@ United States",San Luis Obispo,CA,93405,,no customer email; had NSA-internal ema
 Dana Hills High School Softball
 33333 Golden Lantern
 Dana Point CA 92629
-United States",Dana Point,CA,92629,Dana Hills HS Flag FB,no customer email
-4394,1340,Dana Hills HS Flag FB,Jered Hunt,yes,,,,,"Brnadon Cosenze
+United States",Dana Point,CA,92629,Dana Hills High School,no customer email
+4394,1340,Dana Hills High School,Jered Hunt,yes,,,,,"Brnadon Cosenze
 Dana Hills HS Flag FB 
 33333 Golden Lantern
 Dana Point CA 92629
@@ -655,7 +655,7 @@ Attn: Mike Gibson
 6401 Allen Rd
 Bakersfield CA 93314
 United States",Bakersfield,CA,93314,,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
-4372,1320,Fullerton HS Flag FB,Jered Hunt,yes,,,,,"Fullerton HS Flag FB 
+4372,1320,Fullerton High School,Jered Hunt,yes,,,,,"Fullerton HS Flag FB 
 201 E Chapman Ave
 Fullerton CA 92832
 United States",Fullerton,CA,92832,,no customer email
@@ -753,14 +753,14 @@ United States",La Mesa,CA,91941,Helix High School,no customer email; had NSA-int
 7323 University Avenue
 La Mesa CA 91941
 United States",La Mesa,CA,91941,Helix High School,no customer email; had NSA-internal email (merc@nationalsportsapparel.com)
-4750,1645,Helix High School Boys Basketball,Mike Mercuriali,,yes,,cavazos@helixcharter.net,,,,,,Helix High School Girls LAX,missing structured address
-5340,5471,Helix High School Girls LAX,Mike Mercuriali,,yes,,rader@helixcharter.net,,"Helix High School Girls LAX
-United States",,,,,missing structured address
-4932,5120,Helix High School Softball,Mike Mercuriali,,yes,,sturdivant@helixcharter.net,,,,,,Helix High School Girls LAX,missing structured address
+4750,1645,Helix High School Boys Basketball,Mike Mercuriali,,yes,,cavazos@helixcharter.net,,,,,,Helix High School,missing structured address
+5340,5471,Helix High School Girls Lacrosse,Mike Mercuriali,,yes,,rader@helixcharter.net,,"Helix High School Girls LAX
+United States",,,,Helix High School,missing structured address
+4932,5120,Helix High School Softball,Mike Mercuriali,,yes,,sturdivant@helixcharter.net,,,,,,Helix High School,missing structured address
 4672,1575,Helix High School Water Polo,Mike Mercuriali,yes,,,,,"Helix High School Water Polo
 7323 University Ave
 La Mesa CA 91942
-United States",La Mesa,CA,91942,Helix High School Athletics,no customer email
+United States",La Mesa,CA,91942,Helix High School,no customer email
 4098,1094,High Tech High Baseball,Steve Peterson,yes,,,,,"High Tech High Baseball
 2861 Womble Road,
 San Diego CA 92106
@@ -1099,7 +1099,7 @@ United States",Spring Valley,CA,91977,Monte Vista High School,no customer email
 3230 Sweetwater Springs Blvd
 Spring Valley CA 91977
 United States",Spring Valley,CA,91977,Monte Vista High School,no customer email
-4352,1304,Monte Vista High School LAX,Mike Mercuriali,yes,,,,,"Monte Vista High School
+4352,1304,Monte Vista High School Lacrosse,Mike Mercuriali,yes,,,,,"Monte Vista High School
 G.U.H.S.D.
 3230 Sweetwater Springs Blvd
 Spring Valley CA 91977
@@ -1212,7 +1212,6 @@ United States",,,,,missing structured address
 401 Nogales St
 La Puente CA 91744
 United States",La Puente,CA,91744,,no customer email
-3858,507,NorCal Baseball,Steve Peterson,,yes,,Coachq1010@gmail.com,,,,,,,missing structured address
 4782,1673,Norcal Titans Basketball,Jered Hunt,,yes,,isaiahwalker13@gmail.com,,"Isaiah Walker
 Norcal Titans Basketball
 United States",,,,,missing structured address
@@ -1280,10 +1279,10 @@ Orange Coast College Baseball
 2701 Fairview Road
 Costa Mesa CA 92626
 United States",Costa Mesa,CA,92626,Orange Coast College,no customer email
-4353,1305,Orange County National Team LAX,Chase Koissian,,yes,,alexandra.kyte@lhsoc.org,,"Michael Welter
+4353,1305,Orange County National Team Lacrosse,Chase Koissian,,yes,,alexandra.kyte@lhsoc.org,,"Michael Welter
 Orange County National Team LAX
 CA 
-United States",,CA,,Orange High School,missing structured address
+United States",,CA,,,missing structured address
 3639,299,Order of Malta,Jered Hunt,,yes,,monavarro4@icloud.com,,"Order of Malta
 United States",,,,,missing structured address
 4392,1338,Oscar Flores,Mike Mercuriali,yes,,,,,"Oscar Flores
@@ -1319,7 +1318,6 @@ United States",Pasadena,CA,,Pasadena High School,no customer email; missing stru
 6851 Santa Rita Ave.
 Garden Grove CA 92845
 United States",Garden Grove,CA,92845,,no customer email
-3414,147,Performance Powder Inc.,Gayle Peterson,,yes,,Kathy@performancepowder.com,,,,,,,missing structured address
 3785,403,Perris HS Girls Basketball,Jered Hunt,yes,,,,,"Perris HS Girls Basketball
 175 E Nuevo Rd
 Perris CA 92571
@@ -1373,7 +1371,7 @@ Semper Fit Athletics
 Bldg 13 Fitness Center MCRD
 San Diego CA 92140
 United States",San Diego,CA,92140,,no customer email; had NSA-internal email (merc@nationalsportsapparel.com)
-4382,1329,Rancho Bernardo HS Flag FB,Jered Hunt,yes,,,,,"Courtney Luna De La Fuente
+4382,1329,Rancho Bernardo HS Flag Football,Jered Hunt,yes,,,,,"Courtney Luna De La Fuente
 Rancho Bernardo HS Flag FB 
 13010 Paseo Lucindo
 San Diego  CA 92128
@@ -1382,7 +1380,7 @@ United States",San Diego,CA,92128,,no customer email
 2706 S Benton St
 Denver CO 80227
 United States",Denver,CO,80227,,no customer email
-4379,1326,Redlands East Valley HS Flag FB,Jered Hunt,yes,,,,,"Andrew Saibene
+4379,1326,Redlands East Valley HS Flag Football,Jered Hunt,yes,,,,,"Andrew Saibene
 Redlands East Valley HS Flag FB
 31000 E Colton Ave
 Redlands CA 92374
@@ -1591,7 +1589,7 @@ United States",Fresno,CA,93703,San Joaquin Memorial High School,no customer emai
 1406 N Fresno St
 Fresno CA 93703
 United States",Fresno,CA,93703,San Joaquin Memorial High School,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
-4933,5121,SLO COUNTY XC,Kelly Bean,yes,,,,,"SLO COUNTY XC
+4933,5121,SLO COUNTY Cross Country,Kelly Bean,yes,,,,,"SLO COUNTY XC
 1499 San Luis Drive
 San Luis Obispo CA 93401
 United States",San Luis Obispo,CA,93401,Slo High School,no customer email
@@ -1599,7 +1597,7 @@ United States",San Luis Obispo,CA,93401,Slo High School,no customer email
 900 Southwood Dr
 San Luis Obispo CA 93401
 United States",San Luis Obispo,CA,93401,Slo High School,no customer email; had NSA-internal email (sharon@nationalsportsapparel.com)
-5184,5337,SoCal Bengals Flag FB,Jered Hunt,,yes,,BCCOSENZA@capousd.org,,,,,,,missing structured address
+5184,5337,SoCal Bengals Flag Football,Jered Hunt,,yes,,BCCOSENZA@capousd.org,,,,,,,missing structured address
 4432,1374,Socca USA,Jered Hunt,yes,yes,,,,"Jon Meyers
 Socca USA
 United States",,,,,no customer email; missing structured address
@@ -1772,12 +1770,11 @@ United States",Fremont,CA,94538,,no customer email; had NSA-internal email (kell
 3979,999,The Ridgeview High School Athletics Club,Kevin McCormack,yes,,yes,kevin@nationalsportsapparel.com,,"The Ridgeview High School Athletics Club
 8501 Stine Rd
 BAKERSFIELD CA 93313
-United States",BAKERSFIELD,CA,93313,,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
+United States",BAKERSFIELD,CA,93313,Ridgeview HS Athletics,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
 3868,514,Thomas Downey HS Wrestling,Juliet Leon,yes,,yes,juliet@nationalsportsapparel.com,,"Thomas Downey HS Wrestling
 1000 Coffee Rd
 Modesto CA 95355
 United States",Modesto,CA,95355,Thomas Downey HS,no customer email; had NSA-internal email (juliet@nationalsportsapparel.com)
-4320,1276,Titan Athletic Booster Support,Andrea,yes,yes,,,,,,,,,no customer email; missing structured address
 4436,1378,Titan Athletic Boosters,Andrea,yes,yes,,,,,,,,,no customer email; missing structured address
 3533,229,TJ Jordan,Jered Hunt,,yes,,tjjordan18@yahoo.com,,"TJ Jordan
 United States",,,,,missing structured address
@@ -1822,49 +1819,49 @@ United States",San Diego,CA,92122,University City College,no customer email; had
 3107,234,University HS Boys Lacrosse,Jered Hunt,yes,,,,,"University HS Lacrosse
 4771 Campus Dr,
 Irvine CA 92612
-United States",Irvine,CA,92612,University HS Security,no customer email
+United States",Irvine,CA,92612,University High School,no customer email
 3842,492,University HS Flag Football,Gayle Peterson,yes,,,,,"University HS Flag Football
 4771 Campus Dr.
 Irvine CA 92612
-United States",Irvine,CA,92612,University HS Security,no customer email
+United States",Irvine,CA,92612,University High School,no customer email
 4377,1324,University of Redlands Athletics,Andrea,yes,,,,,"Nikki Ayers
 University of Redlands Athletics
 955 N Grove St
 Redlands CA 92374
-United States",Redlands,CA,92374,University High School,no customer email
+United States",Redlands,CA,92374,,no customer email
 4408,1352,University of Redlands Flag Football,Jered Hunt,yes,,,,,"Spencer Lopes
 University of Redlands Flag Football
 955 N Grove St
 Redlands CA 92374
-United States",Redlands,CA,92374,University High School,no customer email
+United States",Redlands,CA,92374,,no customer email
 3869,515,University of Redlands Football,Jered Hunt,yes,,,,,"Spencer Lopes
 University of Redlands Football
 955 N Grove St
 Redlands CA 92374
-United States",Redlands,CA,92374,University High School,no customer email
+United States",Redlands,CA,92374,University of Redlands Athletics,no customer email
 3817,423,University of Redlands Mens Basketball,Jered Hunt,yes,,,,,"Spencer Lopes
 University of Redlands Mens Basketball
 955 N Grove St
 Redlands  CA 92374
-United States",Redlands,CA,92374,University High School,no customer email
+United States",Redlands,CA,92374,University of Redlands Athletics,no customer email
 5235,5380,University of Redlands Softball,Jered Hunt,yes,,,,,"University of Redlands Softball
 955 N Grove St
 University of Redlands Athletics
 Redlands CA 92374
-United States",Redlands,CA,92374,University High School,no customer email
+United States",Redlands,CA,92374,University of Redlands Athletics,no customer email
 4087,1085,University of Redlands Womens Basketball,Jered Hunt,yes,,,,,"Spencer Lopes
 University of Redlands: Womens Basketball
 955 N Grove St
 Redlands CA 92374
-United States",Redlands,CA,92374,University High School,no customer email
+United States",Redlands,CA,92374,University of Redlands Athletics,no customer email
 4053,1055,University of Redlands Womens Lacrosse,Jered Hunt,yes,,,,,"University of Redlands: Womens Lacrosse
 955 N Grove St
 Redlands CA 92374
-United States",Redlands,CA,92374,University High School,no customer email
+United States",Redlands,CA,92374,University of Redlands Athletics,no customer email
 3787,405,University of Redlands Womens Soccer,Jered Hunt,yes,,,,,"University of Redlands: Womens Soccer
 1200 E Colton Ave
 Redlands CA 92373
-United States",Redlands,CA,92373,University High School,no customer email
+United States",Redlands,CA,92373,University of Redlands Athletics,no customer email
 4071,1072,Vail Vigilantes Volleyball Club,Mike Mercuriali,,yes,,dargenziano1@gmail.com,,"Vail Vigilantes Volleyball Club
 Vail AZ 85641
 United States",Vail,AZ,85641,,missing structured address
@@ -1995,11 +1992,10 @@ United States",,,,,no customer email; missing structured address
 3272,,Michael Moraga OTR,Jered Hunt,yes,yes,,,,,,,,,no customer email; missing structured address
 3275,,Conejo Bulldogs,Jered Hunt,yes,yes,,,,,,,,,no customer email; missing structured address
 3276,,Milpitas Little League,SBS,yes,yes,,,,,,,,,no customer email; missing structured address
-3286,,Portola High School,Jered Hunt,yes,yes,,,,,,,,Portola High School,no customer email; missing structured address
 3288,,Thousand Oaks Knights,Jered Hunt,yes,yes,,,,,,,,,no customer email; missing structured address
 3273,,jesse Bethel HS Athletics,Steve Peterson,yes,yes,,,,,,,,,no customer email; missing structured address
 3277,,West Hills Cross Country,Jered Hunt,yes,yes,,,,,,,,West Hills High School,no customer email; missing structured address
-3241,,Orange Vista HS VB,Jered Hunt,,yes,,avelasquez@valverde.edu,,,,,,Orange High School,missing structured address
+3241,,Orange Vista HS Volleyball,Jered Hunt,,yes,,avelasquez@valverde.edu,,,,,,,missing structured address
 3282,,Esperanza Basketball,Jered Hunt,yes,yes,,,,,,,,Esperanza High School,no customer email; missing structured address
 3256,,Inderkum Football,John Miller,yes,yes,,,,,,,,Inderkum High School,no customer email; missing structured address
 3260,,Overfelt High School,SBS,yes,yes,,,,,,,,,no customer email; missing structured address
@@ -2165,7 +2161,7 @@ United States",Incline Village,NV,89451,Incline High School,no customer email; h
 3522,,Cross Border Medical Tourism,Gayle Peterson,,yes,,across@servitehs.org,,"Ann Cross
 Cross Border Medical Tourism
 United States",,,,,missing structured address
-3526,,Supernova VB Club,Jered Hunt,yes,yes,,,,"Supernova VB Club
+3526,,Supernova Volleyball Club,Jered Hunt,yes,yes,,,,"Supernova VB Club
 United States",,,,,no customer email; missing structured address
 3535,,Incline High Ski Team,Tim Kelly,yes,,yes,tk@nationalsportsapparel.com,,"Incline High School Athletics
 Attn: Ski
@@ -2262,11 +2258,6 @@ Attn: Baseball
 14000 Fruitvale Ave
 Saratoga CA 95070
 United States",Saratoga,CA,95070,West Valley College,no customer email
-3110,,University HS Softball,Jered Hunt,yes,,,,,"University HS Softball
-University HS Softball
-4771 Campus Dr.
-Irvine CA 92612
-United States",Irvine,CA,92612,University HS Security,no customer email
 3120,,Villa Park HS Softball,Steve Peterson,yes,,,,(714) 785-3449,"Villa Park HS Softball
 Villa Park HS Softball
 18402 Taft Ave.
@@ -2419,9 +2410,6 @@ Union Mines Football
 6530 Koki Ln
 El Dorado CA 95623
 United States",El Dorado,CA,95623,,no customer email
-2719,,University High School,,yes,yes,,,,"University High School
-University High School
-United States",,,,,no customer email; missing structured address
 2721,,Valencia High School,,yes,,,,,"Valencia High School
 Valencia High School
 27801 Dickason Dr
@@ -2519,7 +2507,7 @@ United States",Irvine,CA,92606,Westcliff College,no customer email
 2616,,Orange HS Softball,Jered Hunt,,yes,,bruce.sanborn@yahoo.com,,"Orange HS Softball
 Bruce Sanborn
 Orange CA 92618
-United States",Orange,CA,92618,Orange High School,missing structured address
+United States",Orange,CA,92618,,missing structured address
 2567,,La Palma Padres,Chase Koissian,yes,yes,,,,"La Palma Padres
 Shawn Gilbert
 United States",,,,,no customer email; missing structured address
@@ -2614,17 +2602,17 @@ United States",,,,Newbury Park High School,no customer email; had NSA-internal e
 Attn: Cross Country
 1 University Dr
 Orange CA 92866
-United States",Orange,CA,92866,Chapman University Women'sLax,no customer email
+United States",Orange,CA,92866,Chapman University Athletics,no customer email
 2470,,Chapman University Track & Field,Steve Peterson,yes,,,,,"Chapman University Track & Field
 Attn: Track & Field
 1 University Dr
 Orange CA 92866
-United States",Orange,CA,92866,Chapman University Women'sLax,no customer email
-2472,,Chapman University Women'sLax,Jered Hunt,yes,,,,,"Chapman University Women'sLax
+United States",Orange,CA,92866,Chapman University Athletics,no customer email
+2472,,Chapman University Women's Lacrosse,Jered Hunt,yes,,,,,"Chapman University Women'sLax
 Attn: Womens Lacrosse
 1 University Dr
 Orange CA 92866
-United States",Orange,CA,92866,,no customer email
+United States",Orange,CA,92866,Chapman University Athletics,no customer email
 2477,,City of Commerce Sports,Jered Hunt,,yes,,alann@ci.commerce.ca.us,,"City of Commerce Sports
 Alan Neverez
 CA 
@@ -2681,7 +2669,7 @@ United States",,,,,missing structured address
 Tony Henney
 33333 Golden Lantern
 Dana Point CA 92629
-United States",Dana Point,CA,92629,Dana Hills HS Flag FB,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
+United States",Dana Point,CA,92629,Dana Hills High School,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 ,,Exeter Union High School,Kevin McCormack,yes,,,,,,Exeter,CA,93221,,no customer email
 ,,Alemany High School,Jered Hunt,yes,,,,,,Mission Hills,CA,91345,,no customer email
 ,,Anaheim High School,Mike Mercuriali,yes,,,,,,Anaheim,CA,92805,,no customer email
@@ -2728,7 +2716,6 @@ United States",Dana Point,CA,92629,Dana Hills HS Flag FB,no customer email; had 
 ,,Hilltop High School,Mike Mercuriali,yes,,,,,,Chula Vista,CA,91910,,no customer email
 ,,Hilmar High School,Jered Hunt,yes,,,,,,Hilmar,CA,95324,,no customer email
 ,,Hoover (HS),Mike Mercuriali,yes,,,,,,San Diego,CA,92115,,no customer email
-,,Huntington Beach High School,Jered Hunt,yes,,,,,,Huntington Beach,CA,92648,,no customer email
 ,,Inderkum High School,John Miller,yes,yes,,,,,,,,,no customer email; missing structured address
 ,,Indio High School,Jered Hunt,yes,,,,,,Indio,CA,92201,,no customer email
 ,,J Serra High School,Chase Koissian,yes,,,,,,San Juan Capistrano,CA,92675,,no customer email
@@ -2784,7 +2771,6 @@ United States",Dana Point,CA,92629,Dana Hills HS Flag FB,no customer email; had 
 ,,Valhalla High School,Mike Mercuriali,yes,,,,,,El Cajon,CA,92019,,no customer email
 ,,Vanguard High School,Gayle Peterson,yes,,,,,,Costa Mesa,CA,92626,,no customer email
 ,,Walnut High School,Mike Mercuriali,yes,,,,,,Walnut,CA,91789,,no customer email
-,,Weimar Hills School High School,Jeff Bianchini,yes,,,,,,Weimar,CA,95736,,no customer email
 ,,West Hills High School,Mike Mercuriali,yes,,,,,,Santee,CA,92071,,no customer email
 ,,Westminster High School,Jered Hunt,yes,,,,,,Westminster,CA,92683,,no customer email
 ,,Warren High School,Aaron Mason,yes,,,,,,Downey,CA,90241,,no customer email

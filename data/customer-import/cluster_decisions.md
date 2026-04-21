@@ -1,6 +1,6 @@
 # Parent/Sub Cluster Decisions
 
-Total clusters auto-attached: **211**
+Total clusters auto-attached: **213**
 
 ## Concordia University Athletics  *(COL, 92612/ca)*
 
@@ -47,15 +47,15 @@ Total clusters auto-attached: **211**
 - Reps: Shawn McHugh, Steve Peterson
 - Subs (13): Moreau Catholic Baseball, Moreau Catholic Basketball, Moreau Catholic Cross Country, Moreau Catholic Golf, Moreau Catholic Soccer, Moreau Catholic Volleyball, Moreau Catholic Track & Field, Moreau Catholic Badminton, Moreau Catholic Lacrosse, Moreau Catholic Softball, Moreau Catholic Tennis, Moreau Catholic Football, Moreau Catholic Athletics
 
-## Santa Ana College  *(COL, 92706/ca)*
-
-- Reps: Andrea, Gayle Peterson, Jered Hunt, Mike Mercuriali
-- Subs (13): Santa Ana College Athletics Men's Soccer, Santa Ana College Foundation, Santa Ana College Men's Soccer, Santa Ana College, Santa Ana College Softball, Santa Ana College Women's Basketball, Santa Ana College Football, Santa Ana College Wrestling, Santa Ana College Baseball, Santa Ana College Men's Basketball, Santa Ana College Sports Medicine, Santa Ana College Women's Soccer, Santa Ana College Athletics
-
 ## Atascadero High School  *(HS, 93422/ca)*
 
 - Reps: Kelly Bean
 - Subs (12): Atascadero Girls Softball, Atascadero Boosters, Atascadero Boys Basketball, Atascadero Boys Tennis, Atascadero Cross Country, Atascadero Football, Atascadero Girls Golf, Atascadero Softball, Atascadero Track & Field, Atascadero Volleyball, Atascadero Water Polo, Atascadero Wrestling
+
+## Santa Ana College  *(COL, 92706/ca)*
+
+- Reps: Andrea, Gayle Peterson, Jered Hunt, Mike Mercuriali
+- Subs (12): Santa Ana College Athletics Men's Soccer, Santa Ana College Foundation, Santa Ana College Men's Soccer, Santa Ana College Softball, Santa Ana College Women's Basketball, Santa Ana College Football, Santa Ana College Wrestling, Santa Ana College Baseball, Santa Ana College Men's Basketball, Santa Ana College Sports Medicine, Santa Ana College Women's Soccer, Santa Ana College Athletics
 
 ## West Valley College  *(COL, 95070/ca)*
 
@@ -82,15 +82,20 @@ Total clusters auto-attached: **211**
 - Reps: Kelly Bean, Steve Peterson
 - Subs (10): San Joaquin Memorial Women's Volleyball, San Joaquin Memorial Baseball, San Joaquin Memorial Basketball, San Joaquin Memorial Football, San Joaquin Memorial Girls Basketball, San Joaquin Memorial Girls Soccer, San Joaquin Memorial Rugby, San Joaquin Memorial Soccer, San Joaquin Memorial Softball, San Joaquin Memorial Swim
 
-## University HS Security  *(HS, 92612/ca)*
+## Chapman College  *(COL, 92866/ca)*
 
-- Reps: Gayle Peterson, Jered Hunt
-- Subs (10): University HS Boys Lacrosse, University HS Flag Football, University HS Baseball, University HS Girl's Basketball, University HS Football, University HS Girl's Lacrosse, University HS Softball, University HS Basketball, University HS Softball, University HS Wrestling
+- Reps: Jered Hunt, Steve Peterson
+- Subs (9): Chapman University Basketball, Chapman University Athletic Training, Chapman University Cross Country, Chapman University Golf, Chapman University Softball, Chapman University Swim & Dive, Chapman University Track & Field, Chapman University Water Polo, Chapman University Women's Lacrosse
 
 ## Civica Academy  *(HS, 89030/nv)*
 
 - Reps: Jered Hunt
 - Subs (9): Civica Academy Baseball, Civica Academy Wrestling, Civica HS Basketball, Civica HS Cheer, Civica HS Flag Football, Civica HS Football, Civica HS Golf, Civica HS Softball, Civica HS Volleyball
+
+## College of San Mateo Athletics  *(COL, 94402/ca)*
+
+- Reps: Steve Peterson
+- Subs (9): College of San Mateo Baseball, College of San Mateo Basketball, College of San Mateo Enrollment Services, College of San Mateo Football, College of San Mateo Outreach & Recruitment, College of San Mateo Softball, College of San Mateo Swimming, College of San Mateo Track & Field, College of San Mateo Women's Volleyball
 
 ## Fairfield High School  *(HS, 94534/ca)*
 
@@ -107,15 +112,20 @@ Total clusters auto-attached: **211**
 - Reps: Chase Koissian
 - Subs (9): Pacifica Christian Tennis, Pacifica Christian Baseball, Pacifica Christian Cross Country, Pacifica Christian Golf, Pacifica Christian Track and Field, Pacifica Christian Boy's Basketball, Pacifica Christian Girl's Basketball, Pacifica Christian Soccer, Pacifica Christian Volleyball
 
-## Chapman University Women'sLax  *(COL, 92866/ca)*
+## University High School  *(HS, 92612/ca)*
 
-- Reps: Jered Hunt, Steve Peterson
-- Subs (8): Chapman University Basketball, Chapman University Athletic Training, Chapman University Cross Country, Chapman University Golf, Chapman University Softball, Chapman University Swim & Dive, Chapman University Track & Field, Chapman University Water Polo
+- Reps: Gayle Peterson, Jered Hunt
+- Subs (9): University HS Boys Lacrosse, University HS Flag Football, University HS Baseball, University HS Girl's Basketball, University HS Football, University HS Girl's Lacrosse, University HS Basketball, University HS Softball, University HS Wrestling
+
+## University of Redlands Athletics  *(COL, 92374/ca)*
+
+- Reps: Andrea, Jered Hunt
+- Subs (9): University of Redlands Baseball, University of Redlands Football, University of Redlands Mens Basketball, University of Redlands Softball, University of Redlands Tennis, University of Redlands Track, University of Redlands Womens Volleyball, University of Redlands Womens Basketball, University of Redlands Womens Lacrosse
 
 ## Monte Vista High School  *(HS, 91977/ca)*
 
 - Reps: Mike Mercuriali
-- Subs (8): Monte Vista Boys Soccer, Monte Vista Football, Monte Vista High School Admin, Monte Vista High School Cross Country and Track, Monte Vista High School LAX, Monte Vista High School Boys Volleyball, Monte Vista High School Girls Basketball, Monte Vista HS ESports
+- Subs (8): Monte Vista Boys Soccer, Monte Vista Football, Monte Vista High School Admin, Monte Vista High School Cross Country and Track, Monte Vista High School Lacrosse, Monte Vista High School Boys Volleyball, Monte Vista High School Girls Basketball, Monte Vista HS ESports
 
 ## Santa Ana High School  *(HS, 92701/ca)*
 
@@ -282,7 +292,7 @@ Total clusters auto-attached: **211**
 - Reps: Chase Koissian
 - Subs (4): Bellflower High School Football, Bellflower High School Softball, Bellflower High School Tennis, Bellflower HS Baseball
 
-## Dana Hills HS Flag FB  *(HS, 92629/ca)*
+## Dana Hills High School  *(HS, 92629/ca)*
 
 - Reps: Jered Hunt, Steve Peterson
 - Subs (4): Dana Hills High School Softball, Dana Hills HS Girls Soccer, Dana Hills Football, Dana Hills HS Boy's Tennis
@@ -356,6 +366,11 @@ Total clusters auto-attached: **211**
 
 - Reps: Aaron Mason, Jered Hunt
 - Subs (4): Troy Basketball, Troy Girls Golf, Troy Boys Golf, Troy Volleyball
+
+## Vanguard High School  *(HS, 92626/ca)*
+
+- Reps: Gayle Peterson
+- Subs (4): Vanguard Athletics, Vanguard Beach Volleyball, Vanguard Baseball, Vanguard Softball
 
 ## Villa Park High School  *(HS, 92861/ca)*
 
@@ -431,6 +446,11 @@ Total clusters auto-attached: **211**
 
 - Reps: Jered Hunt
 - Subs (3): Gardena HS Girl's Basketball, Gardena HS Girls Soccer, Gardena HS Girls Volleyball
+
+## Helix (HS)  *(HS, ?/?)*
+
+- Reps: Mike Mercuriali
+- Subs (3): Helix High School Boys Basketball, Helix High School Girls Lacrosse, Helix High School Softball
 
 ## Hoover (HS)  *(HS, 92115/ca)*
 
@@ -547,11 +567,6 @@ Total clusters auto-attached: **211**
 - Reps: Mike Mercuriali
 - Subs (3): Valhalla Athletics, Valhalla Boys Soccer, Valhalla Girl's Soccer
 
-## Vanguard High School  *(HS, 92626/ca)*
-
-- Reps: Gayle Peterson
-- Subs (3): Vanguard Athletics, Vanguard Baseball, Vanguard Softball
-
 ## Vista High School  *(HS, 92084/ca)*
 
 - Reps: Mike Mercuriali
@@ -616,6 +631,11 @@ Total clusters auto-attached: **211**
 
 - Reps: Jered Hunt
 - Subs (2): Claremont HS Basketball, Claremont HS Softball
+
+## College of San Mateo  *(COL, ?/?)*
+
+- Reps: Steve Peterson
+- Subs (2): College of San Mateo Water Polo, College of San Mateo Bookstore
 
 ## Costa Mesa High School  *(HS, 92626/ca)*
 
@@ -682,11 +702,6 @@ Total clusters auto-attached: **211**
 - Reps: Kelly Bean, Steve Peterson
 - Subs (2): Granite Ridge Cross Country, Granite Ridge Track & Field
 
-## Helix High School Girls LAX  *(HS, ?/?)*
-
-- Reps: Mike Mercuriali
-- Subs (2): Helix High School Boys Basketball, Helix High School Softball
-
 ## High Tech High School -San Diego  *(HS, 92106/ca)*
 
 - Reps: Mike Mercuriali
@@ -706,11 +721,6 @@ Total clusters auto-attached: **211**
 
 - Reps: Juliet Leon, Steve Peterson
 - Subs (2): Hug High School Basketball, Hug High School Track & Field
-
-## Huntington Beach High School  *(HS, 92648/ca)*
-
-- Reps: Chase Koissian, Jered Hunt
-- Subs (2): Huntington Beach HS Field Hockey, Huntington Beach HS Field Hockey
 
 ## Inderkum High School  *(HS, ?/?)*
 
@@ -752,7 +762,7 @@ Total clusters auto-attached: **211**
 - Reps: Mike Mercuriali
 - Subs (2): Miguel Crespo, Miguel Crespo
 
-## Mira Costa HS Hockey  *(HS, 90266/ca)*
+## Mira Costa High School  *(HS, 90266/ca)*
 
 - Reps: Jered Hunt
 - Subs (2): Mira Costa HS Boys Soccer, Mira Costa HS Girls Lacrosse
@@ -887,6 +897,11 @@ Total clusters auto-attached: **211**
 - Reps: Mike Mercuriali
 - Subs (2): University City High School Girls Soccer, University City High School Soccer
 
+## University Of Redlands College  *(COL, 92373/ca)*
+
+- Reps: Jered Hunt
+- Subs (2): University of Redlands Swim & Dive, University of Redlands Womens Soccer
+
 ## Walnut High School  *(HS, 91789/ca)*
 
 - Reps: Mike Mercuriali
@@ -896,11 +911,6 @@ Total clusters auto-attached: **211**
 
 - Reps: Aaron Mason, Chase Koissian
 - Subs (2): Warren HS Girls Basketball, Warren HS Track
-
-## Weimar Hills School High School  *(HS, 95736/ca)*
-
-- Reps: Jeff Bianchini
-- Subs (2): Weimar Hills School, Weimar Hills School
 
 ## West Hills High School  *(HS, 92071/ca)*
 
@@ -962,12 +972,12 @@ Total clusters auto-attached: **211**
 - Reps: Kelly Bean
 - Subs (1): Evergreen Boys Soccer
 
-## Fullerton HS Flag FB  *(HS, 92832/ca)*
+## Fullerton High School  *(HS, 92832/ca)*
 
 - Reps: Chase Koissian, Jered Hunt
 - Subs (1): Fullerton HS Baseball
 
-## Hercules HS Flag FB  *(HS, 94547/ca)*
+## Hercules High School  *(HS, 94547/ca)*
 
 - Reps: Chase Koissian, Jered Hunt
 - Subs (1): Hercules High School Soccer
