@@ -96,16 +96,20 @@ const getCachedFeed = async (forceRefresh) => {
   return await fetchFeed();
 };
 
-// Aggregate variants → byColor map: {color:{sizes:{S:qty}, nextAvail, total}}
+// Aggregate variants → byColor map: {color:{sizes:{S:qty}, sizeNextAvail:{S:'MM/DD/YYYY'}, nextAvail, total}}
 const buildByColor = (variants) => {
   const byColor = {};
   for (const v of variants) {
     const c = v.color || 'Default';
-    if (!byColor[c]) byColor[c] = { sizes: {}, nextAvail: '', total: 0 };
+    if (!byColor[c]) byColor[c] = { sizes: {}, sizeNextAvail: {}, nextAvail: '', total: 0 };
     byColor[c].sizes[v.size] = (byColor[c].sizes[v.size] || 0) + v.qty;
     byColor[c].total += v.qty;
-    // Keep earliest non-empty restock date (skip "N/A"/"PHASEOUT")
+    // Keep earliest non-empty restock date per size + overall (skip "N/A"/"PHASEOUT")
     if (v.nextAvail && !/^(N\/A|PHASEOUT)$/i.test(v.nextAvail)) {
+      const curSize = byColor[c].sizeNextAvail[v.size];
+      if (!curSize || new Date(v.nextAvail) < new Date(curSize)) {
+        byColor[c].sizeNextAvail[v.size] = v.nextAvail;
+      }
       if (!byColor[c].nextAvail || new Date(v.nextAvail) < new Date(byColor[c].nextAvail)) {
         byColor[c].nextAvail = v.nextAvail;
       }

@@ -222,7 +222,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const cacheKey=sku;
     const cached=vendorInvCache.current[cacheKey];
     if(cached&&(Date.now()-cached.fetchedAt)<600000){
-      setVendorInv(prev=>({...prev,[sku]:{sizes:cached.sizes,price:cached.price,loading:false,error:null,source:cached.source,nextAvail:cached.nextAvail}}));
+      setVendorInv(prev=>({...prev,[sku]:{sizes:cached.sizes,price:cached.price,loading:false,error:null,source:cached.source,nextAvail:cached.nextAvail,sizeNextAvail:cached.sizeNextAvail||{}}}));
       return;
     }
     if(vendorInvFetching.current[cacheKey])return;
@@ -231,7 +231,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     try{
       if(isRS){
         // Richardson: pull StockInventory feed grouped by Style; pick the color match for this item
-        const sizeQty={};const sizePrice={};
+        const sizeQty={};const sizePrice={};const sizeNextAvail={};
         let nextAvail='';
         try{
           const data=await richardsonGetStockInventory(sku);
@@ -261,6 +261,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const norm=normSize(sz);
               sizeQty[norm]=(sizeQty[norm]||0)+(parseInt(q)||0);
             });
+            Object.entries(entry.sizeNextAvail||{}).forEach(([sz,d])=>{
+              const norm=normSize(sz);
+              if(d&&(!sizeNextAvail[norm]||new Date(d)<new Date(sizeNextAvail[norm])))sizeNextAvail[norm]=d;
+            });
             if(entry.nextAvail&&(!nextAvail||new Date(entry.nextAvail)<new Date(nextAvail)))nextAvail=entry.nextAvail;
           };
           if(pickedColor){
@@ -271,9 +275,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           }
         }catch(e){console.warn('[Richardson] Inventory fetch error for',sku,e.message);throw e}
         console.log('[Richardson] Inventory result for',sku,':',JSON.stringify(sizeQty),'next:',nextAvail);
-        const result={sizes:sizeQty,price:sizePrice,nextAvail,fetchedAt:Date.now(),source:'rs'};
+        const result={sizes:sizeQty,price:sizePrice,nextAvail,sizeNextAvail,fetchedAt:Date.now(),source:'rs'};
         vendorInvCache.current[cacheKey]=result;
-        setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,nextAvail,loading:false,error:null,source:'rs'}}));
+        setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,nextAvail,sizeNextAvail,loading:false,error:null,source:'rs'}}));
       }else if(isMT){
         // Momentec: fetch product detail via HCL Commerce to get child SKUs + inventory
         const sizeQty={};const sizePrice={};
@@ -967,11 +971,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const baseRetail=catMatch?.retail_price||0;
         // Build colors array in the shape addSearchProduct + UI expect
         const colors=Object.entries(m.byColor||{}).map(([colorName,info])=>{
-          const sizes=Object.entries(info.sizes||{}).map(([sz,qty])=>({sizeName:sz,qty:parseInt(qty)||0,price:baseCost}));
+          const sizes=Object.entries(info.sizes||{}).map(([sz,qty])=>({sizeName:sz,qty:parseInt(qty)||0,price:baseCost,nextAvail:info.sizeNextAvail?.[sz]||''}));
           const totalQty=Object.values(info.sizes||{}).reduce((a,v)=>a+(parseInt(v)||0),0);
           return {colorName,sku:m.style,piecePrice:baseCost,customerPrice:baseCost,
             colorFrontImage:'',colorBackImage:'',sizes,totalQty,
-            nextAvail:info.nextAvail||''};
+            nextAvail:info.nextAvail||'',sizeNextAvail:info.sizeNextAvail||{}};
         });
         return {
           sku:m.style,
@@ -1034,7 +1038,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const STD_SIZES=isRS?[]:['S','M','L','XL','2XL'];
     let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
-    const vInv={};color.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty});
+    const vInv={};const vNextBySize={};
+    color.sizes.forEach(s=>{
+      vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;
+      if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail;
+    });
     const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
     const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
     const newItem={
@@ -1055,8 +1063,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
     newItem._sizeSells=sizeSell;
     sv('items',[...o.items,newItem]);
-    vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||''};
-    setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||''}}));
+    vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
+    setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
     setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
   };
   // State for expanded style in search results (shows color picker)
@@ -1800,7 +1808,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <input value={item.sizes[sz]||''} onChange={e=>uSz(idx,sz,e.target.value)} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:(item.sizes[sz]||0)>0?'#0f172a':'#cbd5e1'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
-              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'mt':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#d97706':vi.source==='sm'?'#0891b2':'#7c3aed';const displayQty=vi.source==='mt'&&vStk>=999?'✓':vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=srcName+' stock: '+(vStk>=999&&vi.source==='mt'?'Available':vStk.toLocaleString())+(vi.source==='rs'&&vi.nextAvail?' • next avail '+vi.nextAvail:'');return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?'#dc2626':clr}} title={tip}>{displayQty} {lbl}</div>})()}
+              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'mt':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#d97706':vi.source==='sm'?'#0891b2':'#7c3aed';const sizeNext=vi.source==='rs'?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'&&vStk>=999?'✓':(vi.source==='rs'&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=srcName+' stock: '+(vStk>=999&&vi.source==='mt'?'Available':vStk.toLocaleString())+((vi.source==='rs'&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):'');return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?(vi.source==='rs'&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
               {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:8,color:'#059669',minHeight:11}}>...</div>:null;const b2bStk=ai.sizes?.[sz]?.qty;if(b2bStk==null)return<div style={{fontSize:8,color:'transparent',minHeight:11}}>&nbsp;</div>;const need=item.sizes[sz]||0;const color=b2bStk<=0?'#dc2626':(need>0&&b2bStk<need)?'#ca8a04':'#166534';return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:color}} title={'Adidas B2B stock: '+b2bStk+(ai.sizes[sz]?.futureDate?' (restock '+ai.sizes[sz].futureDate+')':'')}>{b2bStk} b2b</div>})()}
               {item._sizeCosts&&<div style={{fontSize:7,fontWeight:700,minHeight:10,color:'#b45309'}}>{(()=>{const sc=item._sizeCosts[sz];if(!sc||Math.abs(sc-item.nsa_cost)<0.01)return'\u00A0';return'$'+sc.toFixed(2)})()}</div>}
               </div>)}
