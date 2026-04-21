@@ -1097,3 +1097,196 @@ describe('Edge Cases & Regression Guards', () => {
     expect(result.pct).toBe(0);
   });
 });
+
+// ═══════════════════════════════════════════════
+// 18. ARTWORK & DECORATION PRESERVATION (Regression)
+// Guards against "artwork falling off jobs" and
+// "decoration lines disappearing" bugs after imports,
+// renames, or merges.
+// ═══════════════════════════════════════════════
+describe('Artwork Preservation — buildJobs()', () => {
+  test('item with two art decorations of the same deco type keeps BOTH art_file_ids on the job', () => {
+    // Regression guard: multiple decos per item (e.g. two embroideries on a hat) must not drop one
+    const o = {
+      id: 'SO-500',
+      items: [{
+        sku: 'HAT-01', sizes: { OS: 12 },
+        decorations: [
+          { kind: 'art', art_file_id: 'a1', position: 'front' },
+          { kind: 'art', art_file_id: 'a2', position: 'side' }
+        ]
+      }],
+      art_files: [
+        { id: 'a1', name: 'Logo', deco_type: 'embroidery', status: 'approved', prod_files: ['f1'] },
+        { id: 'a2', name: 'Side Text', deco_type: 'embroidery', status: 'approved', prod_files: ['f2'] }
+      ]
+    };
+    const jobs = BL.buildJobs(o);
+    expect(jobs).toHaveLength(1); // same deco_type → one combined job
+    expect(jobs[0]._art_ids).toEqual(expect.arrayContaining(['a1', 'a2']));
+    expect(jobs[0]._art_ids).toHaveLength(2);
+    expect(jobs[0].art_name).toContain('Logo');
+    expect(jobs[0].art_name).toContain('Side Text');
+  });
+
+  test('art decoration referencing a missing art_file still creates a job (art does not silently disappear)', () => {
+    // Regression guard: if art_files array is stale or not yet loaded, the decoration reference
+    // should not cause the job to vanish — it should surface as needs_art instead.
+    const o = {
+      id: 'SO-501',
+      items: [{ sku: 'TEE', sizes: { M: 10 }, decorations: [{ kind: 'art', art_file_id: 'missing', position: 'front' }] }],
+      art_files: []
+    };
+    const jobs = BL.buildJobs(o);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]._art_ids).toEqual(['missing']);
+    expect(jobs[0].art_status).toBe('needs_art');
+  });
+
+  test('renaming an art_file updates job label but preserves the art_file_id reference', () => {
+    // Regression guard for deco group renames (art_group naming) — the link must not be lost.
+    const base = {
+      id: 'SO-502',
+      items: [{ sizes: { L: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] }],
+      art_files: [{ id: 'a1', name: 'Redbirds Front', deco_type: 'screen_print', status: 'approved', prod_files: ['f'] }]
+    };
+    const jobs1 = BL.buildJobs(base);
+    expect(jobs1[0]._art_ids).toEqual(['a1']);
+    expect(jobs1[0].art_name).toContain('Redbirds Front');
+
+    const renamed = { ...base, art_files: [{ ...base.art_files[0], name: 'Cardinals Front' }] };
+    const jobs2 = BL.buildJobs(renamed);
+    expect(jobs2[0]._art_ids).toEqual(['a1']);
+    expect(jobs2[0].art_name).toContain('Cardinals Front');
+  });
+
+  test('different art_file_ids (same deco type, same position) produce separate jobs — art never merges across groups', () => {
+    const o = {
+      id: 'SO-503',
+      items: [
+        { sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] },
+        { sizes: { M: 7 }, decorations: [{ kind: 'art', art_file_id: 'a2', position: 'front' }] }
+      ],
+      art_files: [
+        { id: 'a1', name: 'Logo', deco_type: 'screen_print', status: 'approved', prod_files: ['f1'] },
+        { id: 'a2', name: 'Back Text', deco_type: 'screen_print', status: 'approved', prod_files: ['f2'] }
+      ]
+    };
+    const jobs = BL.buildJobs(o);
+    expect(jobs).toHaveLength(2);
+    const allArtIds = jobs.flatMap(j => j._art_ids);
+    expect(allArtIds).toEqual(expect.arrayContaining(['a1', 'a2']));
+  });
+
+  test('buildJobs does not mutate the input order (no stray state changes on re-render / poll)', () => {
+    const o = {
+      id: 'SO-504',
+      items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] }],
+      art_files: [{ id: 'a1', name: 'Logo', deco_type: 'screen_print', status: 'approved', prod_files: ['f1'] }]
+    };
+    const snapshot = JSON.stringify(o);
+    BL.buildJobs(o);
+    expect(JSON.stringify(o)).toBe(snapshot);
+  });
+});
+
+describe('Decoration Lines Preservation — calcTotals() / createInvoice()', () => {
+  test('calcTotals revenue drops when a decoration line is removed from an item', () => {
+    // Regression guard: if decorations silently disappear, totals shouldn't stay the same
+    const twoDecos = {
+      items: [{
+        sizes: { S: 10 }, unit_sell: 20, nsa_cost: 8,
+        decorations: [
+          { kind: 'art', art_file_id: 'a1', position: 'front' },
+          { kind: 'art', art_file_id: 'a2', position: 'back' }
+        ]
+      }],
+      art_files: [
+        { id: 'a1', deco_type: 'screen_print', ink_colors: 'Red' },
+        { id: 'a2', deco_type: 'screen_print', ink_colors: 'Blue' }
+      ]
+    };
+    const oneDeco = {
+      ...twoDecos,
+      items: [{ ...twoDecos.items[0], decorations: [twoDecos.items[0].decorations[0]] }]
+    };
+    const tTwo = BL.calcTotals(twoDecos, {});
+    const tOne = BL.calcTotals(oneDeco, {});
+    expect(tTwo.rev).toBeGreaterThan(tOne.rev);
+    expect(tTwo.cost).toBeGreaterThan(tOne.cost);
+  });
+
+  test('calcTotals still captures outside_deco PO cost on items[].po_lines (legacy path)', () => {
+    // Regression guard: supplier-bill refactor moved outside-deco POs onto so.deco_pos[], but the
+    // legacy per-item po_lines path must keep producing cost for historical orders.
+    const o = {
+      items: [{
+        sku: 'TEE', sizes: { M: 10 }, unit_sell: 15, nsa_cost: 6,
+        decorations: [],
+        po_lines: [{ po_type: 'outside_deco', M: 10, unit_cost: 4 }]
+      }],
+      art_files: []
+    };
+    const t = BL.calcTotals(o, {});
+    // base (10 * 6) + deco PO (10 * 4) = 100
+    expect(t.cost).toBeGreaterThanOrEqual(100);
+  });
+
+  test('calcSOStatus: no_deco items with stale decoration data do not force in_production', () => {
+    // Regression guard: if an item is flipped to no_deco but still carries old decoration entries,
+    // the SO should still reach ready_to_invoice when fulfilled.
+    const ord = {
+      items: [{
+        no_deco: true,
+        sizes: { S: 10 },
+        pick_lines: [{ S: 10, status: 'pulled' }],
+        po_lines: [],
+        decorations: [{ kind: 'art', art_file_id: 'a1' }]
+      }],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).toBe('ready_to_invoice');
+  });
+
+  test('createInvoice line-item rate includes every decoration on the item', () => {
+    // Regression guard: if a decoration drops out, the invoiced rate would silently be too low.
+    const o = {
+      items: [{
+        sku: 'TEE-01', name: 'T-Shirt', sizes: { S: 10 }, unit_sell: 20,
+        decorations: [
+          { kind: 'art', art_file_id: 'a1', position: 'front' },
+          { kind: 'outside_deco', sell_each: 3, cost_each: 1.5 }
+        ]
+      }],
+      art_files: [{ id: 'a1', deco_type: 'screen_print', ink_colors: 'Red' }]
+    };
+    const inv = BL.createInvoice(o, [0], { tax_rate: 0 }, { a1: 10 });
+    expect(inv.lineItems).toHaveLength(1);
+    // rate = unit_sell (20) + art deco sell + outside_deco sell (3) → strictly > 20 + 3
+    expect(inv.lineItems[0].rate).toBeGreaterThan(23);
+  });
+});
+
+describe('Job Readiness — isJobReady() regression guards', () => {
+  test('art approved but missing prod_files keeps job not ready', () => {
+    // Regression guard: prod files are the gate before production — art status alone is not enough.
+    const j = { art_status: 'art_complete', _art_ids: ['a1'], items: [{ item_idx: 0 }] };
+    const o = {
+      items: [{ sizes: { S: 5 }, pick_lines: [{ S: 5, status: 'pulled' }], po_lines: [] }],
+      art_files: [{ id: 'a1', status: 'approved', prod_files: [] }]
+    };
+    expect(BL.isJobReady(j, o)).toBe(false);
+  });
+
+  test('multi-art job requires ALL art files to have prod_files', () => {
+    const j = { art_status: 'art_complete', _art_ids: ['a1', 'a2'], items: [{ item_idx: 0 }] };
+    const o = {
+      items: [{ sizes: { S: 5 }, pick_lines: [{ S: 5, status: 'pulled' }], po_lines: [] }],
+      art_files: [
+        { id: 'a1', prod_files: ['sep1.ai'] },
+        { id: 'a2', prod_files: [] }
+      ]
+    };
+    expect(BL.isJobReady(j, o)).toBe(false);
+  });
+});
