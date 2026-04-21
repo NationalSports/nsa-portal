@@ -4531,8 +4531,8 @@ export default function App(){
     else if(estF.status!=='all')fe=fe.filter(e=>e.status===estF.status);
     if(estRepId&&estRepId!=='all')fe=fe.filter(e=>e.created_by===estRepId);
     if(estF.search){const ss=estF.search.toLowerCase();fe=fe.filter(e=>(e.id+' '+(e.memo||'')+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(ss))}
-    if(estF.sort==='date_desc')fe.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
-    else if(estF.sort==='date_asc')fe.sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
+    if(estF.sort==='date_desc')fe.sort((a,b)=>(new Date(b.created_at||0).getTime()||0)-(new Date(a.created_at||0).getTime()||0));
+    else if(estF.sort==='date_asc')fe.sort((a,b)=>(new Date(a.created_at||0).getTime()||0)-(new Date(b.created_at||0).getTime()||0));
     else if(estF.sort==='customer')fe.sort((a,b)=>{const ca=cust.find(x=>x.id===a.customer_id)?.name||'';const cb=cust.find(x=>x.id===b.customer_id)?.name||'';return ca.localeCompare(cb)});
     const estActiveFilters=estF.status!=='open'||estF.rep!=='all'||estF.search;
     const estStCounts={open:ests.filter(e=>e.status==='draft'||e.status==='open'||e.status==='sent').length,draft:ests.filter(e=>e.status==='draft').length,sent:ests.filter(e=>e.status==='sent').length,approved:ests.filter(e=>e.status==='approved').length,converted:ests.filter(e=>e.status==='converted').length};
@@ -4584,8 +4584,8 @@ export default function App(){
     if(soF.rep!=='all')fSOs=fSOs.filter(s=>s.created_by===soF.rep);
     if(soF.search){const ss=soF.search.toLowerCase();fSOs=fSOs.filter(s=>{const c2=cust.find(x=>x.id===s.customer_id);return s.id.toLowerCase().includes(ss)||(s.memo||'').toLowerCase().includes(ss)||(c2?.name||'').toLowerCase().includes(ss)||(c2?.alpha_tag||'').toLowerCase().includes(ss)||(s.po_number||'').toLowerCase().includes(ss)||safeItems(s).some(it=>(it.sku||'').toLowerCase().includes(ss)||(it.name||'').toLowerCase().includes(ss))})}
     // Sort
-    if(soF.sort==='date_desc')fSOs.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
-    else if(soF.sort==='date_asc')fSOs.sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
+    if(soF.sort==='date_desc')fSOs.sort((a,b)=>(new Date(b.created_at||0).getTime()||0)-(new Date(a.created_at||0).getTime()||0));
+    else if(soF.sort==='date_asc')fSOs.sort((a,b)=>(new Date(a.created_at||0).getTime()||0)-(new Date(b.created_at||0).getTime()||0));
     else if(soF.sort==='expected')fSOs.sort((a,b)=>(a.expected_date||'9999').localeCompare(b.expected_date||'9999'));
     else if(soF.sort==='customer')fSOs.sort((a,b)=>{const ca=cust.find(x=>x.id===a.customer_id)?.name||'';const cb=cust.find(x=>x.id===b.customer_id)?.name||'';return ca.localeCompare(cb)});
     // Status counts using actual so.status
@@ -6522,8 +6522,8 @@ export default function App(){
     if(poF.rep!=='all')fPOs=fPOs.filter(p=>p.so?.created_by===poF.rep);
     if(poF.search){const ss=poF.search.toLowerCase();fPOs=fPOs.filter(p=>p.po_id.toLowerCase().includes(ss)||p.vendor.toLowerCase().includes(ss)||p.so_id.toLowerCase().includes(ss)||p.customer.toLowerCase().includes(ss)||p.itemSku.toLowerCase().includes(ss)||p.itemName.toLowerCase().includes(ss)||p.memo.toLowerCase().includes(ss))}
     // Sort
-    if(poF.sort==='date_desc')fPOs.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
-    else if(poF.sort==='date_asc')fPOs.sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
+    if(poF.sort==='date_desc')fPOs.sort((a,b)=>(new Date(b.created_at||0).getTime()||0)-(new Date(a.created_at||0).getTime()||0));
+    else if(poF.sort==='date_asc')fPOs.sort((a,b)=>(new Date(a.created_at||0).getTime()||0)-(new Date(b.created_at||0).getTime()||0));
     else if(poF.sort==='vendor')fPOs.sort((a,b)=>a.vendor.localeCompare(b.vendor));
     else if(poF.sort==='po_id')fPOs.sort((a,b)=>a.po_id.localeCompare(b.po_id));
     else if(poF.sort==='customer')fPOs.sort((a,b)=>a.customer.localeCompare(b.customer));
