@@ -17,7 +17,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
           cache: 'npm'
 
       - name: Install dependencies
@@ -29,7 +29,8 @@ jobs:
           CI: true
 
       - name: Email report
-        if: always()
+        if: always() && (github.event_name == 'schedule' || failure())
+        continue-on-error: true
         run: node scripts/email-report.js
         env:
           REACT_APP_BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
