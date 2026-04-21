@@ -12,6 +12,7 @@
 //
 // Query params:
 //   style    — return only the matching style (case-insensitive)
+//   search   — substring match against style names (case-insensitive); returns matched styles with byColor
 //   format   — 'summary' returns just byColor map; default returns variants + byColor
 //   refresh  — '1' to bypass the in-memory cache
 //
@@ -116,12 +117,35 @@ const buildByColor = (variants) => {
 exports.handler = async (event) => {
   const qs = event.queryStringParameters || {};
   const style = qs.style ? String(qs.style).trim() : '';
+  const search = qs.search ? String(qs.search).trim() : '';
   const format = qs.format || 'full';
   const forceRefresh = qs.refresh === '1';
   const cors = { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' };
 
   try {
     const cache = await getCachedFeed(forceRefresh);
+
+    // Search mode: substring match against style names, return matched styles with byColor
+    if (search) {
+      const q = search.toLowerCase();
+      const allStyles = Object.keys(cache.byStyle);
+      const matched = allStyles.filter(s => s.toLowerCase().includes(q)).sort((a, b) => {
+        // Prefix matches rank above substring matches
+        const aPre = a.toLowerCase().startsWith(q) ? 0 : 1;
+        const bPre = b.toLowerCase().startsWith(q) ? 0 : 1;
+        return aPre - bPre || a.localeCompare(b);
+      }).slice(0, 25);
+      const results = matched.map(s => {
+        const variants = cache.byStyle[s];
+        const byColor = buildByColor(variants);
+        const totalQty = Object.values(byColor).reduce((a, c) => a + (c.total || 0), 0);
+        return { style: s, totalQty, colorCount: Object.keys(byColor).length, byColor };
+      });
+      return {
+        statusCode: 200, headers: cors,
+        body: JSON.stringify({ fetchedAt: new Date(cache.fetchedAt).toISOString(), query: search, count: results.length, results }),
+      };
+    }
 
     if (!style) {
       return {

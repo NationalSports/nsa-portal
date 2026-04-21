@@ -910,6 +910,21 @@ const richardsonGetStockInventory = async (style) => {
   } catch (error) { console.error('[Richardson] Stock feed call failed:', style, error); throw error; }
 };
 
+// Richardson style search (substring match against style names in the feed).
+// Returns { query, count, results:[{ style, totalQty, colorCount, byColor }] }
+const richardsonSearchStyles = async (query) => {
+  try {
+    const url = `/.netlify/functions/richardson-inventory?search=${encodeURIComponent(query)}`;
+    const response = await fetch(url, { method: 'GET', headers: { 'Content-Type': 'application/json' } });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      let msg; try { msg = JSON.parse(errText)?.error; } catch {}
+      throw new Error(msg || `Richardson search error: ${response.status}`);
+    }
+    return await response.json();
+  } catch (error) { console.error('[Richardson] Style search failed:', query, error); throw error; }
+};
+
 const testRichardsonConnection = async () => {
   try { await richardsonApiCall('/products?limit=1'); console.log('[Richardson] Connection test successful'); return true; }
   catch (error) { console.error('[Richardson] Connection test failed:', error); return false; }
@@ -962,4 +977,4 @@ const testMomentecConnection = async () => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection };

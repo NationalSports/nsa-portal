@@ -10,7 +10,7 @@ import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOSt
 import { CustModal } from './modals';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, nextInvId, _brevoKey } from './utils';
-import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory } from './vendorApis';
+import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 
 function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
@@ -944,20 +944,75 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }finally{if(gen===mtSearchGen.current)setMtSearching(false)}
   },[]);
 
-  // Debounced S&S + SanMar + Momentec search when typing in Add Product search
+  // ─── Live Richardson Product Search (StockInventory feed) ───
+  const[rsResults,setRsResults]=useState([]);
+  const[rsSearching,setRsSearching]=useState(false);
+  const rsSearchTimer=useRef(null);
+  const rsSearchCache=useRef({});
+  const rsSearchGen=useRef(0);
+
+  const rsLiveSearch=useCallback(async(query)=>{
+    if(!query||query.length<2){setRsResults([]);return}
+    const cacheKey=query.toLowerCase().trim();
+    const cached=rsSearchCache.current[cacheKey];
+    if(cached&&(cached.length>0||cached._ts>Date.now()-30000)){setRsResults(cached.length?cached:[]);return}
+    const gen=rsSearchGen.current;
+    setRsSearching(true);
+    try{
+      const data=await richardsonSearchStyles(query);
+      const matches=data?.results||[];
+      // Try to enrich pricing from any matching catalog product (Richardson pricing isn't in the feed)
+      const rsVendor=vendorList.find(v=>v.api_provider==='richardson'||v.name==='Richardson');
+      const rsVendorId=rsVendor?.id||'v5';
+      const results=matches.map(m=>{
+        const catMatch=products.find(p=>p.sku.toLowerCase()===m.style.toLowerCase());
+        const baseCost=catMatch?.nsa_cost||0;
+        const baseRetail=catMatch?.retail_price||0;
+        // Build colors array in the shape addSearchProduct + UI expect
+        const colors=Object.entries(m.byColor||{}).map(([colorName,info])=>{
+          const sizes=Object.entries(info.sizes||{}).map(([sz,qty])=>({sizeName:sz,qty:parseInt(qty)||0,price:baseCost}));
+          const totalQty=Object.values(info.sizes||{}).reduce((a,v)=>a+(parseInt(v)||0),0);
+          return {colorName,sku:m.style,piecePrice:baseCost,customerPrice:baseCost,
+            colorFrontImage:'',colorBackImage:'',sizes,totalQty,
+            nextAvail:info.nextAvail||''};
+        });
+        return {
+          sku:m.style,
+          styleName:catMatch?.name||m.style,
+          brandName:'Richardson',
+          styleImage:catMatch?.image_front_url||'',
+          styleBackImage:catMatch?.image_back_url||'',
+          colors,
+          customerPrice:baseCost,
+          totalQty:m.totalQty||0,
+          _rsVendorId:rsVendorId,
+          _rsCatalogMatch:!!catMatch,
+        };
+      });
+      rsSearchCache.current[cacheKey]=results;
+      if(gen===rsSearchGen.current)setRsResults(results);
+    }catch(err){
+      console.error('[Richardson] Search failed:',err);
+      if(gen===rsSearchGen.current)setRsResults([]);
+    }finally{if(gen===rsSearchGen.current)setRsSearching(false)}
+  },[products,vendorList]);
+
+  // Debounced S&S + SanMar + Momentec + Richardson search when typing in Add Product search
   React.useEffect(()=>{
     if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);
     if(smSearchTimer.current)clearTimeout(smSearchTimer.current);
     if(mtSearchTimer.current)clearTimeout(mtSearchTimer.current);
-    if(!showAdd||!pS||pS.length<2){setSsResults([]);setSmResults([]);setMtResults([]);ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;setExpandedStyle(null);return}
+    if(rsSearchTimer.current)clearTimeout(rsSearchTimer.current);
+    if(!showAdd||!pS||pS.length<2){setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;setExpandedStyle(null);return}
     // Bump generation to discard in-flight results from previous keystrokes
-    ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;setExpandedStyle(null);
+    ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;setExpandedStyle(null);
     const localCount=allFp.length;
     const delay=localCount>5?800:400;
     ssSearchTimer.current=setTimeout(()=>ssLiveSearch(pS),delay);
     smSearchTimer.current=setTimeout(()=>smLiveSearch(pS),delay+100);
     mtSearchTimer.current=setTimeout(()=>mtLiveSearch(pS),delay+200);
-    return()=>{if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);if(smSearchTimer.current)clearTimeout(smSearchTimer.current);if(mtSearchTimer.current)clearTimeout(mtSearchTimer.current)};
+    rsSearchTimer.current=setTimeout(()=>rsLiveSearch(pS),delay+50);
+    return()=>{if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);if(smSearchTimer.current)clearTimeout(smSearchTimer.current);if(mtSearchTimer.current)clearTimeout(mtSearchTimer.current);if(rsSearchTimer.current)clearTimeout(rsSearchTimer.current)};
   },[pS,showAdd]);
 
   // Add a vendor search result as a line item (works for S&S, SanMar, and Momentec)
@@ -965,8 +1020,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const addSearchProduct=(style,color,source)=>{
     const isSM=source==='sm';
     const isMT=source==='mt';
-    const vendor=vendorList.find(v=>isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
-    const vId=vendor?.id||(isMT?'v8':isSM?'v3':'v4');
+    const isRS=source==='rs';
+    const vendor=vendorList.find(v=>isRS?(v.api_provider==='richardson'||v.name==='Richardson'):isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
+    const vId=vendor?.id||(isRS?'v5':isMT?'v8':isSM?'v3':'v4');
     const cost=color.customerPrice||color.piecePrice||0;
     const sell=rQ(cost*(o.default_markup||1.65));
     // Build available sizes: start with sizes from API, merge with catalog product sizes and standard sizes
@@ -976,16 +1032,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const catSizes=(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
     // SanMar provides availableSizes as comma-separated string
     const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(s=>s&&SZ_ORD.includes(s)):[];
-    // Merge all sources; ensure standard sizes are always included for apparel
-    const STD_SIZES=['S','M','L','XL','2XL'];
-    let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
+    // Richardson hat variants often carry sweatband ranges (MD-LG, L-XL, S-M) — default to OSFA when catalog is OSFA
+    const rsStdSizes=isRS?((catMatch?.available_sizes||['OSFA']).filter(s=>SZ_ORD.includes(s))):null;
+    // Merge all sources; ensure standard sizes are always included for apparel (OSFA for Richardson hats)
+    const STD_SIZES=isRS?(rsStdSizes.length?rsStdSizes:['OSFA']):['S','M','L','XL','2XL'];
+    let availSizes=[...new Set([...apiSizes.map(s=>isRS?normSzName(s):s),...catSizes,...smSizes,...STD_SIZES])];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
-    const vInv={};color.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty});
-    const liveFlag=isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
+    const vInv={};color.sizes.forEach(s=>{const k=isRS?normSzName(s.sizeName):s.sizeName;vInv[k]=(vInv[k]||0)+s.qty});
+    const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
     const newItem={
-      product_id:null,sku:style.sku,name:style.styleName,brand:style.brandName,
-      vendor_id:vId,color:color.colorName,nsa_cost:cost,retail_price:0,
-      unit_sell:sell,available_sizes:availSizes.length?availSizes:['S','M','L','XL','2XL'],
+      product_id:catMatch?.id||null,sku:style.sku,name:style.styleName,brand:style.brandName,
+      vendor_id:vId,color:color.colorName,nsa_cost:cost,retail_price:catMatch?.retail_price||0,
+      unit_sell:sell,available_sizes:availSizes.length?availSizes:(isRS?['OSFA']:['S','M','L','XL','2XL']),
       sizes:{},qty_only:false,decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:null}]:[],
       is_custom:false,[liveFlag]:true,
       _colorImage:color.colorFrontImage||style.styleImage||'',
@@ -993,16 +1051,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       ...(isMT&&style._mtId?{_mtId:style._mtId}:{})
     };
     // Build per-size cost map (e.g. 2XL+ costs more than S-XL)
-    const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
+    const sizePrice={};color.sizes.forEach(s=>{const k=isRS?normSzName(s.sizeName):s.sizeName;sizePrice[k]=s.price||cost});
     newItem._sizeCosts=sizePrice;
     // Build per-size sell map (apply markup to each size's cost)
     const mk=o.default_markup||1.65;
     const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
     newItem._sizeSells=sizeSell;
     sv('items',[...o.items,newItem]);
-    vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source};
-    setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source}}));
-    setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setMtResults([]);setExpandedStyle(null);
+    vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||''};
+    setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||''}}));
+    setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
   };
   // State for expanded style in search results (shows color picker)
   const[expandedStyle,setExpandedStyle]=useState(null);// {key:'ss-0', style:{...}}
@@ -2212,9 +2270,39 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>})}
             {!mtSearching&&mtResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No Momentec results for "{pS}"</div>}
           </>}
+          {/* Richardson Live Search Results (StockInventory feed) */}
+          {pS.length>=2&&(rsSearching||rsResults.length>0)&&<>
+            <div style={{padding:'6px 12px',background:'#fef2f2',borderTop:'2px solid #fca5a5',borderBottom:'1px solid #fecaca',display:'flex',alignItems:'center',gap:6}}>
+              <span style={{fontSize:10,fontWeight:800,color:'#dc2626',textTransform:'uppercase',letterSpacing:1}}>Richardson</span>
+              {rsSearching&&<span style={{fontSize:10,color:'#f87171'}}>Searching...</span>}
+              {!rsSearching&&rsResults.length>0&&<span style={{fontSize:10,color:'#dc2626'}}>{rsResults.length} style{rsResults.length!==1?'s':''}</span>}
+            </div>
+            {rsResults.slice(0,10).map((rs,ri)=>{const eKey='rs-'+ri;const isExp=expandedStyle===eKey;return<div key={'rs'+ri}>
+              <div style={{padding:'8px 12px',borderBottom:'1px solid #fef2f2',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:isExp?'#fecaca':ri%2===0?'#fff5f5':'white'}} onClick={()=>setExpandedStyle(isExp?null:eKey)}>
+                {rs.styleImage?<img src={rs.styleImage} alt="" style={{width:32,height:32,objectFit:'contain',borderRadius:4,background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>:<div style={{width:32,height:32,borderRadius:4,background:'#fecaca',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#dc2626',fontWeight:700,flexShrink:0}}>RS</div>}
+                <span style={{fontFamily:'monospace',fontWeight:700,color:'#dc2626',background:'#fecaca',padding:'2px 6px',borderRadius:3,fontSize:12}}>{rs.sku}</span>
+                <span style={{fontWeight:600,fontSize:13,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',flex:1}}>{rs.styleName}</span>
+                <span style={{fontSize:10,padding:'1px 6px',borderRadius:3,background:'#fecaca',color:'#b91c1c',fontWeight:600}}>Richardson</span>
+                <span style={{fontSize:10,color:'#ef4444'}}>{rs.colors.length} color{rs.colors.length!==1?'s':''}</span>
+                <span style={{display:'flex',flexDirection:'column',alignItems:'flex-end'}}>
+                  <span style={{fontSize:12,color:'#dc2626',fontWeight:700}}>{rs.customerPrice>0?`from $${rs.customerPrice.toFixed(2)}`:(rs._rsCatalogMatch?'Price TBD':'New — set cost')}</span>
+                  <span style={{fontSize:9,color:rs.totalQty>0?'#dc2626':'#94a3b8',fontWeight:600}}>{rs.totalQty>0?rs.totalQty.toLocaleString()+' avail':'Out of stock'}</span>
+                </span>
+                <span style={{fontSize:12,color:'#dc2626'}}>{isExp?'▲':'▼'}</span>
+              </div>
+              {isExp&&<div style={{background:'#fff5f5',borderBottom:'2px solid #fca5a5',padding:'6px 12px',display:'flex',flexWrap:'wrap',gap:4,maxHeight:200,overflowY:'auto'}}>
+                {rs.colors.map((c,ci)=><div key={ci} style={{padding:'4px 8px',borderRadius:4,border:'1px solid #fca5a5',background:'white',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0}} onClick={()=>addSearchProduct(rs,c,'rs')} title={c.colorName+(c.totalQty>0?' — '+c.totalQty.toLocaleString()+' avail':' — out of stock')+(c.nextAvail?' • next '+c.nextAvail:'')}>
+                  <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:140}}>{c.colorName||'Default'}</span>
+                  <span style={{fontSize:8,color:c.totalQty>0?'#16a34a':'#dc2626',fontWeight:700}}>{c.totalQty>0?c.totalQty.toLocaleString():'OOS'}</span>
+                  {c.nextAvail&&<span style={{fontSize:8,color:'#b45309'}}>↻{c.nextAvail.slice(0,5)}</span>}
+                </div>)}
+              </div>}
+            </div>})}
+            {!rsSearching&&rsResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No Richardson results for "{pS}"</div>}
+          </>}
         </div>
-        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([])}} style={{marginTop:8}}>Cancel</button>
-        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setShowCustom(true)}} style={{marginTop:8,marginLeft:4}}>+ Custom Item</button></div>}
+        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([])}} style={{marginTop:8}}>Cancel</button>
+        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setShowCustom(true)}} style={{marginTop:8,marginLeft:4}}>+ Custom Item</button></div>}
     </div></div>
     {showCustom&&<div className="card" style={{marginTop:8,borderLeft:'3px solid #d97706'}}><div style={{padding:'14px 18px'}}>
       <div style={{fontWeight:700,marginBottom:8}}>✏️ Custom Item {custItem.name&&<span style={{fontWeight:400,fontSize:12,color:'#64748b'}}>— {custItem.name}</span>}</div>
