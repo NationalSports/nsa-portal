@@ -6504,7 +6504,17 @@ export default function App(){
         const st=totalOpen<=0&&totalRcvd>0?'received':totalRcvd>0?'partial':'waiting';
         const uc=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(it.nsa_cost);const poTotal=totalOrd*uc;
         allPOs.push({po_id:po.po_id||`${so.id}-PO-${pli+1}`,vendor:po.vendor||'',status:st,so_id:so.id,so,customer:c2?.alpha_tag||c2?.name||'',soMemo:so.memo,itemSku:it.sku||'',itemName:it.name||'',totalOrd,totalRcvd,totalCncl,totalOpen,created_at:po.created_at||so.created_at||'',expected_date:po.expected_date||'',memo:po.memo||'',source:'so',lineIdx:idx,unitCost:uc,poTotal,poLineIdx:pli})
-      })})});
+      })});
+      // SO-level decoration POs — cost buckets, no size breakdown
+      (so.deco_pos||[]).forEach(dp=>{
+        const totalOrd=safeNum(dp.qty||0);
+        const expected=safeNum(dp.expected_cost||totalOrd*dp.unit_cost);
+        const actual=safeNum(dp._bill_cost||0);
+        const st=dp.status||'waiting';
+        const skus=(dp.item_idxs||[]).map(ii=>safeItems(so)[ii]?.sku).filter(Boolean);
+        allPOs.push({po_id:dp.po_id,vendor:dp.vendor||'',status:st,so_id:so.id,so,customer:c2?.alpha_tag||c2?.name||'',soMemo:so.memo,itemSku:skus.join(', '),itemName:'Decoration'+(dp.deco_type?' — '+dp.deco_type.replace(/_/g,' '):''),totalOrd,totalRcvd:st==='received'||st==='billed'?totalOrd:0,totalCncl:0,totalOpen:st==='received'||st==='billed'?0:totalOrd,created_at:dp.created_at||so.created_at||'',expected_date:dp.expected_date||'',memo:dp.notes||'',source:'deco',unitCost:safeNum(dp.unit_cost||0),poTotal:actual>0?actual:expected,isDeco:true,decoPoId:dp.id});
+      });
+    });
     // Add submitted batches
     submittedBatches.forEach(sb=>{
       const totalOrd=sb.total_units||0;const st=sb.status||'waiting';
@@ -7570,25 +7580,43 @@ export default function App(){
               poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
               allReceived:blankPOs.length>0&&blankPOs.every(p=>p.status==='received')});
             const aqMap={};safeItems(so).forEach(sit=>{const sq2=Object.values(safeSizes(sit)).reduce((a2,v2)=>a2+safeNum(v2),0);safeDecos(sit).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){aqMap[d2.art_file_id]=(aqMap[d2.art_file_id]||0)+sq2}})});
+            // In-house deco only — outside deco aggregated below at SO level.
             safeDecos(it).forEach(d=>{
+              const matchingDPOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
+              const isOutside=d.kind==='outside_deco'||matchingDPOs.length>0;
+              if(isOutside)return;
               const cq=d.kind==='art'&&d.art_file_id?aqMap[d.art_file_id]:qty;
               const dp=dP(d,qty,af,cq);
               const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const expectedDeco=eqD*dp.cost;
-              const matchingDPOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
-              const actualDeco=matchingDPOs.reduce((a,pl)=>{
-                const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0);
-                return a+poQty*safeNum(pl.unit_cost)},0);
               const artF=af.find(a=>a.id===d.art_file_id);
-              const isOutside=d.kind==='outside_deco'||matchingDPOs.length>0;
-              if(dp.cost>0||actualDeco>0){
-                costLines.push({category:isOutside?'Outside Deco':'In-House Deco',
+              if(dp.cost>0){
+                costLines.push({category:'In-House Deco',
                   sku:it.sku,name:artF?.name||d.deco_type?.replace(/_/g,' ')||'Decoration',
-                  vendor:isOutside?(matchingDPOs[0]?.deco_vendor||d.vendor||'—'):'NSA In-House',
-                  qty,expected:expectedDeco,actual:isOutside?actualDeco:expectedDeco,
-                  poCount:matchingDPOs.length,poIds:matchingDPOs.map(p=>p.po_id).filter(Boolean).join(', '),
-                  allReceived:matchingDPOs.length>0&&matchingDPOs.every(p=>p.status==='received')});
+                  vendor:'NSA In-House',
+                  qty,expected:expectedDeco,actual:expectedDeco,
+                  poCount:0,poIds:'',allReceived:true});
               }
             });
+          });
+          // Outside deco — aggregate one line per outside-deco PO (or per pending vendor/type).
+          // Outside deco — one row per SO-level deco PO (so.deco_pos)
+          (so.deco_pos||[]).forEach(dp=>{
+            const qty=safeNum(dp.qty||0);
+            const unitCost=safeNum(dp.unit_cost||0);
+            const expected=safeNum(dp.expected_cost||qty*unitCost);
+            const actual=safeNum(dp._bill_cost||0);
+            if(expected===0&&actual===0)return;
+            const skus=(dp.item_idxs||[]).map(ii=>safeItems(so)[ii]?.sku).filter(Boolean);
+            if(invSkus.length>0&&!skus.some(s=>invSkus.includes(s)))return;
+            const dtLabel=dp.deco_type?dp.deco_type.replace(/_/g,' '):'';
+            costLines.push({category:'Outside Deco',
+              sku:skus.join(', ')||'—',
+              name:'Outside Deco'+(dtLabel?' — '+dtLabel:''),
+              vendor:dp.vendor||'—',qty,
+              expected:Math.round(expected*100)/100,
+              actual:Math.round(actual*100)/100,
+              poCount:1,poIds:dp.po_id||'',
+              allReceived:dp.status==='received'});
           });
           if(costLines.length===0)return null;
           const totalExpected=costLines.reduce((a,l)=>a+l.expected,0);
@@ -9671,9 +9699,9 @@ export default function App(){
       safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
         rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);
         safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);rev+=qty*dp2.sell;cost+=qty*dp2.cost});
-        // Outside deco POs
-        (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost').reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)});
       });
+      // Outside deco POs — SO-level cost bucket
+      (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
       // Shipping revenue (charged to customer)
       const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
       // Outbound shipping cost from ShipStation — fallback to shipment records
@@ -9752,8 +9780,8 @@ export default function App(){
         safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
           rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);
           safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);rev+=qty*dp2.sell;cost+=qty*dp2.cost});
-          (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost').reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)});
         });
+        (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
         const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
         const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
         const inboundFreight=safeNum(so._inbound_freight||0);
@@ -9785,9 +9813,10 @@ export default function App(){
             productCost+=qty*safeNum(it.nsa_cost);
             const sellP=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;promoRev+=qty*sellP;
             safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,soAf,cq);decoCost+=qty*dp2.cost;promoRev+=qty*rQ(dp2.sell*1.25)});
-            (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)).reduce((a,[,v])=>a+v,0);decoCost+=poQty*safeNum(pl.unit_cost)});
           }
         });
+        // Outside deco POs — only if promo-qualifying items are covered. Simpler: add all SO deco.
+        (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);const c=bc>0?bc:safeNum(dp.qty||0)*safeNum(dp.unit_cost||0);decoCost+=c});
         const totalRev=promoRev;const baseShip=so.shipping_type==='pct'?totalRev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
         const shipCost=rQ(baseShip*1.25);
         const totalCost=productCost+decoCost+shipCost;
@@ -15385,14 +15414,176 @@ export default function App(){
     // Sports Inc / Adidas / UA supplier bill format parser
     // Key: only extract items from the ITEM TABLE SECTION (between header row and totals row)
     // Parse a single invoice section (lines belonging to one invoice within a PDF)
+    // ── DECORATION VENDOR PARSERS ──
+    // These invoices are charge-based (screen print, embroidery, fulfillment, shipping, etc.)
+    // rather than SKU/size-based goods. Each bill has a single PO that links back to an
+    // outside-decoration po_line on a Sales Order. Total cost (less freight) is attributed to
+    // that po_line's _bill_cost; freight is posted to the SO's outbound shipping.
+    const _normalizeDecoPO=v=>{const s=String(v||'').trim();if(!s)return '';const stripped=s.replace(/^PO[\s#:]*/i,'').trim();return /^\d+$/.test(stripped)?'PO'+stripped:s};
+
+    // Find a PO value near a "P.O. NUMBER" / "P.O. No." label.
+    // PDF.js outputs tab-separated columns so the label can share a row with another header
+    // (e.g. Frontier: "P.O. NUMBER\tJOB NAME") with the value one row below ("PO8097\t..").
+    const _findLabeledPO=(lines,labelRe)=>{
+      for(let i=0;i<lines.length;i++){
+        if(!labelRe.test(lines[i]))continue;
+        // Same line (after label and/or in a later tab column)
+        const parts=lines[i].split('\t').map(p=>p.trim());
+        for(const p of parts){const m=p.match(/^(PO\s*\d{3,}|\d{3,})$/i);if(m)return m[1]}
+        const sameM=lines[i].match(/P\.?\s*O\.?\s*(?:NUMBER|No\.?)\s*[:\s]+(PO\s*\d{3,}|\d{3,})/i);
+        if(sameM)return sameM[1];
+        // Next 1-4 lines: check first column (i.e. below the label cell)
+        for(let j=i+1;j<Math.min(i+5,lines.length);j++){
+          const nParts=lines[j].split('\t').map(p=>p.trim());
+          const first=nParts[0]||'';
+          const m=first.match(/^(PO\s*\d{3,}|\d{3,})$/i);
+          if(m)return m[1];
+        }
+      }
+      return '';
+    };
+
+    // Tab-aware line-item row parser. Each vendor specifies the column positions of
+    // qty / rate / amount (negative = from-end). Returns undefined for non-item rows.
+    const _parseDecoRow=(line,cfg)=>{
+      const parts=line.split('\t').map(p=>p.trim());
+      if(parts.length<(cfg.minCols||3))return null;
+      const at=i=>parts[i<0?parts.length+i:i];
+      const qtyStr=at(cfg.qty)||'';
+      const rateStr=at(cfg.rate)||'';
+      const amtStr=(at(cfg.amount)||'').replace(/T$/,'');// strip SilverScreen taxable marker
+      if(!/^\d{1,4}$/.test(qtyStr))return null;
+      if(!/^\d+(?:\.\d{1,2})?$/.test(rateStr))return null;
+      if(!/^\d+(?:\.\d{1,2})?$/.test(amtStr))return null;
+      const qty=parseInt(qtyStr),rate=parseFloat(rateStr),amount=parseFloat(amtStr);
+      if(qty<=0||qty>100000)return null;
+      // Reserved cells: qty, rate, amount, and activity — everything else becomes the description.
+      const norm=i=>i<0?parts.length+i:i;
+      const reserved=new Set([cfg.qty,cfg.rate,cfg.amount,cfg.activityIdx].filter(i=>i!=null).map(norm));
+      const descParts=parts.map((p,i)=>reserved.has(i)?null:p).filter(p=>p&&p.length>0);
+      const activity=(cfg.activityIdx!=null?at(cfg.activityIdx):'')||'';
+      const desc=descParts.join(' · ').trim();
+      return{qty,rate,amount,activity,desc,parts};
+    };
+
+    // Regex fallback for when PDF.js emits columns with spaces instead of tabs
+    // (happens when column x-gap is < 15 units). Handles two layouts:
+    //   'qty-first' — Frontier / Olympic: QTY ... RATE AMOUNT
+    //   'activity-first' — Silver Screen: ACTIVITY ... QTY RATE AMOUNT
+    const _parseDecoRowRegex=(line,layout)=>{
+      if(layout==='qty-first'){
+        const m=line.match(/^\s*(\d{1,4})\s+([A-Za-z][^\n]*?)\s+(\d+\.\d{2})\s+(\d+\.\d{2})T?\s*$/);
+        if(!m)return null;
+        const qty=parseInt(m[1]);if(qty<=0||qty>100000)return null;
+        const middle=m[2].trim();
+        const firstSeg=middle.split(/\s{2,}|\t/)[0].trim();
+        return{qty,rate:parseFloat(m[3]),amount:parseFloat(m[4]),activity:firstSeg||middle,desc:middle,parts:[m[1],middle,m[3],m[4]]};
+      }
+      if(layout==='activity-first'){
+        const m=line.match(/^\s*([A-Za-z][A-Za-z0-9\-\/ ]{1,40}?)\s{2,}(.+?)\s+(\d{1,4})\s+(\d+\.\d{2})\s+(\d+\.\d{2})T?\s*$/);
+        if(!m)return null;
+        const qty=parseInt(m[3]);if(qty<=0||qty>100000)return null;
+        return{qty,rate:parseFloat(m[4]),amount:parseFloat(m[5]),activity:m[1].trim(),desc:m[2].trim(),parts:[m[1],m[2],m[3],m[4],m[5]]};
+      }
+      return null;
+    };
+
+    const _parseOlympicBill=(bill,lines,fullText)=>{
+      bill.kind='decoration';bill.supplier='Olympic Embroidery';
+      const text=fullText||lines.join('\n');
+      const invM=text.match(/Invoice\s*#\s*[\r\n]+\s*[\d\/]+\s+(\d{3,})/i)||text.match(/\bInvoice\s*#?\s*(\d{4,})/i);
+      if(invM)bill.doc_number=invM[1];
+      const dateM=text.match(/Date\s*[\r\n]+\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i)||text.match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/);
+      if(dateM)bill.doc_date=dateM[1];
+      const po=_findLabeledPO(lines,/P\.?\s*O\.?\s*(?:NUMBER|No\.?)\b/i);
+      if(po)bill.po_number=_normalizeDecoPO(po);
+      const tM=text.match(/Tracking\s*#?\s*:?\s*([A-Z0-9]{8,30})/i);
+      if(tM)bill.tracking=tM[1];
+      const balM=text.match(/Balance\s+Due\s*\$?\s*([\d,]+\.\d{2})/i);
+      const totM=text.match(/\bTotal\s*\$?\s*([\d,]+\.\d{2})/i);
+      bill.doc_total=balM?parseFloat(balM[1].replace(/,/g,'')):(totM?parseFloat(totM[1].replace(/,/g,'')):0);
+      // Olympic layout: Qty | Item | Color | Size | Description | Rate | Amount
+      for(const ln of lines){
+        const row=_parseDecoRow(ln,{qty:0,rate:-2,amount:-1,activityIdx:1,minCols:3})||_parseDecoRowRegex(ln,'qty-first');
+        if(!row)continue;
+        bill.items.push({desc:(row.activity||'').trim()+(row.desc?' — '+row.desc:''),qty:row.qty,rate:row.rate,amount:row.amount});
+      }
+      if(!bill.po_number)bill.warnings.push('PO number not found');
+      if(!bill.doc_total)bill.warnings.push('Could not detect total');
+    };
+
+    const _parseFrontierBill=(bill,lines,fullText)=>{
+      bill.kind='decoration';bill.supplier='Frontier Screenprinting';
+      const text=fullText||lines.join('\n');
+      const invM=text.match(/INVOICE\s*#\s*(\d{4,})/i);if(invM)bill.doc_number=invM[1];
+      const dateM=text.match(/\bDATE\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);if(dateM)bill.doc_date=dateM[1];
+      const dueM=text.match(/DUE\s+DATE\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);if(dueM)bill.due_date=dueM[1];
+      const po=_findLabeledPO(lines,/P\.?\s*O\.?\s*NUMBER\b/i);
+      if(po)bill.po_number=_normalizeDecoPO(po);
+      const balM=text.match(/BALANCE\s+DUE\s*\$?\s*([\d,]+\.\d{2})/i);
+      const totM=text.match(/\bTOTAL\s+([\d,]+\.\d{2})/i);
+      bill.doc_total=balM?parseFloat(balM[1].replace(/,/g,'')):(totM?parseFloat(totM[1].replace(/,/g,'')):0);
+      // Frontier layout: Qty | Activity | Description | Rate | Amount
+      for(const ln of lines){
+        const row=_parseDecoRow(ln,{qty:0,rate:-2,amount:-1,activityIdx:1,minCols:3})||_parseDecoRowRegex(ln,'qty-first');
+        if(!row)continue;
+        const activity=(row.activity||'').trim();
+        // Skip column headers / summary rows that accidentally match (start with QTY/SUBTOTAL/etc)
+        if(/^(QTY|ACTIVITY|DESCRIPTION|RATE|AMOUNT|SUBTOTAL|TOTAL|TAX|BALANCE)\b/i.test(activity))continue;
+        const isShip=/shipping|freight/i.test(activity)||/shipping|freight/i.test(row.desc||'');
+        bill.items.push({desc:activity+(row.desc&&row.desc!==activity?' — '+row.desc:''),qty:row.qty,rate:row.rate,amount:row.amount,_isShipping:isShip});
+        if(isShip){bill.freight+=row.amount;const tM=(row.desc||'').match(/\b(\d{12,22})\b/);if(tM&&!bill.tracking)bill.tracking=tM[1]}
+      }
+      if(!bill.po_number)bill.warnings.push('PO number not found');
+      if(!bill.doc_total)bill.warnings.push('Could not detect total');
+    };
+
+    const _parseSilverScreenBill=(bill,lines,fullText)=>{
+      bill.kind='decoration';bill.supplier='Silver Screen Printing';
+      const text=fullText||lines.join('\n');
+      const invM=text.match(/\bInvoice\s+(\d{4,})/i);if(invM)bill.doc_number=invM[1];
+      const dateM=text.match(/\bDATE\s*[\r\n]+\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i)||text.match(/\bDATE\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
+      if(dateM)bill.doc_date=dateM[1];
+      const dueM=text.match(/DUE\s+DATE\s*[\r\n]+\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i)||text.match(/DUE\s+DATE\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
+      if(dueM)bill.due_date=dueM[1];
+      const po=_findLabeledPO(lines,/P\.?\s*O\.?\s*NUMBER\b/i);
+      if(po)bill.po_number=_normalizeDecoPO(po);
+      const dueTotM=text.match(/TOTAL\s+DUE\s*\$?\s*([\d,]+\.\d{2})/i);
+      const pleaseM=text.match(/PLEASE\s+PAY\s*\$?\s*([\d,]+\.\d{2})/i);
+      const totM=text.match(/\bTOTAL\s+([\d,]+\.\d{2})/i);
+      bill.doc_total=dueTotM?parseFloat(dueTotM[1].replace(/,/g,'')):(pleaseM?parseFloat(pleaseM[1].replace(/,/g,'')):(totM?parseFloat(totM[1].replace(/,/g,'')):0));
+      // SilverScreen layout: Activity | Description | Qty | Rate | Amount (amount may have T suffix)
+      for(const ln of lines){
+        const row=_parseDecoRow(ln,{qty:-3,rate:-2,amount:-1,activityIdx:0,minCols:4})||_parseDecoRowRegex(ln,'activity-first');
+        if(!row)continue;
+        const activity=(row.activity||'').trim();
+        if(!/^[A-Za-z]/.test(activity))continue;// filter out rows where first cell is not a label
+        if(/^(SUBTOTAL|TOTAL|TAX|BALANCE|ACTIVITY|DESCRIPTION|QTY|RATE|AMOUNT)\b/i.test(activity))continue;
+        bill.items.push({desc:activity+(row.desc&&row.desc!==activity?' — '+row.desc:''),qty:row.qty,rate:row.rate,amount:row.amount});
+      }
+      if(!bill.po_number)bill.warnings.push('PO number not found');
+      if(!bill.doc_total)bill.warnings.push('Could not detect total');
+    };
+
     const parseSingleInvoice=(lines,sharedFields,fullText)=>{
       const bill={po_number:sharedFields.po_number||'',tracking:sharedFields.tracking||'',supplier:sharedFields.supplier||'',vendor:sharedFields.vendor||'',doc_number:'',doc_date:'',due_date:'',ship_date:'',
-        items:[],merchandise_total:0,freight:0,si_upcharge:0,doc_total:0,warnings:[],rawText:fullText,
+        items:[],merchandise_total:0,freight:0,si_upcharge:0,doc_total:0,warnings:[],rawText:fullText,kind:'goods',
         matchedPO:null,matchedPOSource:null};
 
       // Helper: extract last monetary value after a label on a line
       const extractTotal=(line,re,nextLine)=>{const m=line.match(re);if(!m)return null;const rest=line.slice(m.index+m[0].length);const nums=(rest.match(/[\d,]+\.\d{1,2}/g)||[]);if(nums.length>0)return parseFloat(nums[nums.length-1].replace(/,/g,''))||0;if(nextLine){const nm=nextLine.match(/^\s*([\d,]+\.\d{1,2})\s*$/);if(nm)return parseFloat(nm[1].replace(/,/g,''))||0}return null};
 
+      // ── DECORATION VENDOR DISPATCH ──
+      const _headText=(fullText||lines.join('\n')).slice(0,2000);
+      if(/olympic\s*embroidery|olympicembroidery\.com/i.test(_headText)){
+        _parseOlympicBill(bill,lines,fullText);
+      }else if(/frontier\s*screenprinting/i.test(_headText)){
+        _parseFrontierBill(bill,lines,fullText);
+      }else if(/silverscreen|silver\s*screen\s*printing/i.test(_headText)){
+        _parseSilverScreenBill(bill,lines,fullText);
+      }
+
+      if(bill.kind!=='decoration'){
       // ── PASS 1: Extract header fields & find item table boundaries ──
       let itemSectionStart=-1,itemSectionEnd=-1;
       for(let li=0;li<lines.length;li++){
@@ -15557,6 +15748,7 @@ export default function App(){
       if(!bill.po_number)bill.warnings.push('PO number not found');
       if(!bill.doc_total&&!bill.merchandise_total)bill.warnings.push('Could not detect totals');
       if(bill.items.length===0&&itemSectionStart>=0)bill.warnings.push('No line items detected in item table — check raw text');
+      }// end goods-invoice parsing block
 
       // Match vendor from system vendors
       if(bill.supplier){
@@ -15575,7 +15767,22 @@ export default function App(){
           const invMatch=invPOs.find(p=>p.po_number&&p.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
           if(invMatch){bill.matchedPO=invMatch;bill.matchedPOSource='inv_po'}
         }
-        // Also search SO item PO lines (match by po_id or memo — use startsWith to handle suffixed PO IDs like "PO4133 OLUF")
+        // Check SO-level decoration POs (so.deco_pos) first — cost buckets for outside decorators
+        if(!bill.matchedPO){
+          for(const so of sos){
+            for(const dp of (so.deco_pos||[])){
+              const pid=(dp.po_id||'').toLowerCase().replace(/\s+/g,'');
+              if(pid===poLc||pid.startsWith(poLc)){
+                bill.matchedPO={so_id:so.id,po_id:dp.po_id,deco_po:dp,so};
+                bill.matchedPOSource='so_deco_po';
+                break;
+              }
+            }
+            if(bill.matchedPO)break;
+          }
+        }
+        // Fallback: SO item PO lines (blanks goods POs — match by po_id or memo, startsWith to
+        // handle suffixed PO IDs like "PO4133 OLUF")
         if(!bill.matchedPO){
           for(const so of sos){
             for(const it of (so.items||[])){
@@ -15754,9 +15961,137 @@ export default function App(){
       });
     };
 
+    // A bill is ready to push to the portal when it has either an auto-matched PO or a
+    // complete manual decoration target (SO + existing po_line, or SO + item for create).
+    const _billIsReadyToPush=b=>{
+      if(!b||!b.selected||b.portalStatus)return false;
+      const p=b.parsed;if(!p)return false;
+      if(p.matchedPOSource)return true;
+      const t=p._manualTarget;
+      if(!t||!t.soId||p.kind!=='decoration')return false;
+      if(t.mode==='existing')return !!t.decoPoId;
+      if(t.mode==='create')return true;// applies to SO — no per-item pick required
+      return false;
+    };
+
+    // Re-run PO matching against current state (used after user edits the PO field in review).
+    const rematchBill=(bill)=>{
+      const updated={...bill,matchedPO:null,matchedPOSource:null};
+      if(!bill.po_number)return updated;
+      const poLc=bill.po_number.toLowerCase().replace(/\s+/g,'');
+      const batchMatch=submittedBatches.find(sb=>sb.po_number&&sb.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
+      if(batchMatch){updated.matchedPO=batchMatch;updated.matchedPOSource='batch';return updated}
+      const invMatch=invPOs.find(p=>p.po_number&&p.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
+      if(invMatch){updated.matchedPO=invMatch;updated.matchedPOSource='inv_po';return updated}
+      // Check SO-level decoration POs first (so.deco_pos) — these are the new-style cost buckets
+      for(const so of sos){for(const dp of (so.deco_pos||[])){
+        const pid=(dp.po_id||'').toLowerCase().replace(/\s+/g,'');
+        if(pid===poLc||pid.startsWith(poLc)){
+          updated.matchedPO={so_id:so.id,po_id:dp.po_id,deco_po:dp,so};
+          updated.matchedPOSource='so_deco_po';return updated;
+        }
+      }}
+      // Fallback: item-level po_lines (blanks goods POs)
+      for(const so of sos){for(const it of (so.items||[])){for(const po of (it.po_lines||[])){
+        const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
+        const pmemo=(po.memo||'').toLowerCase().replace(/\s+/g,'');
+        if(pid===poLc||pid.startsWith(poLc)||pmemo.includes(poLc)){
+          updated.matchedPO={so_id:so.id,po_id:po.po_id,po,item:it,so};
+          updated.matchedPOSource='so_po';return updated;
+        }
+      }}}
+      return updated;
+    };
+
+    // Apply a decoration bill manually when the user has picked an SO + target po_line (or "create new").
+    // target = {soId, mode:'existing', itemIdx, poLineIdx}  OR  {soId, mode:'create', itemIdx, decoType}
+    // target = {soId, mode:'existing', decoPoId}  OR  {soId, mode:'create'}
+    const _applyDecorationBillManually=(bill)=>{
+      const t=bill._manualTarget;
+      if(!t||!t.soId)return;
+      const freight=safeNum(bill.freight||0);
+      const decoCost=Math.round((safeNum(bill.doc_total||0)-freight)*100)/100;
+      const billDetail={doc:bill.doc_number,date:bill.doc_date,supplier:bill.supplier,cost:decoCost,freight,tracking:bill.tracking};
+      setSOs(prev=>prev.map(s=>{
+        if(s.id!==t.soId)return s;
+        let nextDecoPos=s.deco_pos||[];
+        if(t.mode==='existing'&&t.decoPoId){
+          nextDecoPos=nextDecoPos.map(dp=>{
+            if(dp.id!==t.decoPoId)return dp;
+            const trackNums=[...(dp.tracking_numbers||[])];
+            if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+            return{...dp,tracking_numbers:trackNums,
+              _bill_cost:Math.round((safeNum(dp._bill_cost||0)+decoCost)*100)/100,
+              _bill_details:[...(dp._bill_details||[]),billDetail],
+              status:'billed'};
+          });
+        }else if(t.mode==='create'){
+          // Create a new SO-level deco PO from the bill. Cost-bucket only — no item selection;
+          // reps can edit item_idxs later on the PO page if they want item badges.
+          const inferredType=/embroidery/i.test(bill.supplier||'')?'embroidery':'screen_print';
+          const newDecoPO={id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
+            po_id:bill.po_number,vendor:bill.supplier,deco_vendor_id:null,deco_type:inferredType,
+            item_idxs:[],qty:0,unit_cost:0,expected_cost:0,
+            notes:'Created from supplier bill',drop_ship:undefined,expected_date:'',preexisting:true,
+            status:'billed',created_at:new Date().toLocaleDateString(),
+            _bill_cost:decoCost,_bill_details:[billDetail],
+            tracking_numbers:bill.tracking?[bill.tracking]:[]};
+          nextDecoPos=[...nextDecoPos,newDecoPO];
+        }else return s;
+        const updated={...s,deco_pos:nextDecoPos,updated_at:new Date().toLocaleString()};
+        if(freight>0){const prevShip=safeNum(s._shipping_cost||0);updated._shipping_cost=Math.round((prevShip+freight)*100)/100}
+        _dbSaveSO(updated);
+        return updated;
+      }));
+    };
+
+    // Apply a decoration bill to the matched SO-level deco PO (so.deco_pos entry).
+    // Total cost (minus freight) is attributed to the deco PO's _bill_cost.
+    // Freight is posted to the SO's outbound shipping (_shipping_cost).
+    const _applyDecorationBillToSO=(bill,soId,decoPoId)=>{
+      if(!soId)return;
+      const freight=safeNum(bill.freight||0);
+      const decoCost=Math.round((safeNum(bill.doc_total||0)-freight)*100)/100;
+      const billDetail={doc:bill.doc_number,date:bill.doc_date,supplier:bill.supplier,cost:decoCost,freight,tracking:bill.tracking};
+      const poLc=(bill.po_number||'').toLowerCase().replace(/\s+/g,'');
+      setSOs(prev=>prev.map(s=>{
+        if(s.id!==soId)return s;
+        let hit=false;
+        const nextDecoPos=(s.deco_pos||[]).map(dp=>{
+          const matches=decoPoId?dp.id===decoPoId:(()=>{const pid=(dp.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===poLc||pid.startsWith(poLc)})();
+          if(!matches)return dp;
+          hit=true;
+          const trackNums=[...(dp.tracking_numbers||[])];
+          if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+          return{...dp,tracking_numbers:trackNums,
+            _bill_cost:Math.round((safeNum(dp._bill_cost||0)+decoCost)*100)/100,
+            _bill_details:[...(dp._bill_details||[]),billDetail],
+            status:'billed'};
+        });
+        if(!hit)return s;
+        const updated={...s,deco_pos:nextDecoPos,updated_at:new Date().toLocaleString()};
+        if(freight>0){const prevShip=safeNum(s._shipping_cost||0);updated._shipping_cost=Math.round((prevShip+freight)*100)/100}
+        _dbSaveSO(updated);
+        return updated;
+      }));
+    };
+
     const applyBillToSO=(bill)=>{
       if(bill._applied)return;
       bill._applied=true;
+      // Decoration bills — route to dedicated apply (total cost → deco PO; freight → outbound)
+      if(bill.kind==='decoration'){
+        if(bill._manualTarget?.soId){_applyDecorationBillManually(bill);return}
+        if(bill.matchedPOSource==='so_deco_po'&&bill.matchedPO){
+          const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
+          _applyDecorationBillToSO(bill,soId,bill.matchedPO.deco_po?.id);
+        }else if(bill.matchedPOSource==='so_po'&&bill.matchedPO){
+          // Fallback: matched an old-style po_line (legacy data). No-op for new flow.
+          const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
+          _applyDecorationBillToSO(bill,soId);
+        }
+        return;
+      }
       if(bill.matchedPOSource==='batch'&&bill.matchedPO){
         const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
         const billedSizes={};
@@ -15811,7 +16146,7 @@ export default function App(){
 
     // Push bills to Portal (apply to SOs)
     const pushBillsToPortal=()=>{
-      const selected=billImport.parsed.filter(b=>b.selected&&!b.portalStatus&&b.parsed?.matchedPOSource);
+      const selected=billImport.parsed.filter(_billIsReadyToPush);
       if(!selected.length){nf('No matched bills selected to push','error');return}
       let applied=0;
       selected.forEach(b=>{
@@ -15881,27 +16216,41 @@ export default function App(){
         }
         const amt=bill.doc_total||bill.merchandise_total+bill.freight+(bill.si_upcharge||0);
         const lineItems=[];
-        // Merchandise line
-        if(bill.merchandise_total>0){
-          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.merchandise_total,
-            Description:'Merchandise — PO '+bill.po_number+(bill.items.length?' ('+bill.items.length+' items)':''),
-            AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
-        }else if(amt>0&&!bill.freight){
-          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:amt,
-            Description:'Vendor bill — PO '+bill.po_number,
-            AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
-        }
-        // Freight line
-        if(bill.freight>0){
-          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.freight,
-            Description:'Freight charge — PO '+bill.po_number,
-            AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.freight_account||'Shipping and delivery expense')}});
-        }
-        // SI Upcharge line
-        if(bill.si_upcharge>0){
-          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.si_upcharge,
-            Description:'SI Upcharge — PO '+bill.po_number,
-            AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
+        if(bill.kind==='decoration'){
+          // Decoration bills: deco cost line (doc_total minus freight) + freight line.
+          // merchandise_total is 0 on these, so the goods-bill path would skip the cost entirely.
+          const decoAmt=Math.round(((bill.doc_total||0)-(bill.freight||0))*100)/100;
+          if(decoAmt>0){
+            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:decoAmt,
+              Description:'Outside decoration — PO '+bill.po_number+(bill.supplier?' — '+bill.supplier:''),
+              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.deco_account||qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
+          }
+          if(bill.freight>0){
+            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.freight,
+              Description:'Shipping — PO '+bill.po_number,
+              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.freight_account||'Shipping and delivery expense')}});
+          }
+        }else{
+          // Goods bills (Adidas / UA / etc.) — merchandise + freight + SI upcharge lines.
+          if(bill.merchandise_total>0){
+            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.merchandise_total,
+              Description:'Merchandise — PO '+bill.po_number+(bill.items.length?' ('+bill.items.length+' items)':''),
+              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
+          }else if(amt>0&&!bill.freight){
+            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:amt,
+              Description:'Vendor bill — PO '+bill.po_number,
+              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
+          }
+          if(bill.freight>0){
+            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.freight,
+              Description:'Freight charge — PO '+bill.po_number,
+              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.freight_account||'Shipping and delivery expense')}});
+          }
+          if(bill.si_upcharge>0){
+            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.si_upcharge,
+              Description:'SI Upcharge — PO '+bill.po_number,
+              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
+          }
         }
         if(lineItems.length===0){
           setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:'No amounts to bill'}:p)}));
@@ -16813,9 +17162,9 @@ export default function App(){
           <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center'}}>
             <button className="btn btn-secondary" onClick={()=>setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}>← Upload More</button>
             <span style={{fontSize:14,fontWeight:700,flex:1}}>{billImport.parsed.length} Bill(s) Parsed</span>
-            <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={billImport.uploading||!billImport.parsed.some(b=>b.selected&&!b.portalStatus&&b.parsed?.matchedPOSource)}
+            <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={billImport.uploading||!billImport.parsed.some(_billIsReadyToPush)}
               onClick={pushBillsToPortal}>
-              Push {billImport.parsed.filter(b=>b.selected&&!b.portalStatus&&b.parsed?.matchedPOSource).length} to Portal
+              Push {billImport.parsed.filter(_billIsReadyToPush).length} to Portal
             </button>
             <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} disabled={billImport.uploading||!billImport.parsed.some(b=>b.selected&&!b.qbStatus)}
               onClick={pushBillsToQB}>
@@ -16845,10 +17194,10 @@ export default function App(){
                   <span style={{fontSize:14}}>&#128279;</span>
                   <div style={{flex:1}}>
                     <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>
-                      Matched to {poSrc==='batch'?'Batch PO':poSrc==='so_po'?'Sales Order PO':'Inventory PO'}: {poMatch.po_number||poMatch.po_id||''}
+                      Matched to {poSrc==='batch'?'Batch PO':poSrc==='so_po'||poSrc==='so_deco_po'?'Sales Order PO':'Inventory PO'}: {poMatch.po_number||poMatch.po_id||''}
                       {poSrc==='batch'&&poMatch.vendor_name&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.vendor_name}</span>}
                       {poSrc==='inv_po'&&poMatch.vendor_name&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.vendor_name}</span>}
-                      {poSrc==='so_po'&&poMatch.so_id&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.so_id}</span>}
+                      {(poSrc==='so_po'||poSrc==='so_deco_po')&&poMatch.so_id&&(()=>{const soCust=cust.find(cc=>cc.id===poMatch.so?.customer_id);return<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.so_id}{soCust?.name?' · '+soCust.name:''}</span>})()}
                     </div>
                     <div style={{fontSize:11,color:'#475569',marginTop:2}}>
                       {poSrc==='batch'&&<>Units: {poMatch.total_units||'?'} | Cost: ${(poMatch.total_cost||0).toFixed(2)}
@@ -16862,6 +17211,7 @@ export default function App(){
                       </>}
                       {poSrc==='so_po'&&<>{poMatch.item?.sku||''} {poMatch.item?.name||''} | {poMatch.so_id}
                       </>}
+                      {poSrc==='so_deco_po'&&<>Decoration PO · {poMatch.deco_po?.vendor||''}{poMatch.deco_po?.deco_type?' · '+poMatch.deco_po.deco_type.replace(/_/g,' '):''} · Expected ${safeNum(poMatch.deco_po?.expected_cost||0).toFixed(2)}</>}
                     </div>
                   </div>
                 </div>}
@@ -16880,7 +17230,7 @@ export default function App(){
                   <div style={{display:'flex',gap:6,alignItems:'center',flex:1,flexWrap:'wrap'}}>
                     <label style={{fontSize:10,fontWeight:600}}>PO</label>
                     <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.po_number}
-                      onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,po_number:e.target.value}}:p)}))}/>
+                      onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:rematchBill({...p.parsed,po_number:e.target.value})}:p)}))}/>
                     <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Vendor</label>
                     <input className="form-input" style={{width:120,fontSize:11,padding:'3px 6px'}} value={bill.vendor||bill.supplier}
                       onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,vendor:e.target.value,supplier:e.target.value}}:p)}))}/>
@@ -16891,23 +17241,37 @@ export default function App(){
                 </div>
                 {/* Line items */}
                 {bill.items.length>0&&<div style={{padding:'0 14px'}}>
-                  <table style={{fontSize:11,marginTop:8,marginBottom:8}}>
-                    <thead><tr><th style={{textAlign:'left'}}>SKU</th><th>Size</th><th>Color</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Unit Price</th><th style={{textAlign:'right'}}>Extension</th><th style={{textAlign:'left',maxWidth:180}}>Description</th></tr></thead>
-                    <tbody>{bill.items.map((it,ii)=><tr key={ii}>
-                      <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
-                      <td style={{textAlign:'center',fontWeight:600}}>{it.size}</td>
-                      <td style={{color:'#64748b'}}>{it.color||'—'}</td>
-                      <td style={{textAlign:'right',fontWeight:700}}>{it.qty}</td>
-                      <td style={{textAlign:'right'}}>${it.unit_price.toFixed(2)}</td>
-                      <td style={{textAlign:'right',fontWeight:600}}>${it.extension.toFixed(2)}</td>
-                      <td style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#64748b',fontSize:10}}>{it.desc||'—'}</td>
-                    </tr>)}</tbody>
-                  </table>
+                  {bill.kind==='decoration'?
+                    <table style={{fontSize:11,marginTop:8,marginBottom:8}}>
+                      <thead><tr><th style={{textAlign:'left',maxWidth:320}}>Activity / Description</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Rate</th><th style={{textAlign:'right'}}>Amount</th></tr></thead>
+                      <tbody>{bill.items.map((it,ii)=><tr key={ii}>
+                        <td style={{maxWidth:320,color:'#334155'}}>{it.desc||'—'}{it._isShipping?<span style={{marginLeft:6,fontSize:9,padding:'1px 5px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>SHIPPING</span>:null}</td>
+                        <td style={{textAlign:'right',fontWeight:700}}>{it.qty}</td>
+                        <td style={{textAlign:'right'}}>${Number(it.rate||0).toFixed(2)}</td>
+                        <td style={{textAlign:'right',fontWeight:600}}>${Number(it.amount||0).toFixed(2)}</td>
+                      </tr>)}</tbody>
+                    </table>:
+                    <table style={{fontSize:11,marginTop:8,marginBottom:8}}>
+                      <thead><tr><th style={{textAlign:'left'}}>SKU</th><th>Size</th><th>Color</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Unit Price</th><th style={{textAlign:'right'}}>Extension</th><th style={{textAlign:'left',maxWidth:180}}>Description</th></tr></thead>
+                      <tbody>{bill.items.map((it,ii)=><tr key={ii}>
+                        <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
+                        <td style={{textAlign:'center',fontWeight:600}}>{it.size}</td>
+                        <td style={{color:'#64748b'}}>{it.color||'—'}</td>
+                        <td style={{textAlign:'right',fontWeight:700}}>{it.qty}</td>
+                        <td style={{textAlign:'right'}}>${it.unit_price.toFixed(2)}</td>
+                        <td style={{textAlign:'right',fontWeight:600}}>${it.extension.toFixed(2)}</td>
+                        <td style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#64748b',fontSize:10}}>{it.desc||'—'}</td>
+                      </tr>)}</tbody>
+                    </table>
+                  }
                 </div>}
                 {bill.items.length===0&&<div style={{padding:'12px 14px',fontSize:12,color:'#d97706'}}>No line items detected — totals will be used as a single line</div>}
                 {/* Totals */}
                 <div style={{display:'flex',gap:0,borderTop:'1px solid #f1f5f9'}}>
-                  {[['Merchandise',bill.merchandise_total,'merchandise_total'],['Freight',bill.freight,'freight'],['SI Upcharge',bill.si_upcharge,'si_upcharge'],['Doc Total',bill.doc_total,'doc_total']].map(([label,val,key],i)=>
+                  {(bill.kind==='decoration'
+                    ?[['Doc Total',bill.doc_total,'doc_total'],['Freight (→ Outbound)',bill.freight,'freight']]
+                    :[['Merchandise',bill.merchandise_total,'merchandise_total'],['Freight',bill.freight,'freight'],['SI Upcharge',bill.si_upcharge,'si_upcharge'],['Doc Total',bill.doc_total,'doc_total']]
+                  ).map(([label,val,key],i)=>
                     <div key={i} style={{flex:1,padding:'10px 14px',borderRight:'1px solid #f1f5f9',textAlign:'center'}}>
                       <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>{label}</div>
                       <input className="form-input" type="number" step="0.01" style={{width:'100%',fontSize:14,fontWeight:800,textAlign:'center',color:val>0?'#166534':'#94a3b8',padding:'2px 4px'}}
@@ -16919,6 +17283,49 @@ export default function App(){
                 {bill.warnings.length>0&&<div style={{padding:'6px 14px',background:'#fef3c7'}}>
                   {bill.warnings.map((w,wi)=><div key={wi} style={{fontSize:10,color:'#92400e'}}>&#9888; {w}</div>)}
                 </div>}
+                {/* Manual SO assignment — only for unmatched decoration bills */}
+                {bill.kind==='decoration'&&!poMatch&&(()=>{
+                  const t=bill._manualTarget||{};
+                  const setT=nt=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_manualTarget:nt}}:p)}));
+                  const so=t.soId?sos.find(s=>s.id===t.soId):null;
+                  const decoPOs=so?(so.deco_pos||[]):[];
+                  return<div style={{padding:'10px 14px',background:'#fff7ed',borderTop:'1px solid #fed7aa'}}>
+                    <div style={{fontSize:11,fontWeight:700,color:'#9a3412',marginBottom:6}}>Assign this decoration bill to a Sales Order:</div>
+                    <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                      <label style={{fontSize:10,fontWeight:600,color:'#9a3412'}}>SO</label>
+                      <input className="form-input" list={`so-list-${bi}`} style={{width:220,fontSize:11,padding:'3px 6px'}}
+                        placeholder="Search SO # or customer..." value={t.soId||''}
+                        onChange={e=>{
+                          const v=e.target.value.split(' — ')[0].trim();
+                          const nextSO=sos.find(s=>s.id===v);
+                          const hasDecoPO=!!(nextSO&&(nextSO.deco_pos||[]).length>0);
+                          const mode=hasDecoPO?(t.mode||'existing'):'create';
+                          setT({soId:v,mode,decoPoId:null});
+                        }}/>
+                      <datalist id={`so-list-${bi}`}>
+                        {sos.slice(0,500).map(s=>{const c=cust.find(cc=>cc.id===s.customer_id);const cn=c?.name||s.customer_name||'';return<option key={s.id} value={`${s.id} — ${cn}`}>{s.id} — {cn}</option>})}
+                      </datalist>
+                      {t.soId&&!so&&<span style={{fontSize:10,color:'#dc2626'}}>SO not found</span>}
+                      {so&&(decoPOs.length>0?<>
+                        <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Mode</label>
+                        <select className="form-input" style={{width:180,fontSize:11,padding:'3px 6px'}} value={t.mode||'existing'}
+                          onChange={e=>setT({...t,mode:e.target.value,decoPoId:null})}>
+                          <option value="existing">Attach to existing deco PO</option>
+                          <option value="create">Create new deco PO</option>
+                        </select>
+                        {t.mode!=='create'&&<>
+                          <label style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Deco PO</label>
+                          <select className="form-input" style={{width:420,fontSize:11,padding:'3px 6px'}}
+                            value={t.decoPoId||''}
+                            onChange={e=>setT({...t,decoPoId:e.target.value||null})}>
+                            <option value="">— pick deco PO —</option>
+                            {decoPOs.map(dp=><option key={dp.id} value={dp.id}>{(dp.po_id||'(no PO)')+' — '+(dp.vendor||'')+(dp.deco_type?' · '+dp.deco_type.replace(/_/g,' '):'')+' — $'+(safeNum(dp.expected_cost||dp.qty*dp.unit_cost)||0).toFixed(2)+' exp'}</option>)}
+                          </select>
+                        </>}
+                      </>:<span style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Will create new deco PO on this SO</span>)}
+                    </div>
+                  </div>;
+                })()}
                 {/* Raw text toggle */}
                 <div style={{padding:'6px 14px',borderTop:'1px solid #f1f5f9'}}>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}}
@@ -20592,8 +20999,10 @@ export default function App(){
             // Build IF index from all SOs
             const allPicks=[];sos.forEach(so=>{safeItems(so).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&pk.pick_id.toLowerCase().includes(s)&&!allPicks.find(x=>x.pick_id===pk.pick_id)){allPicks.push({pick_id:pk.pick_id,so_id:so.id,so,status:pk.status||'pick'})}})})});
             const rpk=allPicks.slice(0,4);
-            // Build PO index from all SO po_lines + submitted batches
-            const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{if((po.po_id||'').toLowerCase().includes(s)||(po.vendor||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor:po.vendor,status:po.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||''})}})})});
+            // Build PO index from all SO po_lines + SO-level deco_pos + submitted batches
+            const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{if((po.po_id||'').toLowerCase().includes(s)||(po.vendor||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor:po.vendor,status:po.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||''})}})});
+              (so.deco_pos||[]).forEach(dp=>{if((dp.po_id||'').toLowerCase().includes(s)||(dp.vendor||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===dp.po_id))allPOs.push({po_id:dp.po_id,vendor:dp.vendor||'',status:dp.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||'',isDeco:true})}});
+            });
             submittedBatches.forEach(sb=>{if((sb.po_number||'').toLowerCase().includes(s)||(sb.vendor_name||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===sb.po_number))allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name,status:sb.status||'waiting',so_id:(sb.source_pos||[])[0]?.so_id||'',so:sos.find(x=>x.id===((sb.source_pos||[])[0]?.so_id)),customer:(sb.source_pos||[])[0]?.customer||'',isBatch:true})}});
             const rpo=allPOs.slice(0,4);
             // Build Jobs index from all SOs
