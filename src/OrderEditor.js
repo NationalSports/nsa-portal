@@ -250,14 +250,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               colors.forEach(c=>{const ct=new Set(tokenize(c));let s=0;ct.forEach(t=>{if(itemTokens.has(t))s++});if(s>bestScore){bestScore=s;pickedColor=c}});
             }
           }
-          // Richardson hat sizes: many use sweatband ranges (MD-LG, S-M, L-XL) — collapse to OSFA when product is OSFA
+          // Only collapse feed sizes to OSFA if the product explicitly carries a single OSFA size
+          // (older catalog entries set this up manually); otherwise keep feed sizes verbatim.
           const itemSizes=(item?.available_sizes||Object.keys(item?.sizes||{}));
-          const productIsOSFA=itemSizes.length>0&&itemSizes.every(s=>normSzName(s)==='OSFA');
-          const normSize=raw=>{
-            const n=normSzName(raw);
-            if(productIsOSFA)return'OSFA';
-            return n;
-          };
+          const productIsOSFA=itemSizes.length===1&&normSzName(itemSizes[0])==='OSFA';
+          const normSize=raw=>productIsOSFA?'OSFA':String(raw||'').trim();
           const aggregate=(entry)=>{
             if(!entry)return;
             Object.entries(entry.sizes||{}).forEach(([sz,q])=>{
@@ -1025,25 +1022,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const vId=vendor?.id||(isRS?'v5':isMT?'v8':isSM?'v3':'v4');
     const cost=color.customerPrice||color.piecePrice||0;
     const sell=rQ(cost*(o.default_markup||1.65));
-    // Build available sizes: start with sizes from API, merge with catalog product sizes and standard sizes
-    const apiSizes=color.sizes.map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s));
     // Try to match a catalog product for this SKU to get its full available_sizes
     const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);
-    const catSizes=(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
+    // Build available sizes: start with sizes from API, merge with catalog product sizes and standard sizes.
+    // For Richardson, trust the feed's size tokens verbatim (e.g. "Y", "XS-SM", "SM-MD", "LG-XL").
+    const apiSizes=isRS?color.sizes.map(s=>s.sizeName).filter(Boolean):color.sizes.map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s));
+    const catSizes=isRS?(catMatch?.available_sizes||[]):(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
     // SanMar provides availableSizes as comma-separated string
     const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(s=>s&&SZ_ORD.includes(s)):[];
-    // Richardson hat variants often carry sweatband ranges (MD-LG, L-XL, S-M) — default to OSFA when catalog is OSFA
-    const rsStdSizes=isRS?((catMatch?.available_sizes||['OSFA']).filter(s=>SZ_ORD.includes(s))):null;
-    // Merge all sources; ensure standard sizes are always included for apparel (OSFA for Richardson hats)
-    const STD_SIZES=isRS?(rsStdSizes.length?rsStdSizes:['OSFA']):['S','M','L','XL','2XL'];
-    let availSizes=[...new Set([...apiSizes.map(s=>isRS?normSzName(s):s),...catSizes,...smSizes,...STD_SIZES])];
+    // For non-RS items keep the legacy default; for Richardson use only what the feed gives us.
+    const STD_SIZES=isRS?[]:['S','M','L','XL','2XL'];
+    let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
-    const vInv={};color.sizes.forEach(s=>{const k=isRS?normSzName(s.sizeName):s.sizeName;vInv[k]=(vInv[k]||0)+s.qty});
+    const vInv={};color.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty});
     const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
+    const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
     const newItem={
       product_id:catMatch?.id||null,sku:style.sku,name:style.styleName,brand:style.brandName,
       vendor_id:vId,color:color.colorName,nsa_cost:cost,retail_price:catMatch?.retail_price||0,
-      unit_sell:sell,available_sizes:availSizes.length?availSizes:(isRS?['OSFA']:['S','M','L','XL','2XL']),
+      unit_sell:sell,available_sizes:availSizes.length?availSizes:fallbackSizes,
       sizes:{},qty_only:false,decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:null}]:[],
       is_custom:false,[liveFlag]:true,
       _colorImage:color.colorFrontImage||style.styleImage||'',
@@ -1051,7 +1048,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       ...(isMT&&style._mtId?{_mtId:style._mtId}:{})
     };
     // Build per-size cost map (e.g. 2XL+ costs more than S-XL)
-    const sizePrice={};color.sizes.forEach(s=>{const k=isRS?normSzName(s.sizeName):s.sizeName;sizePrice[k]=s.price||cost});
+    const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
     newItem._sizeCosts=sizePrice;
     // Build per-size sell map (apply markup to each size's cost)
     const mk=o.default_markup||1.65;
