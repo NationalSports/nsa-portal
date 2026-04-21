@@ -11,6 +11,7 @@ import { CustModal } from './modals';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, nextInvId, _brevoKey } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
+import { getRichardsonLevel4Price } from './richardsonPrices';
 
 function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
@@ -967,7 +968,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const rsVendorId=rsVendor?.id||'v5';
       const results=matches.map(m=>{
         const catMatch=products.find(p=>p.sku.toLowerCase()===m.style.toLowerCase());
-        const baseCost=catMatch?.nsa_cost||0;
+        // Prefer catalog cost; fall back to Richardson Level-4 price list; 0 only if neither
+        const rsLevel4=getRichardsonLevel4Price(m.style);
+        const baseCost=catMatch?.nsa_cost||rsLevel4||0;
         const baseRetail=catMatch?.retail_price||0;
         // Build colors array in the shape addSearchProduct + UI expect
         const colors=Object.entries(m.byColor||{}).map(([colorName,info])=>{
@@ -988,6 +991,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           totalQty:m.totalQty||0,
           _rsVendorId:rsVendorId,
           _rsCatalogMatch:!!catMatch,
+          _rsPriceSource:catMatch?.nsa_cost?'catalog':(rsLevel4?'level4':'none'),
         };
       });
       rsSearchCache.current[cacheKey]=results;
@@ -2290,7 +2294,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontSize:10,padding:'1px 6px',borderRadius:3,background:'#fecaca',color:'#b91c1c',fontWeight:600}}>Richardson</span>
                 <span style={{fontSize:10,color:'#ef4444'}}>{rs.colors.length} color{rs.colors.length!==1?'s':''}</span>
                 <span style={{display:'flex',flexDirection:'column',alignItems:'flex-end'}}>
-                  <span style={{fontSize:12,color:'#dc2626',fontWeight:700}}>{rs.customerPrice>0?`from $${rs.customerPrice.toFixed(2)}`:(rs._rsCatalogMatch?'Price TBD':'New — set cost')}</span>
+                  <span style={{fontSize:12,color:'#dc2626',fontWeight:700}} title={rs._rsPriceSource==='level4'?'Richardson Level 4 dealer price':rs._rsPriceSource==='catalog'?'NSA catalog cost':''}>{rs.customerPrice>0?`from $${rs.customerPrice.toFixed(2)}${rs._rsPriceSource==='level4'?' L4':''}`:(rs._rsCatalogMatch?'Price TBD':'New — set cost')}</span>
                   <span style={{fontSize:9,color:rs.totalQty>0?'#dc2626':'#94a3b8',fontWeight:600}}>{rs.totalQty>0?rs.totalQty.toLocaleString()+' avail':'Out of stock'}</span>
                 </span>
                 <span style={{fontSize:12,color:'#dc2626'}}>{isExp?'▲':'▼'}</span>
