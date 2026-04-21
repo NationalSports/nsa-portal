@@ -61,7 +61,7 @@ Arroyo High School Baseball,AHSB,sub,Arroyo High School,,gabrielpzamora@gmail.co
 Arroyo High School Boys Basketball,AHSBB,sub,Arroyo High School,,troyclavin7@gmail.com,,,15701 Lorenzo Ave,,San Lorenzo,CA,94580,15701 Lorenzo Ave,,San Lorenzo,CA,94580,,,,,Mike Mercuriali,4975,5153,
 Arroyo High School Football,AHSF,sub,Arroyo High School,,jp0454@gmail.com,,,15701 Lorenzo Ave,,San Lorenzo,CA,94580,15701 Lorenzo Ave,,San Lorenzo,CA,94580,,,,,Mike Mercuriali,4728,1627,
 Arroyo High School Soccer,AHSS,sub,Arroyo High School,,msterner@slzusd.org,,,15701 Lorenzo Ave,,San Lorenzo,CA,94580,15701 Lorenzo Ave,,San Lorenzo,CA,94580,,,,,Mike Mercuriali,4880,5085,
-Arroyo High School Track and Field,AHSTAF,parent,,,aomalza2001@gmail.com,,,,,,,,,,,,,,,,,Mike Mercuriali,4865,5071,missing structured address
+Arroyo High School Track and Field,AHSTAF,sub,Arroyo High School,,aomalza2001@gmail.com,,,,,,,,,,,,,,,,,Mike Mercuriali,4865,5071,missing structured address
 Arroyo High School Volleyball,AHSV,sub,Arroyo High School,,deleonhannah09@gmail.com,,,15701 Lorenzo Ave,,San Lorenzo,CA,94580,15701 Lorenzo Ave,,San Lorenzo,CA,94580,,,,,Mike Mercuriali,4774,1667,
 Atascadero Girls Softball,AGS,sub,Atascadero High School,,aprilpeet@me.com,,,13500 Old Morro Rd,,Atascadero,CA,93422,13500 Old Morro Rd,,Atascadero,CA,93422,,,,,Kelly Bean,4658,1562,
 Atascadero High School - ASB,AHSA,parent,,,kerrysherer@atasusd.org,(805) 712-3261,,,,Atascadero,CA,93422,,,Atascadero,CA,93422,,,,,Kelly Bean,4867,5073,missing structured address
@@ -83,11 +83,11 @@ Atascadero Volleyball,AV,sub,Atascadero High School,,danloney@atasusd.org,,,1 Hi
 Atascadero Water Polo,AWP,sub,Atascadero High School,,ruckeronroad@yahoo.com,,,1 High School Hill Rd,,Atascadero,CA,93422,1 High School Hill Rd,,Atascadero,CA,93422,,,,,Kelly Bean,4583,1500,
 Atascadero Wrestling,AW,sub,Atascadero High School,,joebelmonte6@gmail.com,,,1 High School Hill Rd,,Atascadero,CA,93422,1 High School Hill Rd,,Atascadero,CA,93422,,,,,Kelly Bean,4928,5116,
 Atascadero High School Baseball,AHSB,sub,Atascadero High School - ASB,,gorunfast@gmail.com,,,,,Atascadero,CA,93422,,,Atascadero,CA,93422,,,,,Kelly Bean,5028,5200,missing structured address
-Atascadero Middle School,AMS,parent,,,ryanallison@atasusd.org,,,6501 Lewis Ave,,Atascadero,CA,93422,6501 Lewis Ave,,Atascadero,CA,93422,,,,,Kelly Bean,5074,5238,
-Atascadero PAWS,AP,parent,,,kerrysherer@atasusd.org,,,,,Atascadero,CA,93422,,,Atascadero,CA,93422,,,,,Kelly Bean,4549,1469,missing structured address
+Atascadero Middle School,AMS,sub,Atascadero High School - ASB,,ryanallison@atasusd.org,,,6501 Lewis Ave,,Atascadero,CA,93422,6501 Lewis Ave,,Atascadero,CA,93422,,,,,Kelly Bean,5074,5238,
+Atascadero PAWS,AP,sub,Atascadero High School - ASB,,kerrysherer@atasusd.org,,,,,Atascadero,CA,93422,,,Atascadero,CA,93422,,,,,Kelly Bean,4549,1469,missing structured address
 Atascadero School District,ASD,parent,,,,,,5601 W Mall,,Atascadero,CA,93422,5601 W Mall,,Atascadero,CA,93422,,,,,Kelly Bean,4633,1541,no customer email; had NSA-internal email (kelly@nationalsportsapparel.com)
 Atascadero Unified School District Maintenance,AUSDM,sub,Atascadero School District,,beckibanks@atasusd.org,,,4355 POTRERO ROAD,,Atascadero,CA,93422,4355 POTRERO ROAD,,Atascadero,CA,93422,,,,,Sharon Day-Monroe,5251,5395,
-Atascadero Youth Soccer,AYS,parent,,,webadmin@atascaderosoccer.org,,,10065 Old Morro Rd E,,Atascadero,CA,93422,10065 Old Morro Rd E,,Atascadero,CA,93422,,,,,Kelly Bean,4661,1565,
+Atascadero Youth Soccer,AYS,sub,Atascadero High School - ASB,,webadmin@atascaderosoccer.org,,,10065 Old Morro Rd E,,Atascadero,CA,93422,10065 Old Morro Rd E,,Atascadero,CA,93422,,,,,Kelly Bean,4661,1565,
 Atlante Soccer Club,ASC,parent,,,,,,,,,,,,,,,,,,,,Mike Mercuriali,4025,1036,no customer email; had NSA-internal email (merc@nationalsportsapparel.com); missing structured address
 AYSO Region 602,AR6,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,3600,275,no customer email; missing structured address
 AYSO Region 630 Soccer,AR6S,parent,,,adam.moore.555@gmail.com,,,17 temecula ct,,Rancho Santa Margarita,CA,92688,17 temecula ct,,Rancho Santa Margarita,CA,92688,,,,,Mike Mercuriali,4692,1593,
@@ -154,7 +154,7 @@ Brotherhood Golf Tournament,BGT,parent,,,darrellsmith1952@gmail.com,,,,,,,,,,,,,
 Bryant Marchesan,BM,parent,,,bmarchesan1010@gmail.com,,,848 e Dalton Ave,,Glendora,CA,91741,848 e Dalton Ave,,Glendora,CA,91741,,,,,Mike Mercuriali,5310,5446,
 Buchanan High School Athletics,BHSA,parent,,,JenniferOmeara@clovisusd.k12.ca.us,,,1560 N. Minnewawa Ave,,Clovis,CA,93619,1560 N. Minnewawa Ave,,Clovis,CA,93619,,,,,Kelly Bean,4955,5136,
 Buchanan Football,BF,sub,Buchanan High School Athletics,,,,,1560 N. Minnewawa Ave,,Clovis,CA,93619,1560 N. Minnewawa Ave,,Clovis,CA,93619,,,,,Kelly Bean,5055,5224,no customer email; had NSA-internal email (kelly@nationalsportsapparel.com)
-Buchanan Track and Cross Country,BTACC,parent,,,BrianWeaver@clovisusd.k12.ca.us,,,1560 N. Minnewawa Ave,,Clovis,,93619,1560 N. Minnewawa Ave,,Clovis,,93619,,,,,Kelly Bean,4941,5128,
+Buchanan Track and Cross Country,BTACC,sub,Buchanan High School Athletics,,BrianWeaver@clovisusd.k12.ca.us,,,1560 N. Minnewawa Ave,,Clovis,,93619,1560 N. Minnewawa Ave,,Clovis,,93619,,,,,Kelly Bean,4941,5128,
 Buena HS Mens Soccer,BHMS,parent,,,cameronmdejong@gmail.com,,,5670 Telegraph Rd,,Ventura,CA,93003,5670 Telegraph Rd,,Ventura,CA,93003,,,,,Jered Hunt,3779,398,
 Buena Park HS Boys Basketball,BPHBB,sub,Buena Park High School,,sdafney92@gmail.com,,,8833 Academy Dr,,Buena Park,CA,90621,8833 Academy Dr,,Buena Park,CA,90621,,,,,Jered Hunt,5054,5223,
 Bullard Baseball,BB,parent,,,,,,5445 N Palm Ave,,Fresno,CA,93704,5445 N Palm Ave,,Fresno,CA,93704,,,,,,4044,1049,no customer email; rep=Shawn McHugh (pending reassignment)
@@ -187,7 +187,7 @@ California Polytechnic State University,CPSU,parent,,,pwong28@calpoly.edu,,,1 Gr
 California Prestige University School of Business,CPUSOB,parent,,,rwakefield41@outlook.com,,,15605 Carmenita Rd,,Santa Fe Springs,CA,90670,15605 Carmenita Rd,,Santa Fe Springs,CA,90670,,,,,Jered Hunt,4831,5044,
 Camas Basketball,CB,parent,,,lsjohnsonpdx@gmail.com,,,3606 NE Laurel St,,Camas,WA,98607,3606 NE Laurel St,,Camas,WA,98607,,,,,Kelly Bean,4723,1622,
 Cameron Roget,CR,parent,,,,,,1051 Camino Calabazo,,Chula Vista,CA,91910,1051 Camino Calabazo,,Chula Vista,CA,91910,,,,,Mike Mercuriali,4751,1646,no customer email
-Cantwell-Sacred Heart of Mary High School,CHOMHS,parent,,,,,,,,,,,,,,,,,,,,Steve Peterson,3280,490,no customer email; missing structured address
+Cantwell-Sacred Heart of Mary High School,CHOMHS,sub,Cantwell-sacred Heart High School,,,,,,,,,,,,,,,,,,,Steve Peterson,3280,490,no customer email; missing structured address
 Cantwell Sacred Heart HS Basketball,CSHHB,parent,,,dfrazier@cshm.org,,,329 N Garfield Ave,,Montebello,CA,90640,329 N Garfield Ave,,Montebello,CA,90640,,,,,Jered Hunt,3307,,
 Cantwell-Sacred Heart Flag Football,CHFF,sub,Cantwell-sacred Heart High School,,carnold@cshm.org,,,329 N Garfield Ave,,Montebello,CA,90640,329 N Garfield Ave,,Montebello,CA,90640,,,,,Steve Peterson,3326,101,
 Cantwell-Sacred Heart Football,CHF,sub,Cantwell-sacred Heart High School,,carnold@cshm.org,,,329 N Garfield Ave,,Montebello,CA,90640,329 N Garfield Ave,,Montebello,CA,90640,,,,,Jered Hunt,3281,,
@@ -200,12 +200,12 @@ Capital Christian HS Baseball,CCHB,sub,Capital Christian HS,,,,,9470 Micron Ave,
 Capital Christian HS Boys Basketball,CCHBB,sub,Capital Christian HS,,,,,9470 Micron Ave,,Sacramento,CA,95827,9470 Micron Ave,,Sacramento,CA,95827,,,,,John Miller,3462,179,no customer email; had NSA-internal email (jmiller@nationalsportsapparel.com)
 Capital Christian HS Football,CCHF,sub,Capital Christian HS,,,,,9470 Micron Ave,,Sacramento,CA,95827,9470 Micron Ave,,Sacramento,CA,95827,,,,,John Miller,3388,135,no customer email; had NSA-internal email (jmiller@nationalsportsapparel.com)
 Capital Christian HS Girls Basketball,CCHGB,sub,Capital Christian HS,,,,,3401 Mayhew Road,,Sacramento,CA,95827,3401 Mayhew Road,,Sacramento,CA,95827,,,,,John Miller,3465,181,no customer email; had NSA-internal email (jmiller@nationalsportsapparel.com)
-Capital Christian Junior Cougars Football,CCJCF,parent,,,,,,9470 Micron Ave,,Sacramento,CA,95827,9470 Micron Ave,,Sacramento,CA,95827,,,,,John Miller,3460,177,no customer email; had NSA-internal email (jmiller@nationalsportsapparel.com)
+Capital Christian Junior Cougars Football,CCJCF,sub,Capital Christian HS,,,,,9470 Micron Ave,,Sacramento,CA,95827,9470 Micron Ave,,Sacramento,CA,95827,,,,,John Miller,3460,177,no customer email; had NSA-internal email (jmiller@nationalsportsapparel.com)
 Cardinals Baseball,CB,parent,,,diane.mallare@gmail.com,,,123 Locust St SW,,Vienna,VA,22180,123 Locust St SW,,Vienna,VA,22180,,,,,Kelly Bean,5224,5371,
 Carlos-Alebrijes,C,parent,,,clopezaldape@gmail.com,,,,,,,,,,,,,,,,,,5210,5360,missing structured address
 Carmenita Middle School,CMS,parent,,,,,,12320 166th St,,Cerritos,CA,90703,12320 166th St,,Cerritos,CA,90703,,,,,Mike Mercuriali,5198,5350,no customer email
 Carson Baseball,CB,sub,Carson High School,,,,,1111 N. Saliman Road,,Carson City,NV,89701,1111 N. Saliman Road,,Carson City,NV,89701,,,,,Tim Kelly,3605,278,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
-Carson High School Soccer,CHSS,parent,,,mflinchum@carson.k12.nv.us,,,1111 N. Saliman Road,,Carson City,NV,89701,1111 N. Saliman Road,,Carson City,NV,89701,,,,,Chase Koissian,4467,1405,
+Carson High School Soccer,CHSS,sub,Carson High School,,mflinchum@carson.k12.nv.us,,,1111 N. Saliman Road,,Carson City,NV,89701,1111 N. Saliman Road,,Carson City,NV,89701,,,,,Chase Koissian,4467,1405,
 Cascade FC,CF,parent,,,sophieh@cascadefc.org,,,"4921 370th Ct. SE,",,Fall City,WA,98024,"4921 370th Ct. SE,",,Fall City,WA,98024,,,,,Kelly Bean,4825,5039,
 Castaic HS Flag Football,CHFF,parent,,,wdjones@hartdistrict.org,,,31575 Valley Creek Rd,,Castaic,CA,91384,31575 Valley Creek Rd,,Castaic,CA,91384,,,,,Jered Hunt,5192,5344,
 Castilleja School,CS,parent,,,aheath@castilleja.org,,,1310 Bryant ST,,Palo Alto,CA,94301,1310 Bryant ST,,Palo Alto,CA,94301,,,,,Kelly Bean,4721,1620,
@@ -225,7 +225,7 @@ Chapman University Basketball,CUB,sub,Chapman University Women'sLax,,,,,1 Univer
 Chapman University Women's Soccer,CUWS,parent,,,TJPerez@chapman.edu,,,625 W Palm,,Orange,CA,92868,625 W Palm,,Orange,CA,92868,,,,,Mike Mercuriali,4628,1537,
 Charles Wright Academy,CWA,parent,,,jcrumb@charleswright.org,(253) 620-8352,,7723 Chambers Creek Rd W,,University Place,WA,98467,7723 Chambers Creek Rd W,,University Place,WA,98467,,,,,Kelly Bean,4631,1540,
 Chase Koissian,CK,parent,,,,,,,,,,,,,,,,,,,,Chase Koissian,3622,286,no customer email; missing structured address
-Chico State University,CSU,parent,,,jsam@csuchico.edu,,,400 West 1st Street,,Chico,CA,95929-0920,400 West 1st Street,,Chico,CA,95929-0920,,,,,Jeff Bianchini,3349,111,
+Chico State University,CSU,sub,Chico State College,,jsam@csuchico.edu,,,400 West 1st Street,,Chico,CA,95929-0920,400 West 1st Street,,Chico,CA,95929-0920,,,,,Jeff Bianchini,3349,111,
 Chico State University Basketball,CSUB,sub,Chico State College,,,,,25 Main Street,Suite 103,Chico,CA,95929,25 Main Street,Suite 103,Chico,CA,95929,,,,,John Miller,3350,112,no customer email
 Chico State University Women's Basketball,CSUWB,sub,Chico State College,,,,,25 Main Street,Suite 103,Chico,CA,95929,25 Main Street,Suite 103,Chico,CA,95929,,,,,Jeff Bianchini,3794,408,no customer email
 Chico State University Womens Soccer,CSUWS,sub,Chico State College,,ChicoWClubSoccer@outlook.com,,,400 West 1st,,Chico,CA,95929,400 West 1st,,Chico,CA,95929,,,,,Mike Mercuriali,4869,5075,
@@ -234,9 +234,9 @@ Chili Dogs Baseball,CDB,parent,,,nealsonnenberg@gmail.com,,,,,,,,,,,,,,,,,Kelly 
 Christ Community Church,CCC,parent,,,diane@gotochrist.com,,,8404B Summerdale Rd,,San Diego,CA,92126,8404B Summerdale Rd,,San Diego,CA,92126,,,,,Mike Mercuriali,4773,1666,
 Christian High School Boys Soccer,CHSBS,sub,Christian High School,,Bethany.gaut@shadowmountain.org,(913) 706-6193,,2100 Greenfield Dr,Bethany Gaut,El Cajon,CA,92021,2100 Greenfield Dr,Bethany Gaut,El Cajon,CA,92021,,,,,Mike Mercuriali,4269,1236,
 Christian High School Volleyball,CHSV,sub,Christian High School,,Bethany.gaut@shadowmountain.org,(913) 706-6193,,2100 Greenfield Dr,,El Cajon,CA,92021,2100 Greenfield Dr,,El Cajon,CA,92021,,,,,Mike Mercuriali,4207,1190,
-Christian HS Soccer,CHS,parent,,,,,,2100 Greenfield Dr.,,El Cajon,CA,92019,2100 Greenfield Dr.,,El Cajon,CA,92019,,,,,Gayle Peterson,3937,Christian High School Soccer,no customer email
+Christian HS Soccer,CHS,sub,Christian High School,,,,,2100 Greenfield Dr.,,El Cajon,CA,92019,2100 Greenfield Dr.,,El Cajon,CA,92019,,,,,Gayle Peterson,3937,Christian High School Soccer,no customer email
 Christian South,CS,parent,,,danielmontoya619@gmail.com,,,482 L St,,Chula Vista,CA,91911,482 L St,,Chula Vista,CA,91911,,,,,Mike Mercuriali,5189,5342,
-Christian Unified Schools,CUS,parent,,,Julia.cole@christianunified.org,,,2100 Greenfield Dr,,El Cajon,CA,92019,2100 Greenfield Dr,,El Cajon,CA,92019,,,,,Mike Mercuriali,4735,1634,
+Christian Unified Schools,CUS,sub,Christian High School,,Julia.cole@christianunified.org,,,2100 Greenfield Dr,,El Cajon,CA,92019,2100 Greenfield Dr,,El Cajon,CA,92019,,,,,Mike Mercuriali,4735,1634,
 Christopher HS Football,CHF,parent,,,michael.pirnik@gilroyunified.org,,,850 Day Rd,,Gilroy,CA,95020,850 Day Rd,,Gilroy,CA,95020,,,,,Jered Hunt,5104,5262,
 Chuy Nunez,CN,parent,,,chuynunez@gmail.com,,,PO Box 880493,,San Diego,CA,92168,PO Box 880493,,San Diego,CA,92168,,,,,Mike Mercuriali,4960,5141,
 CIF,C,parent,,,,,,764 P street #105,,Kingsburg,CA,93631,764 P street #105,,Kingsburg,CA,93631,,,,,Steve Peterson,4965,5146,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
@@ -269,13 +269,13 @@ Clarksville Athletics,CA,sub,Clarksville High School,,tmiller@clarksvilleisd.org
 Clarksville Football,CF,sub,Clarksville High School,,tmiller@clarksvilleisd.org,,,202 S Donoho St,,Clarksville,TX,75426,202 S Donoho St,,Clarksville,TX,75426,,,,,Jered Hunt,3692,336,
 Clarksville Volleyball,CV,sub,Clarksville High School,,,,,1600 W Main St,,Clarksville,TX,75426,1600 W Main St,,Clarksville,TX,75426,,,,,John Morris,3822,489,no customer email; had NSA-internal email (john@nationalsportsapparel.com)
 Clayton Middle School,CMS,parent,,,,,,425 East 9th Street,,Reno,NV,89512,425 East 9th Street,,Reno,NV,89512,,,,,Tim Kelly,3419,151,no customer email; had NSA-internal email (tk@nationalsportsapparel.com)
-Clovis Aggies Babe Ruth Baseball,CABRB,parent,,,R.rogers@clovisbaberuth.net,,,702 Filbert Avenue,,Clovis,CA,93611,702 Filbert Avenue,,Clovis,CA,93611,,,,,Kelly Bean,5096,5256,
-Clovis East High School,CEHS,parent,,,romangonzalez@clovisusd.k12.ca.us,,,2940 Leonard Ave,,Clovis,CA,93619,2940 Leonard Ave,,Clovis,CA,93619,,,,,Kelly Bean,4690,1591,
+Clovis Aggies Babe Ruth Baseball,CABRB,sub,Clovis High School,,R.rogers@clovisbaberuth.net,,,702 Filbert Avenue,,Clovis,CA,93611,702 Filbert Avenue,,Clovis,CA,93611,,,,,Kelly Bean,5096,5256,
+Clovis East High School,CEHS,sub,Clovis High School,,romangonzalez@clovisusd.k12.ca.us,,,2940 Leonard Ave,,Clovis,CA,93619,2940 Leonard Ave,,Clovis,CA,93619,,,,,Kelly Bean,4690,1591,
 Clovis High School,CHS,parent,,,scottscharton@clovisusd.k12.ca.us,,,1055 Fowler Ave,,Clovis,CA,93611,1055 Fowler Ave,,Clovis,CA,93611,,,,,Steve Peterson,4458,1397,
 Clovis High School Baseball,CHSB,sub,Clovis High School,,jonathansalles@clovisusd.k12.ca.us,(559) 327-1085,,1055 Fowler Ave,,Clovis,CA,93611,1055 Fowler Ave,,Clovis,CA,93611,,,,,Steve Peterson,4284,1246,
 Clovis High School Basketball,CHSB,sub,Clovis High School,,leemayberry@clovisusd.k12.ca.us,,,1055 Fowler Ave,,Clovis,CA,93611,1055 Fowler Ave,,Clovis,CA,93611,,,,,Steve Peterson,4459,1398,
 Clovis High School Football,CHSF,sub,Clovis High School,,,,,1055 Fowler Ave,,Clovis,CA,93611,1055 Fowler Ave,,Clovis,CA,93611,,,,,Steve Peterson,4245,1218,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
-Clovis High School Soccer,CHSS,parent,,,Danielamparano@cusd.com,,,1055 Fowler Ave,,Clovis,,93611,1055 Fowler Ave,,Clovis,,93611,,,,,Kelly Bean,4754,1649,
+Clovis High School Soccer,CHSS,sub,Clovis High School,,Danielamparano@cusd.com,,,1055 Fowler Ave,,Clovis,,93611,1055 Fowler Ave,,Clovis,,93611,,,,,Kelly Bean,4754,1649,
 Clovis High School Track & Field,CHSTF,sub,Clovis High School,,ejjackson@clovisusd.k12.ca.us,,,1055 Fowler Ave,,Clovis,CA,93611,1055 Fowler Ave,,Clovis,CA,93611,,,,,Kelly Bean,4738,1637,
 Clovis High School Badminton,CHSB,sub,Clovis High School,,,,,1055 Fowler Ave,,Clovis,CA,93611,1055 Fowler Ave,,Clovis,CA,93611,,,,,Steve Peterson,5066,5232,no customer email
 Clovis North Cross Country,CNCC,sub,Clovis North High School,,jasonlienau@clovisusd.k12.ca.us,,,2770 E International Ave,,Clovis,CA,93730,2770 E International Ave,,Clovis,CA,93730,,,,,Kelly Bean,4641,5022,
@@ -285,8 +285,8 @@ Clovis South High School,CSHS,parent,,,GregClark@clovisusd.k12.ca.us,,,2501 N. H
 Clovis South Basketball,CSB,sub,Clovis South High School,,ChrisWalker@clovisusd.k12.ca.us,,,2501 N. Highland Avenue,,Fresno,CA,93737,2501 N. Highland Avenue,,Fresno,CA,93737,,,,,Kelly Bean,5085,5247,
 Clovis South Football,CSF,sub,Clovis South High School,,ThadCrews@clovisusd.k12.ca.us,,,2501 N. Highland Ave,,Fresno,CA,93737,2501 N. Highland Ave,,Fresno,CA,93737,,,,,Kelly Bean,5275,5417,
 Clovis South Softball,CSS,sub,Clovis South High School,,TiloSalazar@clovisusd.k12.ca.us,,,2501 N. Highland Ave,,Fresno,CA,93737,2501 N. Highland Ave,,Fresno,CA,93737,,,,,Kelly Bean,5063,5229,
-Clovis South Track & Field,CSTF,parent,,,SkylarCoonnakpiban@clovisusd.k12.ca.us,,,1690 David E. Cook Way,,Clovis,CA,93611,1690 David E. Cook Way,,Clovis,CA,93611,,,,,Kelly Bean,5108,5265,
-Clovis Unified School District Police,CUSDP,parent,,,leemayberry@clovisusd.k12.ca.us,,,1542 David Cook Way,,Clovis,CA,93611,1542 David Cook Way,,Clovis,CA,93611,,,,,Steve Peterson,4566,1485,
+Clovis South Track & Field,CSTF,sub,Clovis High School,,SkylarCoonnakpiban@clovisusd.k12.ca.us,,,1690 David E. Cook Way,,Clovis,CA,93611,1690 David E. Cook Way,,Clovis,CA,93611,,,,,Kelly Bean,5108,5265,
+Clovis Unified School District Police,CUSDP,sub,Clovis High School,,leemayberry@clovisusd.k12.ca.us,,,1542 David Cook Way,,Clovis,CA,93611,1542 David Cook Way,,Clovis,CA,93611,,,,,Steve Peterson,4566,1485,
 Club Soccer,CS,parent,,,,,,1576 W Hampton Cir,,Hanford,CA,93230,1576 W Hampton Cir,,Hanford,CA,93230,,,,,Juliet Leon,4038,1043,no customer email; had NSA-internal email (juliet@nationalsportsapparel.com)
 Coach Wakefield,CW,parent,,,rwakefield41@outlook.com,,,,,,,,,,,,,,,,,Jered Hunt,3474,187,missing structured address
 Coalinga High School,CHS,parent,,,mjacot@chusd.org,,,750 Van Ness Ave,,Coalinga,CA,93210,750 Van Ness Ave,,Coalinga,CA,93210,,,,,Kelly Bean,4707,1607,
@@ -313,7 +313,7 @@ College of San Mateo Track & Field,COSMTF,parent,,,,(650) 574-6462,,1700 W. Hill
 College of San Mateo Women's Basketball,COSMWB,parent,,,warner@smccd.edu,,,1021 Lark Ln,,Foster City,CA,94404,1021 Lark Ln,,Foster City,CA,94404,,,,,Steve Peterson,2887,511,
 College of San Mateo Women's Volleyball,COSMWV,parent,,,goldhahnk@smccd.edu,,,1700 W. Hillsdale Blvd.,,San Mateo,CA,94402,1700 W. Hillsdale Blvd.,,San Mateo,CA,94402,,,,,Steve Peterson,2888,1402,
 College Park HS Football,CPHF,parent,,,,,,201 Viking Dr,,Pleasant Hill,CA,94523,201 Viking Dr,,Pleasant Hill,CA,94523,,,,,Jered Hunt,4204,1187,no customer email
-Concordia Heritage Garden,CHG,parent,,,tyler.zarubin@cui.edu,,,"Tyler Zarubin, Heritage Garden",1530 Concordia West,Irvine,CA,92612,"Tyler Zarubin, Heritage Garden",1530 Concordia West,Irvine,CA,92612,,,,,Gayle Peterson,4108,CUI Heritage Garden,
+Concordia Heritage Garden,CHG,sub,Concordia University Athletics,,tyler.zarubin@cui.edu,,,"Tyler Zarubin, Heritage Garden",1530 Concordia West,Irvine,CA,92612,"Tyler Zarubin, Heritage Garden",1530 Concordia West,Irvine,CA,92612,,,,,Gayle Peterson,4108,CUI Heritage Garden,
 Concordia University Advancement,CUA,sub,Concordia University Athletics,,,,,1530 Concordia West,,Irvine,CA,92612,1530 Concordia West,,Irvine,CA,92612,,,,,Gayle Peterson,3294,88,no customer email
 Concordia University Wellness Center,CUWC,sub,Concordia University Athletics,,sherrie-lynn.schwartz@cui.edu,,,1530 Concordia West,,Irvince,CA,92612,1530 Concordia West,,Irvince,CA,92612,,,,,Chase Koissian,4986,5164,
 Condon Johnson & Associates (CJA),CJA,parent,,,DWatt@condon-johnson.com,,,9012 S 208th St.,,Kent,WA,98031,9012 S 208th St.,,Kent,WA,98031,,,,,Kelly Bean,4972,5150,
@@ -322,12 +322,12 @@ Connor Johnson,CJ,parent,,,connor.johnson@fcarizona.com,,,15801 S 48th St,Apt 31
 Corcoran High School,CHS,parent,,,,,,1100 Letts Ave,,Corcoran,CA,93212,1100 Letts Ave,,Corcoran,CA,93212,,,,,Kevin McCormack,4456,1395,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
 Corcoran Football,CF,sub,Corcoran High School,,,,,1100 Letts Ave,,Corcoran,CA,93212,1100 Letts Ave,,Corcoran,CA,93212,,,,,Kevin McCormack,4457,1396,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
 Cornerstone Christian Academy,CCA,parent,,,cidlett@ccak12.net,,,,,,,,,,,,,,,,,Mike Mercuriali,4763,1657,missing structured address
-Cornerstone Christian Academy - Oakland,CCAO,parent,,,Terrellwoodard.hoops@gmail.com,,,393 Massa Ct,,Brentwood,CA,94513,393 Massa Ct,,Brentwood,CA,94513,,,,,Mike Mercuriali,4997,5173,
+Cornerstone Christian Academy - Oakland,CCAO,sub,Cornerstone Christian Academy,,Terrellwoodard.hoops@gmail.com,,,393 Massa Ct,,Brentwood,CA,94513,393 Massa Ct,,Brentwood,CA,94513,,,,,Mike Mercuriali,4997,5173,
 Corona Del Mar HS Lacrosse,CDMHL,sub,Corona Del Mar High School,,,,,2101 Eastbluff Dr,,Newport Beach,CA,92660,2101 Eastbluff Dr,,Newport Beach,CA,92660,,,,,Steve Peterson,4231,1206,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 Corona Del Mar HS Track,CDMHT,sub,Corona Del Mar High School,,stephwalsh.77@gmail.com,,,2101 Eastbluff Dr,,Newport Beach,CA,92660,2101 Eastbluff Dr,,Newport Beach,CA,92660,,,,,Jered Hunt,4094,1090,
 Corona Norco Unified School District,CNUSD,parent,,,,,,2820 Clark Ave,,Norco,CA,92860,2820 Clark Ave,,Norco,CA,92860,,,,,Jered Hunt,5105,5263,no customer email
 Corona Sharks FC,CSF,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,3724,362,no customer email; missing structured address
-Coronado FC,CF,parent,,,doc@coronadofc.com,,,338 Pomona Ave,,Coronado,CA,92118,338 Pomona Ave,,Coronado,CA,92118,,,,,Mike Mercuriali,3970,588,
+Coronado FC,CF,sub,Coronado High School,,doc@coronadofc.com,,,338 Pomona Ave,,Coronado,CA,92118,338 Pomona Ave,,Coronado,CA,92118,,,,,Mike Mercuriali,3970,588,
 Coronado High School,CHS,parent,,,doc@coronadofc.com,,,650 D Ave,,Coronado,CA,92118,650 D Ave,,Coronado,CA,92118,,,,,Mike Mercuriali,4082,1080,
 Coronado High School Volleyball,CHSV,sub,Coronado High School,,allisonhwygal@gmail.com,,,650 D Ave,,Coronado,CA,92118,650 D Ave,,Coronado,CA,92118,,,,,Mike Mercuriali,5120,5277,
 Corrie Barbara,CB,parent,,,corrie.barbara@gmail.com,,,,,,CA,,,,,CA,,,,,,Chase Koissian,3751,380,missing structured address
@@ -337,7 +337,7 @@ Court Vision Academy,CVA,parent,,,,,,2559 View Trail Court,,Chula Vista,CA,91914
 Covington Elementary,CE,parent,,,Jennifer.Wahl@kent.k12.wa.us,,,25811 156th Avenue SE,,Kent,WA,98042,25811 156th Avenue SE,,Kent,WA,98042,,,,,Sharon Day-Monroe,4985,5163,
 Coyotes Basketball,CB,parent,,,,,,1788 Canyon Oaks Ln,,Lake Forest,CA,l92610,1788 Canyon Oaks Ln,,Lake Forest,CA,l92610,,,,,Kelly Bean,4793,1684,no customer email; had NSA-internal email (kelly@nationalsportsapparel.com)
 Craig Dean,CD,parent,,,craigdean1999@gmail.com,,,,,,,,,,,,,,,,,Mike Mercuriali,4304,1261,missing structured address
-Crean Lutheran High School Academy,CLHSA,parent,,,nick.boyett@creanlutheran.org,,,12500 Sand Canyon Ave.,,Irvine,CA,92618,12500 Sand Canyon Ave.,,Irvine,CA,92618,,,,,Chase Koissian,4444,1384,
+Crean Lutheran High School Academy,CLHSA,sub,Crean Lutheran High School,,nick.boyett@creanlutheran.org,,,12500 Sand Canyon Ave.,,Irvine,CA,92618,12500 Sand Canyon Ave.,,Irvine,CA,92618,,,,,Chase Koissian,4444,1384,
 Crean Lutheran High School Counselor,CLHSC,sub,Crean Lutheran High School Staff,,ariana.caronna@creanlutheran.org,,,12500 Sand Canyon Ave.,,Irvine,CA,92618,12500 Sand Canyon Ave.,,Irvine,CA,92618,,,,,Chase Koissian,4737,1636,
 Crean Lutheran High School Staff,CLHSS,parent,,,shannon.schell@creanlutheran.org,,,12500 Sand Canyon Ave.,,Irvine,CA,92618,12500 Sand Canyon Ave.,,Irvine,CA,92618,,,,,Chase Koissian,4571,1490,
 Crean Lutheran HS Flag Football,CLHFF,sub,Crean Lutheran High School Staff,,mike.shumaker@creanlutheran.org,,,12500 Sand Canyon Ave,,Irvine,CA,92618,12500 Sand Canyon Ave,,Irvine,CA,92618,,,,,Jered Hunt,4368,1317,
@@ -350,9 +350,9 @@ Cuesta Soccer,CS,parent,,,,,,HWY 1,,San Luis Obispo,CA,93405,HWY 1,,San Luis Obi
 CUI W Soccer,CWS,parent,,,chris.gould@cui.edu,,,1530 Concordia West,,Irvine,CA,92612,1530 Concordia West,,Irvine,CA,92612,,,,,Gayle Peterson,4029,Concordia University W Soccer,
 Cuyamaca College,CC,parent,,,johnhklein@pga.com,,,8800 Grossmont College Drive,,El Cajon,CA,92020,8800 Grossmont College Drive,,El Cajon,CA,92020,,,,,Mike Mercuriali,3940,562,
 Cuyamaca College Golf,CCG,sub,Cuyamaca College,,johnhklein@pga.com,,,8800 Grossmont College Drive,,El Cajon,CA,92020,8800 Grossmont College Drive,,El Cajon,CA,92020,,,,,Mike Mercuriali,3941,563,
-Cuyamaca College Cross Country,CCCC,parent,,,p.davis@gcccd.edu,,,900 Rancho San Diego Parkway,,El Cajon,CA,92019,900 Rancho San Diego Parkway,,El Cajon,CA,92019,,,,,Mike Mercuriali,4682,1583,
+Cuyamaca College Cross Country,CCCC,sub,Cuyamaca College,,p.davis@gcccd.edu,,,900 Rancho San Diego Parkway,,El Cajon,CA,92019,900 Rancho San Diego Parkway,,El Cajon,CA,92019,,,,,Mike Mercuriali,4682,1583,
 Cuyamaca College Men's Soccer,CCMS,sub,Cuyamaca College,,Brian.Hiatt-Aleu@gcccd.edu,,,8800 Grossmont College Dr,,El Cajon,CA,92020,8800 Grossmont College Dr,,El Cajon,CA,92020,,,,,Mike Mercuriali,4153,1144,
-Cuyamaca College Womens Basketball,CCWB,parent,,,p.davis@gcccd.edu,,,,,,,,,,,,,,,,,Mike Mercuriali,4983,5161,missing structured address
+Cuyamaca College Womens Basketball,CCWB,sub,Cuyamaca College,,p.davis@gcccd.edu,,,,,,,,,,,,,,,,,Mike Mercuriali,4983,5161,missing structured address
 CVLCC,C,parent,,,Michaelray.Gonzales@cvesd.org,,,590 K St,,Chula Vista,CA,91911,590 K St,,Chula Vista,CA,91911,,,,,Mike Mercuriali,4163,1151,
 Cypress College Softball,CCS,parent,,,bpickler@cypresscollege.edu,,,9200 Valley View St,"Building 11, Room #107",Cypress,CA,90630,9200 Valley View St,"Building 11, Room #107",Cypress,CA,90630,,,,,Chase Koissian,4226,1203,
 d'Arnaud Athletics,DA,parent,,,chasedarnaud@gmail.com,,,3940 E Gilman St,,Long Beach,CA,90815,3940 E Gilman St,,Long Beach,CA,90815,,,,,Chase Koissian,4242,1215,
@@ -375,7 +375,7 @@ Del Oro High School Football,DOHSF,parent,,,,,,3301 Taylor Rd,,Loomis,CA,95650,3
 Del Sol HS Football,DSHF,parent,,,,,,1975 Camino Del Sol,,Oxnard,CA,93030,1975 Camino Del Sol,,Oxnard,CA,93030,,,,,Jered Hunt,3968,586,no customer email
 Delta MCI,DM,parent,,,bill@deltamci.com,,,841 Asbury Blvd,,South Elgin,IL,60177,841 Asbury Blvd,,South Elgin,IL,60177,,,,,Steve Peterson,4484,1416,
 Desert Hills Middle School,DHMS,parent,,,jeremy.grillo@ksd.org,,,1701 S Clodfelter Rd,,Kennewick,WA,99338,1701 S Clodfelter Rd,,Kennewick,WA,99338,,,,,Kelly Bean,5220,5367,
-Desert Pines HS,DPH,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,3818,424,no customer email; missing structured address
+Desert Pines HS,DPH,sub,Desert Pines High School,,,,,,,,,,,,,,,,,,,Jered Hunt,3818,424,no customer email; missing structured address
 Desert Pines HS Boy's Basketball,DPHBB,sub,Desert Pines High School,,harridl2@nv.ccsd.net,,,3800 Harris Ave,,Las Vegas,NV,89110,3800 Harris Ave,,Las Vegas,NV,89110,,,,,Jered Hunt,3484,194,
 Desert Pines HS Football,DPHF,sub,Desert Pines High School,,,,,3800 E Harris Ave,,Las Vegas,NV,89110,3800 E Harris Ave,,Las Vegas,NV,89110,,,,,Jered Hunt,3797,410,no customer email
 Desert Pines HS Girls Soccer,DPHGS,sub,Desert Pines High School,,francgj@nv.ccsd.net,,,3800 E Harris Ave,,Las Vegas,NV,89110,3800 E Harris Ave,,Las Vegas,NV,89110,,,,,Jered Hunt,3763,388,
@@ -390,7 +390,7 @@ Dos Palos Soccer,DPS,sub,Dos Palos High School,,,,,1701 E Blossom St,,Dos Palos,
 Double Peak School,DPS,parent,,,kevin.smith@smusd.org,,,111 San Elijo Rd.,,San Marcos,CA,92078,111 San Elijo Rd.,,San Marcos,CA,92078,,,,,Mike Mercuriali,3943,565,
 Dougherty Valley HS Football,DVHF,parent,,,gpittman@srvusd.net,,,10550 Albion Rd,,San Ramon,CA,94582,10550 Albion Rd,,San Ramon,CA,94582,,,,,Kelly Bean,4497,1427,
 Downey HS Girl's Basketball,DHGB,sub,Downey High School,,lashelton@dusd.net,,,11040 Brookshire Ave,,Downey,CA,90241,11040 Brookshire Ave,,Downey,CA,90241,,,,,Aaron Mason,3816,422,
-Downey Unified School District,DUSD,parent,,,jorvargas@dusd.net,,,11627 Brookshire Avenue,,Downey,CA,90241,11627 Brookshire Avenue,,Downey,CA,90241,,,,,Steve Peterson,4962,5143,
+Downey Unified School District,DUSD,sub,Downey High School,,jorvargas@dusd.net,,,11627 Brookshire Avenue,,Downey,CA,90241,11627 Brookshire Avenue,,Downey,CA,90241,,,,,Steve Peterson,4962,5143,
 Downtown Baseball,DB,parent,,,Pete@Downtownsacbaseball.com,,,5327 Callister Avenue,,Sacramento,CA,95819,5327 Callister Avenue,,Sacramento,CA,95819,,,,,Jeff Bianchini,3726,364,
 Duarte HS Softball,DHS,parent,,,,,,1565 Central Ave,,Duarte,CA,91010,1565 Central Ave,,Duarte,CA,91010,,,,,Jered Hunt,3852,501,no customer email
 Durham High School Football,DHSF,parent,,,ted.staiger@gmail.com,,,9455 Putney Dr,,Durham,CA,95938,9455 Putney Dr,,Durham,CA,95938,,,,,Jered Hunt,5118,5275,
@@ -436,7 +436,7 @@ Eric Quails,EQ,parent,,,equalls@me.com,,,124 Baculo st.,,Rancho Mission Viejo,CA
 Eric Wunderle,EW,parent,,,ewunderle@gmail.com,,,1044 Tahoe Glen Place,,Cary,NC,27513,1044 Tahoe Glen Place,,Cary,NC,27513,,,,,Mike Mercuriali,4451,1390,
 Erik Nagashima,EN,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,4651,1556,no customer email; missing structured address
 Escondido High School Boys Soccer,EHSBS,parent,,,mmendoza1@euhsd.org,(760) 420-8594,,1535 North Broadway,,Escondido,CA,92026,1535 North Broadway,,Escondido,CA,92026,,,,,Mike Mercuriali,3920,546,
-Escondido Union High School District,EUHSD,parent,,,mcasas@euhsd.org,,,150 West Lincoln Ave,,Escondido,CA,92026,150 West Lincoln Ave,,Escondido,CA,92026,,,,,Mike Mercuriali,4289,1249,
+Escondido Union High School District,EUHSD,sub,Escondido Union School District,,mcasas@euhsd.org,,,150 West Lincoln Ave,,Escondido,CA,92026,150 West Lincoln Ave,,Escondido,CA,92026,,,,,Mike Mercuriali,4289,1249,
 Escondido Union School District,EUSD,parent,,,afrank@eusd.org,,,2310 Aldergrove Ave,,Escondido,CA,92029,2310 Aldergrove Ave,,Escondido,CA,92029,,,,,Mike Mercuriali,5325,5459,
 Escondido Union School District- Residency Program,EUSDRP,sub,Escondido Union School District,,harp@eusd.org,,,2310 Aldergrove Ave,,Escondido,CA,92029,2310 Aldergrove Ave,,Escondido,CA,92029,,,,,Mike Mercuriali,5326,5460,
 Eshaya Murphy,EM,parent,,,,,,123 S Figueroa Blvd,Apt 1508,Los Angeles,CA,90012,123 S Figueroa Blvd,Apt 1508,Los Angeles,CA,90012,,,,,Andrea,4257,1228,no customer email
@@ -448,7 +448,7 @@ Evergreen High School Athletics,EHSA,parent,,,Keenan.Burris@evergreenps.org,,,14
 Evergreen Boys Soccer,EBS,sub,Evergreen High School Athletics,,Keenan.Burris@evergreenps.org,,,14300 NE 18th St,,Vancouver,WA,98684,14300 NE 18th St,,Vancouver,WA,98684,,,,,Kelly Bean,4974,5152,
 Evergreen High School Baseball,EHSB,parent,,,Chad.Burchett@evergreenps.org,,,26500 NE 53RD AVE,,Ridgefield,WA,98642,26500 NE 53RD AVE,,Ridgefield,WA,98642,,,,,Kelly Bean,4879,5084,
 Evergreen Valley College,EVC,parent,,,niall.adler@evc.edu,,,3095 Yerba Buena Rd,,San Jose,CA,95135,3095 Yerba Buena Rd,,San Jose,CA,95135,,,,,Steve Peterson,3742,374,
-Exeter Union District,EUD,parent,,,amontes@exeterk12.org,,,505 Rocky Hill Dr.,Julie Hammon,Exeter,CA,93221,505 Rocky Hill Dr.,Julie Hammon,Exeter,CA,93221,,,,,Kevin McCormack,5137,5292,
+Exeter Union District,EUD,sub,Exeter Union High School,,amontes@exeterk12.org,,,505 Rocky Hill Dr.,Julie Hammon,Exeter,CA,93221,505 Rocky Hill Dr.,Julie Hammon,Exeter,CA,93221,,,,,Kevin McCormack,5137,5292,
 Exeter Baseball,EB,sub,Exeter Union High School,,kevseco33@aol.com,,,215 N. Crespi,,Exeter,CA,93221,215 N. Crespi,,Exeter,CA,93221,,,,,Kevin McCormack,5148,5302,
 Exeter Beach Volleyball,EBV,sub,Exeter Union High School,,jhutcheson2@exeterk12.org,,,215 N. Crespi,,Exeter,CA,93221,215 N. Crespi,,Exeter,CA,93221,,,,,Kevin McCormack,5151,5305,
 Exeter Boys Basketball,EBB,sub,Exeter Union High School,,dfaught@exeterk12.org,,,215 N. Crespi,,Exeter,CA,93221,215 N. Crespi,,Exeter,CA,93221,,,,,Kevin McCormack,5153,5307,
@@ -490,7 +490,7 @@ Follet Higher Education,FHE,parent,,,lpluchrat@follett.com,,,"3 Westbrook Corpor
 Folsom Lake College Women's Volleyball,FLCWV,sub,Folsom Lake College,,HanrahM@flc.losrios.edu,,,10 College Parkway,,Folsom,CA,95630,10 College Parkway,,Folsom,CA,95630,,,,,Mike Mercuriali,4450,1389,
 Folsom Lake College Womens Soccer,FLCWS,sub,Folsom Lake College,,RibaudD@flc.losrios.edu,,,10 College Pkwy,,Folsom,CA,95630,10 College Pkwy,,Folsom,CA,95630,,,,,Mike Mercuriali,3985,1003,
 Fontana HS Boys Basketball,FHBB,parent,,,kdubchn21@icloud.com,,,9453 Citrus Ave,,Fontana,CA,92335,9453 Citrus Ave,,Fontana,CA,92335,,,,,Jered Hunt,3925,551,
-Foothill Athletic Boosters(FAB),FAB,parent,,,president@foothillathleticbooster.org,(925) 461-6600,,4375 Foothill Road,,Pleasanton,CA,94588,4375 Foothill Road,,Pleasanton,CA,94588,,,,,,3996,1013,rep=Shawn McHugh (pending reassignment)
+Foothill Athletic Boosters(FAB),FAB,sub,Foothill High School,,president@foothillathleticbooster.org,(925) 461-6600,,4375 Foothill Road,,Pleasanton,CA,94588,4375 Foothill Road,,Pleasanton,CA,94588,,,,,,3996,1013,rep=Shawn McHugh (pending reassignment)
 Foothill High School,FHS,parent,,,,,,4375 Foothill Rd,,Pleasanton,CA,94588,4375 Foothill Rd,,Pleasanton,CA,94588,,,,,,3891,528,no customer email; had NSA-internal email (shawn@nationalsportsapparel.com); rep=Shawn McHugh (pending reassignment)
 Foothills Christian High School Volleyball,FCHSV,parent,,,hannaherikssonmorr@foothillsschool.net,,,2321 Dryden Rd,,El Cajon,CA,92020,2321 Dryden Rd,,El Cajon,CA,92020,,,,,Mike Mercuriali,5226,5373,
 Formula,F,parent,,,gorunfast@gmail.com,,,3729 Reas Ford Ln.,,Earlysville,VA,22936,3729 Reas Ford Ln.,,Earlysville,VA,22936,,,,,Kelly Bean,4508,1435,
@@ -498,11 +498,11 @@ Formula Complete Fitness,FCF,parent,,,ann.m.dunn1@gmail.com,,,2805 Earlysville R
 Fountain Valley HS Flag Football,FVHFF,parent,,,jmorado@hbuhsd.edu,,,17816 Bushard St,,Fountain Valley,CA,92708,17816 Bushard St,,Fountain Valley,CA,92708,,,,,Jered Hunt,4370,1318,
 Francis Parker School,FPS,parent,,,,,,6501 Linda Vista Rd,,San Diego,CA,92111,6501 Linda Vista Rd,,San Diego,CA,92111,,,,,Mike Mercuriali,4280,1243,no customer email
 Franklin High School,FHS,parent,,,mcody@egusd.net,(916) 539-0043,,6400 Whitelock Parkway,Franklin High School,Elk Grove,CA,95757,6400 Whitelock Parkway,Franklin High School,Elk Grove,CA,95757,,,,,,3938,560,rep=Shawn McHugh (pending reassignment)
-Fresno Pacific Athletic Department,FPAD,parent,,,,,,1717 S Chestnut Ave.,,Fresno,CA,93702,1717 S Chestnut Ave.,,Fresno,CA,93702,,,,,Steve Peterson,3708,350,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
-Fresno Pacific E-Sports Program,FPEP,parent,,,,(559) 453-2000,,1717 S Chestnut Ave,,Fresno,CA,93702,1717 S Chestnut Ave,,Fresno,CA,93702,,,,,Juliet Leon,3904,536,no customer email; had NSA-internal email (juliet@nationalsportsapparel.com)
-Fresno Pacific Enrollment Department,FPED,parent,,,,(559) 453-2000,,1717 S Chestnut Ave,,Fresno,CA,93702,1717 S Chestnut Ave,,Fresno,CA,93702,,,,,Steve Peterson,4332,1286,no customer email
+Fresno Pacific Athletic Department,FPAD,sub,Fresno Pacific High School,,,,,1717 S Chestnut Ave.,,Fresno,CA,93702,1717 S Chestnut Ave.,,Fresno,CA,93702,,,,,Steve Peterson,3708,350,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
+Fresno Pacific E-Sports Program,FPEP,sub,Fresno Pacific High School,,,(559) 453-2000,,1717 S Chestnut Ave,,Fresno,CA,93702,1717 S Chestnut Ave,,Fresno,CA,93702,,,,,Juliet Leon,3904,536,no customer email; had NSA-internal email (juliet@nationalsportsapparel.com)
+Fresno Pacific Enrollment Department,FPED,sub,Fresno Pacific High School,,,(559) 453-2000,,1717 S Chestnut Ave,,Fresno,CA,93702,1717 S Chestnut Ave,,Fresno,CA,93702,,,,,Steve Peterson,4332,1286,no customer email
 Fresno Pacific Men's Soccer,FPMS,sub,Fresno Pacific High School,,,,,1717 S Chestnut Ave.,,Fresno,CA,93702,1717 S Chestnut Ave.,,Fresno,CA,93702,,,,,Steve Peterson,4982,5160,no customer email
-Fresno Pacific Sports Performance,FPSP,parent,,,,,,1717 S Chestnut Ave.,,Fresno,CA,93702,1717 S Chestnut Ave.,,Fresno,CA,93702,,,,,Juliet Leon,4130,1124,no customer email; had NSA-internal email (juliet@nationalsportsapparel.com)
+Fresno Pacific Sports Performance,FPSP,sub,Fresno Pacific High School,,,,,1717 S Chestnut Ave.,,Fresno,CA,93702,1717 S Chestnut Ave.,,Fresno,CA,93702,,,,,Juliet Leon,4130,1124,no customer email; had NSA-internal email (juliet@nationalsportsapparel.com)
 Fresno Pacific Stunt,FPS,sub,Fresno Pacific High School,,alyssa.troutt@fresno.edu,,,1717 S Chestnut Ave.,,Fresno,CA,93702,1717 S Chestnut Ave.,,Fresno,CA,93702,,,,,Steve Peterson,3877,520,
 Fresno Pacific University Marketing and Communications,FPUMAC,sub,Fresno Pacific College,,Hannah.Dennis@fresno.edu,,,1717 S Chestnut Ave,,Fresno,CA,93702,1717 S Chestnut Ave,,Fresno,CA,93702,,,,,Kelly Bean,5042,5213,
 Fresno Pacific University Student Development,FPUSD,sub,Fresno Pacific College,,holly.goble@fresno.edu,,,1717 S Chestnut Ave,,Fresno,CA,93702,1717 S Chestnut Ave,,Fresno,CA,93702,,,,,Steve Peterson,5029,5201,
@@ -569,7 +569,7 @@ Granite Hills High School Girls Basketball,GHHSGB,parent,,,sjimenez@guhsd.net,,,
 Granite Hills High School Girls Water Polo,GHHSGW,parent,,,laurissalane@gmail.com,,,,,,,,,,,,,,,,,Mike Mercuriali,4144,1137,missing structured address
 Granite Hills High School Porterville Girls Soccer,GHHSPG,parent,,,jmartinezgonzale4340@portervilleschools.org,,,1701 E Putnam Ave,,Porterville,CA,93257,1701 E Putnam Ave,,Porterville,CA,93257,,,,,Mike Mercuriali,4145,1138,
 Granite Ridge Cross Country,GRCC,sub,Granite Ridge High School,,,,,2770 E International Ave,,Fresno,CA,93730,2770 E International Ave,,Fresno,CA,93730,,,,,Steve Peterson,4668,1571,no customer email; had NSA-internal email (kelly@nationalsportsapparel.com)
-Granite Ridge Intermiediate Athletics,GRIA,parent,,,,,,2770 E International Ave,,Fresno,CA,93730,2770 E International Ave,,Fresno,CA,93730,,,,,Kelly Bean,5182,5335,no customer email
+Granite Ridge Intermiediate Athletics,GRIA,sub,Granite Ridge High School,,,,,2770 E International Ave,,Fresno,CA,93730,2770 E International Ave,,Fresno,CA,93730,,,,,Kelly Bean,5182,5335,no customer email
 Granite Ridge Track & Field,GRTF,sub,Granite Ridge High School,,,,,2770 E International Ave,,Fresno,CA,93730,2770 E International Ave,,Fresno,CA,93730,,,,,Kelly Bean,5183,5336,no customer email
 Grind Baseball,GB,parent,,,grindbaseballsd@gmail.com,,,,,,,,,,,,,,,,,Chase Koissian,3905,537,missing structured address
 Grossmont High School Basketball,GHSB,parent,,,dynamictraining619@gmail.com,,,,,,,,,,,,,,,,,Mike Mercuriali,4851,5063,missing structured address
@@ -583,7 +583,7 @@ Harvard Westlake Girls Volleyball,HWGV,parent,,,,,,3700 Coldwater Canyon Ave,,St
 Havasu City Little League,HCLL,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,3749,379,no customer email; missing structured address
 Hawking Charter School,HCS,parent,,,chris.mora1127@gmail.com,,,1275 30th Street,,San Diego,CA,92154,1275 30th Street,,San Diego,CA,92154,,,,,Mike Mercuriali,5015,5190,
 Headfirst Baseball West Coast,HBWC,parent,,,mario74iglesias@aol.com,(510) 872-6340,,7075 Commerce Cir,,Pleasanton,CA,94588,7075 Commerce Cir,,Pleasanton,CA,94588,,,,,,4004,1021,rep=Shawn McHugh (pending reassignment)
-Helix Campus Supervision,HCS,parent,,,jsimon@helixcharter.net,,,4200 Lowell St,,La Mesa,CA,91941,4200 Lowell St,,La Mesa,CA,91941,,,,,Mike Mercuriali,4914,5105,
+Helix Campus Supervision,HCS,sub,Helix High School,,jsimon@helixcharter.net,,,4200 Lowell St,,La Mesa,CA,91941,4200 Lowell St,,La Mesa,CA,91941,,,,,Mike Mercuriali,4914,5105,
 Helix High School,HHS,parent,,,chase@helixcharter.net,,,7323 University Avenue,,La Mesa,CA,91941,7323 University Avenue,,La Mesa,CA,91941,,,,,Mike Mercuriali,4041,1046,
 Helix High School Admin,HHSA,sub,Helix High School,,chase@helixcharter.net,,,7323 University Avenue,,La Mesa,CA,91941,7323 University Avenue,,La Mesa,CA,91941,,,,,Mike Mercuriali,4058,1060,
 Helix High School Baseball,HHSB,sub,Helix High School,,soto@helixcharter.net,,,7323 University Avenue,,La Mesa,CA,91941,7323 University Avenue,,La Mesa,CA,91941,,,,,Mike Mercuriali,4042,1047,
@@ -613,7 +613,7 @@ High Tech High School Boys Soccer,HTHSBS,sub,High Tech High School -San Diego,,h
 High Tech High School Track and Field,HTHSTA,sub,High Tech High School -San Diego,,eligladden@gmail.com,,,2861 Womble Rd,,San Diego,CA,92106,2861 Womble Rd,,San Diego,CA,92106,,,,,Mike Mercuriali,4329,1283,
 Highland HS Football,HHF,parent,,,jswyatt@avhsd.org,,,39055 25th St,,Palmdale,CA,93551,39055 25th St,,Palmdale,CA,93551,,,,,Jered Hunt,5265,5407,
 Highlanders,H,parent,,,,,,,,,,,,,,,,,,,,Mike Mercuriali,4714,1614,no customer email; missing structured address
-Hilltop High School Boys Soccer,HHSBS,parent,,,jesusa@cox.net,,,986 Vista Way,,Chula Vista,CA,91911,986 Vista Way,,Chula Vista,CA,91911,,,,,Mike Mercuriali,4752,1647,
+Hilltop High School Boys Soccer,HHSBS,sub,Hilltop High School,,jesusa@cox.net,,,986 Vista Way,,Chula Vista,CA,91911,986 Vista Way,,Chula Vista,CA,91911,,,,,Mike Mercuriali,4752,1647,
 Hilltop High School Girls Soccer,HHSGS,sub,Hilltop High School,,rene.ortiz@sweetwaterschools.org,,,555 Claire Ave,,Chula Vista,CA,91910,555 Claire Ave,,Chula Vista,CA,91910,,,,,Mike Mercuriali,4266,1234,
 Hilltop High School Golf,HHSG,sub,Hilltop High School,,sean.reed@sweetwaterschools.org,,,555 Claire Ave,,Chula Vista,CA,91910,555 Claire Ave,,Chula Vista,CA,91910,,,,,Mike Mercuriali,4265,1233,
 Hilmar HS Flag Football,HHFF,sub,Hilmar High School,,aleal@hilmar.k12.ca.us,,,7807 Lander Ave,,Hilmar,CA,95324,7807 Lander Ave,,Hilmar,CA,95324,,,,,Jered Hunt,5286,5424,
@@ -634,7 +634,7 @@ Hoover High School Girls Basketball,HHSGB,sub,Hoover (HS),,derke.crenshaw@gmail.
 Hudsons Bay HS Basketball,HBHB,parent,,,Tony.Holmes@adidas.com,,,1601 E Mcloughlin Blvd,,Vancouver,WA,98663,1601 E Mcloughlin Blvd,,Vancouver,WA,98663,,,,,Jered Hunt,4784,1675,
 Hug High School Basketball,HHSB,sub,Hug High School,,cmagrum@washoeschools.net,(775) 321-3224,,3530 Sullivan Lane,,Sparks,NV,89431,3530 Sullivan Lane,,Sparks,NV,89431,,,,,Juliet Leon,3874,517,
 Hug High School Track & Field,HHSTF,sub,Hug High School,,cmagrum@washoeschools.net,(775) 321-3224,,3530 Sullivan Lane,,Sparks,NV,89431,3530 Sullivan Lane,,Sparks,NV,89431,,,,,Juliet Leon,4192,1177,
-Hug High School Women Soccer,HHSWS,parent,,,Matthew.Treadway@WashoeSchools.net,,,,,,,,,,,,,,,,,Mike Mercuriali,4808,5024,missing structured address
+Hug High School Women Soccer,HHSWS,sub,Hug High School,,Matthew.Treadway@WashoeSchools.net,,,,,,,,,,,,,,,,,Mike Mercuriali,4808,5024,missing structured address
 Hughson High School Football,HHSF,parent,,,,,,7419 E Whitmore Ave,,Hughson,CA,95326,7419 E Whitmore Ave,,Hughson,CA,95326,,,,,Jered Hunt,4307,1264,no customer email
 Hunter Mecum,HM,parent,,,,,,2011 W Sentiero Ave,,Apache Junction,AZ,85120,2011 W Sentiero Ave,,Apache Junction,AZ,85120,,,,,Sharon Day-Monroe,5110,5267,no customer email
 Huntington Beach HS Field Hockey,HBHFH,sub,Huntington Beach High School,,theresamoniak@gmail.com,,,1905 Main St,,Huntington Beach,CA,92648,1905 Main St,,Huntington Beach,CA,92648,,,,,Jered Hunt,3653,308,
@@ -646,7 +646,7 @@ Imperial Beach Parks and Recreation,IBPAR,parent,,,mlutu@imperialbeachca.gov,(61
 Incline Baseball,IB,sub,Incline High School,,,,,499 Village Blvd,,Incline Village,NV,89451,499 Village Blvd,,Incline Village,NV,89451,,,,,Tim Kelly,3597,273,no customer email; had NSA-internal email (tk@nationalsportsapparel.com)
 Incline Booster Club,IBC,sub,Incline High School,,,,,499 Village Blvd,,Incline Village,NV,89451,499 Village Blvd,,Incline Village,NV,89451,,,,,Tim Kelly,4647,1552,no customer email; had NSA-internal email (tk@nationalsportsapparel.com)
 Incline High School Cross Country,IHSCC,sub,Incline High School,,mcmahanhomes@yahoo.com,,,499 Village Ave,,Incline Village,NV,89451,499 Village Ave,,Incline Village,NV,89451,,,,,Tim Kelly,4824,5038,
-Incline Sofbtall,IS,parent,,,,,,499 Village Blvd,,Incline Village,NV,89451,499 Village Blvd,,Incline Village,NV,89451,,,,,Tim Kelly,3667,317,no customer email; had NSA-internal email (tk@nationalsportsapparel.com)
+Incline Sofbtall,IS,sub,Incline High School,,,,,499 Village Blvd,,Incline Village,NV,89451,499 Village Blvd,,Incline Village,NV,89451,,,,,Tim Kelly,3667,317,no customer email; had NSA-internal email (tk@nationalsportsapparel.com)
 Incline Swim,IS,sub,Incline High School,,,,,499 Village Blvd,,Incline Village,NV,89451,499 Village Blvd,,Incline Village,NV,89451,,,,,Tim Kelly,3594,272,no customer email; had NSA-internal email (tk@nationalsportsapparel.com)
 Independence High School,IHS,parent,,,,,,8001 Old River Rd,,Bakersfield,CA,93311,8001 Old River Rd,,Bakersfield,CA,93311,,,,,Kevin McCormack,3757,384,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
 Independence HS Basketball,IHB,sub,Independence High School,,Derek_LaRosa@kernhigh.org,,,8001 Old River Road,,Bakersfield,CA,93311,8001 Old River Road,,Bakersfield,CA,93311,,,,,Kevin McCormack,3367,122,
@@ -657,7 +657,7 @@ Independence Softball,IS,sub,Independence High School,,,,,8001 Old River Rd,,Bak
 Independence Tennis,IT,sub,Independence High School,,,,,8001 Old River Rd,,Bakersfield,CA,93311,8001 Old River Rd,,Bakersfield,CA,93311,,,,,Kevin McCormack,3840,491,no customer email
 Independence Track & Field,ITF,sub,Independence High School,,,,,8001 Old River Road,,BAKERSFIELD,CA,93311,8001 Old River Road,,BAKERSFIELD,CA,93311,,,,,Kevin McCormack,3588,266,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
 Independence Wrestling,IW,sub,Independence High School,,,,,8001 Old River Road,,BAKERSFIELD,CA,93311,8001 Old River Road,,BAKERSFIELD,CA,93311,,,,,Kevin McCormack,3557,246,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
-Inderkum Flag Football,IFF,parent,,,,,,2500 New Market Dr,,Sacramento,CA,95835,2500 New Market Dr,,Sacramento,CA,95835,,,,,John Miller,3381,130,no customer email; had NSA-internal email (jmiller@nationalsportsapparel.com)
+Inderkum Flag Football,IFF,sub,Inderkum High School,,,,,2500 New Market Dr,,Sacramento,CA,95835,2500 New Market Dr,,Sacramento,CA,95835,,,,,John Miller,3381,130,no customer email; had NSA-internal email (jmiller@nationalsportsapparel.com)
 Inderkum Softball,IS,sub,Inderkum High School,,,,,,,,,,,,,,,,,,,John Miller,3577,260,no customer email; had NSA-internal email (jmiller@nationalsportsapparel.com); missing structured address
 Indio HS Basketball,IHB,sub,Indio High School,,Johnnyflores83@yahoo.com,,,817500 Ave 46,,Indio,CA,92201,817500 Ave 46,,Indio,CA,92201,,,,,Jered Hunt,4486,1418,
 Indio HS Football,IHF,sub,Indio High School,,Ron.shipley@desertsands.edu,,,81750 Ave 46,,Indio,CA,92201,81750 Ave 46,,Indio,CA,92201,,,,,Jered Hunt,4179,1167,
@@ -665,7 +665,7 @@ Inglewood Football,IF,parent,,,milvonjames@gmail.com,,,401 South Inglewood Ave,,
 Invasion Soccer,IS,parent,,,,,,,,,,,,,,,,,,,,Tim Kelly,3683,328,no customer email; had NSA-internal email (steve@nationalsportsapparel.com); missing structured address
 Irvington High School,IHS,parent,,,,,,41800 Blacow Rd,,Fremont,CA,94538,41800 Blacow Rd,,Fremont,CA,94538,,,,,Kelly Bean,4730,1629,no customer email
 Irvington Soccer,IS,sub,Irvington High School,,,,,41800 Blacow Rd,,Fremont,CA,94538,41800 Blacow Rd,,Fremont,CA,94538,,,,,Kelly Bean,5045,5215,no customer email
-Irvington Track & Field,ITF,parent,,,,,,44210 Arapaho Ave,,Fremont,CA,94539,44210 Arapaho Ave,,Fremont,CA,94539,,,,,Kelly Bean,5233,5379,no customer email
+Irvington Track & Field,ITF,sub,Irvington High School,,,,,44210 Arapaho Ave,,Fremont,CA,94539,44210 Arapaho Ave,,Fremont,CA,94539,,,,,Kelly Bean,5233,5379,no customer email
 Irvington Water Polo,IWP,sub,Irvington High School,,,,,41800 Blacow Rd,,Fremont,CA,94538,41800 Blacow Rd,,Fremont,CA,94538,,,,,Kelly Bean,4731,1630,no customer email; had NSA-internal email (kelly@nationalsportsapparel.com)
 Irvington High School Basketball,IHSB,sub,Irvington High School,,curtisttharrison@yahoo.com,,,41800 Blacow Rd,,Fremont,CA,94538,41800 Blacow Rd,,Fremont,CA,94538,,,,,Kelly Bean,4998,5174,
 Ismael Vidiro,IV,parent,,,izzysprinting@yahoo.com,,,8653 Avenida Costa Norte Ste 3000,,San Diego,CA,92154,8653 Avenida Costa Norte Ste 3000,,San Diego,CA,92154,,,,,Mike Mercuriali,4291,1251,
@@ -745,14 +745,14 @@ Lakeshow Basketball,LB,parent,,,joeymfuca@gmail.com,,,295 Oak RD,,Alamo,CA,94507
 Lancaster HS Football,LHF,sub,Lancaster High School,,jlewis@avhsd.org,,,44701 32nd St,,Lancaster,CA,93536,44701 32nd St,,Lancaster,CA,93536,,,,,Jered Hunt,5172,5326,
 Lancaster HS Soccer,LHS,sub,Lancaster High School,,cstack@avhsd.org,,,44701 32nd St,,Lancaster,CA,93536,44701 32nd St,,Lancaster,CA,93536,,,,,Jered Hunt,3853,502,
 LAPD Womens Runners,LWR,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,3867,513,no customer email; missing structured address
-Las Vegas 49ers,LV4,parent,,,lasvegas49ers@yahoo.com,,,,,,,,,,,,,,,,,Jered Hunt,3694,338,missing structured address
+Las Vegas 49ers,LV4,sub,Las Vegas High School,,lasvegas49ers@yahoo.com,,,,,,,,,,,,,,,,,Jered Hunt,3694,338,missing structured address
 Las Vegas High School,LVHS,parent,,,,,,6500 E Sahara Ave,,Las Vegas,NV,89142,6500 E Sahara Ave,,Las Vegas,NV,89142,,,,,Jered Hunt,3723,361,no customer email
 Leal Elementary School,LES,parent,,,,,,12920 Droxford St.,,Cerritos,CA,90703,12920 Droxford St.,,Cerritos,CA,90703,,,,,Kelly Bean,4611,1520,no customer email
 LEFT COAST LAX,LCL,parent,,,nissen13@icloud.com,(925) 963-9810,,584 Gerard ct,,pleasanton,CA,94566,584 Gerard ct,,pleasanton,CA,94566,,,,,,4106,1101,rep=Shawn McHugh (pending reassignment)
 Legacy Baseball Group,LBG,parent,,,Brett.Kay@jserra.org,,,,,,CA,,,,,CA,,,,,,Chase Koissian,3849,498,missing structured address
 Lemoore Youth Soccer League,LYSL,parent,,,,,,,,,,,,,,,,,,,,Mike Mercuriali,5282,5421,no customer email; missing structured address
 Leota Middle School,LMS,parent,,,kberube@nsd.org,,,19301 168th AVE NE,,Woodinville,WA,98072,19301 168th AVE NE,,Woodinville,WA,98072,,,,,Kelly Bean,4921,5111,
-Leota Basktball,LB,parent,,,,,,19301 168th AVE NE,,Woodinville,WA,98072,19301 168th AVE NE,,Woodinville,WA,98072,,,,,Kelly Bean,5245,5390,no customer email
+Leota Basktball,LB,sub,Leota Middle School,,,,,19301 168th AVE NE,,Woodinville,WA,98072,19301 168th AVE NE,,Woodinville,WA,98072,,,,,Kelly Bean,5245,5390,no customer email
 Les Armstrong,LA,parent,,,lesarmstrong@scdelsol.com,,,42626 North 44 Drive,,Phoenix,AZ,85087,42626 North 44 Drive,,Phoenix,AZ,85087,,,,,Mike Mercuriali,4648,1553,
 Lexy Plambeck,LP,parent,,,,,,682 Pretoria Rd,,Carnelian Bay,CA,96140,682 Pretoria Rd,,Carnelian Bay,CA,96140,,,,,Steve Peterson,4403,1349,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 Libertas College Prep,LCP,parent,,,,,,5101 S Western Ave,,Los Angeles,CA,90062,5101 S Western Ave,,Los Angeles,CA,90062,,,,,Jered Hunt,4167,1155,no customer email
@@ -771,9 +771,9 @@ Life Pacific University Women's Soccer,LPUWS,sub,Life Pacific University,,sshelt
 Life Pacific University Women's Volleyball,LPUWV,sub,Life Pacific University,,lsalas@lifepacific.edu,,,1100 W Covina Blvd,,San Dimas,CA,91773,1100 W Covina Blvd,,San Dimas,CA,91773,,,,,Mike Mercuriali,4463,1401,
 LILA International School,LIS,parent,,,aacosta013@gmail.com,,,810 N. Bonnie Brae St #1,,Los Angeles,CA,90026,810 N. Bonnie Brae St #1,,Los Angeles,CA,90026,,,,,Kelly Bean,5089,5250,
 Lincoln High School,LHS,parent,,,,,,1750 SW Salmon St,,Portland,OR,97205,1750 SW Salmon St,,Portland,OR,97205,,,,,Kelly Bean,4603,1513,no customer email
-Lincoln Cross Country and Track,LCCAT,parent,,,edettman88@yahoo.com,,,1910 SW 18TH AVE,APT 47,Portland,OR,97201,1910 SW 18TH AVE,APT 47,Portland,OR,97201,,,,,Kelly Bean,4976,5154,
+Lincoln Cross Country and Track,LCCAT,sub,Lincoln High School,,edettman88@yahoo.com,,,1910 SW 18TH AVE,APT 47,Portland,OR,97201,1910 SW 18TH AVE,APT 47,Portland,OR,97201,,,,,Kelly Bean,4976,5154,
 Lincoln High School Boys Basketball,LHSBB,sub,Lincoln (HS),,coachmathews@gmail.com,(209) 298-5926,,6844 Alexandria Pl,,Stockton,CA,95207,6844 Alexandria Pl,,Stockton,CA,95207,,,,,Jered Hunt,3503,208,
-Lincoln High Volleyball,LHV,parent,,,larrycrepeaux@gmail.com,,,1750 SW Salmon St,,Portland,OR,97205,1750 SW Salmon St,,Portland,OR,97205,,,,,Kelly Bean,4555,1474,
+Lincoln High Volleyball,LHV,sub,Lincoln High School,,larrycrepeaux@gmail.com,,,1750 SW Salmon St,,Portland,OR,97205,1750 SW Salmon St,,Portland,OR,97205,,,,,Kelly Bean,4555,1474,
 Lincoln HS Boys Basketball,LHBB,parent,,,rsandoval@guhsd.net,,,4777 Imperial Ave,,San Diego,CA,92113,4777 Imperial Ave,,San Diego,CA,92113,,,,,Jered Hunt,3860,508,
 Lincoln HS Football,LHF,sub,Lincoln (HS),,lgrim@lusd.net,,,6844 Alexandria Pl,,Stockton,CA,95207,6844 Alexandria Pl,,Stockton,CA,95207,,,,,Jered Hunt,5202,5352,
 Linfield Christian High School,LCHS,parent,,,lfabian@linfield.com,,,31950 Pauba Rd,,Temecula,CA,92592,31950 Pauba Rd,,Temecula,CA,92592,,,,,Mike Mercuriali,3959,579,
@@ -804,7 +804,7 @@ Mar Vista High School,MVHS,parent,,,Gisela.Villarreal@sweetwaterschools.org,,,50
 Mar Vista High School Softball,MVHSS,sub,Mar Vista High School,,Julianna.Senties@sweetwaterschools.org,,,505 Elm Ave,,Imperial Beach,CA,91932,505 Elm Ave,,Imperial Beach,CA,91932,,,,,Mike Mercuriali,4961,5142,
 Mar Vista High School Tennis,MVHST,sub,Mar Vista High School,,,,,505 Elm Ave,,Imperial Beach,CA,91932,505 Elm Ave,,Imperial Beach,CA,91932,,,,,Mike Mercuriali,4791,1682,no customer email
 Maranatha Christian High School,MCHS,parent,,,,,,9050 Maranatha Drive,,San Diego,CA,92127,9050 Maranatha Drive,,San Diego,CA,92127,,,,,Mike Mercuriali,4031,1040,no customer email; had NSA-internal email (merc@nationalsportsapparel.com)
-Maranatha Christian NHS,MCN,parent,,,,,,9050 Maranatha Drive,,San Diego,CA,92127,9050 Maranatha Drive,,San Diego,CA,92127,,,,,Mike Mercuriali,4032,1041,no customer email; had NSA-internal email (merc@nationalsportsapparel.com)
+Maranatha Christian NHS,MCN,sub,Maranatha Christian High School,,,,,9050 Maranatha Drive,,San Diego,CA,92127,9050 Maranatha Drive,,San Diego,CA,92127,,,,,Mike Mercuriali,4032,1041,no customer email; had NSA-internal email (merc@nationalsportsapparel.com)
 Marco Ybarra,MY,parent,,,mybarra@rebelssoccerclub.com,,,,,,,,,,,,,,,,,Mike Mercuriali,4562,1481,missing structured address
 Maria Carrillo High School,MCHS,parent,,,,,,6975 Montecito Blvd,,Santa Rosa,CA,95409,6975 Montecito Blvd,,Santa Rosa,CA,95409,,,,,Kelly Bean,4729,1628,no customer email; had NSA-internal email (kelly@nationalsportsapparel.com)
 Marina High School Field Hockey,MHSFH,parent,,,mhsfhbooster@outlook.com,,,15871 Springdale St,,Huntington Beach,CA,92649,15871 Springdale St,,Huntington Beach,CA,92649,,,,,Chase Koissian,4514,1439,
@@ -843,14 +843,14 @@ Mira Monte Football,MMF,sub,Mira Monte High School,,josue_valenzuela@kernhigh.or
 Mira Monte High School,MMHS,parent,,,,,,1800 S Fairfax Rd,,Bakersfield,CA,93307,1800 S Fairfax Rd,,Bakersfield,CA,93307,,,,,Kevin McCormack,3703,345,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
 Mission College Men's Tennis,MCMT,sub,Mission College,,,,,3000 Mission College Blvd,,Santa Clara,CA,95054,3000 Mission College Blvd,,Santa Clara,CA,95054,,,,,Steve Peterson,5214,5363,no customer email
 Mission Hills HS Boys Soccer,MHHBS,parent,,,kyle.baker@smusd.org,,,215 Mata Way,Bldg 4,San Marcos,CA,92069,215 Mata Way,Bldg 4,San Marcos,CA,92069,,,,,Jered Hunt,3865,511,
-Mission Hills Wrestling Club,MHWC,parent,,,dandrelljohnson220@gmail.com,,,,,,,,,,,,,,,,,Jered Hunt,4062,1063,missing structured address
-Mission Prep High School,MPHS,parent,,,MJPruitt@missionprep.org,,,682 Palm St,,San Luis Obispo,CA,93401,682 Palm St,,San Luis Obispo,CA,93401,,,,,Kelly Bean,4592,1505,
+Mission Hills Wrestling Club,MHWC,sub,Mission College,,dandrelljohnson220@gmail.com,,,,,,,,,,,,,,,,,Jered Hunt,4062,1063,missing structured address
+Mission Prep High School,MPHS,sub,Mission High School,,MJPruitt@missionprep.org,,,682 Palm St,,San Luis Obispo,CA,93401,682 Palm St,,San Luis Obispo,CA,93401,,,,,Kelly Bean,4592,1505,
 Mission Boys Basketball,MBB,sub,Mission High School,,tomdonovan805@gmail.com,,,682 Palm St,,San Luis Obispo,CA,93401,682 Palm St,,San Luis Obispo,CA,93401,,,,,Kelly Bean,4987,5165,
 Mission Track & Field,MTF,sub,Mission High School,,cpvaccaro@missionprep.org,,,682 Palm St,,San Luis Obispo,CA,93401,682 Palm St,,San Luis Obispo,CA,93401,,,,,Kelly Bean,5143,5297,
 Mission San Jose High School,MSJHS,parent,,,terrydalziel@sbcglobal.net,,,41717 Palm Ave,,Fremont,CA,94539,41717 Palm Ave,,Fremont,CA,94539,,,,,Kelly Bean,4732,1631,
 Mission San Jose Baseball,MSJB,sub,Mission San Jose High School,,rza619@gmail.com,,,41717 Palm Ave,,Fremont,CA,94539,41717 Palm Ave,,Fremont,CA,94539,,,,,Kelly Bean,4656,1560,
 Mission Vista High School Boys Soccer,MVHSBS,parent,,,matthew.hidalgo1224@gmail.com,,,1306 Melrose Drive,,Oceanside,CA,92057,1306 Melrose Drive,,Oceanside,CA,92057,,,,,Mike Mercuriali,3921,547,
-Mission Vista HS Girls Soccer,MVHGS,parent,,,,,,,,,,,,,,,,,,,,Mike Mercuriali,4154,1145,no customer email; missing structured address
+Mission Vista HS Girls Soccer,MVHGS,sub,Mission College,,,,,,,,,,,,,,,,,,,Mike Mercuriali,4154,1145,no customer email; missing structured address
 Monarch High School Basketball,MHSB,parent,,,gredding@monarchschools.org,,,1625 Newton Ave,,San Diego,CA,92113,1625 Newton Ave,,San Diego,CA,92113,,,,,Mike Mercuriali,5279,5419,
 Monrovia HS Boys Basketball,MHBB,parent,,,,,,845 West Coronado Blvd,,Monrovi,CA,91016,845 West Coronado Blvd,,Monrovi,CA,91016,,,,,Jered Hunt,3774,395,no customer email
 Monte Vista High School,MVHS,parent,,,jtropp@guhsd.net,,,3230 Sweetwater Springs Blvd,,Spring Valley,CA,91977,3230 Sweetwater Springs Blvd,,Spring Valley,CA,91977,,,,,Mike Mercuriali,3994,1011,
@@ -860,7 +860,7 @@ Monte Vista High School Admin,MVHSA,sub,Monte Vista High School,,,,,3230 Sweetwa
 Monte Vista High School Cross Country and Track,MVHSCC,sub,Monte Vista High School,,,,,3230 Sweetwater Springs Blvd,,Spring Valley,CA,91977,3230 Sweetwater Springs Blvd,,Spring Valley,CA,91977,,,,,Mike Mercuriali,4064,1065,no customer email
 Monte Vista High School LAX,MVHSL,sub,Monte Vista High School,,,,,3230 Sweetwater Springs Blvd,,Spring Valley,CA,91977,3230 Sweetwater Springs Blvd,,Spring Valley,CA,91977,,,,,Mike Mercuriali,4352,1304,no customer email
 Monte Vista High School Baseball,MVHSB,sub,Monte Vista High School Music,,jbk_71@yahoo.com,,,9600 Milden St,,La Mesa,CA,91942,9600 Milden St,,La Mesa,CA,91942,,,,,Mike Mercuriali,5273,5415,
-Monte Vista High School Boys Basketball,MVHSBB,parent,,,dsykes@guhsd.net,,,,,,,,,,,,,,,,,Mike Mercuriali,4860,5067,missing structured address
+Monte Vista High School Boys Basketball,MVHSBB,sub,Monte Vista High School,,dsykes@guhsd.net,,,,,,,,,,,,,,,,,Mike Mercuriali,4860,5067,missing structured address
 Monte Vista High School Boys Volleyball,MVHSBV,sub,Monte Vista High School,,alexiscabarga@gmail.com,,,3230 Sweetwater Springs Blvd,,Spring Valley,CA,91977,3230 Sweetwater Springs Blvd,,Spring Valley,CA,91977,,,,,Mike Mercuriali,4303,1260,
 Monte Vista High School Music,MVHSM,parent,,,cjirkovsky@guhsd.net,,,9600 Milden St,,La Mesa,CA,91942,9600 Milden St,,La Mesa,CA,91942,,,,,Mike Mercuriali,4903,5100,
 Monte Vista High School Girls Basketball,MVHSGB,sub,Monte Vista High School,,sjimenez@guhsd.net,,,3230 Sweetwater Springs Blvd,,Spring Valley,CA,91977,3230 Sweetwater Springs Blvd,,Spring Valley,CA,91977,,,,,Mike Mercuriali,4146,1139,
@@ -870,7 +870,7 @@ Montez Glass,MG,parent,,,mattmontez@montezglass.com,,,,,,,,,,,,,,,,,Jeff Bianchi
 Montgomery High School Soccer,MHSS,sub,Montgomery High School,,,,,3250 Palm Ave,,San Diego,CA,92154,3250 Palm Ave,,San Diego,CA,92154,,,,,Mike Mercuriali,4696,1597,no customer email
 Montgomery High School XC,MHSX,parent,,,runrobertfast@gmail.com,,,1250 Hahman Dr.,,Santa Rosa,CA,95405,1250 Hahman Dr.,,Santa Rosa,CA,95405,,,,,Kelly Bean,4864,5070,
 Montgomery High School Boys Soccer,MHSBS,sub,Montgomery High School,,dcorona78@gmail.com,,,3250 Palm Ave,,San Diego,CA,92154,3250 Palm Ave,,San Diego,CA,92154,,,,,Mike Mercuriali,4070,1071,
-Montgomery Middle School,MMS,parent,,,ashley.kunkle@sweetwaterschools.org,(619) 838-5575,,1051 Picador Boulevard,,San Diego,CA,92154,1051 Picador Boulevard,,San Diego,CA,92154,,,,,Mike Mercuriali,3933,558,
+Montgomery Middle School,MMS,sub,Montgomery High School,,ashley.kunkle@sweetwaterschools.org,(619) 838-5575,,1051 Picador Boulevard,,San Diego,CA,92154,1051 Picador Boulevard,,San Diego,CA,92154,,,,,Mike Mercuriali,3933,558,
 Moreau Catholic Baseball,MCB,sub,Moreau Catholic High School,,eescalante@moreaucatholic.org,,,27170 Mission Blvd,,Hayward,CA,94544,27170 Mission Blvd,,Hayward,CA,94544,,,,,Steve Peterson,3744,376,
 Moreau Catholic Basketball,MCB,sub,Moreau Catholic High School,,,,,27170 Mission Blvd,,Hayward,CA,94544,27170 Mission Blvd,,Hayward,CA,94544,,,,,Steve Peterson,4253,1225,no customer email
 Moreau Catholic Cross Country,MCCC,sub,Moreau Catholic High School,,,,,27170 Mission Blvd,,Hayward,CA,94544,27170 Mission Blvd,,Hayward,CA,94544,,,,,Steve Peterson,3303,96,no customer email; had NSA-internal email (jabari@nationalsportsapparel.com)
@@ -880,7 +880,7 @@ Moreau Catholic Volleyball,MCV,sub,Moreau Catholic High School,,eescalante@morea
 Moreno Valley HS Football,MVHF,parent,,,,,,23300 Cottonwood Ave,,Moreno Valley,CA,92553,23300 Cottonwood Ave,,Moreno Valley,CA,92553,,,,,Jered Hunt,4196,1181,no customer email
 Morgan Hartanov,MH,parent,,,morganhartanov@gmail.com,,,,,,,,,,,,,,,,,Mike Mercuriali,4963,5144,missing structured address
 Morristown West,MW,parent,,,,,,1 Trojan Trl,,Morristown,TN,37813,1 Trojan Trl,,Morristown,TN,37813,,,,,Kelly Bean,5193,5345,no customer email
-Morro Bay High,MBH,parent,,,thoyt@slcusd.org,,,235 Atascadero Rd,,Morro Bay,CA,93442,235 Atascadero Rd,,Morro Bay,CA,93442,,,,,Kelly Bean,4617,1526,
+Morro Bay High,MBH,sub,Morro Bay High School,,thoyt@slcusd.org,,,235 Atascadero Rd,,Morro Bay,CA,93442,235 Atascadero Rd,,Morro Bay,CA,93442,,,,,Kelly Bean,4617,1526,
 Morro Bay Cheer,MBC,sub,Morro Bay High School,,cheyennealynn@gmail.com,,,235 Atascadero Rd,,Morro Bay,CA,93442,235 Atascadero Rd,,Morro Bay,CA,93442,,,,,Kelly Bean,4657,1561,
 Morro Bay Cross Country,MBCC,sub,Morro Bay High School,,jfrere@slcusd.org,,,235 Atascadero Rd,,Morro Bay,CA,93442,235 Atascadero Rd,,Morro Bay,CA,93442,,,,,Kelly Bean,4700,1601,
 Morro Bay Volleyball,MBV,sub,Morro Bay High School,,thoyt@slcusd.org,,,235 Atascadero Rd,,Morro Bay,CA,93442,235 Atascadero Rd,,Morro Bay,CA,93442,,,,,Kelly Bean,4618,1527,
@@ -898,7 +898,7 @@ Mountain House Boys Basketball,MHBB,sub,Mountain House High School,,,(408) 393-2
 Mountain House Flag Football,MHFF,sub,Mountain House High School,,,,,1090 Central Pkwy,,Mountain House,CA,95391,1090 Central Pkwy,,Mountain House,CA,95391,,,,,Steve Peterson,4360,1311,no customer email
 Mountain House Football,MHF,sub,Mountain House High School,,jcarr@lammersvilleusd.net,(408) 393-2880,,,1090 S. Central Parkway,Mountain House,CA,95391,,1090 S. Central Parkway,Mountain House,CA,95391,,,,,Steve Peterson,3253,MH,missing structured address
 Mountain House Girls Basketball,MHGB,sub,Mountain House High School,,,(408) 393-2880,,,1090 S. Central Parkway,Mountain House,CA,95391,,1090 S. Central Parkway,Mountain House,CA,95391,,,,,Steve Peterson,4359,1310,no customer email; had NSA-internal email (steve@nationalsportsapparel.com); missing structured address
-Mountain House Girls Volleyball,MHGV,parent,,,,,,,,,,,,,,,,,,,,Steve Peterson,3558,247,no customer email; had NSA-internal email (steve@nationalsportsapparel.com); missing structured address
+Mountain House Girls Volleyball,MHGV,sub,Mountain House High School,,,,,,,,,,,,,,,,,,,Steve Peterson,3558,247,no customer email; had NSA-internal email (steve@nationalsportsapparel.com); missing structured address
 Mountain House Soccer,MHS,sub,Mountain House High School,,,,,570 S. Escuela Dr.,,Mountain House,CA,95391,570 S. Escuela Dr.,,Mountain House,CA,95391,,,,,Steve Peterson,3497,203,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 Mountain House Softball,MHS,sub,Mountain House High School,,,,,1090 Central Pkwy,,Mountain House,CA,95391,1090 Central Pkwy,,Mountain House,CA,95391,,,,,Steve Peterson,4273,1240,no customer email
 Mountain House Tennis,MHT,sub,Mountain House High School,,,,,1090 Central Pkwy,,Mountain House,CA,95391,1090 Central Pkwy,,Mountain House,CA,95391,,,,,Steve Peterson,4364,1314,no customer email
@@ -946,7 +946,7 @@ Basketball,B,parent,,,,,,,,Bakersfield,CA,93308,,,Bakersfield,CA,93308,,,,,Kevin
 Football,F,parent,,,,,,,,Bakersfield,CA,93308,,,Bakersfield,CA,93308,,,,,Kevin McCormack,4615,1524,no customer email; missing structured address
 North Hillsborough Elementary School,NHES,parent,,,lgoh07@gmail.com,,,160 Robin Road,,Hillsborough,CA,94010,160 Robin Road,,Hillsborough,CA,94010,,,,,Kelly Bean,5139,5294,
 North Star Elementary,NSE,parent,,,vvalencia@hcsdk8.org,,,Heidi Beames,545 Eucalyptus Ave,Hillsborough,CA,94010,Heidi Beames,545 Eucalyptus Ave,Hillsborough,CA,94010,,,,,Kelly Bean,4529,1451,
-North Tahoe Football,NTF,parent,,,,,,2945 Polaris Rd.,,Tahoe City,CA,96145,2945 Polaris Rd.,,Tahoe City,CA,96145,,,,,Tim Kelly,4206,1189,no customer email; had NSA-internal email (tk@nationalsportsapparel.com)
+North Tahoe Football,NTF,sub,North Tahoe Middle School,,,,,2945 Polaris Rd.,,Tahoe City,CA,96145,2945 Polaris Rd.,,Tahoe City,CA,96145,,,,,Tim Kelly,4206,1189,no customer email; had NSA-internal email (tk@nationalsportsapparel.com)
 North Tahoe Little League,NTLL,parent,,,,,,4465 Muletail Dr.,,Carnelian Bay,CA,96140,4465 Muletail Dr.,,Carnelian Bay,CA,96140,,,,,Jered Hunt,3604,277,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 North Tahoe Middle School,NTMS,parent,,,,,,2945 Polaris Rd.,,Tahoe City,CA,96145,2945 Polaris Rd.,,Tahoe City,CA,96145,,,,,Tim Kelly,3559,248,no customer email; had NSA-internal email (tk@nationalsportsapparel.com)
 Northeast Little League,NLL,parent,,,dsilva104@gmail.com,,,,,,,,,,,,,,,,,Jered Hunt,3845,495,missing structured address
@@ -971,25 +971,25 @@ Ocean View HS Water Polo,OVHWP,sub,Ocean View High School,,,,,17071 Gothard St,,
 Oceanside HS Football,OHF,parent,,,,,,1 Pirates Cove Way,,Oceanside,CA,92054,1 Pirates Cove Way,,Oceanside,CA,92054,,,,,Steve Peterson,3396,138,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 Oceanview High School Soccer,OHSS,parent,,,kcena@ovcapatriots.com,,,2460 Palm Ave,,San Diego,CA,92154,2460 Palm Ave,,San Diego,CA,92154,,,,,Mike Mercuriali,4917,5107,
 Ohlone College,OC,parent,,,mcurran@ohlone.edu,(559) 285-8413,,43600 Mission BLVD,,Fremont,CA,94539,43600 Mission BLVD,,Fremont,CA,94539,,,,,,4024,1035,rep=Shawn McHugh (pending reassignment)
-OLu Orange Lutheran Beach Volleyball,OOLBV,parent,,,allie.cook@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,5024,5197,
-Orange Lutheran Creative Worship,OLCW,parent,,,karissa.raebel@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,4746,1641,
-OLu Creative Worship,OCW,parent,,,Karissa.Raebel@lhsoc.org,(714) 420-0291,,2222 N Santiago Blvd,,Orange,CA,92867,2222 N Santiago Blvd,,Orange,CA,92867,,,,,Gayle Peterson,4589,Orange Lutheran Creative Worship,
+OLu Orange Lutheran Beach Volleyball,OOLBV,sub,Orange Lutheran High School,,allie.cook@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,5024,5197,
+Orange Lutheran Creative Worship,OLCW,sub,Orange Lutheran High School,,karissa.raebel@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,4746,1641,
+OLu Creative Worship,OCW,sub,Orange Lutheran High School,,Karissa.Raebel@lhsoc.org,(714) 420-0291,,2222 N Santiago Blvd,,Orange,CA,92867,2222 N Santiago Blvd,,Orange,CA,92867,,,,,Gayle Peterson,4589,Orange Lutheran Creative Worship,
 Olympian High School Girls Soccer,OHSGS,sub,Olympian HS Drama,,Nathaniel.Davis@sweetwaterschools.org,,,1925 Magdalena Ave,,Chula Vista,CA,91913,1925 Magdalena Ave,,Chula Vista,CA,91913,,,,,Mike Mercuriali,5068,5234,
 Olympian High School Golf,OHSG,sub,Olympian HS Drama,,Nathaniel.Davis@sweetwaterschools.org,,,1925 Magdalena Ave,,Chula Vista,CA,91913,1925 Magdalena Ave,,Chula Vista,CA,91913,,,,,Mike Mercuriali,5026,5199,
 Olympian HS Basketball,OHB,sub,Olympian HS Drama,,eaglesbball22@gmail.com,,,1925 Magdalena Ave,,Chula Vista,CA,91913,1925 Magdalena Ave,,Chula Vista,CA,91913,,,,,Jered Hunt,3878,521,
 Olympian HS Drama,OHD,parent,,,,,,1925 Magdalena Ave,,Chula Vista,CA,91913,1925 Magdalena Ave,,Chula Vista,CA,91913,,,,,Mike Mercuriali,4254,1226,no customer email
 OMG Basketball,OB,parent,,,,,,10337 Greta Ave,,Buena Park,CA,90620,10337 Greta Ave,,Buena Park,CA,90620,,,,,Kelly Bean,5023,5196,no customer email; had NSA-internal email (kelly@nationalsportsapparel.com)
 Ontario HS Girls Basketball,OHGB,sub,Ontario High School,,,,,901 W Francis Ave,,Ontario,CA,91762,901 W Francis Ave,,Ontario,CA,91762,,,,,Jered Hunt,4507,1434,no customer email
-Ontario Union Toros Hockey,OUTH,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,5327,5461,no customer email; missing structured address
+Ontario Union Toros Hockey,OUTH,sub,Ontario High School,,,,,,,,,,,,,,,,,,,Jered Hunt,5327,5461,no customer email; missing structured address
 Orange Coast College Baseball,OCCB,sub,Orange Coast College,,,,,2701 Fairview Road,,Costa Mesa,CA,92626,2701 Fairview Road,,Costa Mesa,CA,92626,,,,,Chase Koissian,2614,Orange Coast CollegeBaseball,no customer email
 Orange Coast College Softball,OCCS,sub,Orange Coast College,,jlegaspi4@occ.cccd.edu,,,2701 Fairview Rd,,Costa Mesa,CA,92626,2701 Fairview Rd,,Costa Mesa,CA,92626,,,,,Chase Koissian,4135,1128,
-Orange County National Team LAX,OCNTL,parent,,,alexandra.kyte@lhsoc.org,,,,,,CA,,,,,CA,,,,,,Chase Koissian,4353,1305,missing structured address
+Orange County National Team LAX,OCNTL,sub,Orange High School,,alexandra.kyte@lhsoc.org,,,,,,CA,,,,,CA,,,,,,Chase Koissian,4353,1305,missing structured address
 Orange Cove Citrus Middle,OCCM,parent,,,manquero-a@kcusd.com,,,1502 I Street,,Reedley,CA,93654,1502 I Street,,Reedley,CA,93654,,,,,Kevin McCormack,4717,1617,
 Orange HS Boys Basketball,OHBB,sub,Orange High School,,jakerhodes8815@gmail.com,,,525 N Shaffer St,,Orange,CA,92867,525 N Shaffer St,,Orange,CA,92867,,,,,Jered Hunt,4639,1545,
 Orange HS Boys Soccer,OHBS,sub,Orange High School,,ed201hernandez@gmail.com,,,525 N Shaffer St,,Orange,CA,92867,525 N Shaffer St,,Orange,CA,92867,,,,,Jered Hunt,4876,5081,
 Orange Lutheran ASB,OLA,sub,Orange Lutheran High School,,shannon.may@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,3791,407,
-Orange Lutheran High School - Information Technology,OLHSIT,sub,Orange Lutheran (HS),,aj.christensen@lhsoc.org,,,2222 N Santiago Blvd,,Orange,CA,92867,2222 N Santiago Blvd,,Orange,CA,92867,,,,,Chase Koissian,3406,143,
-Orange Lutheran High School Admissions,OLHSA,sub,Orange Lutheran (HS),,aj.christensen@lhsoc.org,,,2222 N Santiago Blvd,,Orange,CA,92867,2222 N Santiago Blvd,,Orange,CA,92867,,,,,Chase Koissian,3447,166,
+Orange Lutheran High School - Information Technology,OLHSIT,sub,Orange Lutheran High School,,aj.christensen@lhsoc.org,,,2222 N Santiago Blvd,,Orange,CA,92867,2222 N Santiago Blvd,,Orange,CA,92867,,,,,Chase Koissian,3406,143,
+Orange Lutheran High School Admissions,OLHSA,sub,Orange Lutheran High School,,aj.christensen@lhsoc.org,,,2222 N Santiago Blvd,,Orange,CA,92867,2222 N Santiago Blvd,,Orange,CA,92867,,,,,Chase Koissian,3447,166,
 Orchard Hills School,OHS,parent,,,rsheveland@tustin.k12.ca.us,,,11555 Culver Dr,,Irvine,CA,92602,11555 Culver Dr,,Irvine,CA,92602,,,,,Jered Hunt,5061,5228,
 Order of Malta,OOM,parent,,,monavarro4@icloud.com,,,,,,,,,,,,,,,,,Jered Hunt,3639,299,missing structured address
 Oscar Flores,OF,parent,,,,,,1045 Bay Blvd Ste E,,Chula Vista,CA,91911,1045 Bay Blvd Ste E,,Chula Vista,CA,91911,,,,,Mike Mercuriali,4392,1338,no customer email
@@ -1006,12 +1006,12 @@ Palomar College Men's Soccer,PCMS,sub,Palomar College,,dlinenberger@palomar.edu,
 Panenka Futbol Academy,PFA,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,4587,1503,no customer email; missing structured address
 Park City High School Boys Soccer,PCHSBS,parent,,,pchs.miners.boys.soccer@gmail.com,,,1750 Kearns Blvd,,Park City,UT,84060,1750 Kearns Blvd,,Park City,UT,84060,,,,,Mike Mercuriali,4222,1201,
 Parlier Volleyball,PV,parent,,,,,,601 3rd St,,Parlier,CA,93648,601 3rd St,,Parlier,CA,93648,,,,,Steve Peterson,3830,434,no customer email; had NSA-internal email (juliet@nationalsportsapparel.com)
-Pasadena Elite Basketball Club,PEBC,parent,,,richardbigbylegacy@gmail.com,,,,,,,,,,,,,,,,,Mike Mercuriali,4388,1334,missing structured address
+Pasadena Elite Basketball Club,PEBC,sub,Pasadena High School,,richardbigbylegacy@gmail.com,,,,,,,,,,,,,,,,,Mike Mercuriali,4388,1334,missing structured address
 Pasadena Football,PF,sub,Pasadena High School,,dilanclark6@gmail.com,,,2925 E Sierra Madre Blvd,,Pasadena,CA,91107,2925 E Sierra Madre Blvd,,Pasadena,CA,91107,,,,,Steve Peterson,3300,91,
 Pasadena High School,PHS,parent,,,dilanclark6@gmail.com,,,2925 E Sierra Madre Blvd,,Pasadena,CA,91107,2925 E Sierra Madre Blvd,,Pasadena,CA,91107,,,,,Steve Peterson,4232,1207,
 Pasadena HS Boys Soccer,PHBS,sub,Pasadena High School,,,,,2925 E Sierra Madre Blvd,,Pasadena,CA,91107,2925 E Sierra Madre Blvd,,Pasadena,CA,91107,,,,,Jered Hunt,3764,389,no customer email
 Pasadena HS Girls Soccer,PHGS,sub,Pasadena High School,,,,,2925 E Sierra Madre Blvd,,Pasadena,CA,91107,2925 E Sierra Madre Blvd,,Pasadena,CA,91107,,,,,Steve Peterson,3803,412,no customer email
-Pasadena HS Golf,PHG,parent,,,,,,2925 E Sierra Madre Blvd,91107,Pasadena,CA,,2925 E Sierra Madre Blvd,91107,Pasadena,CA,,,,,,Jered Hunt,3693,337,no customer email; missing structured address
+Pasadena HS Golf,PHG,sub,Pasadena High School,,,,,2925 E Sierra Madre Blvd,91107,Pasadena,CA,,2925 E Sierra Madre Blvd,91107,Pasadena,CA,,,,,,Jered Hunt,3693,337,no customer email; missing structured address
 Pasadena HS Track and Field,PHTAF,sub,Pasadena High School,,acrespo13@gmail.com,,,2925 E Sierra Madre Blvd,,Pasadena,CA,91107,2925 E Sierra Madre Blvd,,Pasadena,CA,91107,,,,,Chase Koissian,4166,1154,
 Patrick Henry High School Girl's Soccer,PHHSGS,parent,,,jrenfro.phwomensoccer@yahoo.com,(619) 823-9968,,6702 Wandermere Drive,,San Diego,CA,92120,6702 Wandermere Drive,,San Diego,CA,92120,,,,,Mike Mercuriali,3932,557,
 Patterson Road Elementary,PRE,parent,,,jbanks@orcutt-schools.net,(805) 938-8750,,400 Patterson Rd,,Santa Maria,CA,93455,400 Patterson Rd,,Santa Maria,CA,93455,,,,,Mike Mercuriali,5267,5409,
@@ -1027,20 +1027,20 @@ Phoenix Pepper Patch,PPP,parent,,,aggyrun@gmail.com,,,4643 N. 31st St,,Phoenix,A
 Pierpoint Elementary Scool,PES,parent,,,jcross8484@hotmail.com,,,1254 Matha's Vineyard Ct,,Ventura,CA,93001,1254 Matha's Vineyard Ct,,Ventura,CA,93001,,,,,Jered Hunt,3998,1015,
 Pillar Football,PF,parent,,,,,,,,,,,,,,,,,,,,Steve Peterson,3562,251,no customer email; missing structured address
 Placer High School,PHS,parent,,,,,,275 Orange St,,Auburn,CA,95603,275 Orange St,,Auburn,CA,95603,,,,,Jeff Bianchini,3706,348,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
-Placer Football,PF,parent,,,,,,3909 Richardson Drive,C/O Melissa Cutter,Auburn,CA,95602,3909 Richardson Drive,C/O Melissa Cutter,Auburn,CA,95602,,,,,Jeff Bianchini,3714,354,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
+Placer Football,PF,sub,Placer High School,,,,,3909 Richardson Drive,C/O Melissa Cutter,Auburn,CA,95602,3909 Richardson Drive,C/O Melissa Cutter,Auburn,CA,95602,,,,,Jeff Bianchini,3714,354,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 Pleasant Valley School,PVS,parent,,,ahines@gousd.org,(530) 644-9620,,3171 Pleasant Valley Road,,Placerville,CA,95667,3171 Pleasant Valley Road,,Placerville,CA,95667,,,,,Jeff Bianchini,4733,1632,
 Point Loma HS Beach Volleyball,PLHBV,parent,,,suepassman@gmail.com,,,,,,,,,,,,,,,,,,4319,1275,missing structured address
 Point Loma HS Boys Soccer,PLHBS,parent,,,,,,3748 Wawona Dr,,San Diego,CA,92106,3748 Wawona Dr,,San Diego,CA,92106,,,,,Mike Mercuriali,3813,419,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 Point Loma Youth Football,PLYF,parent,,,svargie13@gmail.com,,,,,,,,,,,,,,,,,Mike Mercuriali,4244,1217,missing structured address
 Ponca City United FC,PCUF,parent,,,,,,,,,,,,,,,,,,,,Mike Mercuriali,4324,1279,no customer email; had NSA-internal email (merc@nationalsportsapparel.com); missing structured address
 Port Townsend Little League,PTLL,parent,,,,,,271 Cub Road,,Port Townsend,WA,98368,271 Cub Road,,Port Townsend,WA,98368,,,,,Kelly Bean,5293,5430,no customer email
-Portola High School,PHS,parent,,,aosburn@pcoe.k12.ca.us,,,155 6th Ave,,Portola,CA,96122,155 6th Ave,,Portola,CA,96122,,,,,Kelly Bean,5125,5282,
+Portola High School,PHS,sub,Portola High School,,aosburn@pcoe.k12.ca.us,,,155 6th Ave,,Portola,CA,96122,155 6th Ave,,Portola,CA,96122,,,,,Kelly Bean,5125,5282,
 Portola High School Flag Football,PHSFF,sub,Portola (HS),,,,,1001 Cadence,,Irvine,CA,92618,1001 Cadence,,Irvine,CA,92618,,,,,Jered Hunt,4414,1358,no customer email
 Portola HS Boys Basketball,PHBB,sub,Portola (HS),,BrianSmith@iusd.org,,,1001 Cadence,,Irvine,CA,92618,1001 Cadence,,Irvine,CA,92618,,,,,Jered Hunt,3492,199,
-Portola Springs Elementary,PSE,parent,,,KristiSmith@iusd.org,,,12100 Portola Springs,,Irvine,CA,92618,12100 Portola Springs,,Irvine,CA,92618,,,,,Jered Hunt,3564,253,
+Portola Springs Elementary,PSE,sub,Portola High School,,KristiSmith@iusd.org,,,12100 Portola Springs,,Irvine,CA,92618,12100 Portola Springs,,Irvine,CA,92618,,,,,Jered Hunt,3564,253,
 Poway High School Flag Football,PHSFF,sub,Poway High School,,,,,15500 Espola Rd.,,Poway,CA,92064,15500 Espola Rd.,,Poway,CA,92064,,,,,Mike Mercuriali,4376,1323,no customer email; had NSA-internal email (merc@nationalsportsapparel.com)
 Poway High School Girl's Soccer,PHSGS,sub,Poway High School,,rone@goongalagoonga.com,,,15500 Espola Rd.,,Poway,CA,92064,15500 Espola Rd.,,Poway,CA,92064,,,,,Mike Mercuriali,3984,1002,
-Poway Youth Soccer,PYS,parent,,,bertin@pvscpoway.com,,,13360 Canyon Back Lane,,Poway,CA,92064,13360 Canyon Back Lane,,Poway,CA,92064,,,,,Mike Mercuriali,4097,1093,
+Poway Youth Soccer,PYS,sub,Poway High School,,bertin@pvscpoway.com,,,13360 Canyon Back Lane,,Poway,CA,92064,13360 Canyon Back Lane,,Poway,CA,92064,,,,,Mike Mercuriali,4097,1093,
 Preuss Volleyball,PV,parent,,,pwirszyla@preuss.ucsd.edu,,,,,,,,,,,,,,,,,Mike Mercuriali,4734,1633,missing structured address
 Primetime Basketball,PB,parent,,,anthony@wilsongirlsbasketball.com,,,16101 Old Valley Blvd,,La Puente,CA,91744,16101 Old Valley Blvd,,La Puente,CA,91744,,,,,Jered Hunt,4345,1297,
 Princeton Cross Country,PCC,parent,,,hunt2@princeton.edu,,,Brad Hunt,351 Franklin Avenue,Princeton,NJ,08540,Brad Hunt,351 Franklin Avenue,Princeton,NJ,08540,,,,,Kelly Bean,4574,1493,
@@ -1062,15 +1062,15 @@ Rebels SC Coronado,RSC,parent,,,amartinez@rebelssoccerclub.com,,,987 Cabrillo Av
 Rebels SC East,RSE,parent,,,fabiola@rebelssoccerclub.com,,,10772 Cariuto Ct,,San Diego,CA,92124,10772 Cariuto Ct,,San Diego,CA,92124,,,,,Mike Mercuriali,4218,1198,
 Rebels SC Ramona,RSR,parent,,,hollyoriol@gmail.com,,,104 Main St,,Ramona,CA,92065,104 Main St,,Ramona,CA,92065,,,,,Mike Mercuriali,4313,1269,
 Rebels Softball,RS,parent,,,natd301@icloud.com,,,740 s bethel rd,,Templeton,CA,93465,740 s bethel rd,,Templeton,CA,93465,,,,,Kelly Bean,4569,1488,
-Redlands East Valley HS Flag FB,REVHFF,parent,,,,,,31000 E Colton Ave,,Redlands,CA,92374,31000 E Colton Ave,,Redlands,CA,92374,,,,,Jered Hunt,4379,1326,no customer email
+Redlands East Valley HS Flag FB,REVHFF,sub,Redlands High School,,,,,31000 E Colton Ave,,Redlands,CA,92374,31000 E Colton Ave,,Redlands,CA,92374,,,,,Jered Hunt,4379,1326,no customer email
 Redlands HS Softball,RHS,sub,Redlands High School,,nate_roque@redlands.k12.ca.us,,,840 E Citrus Ave,,Redlands,CA,92374,840 E Citrus Ave,,Redlands,CA,92374,,,,,Jered Hunt,4055,1057,
 Reed Basketball,RB,parent,,,tolinivega@gmail.com,,,1350 Baring Blvd,,Sparks,NV,89434,1350 Baring Blvd,,Sparks,NV,89434,,,,,Tim Kelly,4006,1023,
 Reedley College Athletics,RCA,parent,,,kevin.helmey@reedleycollege.edu,,,995 N Reed Ave,,Reedley,CA,93654,995 N Reed Ave,,Reedley,CA,93654,,,,,Kevin McCormack,4531,1453,
 Reedley College Football,RCF,sub,Reedley College Athletics,,Kevin.helmey@reedleycollege.edu,,,995 N Reed Ave,,Reedley,CA,93654,995 N Reed Ave,,Reedley,CA,93654,,,,,Kevin McCormack,4330,1284,
 Reedley College Residence Hall,RCRH,sub,Reedley College Athletics,,,,,attn Jennifer Roland,995 N Reed Ave,Reedley,CA,93654,attn Jennifer Roland,995 N Reed Ave,Reedley,CA,93654,,,,,Kevin McCormack,4532,1454,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
 Reedley College Softball,RCS,sub,Reedley College Athletics,,,,,995 N Reed Ave,,Reedley,CA,93654,995 N Reed Ave,,Reedley,CA,93654,,,,,Kevin McCormack,4339,1292,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
-Reedley College Receiving,RCR,parent,,,,,,995 N Reed Ave,Central Warehouse,Reedley,CA,93654-2017,995 N Reed Ave,Central Warehouse,Reedley,CA,93654-2017,,,,,Kevin McCormack,4892,5092,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
-Reedley College Residence Hall,RCRH,parent,,,,,,"995 N Reed Ave, RES Bldg",Residence Hall,Reedley,CA,Reedley,"995 N Reed Ave, RES Bldg",Residence Hall,Reedley,CA,Reedley,,,,,Kevin McCormack,4818,5033,no customer email
+Reedley College Receiving,RCR,sub,Reedley High School,,,,,995 N Reed Ave,Central Warehouse,Reedley,CA,93654-2017,995 N Reed Ave,Central Warehouse,Reedley,CA,93654-2017,,,,,Kevin McCormack,4892,5092,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
+Reedley College Residence Hall,RCRH,sub,Reedley High School,,,,,"995 N Reed Ave, RES Bldg",Residence Hall,Reedley,CA,Reedley,"995 N Reed Ave, RES Bldg",Residence Hall,Reedley,CA,Reedley,,,,,Kevin McCormack,4818,5033,no customer email
 Reedley College Volleyball,RCV,sub,Reedley College Athletics,,,,,995 N Reed Ave,,Reedley,CA,93654,995 N Reed Ave,,Reedley,CA,93654,,,,,Kevin McCormack,4411,1355,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
 Reedley HS Boys Tennis,RHBT,sub,Reedley High School,,,(559) 576-1881,,"740 W North Ave,",,Reedley,CA,93654,"740 W North Ave,",,Reedley,CA,93654,,,,,Kevin McCormack,5219,5366,no customer email
 Reedley HS Football,RHF,sub,Reedley High School,,annema-s@kcusd.com,(559) 576-1881,,1502 I Street,,Reedley,CA,93654,1502 I Street,,Reedley,CA,93654,,,,,Kevin McCormack,4250,1222,
@@ -1120,16 +1120,16 @@ San Bernardino Valley College Baseball,SBVCB,parent,,,sbvcbaseball@gmail.com,,,7
 San Clemente HS Beach Volleyball,SCHBV,parent,,,dshastings@sbcglobal.net,,,700 Avenida Pico,,San Clemente,CA,92673,700 Avenida Pico,,San Clemente,CA,92673,,,,,Chase Koissian,3476,188,
 San Diego City College Men's Soccer,SDCCMS,sub,San Diego City College,,Ctolles@sdccd.edu,,,1313 Park Blvd,,San Diego,CA,92101,1313 Park Blvd,,San Diego,CA,92101,,,,,Mike Mercuriali,4314,1270,
 San Diego City College Tennis,SDCCT,sub,San Diego City College,,blupian@sdccd.edu,,,1313 Park Blvd,,San Diego,CA,92101,1313 Park Blvd,,San Diego,CA,92101,,,,,Mike Mercuriali,5017,5191,
-San Diego City College Volleyball,SDCCV,parent,,,adent@sdccd.edu,,,3375 Camino Del Rio South,,San Diego,CA,92108-3883,3375 Camino Del Rio South,,San Diego,CA,92108-3883,,,,,Mike Mercuriali,4268,1235,
+San Diego City College Volleyball,SDCCV,sub,San Diego City College,,adent@sdccd.edu,,,3375 Camino Del Rio South,,San Diego,CA,92108-3883,3375 Camino Del Rio South,,San Diego,CA,92108-3883,,,,,Mike Mercuriali,4268,1235,
 San Diego City College Women's Soccer,SDCCWS,sub,San Diego City College,,croget@sdccd.edu,,,1313 B St,,San Diego,CA,92101,1313 B St,,San Diego,CA,92101,,,,,Mike Mercuriali,4315,1271,
-San Diego Engraving,SDE,parent,,,info@sdengraving.com,,,11611 Rancho Bernardo Rd Suite 104,,San Diego,CA,92127,11611 Rancho Bernardo Rd Suite 104,,San Diego,CA,92127,,,,,Mike Mercuriali,4350,1302,
+San Diego Engraving,SDE,sub,San Diego High School,,info@sdengraving.com,,,11611 Rancho Bernardo Rd Suite 104,,San Diego,CA,92127,11611 Rancho Bernardo Rd Suite 104,,San Diego,CA,92127,,,,,Mike Mercuriali,4350,1302,
 San Diego High School,SDHS,parent,,,pcoover@sandi.net,,,1405 Park Blvd,,San Diego,CA,92101,1405 Park Blvd,,San Diego,CA,92101,,,,,Mike Mercuriali,4373,1321,
 San Diego High School Boys Soccer,SDHSBS,sub,San Diego High School,,cedroarc@gmail.com,,,1405 Park Blvd,,San Diego,CA,92101,1405 Park Blvd,,San Diego,CA,92101,,,,,Mike Mercuriali,4155,1146,
 San Diego High School Girl's Basketball,SDHSGB,sub,San Diego High School,,abird2@sandi.net,,,1405 Park Blvd,,San Diego,CA,92101,1405 Park Blvd,,San Diego,CA,92101,,,,,Mike Mercuriali,4429,1371,
 San Diego High School Girl's Soccer,SDHSGS,sub,San Diego High School,,,,,1405 Park Blvd,,San Diego,CA,92101,1405 Park Blvd,,San Diego,CA,92101,,,,,Mike Mercuriali,4005,1022,no customer email; had NSA-internal email (merc@nationalsportsapparel.com)
-San Diego State Beach Volleyball,SDSBV,parent,,,rileyapra@gmail.com,,,5141 Ewing St,,San Diego,CA,92115,5141 Ewing St,,San Diego,CA,92115,,,,,Mike Mercuriali,4889,5090,
-San Diego State University Men's Soccer,SDSUMS,parent,,,,,,,,,,,,,,,,,,,,Mike Mercuriali,5280,5420,no customer email; missing structured address
-San Diego State University Women's Lacrosse,SDSUWL,parent,,,kylee.white@sdsu.edu,,,5500 Campanile Drive,,San Diego,CA,92182,5500 Campanile Drive,,San Diego,CA,92182,,,,,Mike Mercuriali,4390,1336,
+San Diego State Beach Volleyball,SDSBV,sub,San Diego High School,,rileyapra@gmail.com,,,5141 Ewing St,,San Diego,CA,92115,5141 Ewing St,,San Diego,CA,92115,,,,,Mike Mercuriali,4889,5090,
+San Diego State University Men's Soccer,SDSUMS,sub,San Diego High School,,,,,,,,,,,,,,,,,,,Mike Mercuriali,5280,5420,no customer email; missing structured address
+San Diego State University Women's Lacrosse,SDSUWL,sub,San Diego High School,,kylee.white@sdsu.edu,,,5500 Campanile Drive,,San Diego,CA,92182,5500 Campanile Drive,,San Diego,CA,92182,,,,,Mike Mercuriali,4390,1336,
 San Dieguito HS Boys Soccer,SDHBS,parent,,,bkgoldman@gmail.com,,,800 Santa Fe Dr,,Encinitas,CA,92024,800 Santa Fe Dr,,Encinitas,CA,92024,,,,,Mike Mercuriali,3987,1005,
 San Francisco Distance Project,SFDP,parent,,,carin.ward@gmail.com,,,Carin Marrs,1036 Clement Street,San Francisco,CA,94118,Carin Marrs,1036 Clement Street,San Francisco,CA,94118,,,,,Kelly Bean,4525,1447,
 San Joaquin Memorial Women's Volleyball,SJMWV,sub,San Joaquin Memorial High School,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,5229,5376,no customer email
@@ -1140,12 +1140,12 @@ San Luis Obispo Boosters,SLOB,sub,San Luis Obispo High School,,lbmichel1@gmail.c
 San Luis Obispo Flag Football,SLOFF,sub,San Luis Obispo High School,,rpuccini@slcusd.org,,,1499 San Luis Dr,,San Luis Obispo,CA,93401,1499 San Luis Dr,,San Luis Obispo,CA,93401,,,,,Kelly Bean,4540,1461,
 San Luis Obispo Football,SLOF,sub,San Luis Obispo High School,,,,,1499 San Luis Dr,,San Luis Obispo,CA,93401,1499 San Luis Dr,,San Luis Obispo,CA,93401,,,,,Kelly Bean,4539,1460,no customer email; had NSA-internal email (kelly@nationalsportsapparel.com)
 San Luis Obispo Girls Basketball,SLOGB,sub,San Luis Obispo High School,,dmonroe@slcusd.org,,,1499 San Luis Dr,,San Luis Obispo,CA,93401,1499 San Luis Dr,,San Luis Obispo,CA,93401,,,,,Kelly Bean,4655,1559,
-San Luis Obispo Marching Band,SLOMB,parent,,,philip.steckling@gmail.com,,,1499 San Luis Dr,,San Luis Obispo,CA,93401,1499 San Luis Dr,,San Luis Obispo,CA,93401,,,,,Kelly Bean,4621,1530,
+San Luis Obispo Marching Band,SLOMB,sub,San Luis Obispo High School,,philip.steckling@gmail.com,,,1499 San Luis Dr,,San Luis Obispo,CA,93401,1499 San Luis Dr,,San Luis Obispo,CA,93401,,,,,Kelly Bean,4621,1530,
 San Luis Obispo Softball,SLOS,sub,San Luis Obispo High School,,,,,1499 San Luis Dr,,San Luis Obispo,CA,93401,1499 San Luis Dr,,San Luis Obispo,CA,93401,,,,,Kelly Bean,4517,1441,no customer email; had NSA-internal email (kelly@nationalsportsapparel.com)
 San Luis Obispo Tennis,SLOT,sub,San Luis Obispo High School,,,,,1499 San Luis Dr,,San Luis Obispo,CA,93401,1499 San Luis Dr,,San Luis Obispo,CA,93401,,,,,Kelly Bean,4760,1655,no customer email; had NSA-internal email (kelly@nationalsportsapparel.com)
 SLO Boys Basketball,SBB,sub,Slo High School,,DGomes@slcusd.org,,,1499 San Luis Dr,,San Luis Obispo,CA,93401,1499 San Luis Dr,,San Luis Obispo,CA,93401,,,,,Sharon Day-Monroe,5311,5447,
 SLO Track and Field,STAF,sub,Slo High School,,nsteele@slcusd.org,,,1499 San Luis Dr,,San Luis Obispo,CA,93401,1499 San Luis Dr,,San Luis Obispo,CA,93401,,,,,Kelly Bean,5211,5361,
-San Marcos Field Hockey Club,SMFHC,parent,,,knightsfieldhockey@gmail.com,,,1615 San Marcos Blvd,,San Marcos,CA,92069,1615 San Marcos Blvd,,San Marcos,CA,92069,,,,,Mike Mercuriali,5084,5246,
+San Marcos Field Hockey Club,SMFHC,sub,San Marcos High School,,knightsfieldhockey@gmail.com,,,1615 San Marcos Blvd,,San Marcos,CA,92069,1615 San Marcos Blvd,,San Marcos,CA,92069,,,,,Mike Mercuriali,5084,5246,
 San Marcos High School,SMHS,parent,,,merc@myprimesports.com,,,760 Camino Magnifico,,San Marcos,CA,92069,760 Camino Magnifico,,San Marcos,CA,92069,,,,,Mike Mercuriali,3928,553,
 San Marcos HS Boys Soccer,SMHBS,sub,San Marcos High School,,adam@ourcitysc.com,,,215 Mata Way,Building 4,San Marcos,CA,92069,215 Mata Way,Building 4,San Marcos,CA,92069,,,,,Mike Mercuriali,3929,554,
 San Marcos HS Field Hockey,SMHFH,sub,San Marcos High School,,knightsfieldhockey@gmail.com,,,1615 San Marcos Blvd,,San Marcos,CA,92069,1615 San Marcos Blvd,,San Marcos,CA,92069,,,,,Mike Mercuriali,3961,581,
@@ -1155,19 +1155,19 @@ San Ysidro High School Boys Soccer,SYHSBS,parent,,,cmora@hawkingcharter.org,,,13
 San Ysidro High School Girls Soccer,SYHSGS,sub,San Ysidro High School,,syhsgvpoloaviles@gmail.com,,,5353 Airway Road,,San Diego,CA,92154,5353 Airway Road,,San Diego,CA,92154,,,,,Mike Mercuriali,4104,1099,
 San Ysidro HS Baseball,SYHB,sub,San Ysidro High School,,rjaguilar988@gmail.com,,,2935 Brando,,San Diego,CA,92154,2935 Brando,,San Diego,CA,92154,,,,,Jered Hunt,3875,518,
 Sanger HS Girls Basketball,SHGB,sub,Sanger High School,,fidel_alva@sangerusd.net,,,1045 N Bethel Ave,,Sanger,CA,93657,1045 N Bethel Ave,,Sanger,CA,93657,,,,,Jered Hunt,3482,192,
-Sanger Legacy Basketball,SLB,parent,,,fidel_alva@sangerusd.net,,,,,,,,,,,,,,,,,Jered Hunt,5240,5385,missing structured address
+Sanger Legacy Basketball,SLB,sub,Sanger High School,,fidel_alva@sangerusd.net,,,,,,,,,,,,,,,,,Jered Hunt,5240,5385,missing structured address
 Sanger West Football,SWF,parent,,,,,,1850 S Fowler Ave,,Fresno,CA,93727,1850 S Fowler Ave,,Fresno,CA,93727,,,,,Kevin McCormack,4347,1299,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
 Santa Ana College,SAC,parent,,,Kunipo-Aguirre_Myriah@sac.edu,,,1530 W 17th Street,,Santa Ana,CA,92706,1530 W 17th Street,,Santa Ana,CA,92706,,,,,Gayle Peterson,3729,SAC W Volleyball,
 Santa Ana College Athletics Men's Soccer,SACAMS,sub,Santa Ana College,,,,,1530 W 17th Street,,Santa Ana,CA,92706,1530 W 17th Street,,Santa Ana,CA,92706,,,,,Jered Hunt,3339,105,no customer email; had NSA-internal email (Jered@nationalsportsapparel.com)
 Santa Ana College Foundation,SACF,sub,Santa Ana College,,,,,1530 W 17th Street,,Santa Ana,CA,92706,1530 W 17th Street,,Santa Ana,CA,92706,,,,,Andrea,3780,399,no customer email
 Santa Ana College Men's Soccer,SACMS,sub,Santa Ana College,,Rubio_Miguel@sac.edu,(714) 564-6337 x 46337,,1530 W 17th St,,Santa Ana,CA,92706,1530 W 17th St,,Santa Ana,CA,92706,,,,,Mike Mercuriali,4748,1643,
 Santa Ana High School Girls Soccer,SAHSGS,sub,Santa Ana High School,,Brian.Lillie@sausd.us,,,520 West Walnut St,,Santa Ana,CA,92701,520 West Walnut St,,Santa Ana,CA,92701,,,,,Jered Hunt,3467,182,
-Santa Ana United,SAU,parent,,,jfuentes2726@icloud.com,(714) 341-3647,,"Mile Square, 16801 Euclid St",,Santa Ana,CA,92704,"Mile Square, 16801 Euclid St",,Santa Ana,CA,92704,,,,,Mike Mercuriali,4174,1162,
-Santa Ana Valley HS Softball,SAVHS,parent,,,Brenda.Ortiz@sausd.us,,,1801 Greenville St,,Santa Ana,CA,92704,1801 Greenville St,,Santa Ana,CA,92704,,,,,Jered Hunt,3550,242,
-Santa Barbara Gym Club,SBGC,parent,,,teamdirectorsbgc@gmail.com,,,,,,,,,,,,,,,,,Jered Hunt,3675,323,missing structured address
+Santa Ana United,SAU,sub,Santa Ana College,,jfuentes2726@icloud.com,(714) 341-3647,,"Mile Square, 16801 Euclid St",,Santa Ana,CA,92704,"Mile Square, 16801 Euclid St",,Santa Ana,CA,92704,,,,,Mike Mercuriali,4174,1162,
+Santa Ana Valley HS Softball,SAVHS,sub,Santa Ana College,,Brenda.Ortiz@sausd.us,,,1801 Greenville St,,Santa Ana,CA,92704,1801 Greenville St,,Santa Ana,CA,92704,,,,,Jered Hunt,3550,242,
+Santa Barbara Gym Club,SBGC,sub,Santa Barbara Unified School District,,teamdirectorsbgc@gmail.com,,,,,,,,,,,,,,,,,Jered Hunt,3675,323,missing structured address
 Santa Barbara HS Girls Basketball,SBHGB,sub,Santa Barbara High School,,carlinagonzalez@sbunified.org,,,700 E Anapamu St,,Santa Barbara,CA,93103,700 E Anapamu St,,Santa Barbara,CA,93103,,,,,Jered Hunt,4726,1625,
 Santa Barbara HS Volleyball,SBHV,sub,Santa Barbara High School,,,,,700 E Anapamu St,,Santa Barbara,CA,93103,700 E Anapamu St,,Santa Barbara,CA,93103,,,,,Jered Hunt,2672,Santa Barbara HS  Volleyball,no customer email
-Santa Barbara Unified School District,SBUSD,parent,,,theunzueta@gmail.com,,,700 E Anapamu St,,Santa Barbara,CA,93103,700 E Anapamu St,,Santa Barbara,CA,93103,,,,,Steve Peterson,3338,104,
+Santa Barbara Unified School District,SBUSD,sub,Santa Barbara High School,,theunzueta@gmail.com,,,700 E Anapamu St,,Santa Barbara,CA,93103,700 E Anapamu St,,Santa Barbara,CA,93103,,,,,Steve Peterson,3338,104,
 Santa Clara PAL,SCP,parent,,,,,,,,,,,,,,,,,,,,Gayle Peterson,3291,85,no customer email; missing structured address
 Santa Cruz HS Girls Basketball,SCHGB,parent,,,toddtrowbridgesc@gmail.com,,,415 Walnut Ave,,Santa Cruz,CA,95060,415 Walnut Ave,,Santa Cruz,CA,95060,,,,,Jered Hunt,4445,1385,
 Santa Margarita Catholic HS,SMCH,parent,,,cheyne.gordon@gmail.com,,,22062 Antonio Pkwy,,Rancho Santa Margarita,CA,92688,22062 Antonio Pkwy,,Rancho Santa Margarita,CA,92688,,,,,Gayle Peterson,3546,SMCHS Girls Soccer,
@@ -1210,7 +1210,7 @@ Seton Catholic Cheer,SCC,sub,Seton Catholic High School,,gorunfast@gmail.com,,,9
 Seton Catholic Football,SCF,sub,Seton Catholic High School,,dchase@setonhigh.org,,,9000 NE 64th Ave,,Vancouver,WA,98665,9000 NE 64th Ave,,Vancouver,WA,98665,,,,,Kelly Bean,4501,1429,
 Seton Catholic Golf,SCG,sub,Seton Catholic High School,,gorunfast@gmail.com,,,9000 NE 64th Ave,,Vancouver,WA,98665,9000 NE 64th Ave,,Vancouver,WA,98665,,,,,Kelly Bean,4644,1549,
 Seton Catholic Volleyball,SCV,sub,Seton Catholic High School,,P.Kent@setonhigh.org,,,9000 NE 64th Ave,,Vancouver,WA,98665,9000 NE 64th Ave,,Vancouver,WA,98665,,,,,Kelly Bean,4623,1532,
-Seton Catholic Womens Soccer,SCWS,parent,,,,,,9000 NE 64th Ave,,Vancouver,WA,98665,9000 NE 64th Ave,,Vancouver,WA,98665,,,,,Kelly Bean,4681,1582,no customer email; had NSA-internal email (kelly@nationalsportsapparel.com)
+Seton Catholic Womens Soccer,SCWS,sub,Seton Catholic High School,,,,,9000 NE 64th Ave,,Vancouver,WA,98665,9000 NE 64th Ave,,Vancouver,WA,98665,,,,,Kelly Bean,4681,1582,no customer email; had NSA-internal email (kelly@nationalsportsapparel.com)
 Seton Catholic Wrestling,SCW,sub,Seton Catholic High School,,gorunfast@gmail.com,,,9000 NE 64th Ave,,Vancouver,WA,98665,9000 NE 64th Ave,,Vancouver,WA,98665,,,,,Kelly Bean,4553,1472,
 Seton Drama Department,SDD,parent,,,jnaughton@setonhigh.org,,,9000 NE 64th Ave,,Vancouver,WA,98665,9000 NE 64th Ave,,Vancouver,WA,98665,,,,,Kelly Bean,5049,5218,
 Seton Fishing,SF,parent,,,dgalster@setonhigh.org,,,9000 NE 64th Ave,,Vancouver,WA,98665,9000 NE 64th Ave,,Vancouver,WA,98665,,,,,Kelly Bean,5247,5392,
@@ -1222,7 +1222,7 @@ Shervin Erfani,SE,parent,,,s@joga.im,,,3953 Stonebridge Lane,,Rancho Santa Fe,CA
 "Sierra Electric, Inc.",SEI,parent,,,Jmurphy@sierraelec.net,,,4120 N. Swallow Ave.,,Pasco,WA,99301,4120 N. Swallow Ave.,,Pasco,WA,99301,,,,,Kelly Bean,4930,5118,
 Sierra Lutheran High School,SLHS,parent,,,bmchenry@slhs.com,,,3601 Romans Rd,,Carson City,NV,89705,3601 Romans Rd,,Carson City,NV,89705,,,,,Steve Peterson,4234,1209,
 Sierra Lutheran High School Baseball,SLHSB,sub,Sierra Lutheran High School,,ryanefahey@hotmail.com,,,3601 Romans Rd,,Carson City,NV,89705,3601 Romans Rd,,Carson City,NV,89705,,,,,Chase Koissian,4528,1450,
-Sierra Lutheran Ski,SLS,parent,,,bmchenry@slhs.com,,,3601 Romans Rd,,Carson City,NV,89705,3601 Romans Rd,,Carson City,NV,89705,,,,,Steve Peterson,4944,5129,
+Sierra Lutheran Ski,SLS,sub,Sierra Lutheran High School,,bmchenry@slhs.com,,,3601 Romans Rd,,Carson City,NV,89705,3601 Romans Rd,,Carson City,NV,89705,,,,,Steve Peterson,4944,5129,
 Sierra Pacific High School,SPHS,parent,,,,,,2137 W Vineyard Ct,,Hanford,CA,93230,2137 W Vineyard Ct,,Hanford,CA,93230,,,,,Mike Mercuriali,4086,1084,no customer email; had NSA-internal email (juliet@nationalsportsapparel.com)
 Sierra View CC,SVC,parent,,,Kylesvcc@yahoo.com,(916) 783-4600,,105 Alta Vista Avenue,,Roseville,CA,95678,105 Alta Vista Avenue,,Roseville,CA,95678,,,,,Jeff Bianchini,4088,1086,
 Sierra Vista HS Wrestling,SVHW,parent,,,svwrestling1961@gmail.com,,,3600 Frazier St,,Baldwin Park,CA,91706,3600 Frazier St,,Baldwin Park,CA,91706,,,,,Jered Hunt,3776,396,
@@ -1230,14 +1230,14 @@ Sigma Nu Fraternity,SNF,parent,,,gorunfast@gmail.com,,,"975 S Rural Road, Buildi
 Silicon Valley International,SVI,parent,,,marthagudiel@svintl.org,,,151 Laura Lane,,Palo Alto,CA,94303,151 Laura Lane,,Palo Alto,CA,94303,,,,,Mike Mercuriali,4871,5077,
 Silver Screenprinting,SS,parent,,,,,,1135 S Rock Blvd Suite #340,,Reno,NV,89502,1135 S Rock Blvd Suite #340,,Reno,NV,89502,,,,,Steve Peterson,4650,1555,no customer email
 SJM,S,sub,Sjm High School,,,(559) 268-9251,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,4535,1457,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
-San Joaquin Memorial Athletic Department,SJMAD,parent,,,fpucher@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4705,1605,
-San Joaquin Memorial Athletic Training,SJMAT,parent,,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4704,1604,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
+San Joaquin Memorial Athletic Department,SJMAD,sub,San Joaquin Memorial High School,,fpucher@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4705,1605,
+San Joaquin Memorial Athletic Training,SJMAT,sub,San Joaquin Memorial High School,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4704,1604,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 San Joaquin Memorial Baseball,SJMB,sub,San Joaquin Memorial High School,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,4541,1462,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 San Joaquin Memorial Basketball,SJMB,sub,San Joaquin Memorial High School,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4724,1623,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 San Joaquin Memorial Football,SJMF,sub,San Joaquin Memorial High School,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,4536,1458,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 San Joaquin Memorial Girls Basketball,SJMGB,sub,San Joaquin Memorial High School,,Jwhitfield@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4725,1624,
 San Joaquin Memorial Girls Soccer,SJMGS,sub,San Joaquin Memorial High School,,rcordova@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4744,1639,
-San Joaquin Memorial M Volleyball,SJMMV,parent,,,fpucher@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,5025,5198,
+San Joaquin Memorial M Volleyball,SJMMV,sub,San Joaquin Memorial High School,,fpucher@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,5025,5198,
 San Joaquin Memorial Rugby,SJMR,sub,San Joaquin Memorial High School,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,4971,5149,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 San Joaquin Memorial Soccer,SJMS,sub,San Joaquin Memorial High School,,rcordova@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4745,1640,
 San Joaquin Memorial Softball,SJMS,sub,San Joaquin Memorial High School,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4866,5072,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
@@ -1247,8 +1247,8 @@ Skyline Church Select Basketball,SCSB,parent,,,gwilliams@skylinechurch.org,,,113
 Skyline Church Volleyball,SCV,parent,,,gwilliams@skylinechurch.org,,,11330 Campo Rd,,La Mesa,CA,91941,11330 Campo Rd,,La Mesa,CA,91941,,,,,Mike Mercuriali,4220,1200,
 SLAM!,S,parent,,,taylor.velarde@slamnv.org,,,1095 Fielders St,,Henderson,NV,89011,1095 Fielders St,,Henderson,NV,89011,,,,,Jered Hunt,5197,5349,
 Slate Group Property Development,SGPD,parent,,,Tristen@slategroup.co,(303) 502-4542,,1601 County Road 49,,Hudson,CO,80642,1601 County Road 49,,Hudson,CO,80642,,,,,Gayle Peterson,5181,Slate Group,
-SLO COUNTY XC,SCX,parent,,,,,,1499 San Luis Drive,,San Luis Obispo,CA,93401,1499 San Luis Drive,,San Luis Obispo,CA,93401,,,,,Kelly Bean,4933,5121,no customer email
-SLO Youth Baseball,SYB,parent,,,,,,900 Southwood Dr,,San Luis Obispo,CA,93401,900 Southwood Dr,,San Luis Obispo,CA,93401,,,,,Sharon Day-Monroe,5207,5357,no customer email; had NSA-internal email (sharon@nationalsportsapparel.com)
+SLO COUNTY XC,SCX,sub,Slo High School,,,,,1499 San Luis Drive,,San Luis Obispo,CA,93401,1499 San Luis Drive,,San Luis Obispo,CA,93401,,,,,Kelly Bean,4933,5121,no customer email
+SLO Youth Baseball,SYB,sub,Slo High School,,,,,900 Southwood Dr,,San Luis Obispo,CA,93401,900 Southwood Dr,,San Luis Obispo,CA,93401,,,,,Sharon Day-Monroe,5207,5357,no customer email; had NSA-internal email (sharon@nationalsportsapparel.com)
 Smarden Supply Company,SSC,parent,,,josuna@smardan.com,,,14009 Halldale Ave,,Gardena,CA,90249,14009 Halldale Ave,,Gardena,CA,90249,,,,,Jered Hunt,5058,5226,
 Snoqualmie Valley Transportation,SVT,parent,,,cooperb@svsd410.org,,,8001 Silva Ave SE,,Snoqualmie,WA,98065,8001 Silva Ave SE,,Snoqualmie,WA,98065,,,,,Kelly Bean,5113,5270,
 Sobrato HS Football,SHF,parent,,,coachrueda@yahoo.com,,,401 Burnett Ave,,Morgan Hill,CA,95037,401 Burnett Ave,,Morgan Hill,CA,95037,,,,,Jered Hunt,5171,5325,
@@ -1271,8 +1271,8 @@ Southwest High School Lacrosse,SHSL,sub,Southwest High School,,,,,1685 Hollister
 Southwest High School Softball,SHSS,sub,Southwest High School,,,,,1685 Hollister St,,San Diego,CA,92154,1685 Hollister St,,San Diego,CA,92154,,,,,Mike Mercuriali,3976,592,no customer email; had NSA-internal email (merc@nationalsportsapparel.com)
 Southwest High School Men's Soccer,SHSMS,sub,Southwest High School,,Jason.Snyder@sweetwaterschools.org,,,1685 Hollister Street,,San Diego,CA,92154,1685 Hollister Street,,San Diego,CA,92154,,,,,Mike Mercuriali,4790,1681,
 Southwest High School Southwest HS Wrestling,SHSSHW,sub,Southwest High School,,Jason.Snyder@sweetwaterschools.org,,,1685 Hollister St,,San Diego,CA,92154,1685 Hollister St,,San Diego,CA,92154,,,,,Mike Mercuriali,4183,1170,
-Southwest Middle School,SMS,parent,,,david.singh@sweetwaterschools.org,,,2710 Iris Ave,,San Diego,CA,92154,2710 Iris Ave,,San Diego,CA,92154,,,,,Mike Mercuriali,4355,1307,
-Southwest Middle Soccer,SMS,parent,,,tonazul@gmail.com,,,2710 Iris Ave,,San Diego,CA,92154,2710 Iris Ave,,San Diego,CA,92154,,,,,Mike Mercuriali,5284,5422,
+Southwest Middle School,SMS,sub,Southwest High School,,david.singh@sweetwaterschools.org,,,2710 Iris Ave,,San Diego,CA,92154,2710 Iris Ave,,San Diego,CA,92154,,,,,Mike Mercuriali,4355,1307,
+Southwest Middle Soccer,SMS,sub,Southwest High School,,tonazul@gmail.com,,,2710 Iris Ave,,San Diego,CA,92154,2710 Iris Ave,,San Diego,CA,92154,,,,,Mike Mercuriali,5284,5422,
 Space Force Gaming,SFG,parent,,,,,,11401 Harmon Road,Site 500,Fort Worth,TX,76177,11401 Harmon Road,Site 500,Fort Worth,TX,76177,,,,,Mike Mercuriali,4017,1029,no customer email; had NSA-internal email (merc@nationalsportsapparel.com)
 Spearhead Construction,SC,parent,,,oscarandgonzalez@gmail.com,,,495 Arroyo Seco Dr,,San Diego,CA,92114,495 Arroyo Seco Dr,,San Diego,CA,92114,,,,,Mike Mercuriali,4673,1576,
 Special Olympics Irvine Eagles,SOIE,parent,,,jayceedean@gmail.com,,,23 Wharton Court,,Irvine,CA,92617,23 Wharton Court,,Irvine,CA,92617,,,,,Kelly Bean,5032,5204,
@@ -1317,7 +1317,7 @@ Spirit Christian Academy Student Store,SCASS,parent,,,,,,815 Esplanade St,,ORang
 Sporting FC,SF,parent,,,cameronmdejong@gmail.com,,,454 Belcaro Way,,Oak Park,CA,91377,454 Belcaro Way,,Oak Park,CA,91377,,,,,Jered Hunt,4048,1052,
 Sporting SD,SS,parent,,,joaquin@sportingsd.com,,,2970 Cypress Ave,,Lemon Grove,CA,91945,2970 Cypress Ave,,Lemon Grove,CA,91945,,,,,Mike Mercuriali,4110,1104,
 Springfield High School,SHS,parent,,,cawells1924@outlook.com,,,875 7th St,,Springfield,OR,97477,875 7th St,,Springfield,OR,97477,,,,,Kelly Bean,4841,5053,
-St Mary School,SMS,parent,,,akoeth@saintmaryschool.com,,,,,,,,,,,,,,,,,Jeff Bianchini,3969,587,missing structured address
+St Mary School,SMS,sub,St Mary Elementary School,,akoeth@saintmaryschool.com,,,,,,,,,,,,,,,,,Jeff Bianchini,3969,587,missing structured address
 St Robert Catholic School,SRCS,parent,,,,,,2251 Irvin Way,,Sacramento,CA,95822,2251 Irvin Way,,Sacramento,CA,95822,,,,,Steve Peterson,3644,303,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 St Thomas More Catholic School,STMCS,parent,,,colleenkmiltenberg@gmail.com,,,920 Carmichael St,,Chapel Hill,NC,27514,920 Carmichael St,,Chapel Hill,NC,27514,,,,,Kelly Bean,4743,1638,
 STM Lacrosse,SL,parent,,,,,,920 Carmichael St,,Chapel Hill,NC,27514,920 Carmichael St,,Chapel Hill,NC,27514,,,,,Kelly Bean,5270,5412,no customer email
@@ -1332,7 +1332,7 @@ St. Francis HS Softball,SFHS,sub,St. Francis High School Athletics,,kketcham@stf
 St. Francis HS Track,SFHT,sub,St. Francis High School Athletics,,kketcham@stfrancishs.org,,,5900 Elvas Ave,,Sacramento,CA,95819,5900 Elvas Ave,,Sacramento,CA,95819,,,,,Steve Peterson,3607,280,
 St. Francis HS Volleyball,SFHV,sub,St. Francis High School Athletics,,kketcham@stfrancishs.org,,,5900 Elvas Ave,,Sacramento,CA,95819,5900 Elvas Ave,,Sacramento,CA,95819,,,,,Steve Peterson,3070,99,
 St. Francis HS Water Polo,SFHWP,sub,St. Francis High School Athletics,,,,,5900 Elvas Ave,,Sacramento,CA,95819,5900 Elvas Ave,,Sacramento,CA,95819,,,,,Steve Peterson,3843,493,no customer email
-St. Francis Medicine & More Club,SFMMC,parent,,,kketcham@stfrancishs.org,,,5900 Elvas Ave,,Sacramento,CA,95819,5900 Elvas Ave,,Sacramento,CA,95819,,,,,Steve Peterson,3494,201,
+St. Francis Medicine & More Club,SFMMC,sub,St. Francis High School Athletics,,kketcham@stfrancishs.org,,,5900 Elvas Ave,,Sacramento,CA,95819,5900 Elvas Ave,,Sacramento,CA,95819,,,,,Steve Peterson,3494,201,
 St. Francis Store,SFS,sub,St. Francis High School,,kketcham@stfrancishs.org,,,,,,,,,,,,,,,,,Steve Peterson,3336,103,missing structured address
 St. Francis Tennis,SFT,sub,St. Francis High School,,kketcham@stfrancishs.org,,,,,,,,,,,,,,,,,Steve Peterson,3335,102,missing structured address
 St. Ignatius Parish School,SIPS,parent,,,,,,3245 Arden Way,,Sacramento,CA,95825,3245 Arden Way,,Sacramento,CA,95825,,,,,Steve Peterson,3651,306,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
@@ -1346,7 +1346,7 @@ Steele Canyon HS Baseball,SCHB,sub,Steele Canyon High School,,ddirksen@schscouga
 Steele Canyon HS Boy's Soccer,SCHBS,sub,Steele Canyon High School,,jjohnson7119@gmail.com,,,12440 Campo Rd,,Spring Valley,CA,91978,12440 Campo Rd,,Spring Valley,CA,91978,,,,,Mike Mercuriali,4111,1105,
 Steele Canyon HS Girl's Volleyball,SCHGV,sub,Steele Canyon High School,,wholland@schscougars.org,,,12440 Campo Rd,,Spring Valley,CA,91978,12440 Campo Rd,,Spring Valley,CA,91978,,,,,Jered Hunt,3642,301,
 Stella HS Charter Academy,SHCA,parent,,,doliver@brightstarschools.org,,,1600 W Imperial Hwy,,Los Angeles,CA,90047,1600 W Imperial Hwy,,Los Angeles,CA,90047,,,,,Jered Hunt,4586,1502,
-Stella HS Charter Academy G Soccer,SHCAGS,parent,,,,,,1600 W Imperial Blvd,,Los Angeles,CA,90047,1600 W Imperial Blvd,,Los Angeles,CA,90047,,,,,Jered Hunt,3469,184,no customer email
+Stella HS Charter Academy G Soccer,SHCAGS,sub,Stella HS Charter Academy,,,,,1600 W Imperial Blvd,,Los Angeles,CA,90047,1600 W Imperial Blvd,,Los Angeles,CA,90047,,,,,Jered Hunt,3469,184,no customer email
 Steve i Magnani,SIM,parent,,,steve.magnani@gmail.com,,,,,,,,,,,,,,,,,Gayle Peterson,3674,Savage Invitational,missing structured address
 Stockdale High School,SHS,parent,,,brandon_parks@kernhigh.org,(661) 303-9348 661-747-1137,,2800 Buena Vista Rd.,,Bakersfield,CA,93311,2800 Buena Vista Rd.,,Bakersfield,CA,93311,,,,,Kevin McCormack,2699,408,
 Stockdale High School Athletics,SHSA,sub,Stockdale High School,,,,,2800 Buena Vista Rd,,Bakersfield,CA,93311,2800 Buena Vista Rd,,Bakersfield,CA,93311,,,,,Kevin McCormack,3786,Brandon Parks,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
@@ -1419,8 +1419,8 @@ Tokyo Socal,TS,parent,,,dpowroznik@tokyosocal.com,,,1-21-23 Shibuya,Shibuya Cast
 Train First,TF,parent,,,quaranjsr@gmail.com,1 (267) 970-5322,,2906 Worthing Common,,Livermore,CA,94550,2906 Worthing Common,,Livermore,CA,94550,,,,,Jered Hunt,4078,1077,
 Tri City Christian School Boys Basketball,TCCSBB,parent,,,darrick.jones@tccs.org,,,302 N Emerald Dr,,Vista,CA,92083,302 N Emerald Dr,,Vista,CA,92083,,,,,Mike Mercuriali,4464,1402,
 Tri City Christian School Girls Basketball,TCCSGB,parent,,,darrick.jones@tccs.org,,,,,,,,,,,,,,,,,Mike Mercuriali,4896,5094,missing structured address
-Trinity United Youth,TUY,parent,,,sarah@tupcsa.org,,,3922 Prospect Ave,,Santa Ana,CA,92705,3922 Prospect Ave,,Santa Ana,CA,92705,,,,,Steve Peterson,4575,1494,
-Troy - NHS,TN,parent,,,kgrant@fjuhsd.org,(949) 315-1410,,2200 Dorothy Ln.,,Fullerton,CA,92831,2200 Dorothy Ln.,,Fullerton,CA,92831,,,,,Aaron Mason,3990,1008,
+Trinity United Youth,TUY,sub,Trinity United HS,,sarah@tupcsa.org,,,3922 Prospect Ave,,Santa Ana,CA,92705,3922 Prospect Ave,,Santa Ana,CA,92705,,,,,Steve Peterson,4575,1494,
+Troy - NHS,TN,sub,Troy High School,,kgrant@fjuhsd.org,(949) 315-1410,,2200 Dorothy Ln.,,Fullerton,CA,92831,2200 Dorothy Ln.,,Fullerton,CA,92831,,,,,Aaron Mason,3990,1008,
 Troy Basketball,TB,sub,Troy High School,,,,,2200 E Dorothy Lane,,Fullerton,CA,92831,2200 E Dorothy Lane,,Fullerton,CA,92831,,,,,Aaron Mason,3670,319,no customer email; had NSA-internal email (aaron@nationalsportsapparel.com)
 Troy HS Boys Soccer,THBS,sub,Troy (HS),,lmaldonado@fjuhsd.org,,,2200 Dorothy Lane,,Fullerton,CA,92831,2200 Dorothy Lane,,Fullerton,CA,92831,,,,,Jered Hunt,4112,1106,
 Troy HS Flag Football,THFF,sub,Troy (HS),,dshirota@fjuhsd.org,,,2200 Dorothy Ave,,Fullerton,CA,92831,2200 Dorothy Ave,,Fullerton,CA,92831,,,,,Jered Hunt,3695,339,
@@ -1445,27 +1445,27 @@ University City High School Girls Soccer,UCHSGS,sub,University City College,,sd.
 University City High School Soccer,UCHSS,sub,University City College,,,,,6949 Genesee Ave,,San Diego,CA,92122,6949 Genesee Ave,,San Diego,CA,92122,,,,,Mike Mercuriali,4030,1039,no customer email; had NSA-internal email (merc@nationalsportsapparel.com)
 University HS Boys Lacrosse,UHBL,sub,University HS Security,,,,,"4771 Campus Dr,",,Irvine,CA,92612,"4771 Campus Dr,",,Irvine,CA,92612,,,,,Jered Hunt,3107,234,no customer email
 University HS Flag Football,UHFF,sub,University HS Security,,,,,4771 Campus Dr.,,Irvine,CA,92612,4771 Campus Dr.,,Irvine,CA,92612,,,,,Gayle Peterson,3842,492,no customer email
-University High School Cross Country & Track,UHSCCT,parent,,,carin.ward@gmail.com,,,3065 Jackson St,,San Francisco,CA,94115,3065 Jackson St,,San Francisco,CA,94115,,,,,Kelly Bean,4907,5101,
+University High School Cross Country & Track,UHSCCT,sub,University High School,,carin.ward@gmail.com,,,3065 Jackson St,,San Francisco,CA,94115,3065 Jackson St,,San Francisco,CA,94115,,,,,Kelly Bean,4907,5101,
 University HS Baseball,UHB,sub,University HS Security,,WesleyShaw@iusd.org,,,4771 Campus Dr,,Irvine,CA,92612,4771 Campus Dr,,Irvine,CA,92612,,,,,Jered Hunt,3528,225,
-University HS Charter School,UHCS,parent,,,EMAIL-BXF4496@LAUSD.NET,,,11800 Texas Ave,,Los Angeles,CA,90025,11800 Texas Ave,,Los Angeles,CA,90025,,,,,Jered Hunt,4929,5117,
+University HS Charter School,UHCS,sub,University High School,,EMAIL-BXF4496@LAUSD.NET,,,11800 Texas Ave,,Los Angeles,CA,90025,11800 Texas Ave,,Los Angeles,CA,90025,,,,,Jered Hunt,4929,5117,
 University HS Girl's Basketball,UHGB,sub,University HS Security,,jgass2000@gmail.com,,,4771 Campus Dr,,Irvine,CA,92612,4771 Campus Dr,,Irvine,CA,92612,,,,,Jered Hunt,3409,146,
-University of California Riverside,UOCR,parent,,,gerardoh@ucr.edu,,,900 University Ave,,Riverside,CA,92521,900 University Ave,,Riverside,CA,92521,,,,,Mike Mercuriali,4534,1456,
-University of La Verne Womens Basketball,UOLVWB,parent,,,amason@laverne.edu,,,1950 3rd St,,La Verne,CA,91750,1950 3rd St,,La Verne,CA,91750,,,,,Steve Peterson,3491,198,
-University of Redlands Athletics,UORA,parent,,,,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Andrea,4377,1324,no customer email
-University of Redlands Baseball,UORB,parent,,,spencer_lopes@redlands.edu,,,955 N Grove St,University of Redlands Athletics,Redlands,CA,92374,955 N Grove St,University of Redlands Athletics,Redlands,CA,92374,,,,,Jered Hunt,5067,5233,
-University of Redlands Flag Football,UORFF,parent,,,,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,4408,1352,no customer email
-University of Redlands Football,UORF,parent,,,,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,3869,515,no customer email
-University of Redlands Mens Basketball,UORMB,parent,,,,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,3817,423,no customer email
-University of Redlands Softball,UORS,parent,,,,,,955 N Grove St,University of Redlands Athletics,Redlands,CA,92374,955 N Grove St,University of Redlands Athletics,Redlands,CA,92374,,,,,Jered Hunt,5235,5380,no customer email
-University of Redlands Swim & Dive,UORSD,parent,,,spencer_lopes@redlands.edu,,,955 N Grove St,,Redlands,CA,92373,955 N Grove St,,Redlands,CA,92373,,,,,Jered Hunt,4736,1635,
-University of Redlands Tennis,UORT,parent,,,spencer_lopes@redlands.edu,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,4016,1028,
-University of Redlands Track,UORT,parent,,,spencer_lopes@redlands.edu,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,4349,1301,
-University of Redlands Water Polo,UORWP,parent,,,spencer_lopes@redlands.edu,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,3977,593,
-University of Redlands Womens Volleyball,UORWV,parent,,,spencer_lopes@redlands.edu,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,4475,1410,
-University of Redlands Womens Basketball,UORWB,parent,,,,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,4087,1085,no customer email
-University of Redlands Womens Lacrosse,UORWL,parent,,,,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,4053,1055,no customer email
-University of Redlands Womens Soccer,UORWS,parent,,,,,,1200 E Colton Ave,,Redlands,CA,92373,1200 E Colton Ave,,Redlands,CA,92373,,,,,Jered Hunt,3787,405,no customer email
-University of San Diego Volleyball,UOSDV,parent,,,csmith@hs-ps.com,,,5998 Alcala Park,,San Diego,CA,92110,5998 Alcala Park,,San Diego,CA,92110,,,,,Steve Peterson,4891,5091,
+University of California Riverside,UOCR,sub,University High School,,gerardoh@ucr.edu,,,900 University Ave,,Riverside,CA,92521,900 University Ave,,Riverside,CA,92521,,,,,Mike Mercuriali,4534,1456,
+University of La Verne Womens Basketball,UOLVWB,sub,University High School,,amason@laverne.edu,,,1950 3rd St,,La Verne,CA,91750,1950 3rd St,,La Verne,CA,91750,,,,,Steve Peterson,3491,198,
+University of Redlands Athletics,UORA,sub,University High School,,,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Andrea,4377,1324,no customer email
+University of Redlands Baseball,UORB,sub,University High School,,spencer_lopes@redlands.edu,,,955 N Grove St,University of Redlands Athletics,Redlands,CA,92374,955 N Grove St,University of Redlands Athletics,Redlands,CA,92374,,,,,Jered Hunt,5067,5233,
+University of Redlands Flag Football,UORFF,sub,University High School,,,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,4408,1352,no customer email
+University of Redlands Football,UORF,sub,University High School,,,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,3869,515,no customer email
+University of Redlands Mens Basketball,UORMB,sub,University High School,,,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,3817,423,no customer email
+University of Redlands Softball,UORS,sub,University High School,,,,,955 N Grove St,University of Redlands Athletics,Redlands,CA,92374,955 N Grove St,University of Redlands Athletics,Redlands,CA,92374,,,,,Jered Hunt,5235,5380,no customer email
+University of Redlands Swim & Dive,UORSD,sub,University High School,,spencer_lopes@redlands.edu,,,955 N Grove St,,Redlands,CA,92373,955 N Grove St,,Redlands,CA,92373,,,,,Jered Hunt,4736,1635,
+University of Redlands Tennis,UORT,sub,University High School,,spencer_lopes@redlands.edu,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,4016,1028,
+University of Redlands Track,UORT,sub,University High School,,spencer_lopes@redlands.edu,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,4349,1301,
+University of Redlands Water Polo,UORWP,sub,University High School,,spencer_lopes@redlands.edu,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,3977,593,
+University of Redlands Womens Volleyball,UORWV,sub,University High School,,spencer_lopes@redlands.edu,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,4475,1410,
+University of Redlands Womens Basketball,UORWB,sub,University High School,,,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,4087,1085,no customer email
+University of Redlands Womens Lacrosse,UORWL,sub,University High School,,,,,955 N Grove St,,Redlands,CA,92374,955 N Grove St,,Redlands,CA,92374,,,,,Jered Hunt,4053,1055,no customer email
+University of Redlands Womens Soccer,UORWS,sub,University High School,,,,,1200 E Colton Ave,,Redlands,CA,92373,1200 E Colton Ave,,Redlands,CA,92373,,,,,Jered Hunt,3787,405,no customer email
+University of San Diego Volleyball,UOSDV,sub,University High School,,csmith@hs-ps.com,,,5998 Alcala Park,,San Diego,CA,92110,5998 Alcala Park,,San Diego,CA,92110,,,,,Steve Peterson,4891,5091,
 US Air Force,UAF,parent,,,justyn.guthier@us.af.mil,,,HQ Air Force Services Center,Joint Base,San Antonio Lackland-Kelly,TX,78224,HQ Air Force Services Center,Joint Base,San Antonio Lackland-Kelly,TX,78224,,,,,Mike Mercuriali,4075,1076,
 US Army- All Army Sports,UAAAS,parent,,,sarah.a.galon.naf@army.mil,,,62nd St & Support Ave,Bldg 23001,Fort Cavazos,TX,76544,62nd St & Support Ave,Bldg 23001,Fort Cavazos,TX,76544,,,,,Mike Mercuriali,4067,1068,
 Vail Vigilantes Volleyball Club,VVVC,parent,,,dargenziano1@gmail.com,,,,,Vail,AZ,85641,,,Vail,AZ,85641,,,,,Mike Mercuriali,4071,1072,missing structured address
@@ -1474,7 +1474,7 @@ Valentine Supply Co,VSC,parent,,,,,,,,,,,,,,,,,,,,Chase Koissian,4316,1272,no cu
 Valhalla Athletics,VA,sub,Valhalla High School,,,,,1725 Hillsdale Rd,,El Cajon,CA,92019,1725 Hillsdale Rd,,El Cajon,CA,92019,,,,,Mike Mercuriali,4072,1073,no customer email; had NSA-internal email (merc@nationalsportsapparel.com)
 Valhalla Boys Soccer,VBS,sub,Valhalla High School,,setapart4jc@me.com,,,1725 Hillsdale Rd,,El Cajon,CA,92019,1725 Hillsdale Rd,,El Cajon,CA,92019,,,,,Mike Mercuriali,4022,1033,
 Valhalla Girl's Soccer,VGS,sub,Valhalla High School,,setapart4jc@me.com,,,1725 Hillsdale Rd,,El Cajon,CA,92019,1725 Hillsdale Rd,,El Cajon,CA,92019,,,,,Mike Mercuriali,3923,549,
-Valhalla HS Girls Lacrosse,VHGL,parent,,,bupham@guhsd.net,,,1725 Hillsdale Rd,,El Cajon,CA,92019,1725 Hillsdale Rd,,El Cajon,CA,92019,,,,,Mike Mercuriali,4294,1253,
+Valhalla HS Girls Lacrosse,VHGL,sub,Valhalla High School,,bupham@guhsd.net,,,1725 Hillsdale Rd,,El Cajon,CA,92019,1725 Hillsdale Rd,,El Cajon,CA,92019,,,,,Mike Mercuriali,4294,1253,
 Valley Heat Softball,VHS,parent,,,,,,,,,,,,,,,,,,,,Jeff Bianchini,3718,357,no customer email; had NSA-internal email (steve@nationalsportsapparel.com); missing structured address
 Valor Track Club,VTC,parent,,,jorgejabaz@gmail.com,,,,,,,,,,,,,,,,,Mike Mercuriali,5321,5456,missing structured address
 Vanguard Athletics,VA,sub,Vanguard High School,,ally.garrett@vanguard.edu,(714) 619-6620,,"55 Fair Dr,",,Costa Mesa,CA,92626,"55 Fair Dr,",,Costa Mesa,CA,92626,,,,,Gayle Peterson,4491,1422,
@@ -1488,14 +1488,14 @@ Vienna Little League,VLL,parent,,,cslancman@gmail.com,,,,,,,,,,,,,,,,,Kelly Bean
 Villa Fundamental School,VFS,parent,,,,,,1441 E Chestnut Ave,,Santa Ana,CA,92701,1441 E Chestnut Ave,,Santa Ana,CA,92701,,,,,Jered Hunt,3643,302,no customer email
 Vince Lopiccolo,VL,parent,,,v_lopiccolo@yahoo.com,,,649 Pepper Dr,,San Bruno,CA,94066,649 Pepper Dr,,San Bruno,CA,94066,,,,,Sharon Day-Monroe,5331,5465,
 Visalia Unified School District,VUSD,parent,,,,,,5000 W. Cypress Avenue,,Visalia,CA,93277,5000 W. Cypress Avenue,,Visalia,CA,93277,,,,,Kevin McCormack,4686,1587,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
-Visalia Youth Football,VYF,parent,,,,,,,,,CA,,,,,CA,,,,,,Kevin McCormack,4398,1344,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com); missing structured address
+Visalia Youth Football,VYF,sub,Visalia Unified School District,,,,,,,,CA,,,,,CA,,,,,,Kevin McCormack,4398,1344,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com); missing structured address
 Vista High School,VHS,parent,,,,,,1 Panther Way,,Vista,CA,92084,1 Panther Way,,Vista,CA,92084,,,,,Mike Mercuriali,3963,582,no customer email
 Vista High School Field Hockey,VHSFH,sub,Vista High School,,nicoleolguin@vistausd.org,,,1 Panther Way,,Vista,CA,92084,1 Panther Way,,Vista,CA,92084,,,,,Mike Mercuriali,5252,5396,
 Vista High School Football,VHSF,sub,Vista High School,,ryanmchale@vistausd.org,,,1 Panther Way,,Vista,CA,92084,1 Panther Way,,Vista,CA,92084,,,,,Mike Mercuriali,5299,5436,
 Vista High School Boys Soccer,VHSBS,sub,Vista High School,,hectorpradovista@gmail.com,,,1 Panther Way,,Vista,CA,92084,1 Panther Way,,Vista,CA,92084,,,,,Mike Mercuriali,4085,1083,
 Vista High School Girls Soccer,VHSGS,parent,,,jesussilva@vistausd.org,,,4680 North Avenue,,Oceanside,CA,92056,4680 North Avenue,,Oceanside,CA,92056,,,,,Mike Mercuriali,4305,1262,
-Vista Soccer Club,VSC,parent,,,hectorpradovista@gmail.com,,,337 Olive Ave,,Vista,CA,92083,337 Olive Ave,,Vista,CA,92083,,,,,Mike Mercuriali,3954,Vista Storm,
-Vista Soccer Club Coaches,VSCC,parent,,,hectorpradovista@gmail.com,,,337 Olive Ave,,Vista,CA,92083,337 Olive Ave,,Vista,CA,92083,,,,,Mike Mercuriali,4431,1373,
+Vista Soccer Club,VSC,sub,Vista High School,,hectorpradovista@gmail.com,,,337 Olive Ave,,Vista,CA,92083,337 Olive Ave,,Vista,CA,92083,,,,,Mike Mercuriali,3954,Vista Storm,
+Vista Soccer Club Coaches,VSCC,sub,Vista High School,,hectorpradovista@gmail.com,,,337 Olive Ave,,Vista,CA,92083,337 Olive Ave,,Vista,CA,92083,,,,,Mike Mercuriali,4431,1373,
 Waikato Lacrosse,WL,parent,,,,,,,,,,,,,,,,,,,,Steve Peterson,4090,1088,no customer email; had NSA-internal email (steve@nationalsportsapparel.com); missing structured address
 Walnut Creek High School Girls Soccer,WCHSGS,parent,,,,,,4423 San Bernardino St,,Montclair,CA,91763,4423 San Bernardino St,,Montclair,CA,91763,,,,,Mike Mercuriali,4199,1184,no customer email
 Walnut Grove Elementary,WGE,parent,,,margohmm@gmail.com,,,1999 Harvest Road,,Pleasanton,CA,94566,1999 Harvest Road,,Pleasanton,CA,94566,,,,,Steve Peterson,4778,1670,
@@ -1559,18 +1559,18 @@ Compton College Soccer,CCS,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,3271,,no custome
 Michael Moraga OTR,MMO,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,3272,,no customer email; missing structured address
 Conejo Bulldogs,CB,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,3275,,no customer email; missing structured address
 Milpitas Little League,MLL,parent,,,,,,,,,,,,,,,,,,,,SBS,3276,,no customer email; missing structured address
-Portola High School,PHS,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,3286,,no customer email; missing structured address
+Portola High School,PHS,sub,Portola High School,,,,,,,,,,,,,,,,,,,Jered Hunt,3286,,no customer email; missing structured address
 Thousand Oaks Knights,TOK,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,3288,,no customer email; missing structured address
 jesse Bethel HS Athletics,JBHA,parent,,,,,,,,,,,,,,,,,,,,Steve Peterson,3273,,no customer email; missing structured address
-West Hills Cross Country,WHCC,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,3277,,no customer email; missing structured address
-Orange Vista HS VB,OVHV,parent,,,avelasquez@valverde.edu,,,,,,,,,,,,,,,,,Jered Hunt,3241,,missing structured address
-Esperanza Basketball,EB,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,3282,,no customer email; missing structured address
+West Hills Cross Country,WHCC,sub,West Hills High School,,,,,,,,,,,,,,,,,,,Jered Hunt,3277,,no customer email; missing structured address
+Orange Vista HS VB,OVHV,sub,Orange High School,,avelasquez@valverde.edu,,,,,,,,,,,,,,,,,Jered Hunt,3241,,missing structured address
+Esperanza Basketball,EB,sub,Esperanza High School,,,,,,,,,,,,,,,,,,,Jered Hunt,3282,,no customer email; missing structured address
 Inderkum Football,IF,sub,Inderkum High School,,,,,,,,,,,,,,,,,,,John Miller,3256,,no customer email; missing structured address
 Overfelt High School,OHS,parent,,,,,,,,,,,,,,,,,,,,SBS,3260,,no customer email; missing structured address
 Long Beach Poly HS Girls Basketball,LBPHGB,parent,,,buggs061@yahoo.com,,,,,,,,,,,,,,,,,Jered Hunt,3505,,missing structured address
 Valley Pure,VP,parent,,,,,,,,,,,,,,,,,,,,Kevin McCormack,3991,,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com); missing structured address
 Ontario Reign,OR,parent,,,cjohns@lakings.com,,,555 N Nash St,,El Segundo,CA,,555 N Nash St,,El Segundo,CA,,,,,,Jered Hunt,2612,,missing structured address
-Orange Lutheran Ice Hockey,OLIH,parent,,,,(714) 998-5151,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,3002,,no customer email
+Orange Lutheran Ice Hockey,OLIH,sub,Orange Lutheran Ice Academy,,,(714) 998-5151,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,3002,,no customer email
 Warren HS Girls Basketball,WHGB,sub,Warren High School,,dangomez@dusd.net,(562) 922-4685,,11627 Brookshire Ave,,Downey,CA,90241,11627 Brookshire Ave,,Downey,CA,90241,,,,,Aaron Mason,3792,,
 Giving Children Hope,GCH,parent,,,JStevenson@gchope.org,(714) 293-1627,,8332 Commonwealth Ave.,,Buena Park,CA,90621,8332 Commonwealth Ave.,,Buena Park,CA,90621,,,,,Gayle Peterson,2534,,
 Beckman,B,parent,,,CSCHILLIZZI@beckman.com,,,ADLM 41537900,200 Ridge Rd,Dayton,NJ,08810,ADLM 41537900,200 Ridge Rd,Dayton,NJ,08810,,,,,Gayle Peterson,4481,,
@@ -1584,7 +1584,7 @@ Sacramento Performance Volleyball Club,SPVC,parent,,,curtisgee@hotmail.com,(916)
 Orange Lutheran Boy's Tennis,OLBT,sub,Orange Lutheran High School,,Chris.chi@lhsoc.org,(714) 998-5151,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Jered Hunt,2982,,
 Magnolia HS Boy's Volleyball,MHBV,sub,Magnolia High School,,austinesparza981498@outlook.com,,,2295 W Broadway Ave,K-119,Anaheim,CA,92804,2295 W Broadway Ave,K-119,Anaheim,CA,92804,,,,,Jered Hunt,2593,,
 Pasadena Baseball,PB,sub,Pasadena High School,,rucker.christopher@pusd.us,,,3765 Canfield Rd.,,Pasadena,CA,91107,3765 Canfield Rd.,,Pasadena,CA,91107,,,,,Chase Koissian,2627,,
-Sanger HS Volleyball,SHV,parent,,,sierra_lebeau@sangerusd.net,,,1905 7th Street,,Sanger,CA,33657,1905 7th Street,,Sanger,CA,33657,,,,,Jered Hunt,2663,,
+Sanger HS Volleyball,SHV,sub,Sanger High School,,sierra_lebeau@sangerusd.net,,,1905 7th Street,,Sanger,CA,33657,1905 7th Street,,Sanger,CA,33657,,,,,Jered Hunt,2663,,
 Bayside Development,BD,parent,,,keith@bayside.llc,(303) 906-7604,,1601County Rd. 49,,Hudson,CO,80642,1601County Rd. 49,,Hudson,CO,80642,,,,,Gayle Peterson,4238,,
 Bishop Alemany Baseball,BAB,sub,Bishop Alemany HS,,RThompson@alemany.org,,,11111 N Alemany Dr,,Mission Hills,CA,91345,11111 N Alemany Dr,,Mission Hills,CA,91345,,,,,Jered Hunt,2852,,
 Damien HS Baseball,DHB,parent,,,lamonda@damien-hs.edu,,,2280 Damien Ave.,,La Verne,CA,91750,2280 Damien Ave.,,La Verne,CA,91750,,,,,Chase Koissian,2495,,
@@ -1594,7 +1594,7 @@ Fresno Pacific Athletics,FPA,sub,Fresno Pacific High School,,bryan.huettmann@fre
 Cal Poly Women's Baseball,CPWB,parent,,,mcculla925@gmail.com,,,1844 Canyon Circle Dr.,,San Luis Obispo,CA,93410,1844 Canyon Circle Dr.,,San Luis Obispo,CA,93410,,,,,Kelly Bean,4910,,
 Concordia University Soccer,CUS,sub,Concordia University Athletics,,Joshua.glover@cui.edu,(949) 214-3237,,1530 Concordia West,1530 Concordia West,Irvine,CA,92612,1530 Concordia West,1530 Concordia West,Irvine,CA,92612,,,,,Gayle Peterson,2910,,
 Orange Lutheran Girl's Water Polo,OLGWP,sub,Orange Lutheran High School,,Brenda.Villa@lhsoc.org,(714) 998-5151,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Jered Hunt,2999,,
-Orange Lutheran Spiritleaders,OLS,parent,,,Kim.Mirzaie@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,3010,,
+Orange Lutheran Spiritleaders,OLS,sub,Orange Lutheran High School,,Kim.Mirzaie@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,3010,,
 Orange Lutheran Baseball,OLB,sub,Orange Lutheran High School,,rj.farrell@lhsoc.org,(714) 998-5151 ext.659,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,2978,,
 Concordia University Women's Volleyball,CUWV,sub,Concordia University Athletics,,eryn.leja@cui.edu,,,1530 Concordia West,,Irvine,CA,92612,1530 Concordia West,,Irvine,CA,92612,,,,,Chase Koissian,2925,,
 Carlsbad High School Boy's Soccer,CHSBS,parent,,,leahcrane@mac.com,,,600 Airport Rd,,Oceanside,CA,92058,600 Airport Rd,,Oceanside,CA,92058,,,,,Mike Mercuriali,3949,,
@@ -1605,7 +1605,7 @@ We 'R Dance,WD,parent,,,marie.deanda1@gmail.com,,,1133 W Blaine St. Apt 13,,Rive
 Servite Tennis,ST,sub,Servite High School,,tludeke@servitehs.com,(714) 774-7575,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3065,,
 St. John Bosco Baseball,SJBB,sub,St. John Bosco (HS),,arojo@bosco.org,rsalvador@bosco.org,,3640 S. Bellflower Blvd.,,Bellflower,CA,90706,3640 S. Bellflower Blvd.,,Bellflower,CA,90706,,,,,Chase Koissian,3072,,
 Redlands High School,RHS,parent,,,cowboyshooter70@hotmail.com,(909) 307-5500,,840 E Citrus Ave,,Redlands,CA,92374,840 E Citrus Ave,,Redlands,CA,92374,,,,,Mike Mercuriali,4037,,
-Orange Lutheran Campus Safety,OLCS,parent,,,garret.ross@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,2984,,
+Orange Lutheran Campus Safety,OLCS,sub,Orange Lutheran High School,,garret.ross@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,2984,,
 No. Hollywood FC,NHF,parent,,,MayraCortez40@me.com,(818) 679-2875,,6939 Woodman Ave 316,,Van Nuys,CA,91405,6939 Woodman Ave 316,,Van Nuys,CA,91405,,,,,Gayle Peterson,2608,,
 St. Michael School,SMS,parent,,,bristyn.gorman@gmail.com,,,1733 Sardonyx Court,,Livermore,CA,94550,1733 Sardonyx Court,,Livermore,CA,94550,,,,,Kelly Bean,4890,,
 Robert McQueen High School,RMHS,parent,,,,(775) 746-5880,,6055 Lancer St,,Reno,NV,89523,6055 Lancer St,,Reno,NV,89523,,,,,Tim Kelly,3626,,no customer email
@@ -1622,7 +1622,7 @@ Bullard HS Girls Volleyball,BHGV,parent,,,wastaleyiii@gmail.com,,,4485 N John Al
 LAGU (LA Girls United),LGU,parent,,,shellyv5@yahoo.com,(562) 595-2464,,3048 Sastre Ave Apt 1/2,,El Monte,CA,91733,3048 Sastre Ave Apt 1/2,,El Monte,CA,91733,,,,,Gayle Peterson,2550,,
 Mesa Verde Track & Field,MVTF,sub,Mesa Verde High School,,travis.miller@sanjuan.edu,,,7501 Carriage Dr,,Citrus Heights,CA,95621,7501 Carriage Dr,,Citrus Heights,CA,95621,,,,,John Miller,3668,,
 JinenKai California,JC,parent,,,jinenkaicalifornia@gmail.com,,,7042 Ellicott Court,JinenKai California,Jurupa Valley,CA,91752,7042 Ellicott Court,JinenKai California,Jurupa Valley,CA,91752,,,,,Jered Hunt,2557,,
-Santa Barbara HS Football,SBHF,parent,,,nmendoza@sbunified.org,,,PO Box 24132,,Santa Barbara,CA,93121,PO Box 24132,,Santa Barbara,CA,93121,,,,,Jered Hunt,2673,,
+Santa Barbara HS Football,SBHF,sub,Santa Barbara Unified School District,,nmendoza@sbunified.org,,,PO Box 24132,,Santa Barbara,CA,93121,PO Box 24132,,Santa Barbara,CA,93121,,,,,Jered Hunt,2673,,
 Aliso Niguel HS Activities,ANHA,parent,,,CPROSS@capousd.org,,,28000 Woverine Way,,Aliso Viejo,CA,92656,28000 Woverine Way,,Aliso Viejo,CA,92656,,,,,Gayle Peterson,3616,,
 Bianco Landscape Management,BLM,parent,,,dlacey@blmservices.net,(916) 514-9550,,4321 Auburn Blvd,,Sacramento,CA,95841,4321 Auburn Blvd,,Sacramento,CA,95841,,,,,,3819,,
 Servite Soccer,SS,sub,Servite High School,,aramirez@servitehs.org,(714) 774-7575,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3060,,
@@ -1672,10 +1672,10 @@ Sunny Hills HS Football,SHHF,sub,Sunny Hills High School,,fgambrell@fjuhsd.org,,
 Garces Hail Mary Club,GHMC,parent,,,Tom.Ming@pensionmark.com,(661) 302-4357,,2800 Loma Linda Dr.,,Bakersfield,CA,93305,2800 Loma Linda Dr.,,Bakersfield,CA,93305,,,,,Gayle Peterson,2533,,
 Moreau Catholic Softball,MCS,sub,Moreau Catholic High School,,,,,27170 Mission Blvd,,Hayward,CA,94544,27170 Mission Blvd,,Hayward,CA,94544,,,,,Steve Peterson,3608,,no customer email
 Carlsbad High School,CHS,parent,,,leahcrane@mac.com,,,3557 Monroe St.,,Carlsbad,CA,92008,3557 Monroe St.,,Carlsbad,CA,92008,,,,,Mike Mercuriali,3948,,
-Mesa Verde Boys' Basketball,MVBB,parent,,,,,,7501 Carriage Dr,,Citrus Heights,CA,95621,7501 Carriage Dr,,Citrus Heights,CA,95621,,,,,John Miller,3590,,no customer email
+Mesa Verde Boys' Basketball,MVBB,sub,Mesa Verde High School,,,,,7501 Carriage Dr,,Citrus Heights,CA,95621,7501 Carriage Dr,,Citrus Heights,CA,95621,,,,,John Miller,3590,,no customer email
 Port City Basketball,PCB,parent,,,,,,,,,,,,,,,,,,,,John Miller,3665,,no customer email; missing structured address
-Vanguard Beach VB,VBV,parent,,,Kris.Dorn@vanguard.edu,,,55 Fair Drive,,Costa Mesa,CA,92626,55 Fair Drive,,Costa Mesa,CA,92626,,,,,Gayle Peterson,2723,,
-Incline Village Recreation Center,IVRC,parent,,,,,,980 Incline Way,,Incline Village,NV,89451,980 Incline Way,,Incline Village,NV,89451,,,,,Steve Peterson,3284,,no customer email
+Vanguard Beach VB,VBV,sub,Vanguard High School,,Kris.Dorn@vanguard.edu,,,55 Fair Drive,,Costa Mesa,CA,92626,55 Fair Drive,,Costa Mesa,CA,92626,,,,,Gayle Peterson,2723,,
+Incline Village Recreation Center,IVRC,sub,Incline High School,,,,,980 Incline Way,,Incline Village,NV,89451,980 Incline Way,,Incline Village,NV,89451,,,,,Steve Peterson,3284,,no customer email
 Thomas Downey HS Boys' Basketball,TDHBB,sub,Thomas Downey HS,,mitch.evans4@yahoo.com,,,1000 Coffee Rd,,Modesto,CA,95355,1000 Coffee Rd,,Modesto,CA,95355,,,,,Steve Peterson,3483,,
 South Coast Gymnastics,SCG,parent,,,southcoastgymgirlsteam@gmail.com,,,17850 Sky Park Circle,,Irvine,CA,92614,17850 Sky Park Circle,,Irvine,CA,92614,,,,,Gayle Peterson,2693,,
 Long Beach State Softball,LBSS,sub,Long Beach State High School,,panita.thanatharn@csulb.edu,,,1331 Palo Verde Avenue,,Long Beach,CA,90840,1331 Palo Verde Avenue,,Long Beach,CA,90840,,,,,Chase Koissian,3417,,
@@ -1686,7 +1686,7 @@ Ortiz Enterprises,OE,parent,,,cpineda@ortizent.com,,,6 Cushing #200,,Irvine,CA,9
 St Mary Elementary School,SMES,parent,,,akoeth@saintmaryschool.com,(916) 452-1100,,1351 58th Street,,Sacramento,CA,95819,1351 58th Street,,Sacramento,CA,95819,,,,,Jeff Bianchini,3971,,
 Santa Ana High School Basketball,SAHSB,sub,Santa Ana High School,,felmasry6122@gmail.com,,,520 West Walnut St,,Santa Ana,CA,92701,520 West Walnut St,,Santa Ana,CA,92701,,,,,Gayle Peterson,3615,,
 US Kendo,UK,parent,,,jasonshoji@gmail.com,,,2872 Silva St,,Lakewood,CA,90712,2872 Silva St,,Lakewood,CA,90712,,,,,Gayle Peterson,3663,,
-Independence High Booster Club,IHBC,parent,,,,,,8001 Old River Rd,,Bakersfield,CA,93311,8001 Old River Rd,,Bakersfield,CA,93311,,,,,Kevin McCormack,4050,,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
+Independence High Booster Club,IHBC,sub,Independence High School,,,,,8001 Old River Rd,,Bakersfield,CA,93311,8001 Old River Rd,,Bakersfield,CA,93311,,,,,Kevin McCormack,4050,,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
 Independence Baseball,IB,sub,Independence High School,,,,,8001 Old River Road,,BAKERSFIELD,CA,93311,8001 Old River Road,,BAKERSFIELD,CA,93311,,,,,Kevin McCormack,3620,,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
 Liqui Moly USA,LMU,parent,,,susan.mcdermott@liqui-moly.com,(714) 300-3645,,"18009 Sky Park Circle, Suite L",,Irvine,CA,92614,"18009 Sky Park Circle, Suite L",,Irvine,CA,92614,,,,,Gayle Peterson,3907,,
 Modesto Junior College Football,MJCF,parent,,,,,,435 College Ave,,Modesto,CA,95350,435 College Ave,,Modesto,CA,95350,,,,,John Miller,3664,,no customer email
@@ -1732,21 +1732,21 @@ Birmingham Community Charter HS,BCCH,parent,,,D.Saxon@birminghamcharter.com,(310
 Cross Border Medical Tourism,CBMT,parent,,,across@servitehs.org,,,,,,,,,,,,,,,,,Gayle Peterson,3522,,missing structured address
 Orange Lutheran Wrestling,OLW,sub,Orange Lutheran High School,,heber.castillo@lhsoc.org,(714) 998-5151,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Jered Hunt,3019,,
 Biola University Softball,BUS,sub,Biola University,,busoftball@biola.edu,,,13301 University Dr,,La Mirada,CA,90639,13301 University Dr,,La Mirada,CA,90639,,,,,Gayle Peterson,2840,,
-Orange Lutheran Vocal Music,OLVM,parent,,,dan.vu@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,3016,,
+Orange Lutheran Vocal Music,OLVM,sub,Orange Lutheran High School,,dan.vu@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,3016,,
 Supernova VB Club,SVC,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,3526,,no customer email; missing structured address
-Incline High Ski Team,IHST,parent,,,,,,499 Village Blvd,,Incline Village,NV,89451,499 Village Blvd,,Incline Village,NV,89451,,,,,Tim Kelly,3535,,no customer email; had NSA-internal email (tk@nationalsportsapparel.com)
+Incline High Ski Team,IHST,sub,Incline High School,,,,,499 Village Blvd,,Incline Village,NV,89451,499 Village Blvd,,Incline Village,NV,89451,,,,,Tim Kelly,3535,,no customer email; had NSA-internal email (tk@nationalsportsapparel.com)
 Long Beach State Athletics,LBSA,sub,Long Beach State High School,,Paige.Mackowiak@csulb.edu,,,1250 Bellflower Blvd,,Long Beach,CA,90840,1250 Bellflower Blvd,,Long Beach,CA,90840,,,,,Chase Koissian,3543,,
-Concordia University Track and Field,CUTAF,parent,,,keegan.bloomfield@cui.edu,,,210 E Emerson Ave,,Orange,CA,92865,210 E Emerson Ave,,Orange,CA,92865,,,,,Chase Koissian,2919,,
+Concordia University Track and Field,CUTAF,sub,Concordia University Athletics,,keegan.bloomfield@cui.edu,,,210 E Emerson Ave,,Orange,CA,92865,210 E Emerson Ave,,Orange,CA,92865,,,,,Chase Koissian,2919,,
 Mission College Women's Basketball,MCWB,parent,,,antonio.velosojr@wvm.edu,,,14000 Fruitvale Ave,,Saratoga,CA,95070,14000 Fruitvale Ave,,Saratoga,CA,95070,,,,,Steve Peterson,2971,,
-Santa Monica Volleyball Club,SMVC,parent,,,anthony.elizondo@smvbc.com,(310) 619-3196,,2211 6th St.,,Santa Monica,CA,90405,2211 6th St.,,Santa Monica,CA,90405,,,,,Steve Peterson,2677,,
-Saddleback HS Football,SHF,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,3261,,no customer email; missing structured address
+Santa Monica Volleyball Club,SMVC,sub,Santa Monica College,,anthony.elizondo@smvbc.com,(310) 619-3196,,2211 6th St.,,Santa Monica,CA,90405,2211 6th St.,,Santa Monica,CA,90405,,,,,Steve Peterson,2677,,
+Saddleback HS Football,SHF,sub,Saddleback High School,,,,,,,,,,,,,,,,,,,Jered Hunt,3261,,no customer email; missing structured address
 Mesa Verde High School,MVHS,parent,,,,,,7501 Carriage Dr,,Citrus Heights,CA,95621,7501 Carriage Dr,,Citrus Heights,CA,95621,,,,,John Miller,3551,,no customer email; had NSA-internal email (jmiller@nationalsportsapparel.com)
 Servite Football,SF,sub,Servite High School,,creinert@servitehs.org,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Steve Peterson,3053,,
-Servite Formation,SF,parent,,,bronan@servitehs.org,(714) 774-7575 x 1449,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3055,,
-Servite Hockey,SH,parent,,,mmarshall@servitehs.org,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Chase Koissian,3057,,
+Servite Formation,SF,sub,Servite High School,,bronan@servitehs.org,(714) 774-7575 x 1449,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3055,,
+Servite Hockey,SH,sub,Servite High School,,mmarshall@servitehs.org,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Chase Koissian,3057,,
 Servite Rugby,SR,sub,Servite High School,,,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Steve Peterson,3059,,no customer email
 Servite Sports Medicine,SSM,sub,Servite High School,,dboroian@servitehs.org,(714) 774-7575,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Steve Peterson,3061,,
-Servite Strength & Conditioning,SSC,parent,,,mchandler@servitehs.org,(714) 774-7575,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3063,,
+Servite Strength & Conditioning,SSC,sub,Servite High School,,mchandler@servitehs.org,(714) 774-7575,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3063,,
 West Valley College Softball,WVCS,sub,West Valley College,,,,,14000 Fruitvale Ave,,Saratoga,CA,95070,14000 Fruitvale Ave,,Saratoga,CA,95070,,,,,Steve Peterson,3125,,no customer email
 West Valley College Swim,WVCS,sub,West Valley College,,Erika.Vargas@westvalley.edu,(408) 867-2200,,14000 Fruitvale Ave,,Saratoga,CA,95070,14000 Fruitvale Ave,,Saratoga,CA,95070,,,,,Steve Peterson,3127,,
 West Valley College Women's Volleyball,WVCWV,sub,West Valley College,,,(408) 867-2200,,14000 Fruitvale Ave,,Saratoga,CA,95070,14000 Fruitvale Ave,,Saratoga,CA,95070,,,,,Steve Peterson,3131,,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
@@ -1757,8 +1757,8 @@ Incline High School,IHS,parent,,,,,,499 Village Ave,,Incline Village,NV,89451,49
 Incline Soccer,IS,sub,Incline High School,,invasion74@yahoo.com,,,499 Village Blvd,,Incline Village,NV,89451,499 Village Blvd,,Incline Village,NV,89451,,,,,Tim Kelly,3296,,
 Westminster HS Flag Football,WHFF,sub,Westminster High School,,ealbright@hbuhsd.edu,,,14325 Goldenwest St,,Westminster,CA,92683,14325 Goldenwest St,,Westminster,CA,92683,,,,,Jered Hunt,3304,,
 Milwaukee Admirals,MA,parent,,,leichas@milwaukeeadmirals.com,,,510 W Kilbourn Ave,,Milwaukee,WI,53203,510 W Kilbourn Ave,,Milwaukee,WI,53203,,,,,Jered Hunt,3316,,
-Santa Rosa Women's Volleyball,SRWV,parent,,,asatherl@santarosa.edu,(707) 527-4011,,1501 Mendocino Avenue,,Santa Rosa,,95401,1501 Mendocino Avenue,,Santa Rosa,,95401,,,,,Gayle Peterson,2680,,
-Orange Lutheran First Responders Academy,OLFRA,parent,,,joy.karavedas@lhsoc.org,,,2222 N. Santiago Blvd,,Orange,CA,92867,2222 N. Santiago Blvd,,Orange,CA,92867,,,,,Gayle Peterson,3359,,
+Santa Rosa Women's Volleyball,SRWV,sub,Santa Rosa High School,,asatherl@santarosa.edu,(707) 527-4011,,1501 Mendocino Avenue,,Santa Rosa,,95401,1501 Mendocino Avenue,,Santa Rosa,,95401,,,,,Gayle Peterson,2680,,
+Orange Lutheran First Responders Academy,OLFRA,sub,Orange Lutheran High School,,joy.karavedas@lhsoc.org,,,2222 N. Santiago Blvd,,Orange,CA,92867,2222 N. Santiago Blvd,,Orange,CA,92867,,,,,Gayle Peterson,3359,,
 Santa Ana College Women's Basketball,SACWB,sub,Santa Ana College,,Luppani_Flo@sac.edu,(714) 564-6000,,1530 W 17th St.,,Santa Ana,CA,92706,1530 W 17th St.,,Santa Ana,CA,92706,,,,,Gayle Peterson,3039,,
 Servite Golf,SG,sub,Servite High School,,djako@servitehs.org,(714) 742-1919,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3132,,
 Moreau Catholic Athletics,MCA,sub,Moreau Catholic High School,,tabdenour@moreaucatholic.org,,,27170 Mission Blvd,,Hayward,CA,94544,27170 Mission Blvd,,Hayward,CA,94544,,,,,,3244,,rep=Shawn McHugh (pending reassignment)
@@ -1770,7 +1770,7 @@ West Valley College Women's Tennis,WVCWT,sub,West Valley College,,Lauren.Hickey@
 Fairfield Soccer,FS,sub,Fairfield High School,,eddiew@fsusd.org,,,2490 Hilborn Rd,,Fairfield,CA,94534,2490 Hilborn Rd,,Fairfield,CA,94534,,,,,SBS,3310,,
 Fairfield Football,FF,sub,Fairfield High School,,,,,2490 Hilborn Rd,,Fairfield,CA,94534,2490 Hilborn Rd,,Fairfield,CA,94534,,,,,SBS,3293,,no customer email
 Bakersfield Centennial Football,BCF,sub,Bakersfield Centennial High School,,richard_starrett@kernhigh.org,,,8601 Hageman Rd,,Bakersfield,CA,93312,8601 Hageman Rd,,Bakersfield,CA,93312,,,,,Kevin McCormack,3255,,
-Santa Barbara Girl's Flag Football,SBGFF,parent,,,,,,700 E Anapamu St,,Santa Barbara,CA,93103,700 E Anapamu St,,Santa Barbara,CA,93103,,,,,Steve Peterson,3262,,no customer email
+Santa Barbara Girl's Flag Football,SBGFF,sub,Santa Barbara Unified School District,,,,,700 E Anapamu St,,Santa Barbara,CA,93103,700 E Anapamu St,,Santa Barbara,CA,93103,,,,,Steve Peterson,3262,,no customer email
 Orange Lutheran Flag Football,OLFF,sub,Orange Lutheran High School,,kristen.sherman@lhsoc.org,,,2222 N Santiago Blvd,,Orange,CA,92867,2222 N Santiago Blvd,,Orange,CA,92867,,,,,Jered Hunt,3285,,
 Central California Kings Baseball,CCKB,parent,,,,,,205 Cedar St,,Bakersfield,CA,93304,205 Cedar St,,Bakersfield,CA,93304,,,,,Jered Hunt,3274,,no customer email
 Pacifica Christian Tennis,PCT,sub,Pacifica Christian High School,,bshaw@pacificachristian.org,,,1730 Wilshire Blvd,,Santa Monica,CA,90403,1730 Wilshire Blvd,,Santa Monica,CA,90403,,,,,Chase Koissian,3312,,
@@ -1824,21 +1824,21 @@ Lakewood HS Softball,LHS,sub,Lakewood High School,,AMiramontes@lbschools.net,,,4
 Lakewood HS Water Polo,LHWP,sub,Lakewood High School,,charlesmwlb@gmail.com,(562) 825-9603,,4400 Briercrest Avenue,,Lakewood,CA,90713,4400 Briercrest Avenue,,Lakewood,CA,90713,,,,,Chase Koissian,2968,,
 Mission College Women's Badminton,MCWB,sub,Mission College,,,,,3000 Mission College Blvd,,Santa Clara,CA,95054,3000 Mission College Blvd,,Santa Clara,CA,95054,,,,,SBS,2970,,no customer email
 Mission College Women's Tennis,MCWT,sub,Mission College,,,,,3000 Mission College Blvd,,Santa Clara,CA,95054,3000 Mission College Blvd,,Santa Clara,CA,95054,,,,,SBS,2972,,no customer email
-Orange Lutheran Athletic Department,OLAD,parent,,,Karen.Kekipi@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Steve Peterson,2976,,
+Orange Lutheran Athletic Department,OLAD,sub,Orange Lutheran High School,,Karen.Kekipi@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Steve Peterson,2976,,
 Orange Lutheran Boy's Golf,OLBG,sub,Orange Lutheran High School,,Darren.Kelso@lhsoc.org,(714) 998-5151 ext.553,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,2980,,
 Orange Lutheran Cross Country,OLCC,sub,Orange Lutheran High School,,Kristen.Goossens@lhsoc.org,(714) 998-5151,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,2986,,
 Orange Lutheran ESports,OLE,sub,Orange Lutheran High School,,,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Jered Hunt,2988,,no customer email
-Orange Lutheran Facilities,OLF,parent,,,tj.detviler@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,2989,,
+Orange Lutheran Facilities,OLF,sub,Orange Lutheran High School,,tj.detviler@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,2989,,
 Orange Lutheran Football,OLF,sub,Orange Lutheran High School,,kyla.laulhere@lhsoc.org,(714) 998-5151 ext. 552,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Steve Peterson,2991,,
 Orange Lutheran Girl's Golf,OLGG,sub,Orange Lutheran High School,,dustin.boburka@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,2993,,
 Orange Lutheran Girl's Tennis,OLGT,sub,Orange Lutheran High School,,lindsey.motis@lhsoc.org,(714) 998-5151,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,2997,,
-Orange Lutheran Ice Academy,OLIA,parent,,,ryan.frost@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,3001,,
-Orange Lutheran Ignite,OLI,parent,,,julia.parsons@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Steve Peterson,3003,,
+Orange Lutheran Ice Academy,OLIA,sub,Orange Lutheran High School,,ryan.frost@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,3001,,
+Orange Lutheran Ignite,OLI,sub,Orange Lutheran High School,,julia.parsons@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Steve Peterson,3003,,
 Orange Lutheran Lacrosse,OLL,sub,Orange Lutheran High School,,John.Padama@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,3005,,
-Orange Lutheran Online,OLO,parent,,,joy.karavedas@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,3007,,
-Orange Lutheran Song,OLS,parent,,,stephanie.schuster@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,3009,,
-Orange Lutheran Sports Performance,OLSP,parent,,,,(714) 282-4656,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,3011,,no customer email
-Orange Lutheran Student Leadership,OLSL,parent,,,isabel.reafsnyder@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,3013,,
+Orange Lutheran Online,OLO,sub,Orange Lutheran High School,,joy.karavedas@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,3007,,
+Orange Lutheran Song,OLS,sub,Orange Lutheran High School,,stephanie.schuster@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,3009,,
+Orange Lutheran Sports Performance,OLSP,sub,Orange Lutheran High School,,,(714) 282-4656,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,3011,,no customer email
+Orange Lutheran Student Leadership,OLSL,sub,Orange Lutheran High School,,isabel.reafsnyder@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,3013,,
 Orange Lutheran Track & Field,OLTF,sub,Orange Lutheran High School,,Kevin.Gillian@lhsoc.org,(714) 998-5151 ext.747,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,3015,,
 Pacifica Christian Baseball,PCB,sub,Pacifica Christian High School,,bshaw@pacificachristian.org,,,1730 Wilshire Blvd,,Santa Monica,CA,90403,1730 Wilshire Blvd,,Santa Monica,CA,90403,,,,,Chase Koissian,3021,,
 Pacifica Christian Cross Country,PCCC,sub,Pacifica Christian High School,,bshaw@pacificachristian.org,,,1730 Wilshire Blvd,,Santa Monica,CA,90403,1730 Wilshire Blvd,,Santa Monica,CA,90403,,,,,Chase Koissian,3023,,
@@ -1853,7 +1853,7 @@ Servite Advancement,SA,sub,Servite High School,,,,,1952 West La Palma Avenue,,An
 Servite Aquatics,SA,sub,Servite High School,,,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3045,,no customer email
 Servite Athletics,SA,sub,Servite High School,,mmarrujo@servitehs.org,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Chase Koissian,3047,,
 Servite Basketball,SB,sub,Servite High School,,mkanne@servitehs.org,(714) 774-7575,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Steve Peterson,3049,,
-Servite Communications,SC,parent,,,Jbeckman@servitehs.org,(714) 774-7575 x 1141,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3051,,
+Servite Communications,SC,sub,Servite High School,,Jbeckman@servitehs.org,(714) 774-7575 x 1141,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3051,,
 J Serra Boy's Volleyball,JSBV,sub,J Serra (OTHER),,curt.mahle@jserra.org,,,26351 Junipero Serra Road,,San Juan Capistrano,CA,92675,26351 Junipero Serra Road,,San Juan Capistrano,CA,92675,,,,,Chase Koissian,2957,,
 J Serra HS Basketball,JSHB,sub,J Serra High School,,joedy.gardner@jserra.org,,,26351 Junipera Serra Rd.,,San Juan Capistrano,CA,92675,26351 Junipera Serra Rd.,,San Juan Capistrano,CA,92675,,,,,Chase Koissian,2959,,
 J Serra Track and Field,JSTAF,sub,J Serra (OTHER),,bj@victoryathleticspv.com,,,26351 Junipero Serra Rd,,San Juan Capistrano,CA,92675,26351 Junipero Serra Rd,,San Juan Capistrano,CA,92675,,,,,Chase Koissian,2961,,
@@ -1862,25 +1862,25 @@ Lakewood HS Lacrosse,LHL,sub,Lakewood High School,,MHardin@lbschools.net,,,4400 
 Lakewood HS Swim,LHS,sub,Lakewood High School,,DCaine@lbschools.net,,,4400 Briercrest Avenue,,Lakewood,CA,90713,4400 Briercrest Avenue,,Lakewood,CA,90713,,,,,Chase Koissian,2967,,
 Mission College Baseball,MCB,sub,Mission College,,,(408) 855-5007,,3000 Mission College Blvd,,Santa Clara,CA,95054,3000 Mission College Blvd,,Santa Clara,CA,95054,,,,,Steve Peterson,2969,,no customer email
 Orange Lutheran Admin,OLA,sub,Orange Lutheran High School,,justin.stewart@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Steve Peterson,2973,,
-Orange Lutheran Ambassadors,OLA,parent,,,abigail.mcgovern@students.lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,2975,,
-Orange Lutheran Athletic Trainers,OLAT,parent,,,ryan.lisk@lhsoc.org,(805) 217-0286,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,2977,,
+Orange Lutheran Ambassadors,OLA,sub,Orange Lutheran High School,,abigail.mcgovern@students.lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,2975,,
+Orange Lutheran Athletic Trainers,OLAT,sub,Orange Lutheran High School,,ryan.lisk@lhsoc.org,(805) 217-0286,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,2977,,
 Orange Lutheran Basketball,OLB,sub,Orange Lutheran High School,,Daniel.Dunbar@lhsoc.org,(714) 998-5151 ext.696,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Steve Peterson,2979,,
 Orange Lutheran Boy's Soccer,OLBS,sub,Orange Lutheran High School,,mike.oseguera@lhsoc.org,(714) 998-5151,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,2981,,
 Orange Lutheran Boy's Volleyball,OLBV,sub,Orange Lutheran High School,,Henry.Valiente@lhsoc.org,(714) 998-5151,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,2983,,
-Orange Lutheran Counseling,OLC,parent,,,steve.barillier@lhsoc.org,(714) 998-5151 ext. 571,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,2985,,
-Orange Lutheran DSPS,OLD,parent,,,daniel.dunbar@lhsoc.org,(714) 998-5151 Ext. 533,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Steve Peterson,2987,,
-Orange Lutheran Food Service,OLFS,parent,,,Anthony.Chumpitaz@Ihsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,2990,,
+Orange Lutheran Counseling,OLC,sub,Orange Lutheran High School,,steve.barillier@lhsoc.org,(714) 998-5151 ext. 571,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,2985,,
+Orange Lutheran DSPS,OLD,sub,Orange Lutheran High School,,daniel.dunbar@lhsoc.org,(714) 998-5151 Ext. 533,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Steve Peterson,2987,,
+Orange Lutheran Food Service,OLFS,sub,Orange Lutheran High School,,Anthony.Chumpitaz@Ihsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,2990,,
 Orange Lutheran Girl's Basketball,OLGB,sub,Orange Lutheran High School,,accounts.payable@lhsoc.org,(714) 998-5151 ext.652,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,2992,,
 Orange Lutheran Girl's Lacrosse,OLGL,sub,Orange Lutheran High School,,alexandra.kyte@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,2994,,
 Orange Lutheran Girl's Swim,OLGS,sub,Orange Lutheran High School,,brenda.villa@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Steve Peterson,2996,,
 Orange Lutheran Girl's Volleyball,OLGV,sub,Orange Lutheran High School,,henry.valiente@lhsoc.org,(714) 998-5151 ext. 573,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,2998,,
-Orange Lutheran HS Rugby,OLHR,sub,Orange Lutheran (HS),,sunrooms21@gmail.com,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Jered Hunt,3000,,
-Orange Lutheran Instrumental Music,OLIM,parent,,,aaron.zeilinger@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,3004,,
-Orange Lutheran Nechita Team Tech,OLNTT,parent,,,crysti.everhart@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,3006,,
+Orange Lutheran HS Rugby,OLHR,sub,Orange Lutheran High School,,sunrooms21@gmail.com,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Jered Hunt,3000,,
+Orange Lutheran Instrumental Music,OLIM,sub,Orange Lutheran High School,,aaron.zeilinger@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,3004,,
+Orange Lutheran Nechita Team Tech,OLNTT,sub,Orange Lutheran High School,,crysti.everhart@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,3006,,
 Orange Lutheran Store,OLS,sub,Orange Lutheran High School,,aj.christensen@lhsoc.org,(714) 998-5151,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,3012,,
 Orange Lutheran Swim,OLS,sub,Orange Lutheran High School,,brenda.villa@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Jered Hunt,3014,,
-Orange Lutheran World Languages,OLWL,parent,,,erica.neumann@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,3018,,
-Pacifica Christian Arts,PCA,parent,,,bshaw@pacificachristian.org,,,1730 Wilshire B,,Santa Monica,CA,90403,1730 Wilshire B,,Santa Monica,CA,90403,,,,,Chase Koissian,3020,,
+Orange Lutheran World Languages,OLWL,sub,Orange Lutheran High School,,erica.neumann@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Gayle Peterson,3018,,
+Pacifica Christian Arts,PCA,sub,Pacifica Christian High School,,bshaw@pacificachristian.org,,,1730 Wilshire B,,Santa Monica,CA,90403,1730 Wilshire B,,Santa Monica,CA,90403,,,,,Chase Koissian,3020,,
 Pacifica Christian Boy's Basketball,PCBB,sub,Pacifica Christian High School,,bshaw@pacificachristian.org,,,1730 Wilshire Blvd,,Santa Monica,CA,90403,1730 Wilshire Blvd,,Santa Monica,CA,90403,,,,,Chase Koissian,3022,,
 Pacifica Christian Girl's Basketball,PCGB,sub,Pacifica Christian High School,,bshaw@pacificachristian.org,,,1730 Wilshire Blvd,,Santa Monica,CA,90403,1730 Wilshire Blvd,,Santa Monica,CA,90403,,,,,Chase Koissian,3024,,
 Pacifica Christian Soccer,PCS,sub,Pacifica Christian High School,,bshaw@pacificachristian.org,,,1730 Wilshire Blvd,,Santa Monica,CA,90403,1730 Wilshire Blvd,,Santa Monica,CA,90403,,,,,Chase Koissian,3026,,
@@ -1892,17 +1892,17 @@ Santa Ana College Men's Basketball,SACMB,sub,Santa Ana College,,rwakefield41@out
 Santa Ana College Sports Medicine,SACSM,sub,Santa Ana College,,Sanchez_Uribe_Jose@sac.edu,,,2323 N. Broadway,,Santa Ana,CA,92706,2323 N. Broadway,,Santa Ana,CA,92706,,,,,Gayle Peterson,3038,,
 Santa Ana College Women's Soccer,SACWS,sub,Santa Ana College,,Baquero_Jaymie@sac.edu,,,2323 N. Broadway,,Santa Ana,CA,92706,2323 N. Broadway,,Santa Ana,CA,92706,,,,,Gayle Peterson,3040,,
 Servite Admissions,SA,sub,Servite High School,,mmarrujo@servitehs.org,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Chase Koissian,3042,,
-Servite Ambassadors,SA,parent,,,,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3044,,no customer email
-Servite Asylum,SA,parent,,,mthomas@servitehs.org,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3046,,
+Servite Ambassadors,SA,sub,Servite High School,,,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3044,,no customer email
+Servite Asylum,SA,sub,Servite High School,,mthomas@servitehs.org,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3046,,
 Servite Baseball,SB,sub,Servite High School,,sgilbert@servitehs.org,(714) 774-1067,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Chase Koissian,3048,,
 Servite Choir,SC,sub,Servite High School,,,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Steve Peterson,3050,,no customer email
 Servite Cross Country,SCC,sub,Servite High School,,khayden@servitehs.org,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Jered Hunt,3052,,
 Servite Lacrosse,SL,sub,Servite High School,,friarscoach19@gmail.com,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3058,,
 Servite Store,SS,sub,Servite High School,,mbetwarda@servitehs.org,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Chase Koissian,3062,,
-Servite Student Store,SSS,parent,,,,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3064,,no customer email
+Servite Student Store,SSS,sub,Servite High School,,,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3064,,no customer email
 Servite Track & Field,STF,sub,Servite High School,,rgibbs@servitehs.org,,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Gayle Peterson,3066,,
 Servite Wrestling,SW,sub,Servite High School,,aclinton@servitehs.org,(714) 774-7575,,1952 West La Palma Avenue,,Anaheim,CA,92801,1952 West La Palma Avenue,,Anaheim,CA,92801,,,,,Jered Hunt,3068,,
-St. John Bosco Engineering,SJBE,parent,,,rlinares@bosco.org,,,13640 S. Bellflower Blvd.,,Bellflower,CA,90706,13640 S. Bellflower Blvd.,,Bellflower,CA,90706,,,,,Chase Koissian,3074,,
+St. John Bosco Engineering,SJBE,sub,St. John Bosco High School,,rlinares@bosco.org,,,13640 S. Bellflower Blvd.,,Bellflower,CA,90706,13640 S. Bellflower Blvd.,,Bellflower,CA,90706,,,,,Chase Koissian,3074,,
 St. John Bosco Water Polo,SJBWP,sub,St. John Bosco (HS),,,,,13640 Bellflower Blvd,,Bellflower,CA,90706,13640 Bellflower Blvd,,Bellflower,CA,90706,,,,,Chase Koissian,3076,,no customer email; had NSA-internal email (chase@nationalsportsapparel.com)
 Sunny Hills Track,SHT,sub,Sunny Hills High School,,jholloway@fjuhsd.org,,,1801 Lancer Way,,Fullerton,CA,92833,1801 Lancer Way,,Fullerton,CA,92833,,,,,Jered Hunt,3098,,
 The King's Academy Softball,TKAS,sub,The King's Academy School,,,,,562 N. Britton Ave,,Sunnyvale,Ca,94085,562 N. Britton Ave,,Sunnyvale,Ca,94085,,,,,SBS,3100,,no customer email
@@ -2068,16 +2068,16 @@ Westmont HS,WH,parent,,,rmartwick@cuhsd.org,(408) 626-3406,,4805 Westmont Ave,,C
 Wilcox HS,WH,parent,,,prosa@scusd.net,(408) 595-8752,,3250 Monroe St,,Santa Clara,Ca,95051,3250 Monroe St,,Santa Clara,Ca,95051,,,,,SBS,2741,,
 Optimum Hockey Academy,OHA,parent,,,ak@optimumhockeyacademy.com,(213) 247-1199,,888 Ridge Valley,,Irvine,CA,92618,888 Ridge Valley,,Irvine,CA,92618,,,,,Jered Hunt,2613,,
 Orange HS Baseball,OHB,sub,Orange High School,,gchace@orangeusd.org,(714) 768-2166,,525 N Shaffer St,,Orange,CA,92867,525 N Shaffer St,,Orange,CA,92867,,,,,Chase Koissian,2615,,
-Orange HS Softball,OHS,parent,,,bruce.sanborn@yahoo.com,,,,,Orange,CA,92618,,,Orange,CA,92618,,,,,Jered Hunt,2616,,missing structured address
-OLu,O,parent,,,justin.stewart@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Steve Peterson,2617,,
+Orange HS Softball,OHS,sub,Orange High School,,bruce.sanborn@yahoo.com,,,,,Orange,CA,92618,,,Orange,CA,92618,,,,,Jered Hunt,2616,,missing structured address
+OLu,O,sub,Orange Lutheran High School,,justin.stewart@lhsoc.org,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Steve Peterson,2617,,
 Pacifica Christian High School,PCHS,parent,,,bshaw@pacificachristian.org,(310) 828-7015,,1730 Wilshire Blvd,,Santa Monica,CA,90403,1730 Wilshire Blvd,,Santa Monica,CA,90403,,,,,Chase Koissian,2619,,
 Palm Springs HS Baseball,PSHB,parent,,,esmith@psusd.us,,,2401 E Baristo Rd,,Palm Springs,CA,92262,2401 E Baristo Rd,,Palm Springs,CA,92262,,,,,Jered Hunt,2621,,
-Paloma Valley HS Cross Country,PVHCC,parent,,,joe.ellett@puhsd.org,,,31375 Bradley Rd,,Menifee,CA,92618,31375 Bradley Rd,,Menifee,CA,92618,,,,,Jered Hunt,2622,,
+Paloma Valley HS Cross Country,PVHCC,sub,Paloma Valley High School,,joe.ellett@puhsd.org,,,31375 Bradley Rd,,Menifee,CA,92618,31375 Bradley Rd,,Menifee,CA,92618,,,,,Jered Hunt,2622,,
 Paloma Valley HS Golf,PVHG,sub,Paloma Valley High School,,matthew.dale@puhsd.org,,,31375 Bradley Rd,,Menifee,CA,92584,31375 Bradley Rd,,Menifee,CA,92584,,,,,Jered Hunt,2623,,
 Paloma Valley HS Wom Basketball,PVHWB,sub,Paloma Valley High School,,matthew.dale@puhsd.org,,,31375 Bradley Rd,,Menifee,CA,92584,31375 Bradley Rd,,Menifee,CA,92584,,,,,Jered Hunt,2624,,
 Palos Verdes HS Football,PVHF,parent,,,gardnerg@pvpusd.net,,,600 Cloyden Rd.,,Palos Verdes Estates,CA,90274,600 Cloyden Rd.,,Palos Verdes Estates,CA,90274,,,,,Steve Peterson,2625,,
 Paramount HS Baseball,PHB,parent,,,solomanwilliams18@gmail.com,,,14429 DOWNEY AVE.,,PARAMOUNT,CA,90723,14429 DOWNEY AVE.,,PARAMOUNT,CA,90723,,,,,Chase Koissian,2626,,
-Pasadena Christian School,PCS,parent,,,cfrank@pcs.school,(626) 660-6894,,1515 N. Las Robles Ave,,Pasadena,CA,91104,1515 N. Las Robles Ave,,Pasadena,CA,91104,,,,,Jered Hunt,2628,,
+Pasadena Christian School,PCS,sub,Pasadena High School,,cfrank@pcs.school,(626) 660-6894,,1515 N. Las Robles Ave,,Pasadena,CA,91104,1515 N. Las Robles Ave,,Pasadena,CA,91104,,,,,Jered Hunt,2628,,
 Julie Sutton,JS,parent,,,JSutton143@gmail.com,(714) 865-0317,,925 Lincoln Ave.,,Orange,Ca,92865,925 Lincoln Ave.,,Orange,Ca,92865,,,,,Gayle Peterson,2559,,
 LA Jr Kings,LJK,parent,,,brett@beebehockeycamp.com,(310) 418-4595,,228 27th St,,Hermosa Beach,CA,90254,228 27th St,,Hermosa Beach,CA,90254,,,,,Jered Hunt,2563,,
 La Mirada HS Boy's Soccer,LMHBS,parent,,,PYovino@nlmusd.k12.ca.us,,,13520 Adelfa Dr,,La Mirada,CA,90638,13520 Adelfa Dr,,La Mirada,CA,90638,,,,,Jered Hunt,2565,,
@@ -2087,11 +2087,11 @@ Lakewood High School,LHS,parent,,,,,,4400 Briercrest Avenue,,Lakewood,CA,90713,4
 562 Training Academy,5TA,parent,,,scotttalanoa@gmail.com,,,,,,CA,,,,,CA,,,,,,Chase Koissian,2432,,missing structured address
 805 Elite Volleyball Club,8EVC,parent,,,805elite@gmail.com,,,2020 Johnson Ave,,San Luis Obispo,CA,93401,2020 Johnson Ave,,San Luis Obispo,CA,93401,,,,,Steve Peterson,2433,,
 Amort Construction,AC,parent,,,anne.elizabeth.lange@gmail.com,(714) 998-2401,,1757 N. Batavia St.,,Orange,CA,92865,1757 N. Batavia St.,,Orange,CA,92865,,,,,Gayle Peterson,2434,,
-Anaheim Ducks HS Hockey League,ADHHL,parent,,,hockey_ducks@yahoo.com,(714) 616-7878,,,,,,,,,,,,,,,,Gayle Peterson,2435,,missing structured address
+Anaheim Ducks HS Hockey League,ADHHL,sub,Anaheim High School,,hockey_ducks@yahoo.com,(714) 616-7878,,,,,,,,,,,,,,,,Gayle Peterson,2435,,missing structured address
 Anaheim HS Baseball,AHB,sub,Anaheim High School,,barrera_mi@auhsd.us,,,811 W Lincoln Ave,,Anaheim,CA,92805,811 W Lincoln Ave,,Anaheim,CA,92805,,,,,Jered Hunt,2436,,
 Anaheim HS Boy's Volleyball,AHBV,sub,Anaheim High School,,jjceja08@gmail.com,,,811 W Lincoln Ave,,Anaheim,CA,92805,811 W Lincoln Ave,,Anaheim,CA,92805,,,,,Jered Hunt,2437,,
-Anaheim Police Department,APD,parent,,,JAddington@anaheim.net,,,425 S Harbor Dr,,Anaheim,CA,92805,425 S Harbor Dr,,Anaheim,CA,92805,,,,,Jered Hunt,2438,,
-Anaheim Rams,AR,parent,,,corinmoore@yahoo.com,(626) 736-7874,,,,,,,,,,,,,,,,Jered Hunt,2439,,missing structured address
+Anaheim Police Department,APD,sub,Anaheim High School,,JAddington@anaheim.net,,,425 S Harbor Dr,,Anaheim,CA,92805,425 S Harbor Dr,,Anaheim,CA,92805,,,,,Jered Hunt,2438,,
+Anaheim Rams,AR,sub,Anaheim High School,,corinmoore@yahoo.com,(626) 736-7874,,,,,,,,,,,,,,,,Jered Hunt,2439,,missing structured address
 Angelica Landero,AL,parent,,,angielandero@gmail.com,,,,,,,,,,,,,,,,,Jered Hunt,2440,,missing structured address
 Antelope Valley College Athletics,AVCA,parent,,,plondono@avc.edu,(661) 400-9515,,3041 West Ave. K,,Lancaster,CA,93536,3041 West Ave. K,,Lancaster,CA,93536,,,,,Gayle Peterson,2441,,
 Apex Skating,AS,parent,,,dan@apexskating.com,,,,,,,,,,,,,,,,,Jered Hunt,2442,,missing structured address
@@ -2099,7 +2099,7 @@ Apple Inc. Security Operations,AISO,parent,,,emily_vandenberg@apple.com,,,"P.O. 
 Artesia HS Football,AHF,parent,,,hc@artesiafootball.com,,,12108 Del Amo Blvd,,Lakewood,CA,90715,12108 Del Amo Blvd,,Lakewood,CA,90715,,,,,Jered Hunt,2444,,
 Austyn Caraway,AC,parent,,,acarawayphoto@gmail.com,,,,,,,,,,,,,,,,,Chase Koissian,2445,,missing structured address
 Azusa Pacific University Softball,APUS,parent,,,cwebber@apu.edu,,,701 E. Foothill Blvd.,,Azusa,CA,91702,701 E. Foothill Blvd.,,Azusa,CA,91702,,,,,Gayle Peterson,2446,,
-Bakersfield Condors,BC,parent,,,alan.oman@comcast.net,,,1001 Truxton Ave,,Bakersfield,CA,93301,1001 Truxton Ave,,Bakersfield,CA,93301,,,,,Jered Hunt,2447,,
+Bakersfield Condors,BC,sub,Bakersfield College,,alan.oman@comcast.net,,,1001 Truxton Ave,,Bakersfield,CA,93301,1001 Truxton Ave,,Bakersfield,CA,93301,,,,,Jered Hunt,2447,,
 Beckman HS Baseball,BHB,sub,Beckman High School,,klavalle@tustin.k12.ca.us,(714) 420-6925,,3588 Bryan,,Irvine,CA,92602,3588 Bryan,,Irvine,CA,92602,,,,,Gayle Peterson,2448,,
 Big Picture Athletics,BPA,parent,,,theunzueta@gmail.com,,,,,,,,,,,,,,,,,Steve Peterson,2449,,missing structured address
 Biola University,BU,parent,,,bethany.miller@biola.edu,,,13800 Biola Ave,,La Mirada,CA,90639,13800 Biola Ave,,La Mirada,CA,90639,,,,,Steve Peterson,2450,,
@@ -2116,7 +2116,7 @@ Chapman University Admin Operations,CUAO,sub,Chapman University Athletics,,sawhi
 Patriot Water Polo Club,PWPC,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,2630,,no customer email; missing structured address
 Piedmont Hills HS,PHH,parent,,,cloughr@esuhsd.org,(408) 347-3800,,1377 Piedmont Rd,,San Jose,Ca,95132,1377 Piedmont Rd,,San Jose,Ca,95132,,,,,SBS,2632,,
 Pioneer Valley HS Girl's Volleyball,PVHGV,parent,,,johannanicole101616@gmail.com,,,675 Panther Dr,,Santa Maria,CA,93454,675 Panther Dr,,Santa Maria,CA,93454,,,,,Jered Hunt,2636,,
-Portola High Softball,PHS,parent,,,AmandaLovette@iusd.org,,,1001 Cadence,,Irvine,CA,92618,1001 Cadence,,Irvine,CA,92618,,,,,Jered Hunt,2638,,
+Portola High Softball,PHS,sub,Portola High School,,AmandaLovette@iusd.org,,,1001 Cadence,,Irvine,CA,92618,1001 Cadence,,Irvine,CA,92618,,,,,Jered Hunt,2638,,
 Portola HS Track,PHT,sub,Portola (HS),,CaleKavanaugh@iusd.org,,,1001 Cadence,,Irvine,CA,92618,1001 Cadence,,Irvine,CA,92618,,,,,Jered Hunt,2640,,
 ProPlay Volleyball Club,PVC,parent,,,proplayvolleyball@gmail.com,,,2929 Welleseley Court,,"Fullerton,",CA,92831,2929 Welleseley Court,,"Fullerton,",CA,92831,,,,,Steve Peterson,2642,,
 Puma Baseball,PB,parent,,,pumabaseball44@gmail.com,,,26371 Ambia,,Mission Viejo,CA,92692,26371 Ambia,,Mission Viejo,CA,92692,,,,,Denis Bobarykin,2644,,
@@ -2126,7 +2126,7 @@ Saddleback HS Baseball,SHB,sub,Saddleback High School,,bishop.griggs33@yahoo.com
 Saddleback HS Track,SHT,sub,Saddleback High School,,erik.zuniga@sausd.us,,,2802 S Flower St,,Santa Ana,CA,92707,2802 S Flower St,,Santa Ana,CA,92707,,,,,Jered Hunt,2654,,
 San Bernardino HS,SBH,parent,,,patrick.mills@sbcusd.k12.ca.us,,,1850 North E Street,,San Bernrdino,CA,92405,1850 North E Street,,San Bernrdino,CA,92405,,,,,Jered Hunt,2656,,
 El Dorado HS Band,EDHB,sub,El Dorado High School,,pjohnson@pylusd.org,(619) 818-8777,,1651 Valencia Ave.,,"Placentia,",CA,92870,1651 Valencia Ave.,,"Placentia,",CA,92870,,,,,Gayle Peterson,2514,,
-El Modena Cheer,EMC,parent,,,emhscheerboosters@gmail.com,,,3920 East Spring Street,,Orange,CA,92869,3920 East Spring Street,,Orange,CA,92869,,,,,Gayle Peterson,2516,,
+El Modena Cheer,EMC,sub,El Modena High School,,emhscheerboosters@gmail.com,,,3920 East Spring Street,,Orange,CA,92869,3920 East Spring Street,,Orange,CA,92869,,,,,Gayle Peterson,2516,,
 ELCO Basketball,EB,parent,,,skolani10@gmail.com,,,5440 Valley Circle Blvd,,Woodland Hills,CA,91367,5440 Valley Circle Blvd,,Woodland Hills,CA,91367,,,,,Steve Peterson,2518,,
 Encore Volleyball,EV,parent,,,tb@encorevolleyball.com,(650) 678-8424,,2575 E. Bayshore Rd,,Redwood City,CA,94063,2575 E. Bayshore Rd,,Redwood City,CA,94063,,,,,SBS,2520,,
 Esperanza HS Baseball,EHB,sub,Esperanza High School,,jasonsecoda@gmail.com,,,1830 Kellogg Dr,,Anaheim,CA,92807,1830 Kellogg Dr,,Anaheim,CA,92807,,,,,Jered Hunt,2522,,
@@ -2140,7 +2140,7 @@ Goetz Bros. Sporting Goods,GBSG,parent,,,brent@goetzsports.com,,,,,,,,,,,,,,,,,G
 Hart Soccer,HS,parent,,,,,,24825 North Newhall Ave.,,Santa Clarita,CA,91321,24825 North Newhall Ave.,,Santa Clarita,CA,91321,,,,,Jered Hunt,2541,,no customer email
 Harvard Westlake HS Baseball,HWHB,parent,,,jhalpert@hw.com,(818) 421-2265,,3700 Coldwater Canyon Ave.,,Studio City,CA,91604,3700 Coldwater Canyon Ave.,,Studio City,CA,91604,,,,,Chase Koissian,2543,,
 Hillcrest Christian Basketball,HCB,parent,,,tommy.driffill.uxds@statefarm.com,,,267 Village Commons Blvd. Ste 13,,Camarillo,CA,93012,267 Village Commons Blvd. Ste 13,,Camarillo,CA,93012,,,,,Gayle Peterson,2545,,
-Huntington Beach Boy's Volleyball,HBBV,parent,,,Cpazanti@gmail.com,(714) 401-1726,,1905 Main Street,,Huntington Beach,CA,92648,1905 Main Street,,Huntington Beach,CA,92648,,,,,Gayle Peterson,2547,,
+Huntington Beach Boy's Volleyball,HBBV,sub,Huntington Beach High School,,Cpazanti@gmail.com,(714) 401-1726,,1905 Main Street,,Huntington Beach,CA,92648,1905 Main Street,,Huntington Beach,CA,92648,,,,,Gayle Peterson,2547,,
 Indepedence High School Football,IHSF,parent,,,tyler_schilhabel@kernhigh.org,,,8001 Old River Rd,,Bakersfield,CA,93311,8001 Old River Rd,,Bakersfield,CA,93311,,,,,Steve Peterson,2549,,
 Irvine HS Baseball,IHB,sub,Irvine High School,,GabrielCota@iusd.org,(949) 302-3515,,4321 Walnut Ave,,Irvine,CA,92604,4321 Walnut Ave,,Irvine,CA,92604,,,,,Gayle Peterson,2551,,
 IVC Badminton,IB,parent,,,jgarey@ivc.edu,(949) 451-5503,,28000 Marguerite Parkway,,Mission Viejo,CA,92692,28000 Marguerite Parkway,,Mission Viejo,CA,92692,,,,,Jered Hunt,2553,,
@@ -2159,7 +2159,7 @@ Liberty HS Girl's Volleyball,LHGV,sub,Liberty (HS),,Morgan_Dake@kernhigh.org,,,9
 Living Legends,LL,parent,,,allstarjg76@aol.com,(408) 390-0537,,,,,,,,,,,,,,,,SBS,2576,,missing structured address
 Long Beach State Baseball,LBSB,sub,Long Beach State High School,,,,,1250 Bellflower Boulevard,,Long Beach,CA,90840,1250 Bellflower Boulevard,,Long Beach,CA,90840,,,,,Chase Koissian,2578,,no customer email
 Long Beach State Basketball,LBSB,sub,Long Beach State High School,,Ali.Tavakol@csulb.edu,,,1331 Palo Verde Avenue,,Long Beach,CA,90840,1331 Palo Verde Avenue,,Long Beach,CA,90840,,,,,Chase Koissian,2579,,
-Long Beach State Sports Performance,LBSSP,parent,,,Frank.Ramirez@csulb.edu,,,1250 Bellflower Boulevard,,Long Beach,CA,90840,1250 Bellflower Boulevard,,Long Beach,CA,90840,,,,,Chase Koissian,2581,,
+Long Beach State Sports Performance,LBSSP,sub,Long Beach State High School,,Frank.Ramirez@csulb.edu,,,1250 Bellflower Boulevard,,Long Beach,CA,90840,1250 Bellflower Boulevard,,Long Beach,CA,90840,,,,,Chase Koissian,2581,,
 Long Beach State Track and Field,LBSTAF,sub,Long Beach State High School,,Marc.Alex@csulb.edu,,,1250 Bellflower Boulevard,,Long Beach,CA,90840,1250 Bellflower Boulevard,,Long Beach,CA,90840,,,,,Chase Koissian,2582,,
 Long Beach State Women's Basketball,LBSWB,sub,Long Beach State High School,,Marc.Alex@csulb.edu,,,1250 Bellflower Boulevard,,Long Beach,CA,90840,1250 Bellflower Boulevard,,Long Beach,CA,90840,,,,,Chase Koissian,2583,,
 Long Beach State Women's Tennis,LBSWT,sub,Long Beach State High School,,Marc.Alex@csulb.edu,,,1250 Bellflower Boulevard,,Long Beach,CA,90840,1250 Bellflower Boulevard,,Long Beach,CA,90840,,,,,Chase Koissian,2584,,
@@ -2183,7 +2183,7 @@ Monrovia High Football,MHF,parent,,,chriswms1979@gmail.com,,,845 W Colorado Blvd
 Montclair HS Girl's Basketball,MHGB,parent,,,Robert.Martin@cjuhsd.net,,,4725 Benito St,,Montclair,CA,91736,4725 Benito St,,Montclair,CA,91736,,,,,Jered Hunt,2603,,
 Murrieta Valley HS Boy's Volleyball,MVHBV,parent,,,jcantu@murrieta.k12.ca.us,,,42200 Nighthawk Way,,Murrieta,CA,92562,42200 Nighthawk Way,,Murrieta,CA,92562,,,,,Chase Koissian,2604,,
 New Harvest Christian School,NHCS,parent,,,george@newharvestnorwalk.church,,,11364 E Imperial Hwy,,Norwalk,CA,90650,11364 E Imperial Hwy,,Norwalk,CA,90650,,,,,Jered Hunt,2605,,
-Newbury Park Volleyball,NPV,parent,,,,,,,,,,,,,,,,,,,,Jered Hunt,2606,,no customer email; had NSA-internal email (steve@nationalsportsapparel.com); missing structured address
+Newbury Park Volleyball,NPV,sub,Newbury Park High School,,,,,,,,,,,,,,,,,,,Jered Hunt,2606,,no customer email; had NSA-internal email (steve@nationalsportsapparel.com); missing structured address
 Nighthawks Baseball,NB,parent,,,rmhawks@pacbell.net,(909) 913-7728,,731 Tejon Ave,,Colton,CA,92324,731 Tejon Ave,,Colton,CA,92324,,,,,Chase Koissian,2607,,
 NOVA Academy Athletics,NAA,parent,,,Brittany-Adame@nova-academy.org,,,500 W Santa Ana Blvd,,Santa Ana,CA,92701,500 W Santa Ana Blvd,,Santa Ana,CA,92701,,,,,Jered Hunt,2609,,
 Ontario HS Football,OHF,sub,Ontario High School,,John.Kusleika@cjuhsd.net,,,901 W Francis St,,Ontario,CA,91762,901 W Francis St,,Ontario,CA,91762,,,,,Jered Hunt,2611,,
@@ -2219,23 +2219,23 @@ David Kawamoto,DK,parent,,,davidkawamotojr@sbcglobal.net,(408) 718-0193,,,,,,,,,
 DOM,D,parent,,,,(415) 457-4440,,50 Acacia Ave,,San Rafael,CA,94901,50 Acacia Ave,,San Rafael,CA,94901,,,,,Steve Peterson,2505,,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 EDGE Elite Hockey,EEH,parent,,,erik.lektorp@gmail.com,,,,,,,,,,,,,,,,,Jered Hunt,2507,,missing structured address
 Edgewood HS Girl's Soccer,EHGS,sub,Edgewood High School,,bwhite@wcusd.org,,,1625 W Durness St #3337,,West Covina,CA,91790,1625 W Durness St #3337,,West Covina,CA,91790,,,,,Jered Hunt,2509,,
-Edgewood Wrestling,EW,parent,,,tsuehiro@wcusd.org,,,1625 W Durness St #3333,,West Covina,CA,91790,1625 W Durness St #3333,,West Covina,CA,91790,,,,,Jered Hunt,2511,,
+Edgewood Wrestling,EW,sub,Edgewood High School,,tsuehiro@wcusd.org,,,1625 W Durness St #3333,,West Covina,CA,91790,1625 W Durness St #3333,,West Covina,CA,91790,,,,,Jered Hunt,2511,,
 El Dorado HS Baseball,EDHB,sub,El Dorado High School,,mlucas@pylusd.org,,,1651 Valencia Ave,,Placentia,CA,92870,1651 Valencia Ave,,Placentia,CA,92870,,,,,Jered Hunt,2515,,
 El Toro HS Girl's Lax,ETHGL,parent,,,bertgamble@yahoo.com,,,25255 Toledo Way,,Lake Forest,CA,92630,25255 Toledo Way,,Lake Forest,CA,92630,,,,,Jered Hunt,2517,,
 ELCO Women'sBasketball,EW,parent,,,p.trapani@ecrchs.net,,,5440 Valley Circle Blvd,,Woodland Hills,CA,91367,5440 Valley Circle Blvd,,Woodland Hills,CA,91367,,,,,Steve Peterson,2519,,
 Esperanza HS Wrestling,EHW,sub,Esperanza High School,,choliday@academyofwrestling.com,,,1830 Kelogg Dr,,Anaheim,CA,92807,1830 Kelogg Dr,,Anaheim,CA,92807,,,,,Jered Hunt,2523,,
-Fairfield Athletics,FA,parent,,,eddiew@fsusd.org,,,205 E Atlantic Ave,,Fairfield,CA,94533,205 E Atlantic Ave,,Fairfield,CA,94533,,,,,SBS,2525,,
+Fairfield Athletics,FA,sub,Fairfield High School,,eddiew@fsusd.org,,,205 E Atlantic Ave,,Fairfield,CA,94533,205 E Atlantic Ave,,Fairfield,CA,94533,,,,,SBS,2525,,
 Foothill HS Boy's Soccer,FHBS,parent,,,tyrel_rose@kernhigh.org,,,501 Park Dr,,Bakersfield,CA,93306,501 Park Dr,,Bakersfield,CA,93306,,,,,Jered Hunt,2528,,
 G4G Football,GF,parent,,,tmcmahon@upatoday.com,,,,,,,,,,,,,,,,,SBS,2532,,missing structured address
 Glendale HS Boy's Soccer,GHBS,sub,Glendale High School,,bweisman@gusd.net,,,1440 E Broadway,,Glendale,CA,91205,1440 E Broadway,,Glendale,CA,91205,,,,,Jered Hunt,2536,,
-Godinez Track,GT,parent,,,aaron.raya@sausdlearns.net,,,3002 Centennial Rd,,Santa Ana,CA,92704,3002 Centennial Rd,,Santa Ana,CA,92704,,,,,Jered Hunt,2538,,
+Godinez Track,GT,sub,Godinez High School,,aaron.raya@sausdlearns.net,,,3002 Centennial Rd,,Santa Ana,CA,92704,3002 Centennial Rd,,Santa Ana,CA,92704,,,,,Jered Hunt,2538,,
 Golden West College Men's Volleyball,GWCMV,parent,,,aiupati@gwc.cccd.edu,(714) 642-3203,,15744 Goldenwest Street,,Huntington Beach,CA,92647,15744 Goldenwest Street,,Huntington Beach,CA,92647,,,,,Jered Hunt,2540,,
 Hartnell College Baseball,HCB,parent,,,,,,411 Central Avenue,,Salinas,CA,93901,411 Central Avenue,,Salinas,CA,93901,,,,,SBS,2542,,no customer email; had NSA-internal email (jesse@nationalsportsapparel.com)
 Hesperia HS Boy's Basketball,HHBB,parent,,,robert.tossetti@hesperiausd.org,,,9898 Maple Ave,,Hesperia,CA,92345,9898 Maple Ave,,Hesperia,CA,92345,,,,,Jered Hunt,2544,,
 Hollywood High School,HHS,parent,,,simkhai27@gmail.com,,,1521 N Highland Ave,,los Angeles,CA,90028,1521 N Highland Ave,,los Angeles,CA,90028,,,,,Jered Hunt,2546,,
-Huntington Beach High Girl's Volleyball,HBHGV,parent,,,CPazanti@gmail.com,(714) 504-4225,,1905 Main Street,,Huntington Beach,CA,92648,1905 Main Street,,Huntington Beach,CA,92648,,,,,Gayle Peterson,2548,,
+Huntington Beach High Girl's Volleyball,HBHGV,sub,Huntington Beach High School,,CPazanti@gmail.com,(714) 504-4225,,1905 Main Street,,Huntington Beach,CA,92648,1905 Main Street,,Huntington Beach,CA,92648,,,,,Gayle Peterson,2548,,
 Irvine HS Girl's Soccer,IHGS,sub,Irvine High School,,MichelleCortez@iusd.org,,,4321 Walnut Ave,,Irvine,CA,92604,4321 Walnut Ave,,Irvine,CA,92604,,,,,Jered Hunt,2552,,
-J Serra High School Athletics,JSHSA,parent,,,,,,,,,CA,,,,,CA,,,,,,Chase Koissian,2554,,no customer email; had NSA-internal email (chase@nationalsportsapparel.com); missing structured address
+J Serra High School Athletics,JSHSA,sub,J Serra High School,,,,,,,,CA,,,,,CA,,,,,,Chase Koissian,2554,,no customer email; had NSA-internal email (chase@nationalsportsapparel.com); missing structured address
 Jared Britton,JB,parent,,,jared@clavafitness.com,,,,,,,,,,,,,,,,,Jered Hunt,2555,,missing structured address
 Dalton Silva,DS,parent,,,daltondsilva22@gmail.com,,,,,,,,,,,,,,,,,Jered Hunt,2494,,missing structured address
 Damien Ryan,DR,parent,,,dryan@soledad.k12.ca.us,,,,,,,,,,,,,,,,,Jered Hunt,2496,,missing structured address
@@ -2250,7 +2250,6 @@ Alemany High School,AHS,parent,,,,,,11111 N Alemany Dr,,Mission Hills,CA,91345,1
 Anaheim High School,AHS,parent,,,,,,811 W Lincoln Ave,,Anaheim,CA,92805,811 W Lincoln Ave,,Anaheim,CA,92805,,,,,Mike Mercuriali,,,no customer email
 Atascadero High School,AHS,parent,,,,,,13500 Old Morro Rd,,Atascadero,CA,93422,13500 Old Morro Rd,,Atascadero,CA,93422,,,,,Kelly Bean,,,no customer email
 Bakersfield Centennial High School,BCHS,parent,,,,,,8601 Hageman Rd,,Bakersfield,CA,93312,8601 Hageman Rd,,Bakersfield,CA,93312,,,,,Kevin McCormack,,,no customer email
-Bakersfield (OTHER),B,parent,,,,,,1241 G St,,Bakersfield,CA,93304,1241 G St,,Bakersfield,CA,93304,,,,,Kevin McCormack,,,no customer email
 Beckman High School,BHS,parent,,,,,,3588 Bryan Ave,,Irvine,CA,92602,3588 Bryan Ave,,Irvine,CA,92602,,,,,Chase Koissian,,,no customer email
 Bellflower High School,BHS,parent,,,,,,15301 McNab Ave,,Bellflower,CA,90706,15301 McNab Ave,,Bellflower,CA,90706,,,,,Chase Koissian,,,no customer email
 Beyer High School,BHS,parent,,,,,,1717 Sylvan Ave,,Modesto,CA,95355,1717 Sylvan Ave,,Modesto,CA,95355,,,,,Steve Peterson,,,no customer email
@@ -2317,7 +2316,6 @@ Ontario High School,OHS,parent,,,,,,901 W Francis Ave,,Ontario,CA,91762,901 W Fr
 Orange Coast College,OCC,parent,,,,,,2701 Fairview Road,,Costa Mesa,CA,92626,2701 Fairview Road,,Costa Mesa,CA,92626,,,,,Chase Koissian,,,no customer email
 Orange High School,OHS,parent,,,,,,525 N Shaffer St,,Orange,CA,92867,525 N Shaffer St,,Orange,CA,92867,,,,,Jered Hunt,,,no customer email
 Orange Lutheran High School,OLHS,parent,,,,,,2222 N. Santiago Blvd.,,Orange,CA,92867,2222 N. Santiago Blvd.,,Orange,CA,92867,,,,,Chase Koissian,,,no customer email
-Orange Lutheran (HS),OL,parent,,,,,,2222 N Santiago Blvd,,Orange,CA,92867,2222 N Santiago Blvd,,Orange,CA,92867,,,,,Chase Koissian,,,no customer email
 Portola (HS),P,parent,,,,,,1001 Cadence,,Irvine,CA,92618,1001 Cadence,,Irvine,CA,92618,,,,,Jered Hunt,,,no customer email
 Reedley High School,RHS,parent,,,,,,"740 W North Ave,",,Reedley,CA,93654,"740 W North Ave,",,Reedley,CA,93654,,,,,Kevin McCormack,,,no customer email
 Rubidoux High School,RHS,parent,,,,,,4250 Opal St,,Riverside,CA,92509,4250 Opal St,,Riverside,CA,92509,,,,,Jered Hunt,,,no customer email

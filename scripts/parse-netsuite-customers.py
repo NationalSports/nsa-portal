@@ -91,6 +91,17 @@ MANUAL_SUB_ASSIGNMENTS: dict[str, str] = {
     "Bakersfield Football": "Bakersfield High School",
     "Bakersfield Girls Basketball": "Bakersfield High School",
     "Bakersfield Track": "Bakersfield High School",
+    # "OLu" = Orange Lutheran (user nickname for the school)
+    "OLu": "Orange Lutheran High School",
+    "OLu Creative Worship": "Orange Lutheran High School",
+    "OLu Orange Lutheran Beach Volleyball": "Orange Lutheran High School",
+    # Orange Lutheran (HS) was a collision fallback; merge its subs into the main.
+    "Orange Lutheran High School - Information Technology": "Orange Lutheran High School",
+    "Orange Lutheran High School Admissions": "Orange Lutheran High School",
+    "Orange Lutheran HS Rugby": "Orange Lutheran High School",
+    # Concordia Irvine: pull the Heritage Garden under the Athletics parent.
+    "Concordia Heritage Garden": "Concordia University Athletics",
+    "Concordia University Track and Field": "Concordia University Athletics",
 }
 
 # Sport/role suffix patterns — strip from a name to get the org root.
@@ -381,8 +392,8 @@ def main():
             "_root": root_l.title(),
             "_inst": inst_target,
             "_anchor": True,
-            "_city": city_l,
-            "_state": state_l,
+            "_city": proto.get("City", "").strip().lower() or city_l,
+            "_state": proto.get("State/Province", "").strip().lower() or state_l,
             "_rep": proto.get("Sales Rep", ""),
             "_real_email": False,
             "_has_addr": bool(proto.get("Address 1", "").strip() and proto.get("City", "").strip() and proto.get("Zip Code", "").strip()),
@@ -511,7 +522,9 @@ def main():
                     "Zip Code": proto.get("Zip Code", ""),
                     "_name": invented_name, "_root": pretty_root,
                     "_inst": inst if inst != "other" else "hs",
-                    "_anchor": True, "_city": city, "_state": state,
+                    "_anchor": True,
+                    "_city": proto.get("City", "").strip().lower(),
+                    "_state": proto.get("State/Province", "").strip().lower(),
                     "_rep": proto.get("Sales Rep", ""),
                     "_real_email": False,
                     "_has_addr": bool(proto.get("Address 1", "").strip() and proto.get("City", "").strip() and proto.get("Zip Code", "").strip()),
@@ -546,6 +559,77 @@ def main():
             r["_role"] = "sub"
             r["_parent_name"] = target
             manual_applied += 1
+
+    # Drop auto-invented parents that end up with zero subs (happens when manual
+    # overrides pull all their children elsewhere). Invented parents have no
+    # NetSuite Internal ID and _auto_invented flag.
+    referenced_parent_names = {r.get("_parent_name", "") for r in records if r.get("_role") == "sub"}
+    records = [r for r in records
+               if not (r.get("_auto_invented") and r.get("_name") not in referenced_parent_names)]
+
+    # Prefix-based demotion pass: childless "parent" rows whose name starts with
+    # an umbrella parent's stem become subs of that umbrella. Catches
+    # department-style rows (Creative Worship, Campus Supervision, Hockey,
+    # Ambassadors, Formation, Heritage Garden, etc.) that my sport-word list
+    # doesn't strip.
+    def umbrella_stem(name: str) -> str:
+        """Strip trailing institution words from a name to get its stem."""
+        stripped = re.sub(
+            r"\s+(High School Athletics|High School\s*-?\s*ASB|High School|"
+            r"Middle School|Elementary School|Elementary|HS|Academy|College|"
+            r"University|Charter School|Charter Academy|School District|"
+            r"Unified School District.*)$",
+            "",
+            name,
+            flags=re.IGNORECASE,
+        ).strip()
+        return stripped if stripped and stripped.lower() != name.lower() else ""
+
+    # Rows that will end up as "account_type=parent" in the CSV = cluster parents
+    # AND standalones (both render as parent in the output).
+    parents_all = [r for r in records if r.get("_role") in ("parent", "standalone")]
+    umbrella_parents = []
+    for p in parents_all:
+        stem = umbrella_stem(p["_name"])
+        if stem:
+            umbrella_parents.append((p, stem))
+
+    children_of = defaultdict(int)
+    for r in records:
+        if r.get("_role") == "sub":
+            children_of[r.get("_parent_name", "")] += 1
+
+    demoted = 0
+    for r in records:
+        if r.get("_role") not in ("parent", "standalone"):
+            continue
+        if children_of.get(r["_name"], 0) > 0:
+            continue  # don't demote parents that already have subs
+        if any(stem == r["_name"] for _, stem in umbrella_parents):
+            continue  # skip if this row IS someone's stem target
+        # Find longest-stem match in same state (+ city when both non-blank).
+        best = None
+        best_len = 0
+        r_name_lower = r["_name"].lower()
+        r_state = r.get("_state", "")
+        r_city = r.get("_city", "")
+        for p, stem in umbrella_parents:
+            if p is r:
+                continue
+            p_state = p.get("_state", "")
+            p_city = p.get("_city", "")
+            if r_state and p_state and r_state != p_state:
+                continue
+            if r_city and p_city and r_city != p_city:
+                continue
+            stem_l = stem.lower()
+            if r_name_lower.startswith(stem_l + " ") and len(stem) > best_len:
+                best = p
+                best_len = len(stem)
+        if best:
+            r["_role"] = "sub"
+            r["_parent_name"] = best["_name"]
+            demoted += 1
 
     # ---------- build output rows ----------
 
@@ -714,6 +798,7 @@ def main():
     print(f"duplicates dropped:           {len(dup_log)}")
     print(f"synthetic parents added:      {len(synthetic)}")
     print(f"manual sub overrides applied: {manual_applied}")
+    print(f"prefix-demoted to sub:        {demoted}")
     print(f"total rows in upload:         {len(upload_rows)}")
     print(f"  parents/standalone:         {pcount}")
     print(f"  subs:                       {scount}")
