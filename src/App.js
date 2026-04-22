@@ -1649,7 +1649,14 @@ export default function App(){
   };
   const _migrated=useMemo(()=>migrateState(),[]);
   const[REPS,setREPS]=useState(()=>loadState('reps',DEFAULT_REPS));
-  const[cust,setCust]=useState(()=>loadState('cust',D_C));const[vend,setVend]=useState(()=>loadState('vend',D_V));const[prod,setProd]=useState(()=>loadState('prod',D_P));
+  const[cust,setCust]=useState(()=>loadState('cust',D_C));const[vend,setVend]=useState(()=>loadState('vend',D_V));
+  // Old sample products (ids p1..p9 from former D_P seed) were seeded into some users' localStorage
+  // before we moved to DB-as-truth. They don't exist in Supabase so every save retry returns a
+  // 401/RLS error and surfaces as "N items failed to save to cloud". Strip them on load.
+  const[prod,setProd]=useState(()=>{
+    const _SAMPLE_PROD_IDS=new Set(['p1','p2','p3','p4','p5','p6','p7','p8','p9']);
+    return loadState('prod',D_P).filter(p=>!_SAMPLE_PROD_IDS.has(p.id));
+  });
   const[ests,setEsts]=useState(()=>_migrated.ests);const[sos,setSOs]=useState(()=>_migrated.sos);const[invs,setInvs]=useState(()=>_migrated.invs);
   // NetSuite invoice history (customer_invoices table) — read-only; kept separate from portal invs state.
   const[histInvs,setHistInvs]=useState([]);
@@ -20636,7 +20643,10 @@ export default function App(){
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
           <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>{setGQ(e.target.value);if(e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(gQ.length>=2)setGOpen(true)}}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
           {gOpen&&gQ.length>=2&&(()=>{const s=gQ.toLowerCase();
-            const rc=cust.filter(cc=>(cc.name+' '+cc.alpha_tag).toLowerCase().includes(s)).slice(0,4);
+            const rcAll=cust.filter(cc=>(cc.name+' '+cc.alpha_tag).toLowerCase().includes(s));
+            // Parents first so e.g. "Orange Lutheran High School" isn't pushed out of the slice
+            // by its own subs (which sort alphabetically before it).
+            const rc=[...rcAll.filter(cc=>!cc.parent_id),...rcAll.filter(cc=>cc.parent_id)].slice(0,6);
             const re=ests.filter(e=>{const cc=cust.find(x=>x.id===e.customer_id);return(e.id+' '+(e.memo||'')+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')).toLowerCase().includes(s)}).slice(0,4);
             const rs=sos.filter(so=>{const cc=cust.find(x=>x.id===so.customer_id);return(so.id+' '+(so.memo||'')+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')).toLowerCase().includes(s)}).slice(0,4);
             const rp=gProdResults.slice(0,6);
