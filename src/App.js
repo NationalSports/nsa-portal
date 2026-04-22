@@ -2835,6 +2835,8 @@ export default function App(){
   const[custPage,setCustPage]=useState(0);const CUST_PAGE_SIZE=50;
   const[custServerResults,setCustServerResults]=useState(null);
   const[custSearching,setCustSearching]=useState(false);
+  // Customer list collapse state — parents with subs start collapsed; Set of expanded parent ids.
+  const[custExpanded,setCustExpanded]=useState(()=>new Set());
   const _custSearchTimer=useRef(null);
   const _custSearchRPC=useCallback((query,repId,page)=>{
     if(_custSearchTimer.current)clearTimeout(_custSearchTimer.current);
@@ -4673,16 +4675,20 @@ export default function App(){
       <button className="btn btn-primary" onClick={()=>setCM({open:true,c:null})}><Icon name="plus" size={14}/> New</button></div>
     {custSearching&&<div style={{textAlign:'center',padding:12,color:'#64748b',fontSize:13}}>Searching...</div>}
     {f.map(p=>{const kids=gK(p.id);const bal=kids.reduce((a,c)=>a+(c._ob||0),p._ob||0);
+      // Auto-expand when a search narrows the cluster (so matching subs aren't hidden).
+      const isExpanded=custExpanded.has(p.id)||(!!q&&kids.some(c=>c.name.toLowerCase().includes(q.toLowerCase())));
+      const toggle=(e)=>{e.stopPropagation();setCustExpanded(prev=>{const s=new Set(prev);if(s.has(p.id))s.delete(p.id);else s.add(p.id);return s})};
       return(<div key={p.id} className="card" style={{marginBottom:10}}>
         <div style={{padding:'12px 16px',display:'flex',alignItems:'center',gap:12}}>
+          {kids.length>0?<button onClick={toggle} title={isExpanded?'Collapse subs':'Expand subs'} style={{width:24,height:24,padding:0,border:'1px solid #e2e8f0',borderRadius:4,background:'#fff',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#64748b'}}><Icon name={isExpanded?'chevron-down':'chevron-right'} size={14}/></button>:<div style={{width:24}}/>}
           <div style={{width:36,height:36,borderRadius:8,background:'#dbeafe',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}} onClick={()=>setSelC(p)}><Icon name="building" size={18}/></div>
           <div style={{flex:1,cursor:'pointer'}} onClick={()=>setSelC(p)}>
-            <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:15,fontWeight:700}}>{p.name}</span><span className="badge badge-blue">{p.alpha_tag}</span><span className="badge badge-green">Tier {p.adidas_ua_tier}</span></div>
+            <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:15,fontWeight:700}}>{p.name}</span><span className="badge badge-blue">{p.alpha_tag}</span><span className="badge badge-green">Tier {p.adidas_ua_tier}</span>{kids.length>0&&<span className="badge badge-gray" style={{fontSize:10}}>{kids.length} sub{kids.length===1?'':'s'}</span>}</div>
             <div style={{fontSize:12,color:'#94a3b8'}}>{(p.contacts||[])[0]?.name&&`${p.contacts[0].name} · `}{p.billing_city&&`${p.billing_city}, ${p.billing_state}`}{p.primary_rep_id&&` · ${REPS.find(r=>r.id===p.primary_rep_id)?.name||''}`}</div></div>
           {bal>0&&<div style={{textAlign:'right'}}><div style={{fontSize:16,fontWeight:800,color:'#dc2626'}}>${bal.toLocaleString()}</div></div>}
           <button className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();newE(p)}}><Icon name="file" size={12}/></button>
           <button className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();setCM({open:true,c:p})}}><Icon name="edit" size={12}/></button></div>
-        {kids.length>0&&<div style={{borderTop:'1px solid #f1f5f9'}}>{kids.map(ch=><div key={ch.id} style={{padding:'8px 16px 8px 64px',display:'flex',alignItems:'center',gap:10,borderBottom:'1px solid #f8fafc',cursor:'pointer'}} onClick={()=>setSelC(ch)}>
+        {kids.length>0&&isExpanded&&<div style={{borderTop:'1px solid #f1f5f9'}}>{kids.map(ch=><div key={ch.id} style={{padding:'8px 16px 8px 64px',display:'flex',alignItems:'center',gap:10,borderBottom:'1px solid #f8fafc',cursor:'pointer'}} onClick={()=>setSelC(ch)}>
           <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontSize:13,fontWeight:600}}>{ch.name}</span><span className="badge badge-gray">{ch.alpha_tag}</span>{ch.primary_rep_id&&ch.primary_rep_id!==p.primary_rep_id&&<span style={{fontSize:10,color:'#6d28d9',fontWeight:600}}>{REPS.find(r=>r.id===ch.primary_rep_id)?.name||''}</span>}<div style={{flex:1}}/>
           {(ch._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${ch._ob.toLocaleString()}</span>}</div>)}</div>}
       </div>)})}
