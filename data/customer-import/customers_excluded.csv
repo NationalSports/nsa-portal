@@ -468,3 +468,4 @@ netsuite_internal_id,netsuite_id,name,sales_rep,city,state,excluded_reason
 3414,147,Performance Powder Inc.,Gayle Peterson,,,dedup drop (keeper name: Performance Powder Inc.)
 3286,,Portola High School,Jered Hunt,,,dedup drop (keeper name: Portola High School)
 2719,,University High School,,,,dedup drop (keeper name: University High School)
+5266,5408,Miguel Crespo,Mike Mercuriali,,,dedup drop (keeper name: Miguel Crespo)

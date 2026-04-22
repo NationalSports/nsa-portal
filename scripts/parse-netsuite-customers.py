@@ -734,6 +734,32 @@ def main():
             other["_role"] = "sub"
             other["_parent_name"] = keeper["_name"]
 
+    # Within-cluster dedup: when two subs share the same name under the same
+    # parent, they're the same team with different NetSuite Internal IDs. Keep
+    # the most-populated one, drop the rest.
+    from collections import defaultdict as _dd2
+    by_name_parent = _dd2(list)
+    for r in records:
+        if r.get("_role") == "sub":
+            k = (r["_name"].strip().lower(), r.get("_parent_name", "").strip().lower())
+            if k[0] and k[1]:
+                by_name_parent[k].append(r)
+    within_dropped = 0
+    for k, grp in by_name_parent.items():
+        if len(grp) < 2:
+            continue
+        grp_sorted = sorted(grp, key=lambda x: (-populated_score(x), x.get("Name", "")))
+        keeper = grp_sorted[0]
+        for loser in grp_sorted[1:]:
+            dup_log.append((loser, keeper, ("within-cluster", k[0])))
+            within_dropped += 1
+    if within_dropped:
+        drop_ids_post = set()
+        for loser, keeper, key in dup_log:
+            if isinstance(key, tuple) and key[0] == "within-cluster":
+                drop_ids_post.add(id(loser))
+        records = [r for r in records if id(r) not in drop_ids_post]
+
     # Drop auto-invented parents that end up with zero subs (happens when manual
     # overrides pull all their children elsewhere). Invented parents have no
     # NetSuite Internal ID and _auto_invented flag.
@@ -985,6 +1011,7 @@ def main():
     print(f"manual sub overrides applied: {manual_applied}")
     print(f"cluster merges applied:       {merges_applied}")
     print(f"prefix-demoted to sub:        {demoted}")
+    print(f"within-cluster dupes dropped: {within_dropped}")
     print(f"total rows in upload:         {len(upload_rows)}")
     print(f"  parents/standalone:         {pcount}")
     print(f"  subs:                       {scount}")
