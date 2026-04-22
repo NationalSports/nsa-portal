@@ -122,9 +122,20 @@ INVENTED_PARENTS: dict[tuple[str, str, str, str], str] = {
 # dominant-hint heuristic picks "High School" for a school that's actually a
 # College/University.
 INVENTED_PARENT_NAME_OVERRIDES: dict[tuple[str, str], str] = {
-    ("fresno pacific",   "ca"): "Fresno Pacific University",
-    ("long beach state", "ca"): "Long Beach State University",
-    ("mission",          "ca"): "Mission Prep High School",
+    ("fresno pacific",      "ca"): "Fresno Pacific University",
+    ("long beach state",    "ca"): "Long Beach State University",
+    ("mission",             "ca"): "Mission Prep High School",
+    # San Joaquin Memorial — portal already has "San Joaquin Memorial" row
+    # (c1773670554205). Match that name so the bulk insert can merge in.
+    ("san joaquin memorial", "ca"): "San Joaquin Memorial",
+}
+
+# When the bulk customer insert runs, use this existing portal customer id
+# (pre-loaded in the DB before this import) as the parent_id for any cluster
+# whose parent has the matching name. Skip inserting a new parent row.
+# Key = the parent name in the upload CSV. Value = portal customer.id.
+MERGE_INTO_EXISTING_PORTAL_PARENT: dict[str, str] = {
+    "San Joaquin Memorial": "c1773670554205",
 }
 
 # Manual sub assignments. Key = customer Name (exact), Value = parent Name
@@ -171,6 +182,11 @@ MANUAL_SUB_ASSIGNMENTS: dict[str, str] = {
     # HS stem. Force them back to the College parent.
     "Reedley College Receiving": "Reedley College Athletics",
     "Reedley College Residence Hall": "Reedley College Athletics",
+    # SJM orphans — parent "San Joaquin Memorial" doesn't end in an institution
+    # suffix so my prefix-demotion can't target it. Manual assign.
+    "San Joaquin Memorial Athletic Department": "San Joaquin Memorial",
+    "San Joaquin Memorial Athletic Training": "San Joaquin Memorial",
+    "San Joaquin Memorial M Volleyball": "San Joaquin Memorial",
 }
 
 # Cluster merges flatten a secondary parent into a primary parent.
@@ -1003,6 +1019,11 @@ def main():
         w = csv.DictWriter(f, fieldnames=REVIEW_COLS)
         w.writeheader()
         w.writerows(review_rows)
+
+    # Emit the existing-portal-parent merge map so the bulk insert can use it.
+    import json as _json
+    with (OUT_DIR / "merge_into_existing_portal_parent.json").open("w") as f:
+        _json.dump(MERGE_INTO_EXISTING_PORTAL_PARENT, f, indent=2)
 
     # Excluded list — things we dropped on purpose (per user rules + dedup).
     with (OUT_DIR / "customers_excluded.csv").open("w", newline="") as f:

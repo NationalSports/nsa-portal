@@ -1119,7 +1119,7 @@ San Diego State University Men's Soccer,SDSUMS,sub,San Diego High School,,,,,,,,
 San Diego State University Women's Lacrosse,SDSUWL,sub,San Diego High School,,kylee.white@sdsu.edu,,,5500 Campanile Drive,,San Diego,CA,92182,5500 Campanile Drive,,San Diego,CA,92182,,,,,Mike Mercuriali,4390,1336,
 San Dieguito HS Boys Soccer,SDHBS,parent,,,bkgoldman@gmail.com,,,800 Santa Fe Dr,,Encinitas,CA,92024,800 Santa Fe Dr,,Encinitas,CA,92024,,,,,Mike Mercuriali,3987,1005,
 San Francisco Distance Project,SFDP,parent,,,carin.ward@gmail.com,,,Carin Marrs,1036 Clement Street,San Francisco,CA,94118,Carin Marrs,1036 Clement Street,San Francisco,CA,94118,,,,,Kelly Bean,4525,1447,
-San Joaquin Memorial Women's Volleyball,SJMWV,sub,San Joaquin Memorial High School,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,5229,5376,no customer email
+San Joaquin Memorial Women's Volleyball,SJMWV,sub,San Joaquin Memorial,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,5229,5376,no customer email
 San Juan Cubs,SJC,parent,,,zacsigler4@gmail.com,,,,,San Juan Capistrano,CA,,,,San Juan Capistrano,CA,,,,,,Chase Koissian,3400,140,missing structured address
 San Juan High School Football,SJHSF,parent,,,,,,7551 Greenback Ln,,Citrus Heights,CA,95610,7551 Greenback Ln,,Citrus Heights,CA,95610,,,,,Jeff Bianchini,3864,510,no customer email; had NSA-internal email (jeff@nationalsportsapparel.com)
 San Luis Obispo High School,SLOHS,parent,,,,,,1499 San Luis Dr,,San Luis Obispo,CA,93401,1499 San Luis Dr,,San Luis Obispo,CA,93401,,,,,Kelly Bean,4503,1431,no customer email; had NSA-internal email (kelly@nationalsportsapparel.com)
@@ -1217,18 +1217,18 @@ Sigma Nu Fraternity,SNF,parent,,,gorunfast@gmail.com,,,"975 S Rural Road, Buildi
 Silicon Valley International,SVI,parent,,,marthagudiel@svintl.org,,,151 Laura Lane,,Palo Alto,CA,94303,151 Laura Lane,,Palo Alto,CA,94303,,,,,Mike Mercuriali,4871,5077,
 Silver Screenprinting,SS,parent,,,,,,1135 S Rock Blvd Suite #340,,Reno,NV,89502,1135 S Rock Blvd Suite #340,,Reno,NV,89502,,,,,Steve Peterson,4650,1555,no customer email
 SJM,S,sub,Sjm High School,,,(559) 268-9251,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,4535,1457,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
-San Joaquin Memorial Athletic Department,SJMAD,sub,San Joaquin Memorial High School,,fpucher@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4705,1605,
-San Joaquin Memorial Athletic Training,SJMAT,sub,San Joaquin Memorial High School,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4704,1604,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
-San Joaquin Memorial Baseball,SJMB,sub,San Joaquin Memorial High School,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,4541,1462,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
-San Joaquin Memorial Basketball,SJMB,sub,San Joaquin Memorial High School,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4724,1623,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
-San Joaquin Memorial Football,SJMF,sub,San Joaquin Memorial High School,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,4536,1458,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
-San Joaquin Memorial Girls Basketball,SJMGB,sub,San Joaquin Memorial High School,,Jwhitfield@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4725,1624,
-San Joaquin Memorial Girls Soccer,SJMGS,sub,San Joaquin Memorial High School,,rcordova@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4744,1639,
-San Joaquin Memorial M Volleyball,SJMMV,sub,San Joaquin Memorial High School,,fpucher@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,5025,5198,
-San Joaquin Memorial Rugby,SJMR,sub,San Joaquin Memorial High School,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,4971,5149,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
-San Joaquin Memorial Soccer,SJMS,sub,San Joaquin Memorial High School,,rcordova@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4745,1640,
-San Joaquin Memorial Softball,SJMS,sub,San Joaquin Memorial High School,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4866,5072,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
-San Joaquin Memorial Swim,SJMS,sub,San Joaquin Memorial High School,,screven@outlook.com,,,"1406 N Fresno St,",,Fresno,CA,93703,"1406 N Fresno St,",,Fresno,CA,93703,,,,,Steve Peterson,5126,5283,
+San Joaquin Memorial Athletic Department,SJMAD,sub,San Joaquin Memorial,,fpucher@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4705,1605,
+San Joaquin Memorial Athletic Training,SJMAT,sub,San Joaquin Memorial,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4704,1604,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
+San Joaquin Memorial Baseball,SJMB,sub,San Joaquin Memorial,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,4541,1462,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
+San Joaquin Memorial Basketball,SJMB,sub,San Joaquin Memorial,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4724,1623,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
+San Joaquin Memorial Football,SJMF,sub,San Joaquin Memorial,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,4536,1458,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
+San Joaquin Memorial Girls Basketball,SJMGB,sub,San Joaquin Memorial,,Jwhitfield@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4725,1624,
+San Joaquin Memorial Girls Soccer,SJMGS,sub,San Joaquin Memorial,,rcordova@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4744,1639,
+San Joaquin Memorial M Volleyball,SJMMV,sub,San Joaquin Memorial,,fpucher@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,5025,5198,
+San Joaquin Memorial Rugby,SJMR,sub,San Joaquin Memorial,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,4971,5149,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
+San Joaquin Memorial Soccer,SJMS,sub,San Joaquin Memorial,,rcordova@sjmhs.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4745,1640,
+San Joaquin Memorial Softball,SJMS,sub,San Joaquin Memorial,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,4866,5072,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
+San Joaquin Memorial Swim,SJMS,sub,San Joaquin Memorial,,screven@outlook.com,,,"1406 N Fresno St,",,Fresno,CA,93703,"1406 N Fresno St,",,Fresno,CA,93703,,,,,Steve Peterson,5126,5283,
 SJM Golf,SG,sub,Sjm High School,,hradford@hcjh.org,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Kelly Bean,5222,5369,
 Skyline Church Select Basketball,SCSB,parent,,,gwilliams@skylinechurch.org,,,11330 Campo Rd,,La Mesa,CA,91941,11330 Campo Rd,,La Mesa,CA,91941,,,,,Mike Mercuriali,4156,1147,
 Skyline Church Volleyball,SCV,parent,,,gwilliams@skylinechurch.org,,,11330 Campo Rd,,La Mesa,CA,91941,11330 Campo Rd,,La Mesa,CA,91941,,,,,Mike Mercuriali,4220,1200,
@@ -2282,7 +2282,7 @@ Rubidoux High School,RHS,parent,,,,,,4250 Opal St,,Riverside,CA,92509,4250 Opal 
 Sacramento City College,SCC,parent,,,,,,3835 Freeport Blvd,,Sacramento,CA,95822,3835 Freeport Blvd,,Sacramento,CA,95822,,,,,Jeff Bianchini,,,no customer email
 Saddleback High School,SHS,parent,,,,,,2802 S Flower St,,Santa Ana,CA,92707,2802 S Flower St,,Santa Ana,CA,92707,,,,,Jered Hunt,,,no customer email
 San Diego City College,SDCC,parent,,,,,,1313 Park Blvd,,San Diego,CA,92101,1313 Park Blvd,,San Diego,CA,92101,,,,,Mike Mercuriali,,,no customer email
-San Joaquin Memorial High School,SJMHS,parent,,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,,,no customer email
+San Joaquin Memorial,SJM,parent,,,,,,1406 N Fresno St,,Fresno,CA,93703,1406 N Fresno St,,Fresno,CA,93703,,,,,Steve Peterson,,,no customer email
 Slo High School,SHS,parent,,,,,,1499 San Luis Dr,,San Luis Obispo,CA,93401,1499 San Luis Dr,,San Luis Obispo,CA,93401,,,,,Sharon Day-Monroe,,,no customer email
 San Marino High School,SMHS,parent,,,,,,2701 Huntington Dr,,San Marino,CA,91108,2701 Huntington Dr,,San Marino,CA,91108,,,,,Mike Mercuriali,,,no customer email
 San Ysidro High School,SYHS,parent,,,,,,5353 Airway Road,,San Diego,CA,92154,5353 Airway Road,,San Diego,CA,92154,,,,,Mike Mercuriali,,,no customer email

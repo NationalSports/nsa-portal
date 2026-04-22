@@ -72,7 +72,7 @@ Total clusters auto-attached: **211**
 - Reps: Chase Koissian
 - Subs (10): Long Beach State Golf, Long Beach State Softball, Long Beach State Athletics, Long Beach State Soccer, Long Beach State Baseball, Long Beach State Basketball, Long Beach State Track and Field, Long Beach State Women's Basketball, Long Beach State Women's Tennis, Long Beach State Women's Water Polo
 
-## San Joaquin Memorial High School  *(HS, 93703/ca)*
+## San Joaquin Memorial  *(HS, 93703/ca)*
 
 - Reps: Kelly Bean, Steve Peterson
 - Subs (10): San Joaquin Memorial Women's Volleyball, San Joaquin Memorial Baseball, San Joaquin Memorial Basketball, San Joaquin Memorial Football, San Joaquin Memorial Girls Basketball, San Joaquin Memorial Girls Soccer, San Joaquin Memorial Rugby, San Joaquin Memorial Soccer, San Joaquin Memorial Softball, San Joaquin Memorial Swim
