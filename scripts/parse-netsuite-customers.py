@@ -166,6 +166,11 @@ MANUAL_SUB_ASSIGNMENTS: dict[str, str] = {
     # to "Bishop Alemany".
     "Alemany HS Dance": "Bishop Alemany HS",
     "Alemany HS Girls Volleyball": "Bishop Alemany HS",
+    # Reedley — these say "Reedley College" in the name but were prefix-demoted
+    # under the invented "Reedley High School" because they also matched the
+    # HS stem. Force them back to the College parent.
+    "Reedley College Receiving": "Reedley College Athletics",
+    "Reedley College Residence Hall": "Reedley College Athletics",
 }
 
 # Cluster merges flatten a secondary parent into a primary parent.

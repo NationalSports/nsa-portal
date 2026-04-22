@@ -485,3 +485,4 @@ netsuite_internal_id,netsuite_id,name,sales_rep,city,state,excluded_reason
 3286,,Portola High School,Jered Hunt,,,dedup drop (keeper name: Portola High School)
 2719,,University High School,,,,dedup drop (keeper name: University High School)
 5266,5408,Miguel Crespo,Mike Mercuriali,,,dedup drop (keeper name: Miguel Crespo)
+4818,5033,Reedley College Residence Hall,Kevin McCormack,Reedley,CA,dedup drop (keeper name: Reedley College Residence Hall)
