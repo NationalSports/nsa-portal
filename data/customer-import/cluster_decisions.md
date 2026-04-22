@@ -1,6 +1,6 @@
 # Parent/Sub Cluster Decisions
 
-Total clusters auto-attached: **212**
+Total clusters auto-attached: **211**
 
 ## Concordia University Athletics  *(COL, 92612/ca)*
 
@@ -41,11 +41,6 @@ Total clusters auto-attached: **212**
 
 - Reps: Tim Kelly
 - Subs (14): Incline Baseball, Incline Booster Club, Incline High School Cross Country, Incline Swim, Incline Football, Incline Golf, Incline Girl's Basketball, Incline Wrestling, Incline Cheer, Incline Basketball, Incline Soccer, Incline Track & Field, Incline Girl's Volleyball, Incline Cross Country
-
-## Moreau Catholic High School  *(HS, 94544/ca)*
-
-- Reps: Shawn McHugh, Steve Peterson
-- Subs (13): Moreau Catholic Baseball, Moreau Catholic Basketball, Moreau Catholic Cross Country, Moreau Catholic Golf, Moreau Catholic Soccer, Moreau Catholic Volleyball, Moreau Catholic Track & Field, Moreau Catholic Badminton, Moreau Catholic Lacrosse, Moreau Catholic Softball, Moreau Catholic Tennis, Moreau Catholic Football, Moreau Catholic Athletics
 
 ## Atascadero High School  *(HS, 93422/ca)*
 
@@ -762,7 +757,7 @@ Total clusters auto-attached: **212**
 - Reps: Jered Hunt
 - Subs (2): Mira Costa HS Boys Soccer, Mira Costa HS Girls Lacrosse
 
-## Mission High School  *(HS, 93401/ca)*
+## Mission Prep High School  *(OTHER, 93401/ca)*
 
 - Reps: Kelly Bean
 - Subs (2): Mission Boys Basketball, Mission Track & Field

@@ -74,6 +74,7 @@ EXCLUDED_NAME_SUBSTRINGS = [
     "dominican",
     # Per user request 2026-04-22.
     "inderkum",
+    "moreau catholic",
 ]
 
 # Specific NetSuite Internal IDs to drop (duplicates, unwanted rows). Keyed by
@@ -123,6 +124,7 @@ INVENTED_PARENTS: dict[tuple[str, str, str, str], str] = {
 INVENTED_PARENT_NAME_OVERRIDES: dict[tuple[str, str], str] = {
     ("fresno pacific",   "ca"): "Fresno Pacific University",
     ("long beach state", "ca"): "Long Beach State University",
+    ("mission",          "ca"): "Mission Prep High School",
 }
 
 # Manual sub assignments. Key = customer Name (exact), Value = parent Name
