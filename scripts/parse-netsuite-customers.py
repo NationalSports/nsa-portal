@@ -647,10 +647,34 @@ def main():
                 else:
                     # Default for HS variants and sport-only rows.
                     invented_name = f"{pretty_root} High School"
-                # Avoid colliding with an existing row's name.
-                existing_names = {r["_name"].lower() for r in records}
-                if invented_name.lower() in existing_names:
-                    invented_name = f"{pretty_root} ({inst.upper()})"
+                # If a row with the invented name already exists in the data,
+                # don't create a duplicate — use that existing row as the anchor
+                # and make our cluster rows its subs. Prefer same-state matches.
+                invented_lower = invented_name.lower()
+                existing_anchor = None
+                for r in records:
+                    if r.get("_name", "").lower() == invented_lower:
+                        if r.get("_state", "") == state or not state or not r.get("_state", ""):
+                            existing_anchor = r
+                            break
+                if existing_anchor:
+                    # Promote the existing row to parent role (in case it was standalone)
+                    # and attach our cluster rows to it. Skip synthesising a new one.
+                    existing_anchor["_role"] = "parent"
+                    existing_anchor["_parent_name"] = ""
+                    for r in rows:
+                        if r is existing_anchor:
+                            continue
+                        r["_role"] = "sub"
+                        r["_parent_name"] = existing_anchor["_name"]
+                    cluster_log.append({
+                        "root": root_l, "inst": inst, "city": city, "state": state,
+                        "parent": existing_anchor["_name"],
+                        "subs": [r["_name"] for r in rows if r is not existing_anchor],
+                        "reps": sorted({r["_rep"] for r in rows if r["_rep"]}),
+                        "decision": "attached to existing same-named row",
+                    })
+                    continue
                 # Build synthetic parent from the best-address member.
                 proto = max(rows, key=lambda x: sum(1 for k in ("Address 1","City","State/Province","Zip Code") if x.get(k,"").strip()))
                 syn = {

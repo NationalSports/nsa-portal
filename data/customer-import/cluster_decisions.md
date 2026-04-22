@@ -197,7 +197,7 @@ Total clusters auto-attached: **213**
 - Reps: Chase Koissian, Gayle Peterson, Jered Hunt, Steve Peterson
 - Subs (6): Crean Lutheran High School Counselor, Crean Lutheran HS Flag Football, Crean Lutheran HS Student Leadership, Crean Lutheran Girl's Soccer, Crean Lutheran Boy's Volleyball, Crean Lutheran Soccer
 
-## J Serra (OTHER)  *(HS, 92675/ca)*
+## J Serra High School  *(OTHER, 92675/ca)*
 
 - Reps: Chase Koissian
 - Subs (6): J Serra Baseball, J Serra Girl's Volleyball, J Serra Softball, J Serra Boy's Volleyball, J Serra Track and Field, J Serra Admissions
@@ -257,7 +257,7 @@ Total clusters auto-attached: **213**
 - Reps: Chase Koissian, Jered Hunt, Steve Peterson
 - Subs (5): Pasadena Football, Pasadena HS Boys Soccer, Pasadena HS Girls Soccer, Pasadena HS Track and Field, Pasadena Baseball
 
-## Portola (HS)  *(HS, 92618/ca)*
+## Portola High School  *(HS, 92618/ca)*
 
 - Reps: Jered Hunt
 - Subs (5): Portola High School Flag Football, Portola HS Boys Basketball, Portola HS Girl's Soccer, Portola HS Wrestling, Portola HS Track
@@ -277,7 +277,7 @@ Total clusters auto-attached: **213**
 - Reps: Jered Hunt
 - Subs (5): Sunny Hills HS Girls Soccer, Sunny Hills HS Football, Sunny Hills Track, Sunny Hills Cross Country, Sunny Hills Men's Soccer
 
-## Troy (HS)  *(HS, 92831/ca)*
+## Troy High School  *(HS, 92831/ca)*
 
 - Reps: Jered Hunt, Steve Peterson
 - Subs (5): Troy HS Boys Soccer, Troy HS Flag Football, Troy HS Football, Troy HS Wrestling, Troy HS Girl's Volleyball
@@ -352,7 +352,7 @@ Total clusters auto-attached: **213**
 - Reps: Chase Koissian, Jered Hunt
 - Subs (4): Sonora HS Boys Volleyball, Sonora HS Girl's Volleyball, Sonora HS Girls Basketball, Sonora HS Softball
 
-## St. John Bosco (HS)  *(HS, 90706/ca)*
+## St. John Bosco High School  *(HS, 90706/ca)*
 
 - Reps: Chase Koissian
 - Subs (4): St. John Bosco Baseball, St. John Bosco Water Polo, St. John Bosco Basketball, St. John Bosco Swimming
@@ -387,15 +387,15 @@ Total clusters auto-attached: **213**
 - Reps: Jered Hunt, Mike Mercuriali
 - Subs (3): Anaheim High School Boy's Soccer, Anaheim HS Baseball, Anaheim HS Boy's Volleyball
 
-## Bakersfield (OTHER)  *(HS, 93304/ca)*
-
-- Reps: Kevin McCormack
-- Subs (3): Bakersfield Football, Bakersfield Girls Basketball, Bakersfield Track
-
 ## Bakersfield Christian High School  *(HS, 93314/ca)*
 
 - Reps: Kevin McCormack
 - Subs (3): Bakersfield Christian Cross Country, Bakersfield Christian Soccer, Bakersfield Christian Track & Field
+
+## Bakersfield High School  *(OTHER, 93304/ca)*
+
+- Reps: Kevin McCormack
+- Subs (3): Bakersfield Football, Bakersfield Girls Basketball, Bakersfield Track
 
 ## Buena Park High School  *(HS, 90621/ca)*
 
@@ -447,12 +447,12 @@ Total clusters auto-attached: **213**
 - Reps: Jered Hunt
 - Subs (3): Gardena HS Girl's Basketball, Gardena HS Girls Soccer, Gardena HS Girls Volleyball
 
-## Helix (HS)  *(HS, ?/?)*
+## Helix High School  *(HS, ?/?)*
 
 - Reps: Mike Mercuriali
 - Subs (3): Helix High School Boys Basketball, Helix High School Girls Lacrosse, Helix High School Softball
 
-## Hoover (HS)  *(HS, 92115/ca)*
+## Hoover High School  *(HS, 92115/ca)*
 
 - Reps: Mike Mercuriali
 - Subs (3): Hoover High School Boys Basketball, Hoover High School Flag Football, Hoover High School Girls Basketball
@@ -482,7 +482,7 @@ Total clusters auto-attached: **213**
 - Reps: Jered Hunt
 - Subs (3): Lancaster HS Football, Lancaster HS Soccer, Lancaster HS Tennis
 
-## Liberty (HS)  *(HS, 93312/ca)*
+## Liberty High School  *(HS, 93312/ca)*
 
 - Reps: Jered Hunt, Kevin McCormack
 - Subs (3): Liberty HS Football, Liberty HS Softball, Liberty HS Girl's Volleyball
@@ -507,7 +507,7 @@ Total clusters auto-attached: **213**
 - Reps: Chase Koissian, Jered Hunt
 - Subs (3): Orange HS Boys Basketball, Orange HS Boys Soccer, Orange HS Baseball
 
-## Orange Lutheran (HS)  *(HS, 92867/ca)*
+## Orange Lutheran High School  *(HS, 92867/ca)*
 
 - Reps: Chase Koissian, Jered Hunt
 - Subs (3): Orange Lutheran High School - Information Technology, Orange Lutheran High School Admissions, Orange Lutheran HS Rugby
@@ -657,12 +657,12 @@ Total clusters auto-attached: **213**
 - Reps: Aaron Mason, Jered Hunt
 - Subs (2): Downey HS Girl's Basketball, Downey HS Boy's Basketball
 
-## Esperanza (OTHER)  *(HS, 92807/ca)*
+## Esperanza High School  *(OTHER, 92807/ca)*
 
 - Reps: Steve Peterson
 - Subs (2): Esperanza Soccer, Esperanza Football
 
-## Fairfield (HS)  *(HS, 94533/ca)*
+## Fairfield High School  *(HS, 94533/ca)*
 
 - Reps: Jered Hunt, Mike Mercuriali
 - Subs (2): Fairfield High School Girls Soccer, Fairfield HS Wrestling
@@ -732,22 +732,22 @@ Total clusters auto-attached: **213**
 - Reps: Jered Hunt
 - Subs (2): Indio HS Basketball, Indio HS Football
 
-## La Costa Canyon (HS)  *(HS, 92009/ca)*
-
-- Reps: Mike Mercuriali
-- Subs (2): La Costa Canyon High School Football, La Costa Canyon High School Girl's Soccer
-
 ## La Costa Canyon High School  *(HS, 92009/ca)*
 
 - Reps: Mike Mercuriali
 - Subs (2): La Costa Canyon Baseball, La Costa Canyon Track & Field
+
+## La Costa Canyon High School  *(HS, 92009/ca)*
+
+- Reps: Mike Mercuriali
+- Subs (2): La Costa Canyon High School Football, La Costa Canyon High School Girl's Soccer
 
 ## Laguna Hills High School  *(HS, 92653/ca)*
 
 - Reps: Jered Hunt
 - Subs (2): Laguna Hills HS Boys Basketball, Laguna Hills HS Girl's Volleyball
 
-## Lincoln (HS)  *(HS, 95207/ca)*
+## Lincoln High School  *(HS, 95207/ca)*
 
 - Reps: Jered Hunt
 - Subs (2): Lincoln High School Boys Basketball, Lincoln HS Football
@@ -847,15 +847,15 @@ Total clusters auto-attached: **213**
 - Reps: Jered Hunt
 - Subs (2): Santiago HS Flag Football, Santiago HS Football
 
-## Saugus (HS)  *(HS, 91350/ca)*
-
-- Reps: Chase Koissian
-- Subs (2): Saugus HS Boy's Volleyball, Saugus HS Girl's Volleyball
-
 ## Saugus High School  *(HS, 91350/ca)*
 
 - Reps: Chase Koissian, Steve Peterson
 - Subs (2): Saugus Lacrosse, Saugus Cross Country
+
+## Saugus High School  *(HS, 91350/ca)*
+
+- Reps: Chase Koissian
+- Subs (2): Saugus HS Boy's Volleyball, Saugus HS Girl's Volleyball
 
 ## Savanna High School  *(HS, 92801/ca)*
 

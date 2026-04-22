@@ -518,7 +518,7 @@ United States",Los Angeles,CA,90012,,no customer email
 5002,5178,Esperanza Soccer,Steve Peterson,yes,,yes,steve@nationalsportsapparel.com,,"Esperanza HS Soccer
 1830 Kellogg Dr
 Anaheim CA 92807
-United States",Anaheim,CA,92807,Esperanza (OTHER),no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
+United States",Anaheim,CA,92807,Esperanza High School,no customer email; had NSA-internal email (steve@nationalsportsapparel.com)
 4299,1256,Estancia HS Softball,Jered Hunt,yes,,,,,"Dale Lopes
 Estancia HS Softball
 2323 Placentia Ave
@@ -532,7 +532,7 @@ United States",Fairfield,CA,94534,Fairfield High School,no customer email
 5200,5351,Fairfield High School Girls Soccer,Mike Mercuriali,yes,,,,,"Fairfield High School Girls Soccer
 205 E Atlantic Ave
 Fairfield  CA 94533
-United States",Fairfield,CA,94533,Fairfield (HS),no customer email
+United States",Fairfield,CA,94533,Fairfield High School,no customer email
 3727,365,Fairmont Prep Academy,John Morris,yes,,yes,steve@nationalsportsapparel.com,,"Fairmont Prep Academy Athletics
 2200 W Sequoia Ave
 Anaheim CA 92801
@@ -981,11 +981,11 @@ United States",Los Angeles,CA,90062,,no customer email
 Robert Candelaria
 925 Jewetta Ave
 Bakersfield CA 93312
-United States",Bakersfield,CA,93312,Liberty (HS),no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
+United States",Bakersfield,CA,93312,Liberty High School,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
 3772,394,Liberty HS Softball,Kevin McCormack,yes,,yes,kevin@nationalsportsapparel.com,,"Liberty HS Softball
 925 Jewetta Ave
 Bakersfield CA 93312
-United States",Bakersfield,CA,93312,Liberty (HS),no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
+United States",Bakersfield,CA,93312,Liberty High School,no customer email; had NSA-internal email (kevin@nationalsportsapparel.com)
 4603,1513,Lincoln High School,Kelly Bean,yes,,,,,"Lincoln High School
 1750 SW Salmon St
 Portland OR 97205
@@ -1355,7 +1355,7 @@ United States",Port Townsend,WA,98368,,no customer email
 Portola High School Flag Football
 1001 Cadence 
 Irvine CA 92618
-United States",Irvine,CA,92618,Portola (HS),no customer email
+United States",Irvine,CA,92618,Portola High School,no customer email
 4376,1323,Poway High School Flag Football,Mike Mercuriali,yes,,yes,merc@nationalsportsapparel.com,,"Poway High Flag Football
 15500 Espola Rd.
 Poway CA 92064
@@ -1791,7 +1791,7 @@ United States",Fullerton,CA,92831,Troy High School,no customer email; had NSA-in
 4172,1160,Troy HS Football,Jered Hunt,yes,,,,,"Troy HS Football
 2200 Dorothy Lane
 Fullerton CA 92831
-United States",Fullerton,CA,92831,Troy (HS),no customer email
+United States",Fullerton,CA,92831,Troy High School,no customer email
 3719,358,Truckee Basketball,Tim Kelly,yes,,yes,steve@nationalsportsapparel.com,,"Truckee Basketball
 11725 Donner Pass Rd
 Truckee CA 96161
@@ -2281,7 +2281,7 @@ United States",Fresno,CA,93702,Fresno Pacific High School,no customer email; had
 Brett Kay
 26351 Junipero Serra Road
 San Juan Capistrano CA 92675
-United States",San Juan Capistrano,CA,92675,J Serra (OTHER),no customer email; had NSA-internal email (chase@nationalsportsapparel.com)
+United States",San Juan Capistrano,CA,92675,J Serra High School,no customer email; had NSA-internal email (chase@nationalsportsapparel.com)
 2970,,Mission College Women's Badminton,SBS,yes,,,,,"Mission College Women's Badminton
 Mission College Women's Badminton
 3000 Mission College Blvd
@@ -2341,7 +2341,7 @@ United States",Anaheim,CA,92801,Servite High School,no customer email
 Jeff Powers
 13640 Bellflower Blvd
 Bellflower CA 90706
-United States",Bellflower,CA,90706,St. John Bosco (HS),no customer email; had NSA-internal email (chase@nationalsportsapparel.com)
+United States",Bellflower,CA,90706,St. John Bosco High School,no customer email; had NSA-internal email (chase@nationalsportsapparel.com)
 3100,,The King's Academy Softball,SBS,yes,,,,,"The King's Academy Softball
 The King's Academy Softball
 562 N. Britton Ave
@@ -2376,7 +2376,7 @@ United States",Villa Park,CA,92861,Villa Park High School,no customer email
 Bret Dahlson
 26351 Junipero Serra Road
 San Juan Capistrano CA 92675
-United States",San Juan Capistrano,CA,92675,J Serra (OTHER),no customer email; had NSA-internal email (chase@nationalsportsapparel.com)
+United States",San Juan Capistrano,CA,92675,J Serra High School,no customer email; had NSA-internal email (chase@nationalsportsapparel.com)
 2743,,Wrestling 316,Gayle Peterson,,yes,,Jeff@notarygo.com,,"Wrestling 316
 Jeff Stone
 United States",,,,,missing structured address
@@ -2700,9 +2700,7 @@ United States",Dana Point,CA,92629,Dana Hills High School,no customer email; had
 ,,El Dorado High School,Jered Hunt,yes,,,,,,Placentia,CA,92870,,no customer email
 ,,El Modena High School,Chase Koissian,yes,,,,,,Orange,CA,92869,,no customer email
 ,,Esperanza High School,Chase Koissian,yes,,,,,,Anaheim,CA,92807,,no customer email
-,,Esperanza (OTHER),Steve Peterson,yes,,,,,,Anaheim,CA,92807,,no customer email
 ,,Fairfield High School,SBS,yes,,,,,,Fairfield,CA,94534,,no customer email
-,,Fairfield (HS),Mike Mercuriali,yes,,,,,,Fairfield,CA,94533,,no customer email
 ,,Folsom Lake College,Mike Mercuriali,yes,,,,,,Folsom,CA,95630,,no customer email
 ,,Fresno Pacific High School,Steve Peterson,yes,,,,,,Fresno,CA,93702,,no customer email
 ,,Fresno Pacific College,Kelly Bean,yes,,,,,,Fresno,CA,93702,,no customer email
@@ -2714,18 +2712,16 @@ United States",Dana Point,CA,92629,Dana Hills High School,no customer email; had
 ,,Granite Ridge High School,Steve Peterson,yes,,,,,,Fresno,CA,93730,,no customer email
 ,,Hilltop High School,Mike Mercuriali,yes,,,,,,Chula Vista,CA,91910,,no customer email
 ,,Hilmar High School,Jered Hunt,yes,,,,,,Hilmar,CA,95324,,no customer email
-,,Hoover (HS),Mike Mercuriali,yes,,,,,,San Diego,CA,92115,,no customer email
 ,,Inderkum High School,John Miller,yes,yes,,,,,,,,,no customer email; missing structured address
 ,,Indio High School,Jered Hunt,yes,,,,,,Indio,CA,92201,,no customer email
 ,,J Serra High School,Chase Koissian,yes,,,,,,San Juan Capistrano,CA,92675,,no customer email
 ,,Katella High School,Jered Hunt,yes,,,,,,Anaheim,CA,92806,,no customer email
 ,,La Costa Canyon High School,Mike Mercuriali,yes,,,,,,Carlsbad,CA,92009,,no customer email
-,,La Costa Canyon (HS),Mike Mercuriali,yes,,,,,,Carlsbad,CA,92009,,no customer email
 ,,Laguna Hills High School,Jered Hunt,yes,,,,,,Laguna Hills,CA,92653,,no customer email
 ,,Lake Tahoe School High School,Tim Kelly,yes,,,,,,Incline Village,NV,89451,,no customer email
 ,,Lancaster High School,Jered Hunt,yes,,,,,,Lancaster,CA,93536,,no customer email
-,,Liberty (HS),Kevin McCormack,yes,,,,,,Bakersfield,CA,93312,,no customer email
-,,Lincoln (HS),Jered Hunt,yes,,,,,,Stockton,CA,95207,,no customer email
+,,Liberty High School,Kevin McCormack,yes,,,,,,Bakersfield,CA,93312,,no customer email
+,,Lincoln High School,Jered Hunt,yes,,,,,,Stockton,CA,95207,,no customer email
 ,,Magnolia High School,Jered Hunt,yes,,,,,,Anaheim,CA,92804,,no customer email
 ,,Miguel Crespo High School,Mike Mercuriali,yes,yes,,,,,,,,,no customer email; missing structured address
 ,,Mission High School,Kelly Bean,yes,,,,,,San Luis Obispo,CA,93401,,no customer email
@@ -2739,7 +2735,6 @@ United States",Dana Point,CA,92629,Dana Hills High School,no customer email; had
 ,,Orange Coast College,Chase Koissian,yes,,,,,,Costa Mesa,CA,92626,,no customer email
 ,,Orange High School,Jered Hunt,yes,,,,,,Orange,CA,92867,,no customer email
 ,,Orange Lutheran High School,Chase Koissian,yes,,,,,,Orange,CA,92867,,no customer email
-,,Portola (HS),Jered Hunt,yes,,,,,,Irvine,CA,92618,,no customer email
 ,,Reedley High School,Kevin McCormack,yes,,,,,,Reedley,CA,93654,,no customer email
 ,,Rubidoux High School,Jered Hunt,yes,,,,,,Riverside,CA,92509,,no customer email
 ,,Sacramento City College,Jeff Bianchini,yes,,,,,,Sacramento,CA,95822,,no customer email
@@ -2764,7 +2759,6 @@ United States",Dana Point,CA,92629,Dana Hills High School,no customer email; had
 ,,Steele Canyon High School,Jered Hunt,yes,,,,,,Spring Valley,CA,91978,,no customer email
 ,,Sweetwater High School,Mike Mercuriali,yes,,,,,,National City,CA,91950,,no customer email
 ,,Troy High School,Aaron Mason,yes,,,,,,Fullerton,CA,92831,,no customer email
-,,Troy (HS),Jered Hunt,yes,,,,,,Fullerton,CA,92831,,no customer email
 ,,Tustin High School,Jered Hunt,yes,,,,,,Tustin,CA,92780,,no customer email
 ,,University City College,Mike Mercuriali,yes,,,,,,San Diego,CA,92122,,no customer email
 ,,Valhalla High School,Mike Mercuriali,yes,,,,,,El Cajon,CA,92019,,no customer email
@@ -2773,11 +2767,8 @@ United States",Dana Point,CA,92629,Dana Hills High School,no customer email; had
 ,,West Hills High School,Mike Mercuriali,yes,,,,,,Santee,CA,92071,,no customer email
 ,,Westminster High School,Jered Hunt,yes,,,,,,Westminster,CA,92683,,no customer email
 ,,Warren High School,Aaron Mason,yes,,,,,,Downey,CA,90241,,no customer email
-,,Saugus (HS),Chase Koissian,yes,,,,,,Santa Clarita,CA,91350,,no customer email
-,,St. John Bosco (HS),Chase Koissian,yes,,,,,,Bellflower,CA,90706,,no customer email
 ,,Long Beach State High School,Chase Koissian,yes,,,,,,Long Beach,CA,90840,,no customer email
 ,,Irvine High School,Jered Hunt,yes,,,,,,Irvine,CA,92604,,no customer email
-,,J Serra (OTHER),Chase Koissian,yes,,,,,,San Juan Capistrano,CA,92675,,no customer email
 ,,Westcliff College,Chase Koissian,yes,,,,,,Irvine,CA,92606,,no customer email
 ,,Santa Rosa High School,Gayle Peterson,yes,,,,,,Santa Rosa,Ca,95401,,no customer email
 ,,Paloma Valley High School,Jered Hunt,yes,,,,,,Menifee,CA,92584,,no customer email
