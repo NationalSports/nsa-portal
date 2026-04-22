@@ -71,12 +71,34 @@ def _row_cells(row):
     return out
 
 
+def _dedupe_headers(raw_headers):
+    """Resolve duplicate column names. NetSuite exports ship TWO columns both
+    named 'Internal ID' — the first is the transaction's, the second is the
+    customer's. We rename the second one so downstream mapping can tell them
+    apart without guessing."""
+    seen = {}
+    out = []
+    for h in raw_headers:
+        key = h.strip()
+        if key in seen:
+            seen[key] += 1
+            if key.lower() == "internal id":
+                out.append("Customer Internal ID")
+            else:
+                out.append(f"{key} ({seen[key]})")
+        else:
+            seen[key] = 1
+            out.append(key)
+    return out
+
+
 def load_spreadsheetml(path: Path):
     tree = ET.parse(path)
     ws = tree.getroot().find("ss:Worksheet", NS)
     rows = ws.find("ss:Table", NS).findall("ss:Row", NS)
     header = _row_cells(rows[0])
-    headers = [header.get(i + 1, "") for i in range(max(header))]
+    raw_headers = [header.get(i + 1, "") for i in range(max(header))]
+    headers = _dedupe_headers(raw_headers)
     return headers, [
         {h: _row_cells(r).get(i + 1, "") for i, h in enumerate(headers)}
         for r in rows[1:]
@@ -88,22 +110,41 @@ def load_csv(path: Path):
         sniff = f.read(4096)
         f.seek(0)
         dialect = csv.Sniffer().sniff(sniff, delimiters=",\t;")
-        reader = csv.DictReader(f, dialect=dialect)
-        headers = reader.fieldnames or []
-        return headers, list(reader)
+        reader = csv.reader(f, dialect=dialect)
+        raw_headers = next(reader)
+        headers = _dedupe_headers(raw_headers)
+        out = []
+        for row in reader:
+            if not any(row):
+                continue
+            out.append({h: (row[i] if i < len(row) else "") for i, h in enumerate(headers)})
+        return headers, out
 
 
 def auto_map(headers):
-    """Pick the best header for each canonical field."""
-    mapping = {}
+    """Pick the best header for each canonical field.
+
+    Two-pass: first claim headers with the most specific alias matches (longer
+    alias string = more specific), then fall back to generic ones. A header
+    can only be claimed by one field."""
     lowered = [(h, h.lower().strip()) for h in headers]
+    claimed: set[str] = set()
+    mapping: dict[str, str] = {}
+    # Build (field, alias, specificity) candidates, sorted by specificity desc.
+    candidates = []
     for field, aliases in COLUMN_ALIASES.items():
         for a in aliases:
-            for orig, low in lowered:
-                if a in low:
-                    mapping[field] = orig
-                    break
-            if field in mapping:
+            candidates.append((field, a, len(a)))
+    candidates.sort(key=lambda x: -x[2])
+    for field, alias, _ in candidates:
+        if field in mapping:
+            continue
+        for orig, low in lowered:
+            if orig in claimed:
+                continue
+            if alias in low:
+                mapping[field] = orig
+                claimed.add(orig)
                 break
     return mapping
 
@@ -112,6 +153,9 @@ def parse_date(s: str) -> str | None:
     s = (s or "").strip()
     if not s:
         return None
+    # NetSuite XLS export uses ISO with T: "2024-07-01T00:00:00". Strip time.
+    if "T" in s:
+        s = s.split("T", 1)[0]
     for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y", "%d-%b-%Y", "%b %d, %Y"):
         try:
             return datetime.strptime(s, fmt).date().isoformat()
@@ -215,7 +259,10 @@ def main():
         kept.append({
             "id": f"inv-ns-{ns_txn_id}",
             "netsuite_internal_id": ns_txn_id,
-            "customer_id": f"c-ns-{cust_nsid}" if cust_nsid else None,
+            # Leave customer_id NULL at insert time; a post-load JOIN on
+            # raw_customer_nsid populates it for customers that exist now,
+            # and re-running the join later picks up any newly imported ones.
+            "customer_id": None,
             "raw_customer_nsid": cust_nsid or None,
             "raw_customer_name": r.get(mapping.get("customer_name", ""), "") or None,
             "document_number": r.get(mapping.get("document_number", ""), "") or None,
@@ -249,13 +296,17 @@ def main():
         ",\n  ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
     )
     lines.append(";")
-    # Post-load: re-match any rows whose customer_id doesn't actually exist yet
-    # (customer wasn't imported at load time) so we don't leave dangling FKs.
+    # Post-load: link invoices to their customer by NS Internal ID. Idempotent
+    # and safe to re-run — each time more customers get imported, previously
+    # orphan invoices get picked up. Preserves any manual overrides (WHERE
+    # clause only fills NULLs).
     lines.append("""
 UPDATE customer_invoices ci
-SET customer_id = NULL
-WHERE ci.customer_id IS NOT NULL
-  AND NOT EXISTS (SELECT 1 FROM customers c WHERE c.id = ci.customer_id);
+SET customer_id = c.id
+FROM customers c
+WHERE ci.customer_id IS NULL
+  AND ci.raw_customer_nsid IS NOT NULL
+  AND c.netsuite_internal_id = ci.raw_customer_nsid;
 """)
     lines.append("COMMIT;")
 
