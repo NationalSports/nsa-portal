@@ -128,6 +128,7 @@ INVENTED_PARENT_NAME_OVERRIDES: dict[tuple[str, str], str] = {
     # San Joaquin Memorial — portal already has "San Joaquin Memorial" row
     # (c1773670554205). Match that name so the bulk insert can merge in.
     ("san joaquin memorial", "ca"): "San Joaquin Memorial",
+    ("vanguard",             "ca"): "Vanguard University",
 }
 
 # When the bulk customer insert runs, use this existing portal customer id
@@ -218,6 +219,8 @@ CLUSTER_MERGES: dict[str, str] = {
     # College of San Mateo — collapse Athletics + Women's BB into one umbrella.
     "College of San Mateo Athletics": "College of San Mateo",
     "College of San Mateo Women's Basketball": "College of San Mateo",
+    # St. Francis HS — two parents in the data, merge into the NS Athletics row.
+    "St. Francis High School": "St. Francis High School Athletics",
 }
 
 # Tagged name swap: for pairs where the "older" NS ID should be the parent of

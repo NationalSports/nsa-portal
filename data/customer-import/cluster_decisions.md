@@ -362,7 +362,7 @@ Total clusters auto-attached: **211**
 - Reps: Aaron Mason, Jered Hunt
 - Subs (4): Troy Basketball, Troy Girls Golf, Troy Boys Golf, Troy Volleyball
 
-## Vanguard High School  *(HS, 92626/ca)*
+## Vanguard University  *(HS, 92626/ca)*
 
 - Reps: Gayle Peterson
 - Subs (4): Vanguard Athletics, Vanguard Beach Volleyball, Vanguard Baseball, Vanguard Softball
