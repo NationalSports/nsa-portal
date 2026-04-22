@@ -1,6 +1,6 @@
 # Parent/Sub Cluster Decisions
 
-Total clusters auto-attached: **213**
+Total clusters auto-attached: **212**
 
 ## Concordia University Athletics  *(COL, 92612/ca)*
 
@@ -32,7 +32,7 @@ Total clusters auto-attached: **213**
 - Reps: Jered Hunt
 - Subs (16): Bishop Alemany HS Athletics, Bishop Alemany HS Flag Football, Bishop Alemany HS Admissions, Bishop Alemany Girl's Golf, Bishop Alemany Golf, Bishop Alemany Baseball, Bishop Alemany Football, Bishop Alemany Band, Bishop Alemany Basketball, Bishop Alemany Boy's Volleyball, Bishop Alemany Cross Country, Bishop Alemany Girl's Basketball, Bishop Alemany Softball, Bishop Alemany Swim, Bishop Alemany Track, Bishop Alemany Wrestling
 
-## Fresno Pacific High School  *(HS, 93702/ca)*
+## Fresno Pacific University  *(HS, 93702/ca)*
 
 - Reps: Steve Peterson
 - Subs (15): Fresno Pacific Men's Soccer, Fresno Pacific Stunt, Fresno Pacific Women's Basketball, Fresno Pacific Athletics, Fresno Pacific Sports Medicine, Fresno Pacific Basketball, Fresno Pacific Cross Country, Fresno Pacific Swim, Fresno Pacific Track, Fresno Pacific Women's Volleyball, Fresno Pacific Baseball, Fresno Pacific Cheer, Fresno Pacific Tennis, Fresno Pacific Water Polo, Fresno Pacific Women's Soccer
@@ -72,7 +72,7 @@ Total clusters auto-attached: **213**
 - Reps: Shawn McHugh, Steve Peterson
 - Subs (11): Mountain House Athletics, Mountain House Baseball, Mountain House Boys Basketball, Mountain House Flag Football, Mountain House Football, Mountain House Girls Basketball, Mountain House Soccer, Mountain House Softball, Mountain House Tennis, Mountain House Volleyball, Mountain House Wrestling
 
-## Long Beach State High School  *(HS, 90840/ca)*
+## Long Beach State University  *(HS, 90840/ca)*
 
 - Reps: Chase Koissian
 - Subs (10): Long Beach State Golf, Long Beach State Softball, Long Beach State Athletics, Long Beach State Soccer, Long Beach State Baseball, Long Beach State Basketball, Long Beach State Track and Field, Long Beach State Women's Basketball, Long Beach State Women's Tennis, Long Beach State Women's Water Polo
@@ -677,7 +677,7 @@ Total clusters auto-attached: **213**
 - Reps: Mike Mercuriali
 - Subs (2): Folsom Lake College Women's Volleyball, Folsom Lake College Womens Soccer
 
-## Fresno Pacific College  *(COL, 93702/ca)*
+## Fresno Pacific University  *(COL, 93702/ca)*
 
 - Reps: Kelly Bean, Steve Peterson
 - Subs (2): Fresno Pacific University Marketing and Communications, Fresno Pacific University Student Development
@@ -721,11 +721,6 @@ Total clusters auto-attached: **213**
 
 - Reps: Juliet Leon, Steve Peterson
 - Subs (2): Hug High School Basketball, Hug High School Track & Field
-
-## Inderkum High School  *(HS, ?/?)*
-
-- Reps: John Miller
-- Subs (2): Inderkum Softball, Inderkum Football
 
 ## Indio High School  *(HS, 92201/ca)*
 

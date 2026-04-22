@@ -72,6 +72,8 @@ EXCLUDED_NAME_SUBSTRINGS = [
     "saint mary's",
     "saint marys",
     "dominican",
+    # Per user request 2026-04-22.
+    "inderkum",
 ]
 
 # Specific NetSuite Internal IDs to drop (duplicates, unwanted rows). Keyed by
@@ -111,6 +113,16 @@ MANUAL_RENAMES: dict[str, str] = {
 # create. Add entries here as the user resolves ambiguous clusters.
 INVENTED_PARENTS: dict[tuple[str, str, str, str], str] = {
     ("exeter", "exeter", "ca", "hs"): "Exeter Union High School",
+}
+
+# Override the auto-generated name for an invented parent. Key is (root
+# lowercase, state lowercase). Value is the exact name to use — whatever the
+# clustering decides is the institution type, this wins. Useful when the
+# dominant-hint heuristic picks "High School" for a school that's actually a
+# College/University.
+INVENTED_PARENT_NAME_OVERRIDES: dict[tuple[str, str], str] = {
+    ("fresno pacific",   "ca"): "Fresno Pacific University",
+    ("long beach state", "ca"): "Long Beach State University",
 }
 
 # Manual sub assignments. Key = customer Name (exact), Value = parent Name
@@ -639,7 +651,11 @@ def main():
                 n_col      = sum(1 for n in names_lower if re.search(r"\b(college|university)\b", n))
                 # Pretty-case the root.
                 pretty_root = " ".join(w.capitalize() for w in root_l.split())
-                if n_col > 0:
+                # User-supplied override for this (root, state) wins over the hint logic.
+                override = INVENTED_PARENT_NAME_OVERRIDES.get((root_l, state))
+                if override:
+                    invented_name = override
+                elif n_col > 0:
                     invented_name = f"{pretty_root} College"
                 elif n_acad > 0:
                     # If ANY row calls it an "Academy", prefer that — academy is
