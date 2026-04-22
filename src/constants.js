@@ -347,17 +347,8 @@ export const SC={
   uploaded:{bg:'#fef3c7',c:'#92400e'},waiting_art:{bg:'#fef3c7',c:'#92400e'},ready_ship:{bg:'#dcfce7',c:'#166534'},
 };
 
-// DATA
-export const D_C=[
-{id:'c1',parent_id:null,name:'Orange Lutheran High School',alpha_tag:'OLu',contacts:[{name:'Athletic Director',email:'athletics@orangelutheran.org',phone:'714-555-0100',role:'Athletic Director'},{name:'Janet Wu',email:'jwu@orangelutheran.org',phone:'714-555-0109',role:'Accounting'}],billing_address_line1:'2222 N Santiago Blvd',billing_city:'Orange',billing_state:'CA',billing_zip:'92867',shipping_address_line1:'2222 N Santiago Blvd',shipping_city:'Orange',shipping_state:'CA',shipping_zip:'92867',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',tax_rate:0.0775,primary_rep_id:'r1',is_active:true,_oe:1,_os:2,_oi:1,_ob:4200},
-{id:'c1a',parent_id:'c1',name:'OLu Baseball',alpha_tag:'OLuB',contacts:[{name:'Coach Martinez',email:'martinez@orangelutheran.org',phone:'',role:'Head Coach'}],shipping_address_line1:'2222 N Santiago Blvd - Field House',shipping_city:'Orange',shipping_state:'CA',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',primary_rep_id:'r1',is_active:true,_oe:0,_os:1,_oi:1,_ob:4200},
-{id:'c1b',parent_id:'c1',name:'OLu Football',alpha_tag:'OLuF',contacts:[{name:'Coach Davis',email:'davis@orangelutheran.org',phone:'',role:'Head Coach'}],shipping_address_line1:'2222 N Santiago Blvd - Athletics',shipping_city:'Orange',shipping_state:'CA',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',primary_rep_id:'r1',is_active:true,_oe:1,_os:1,_oi:0,_ob:0},
-{id:'c1c',parent_id:'c1',name:'OLu Track & Field',alpha_tag:'OLuT',contacts:[{name:'Coach Chen',email:'chen@orangelutheran.org',phone:'',role:'Head Coach'}],shipping_city:'Orange',shipping_state:'CA',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',primary_rep_id:'r1',is_active:true,_oe:0,_os:0,_oi:0,_ob:0},
-{id:'c2',parent_id:null,name:'St. Francis High School',alpha_tag:'SF',contacts:[{name:'AD Office',email:'ad@stfrancis.edu',phone:'818-555-0200',role:'Athletic Director'}],billing_city:'La Canada',billing_state:'CA',shipping_city:'La Canada',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',tax_rate:0.095,primary_rep_id:'r4',is_active:true,_oe:0,_os:1,_oi:2,_ob:6800},
-{id:'c2a',parent_id:'c2',name:'St. Francis Lacrosse',alpha_tag:'SFL',contacts:[{name:'Coach Resch',email:'resch@stfrancis.edu',phone:'',role:'Head Coach'}],shipping_city:'La Canada',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',primary_rep_id:'r4',is_active:true,_oe:0,_os:1,_oi:2,_ob:6800},
-{id:'c3',parent_id:null,name:'Clovis Unified School District',alpha_tag:'CUSD',contacts:[{name:'District Office',email:'purchasing@clovisusd.k12.ca.us',phone:'559-555-0300',role:'Primary'}],billing_city:'Clovis',billing_state:'CA',shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',tax_rate:0.0863,primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
-{id:'c3a',parent_id:'c3',name:'Clovis High Badminton',alpha_tag:'CHBad',contacts:[{name:'Coach Kim',email:'kim@clovisusd.k12.ca.us',phone:'',role:'Head Coach'}],shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
-];
+// DATA — sample seeds removed; real data loads from Supabase on startup.
+export const D_C=[];
 export const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:200},'a4':{name:'A4',threshold:200},'adidas':{name:'Adidas',threshold:0},'under armour':{name:'Under Armour',threshold:0}};
 export const MACHINES=[
   {id:'auto_press',name:'Auto Press',type:'screen_print'},
@@ -388,174 +379,10 @@ export const D_P=[
 {id:'p8',vendor_id:'v1',sku:'EK0100',name:'Adidas Team 1/4 Zip',brand:'Adidas',color:'Team Navy/White',category:'1/4 Zips',retail_price:75,nsa_cost:25,available_sizes:['S','M','L','XL','2XL'],is_active:true,_inv:{S:2,M:7,L:9,XL:5,'2XL':1}},
 {id:'p9',vendor_id:'v2',sku:'1376844',name:'Under Armour Tech Short',brand:'Under Armour',color:'Black/White',category:'Shorts',retail_price:45,nsa_cost:15.5,available_sizes:['S','M','L','XL','2XL'],is_active:true,_inv:{S:0,M:4,L:6,XL:3,'2XL':0}},
 ];
-export const D_E=[
-{id:'EST-2089',customer_id:'c1b',memo:'Spring 2026 Football Camp Tees',status:'sent',created_by:'r1',created_at:'02/10/26 9:15 AM',updated_at:'02/10/26 2:30 PM',default_markup:1.65,shipping_type:'pct',shipping_value:8,ship_to_id:'default',email_status:'opened',email_opened_at:'02/10/26 3:45 PM',art_files:[],items:[{product_id:'p5',sku:'PC61',name:'Port & Company Essential Tee',brand:'Port & Company',color:'Jet Black',nsa_cost:2.85,retail_price:8.98,unit_sell:4.75,sizes:{S:8,M:15,L:20,XL:12,'2XL':5},available_sizes:['S','M','L','XL','2XL','3XL'],_colors:['Jet Black','Navy','Red','White'],decorations:[{kind:'art',position:'Front Center',art_file_id:null,sell_override:null},{kind:'art',position:'Back Center',art_file_id:null,sell_override:null}]}]},
-{id:'EST-2094',customer_id:'c1b',memo:'Football Coaches Polos',status:'approved',created_by:'r1',created_at:'02/16/26 10:00 AM',updated_at:'02/16/26 10:00 AM',default_markup:1.65,shipping_type:'flat',shipping_value:25,ship_to_id:'default',email_status:'viewed',email_opened_at:'02/16/26 11:30 AM',email_viewed_at:'02/16/26 11:32 AM',art_files:[],items:[{product_id:'p4',sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Cardinal/White',nsa_cost:22,retail_price:65,unit_sell:39,sizes:{M:2,L:3,XL:2,'2XL':1},available_sizes:['S','M','L','XL','2XL'],decorations:[{kind:'art',position:'Left Chest',art_file_id:null,sell_override:null}]}]},
-{id:'EST-2101',customer_id:'c3a',memo:'Badminton Team Uniforms',status:'open',created_by:'r5',created_at:'02/12/26 3:00 PM',updated_at:'02/12/26 3:00 PM',default_markup:1.65,shipping_type:'pct',shipping_value:0,ship_to_id:'default',email_status:null,art_files:[],items:[]},
-];
-export const D_SO=[
-// SO-1042: Baseball — FULLY IN PRODUCTION. All items ordered/received, art approved, prod files done, jobs on board in process
-{id:'SO-1042',customer_id:'c1a',estimate_id:'EST-2088',memo:'Baseball Spring Season Full Package',status:'in_production',created_by:'r1',created_at:'02/10/26 11:00 AM',updated_at:'02/14/26',expected_date:'2026-03-15',production_notes:'Rush - coach needs by spring break',shipping_type:'flat',shipping_value:45,ship_to_id:'default',firm_dates:[{item_desc:'JX4453 - Adidas Pregame Tee',date:'03/01/26',approved:true}],
-  art_files:[{id:'af1',name:'OLu Baseball Front Logo',deco_type:'screen_print',ink_colors:'Navy, Gold, White',thread_colors:'',art_size:'12" x 4"',files:[],mockup_files:['OLu_Baseball_Logo_v3.pdf','OLu_Baseball_Mockup_Jersey.png'],prod_files:['OLu_Baseball_Logo_v3.ai','OLu_Baseball_Seps_3color.ai'],notes:'Final approved - navy/gold',status:'approved',uploaded:'02/10/26'},
-    {id:'af2',name:'Sleeve Logo Small',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, Gold',art_size:'2" wide',files:[],mockup_files:['OLu_Sleeve_Logo.pdf'],prod_files:['OLu_Sleeve_Logo.dst','OLu_Sleeve_ThreadChart.pdf'],notes:'Small sleeve crest',status:'approved',uploaded:'02/11/26'}],
-  items:[
-    {sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,product_id:'p1',
-      sizes:{S:5,M:20,L:15,XL:8,'2XL':3},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[
-        {pick_id:'IF-4100',S:5,M:8,L:5,XL:3,status:'pulled',created_at:'02/10/26',memo:'First pull — in-stock sizes',ship_dest:'in_house'},
-        {pick_id:'IF-4192',S:0,M:4,L:10,XL:5,'2XL':0,status:'pulled',created_at:'02/14/26',memo:'Second pull',ship_dest:'in_house'}
-      ],
-      po_lines:[
-        {po_id:'PO-3001',S:0,M:0,L:0,XL:0,'2XL':3,received:{'2XL':3},shipments:[{date:'2026-02-19','2XL':3}],status:'received',created_at:'02/11/26',memo:'2XL from Adidas'},
-        {po_id:'PO-3088',S:0,M:8,L:0,XL:0,'2XL':0,received:{M:8},shipments:[{date:'2026-02-18',M:8}],status:'received',created_at:'02/12/26',memo:'Rush restock M sizes'}
-      ],
-      decorations:[{kind:'art',position:'Front Center',art_file_id:'af1',sell_override:null},{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,roster:[]}]},
-    {sku:'HF7245',name:'Adidas Team Issue Hoodie',brand:'Adidas',color:'Team Power Red/White',nsa_cost:28.5,retail_price:85,unit_sell:51,product_id:'p2',
-      sizes:{S:2,M:4,L:3,XL:2},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[{pick_id:'IF-4699',S:2,M:4,L:3,XL:2,status:'pulled',created_at:'02/16/26',memo:'Hoodies — blank ship to customer',ship_dest:'ship_customer',ship_addr:'default'}],
-      po_lines:[],no_deco:true,
-      decorations:[]},
-    {sku:'PC61',name:'Port & Company Essential Tee',brand:'Port & Company',color:'Jet Black',nsa_cost:2.85,retail_price:8.98,unit_sell:4.75,product_id:'p5',
-      sizes:{S:10,M:15,L:10,XL:5},available_sizes:['S','M','L','XL','2XL','3XL'],
-      pick_lines:[{pick_id:'IF-4327',S:10,M:15,L:10,XL:5,status:'pulled',created_at:'02/17/26',memo:'All PC61 in stock',ship_dest:'in_house'}],
-      po_lines:[],
-      decorations:[{kind:'art',position:'Front Center',art_file_id:'af1',sell_override:3.25}]}
-  ],
-  jobs:[
-    {id:'JOB-1042-01',key:'art_af1_Front Center',art_file_id:'af1',art_name:'OLu Baseball Front Logo',deco_type:'screen_print',
-      positions:'Front Center',art_status:'art_complete',item_status:'items_received',prod_status:'in_process',
-      total_units:91,fulfilled_units:91,split_from:null,created_at:'02/10/26',
-      assigned_machine:'auto_press',assigned_to:'Carlos',ship_method:'rep_delivery',
-      items:[
-        {item_idx:0,deco_idx:0,sku:'JX4453',name:'Adidas Unisex Pregame Tee',color:'Team Power Red/White',units:51,fulfilled:51},
-        {item_idx:2,deco_idx:0,sku:'PC61',name:'Port & Company Essential Tee',color:'Jet Black',units:40,fulfilled:40},
-      ]},
-  ]},
-// SO-1045: Football — WAITING TO RECEIVE. All items covered by POs/picks but not all received yet. Art not approved.
-{id:'SO-1045',customer_id:'c1b',memo:'Football Spring Practice Gear',status:'waiting_receive',created_by:'r1',created_at:'02/12/26 2:00 PM',updated_at:'02/12/26',expected_date:'2026-03-20',production_notes:'Need sizes confirmed by coach',shipping_type:'pct',shipping_value:8,ship_to_id:'default',firm_dates:[],
-  art_files:[{id:'af4',name:'OLu Football Helmet Logo',deco_type:'screen_print',ink_colors:'Red, White',thread_colors:'',art_size:'10" x 8"',files:['OLu_Football.ai'],mockup_files:['OLu_Football_Mockup.pdf'],prod_files:[],notes:'Waiting coach approval',status:'needs_approval',uploaded:'02/13/26'}],
-  items:[
-    {sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,product_id:'p1',
-      sizes:{S:3,M:5,L:4,XL:2},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[{pick_id:'IF-4200',S:3,M:5,L:4,XL:2,status:'pick',created_at:'02/15/26',memo:'Football pregame tees — stock pull'}],
-      po_lines:[],
-      decorations:[{kind:'art',position:'Front Center',art_file_id:'af4',sell_override:null}]},
-    {sku:'EK0100',name:'Adidas Team 1/4 Zip',brand:'Adidas',color:'Team Navy/White',nsa_cost:25,retail_price:75,unit_sell:45,product_id:'p8',
-      sizes:{S:2,M:6,L:8,XL:4,'2XL':2},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[],
-      po_lines:[{po_id:'PO-3055',S:2,M:6,L:8,XL:4,'2XL':2,
-        received:{S:2,M:6,L:8},
-        cancelled:{XL:2},
-        shipments:[{date:'2026-02-15',S:2,M:6,L:8}],
-        status:'partial',created_at:'02/13/26',memo:'1/4 Zips order — Adidas direct'}],
-      decorations:[{kind:'art',position:'Left Chest',art_file_id:'af4',sell_override:null}]},
-    {sku:'112',name:'Richardson Trucker Cap',brand:'Richardson',color:'Black/White',nsa_cost:4.5,retail_price:12,unit_sell:8,product_id:'p7',
-      sizes:{OSFA:20},available_sizes:['OSFA'],
-      pick_lines:[{pick_id:'IF-4150',OSFA:20,status:'pulled',created_at:'02/14/26',memo:'Trucker caps — blank, no deco'}],
-      po_lines:[],no_deco:true,
-      decorations:[]}
-  ]},
-// SO-1051: Lacrosse — NEED TO ORDER. Nothing ordered yet. Art waiting approval.
-{id:'SO-1051',customer_id:'c2a',memo:'Lacrosse Team Store',status:'need_order',created_by:'r4',created_at:'02/14/26 10:30 AM',updated_at:'02/15/26',expected_date:'2026-03-10',production_notes:'Coach wants navy/silver colorway',shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],
-  art_files:[{id:'af3',name:'SFL Lacrosse Crest',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, White, Silver 877',art_size:'3.5" wide',files:['SFL_Crest.eps','SFL_Crest_preview.png'],mockup_files:['SFL_Crest_Preview.pdf'],prod_files:[],notes:'',status:'needs_approval',uploaded:'02/15/26'}],
-  items:[
-    {sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Cardinal/White',nsa_cost:22,retail_price:65,unit_sell:39,product_id:'p4',
-      sizes:{M:4,L:6,XL:4,'2XL':2},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[],po_lines:[],
-      decorations:[{kind:'art',position:'Left Chest',art_file_id:'af3',sell_override:null},{kind:'numbers',position:'Upper Back',num_method:'heat_transfer',num_size:'3"',two_color:false,sell_override:null,roster:[]}]},
-    {sku:'1376844',name:'Under Armour Tech Short',brand:'Under Armour',color:'Black/White',nsa_cost:15.5,retail_price:45,unit_sell:27,product_id:'p9',
-      sizes:{S:4,M:6,L:8,XL:4},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[],po_lines:[],
-      decorations:[]}
-  ]},
-// SO-1060: Badminton — empty order, NEED TO ORDER
-{id:'SO-1060',customer_id:'c3a',memo:'Badminton Warm-ups',status:'need_order',created_by:'r5',created_at:'02/16/26 9:00 AM',updated_at:'02/16/26',expected_date:null,production_notes:'',shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:null,
-  art_files:null,items:[]},
-// SO-1061: Rush order — stress test, empty sizes
-{id:'SO-1061',customer_id:'c1a',memo:'Rush Order - Coach Martinez',status:'need_order',created_by:'r4',created_at:'02/17/26 8:00 AM',updated_at:null,expected_date:'2026-02-28',production_notes:null,shipping_type:null,shipping_value:null,ship_to_id:null,firm_dates:[],
-  art_files:[],items:[
-    {sku:'JX4453',name:'Adidas Pregame Tee',brand:'Adidas',color:null,nsa_cost:null,retail_price:null,unit_sell:28,product_id:'p1',
-      sizes:{},available_sizes:null,pick_lines:null,po_lines:null,decorations:null},
-    {sku:'UNKNOWN_SKU',name:null,brand:null,color:'Red',nsa_cost:0,retail_price:0,unit_sell:0,product_id:null,
-      sizes:{S:3,M:5},available_sizes:['S','M','L'],pick_lines:[],po_lines:[],decorations:[]},
-  ]},
-// SO-1062: Ghost customer — all items pulled → ITEMS RECEIVED (but no jobs, so will be items_received)
-{id:'SO-1062',customer_id:'c_deleted',memo:'Ghost Customer Order',status:'items_received',created_by:'r99',created_at:'',updated_at:'',expected_date:'',production_notes:'',shipping_type:'pct',shipping_value:0,ship_to_id:'default',firm_dates:[],
-  art_files:[],items:[
-    {sku:'PC61',name:'Port Company Tee',brand:'Port Company',color:'White',nsa_cost:3.80,retail_price:null,unit_sell:12,product_id:'p3',
-      sizes:{S:10,M:10,L:10},available_sizes:['S','M','L','XL'],
-      pick_lines:[{pick_id:'IF-9999',status:'pulled',S:10,M:10,L:10,created_at:'02/17/26',memo:'Pulled all'}],
-      po_lines:[],decorations:[{kind:'art',position:'Front Center',art_file_id:'af_missing',sell_override:null}]}
-  ]},
-// SO-1063: Track & Field — READY TO INVOICE. Jobs on board all completed. Partially received items but jobs done.
-{id:'SO-1063',customer_id:'c2',memo:'Track & Field Gear',status:'ready_to_invoice',created_by:'r1',created_at:'02/15/26 4:00 PM',updated_at:'02/15/26',expected_date:'2026-04-01',production_notes:'Long lead time on custom colors',shipping_type:'flat',shipping_value:25,ship_to_id:'default',firm_dates:[{item_desc:'Full Order',date:'03/20/26',approved:false,requested_by:'r1',requested_at:'02/16/26',note:'Meet is April 5'}],
-  art_files:[{id:'af_tf1',name:'SFL Track Logo',deco_type:'screen_print',ink_colors:'Navy, Gold',thread_colors:'',art_size:'10" wide',files:[],mockup_files:['SFL_Track_Mockup.pdf'],prod_files:['SFL_Track_Seps.ai'],notes:'',status:'approved',uploaded:'02/15/26'}],
-  items:[
-    {sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Navy/Gold',nsa_cost:22,retail_price:65,unit_sell:42,product_id:'p4',
-      sizes:{S:5,M:8,L:10,XL:6,'2XL':3},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[{pick_id:'IF-4500',S:5,M:8,L:10,XL:6,'2XL':3,status:'pulled',created_at:'02/18/26',memo:'All polos pulled'}],
-      po_lines:[],
-      decorations:[{kind:'art',position:'Left Chest',art_file_id:'af_tf1',sell_override:null}]},
-    {sku:'1376844',name:'Under Armour Tech Short',brand:'Under Armour',color:'Navy',nsa_cost:15.5,retail_price:45,unit_sell:29,product_id:'p9',
-      sizes:{S:5,M:8,L:10,XL:6,'2XL':3},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[{pick_id:'IF-4501',S:5,M:8,L:10,XL:6,'2XL':3,status:'pulled',created_at:'02/18/26',memo:'All shorts pulled'}],
-      po_lines:[],
-      decorations:[{kind:'art',position:'Left Leg',art_file_id:'af_tf1',sell_override:3}]}
-  ],
-  jobs:[
-    {id:'JOB-1063-01',key:'art_af_tf1',art_file_id:'af_tf1',art_name:'SFL Track Logo',deco_type:'screen_print',
-      positions:'Left Chest, Left Leg',art_status:'art_complete',item_status:'items_received',prod_status:'completed',
-      total_units:64,fulfilled_units:64,split_from:null,created_at:'02/16/26',
-      assigned_machine:'auto_press',assigned_to:'Mike',ship_method:'ship_customer',
-      items:[
-        {item_idx:0,deco_idx:0,sku:'1370399',name:'Under Armour Team Polo',color:'Navy/Gold',units:32,fulfilled:32},
-        {item_idx:1,deco_idx:0,sku:'1376844',name:'Under Armour Tech Short',color:'Navy',units:32,fulfilled:32},
-      ]},
-  ]},
-// SO-1070: BOOKING ORDER — Fall 2026 Football. 6+ months out, not yet in pipeline.
-{id:'SO-1070',customer_id:'c1a',memo:'Fall 2026 Football Full Package — Adidas',status:'need_order',created_by:'r1',created_at:'03/01/26 9:00 AM',updated_at:'03/01/26',expected_date:null,production_notes:'Booking order — Adidas Fall 2026 line. Coach wants full package.',shipping_type:'flat',shipping_value:65,ship_to_id:'default',firm_dates:[],
-  order_type:'booking',expected_ship_date:'2026-08-15',booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,
-  art_files:[],items:[
-    {sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Navy/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,product_id:'p1',
-      sizes:{S:10,M:25,L:20,XL:12,'2XL':5},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[],po_lines:[],decorations:[{kind:'art',position:'Front Center',art_file_id:null,sell_override:null}]},
-    {sku:'HF7245',name:'Adidas Team Issue Hoodie',brand:'Adidas',color:'Team Navy/White',nsa_cost:28.5,retail_price:85,unit_sell:51,product_id:'p2',
-      sizes:{S:5,M:12,L:10,XL:8,'2XL':3},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[],po_lines:[],decorations:[{kind:'art',position:'Left Chest',art_file_id:null,sell_override:null}]},
-  ]},
-// SO-1071: BOOKING ORDER — close to threshold, should trigger confirmation todo
-{id:'SO-1071',customer_id:'c2a',memo:'UA Fall Lacrosse Booking — Under Armour',status:'need_order',created_by:'r4',created_at:'02/20/26 2:00 PM',updated_at:'02/20/26',expected_date:null,production_notes:'Under Armour booking for fall season.',shipping_type:'pct',shipping_value:5,ship_to_id:'default',firm_dates:[],
-  order_type:'booking',expected_ship_date:'2026-06-10',booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,
-  art_files:[],items:[
-    {sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Red/White',nsa_cost:22,retail_price:65,unit_sell:42,product_id:'p4',
-      sizes:{M:6,L:8,XL:4,'2XL':2},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[],po_lines:[],decorations:[{kind:'art',position:'Left Chest',art_file_id:null,sell_override:null}]},
-  ]},
-];
-export const D_MSG=[
-{id:'m1',so_id:'SO-1042',author_id:'r1',text:'Coach Martinez confirmed navy/gold for front logo. Approved the proof.',ts:'02/10/26 11:30 AM',read_by:['r1','r2'],tagged_members:[]},
-{id:'m2',so_id:'SO-1042',author_id:'r5',text:'Warehouse: we have 30 of JX4453 in stock, rest need to be ordered from Adidas.',ts:'02/11/26 9:15 AM',read_by:['r5'],tagged_members:[]},
-{id:'m3',so_id:'SO-1042',author_id:'r1',text:'PO placed with Adidas for remaining sizes. Expected 02/20.',ts:'02/11/26 2:00 PM',read_by:['r1'],tagged_members:[]},
-{id:'m4',so_id:'SO-1042',author_id:'r4',text:'@Steve Peterson - coach called, needs jerseys by 3/10 not 3/15. Can we rush?',ts:'02/14/26 10:00 AM',read_by:['r4'],tagged_members:['r1']},
-{id:'m5',so_id:'SO-1042',author_id:'r1',text:'Updated expected date. Adidas confirmed they can expedite.',ts:'02/14/26 11:30 AM',read_by:['r1'],tagged_members:[]},
-{id:'m6',so_id:'SO-1045',author_id:'r1',text:'Waiting on Coach Davis for logo approval. Sent follow-up email.',ts:'02/13/26 3:00 PM',read_by:['r1'],tagged_members:[]},
-{id:'m7',so_id:'SO-1051',author_id:'r4',text:'@Mo - Crest file from coach is low-res. Need vector version.',ts:'02/15/26 11:00 AM',read_by:['r4'],tagged_members:['r7']},
-{id:'m8',so_id:'SO-1063',author_id:'r1',text:'UA says custom navy/gold will ship 3/1. Backordered on XL and 2XL. @Kellen Coates check warehouse stock.',ts:'02/16/26 4:30 PM',read_by:['r1'],tagged_members:['r5']},
-{id:'m9',so_id:'SO-1062',author_id:'r99',text:'This message is from a deleted rep — should still render.',ts:'02/17/26 9:00 AM',read_by:[],tagged_members:[],entity_type:'so',entity_id:'SO-1062'},
-{id:'m10',so_id:null,author_id:'r1',text:'Need coach to confirm sleeve logo placement before we convert to SO.',ts:'02/18/26 10:00 AM',read_by:['r1'],tagged_members:[],entity_type:'estimate',entity_id:'EST-2101'},
-{id:'m11',so_id:null,author_id:'r4',text:'@Steve Peterson pricing approved by AD, ready to convert whenever.',ts:'02/19/26 2:30 PM',read_by:['r4'],tagged_members:['r1'],entity_type:'estimate',entity_id:'EST-2101'},
-{id:'m12',so_id:'SO-1042',author_id:'r5',text:'Got it, will check bin locations today.',ts:'02/11/26 10:00 AM',read_by:['r5'],tagged_members:[],entity_type:'so',entity_id:'SO-1042',thread_id:'m2'},
-{id:'m13',so_id:'SO-1042',author_id:'r1',text:'Thanks Kellen, let me know the count.',ts:'02/11/26 10:30 AM',read_by:['r1'],tagged_members:[],entity_type:'so',entity_id:'SO-1042',thread_id:'m2'},
-];
-export const D_INV=[
-  {id:'INV-1042',type:'invoice',customer_id:'c1a',so_id:'SO-1042',date:'02/10/26',due_date:'03/12/26',total:2765,paid:0,memo:'Baseball Spring Season Full Package',status:'open',payments:[],cc_fee:0},
-  {id:'INV-1038',type:'invoice',customer_id:'c2a',so_id:'SO-1051',date:'01/28/26',due_date:'02/27/26',total:3400,paid:0,memo:'Lacrosse Preseason',status:'open',payments:[],cc_fee:0},
-  {id:'INV-1039',type:'invoice',customer_id:'c2a',so_id:null,date:'02/01/26',due_date:'03/03/26',total:3400,paid:3400,memo:'Lacrosse Batch 1',status:'paid',payments:[{amount:3400,method:'check',ref:'Check #4521',date:'02/15/26'}],cc_fee:0},
-  {id:'INV-1050',type:'invoice',customer_id:'c1a',so_id:'SO-1042',date:'01/15/26',due_date:'02/14/26',total:1500,paid:1500,memo:'Baseball Deposit — 50%',status:'paid',payments:[{amount:1500,method:'cc',ref:'Visa ending 4242',date:'01/20/26'}],cc_fee:43.50},
-  {id:'INV-1055',type:'invoice',customer_id:'c2',so_id:'SO-1063',date:'02/15/26',due_date:'03/17/26',total:2856,paid:0,memo:'Track & Field Gear',status:'open',payments:[],cc_fee:0},
-  {id:'INV-1060',type:'invoice',customer_id:'c3a',so_id:null,date:'12/15/25',due_date:'01/14/26',total:980,paid:0,memo:'Badminton Fall Order — OVERDUE',status:'open',payments:[],cc_fee:0},
-  {id:'INV-1061',type:'invoice',customer_id:'c1b',so_id:'SO-1045',date:'02/12/26',due_date:'03/14/26',total:1890,paid:945,memo:'Football Practice Gear — Partial',status:'partial',payments:[{amount:945,method:'venmo',ref:'@OLu-Athletics',date:'02/20/26'}],cc_fee:0},
-];
+export const D_E=[];
+export const D_SO=[];
+export const D_MSG=[];
+export const D_INV=[];
 
 // OMG TEAM STORES
 export const D_OMG=[];
