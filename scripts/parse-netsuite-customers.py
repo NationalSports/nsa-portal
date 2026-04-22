@@ -147,6 +147,11 @@ MANUAL_SUB_ASSIGNMENTS: dict[str, str] = {
     "Helix Campus Supervision": "Helix High School",
     "Dana Hills Girl's Water Polo": "Dana Hills High School",
     "Dana Hills Boy's Swim Team": "Dana Hills High School",
+    # Alemany HS Dance / Girls Volleyball are Bishop Alemany subs — got
+    # separated because their root stems to "Alemany" while the anchor stems
+    # to "Bishop Alemany".
+    "Alemany HS Dance": "Bishop Alemany HS",
+    "Alemany HS Girls Volleyball": "Bishop Alemany HS",
 }
 
 # Cluster merges flatten a secondary parent into a primary parent.
