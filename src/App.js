@@ -163,14 +163,32 @@ const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
   if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL)return Promise.resolve({data:[],error:null,status:200});
   if(cachedAt)_missing404Tables.delete(table);// expired — retry
-  let q=supabase.from(table).select('*');
-  if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
-  q=q.limit(opts?.limit||10000);
+  const hardLimit=opts?.limit||20000;// safety cap to avoid runaway paging
+  const pageSize=1000;// PostgREST default max-rows; requesting more is silently capped
+  // Paged fetch: .range(start, end) repeatedly until the last chunk returns fewer than pageSize
+  // rows (meaning we're done) or we hit hardLimit. Fixes missing rows when tables exceed 1000.
+  const fetchPage=(start)=>{
+    let q=supabase.from(table).select('*');
+    if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
+    return q.range(start,start+pageSize-1);
+  };
+  const pagedFetch=async()=>{
+    const all=[];
+    for(let start=0;start<hardLimit;start+=pageSize){
+      const r=await fetchPage(start);
+      if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){
+        _missing404Tables.set(table,Date.now());return{data:[],error:null,status:200};
+      }
+      if(r.error)return r;
+      const rows=r.data||[];
+      all.push(...rows);
+      if(rows.length<pageSize)break;
+    }
+    return{data:all,error:null,status:200};
+  };
   // Add per-query timeout to prevent individual queries from hanging forever
   const timeout=new Promise(resolve=>setTimeout(()=>resolve({data:[],error:{message:'Query timeout for '+table},status:408}),20000));
-  return Promise.race([q,timeout]).then(r=>{
-    if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){
-      _missing404Tables.set(table,Date.now());return{data:[],error:null,status:200}}
+  return Promise.race([pagedFetch(),timeout]).then(r=>{
     if(r.status===408){_lastLoadTimedOut.add(table);return{data:[],error:null,status:408}}
     return r;
   }).catch(e=>{
