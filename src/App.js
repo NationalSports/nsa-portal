@@ -164,14 +164,32 @@ const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
   if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL)return Promise.resolve({data:[],error:null,status:200});
   if(cachedAt)_missing404Tables.delete(table);// expired — retry
-  let q=supabase.from(table).select('*');
-  if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
-  q=q.limit(opts?.limit||10000);
+  const hardLimit=opts?.limit||20000;// safety cap to avoid runaway paging
+  const pageSize=1000;// PostgREST default max-rows; requesting more is silently capped
+  // Paged fetch: .range(start, end) repeatedly until the last chunk returns fewer than pageSize
+  // rows (meaning we're done) or we hit hardLimit. Fixes missing rows when tables exceed 1000.
+  const fetchPage=(start)=>{
+    let q=supabase.from(table).select('*');
+    if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
+    return q.range(start,start+pageSize-1);
+  };
+  const pagedFetch=async()=>{
+    const all=[];
+    for(let start=0;start<hardLimit;start+=pageSize){
+      const r=await fetchPage(start);
+      if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){
+        _missing404Tables.set(table,Date.now());return{data:[],error:null,status:200};
+      }
+      if(r.error)return r;
+      const rows=r.data||[];
+      all.push(...rows);
+      if(rows.length<pageSize)break;
+    }
+    return{data:all,error:null,status:200};
+  };
   // Add per-query timeout to prevent individual queries from hanging forever
   const timeout=new Promise(resolve=>setTimeout(()=>resolve({data:[],error:{message:'Query timeout for '+table},status:408}),20000));
-  return Promise.race([q,timeout]).then(r=>{
-    if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){
-      _missing404Tables.set(table,Date.now());return{data:[],error:null,status:200}}
+  return Promise.race([pagedFetch(),timeout]).then(r=>{
     if(r.status===408){_lastLoadTimedOut.add(table);return{data:[],error:null,status:408}}
     return r;
   }).catch(e=>{
@@ -336,7 +354,8 @@ const _dbLoad = async (opts={}) => {
       rRepCsr,rAssignedTodos,rTodoComments,
       rDecoVendors,rDecoVendorPricing,
       rQuoteReqs,rQuoteReqItems,
-      rDismissedTodos,rDismissedNotifs] = await _batch([
+      rDismissedTodos,rDismissedNotifs,
+      rHistInvs] = await _batch([
       ()=>coreOnly?_skip():_safeQuery('team_members',{order:'name'}),
       ()=>_safeQuery('customers',{order:'name'}),
       ()=>_safeQuery('customer_contacts'),
@@ -378,6 +397,8 @@ const _dbLoad = async (opts={}) => {
       ()=>coreOnly?_skip():_safeQuery('quote_request_items',{order:'sort_order'}),
       ()=>coreOnly?_skip():_safeQuery('dismissed_todos'),
       ()=>coreOnly?_skip():_safeQuery('dismissed_notifs'),
+      // NetSuite invoice history — read-only sales record separate from portal 'invoices'.
+      ()=>_safeQuery('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000}),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -448,6 +469,26 @@ const _dbLoad = async (opts={}) => {
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
       const items=invItems.filter(i=>i.invoice_id===inv.id).map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description}));
       return{...inv,payments,items:items.length?items:undefined}});
+    // NetSuite historical invoices — read-only; reshape invoice_date → date and tag as historical.
+    const hist_invoices=d(rHistInvs).map(hi=>({
+      id:hi.document_number||hi.id,
+      customer_id:hi.customer_id,
+      date:hi.invoice_date,
+      total:hi.total!=null?Number(hi.total):null,
+      memo:hi.memo||'',
+      status:hi.status||'paid',
+      type:'invoice',
+      _hist:true,
+      netsuite_internal_id:hi.netsuite_internal_id,
+      document_number:hi.document_number,
+      subsidiary:hi.subsidiary,
+      rep_name:hi.rep_name,
+      subtotal:hi.subtotal!=null?Number(hi.subtotal):null,
+      tax:hi.tax!=null?Number(hi.tax):null,
+      raw_customer_nsid:hi.raw_customer_nsid,
+      raw_customer_name:hi.raw_customer_name,
+      invoice_type:hi.type,
+    }));
     // Messages: attach read_by array and parse tagged_members
     const messages=msgRaw.map(m=>{const tm=m.tagged_members;const mapped={...m,text:m.body||m.text,ts:m.created_at||m.ts};delete mapped.body;return{...mapped,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
@@ -455,7 +496,7 @@ const _dbLoad = async (opts={}) => {
     const hasData=(customers.length>0)||(sales_orders.length>0);
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations');
-    return{team,customers,vendors,products,estimates,sales_orders,invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_coreOnly:coreOnly};
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_coreOnly:coreOnly};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
 const _dbSeed = async (d) => {
@@ -1616,8 +1657,17 @@ export default function App(){
   };
   const _migrated=useMemo(()=>migrateState(),[]);
   const[REPS,setREPS]=useState(()=>loadState('reps',DEFAULT_REPS));
-  const[cust,setCust]=useState(()=>loadState('cust',D_C));const[vend,setVend]=useState(()=>loadState('vend',D_V));const[prod,setProd]=useState(()=>loadState('prod',D_P));
+  const[cust,setCust]=useState(()=>loadState('cust',D_C));const[vend,setVend]=useState(()=>loadState('vend',D_V));
+  // Old sample products (ids p1..p9 from former D_P seed) were seeded into some users' localStorage
+  // before we moved to DB-as-truth. They don't exist in Supabase so every save retry returns a
+  // 401/RLS error and surfaces as "N items failed to save to cloud". Strip them on load.
+  const[prod,setProd]=useState(()=>{
+    const _SAMPLE_PROD_IDS=new Set(['p1','p2','p3','p4','p5','p6','p7','p8','p9']);
+    return loadState('prod',D_P).filter(p=>!_SAMPLE_PROD_IDS.has(p.id));
+  });
   const[ests,setEsts]=useState(()=>_migrated.ests);const[sos,setSOs]=useState(()=>_migrated.sos);const[invs,setInvs]=useState(()=>_migrated.invs);
+  // NetSuite invoice history (customer_invoices table) — read-only; kept separate from portal invs state.
+  const[histInvs,setHistInvs]=useState([]);
   const[omgStores,setOmgStores]=useState(D_OMG);
   // Adidas B2B bulk inventory for Products/Inventory pages
   const[adidasInvBulk,setAdidasInvBulk]=useState({});// {sku: {sizes:{sz:{qty,futureDate,futureQty}}, lastSynced}}
@@ -1749,9 +1799,10 @@ export default function App(){
             setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));
             setSOs(prev=>d.sales_orders.map(s=>{if(_dbSaveFailedIds.has(s.id))return prev.find(p=>p.id===s.id)||s;const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));
             setInvs(prev=>d.invoices.map(i=>{if(_dbSaveFailedIds.has(i.id))return prev.find(p=>p.id===i.id)||i;const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));
-            setMsgs(prev=>{const base=d.messages.length?d.messages:prev;return base.map(m=>_dbSaveFailedIds.has(m.id)?(prev.find(p=>p.id===m.id)||m):m)});
-          }else{setEsts(prev=>d.estimates.map(e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));setSOs(prev=>d.sales_orders.map(s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));setInvs(prev=>d.invoices.map(i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));setMsgs(d.messages.length?d.messages:msgs)}
+            setMsgs(prev=>d.messages.map(m=>_dbSaveFailedIds.has(m.id)?(prev.find(p=>p.id===m.id)||m):m));
+          }else{setEsts(prev=>d.estimates.map(e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));setSOs(prev=>d.sales_orders.map(s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));setInvs(prev=>d.invoices.map(i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));setMsgs(d.messages)}
           if(d.omg_stores.length)setOmgStores(d.omg_stores);
+          setHistInvs(d.hist_invoices||[]);
           setIssues(d.issues||[]);
           if(d.quote_requests)setQuoteRequests(d.quote_requests);
           if(d.repCsrAssignments)setRepCsrAssignments(d.repCsrAssignments);
@@ -1812,7 +1863,8 @@ export default function App(){
               setREPS(d2.team.length?d2.team:DEFAULT_REPS);setCust(d2.customers);
               if(d2.vendors.length)setVend(d2.vendors);setProd(d2.products.length?d2.products:prod);
               setEsts(d2.estimates);setSOs(d2.sales_orders);
-              setInvs(d2.invoices);setMsgs(d2.messages.length?d2.messages:msgs);
+              setInvs(d2.invoices);setMsgs(d2.messages);
+              setHistInvs(d2.hist_invoices||[]);
               if(d2.omg_stores.length)setOmgStores(d2.omg_stores);
               setIssues(d2.issues||[]);
               const as2=d2.appState||{};
@@ -2844,6 +2896,8 @@ export default function App(){
   const[custPage,setCustPage]=useState(0);const CUST_PAGE_SIZE=50;
   const[custServerResults,setCustServerResults]=useState(null);
   const[custSearching,setCustSearching]=useState(false);
+  // Customer list collapse state — parents with subs start collapsed; Set of expanded parent ids.
+  const[custExpanded,setCustExpanded]=useState(()=>new Set());
   const _custSearchTimer=useRef(null);
   const _custSearchRPC=useCallback((query,repId,page)=>{
     if(_custSearchTimer.current)clearTimeout(_custSearchTimer.current);
@@ -3283,7 +3337,8 @@ export default function App(){
   const aO=useMemo(()=>[
     ...ests.map(e=>{const _eAQ={};safeItems(e).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const eaf=safeArt(e);const t=e.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+v,0);let r=qq*it.unit_sell;it.decorations?.forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp=dP(d,qq,eaf,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qq*2:qq);r+=eq*dp.sell});return a+r},0)||0;return{id:e.id,type:'estimate',customer_id:e.customer_id,date:e.created_at?.split(' ')[0],total:t,memo:e.memo,status:e.status}}),
     ...sos.map(s=>{const _sAQ={};safeItems(s).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((ss,v)=>ss+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_sAQ[d.art_file_id]=(_sAQ[d.art_file_id]||0)+q2}})});const saf=safeArt(s);const t=s.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((ss,v)=>ss+v,0);let r=qq*(it.unit_sell||0);(it.decorations||[]).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_sAQ[d.art_file_id]:qq;const dp=dP(d,qq,saf,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qq*2:qq);r+=eq*dp.sell});return a+r},0)||0;return{id:s.id,type:'sales_order',customer_id:s.customer_id,date:s.created_at?.split(' ')[0],total:t,memo:s.memo,status:s.status}}),
-    ...invs.map(i=>({...i,type:'invoice'}))],[ests,sos,invs]);
+    ...invs.map(i=>({...i,type:'invoice'})),
+    ...histInvs],[ests,sos,invs,histInvs]);
   const fP=useMemo(()=>{
     // Use server-side results if available (paginated, indexed search)
     if(prodServerResults&&pg==='products')return prodServerResults.products;
@@ -4682,16 +4737,20 @@ export default function App(){
       <button className="btn btn-primary" onClick={()=>setCM({open:true,c:null})}><Icon name="plus" size={14}/> New</button></div>
     {custSearching&&<div style={{textAlign:'center',padding:12,color:'#64748b',fontSize:13}}>Searching...</div>}
     {f.map(p=>{const kids=gK(p.id);const bal=kids.reduce((a,c)=>a+(c._ob||0),p._ob||0);
+      // Auto-expand when a search narrows the cluster (so matching subs aren't hidden).
+      const isExpanded=custExpanded.has(p.id)||(!!q&&kids.some(c=>c.name.toLowerCase().includes(q.toLowerCase())));
+      const toggle=(e)=>{e.stopPropagation();setCustExpanded(prev=>{const s=new Set(prev);if(s.has(p.id))s.delete(p.id);else s.add(p.id);return s})};
       return(<div key={p.id} className="card" style={{marginBottom:10}}>
         <div style={{padding:'12px 16px',display:'flex',alignItems:'center',gap:12}}>
+          {kids.length>0?<button onClick={toggle} title={isExpanded?'Collapse subs':'Expand subs'} style={{width:24,height:24,padding:0,border:'1px solid #e2e8f0',borderRadius:4,background:'#fff',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#64748b'}}><Icon name={isExpanded?'chevron-down':'chevron-right'} size={14}/></button>:<div style={{width:24}}/>}
           <div style={{width:36,height:36,borderRadius:8,background:'#dbeafe',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}} onClick={()=>setSelC(p)}><Icon name="building" size={18}/></div>
           <div style={{flex:1,cursor:'pointer'}} onClick={()=>setSelC(p)}>
-            <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:15,fontWeight:700}}>{p.name}</span><span className="badge badge-blue">{p.alpha_tag}</span><span className="badge badge-green">Tier {p.adidas_ua_tier}</span></div>
+            <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:15,fontWeight:700}}>{p.name}</span><span className="badge badge-blue">{p.alpha_tag}</span><span className="badge badge-green">Tier {p.adidas_ua_tier}</span>{kids.length>0&&<span className="badge badge-gray" style={{fontSize:10}}>{kids.length} sub{kids.length===1?'':'s'}</span>}</div>
             <div style={{fontSize:12,color:'#94a3b8'}}>{(p.contacts||[])[0]?.name&&`${p.contacts[0].name} · `}{p.billing_city&&`${p.billing_city}, ${p.billing_state}`}{p.primary_rep_id&&` · ${REPS.find(r=>r.id===p.primary_rep_id)?.name||''}`}</div></div>
           {bal>0&&<div style={{textAlign:'right'}}><div style={{fontSize:16,fontWeight:800,color:'#dc2626'}}>${bal.toLocaleString()}</div></div>}
           <button className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();newE(p)}}><Icon name="file" size={12}/></button>
           <button className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();setCM({open:true,c:p})}}><Icon name="edit" size={12}/></button></div>
-        {kids.length>0&&<div style={{borderTop:'1px solid #f1f5f9'}}>{kids.map(ch=><div key={ch.id} style={{padding:'8px 16px 8px 64px',display:'flex',alignItems:'center',gap:10,borderBottom:'1px solid #f8fafc',cursor:'pointer'}} onClick={()=>setSelC(ch)}>
+        {kids.length>0&&isExpanded&&<div style={{borderTop:'1px solid #f1f5f9'}}>{kids.map(ch=><div key={ch.id} style={{padding:'8px 16px 8px 64px',display:'flex',alignItems:'center',gap:10,borderBottom:'1px solid #f8fafc',cursor:'pointer'}} onClick={()=>setSelC(ch)}>
           <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontSize:13,fontWeight:600}}>{ch.name}</span><span className="badge badge-gray">{ch.alpha_tag}</span>{ch.primary_rep_id&&ch.primary_rep_id!==p.primary_rep_id&&<span style={{fontSize:10,color:'#6d28d9',fontWeight:600}}>{REPS.find(r=>r.id===ch.primary_rep_id)?.name||''}</span>}<div style={{flex:1}}/>
           {(ch._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${ch._ob.toLocaleString()}</span>}</div>)}</div>}
       </div>)})}
@@ -8269,7 +8328,10 @@ export default function App(){
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
   const[rptRep,setRptRep]=useState('all');
-  const[rptWidgets,setRptWidgets]=useState({pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
+  const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
+  // Historical sales chart UI state — hover tooltip + rep-vs-team mode
+  const[histHover,setHistHover]=useState(null);// null | {x,y,label,value,year,scope}
+  const[histShowTeam,setHistShowTeam]=useState(true);// when a rep is selected, overlay team totals so reps see their share
   // Customers-tab widget state — must live at component level (not inside conditional IIFEs) to avoid React error #310 (rules of hooks)
   const[pdSort,setPdSort]=useState('avgDays');
   const[pdDir,setPdDir]=useState('desc');
@@ -8463,14 +8525,169 @@ export default function App(){
         <div style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>Toggle widgets to customize your view</div>
       </div>
 
-      {/* KPI Bar */}
+      {/* KPI Bar (pipeline-side, SO-driven) — margin tile removed until line-item costs are imported */}
       <div className="stats-row" style={{marginBottom:16}}>
         <div className="stat-card"><div className="stat-label">Pipeline Revenue</div><div className="stat-value" style={{color:'#1e40af'}}>${(totalRev/1000).toFixed(1)}k</div></div>
-        <div className="stat-card"><div className="stat-label">Total Margin</div><div className="stat-value" style={{color:'#166534'}}>${(totalMargin/1000).toFixed(1)}k <span style={{fontSize:12,color:avgMarginPct>=40?'#166534':'#d97706'}}>({avgMarginPct}%)</span></div></div>
         <div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#7c3aed'}}>{pipeline.filter(s=>s._status!=='complete').length}</div></div>
         <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{totalUnits.toLocaleString()}</div></div>
         <div className="stat-card"><div className="stat-label">Avg Order</div><div className="stat-value" style={{color:'#d97706'}}>${avgOrderSize.toLocaleString()}</div></div>
       </div>
+
+      {/* HISTORICAL SALES — NetSuite invoice history (read-only), this year vs last year by month */}
+      {rptTab==='overview'&&<div className="card" style={{marginBottom:12}}>
+        <WH id="histSales" title="Historical Sales — This Year vs Last Year" icon="📈"/>
+        {rptWidgets.histSales&&(()=>{
+          // Resolve the rep filter against rep_name on histInvs (NetSuite stored rep as a string snapshot).
+          const repObj=rptRep==='all'?null:REPS.find(r=>r.id===rptRep);
+          const repNameLc=repObj?.name?.toLowerCase()||null;
+          const matchesRep=(hi)=>{
+            if(!repNameLc)return true;
+            const rn=(hi.rep_name||'').toLowerCase();
+            if(!rn)return false;
+            return rn===repNameLc||rn.includes(repNameLc)||repNameLc.includes(rn);
+          };
+          const now=new Date();const curY=now.getFullYear();const lastY=curY-1;
+          const curMonth=now.getMonth();const curDay=now.getDate();
+          // Accumulate both rep and team totals in one pass.
+          const repData={cur:Array(12).fill(0),last:Array(12).fill(0)};
+          const teamData={cur:Array(12).fill(0),last:Array(12).fill(0)};
+          let repYtdCur=0,repYtdLast=0,repFullCur=0,repFullLast=0;
+          let teamYtdCur=0,teamYtdLast=0,teamFullCur=0,teamFullLast=0;
+          (histInvs||[]).forEach(hi=>{
+            if(!hi.date)return;
+            const m=hi.date.match(/^(\d{4})-(\d{2})-(\d{2})/);
+            if(!m)return;
+            const y=parseInt(m[1]);const mo=parseInt(m[2])-1;const d=parseInt(m[3]);
+            const total=safeNum(hi.total);
+            const isYtd=mo<curMonth||(mo===curMonth&&d<=curDay);
+            if(y===curY){teamData.cur[mo]+=total;teamFullCur+=total;if(isYtd)teamYtdCur+=total}
+            else if(y===lastY){teamData.last[mo]+=total;teamFullLast+=total;if(isYtd)teamYtdLast+=total}
+            if(matchesRep(hi)){
+              if(y===curY){repData.cur[mo]+=total;repFullCur+=total;if(isYtd)repYtdCur+=total}
+              else if(y===lastY){repData.last[mo]+=total;repFullLast+=total;if(isYtd)repYtdLast+=total}
+            }
+          });
+          // Primary series = the selected rep (or the team when "All Reps").
+          // Secondary series = team totals, shown as faint overlay bars when a rep is selected.
+          const isRepView=!!repObj;
+          const primary=isRepView?repData:teamData;
+          const primaryFullCur=isRepView?repFullCur:teamFullCur;
+          const primaryFullLast=isRepView?repFullLast:teamFullLast;
+          const primaryYtdCur=isRepView?repYtdCur:teamYtdCur;
+          const primaryYtdLast=isRepView?repYtdLast:teamYtdLast;
+          const ytdDelta=primaryYtdCur-primaryYtdLast;
+          const ytdPct=primaryYtdLast>0?Math.round(ytdDelta/primaryYtdLast*100):(primaryYtdCur>0?100:0);
+          const sharePct=isRepView&&teamYtdCur>0?Math.round(repYtdCur/teamYtdCur*100):null;
+          // Scale — if team overlay on, include team values in max so bars remain comparable.
+          const overlayOn=isRepView&&histShowTeam;
+          const max=Math.max(1,...primary.cur,...primary.last,...(overlayOn?teamData.cur:[0]),...(overlayOn?teamData.last:[0]));
+          const monthLabels=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+          const chartH=180;const barW=14;const gap=4;const groupW=barW*2+gap;const groupGap=22;
+          const chartW=12*groupW+11*groupGap;
+          const fmt=n=>n===0?'$0':(Math.abs(n)>=1000?'$'+(n/1000).toFixed(Math.abs(n)>=10000?0:1)+'k':'$'+Math.round(n));
+          const noData=primaryFullCur===0&&primaryFullLast===0;
+          const onBarEnter=(ev,meta)=>{
+            const svg=ev.currentTarget.ownerSVGElement;
+            const pt=svg.getBoundingClientRect();
+            setHistHover({...meta,x:ev.clientX-pt.left,y:ev.clientY-pt.top});
+          };
+          return<div className="card-body">
+            {/* Summary tiles */}
+            <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap'}}>
+              <div style={{flex:1,minWidth:140,padding:10,background:'#dbeafe',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>{isRepView?repObj.name.split(' ')[0]+"'s YTD "+curY:'Team YTD '+curY}</div>
+                <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{fmt(primaryYtdCur)}</div>
+              </div>
+              <div style={{flex:1,minWidth:140,padding:10,background:'#f1f5f9',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{isRepView?repObj.name.split(' ')[0]+"'s YTD "+lastY:'Team YTD '+lastY}</div>
+                <div style={{fontSize:20,fontWeight:800,color:'#475569'}}>{fmt(primaryYtdLast)}</div>
+              </div>
+              <div style={{flex:1,minWidth:140,padding:10,background:ytdDelta>=0?'#dcfce7':'#fecaca',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:700,color:ytdDelta>=0?'#166534':'#dc2626'}}>YTD Δ vs last year</div>
+                <div style={{fontSize:20,fontWeight:800,color:ytdDelta>=0?'#166534':'#dc2626'}}>
+                  {ytdDelta>=0?'+':''}{fmt(ytdDelta)} <span style={{fontSize:12}}>({ytdPct>=0?'+':''}{ytdPct}%)</span>
+                </div>
+              </div>
+              {isRepView?
+                <div style={{flex:1,minWidth:140,padding:10,background:'#ede9fe',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#6d28d9'}}>Share of Team YTD</div>
+                  <div style={{fontSize:20,fontWeight:800,color:'#6d28d9'}}>{sharePct!=null?sharePct+'%':'—'} <span style={{fontSize:11,color:'#7c3aed'}}>of {fmt(teamYtdCur)}</span></div>
+                </div>
+              :
+                <div style={{flex:1,minWidth:140,padding:10,background:'#fef3c7',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#92400e'}}>Team Full Year {lastY}</div>
+                  <div style={{fontSize:20,fontWeight:800,color:'#92400e'}}>{fmt(teamFullLast)}</div>
+                </div>
+              }
+            </div>
+
+            {/* Controls — team overlay toggle only meaningful when a rep is selected */}
+            {isRepView&&<div style={{display:'flex',justifyContent:'flex-end',marginBottom:8,fontSize:11,color:'#475569'}}>
+              <label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer'}}>
+                <input type="checkbox" checked={histShowTeam} onChange={e=>setHistShowTeam(e.target.checked)}/>
+                Show team totals as overlay
+              </label>
+            </div>}
+
+            {/* Chart */}
+            {noData?<div style={{textAlign:'center',color:'#94a3b8',padding:24,fontSize:13}}>No historical invoices{repObj?` matched for ${repObj.name}`:''}.</div>:
+            <div style={{overflowX:'auto',position:'relative'}}>
+              <svg width={chartW+60} height={chartH+60} style={{display:'block',margin:'0 auto'}} onMouseLeave={()=>setHistHover(null)}>
+                {[0.25,0.5,0.75,1].map(f=>{
+                  const y=chartH-chartH*f+10;
+                  return<g key={f}>
+                    <line x1={40} x2={chartW+50} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="3,3"/>
+                    <text x={36} y={y+4} fontSize={9} textAnchor="end" fill="#94a3b8">{fmt(max*f)}</text>
+                  </g>;
+                })}
+                {monthLabels.map((lbl,i)=>{
+                  const groupX=50+i*(groupW+groupGap);
+                  const pLast=primary.last[i];const pCur=primary.cur[i];
+                  const pLastH=max>0?(pLast/max)*chartH:0;
+                  const pCurH=max>0?(pCur/max)*chartH:0;
+                  const tLast=teamData.last[i];const tCur=teamData.cur[i];
+                  const tLastH=max>0?(tLast/max)*chartH:0;
+                  const tCurH=max>0?(tCur/max)*chartH:0;
+                  const repLabel=isRepView?repObj.name.split(' ')[0]:'Team';
+                  return<g key={i}>
+                    {/* Team overlay bars (rendered behind, fainter) when a rep is selected */}
+                    {overlayOn&&<>
+                      <rect x={groupX-3} y={chartH-tLastH+10} width={barW+6} height={tLastH} fill="#cbd5e1" opacity={0.55} rx="2"
+                        onMouseMove={e=>onBarEnter(e,{label:`Team ${lastY} ${lbl}`,value:tLast})}/>
+                      <rect x={groupX+barW+gap-3} y={chartH-tCurH+10} width={barW+6} height={tCurH} fill="#93c5fd" opacity={0.55} rx="2"
+                        onMouseMove={e=>onBarEnter(e,{label:`Team ${curY} ${lbl}`,value:tCur})}/>
+                    </>}
+                    {/* Primary bars */}
+                    <rect x={groupX} y={chartH-pLastH+10} width={barW} height={pLastH} fill="#64748b" rx="2"
+                      onMouseMove={e=>onBarEnter(e,{label:`${repLabel} ${lastY} ${lbl}`,value:pLast})}/>
+                    <rect x={groupX+barW+gap} y={chartH-pCurH+10} width={barW} height={pCurH} fill="#2563eb" rx="2"
+                      onMouseMove={e=>onBarEnter(e,{label:`${repLabel} ${curY} ${lbl}`,value:pCur})}/>
+                    <text x={groupX+groupW/2} y={chartH+26} fontSize={10} textAnchor="middle" fill="#475569" fontWeight={i===curMonth?700:400}>{lbl}</text>
+                  </g>;
+                })}
+                <line x1={40} x2={chartW+50} y1={chartH+10} y2={chartH+10} stroke="#cbd5e1"/>
+              </svg>
+              {/* Hover tooltip */}
+              {histHover&&<div style={{position:'absolute',left:histHover.x+16,top:Math.max(0,histHover.y-40),background:'#0f172a',color:'white',padding:'6px 10px',borderRadius:6,fontSize:11,pointerEvents:'none',boxShadow:'0 4px 10px rgba(0,0,0,0.25)',zIndex:5,whiteSpace:'nowrap'}}>
+                <div style={{fontWeight:700}}>{histHover.label}</div>
+                <div>{fmt(histHover.value)}</div>
+              </div>}
+              {/* Legend */}
+              <div style={{display:'flex',gap:18,justifyContent:'center',fontSize:11,color:'#475569',marginTop:8,flexWrap:'wrap'}}>
+                <span><span style={{display:'inline-block',width:10,height:10,background:'#64748b',borderRadius:2,marginRight:6}}/>{isRepView?repObj.name.split(' ')[0]:'Team'} {lastY}: {fmt(primaryFullLast)}</span>
+                <span><span style={{display:'inline-block',width:10,height:10,background:'#2563eb',borderRadius:2,marginRight:6}}/>{isRepView?repObj.name.split(' ')[0]:'Team'} {curY} (YTD): {fmt(primaryFullCur)}</span>
+                {overlayOn&&<>
+                  <span><span style={{display:'inline-block',width:10,height:10,background:'#cbd5e1',borderRadius:2,marginRight:6}}/>Team {lastY}: {fmt(teamFullLast)}</span>
+                  <span><span style={{display:'inline-block',width:10,height:10,background:'#93c5fd',borderRadius:2,marginRight:6}}/>Team {curY} (YTD): {fmt(teamFullCur)}</span>
+                </>}
+              </div>
+            </div>}
+            <div style={{marginTop:10,fontSize:10,color:'#94a3b8',textAlign:'center'}}>
+              Source: NetSuite invoice history (customer_invoices). Totals include credit memos as negatives. Excludes margin — cost data not imported.
+            </div>
+          </div>;
+        })()}
+      </div>}
 
       {/* OVERVIEW / PIPELINE TAB */}
       {(rptTab==='overview'||rptTab==='pipeline')&&<>
@@ -14947,6 +15164,7 @@ export default function App(){
       {key:'payment_terms',label:'Payment Terms'},
       {key:'tax_rate',label:'Tax Rate (decimal)'},
       {key:'primary_rep_id',label:'Rep ID'},
+      {key:'netsuite_internal_id',label:'NetSuite Internal ID'},
     ];
     const VEND_FIELDS=[
       {key:'name',label:'Name *',required:true},
@@ -14994,6 +15212,7 @@ export default function App(){
         payment_terms:['payment_terms','terms','net_terms'],
         tax_rate:['tax_rate','tax','sales_tax'],
         primary_rep_id:['rep','rep_id','sales_rep','rep_name','sales_rep_name'],
+        netsuite_internal_id:['netsuite_internal_id','netsuite_id','ns_id','ns_internal_id','internal_id'],
         account_type:['account_type','type','acct_type','parent_sub','parent_or_sub'],
         parent_name:['parent','parent_name','parent_account','parent_company','parent_school'],
         sku:['sku','item_number','style','item','part_number','style_number','article','articlenumber','styleno','material','materialid'],
@@ -15091,6 +15310,7 @@ export default function App(){
           payment_terms:normalizeTerms(rawTerms),
           tax_rate:parseFloat(row[colMap.tax_rate])||0,
           primary_rep_id:resolveRepId(rawRep),
+          netsuite_internal_id:(row[colMap.netsuite_internal_id]||'').trim()||null,
           is_active:true,_oe:0,_os:0,_oi:0,_ob:0
         };
         added.push(c);
@@ -15144,6 +15364,7 @@ export default function App(){
           payment_terms:normalizeTerms(rawTerms)||parent?.payment_terms||'net30',
           tax_rate:parseFloat(row[colMap.tax_rate])||parent?.tax_rate||0,
           primary_rep_id:resolveRepId(rawRep)||parent?.primary_rep_id||cu.id,
+          netsuite_internal_id:(row[colMap.netsuite_internal_id]||'').trim()||null,
           is_active:true,_oe:0,_os:0,_oi:0,_ob:0
         };
         added.push(c);
@@ -20999,7 +21220,10 @@ export default function App(){
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
           <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>{setGQ(e.target.value);if(e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(gQ.length>=2)setGOpen(true)}}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
           {gOpen&&gQ.length>=2&&(()=>{const s=gQ.toLowerCase();
-            const rc=cust.filter(cc=>(cc.name+' '+cc.alpha_tag).toLowerCase().includes(s)).slice(0,4);
+            const rcAll=cust.filter(cc=>(cc.name+' '+cc.alpha_tag).toLowerCase().includes(s));
+            // Parents first so e.g. "Orange Lutheran High School" isn't pushed out of the slice
+            // by its own subs (which sort alphabetically before it).
+            const rc=[...rcAll.filter(cc=>!cc.parent_id),...rcAll.filter(cc=>cc.parent_id)].slice(0,6);
             const re=ests.filter(e=>{const cc=cust.find(x=>x.id===e.customer_id);return(e.id+' '+(e.memo||'')+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')).toLowerCase().includes(s)}).slice(0,4);
             const rs=sos.filter(so=>{const cc=cust.find(x=>x.id===so.customer_id);return(so.id+' '+(so.memo||'')+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')).toLowerCase().includes(s)}).slice(0,4);
             const rp=gProdResults.slice(0,6);
