@@ -8288,7 +8288,7 @@ export default function App(){
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
   const[rptRep,setRptRep]=useState('all');
-  const[rptWidgets,setRptWidgets]=useState({pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
+  const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
   // Customers-tab widget state — must live at component level (not inside conditional IIFEs) to avoid React error #310 (rules of hooks)
   const[pdSort,setPdSort]=useState('avgDays');
   const[pdDir,setPdDir]=useState('desc');
@@ -8482,14 +8482,122 @@ export default function App(){
         <div style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>Toggle widgets to customize your view</div>
       </div>
 
-      {/* KPI Bar */}
+      {/* KPI Bar (pipeline-side, SO-driven) — margin tile removed until line-item costs are imported */}
       <div className="stats-row" style={{marginBottom:16}}>
         <div className="stat-card"><div className="stat-label">Pipeline Revenue</div><div className="stat-value" style={{color:'#1e40af'}}>${(totalRev/1000).toFixed(1)}k</div></div>
-        <div className="stat-card"><div className="stat-label">Total Margin</div><div className="stat-value" style={{color:'#166534'}}>${(totalMargin/1000).toFixed(1)}k <span style={{fontSize:12,color:avgMarginPct>=40?'#166534':'#d97706'}}>({avgMarginPct}%)</span></div></div>
         <div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#7c3aed'}}>{pipeline.filter(s=>s._status!=='complete').length}</div></div>
         <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{totalUnits.toLocaleString()}</div></div>
         <div className="stat-card"><div className="stat-label">Avg Order</div><div className="stat-value" style={{color:'#d97706'}}>${avgOrderSize.toLocaleString()}</div></div>
       </div>
+
+      {/* HISTORICAL SALES — NetSuite invoice history (read-only), this year vs last year by month */}
+      {rptTab==='overview'&&<div className="card" style={{marginBottom:12}}>
+        <WH id="histSales" title="Historical Sales — This Year vs Last Year" icon="📈"/>
+        {rptWidgets.histSales&&(()=>{
+          // Resolve the rep filter against rep_name on histInvs (NetSuite stored rep as a string snapshot).
+          const repObj=rptRep==='all'?null:REPS.find(r=>r.id===rptRep);
+          const repNameLc=repObj?.name?.toLowerCase()||null;
+          const filtered=(histInvs||[]).filter(hi=>{
+            if(!repNameLc)return true;
+            const rn=(hi.rep_name||'').toLowerCase();
+            if(!rn)return false;
+            return rn===repNameLc||rn.includes(repNameLc)||repNameLc.includes(rn);
+          });
+          const now=new Date();const curY=now.getFullYear();const lastY=curY-1;
+          const curMonth=now.getMonth();// 0-indexed
+          const curDay=now.getDate();
+          const byMonth={cur:Array(12).fill(0),last:Array(12).fill(0)};
+          let ytdCur=0,ytdLast=0,fullLast=0,fullCur=0;
+          filtered.forEach(hi=>{
+            if(!hi.date)return;
+            // hi.date is 'YYYY-MM-DD' from the customer_invoices.invoice_date column.
+            const m=hi.date.match(/^(\d{4})-(\d{2})-(\d{2})/);
+            if(!m)return;
+            const y=parseInt(m[1]);const mo=parseInt(m[2])-1;const d=parseInt(m[3]);
+            const total=safeNum(hi.total);
+            if(y===curY){
+              byMonth.cur[mo]+=total;fullCur+=total;
+              // YTD: include this month only up to today
+              if(mo<curMonth||(mo===curMonth&&d<=curDay))ytdCur+=total;
+            }else if(y===lastY){
+              byMonth.last[mo]+=total;fullLast+=total;
+              if(mo<curMonth||(mo===curMonth&&d<=curDay))ytdLast+=total;
+            }
+          });
+          const ytdDelta=ytdCur-ytdLast;
+          const ytdPct=ytdLast>0?Math.round(ytdDelta/ytdLast*100):(ytdCur>0?100:0);
+          const max=Math.max(1,...byMonth.cur,...byMonth.last);
+          const monthLabels=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+          const chartH=160;const barW=14;const gap=4;const groupW=barW*2+gap;const groupGap=18;
+          const chartW=12*groupW+11*groupGap;
+          const fmt=n=>n>=1000?'$'+(n/1000).toFixed(n>=10000?0:1)+'k':'$'+Math.round(n);
+          const noData=filtered.length===0;
+          return<div className="card-body">
+            {/* Summary tiles */}
+            <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
+              <div style={{flex:1,minWidth:140,padding:10,background:'#dbeafe',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>YTD {curY}</div>
+                <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{fmt(ytdCur)}</div>
+              </div>
+              <div style={{flex:1,minWidth:140,padding:10,background:'#f1f5f9',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>YTD {lastY}</div>
+                <div style={{fontSize:20,fontWeight:800,color:'#475569'}}>{fmt(ytdLast)}</div>
+              </div>
+              <div style={{flex:1,minWidth:140,padding:10,background:ytdDelta>=0?'#dcfce7':'#fecaca',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:700,color:ytdDelta>=0?'#166534':'#dc2626'}}>YTD Δ</div>
+                <div style={{fontSize:20,fontWeight:800,color:ytdDelta>=0?'#166534':'#dc2626'}}>
+                  {ytdDelta>=0?'+':''}{fmt(ytdDelta)} <span style={{fontSize:12}}>({ytdPct>=0?'+':''}{ytdPct}%)</span>
+                </div>
+              </div>
+              <div style={{flex:1,minWidth:140,padding:10,background:'#fef3c7',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#92400e'}}>Full Year {lastY}</div>
+                <div style={{fontSize:20,fontWeight:800,color:'#92400e'}}>{fmt(fullLast)}</div>
+              </div>
+            </div>
+            {/* Chart */}
+            {noData?<div style={{textAlign:'center',color:'#94a3b8',padding:24,fontSize:13}}>No historical invoices{repObj?` for ${repObj.name}`:''} yet.</div>:
+            <div style={{overflowX:'auto'}}>
+              <svg width={chartW+60} height={chartH+60} style={{display:'block',margin:'0 auto'}}>
+                {/* Y-axis gridlines at 25/50/75/100% */}
+                {[0.25,0.5,0.75,1].map(f=>{
+                  const y=chartH-chartH*f+10;
+                  return<g key={f}>
+                    <line x1={40} x2={chartW+50} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="3,3"/>
+                    <text x={36} y={y+4} fontSize={9} textAnchor="end" fill="#94a3b8">{fmt(max*f)}</text>
+                  </g>;
+                })}
+                {/* Bars */}
+                {monthLabels.map((lbl,i)=>{
+                  const groupX=50+i*(groupW+groupGap);
+                  const curVal=byMonth.cur[i];const lastVal=byMonth.last[i];
+                  const curH=max>0?(curVal/max)*chartH:0;
+                  const lastH=max>0?(lastVal/max)*chartH:0;
+                  return<g key={i}>
+                    <rect x={groupX} y={chartH-lastH+10} width={barW} height={lastH} fill="#94a3b8" rx="2">
+                      <title>{`${lastY} ${lbl}: ${fmt(lastVal)}`}</title>
+                    </rect>
+                    <rect x={groupX+barW+gap} y={chartH-curH+10} width={barW} height={curH} fill="#2563eb" rx="2">
+                      <title>{`${curY} ${lbl}: ${fmt(curVal)}`}</title>
+                    </rect>
+                    <text x={groupX+groupW/2} y={chartH+26} fontSize={10} textAnchor="middle" fill="#475569" fontWeight={i===curMonth?700:400}>{lbl}</text>
+                  </g>;
+                })}
+                {/* Baseline */}
+                <line x1={40} x2={chartW+50} y1={chartH+10} y2={chartH+10} stroke="#cbd5e1"/>
+              </svg>
+              {/* Legend */}
+              <div style={{display:'flex',gap:16,justifyContent:'center',fontSize:11,color:'#475569',marginTop:8}}>
+                <span><span style={{display:'inline-block',width:10,height:10,background:'#94a3b8',borderRadius:2,marginRight:6}}/>{lastY}: {fmt(fullLast)}</span>
+                <span><span style={{display:'inline-block',width:10,height:10,background:'#2563eb',borderRadius:2,marginRight:6}}/>{curY} (YTD): {fmt(fullCur)}</span>
+                {repObj&&<span style={{color:'#64748b'}}>Rep filter: {repObj.name}</span>}
+              </div>
+            </div>}
+            <div style={{marginTop:10,fontSize:10,color:'#94a3b8',textAlign:'center'}}>
+              Source: NetSuite invoice history (customer_invoices). Totals include credit memos as negatives. Excludes margin — cost data not imported.
+            </div>
+          </div>;
+        })()}
+      </div>}
 
       {/* OVERVIEW / PIPELINE TAB */}
       {(rptTab==='overview'||rptTab==='pipeline')&&<>
