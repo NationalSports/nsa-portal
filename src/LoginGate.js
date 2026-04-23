@@ -5,7 +5,7 @@ import { NSA } from './constants';
 const ADMIN_PW_HASH=(process.env.REACT_APP_ADMIN_PW_HASH||'').trim();
 const hashPassword=async(pw)=>{const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pw));return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('')};
 
-function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,sbGetSession:_sbGetSession,sbLinkTeamAuth:_sbLinkTeamAuth,sbGetMyProfile:_sbGetMyProfile}){
+function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,sbResendSignup:_sbResendSignup,sbGetSession:_sbGetSession,sbLinkTeamAuth:_sbLinkTeamAuth,sbGetMyProfile:_sbGetMyProfile}){
   const REPS=(reps||[]).filter(r=>r.is_active!==false);
   const roleLabels={super_admin:'Super Admin',admin:'Admin',gm:'General Manager',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',rep:'Sales Rep',csr:'CSR',warehouse:'Warehouse',accounting:'Accounting',art:'Artist'};
   const roleColors={super_admin:'#dc2626',admin:'#1e40af',gm:'#7c3aed',prod_manager:'#b45309',production:'#d97706',prod_assistant:'#a16207',rep:'#166534',csr:'#0891b2',warehouse:'#9333ea',accounting:'#dc2626',art:'#ec4899'};
@@ -14,12 +14,22 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
   const[password2,setPassword2]=useState('');
   const[error,setError]=useState('');
   const[loading,setLoading]=useState(false);
-  const[mode,setMode]=useState('login');// 'login', 'setup', 'admin', or 'confirm'
+  const[mode,setMode]=useState('login');// 'login', 'setup', 'admin', 'confirm', or 'expired'
   const[adminFilter,setAdminFilter]=useState('');
   const[sessionChecked,setSessionChecked]=useState(false);
 
-  // Check for existing Supabase session on mount
+  // Check for expired-link hash or existing Supabase session on mount
   useEffect(()=>{
+    const h=window.location.hash;
+    if(h&&h.includes('error_code=')){
+      const p=new URLSearchParams(h.startsWith('#')?h.substring(1):h);
+      const desc=p.get('error_description');
+      setError(desc?desc.replace(/\+/g,' '):(p.get('error_code')||'Link expired'));
+      setMode('expired');
+      window.history.replaceState(null,'',window.location.pathname+window.location.search);
+      setSessionChecked(true);
+      return;
+    }
     (async()=>{
       const session=await _sbGetSession();
       if(session?.user){
@@ -77,6 +87,16 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
     setLoading(false);
   };
 
+  const handleResend=async(e)=>{
+    e.preventDefault();setError('');
+    if(!email.trim()){setError('Please enter your email');return}
+    setLoading(true);
+    const res=await _sbResendSignup(email.trim());
+    setLoading(false);
+    if(res.error){setError(res.error);return}
+    setMode('confirm');
+  };
+
   if(!sessionChecked)return(
     <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center'}}>
       <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3}}>Loading...</div>
@@ -94,7 +114,36 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
 
         {/* Login Card */}
         <div style={{background:'white',borderRadius:16,padding:32,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
-          {mode==='confirm'?(
+          {mode==='expired'?(
+            /* Expired / invalid confirmation link — offer to resend */
+            <>
+              <div style={{textAlign:'center',paddingBottom:8}}>
+                <div style={{fontSize:40,marginBottom:12}}>&#9888;&#65039;</div>
+                <div style={{fontSize:18,fontWeight:700,color:'#0f172a',marginBottom:8}}>Link Expired</div>
+                <div style={{fontSize:13,color:'#64748b',marginBottom:16,lineHeight:1.5}}>
+                  Your confirmation link has expired or was already used. Enter your email below to get a new one.
+                </div>
+              </div>
+              <form onSubmit={handleResend}>
+                <label style={{display:'block',fontSize:12,fontWeight:600,color:'#374151',marginBottom:4}}>Email</label>
+                <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" autoFocus
+                  autoComplete="email" name="email"
+                  style={{width:'100%',padding:'10px 12px',border:'1px solid #d1d5db',borderRadius:8,marginBottom:12,fontSize:14,boxSizing:'border-box',outline:'none'}}
+                  onFocus={e=>e.target.style.borderColor='#3b82f6'} onBlur={e=>e.target.style.borderColor='#d1d5db'}/>
+                {error&&<div style={{color:'#dc2626',fontSize:13,marginTop:4,marginBottom:4,padding:'8px 12px',background:'#fef2f2',borderRadius:8}}>{error}</div>}
+                <button type="submit" disabled={loading}
+                  style={{width:'100%',padding:'11px',background:'#1e40af',color:'white',border:'none',borderRadius:8,fontWeight:700,fontSize:14,cursor:'pointer',marginTop:8,opacity:loading?0.6:1,transition:'opacity 0.15s'}}>
+                  {loading?'Sending...':'Resend Confirmation Email'}
+                </button>
+              </form>
+              <div style={{textAlign:'center',marginTop:16,paddingTop:16,borderTop:'1px solid #f1f5f9'}}>
+                <button type="button" onClick={()=>{setMode('login');setError('')}}
+                  style={{background:'none',border:'none',color:'#3b82f6',fontSize:13,cursor:'pointer',fontWeight:500}}>
+                  Back to Sign In
+                </button>
+              </div>
+            </>
+          ):mode==='confirm'?(
             /* Email confirmation notice */
             <>
               <div style={{textAlign:'center',padding:'16px 0'}}>
