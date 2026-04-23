@@ -8289,6 +8289,9 @@ export default function App(){
   const[rptTab,setRptTab]=useState('overview');
   const[rptRep,setRptRep]=useState('all');
   const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
+  // Historical sales chart UI state — hover tooltip + rep-vs-team mode
+  const[histHover,setHistHover]=useState(null);// null | {x,y,label,value,year,scope}
+  const[histShowTeam,setHistShowTeam]=useState(true);// when a rep is selected, overlay team totals so reps see their share
   // Customers-tab widget state — must live at component level (not inside conditional IIFEs) to avoid React error #310 (rules of hooks)
   const[pdSort,setPdSort]=useState('avgDays');
   const[pdDir,setPdDir]=useState('desc');
@@ -8497,68 +8500,99 @@ export default function App(){
           // Resolve the rep filter against rep_name on histInvs (NetSuite stored rep as a string snapshot).
           const repObj=rptRep==='all'?null:REPS.find(r=>r.id===rptRep);
           const repNameLc=repObj?.name?.toLowerCase()||null;
-          const filtered=(histInvs||[]).filter(hi=>{
+          const matchesRep=(hi)=>{
             if(!repNameLc)return true;
             const rn=(hi.rep_name||'').toLowerCase();
             if(!rn)return false;
             return rn===repNameLc||rn.includes(repNameLc)||repNameLc.includes(rn);
-          });
+          };
           const now=new Date();const curY=now.getFullYear();const lastY=curY-1;
-          const curMonth=now.getMonth();// 0-indexed
-          const curDay=now.getDate();
-          const byMonth={cur:Array(12).fill(0),last:Array(12).fill(0)};
-          let ytdCur=0,ytdLast=0,fullLast=0,fullCur=0;
-          filtered.forEach(hi=>{
+          const curMonth=now.getMonth();const curDay=now.getDate();
+          // Accumulate both rep and team totals in one pass.
+          const repData={cur:Array(12).fill(0),last:Array(12).fill(0)};
+          const teamData={cur:Array(12).fill(0),last:Array(12).fill(0)};
+          let repYtdCur=0,repYtdLast=0,repFullCur=0,repFullLast=0;
+          let teamYtdCur=0,teamYtdLast=0,teamFullCur=0,teamFullLast=0;
+          (histInvs||[]).forEach(hi=>{
             if(!hi.date)return;
-            // hi.date is 'YYYY-MM-DD' from the customer_invoices.invoice_date column.
             const m=hi.date.match(/^(\d{4})-(\d{2})-(\d{2})/);
             if(!m)return;
             const y=parseInt(m[1]);const mo=parseInt(m[2])-1;const d=parseInt(m[3]);
             const total=safeNum(hi.total);
-            if(y===curY){
-              byMonth.cur[mo]+=total;fullCur+=total;
-              // YTD: include this month only up to today
-              if(mo<curMonth||(mo===curMonth&&d<=curDay))ytdCur+=total;
-            }else if(y===lastY){
-              byMonth.last[mo]+=total;fullLast+=total;
-              if(mo<curMonth||(mo===curMonth&&d<=curDay))ytdLast+=total;
+            const isYtd=mo<curMonth||(mo===curMonth&&d<=curDay);
+            if(y===curY){teamData.cur[mo]+=total;teamFullCur+=total;if(isYtd)teamYtdCur+=total}
+            else if(y===lastY){teamData.last[mo]+=total;teamFullLast+=total;if(isYtd)teamYtdLast+=total}
+            if(matchesRep(hi)){
+              if(y===curY){repData.cur[mo]+=total;repFullCur+=total;if(isYtd)repYtdCur+=total}
+              else if(y===lastY){repData.last[mo]+=total;repFullLast+=total;if(isYtd)repYtdLast+=total}
             }
           });
-          const ytdDelta=ytdCur-ytdLast;
-          const ytdPct=ytdLast>0?Math.round(ytdDelta/ytdLast*100):(ytdCur>0?100:0);
-          const max=Math.max(1,...byMonth.cur,...byMonth.last);
+          // Primary series = the selected rep (or the team when "All Reps").
+          // Secondary series = team totals, shown as faint overlay bars when a rep is selected.
+          const isRepView=!!repObj;
+          const primary=isRepView?repData:teamData;
+          const primaryFullCur=isRepView?repFullCur:teamFullCur;
+          const primaryFullLast=isRepView?repFullLast:teamFullLast;
+          const primaryYtdCur=isRepView?repYtdCur:teamYtdCur;
+          const primaryYtdLast=isRepView?repYtdLast:teamYtdLast;
+          const ytdDelta=primaryYtdCur-primaryYtdLast;
+          const ytdPct=primaryYtdLast>0?Math.round(ytdDelta/primaryYtdLast*100):(primaryYtdCur>0?100:0);
+          const sharePct=isRepView&&teamYtdCur>0?Math.round(repYtdCur/teamYtdCur*100):null;
+          // Scale — if team overlay on, include team values in max so bars remain comparable.
+          const overlayOn=isRepView&&histShowTeam;
+          const max=Math.max(1,...primary.cur,...primary.last,...(overlayOn?teamData.cur:[0]),...(overlayOn?teamData.last:[0]));
           const monthLabels=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-          const chartH=160;const barW=14;const gap=4;const groupW=barW*2+gap;const groupGap=18;
+          const chartH=180;const barW=14;const gap=4;const groupW=barW*2+gap;const groupGap=22;
           const chartW=12*groupW+11*groupGap;
-          const fmt=n=>n>=1000?'$'+(n/1000).toFixed(n>=10000?0:1)+'k':'$'+Math.round(n);
-          const noData=filtered.length===0;
+          const fmt=n=>n===0?'$0':(Math.abs(n)>=1000?'$'+(n/1000).toFixed(Math.abs(n)>=10000?0:1)+'k':'$'+Math.round(n));
+          const noData=primaryFullCur===0&&primaryFullLast===0;
+          const onBarEnter=(ev,meta)=>{
+            const svg=ev.currentTarget.ownerSVGElement;
+            const pt=svg.getBoundingClientRect();
+            setHistHover({...meta,x:ev.clientX-pt.left,y:ev.clientY-pt.top});
+          };
           return<div className="card-body">
             {/* Summary tiles */}
-            <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
+            <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap'}}>
               <div style={{flex:1,minWidth:140,padding:10,background:'#dbeafe',borderRadius:6,textAlign:'center'}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>YTD {curY}</div>
-                <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{fmt(ytdCur)}</div>
+                <div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>{isRepView?repObj.name.split(' ')[0]+"'s YTD "+curY:'Team YTD '+curY}</div>
+                <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{fmt(primaryYtdCur)}</div>
               </div>
               <div style={{flex:1,minWidth:140,padding:10,background:'#f1f5f9',borderRadius:6,textAlign:'center'}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>YTD {lastY}</div>
-                <div style={{fontSize:20,fontWeight:800,color:'#475569'}}>{fmt(ytdLast)}</div>
+                <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{isRepView?repObj.name.split(' ')[0]+"'s YTD "+lastY:'Team YTD '+lastY}</div>
+                <div style={{fontSize:20,fontWeight:800,color:'#475569'}}>{fmt(primaryYtdLast)}</div>
               </div>
               <div style={{flex:1,minWidth:140,padding:10,background:ytdDelta>=0?'#dcfce7':'#fecaca',borderRadius:6,textAlign:'center'}}>
-                <div style={{fontSize:10,fontWeight:700,color:ytdDelta>=0?'#166534':'#dc2626'}}>YTD Δ</div>
+                <div style={{fontSize:10,fontWeight:700,color:ytdDelta>=0?'#166534':'#dc2626'}}>YTD Δ vs last year</div>
                 <div style={{fontSize:20,fontWeight:800,color:ytdDelta>=0?'#166534':'#dc2626'}}>
                   {ytdDelta>=0?'+':''}{fmt(ytdDelta)} <span style={{fontSize:12}}>({ytdPct>=0?'+':''}{ytdPct}%)</span>
                 </div>
               </div>
-              <div style={{flex:1,minWidth:140,padding:10,background:'#fef3c7',borderRadius:6,textAlign:'center'}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#92400e'}}>Full Year {lastY}</div>
-                <div style={{fontSize:20,fontWeight:800,color:'#92400e'}}>{fmt(fullLast)}</div>
-              </div>
+              {isRepView?
+                <div style={{flex:1,minWidth:140,padding:10,background:'#ede9fe',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#6d28d9'}}>Share of Team YTD</div>
+                  <div style={{fontSize:20,fontWeight:800,color:'#6d28d9'}}>{sharePct!=null?sharePct+'%':'—'} <span style={{fontSize:11,color:'#7c3aed'}}>of {fmt(teamYtdCur)}</span></div>
+                </div>
+              :
+                <div style={{flex:1,minWidth:140,padding:10,background:'#fef3c7',borderRadius:6,textAlign:'center'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#92400e'}}>Team Full Year {lastY}</div>
+                  <div style={{fontSize:20,fontWeight:800,color:'#92400e'}}>{fmt(teamFullLast)}</div>
+                </div>
+              }
             </div>
+
+            {/* Controls — team overlay toggle only meaningful when a rep is selected */}
+            {isRepView&&<div style={{display:'flex',justifyContent:'flex-end',marginBottom:8,fontSize:11,color:'#475569'}}>
+              <label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer'}}>
+                <input type="checkbox" checked={histShowTeam} onChange={e=>setHistShowTeam(e.target.checked)}/>
+                Show team totals as overlay
+              </label>
+            </div>}
+
             {/* Chart */}
-            {noData?<div style={{textAlign:'center',color:'#94a3b8',padding:24,fontSize:13}}>No historical invoices{repObj?` for ${repObj.name}`:''} yet.</div>:
-            <div style={{overflowX:'auto'}}>
-              <svg width={chartW+60} height={chartH+60} style={{display:'block',margin:'0 auto'}}>
-                {/* Y-axis gridlines at 25/50/75/100% */}
+            {noData?<div style={{textAlign:'center',color:'#94a3b8',padding:24,fontSize:13}}>No historical invoices{repObj?` matched for ${repObj.name}`:''}.</div>:
+            <div style={{overflowX:'auto',position:'relative'}}>
+              <svg width={chartW+60} height={chartH+60} style={{display:'block',margin:'0 auto'}} onMouseLeave={()=>setHistHover(null)}>
                 {[0.25,0.5,0.75,1].map(f=>{
                   const y=chartH-chartH*f+10;
                   return<g key={f}>
@@ -8566,30 +8600,46 @@ export default function App(){
                     <text x={36} y={y+4} fontSize={9} textAnchor="end" fill="#94a3b8">{fmt(max*f)}</text>
                   </g>;
                 })}
-                {/* Bars */}
                 {monthLabels.map((lbl,i)=>{
                   const groupX=50+i*(groupW+groupGap);
-                  const curVal=byMonth.cur[i];const lastVal=byMonth.last[i];
-                  const curH=max>0?(curVal/max)*chartH:0;
-                  const lastH=max>0?(lastVal/max)*chartH:0;
+                  const pLast=primary.last[i];const pCur=primary.cur[i];
+                  const pLastH=max>0?(pLast/max)*chartH:0;
+                  const pCurH=max>0?(pCur/max)*chartH:0;
+                  const tLast=teamData.last[i];const tCur=teamData.cur[i];
+                  const tLastH=max>0?(tLast/max)*chartH:0;
+                  const tCurH=max>0?(tCur/max)*chartH:0;
+                  const repLabel=isRepView?repObj.name.split(' ')[0]:'Team';
                   return<g key={i}>
-                    <rect x={groupX} y={chartH-lastH+10} width={barW} height={lastH} fill="#94a3b8" rx="2">
-                      <title>{`${lastY} ${lbl}: ${fmt(lastVal)}`}</title>
-                    </rect>
-                    <rect x={groupX+barW+gap} y={chartH-curH+10} width={barW} height={curH} fill="#2563eb" rx="2">
-                      <title>{`${curY} ${lbl}: ${fmt(curVal)}`}</title>
-                    </rect>
+                    {/* Team overlay bars (rendered behind, fainter) when a rep is selected */}
+                    {overlayOn&&<>
+                      <rect x={groupX-3} y={chartH-tLastH+10} width={barW+6} height={tLastH} fill="#cbd5e1" opacity={0.55} rx="2"
+                        onMouseMove={e=>onBarEnter(e,{label:`Team ${lastY} ${lbl}`,value:tLast})}/>
+                      <rect x={groupX+barW+gap-3} y={chartH-tCurH+10} width={barW+6} height={tCurH} fill="#93c5fd" opacity={0.55} rx="2"
+                        onMouseMove={e=>onBarEnter(e,{label:`Team ${curY} ${lbl}`,value:tCur})}/>
+                    </>}
+                    {/* Primary bars */}
+                    <rect x={groupX} y={chartH-pLastH+10} width={barW} height={pLastH} fill="#64748b" rx="2"
+                      onMouseMove={e=>onBarEnter(e,{label:`${repLabel} ${lastY} ${lbl}`,value:pLast})}/>
+                    <rect x={groupX+barW+gap} y={chartH-pCurH+10} width={barW} height={pCurH} fill="#2563eb" rx="2"
+                      onMouseMove={e=>onBarEnter(e,{label:`${repLabel} ${curY} ${lbl}`,value:pCur})}/>
                     <text x={groupX+groupW/2} y={chartH+26} fontSize={10} textAnchor="middle" fill="#475569" fontWeight={i===curMonth?700:400}>{lbl}</text>
                   </g>;
                 })}
-                {/* Baseline */}
                 <line x1={40} x2={chartW+50} y1={chartH+10} y2={chartH+10} stroke="#cbd5e1"/>
               </svg>
+              {/* Hover tooltip */}
+              {histHover&&<div style={{position:'absolute',left:histHover.x+16,top:Math.max(0,histHover.y-40),background:'#0f172a',color:'white',padding:'6px 10px',borderRadius:6,fontSize:11,pointerEvents:'none',boxShadow:'0 4px 10px rgba(0,0,0,0.25)',zIndex:5,whiteSpace:'nowrap'}}>
+                <div style={{fontWeight:700}}>{histHover.label}</div>
+                <div>{fmt(histHover.value)}</div>
+              </div>}
               {/* Legend */}
-              <div style={{display:'flex',gap:16,justifyContent:'center',fontSize:11,color:'#475569',marginTop:8}}>
-                <span><span style={{display:'inline-block',width:10,height:10,background:'#94a3b8',borderRadius:2,marginRight:6}}/>{lastY}: {fmt(fullLast)}</span>
-                <span><span style={{display:'inline-block',width:10,height:10,background:'#2563eb',borderRadius:2,marginRight:6}}/>{curY} (YTD): {fmt(fullCur)}</span>
-                {repObj&&<span style={{color:'#64748b'}}>Rep filter: {repObj.name}</span>}
+              <div style={{display:'flex',gap:18,justifyContent:'center',fontSize:11,color:'#475569',marginTop:8,flexWrap:'wrap'}}>
+                <span><span style={{display:'inline-block',width:10,height:10,background:'#64748b',borderRadius:2,marginRight:6}}/>{isRepView?repObj.name.split(' ')[0]:'Team'} {lastY}: {fmt(primaryFullLast)}</span>
+                <span><span style={{display:'inline-block',width:10,height:10,background:'#2563eb',borderRadius:2,marginRight:6}}/>{isRepView?repObj.name.split(' ')[0]:'Team'} {curY} (YTD): {fmt(primaryFullCur)}</span>
+                {overlayOn&&<>
+                  <span><span style={{display:'inline-block',width:10,height:10,background:'#cbd5e1',borderRadius:2,marginRight:6}}/>Team {lastY}: {fmt(teamFullLast)}</span>
+                  <span><span style={{display:'inline-block',width:10,height:10,background:'#93c5fd',borderRadius:2,marginRight:6}}/>Team {curY} (YTD): {fmt(teamFullCur)}</span>
+                </>}
               </div>
             </div>}
             <div style={{marginTop:10,fontSize:10,color:'#94a3b8',textAlign:'center'}}>
