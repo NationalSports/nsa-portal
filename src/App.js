@@ -5662,6 +5662,8 @@ export default function App(){
   const[artJobDetailModal,setArtJobDetailModal]=useState(null);// job object for artist card detail popup
   const[artJobDetailMsg,setArtJobDetailMsg]=useState('');// message text in artist detail popup
   const[artJobDetailUploading,setArtJobDetailUploading]=useState(false);// upload in-progress flag
+  const[artProdAssignModal,setArtProdAssignModal]=useState(null);// {files:File[], assignments:{[idx]:artId}} — per-file art picker for multi-art jobs
+  React.useEffect(()=>{if(!artJobDetailModal)setArtProdAssignModal(null)},[artJobDetailModal]);
   const[artJobDetailEditColors,setArtJobDetailEditColors]=useState(null);// editing color string or null
   const[artJobDetailEditSize,setArtJobDetailEditSize]=useState(null);// editing art size string or null
   // Helper: build product search URL — uses Google Images to find the product
@@ -13975,7 +13977,7 @@ export default function App(){
         const af=j.artFile||allArtFiles[0]||null;
         const additionalArtFiles=allArtFiles.slice(1);
         const mockupFiles=(af?.mockup_files||af?.files||[]);
-        const prodFilesL=allArtFiles.flatMap(artF=>(artF?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_artName:allArtFiles.length>1?(artF?.name||''):''})));
+        const prodFilesL=allArtFiles.flatMap(artF=>(artF?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_artName:allArtFiles.length>1?(artF?.name||''):'',_artId:artF.id})));
         const colorList=af?(af.ink_colors||af.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean):[];
         const isEmb=allArtFiles.some(a=>a.deco_type==='embroidery');
         const colorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
@@ -14183,24 +14185,41 @@ export default function App(){
           nf('Mockup removed from '+sku);
         };
 
-        // Upload handler for production files (when art is approved, needs prod files)
-        const handleProdFileUpload=async(files)=>{
+        // Upload handler for production files. Accepts [{file, artId}] so multi-art jobs can route each file to the correct art.
+        const handleProdFileUpload=async(entries)=>{
           setArtJobDetailUploading(true);
           try{
-            const uploaded=[];
-            for(const f of files){
-              nf('Uploading '+f.name+'...');
-              const url=await fileUpload(f,'nsa-art-files');
-              uploaded.push({url,name:f.name});
+            const uploads=[];
+            for(const e of entries){
+              nf('Uploading '+e.file.name+'...');
+              const url=await fileUpload(e.file,'nsa-art-files');
+              uploads.push({artId:e.artId,file:{url,name:e.file.name}});
             }
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-            const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,prod_files:[...(a.prod_files||[]),...uploaded]}:a);
+            const updArt=safeArt(liveSO).map(a=>{
+              const addl=uploads.filter(u=>u.artId===a.id).map(u=>u.file);
+              return addl.length?{...a,prod_files:[...(a.prod_files||[]),...addl]}:a;
+            });
             savSO({...liveSO,art_files:updArt});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
             setArtJobDetailModal({...j,artFile:updatedAf});
-            nf(uploaded.length+' production file'+(uploaded.length>1?'s':'')+' uploaded!');
+            nf(uploads.length+' production file'+(uploads.length>1?'s':'')+' uploaded!');
           }catch(err){nf('Upload failed: '+err.message,'error')}
           finally{setArtJobDetailUploading(false)}
+        };
+
+        // Kick off prod file upload: auto-assign when the job has a single art, otherwise open the per-file art picker.
+        const startProdUpload=(files)=>{
+          if(!files||files.length===0)return;
+          const arts=allArtFiles;
+          if(arts.length<=1){
+            const artId=arts[0]?.id||j.art_file_id;
+            if(!artId){nf('No art on this job to attach files to','error');return}
+            handleProdFileUpload(files.map(f=>({file:f,artId})));
+          }else{
+            const assignments={};files.forEach((_,i)=>{assignments[i]=''});
+            setArtProdAssignModal({files,assignments});
+          }
         };
 
         // Send message from artist to rep
@@ -14610,12 +14629,12 @@ export default function App(){
               {prodFilesL.length>0&&<div style={{marginBottom:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Production Files ({prodFilesL.length})</div>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                  {prodFilesL.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
+                  {prodFilesL.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const artId=f?._artId||j.art_file_id;
                     return<div key={i} style={{padding:'6px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontSize:11,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:4}}
-                      onClick={()=>openFile(url)}>📁 {name}
+                      onClick={()=>openFile(url)}>📁 {name}{f?._artName&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#fde68a',color:'#78350f'}}>{f._artName}</span>}
                       <button style={{background:'none',border:'none',color:'#dc2626',cursor:'pointer',fontSize:12,padding:'0 2px',lineHeight:1}} onClick={e=>{e.stopPropagation();if(window.confirm('Remove this production file?')){
                         const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-                        const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,prod_files:(a.prod_files||[]).filter(pf=>(typeof pf==='string'?pf:(pf?.url||''))!==url)}:a);
+                        const updArt=safeArt(liveSO).map(a=>a.id===artId?{...a,prod_files:(a.prod_files||[]).filter(pf=>(typeof pf==='string'?pf:(pf?.url||''))!==url)}:a);
                         savSO({...liveSO,art_files:updArt});
                         setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
                         nf('Production file removed');
@@ -14626,14 +14645,46 @@ export default function App(){
               <div style={{padding:20,textAlign:'center',borderRadius:8,border:'2px dashed #f59e0b',background:'#fffbeb',cursor:artJobDetailUploading?'wait':'pointer',opacity:artJobDetailUploading?0.6:1}}
                 onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#d97706';e.currentTarget.style.background='#fef3c7'}}
                 onDragLeave={e=>{e.currentTarget.style.borderColor='#f59e0b';e.currentTarget.style.background='#fffbeb'}}
-                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#f59e0b';e.currentTarget.style.background='#fffbeb';if(!artJobDetailUploading)handleProdFileUpload(Array.from(e.dataTransfer.files))}}
-                onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.dst,.svg';inp.onchange=()=>handleProdFileUpload(Array.from(inp.files));inp.click()}}>
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#f59e0b';e.currentTarget.style.background='#fffbeb';if(!artJobDetailUploading)startProdUpload(Array.from(e.dataTransfer.files))}}
+                onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.dst,.svg';inp.onchange=()=>startProdUpload(Array.from(inp.files));inp.click()}}>
                 {artJobDetailUploading?<><div style={{fontSize:28,marginBottom:4}}>⏳</div><div style={{fontSize:12,fontWeight:600,color:'#92400e'}}>Uploading...</div></>
                 :<><div style={{fontSize:28,marginBottom:4}}>📁</div><div style={{fontSize:12,fontWeight:600,color:'#92400e'}}>Drop production files here or click to upload</div>
                   <div style={{fontSize:10,color:'#a16207',marginTop:2}}>DST, AI, EPS, PDF, PNG, SVG</div></>}
               </div>
               {prodFilesL.length>0&&<button className="btn" style={{marginTop:10,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontSize:13,fontWeight:700,width:'100%'}}
                 onClick={()=>{moveArtStatus(j,'art_complete');setArtJobDetailModal(null);nf('Production files uploaded — Art Complete!')}}>✅ Mark Art Complete</button>}
+              {artProdAssignModal&&(()=>{
+                const {files,assignments}=artProdAssignModal;
+                const allAssigned=files.every((_,i)=>assignments[i]);
+                const setAssignment=(idx,aid)=>setArtProdAssignModal(m=>m?{...m,assignments:{...m.assignments,[idx]:aid}}:m);
+                return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(15,23,42,0.6)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:20}} onClick={()=>!artJobDetailUploading&&setArtProdAssignModal(null)}>
+                  <div style={{background:'white',borderRadius:12,padding:20,maxWidth:560,width:'100%',maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
+                    <div style={{fontSize:16,fontWeight:800,color:'#1e293b',marginBottom:4}}>Which art does each file belong to?</div>
+                    <div style={{fontSize:12,color:'#64748b',marginBottom:14}}>This job has {allArtFiles.length} art pieces. Pick the right one for each file so it saves to the correct folder.</div>
+                    <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
+                      {files.map((f,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:10,background:'#f8fafc',border:'1px solid '+(assignments[i]?'#bbf7d0':'#e2e8f0'),borderRadius:8}}>
+                        <span style={{fontSize:18}}>📁</span>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:12,fontWeight:600,color:'#0f172a',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={f.name}>{f.name}</div>
+                          <div style={{fontSize:10,color:'#94a3b8'}}>{(f.size/1024).toFixed(0)} KB</div>
+                        </div>
+                        <select className="form-select" style={{width:200,fontSize:12}} value={assignments[i]||''} onChange={e=>setAssignment(i,e.target.value)}>
+                          <option value="">— Pick art —</option>
+                          {allArtFiles.map(a=><option key={a.id} value={a.id}>{a.name||'Unnamed'}{a.deco_type?' ('+a.deco_type.replace(/_/g,' ')+')':''}</option>)}
+                        </select>
+                      </div>)}
+                    </div>
+                    <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+                      <button className="btn btn-secondary" disabled={artJobDetailUploading} onClick={()=>setArtProdAssignModal(null)}>Cancel</button>
+                      <button className="btn btn-primary" disabled={!allAssigned||artJobDetailUploading} onClick={async()=>{
+                        const entries=files.map((f,i)=>({file:f,artId:assignments[i]}));
+                        setArtProdAssignModal(null);
+                        await handleProdFileUpload(entries);
+                      }}>{artJobDetailUploading?'Uploading...':'Upload '+files.length+' file'+(files.length>1?'s':'')}</button>
+                    </div>
+                  </div>
+                </div>;
+              })()}
             </div>
             :null}
 
