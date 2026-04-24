@@ -82,7 +82,7 @@ const OrderEditor = lazyRetry(() => import('./OrderEditor'));
 const CustDetail = lazyRetry(() => import('./CustDetail'));
 const CoachPortal = lazyRetry(() => import('./CoachPortal'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
-import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm } from './modals';
+import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
 import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection } from './vendorApis';
 // ── Loading fallback for lazy components ──
 const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
@@ -1863,7 +1863,7 @@ export default function App(){
   const exportIssuesCSV=()=>{const hdr=['ID','Status','Priority','Description','Page','Context','Reported By','Role','Timestamp','Resolution','Resolved At'];const rows=issues.map(i=>[i.id,i.status,i.priority,'"'+i.description.replace(/"/g,'""')+'"',i.page,i.viewing||'',i.reported_by||i.reportedBy||'',i.role,i.timestamp,i.resolution||'',i.resolved_at||i.resolvedAt||'']);const csv=[hdr.join(','),...rows.map(r=>r.join(','))].join('\n');const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='issues_export_'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url)};
   // SO version history
   const[soHistory,setSOHistory]=useState(()=>loadState('so_history',{}));// {soId:[{ts,user,snapshot}]}
-  const[msgs,setMsgs]=useState(()=>_migrated.msgs);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
+  const[msgs,setMsgs]=useState(()=>_migrated.msgs);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});const[vM,setVM]=useState({open:false,v:null});
   // ─── Supabase: load on mount ───
   const _pendingQBTokens=useRef(null);
   const _initialLoadDone=useRef(false);
@@ -3234,6 +3234,7 @@ export default function App(){
   const _r=cu?.role==='super_admin'?'admin':cu?.role;
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id),[cust]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
   const cols=useMemo(()=>COLOR_CATEGORIES,[]);
+  const savV=v=>{setVend(p=>{const e=p.find(x=>x.id===v.id);return e?p.map(x=>x.id===v.id?{...x,...v}:x):[...p,v]});nf(vend.some(x=>x.id===v.id)?'Vendor updated':'Vendor created')};
   const savC=c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});
     let subCount=0;let tagCount=0;
     setCust(p=>{
@@ -4956,14 +4957,18 @@ export default function App(){
 
   // VENDORS
   function rVend(){if(selV)return<VendDetail vendor={selV} products={prod} onUpdateProducts={setProd} onBack={()=>setSelV(null)}/>;
-    return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Vendors</div><div className="stat-value">{vend.length}</div></div><div className="stat-card"><div className="stat-label">API</div><div className="stat-value">{vend.filter(v=>v.vendor_type==='api').length}</div></div>
+    return(<><div style={{display:'flex',justifyContent:'flex-end',marginBottom:12}}>
+      <button className="btn btn-primary" onClick={()=>setVM({open:true,v:null})}><Icon name="plus" size={14}/> New Vendor</button>
+    </div>
+    <div className="stats-row"><div className="stat-card"><div className="stat-label">Vendors</div><div className="stat-value">{vend.length}</div></div><div className="stat-card"><div className="stat-label">API</div><div className="stat-value">{vend.filter(v=>v.vendor_type==='api').length}</div></div>
       {isA&&<div className="stat-card"><div className="stat-label">Open AP</div><div className="stat-value" style={{color:'#dc2626'}}>${vend.reduce((a,v)=>a+(v._it||0),0).toLocaleString()}</div></div>}</div>
-    <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>Vendor</th><th>Type</th><th>Contact</th><th>Terms</th>{isA&&<th>Owed</th>}<th>Status</th></tr></thead><tbody>
+    <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>Vendor</th><th>Type</th><th>Contact</th><th>Terms</th>{isA&&<th>Owed</th>}<th>Status</th><th></th></tr></thead><tbody>
     {vend.map(v=><tr key={v.id} style={{cursor:'pointer'}} onClick={()=>setSelV(v)}>
       <td style={{fontWeight:700,color:'#1e40af'}}>{v.name}</td><td><span className={`badge ${v.vendor_type==='api'?'badge-purple':'badge-gray'}`}>{v.vendor_type==='api'?'API':'Upload'}</span></td>
       <td style={{fontSize:11}}>{v.contact_email}</td><td><span className="badge badge-gray">{v.payment_terms?.replace('net','Net ')}</span></td>
       {isA&&<td style={{fontWeight:700,color:(v._it||0)>0?'#dc2626':''}}>{(v._it||0)>0?'$'+v._it.toLocaleString():'--'}</td>}
-      <td><span className="badge badge-green">Active</span></td></tr>)}</tbody></table></div></div></>);};
+      <td><span className="badge badge-green">Active</span></td>
+      <td style={{textAlign:'right'}}><button className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();setVM({open:true,v})}}><Icon name="edit" size={12}/></button></td></tr>)}</tbody></table></div></div></>);};
 
   // PRODUCT DETAIL VIEW
   // Store closure deps in a ref so the stable ProductDetail component can access fresh values
@@ -21645,6 +21650,7 @@ export default function App(){
       </div>
     </div></div>}
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars} reps={REPS} supabase={supabase} allCustomers={cust}/>
+    <VendorModal isOpen={vM.open} onClose={()=>setVM({open:false,v:null})} onSave={savV} vendor={vM.v} allVendors={vend}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
     {/* INVENTORY PO CREATE MODAL */}
