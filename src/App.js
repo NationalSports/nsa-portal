@@ -5442,7 +5442,11 @@ export default function App(){
     setInvPOModal({open:true,vendor_id:po.vendor_id,items:po.items.map(it=>({...it})),memo:po.memo||'',expected_date:po.expected_date||'',productSearch:'',editId:po.id});
   };
   const deleteInvPO=(po)=>{
-    if(!window.confirm('Delete PO '+po.po_number+'? This cannot be undone.'))return;
+    const isReceived=po.status==='received'||po.status==='partial';
+    const msg=isReceived
+      ?'Delete PO '+po.po_number+'? This will NOT reverse inventory that was already received — stock will remain adjusted. Continue?'
+      :'Delete PO '+po.po_number+'? This cannot be undone.';
+    if(!window.confirm(msg))return;
     setInvPOs(prev=>prev.filter(p=>p.id!==po.id));
     logChange('deleted','Inventory PO',po.po_number,po.vendor_name);
     nf('PO '+po.po_number+' deleted');
@@ -5537,7 +5541,7 @@ export default function App(){
             <div style={{padding:'10px 16px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',display:'flex',gap:8}}>
               {po.status!=='received'&&po.status!=='cancelled'&&<button className="btn btn-sm btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>setInvPOReceive(po)}>Receive Items</button>}
               {po.status==='ordered'&&<button className="btn btn-sm btn-secondary" onClick={()=>editInvPO(po)}>Edit</button>}
-              {po.status!=='received'&&<button className="btn btn-sm btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>deleteInvPO(po)}>Delete</button>}
+              <button className="btn btn-sm btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>deleteInvPO(po)}>Delete</button>
             </div>
           </div>})}
       </div>}
@@ -13521,8 +13525,9 @@ export default function App(){
       const updatedJobs=currentJobs.map(jj=>{
         if(jj.id!==j.id)return jj;
         const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
-        // Auto-move to production staging when art complete + items received
-        // Jobs stay in 'hold' (Ready for Prod) — warehouse moves them to In Line manually
+        if((newStatus==='art_complete'||newStatus==='production_files_needed')&&upd.art_requests){
+          upd.art_requests=upd.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r);
+        }
         return upd;
       });
       let updArt=safeArt(so);
@@ -13677,7 +13682,7 @@ export default function App(){
                   const ext=j.deco_type==='embroidery'?'.dst':j.deco_type==='screen_print'?'_seps.ai':'.pdf';
                   const fn=(j.art_name||'art').replace(/\s+/g,'_')+'_FINAL'+ext;
                   const updArt=[...safeArt(so)];updArt[afIdx]={...updArt[afIdx],prod_files:[...(updArt[afIdx].prod_files||[]),fn]};
-                  const updJobs=safeJobs(so).map(jj=>{if(jj.id!==j.id)return jj;return{...jj,art_status:'art_complete'}});
+                  const updJobs=safeJobs(so).map(jj=>{if(jj.id!==j.id)return jj;return{...jj,art_status:'art_complete',art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}});
                   savSO({...so,art_files:updArt,jobs:updJobs});
                   nf('Prod files uploaded — Art Complete!');
                 }else{moveArtStatus(j,'art_complete')}
@@ -14054,7 +14059,7 @@ export default function App(){
                           {deco.underbase&&<span style={{fontSize:10,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 6px',borderRadius:3,border:'1px solid #fbbf24'}}>Underbase</span>}
                           {size&&<span style={{fontSize:11,color:'#64748b',fontWeight:600}}>{size}</span>}
                           <span style={{fontSize:11,color:'#94a3b8'}}>—</span>
-                          {Array.isArray(posColors)&&posColors.length>0?<div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{posColors.map((cl,ci)=>{const clStr=String(cl||'');const sw=colorMap[clStr]||Object.entries(colorMap).find(([k])=>clStr.toLowerCase().includes(k.toLowerCase()))?.[1]||null;return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}><span style={{width:10,height:10,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{clStr}</span>})}</div>
+                          {Array.isArray(posColors)&&posColors.length>0?<div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{posColors.map((cl,ci)=>{const clStr=String(cl||'');const sw=colorMap[clStr]||Object.entries(colorMap).find(([k])=>clStr.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(clStr)||null;return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}><span style={{width:10,height:10,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{clStr}</span>})}</div>
                           :<span style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No colors</span>}
                         </div>;})}
                       {numDecos.map((nd,ni)=><div key={'n'+ni} style={{padding:'5px 0',borderTop:'1px solid #e9ecef'}}>
@@ -14554,7 +14559,7 @@ export default function App(){
                               {editPosColors.length>1&&<button style={{background:'none',border:'none',color:'#dc2626',fontSize:12,cursor:'pointer',padding:'0 2px'}} onClick={()=>{const upd={...artJobDetailEditColors};upd[_gk]={...upd[_gk]};upd[_gk][pos]=editPosColors.slice(0,-1);setArtJobDetailEditColors(upd);}}>x</button>}
                             </div>
                             :Array.isArray(posColors)&&posColors.length>0?<div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
-                              {posColors.map((cl,ci)=>{const clStr=String(cl||'');const sw=colorMap[clStr]||Object.entries(colorMap).find(([k])=>clStr.toLowerCase().includes(k.toLowerCase()))?.[1]||null;return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}><span style={{width:11,height:11,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{clStr}</span>;})}
+                              {posColors.map((cl,ci)=>{const clStr=String(cl||'');const sw=colorMap[clStr]||Object.entries(colorMap).find(([k])=>clStr.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(clStr)||null;return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}><span style={{width:11,height:11,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{clStr}</span>;})}
                             </div>
                             :<span style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No colors</span>}
                           </div>
@@ -14717,7 +14722,7 @@ export default function App(){
                             }}>×</button>}
                           </div>
                           :posColors.length>0?<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-                            {posColors.map((cl,ci)=>{const sw=colorMap[cl]||Object.entries(colorMap).find(([k])=>cl.toLowerCase().includes(k.toLowerCase()))?.[1]||null;
+                            {posColors.map((cl,ci)=>{const sw=colorMap[cl]||Object.entries(colorMap).find(([k])=>cl.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
                               return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700,color:'#0f172a'}}>
                                 <span style={{width:12,height:12,borderRadius:3,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{cl}
                               </span>})}
