@@ -1878,7 +1878,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {isSO&&(item.po_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
           {safePOs(item).map((po,pi)=>{
             const rcvd=po.received||{};const cncl=po.cancelled||{};const blld=po.billed||{};const isDS=!!po.drop_ship;
-            const szKeysAll=Object.keys(po).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='drop_ship'&&typeof po[k]==='number');
+            const szKeysAll=Object.keys(po).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','notes','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof po[k]==='number');
             const totalOrd=szKeysAll.reduce((a,sz)=>a+(po[sz]||0),0);
             const totalRcvd=szKeysAll.reduce((a,sz)=>a+(rcvd[sz]||0),0);
             const totalBlld=szKeysAll.reduce((a,sz)=>a+((blld[sz]||0)),0);
@@ -5878,7 +5878,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const itemTotal=qty*it.unit_sell;
           allPickIds.push({id:pk.pick_id,status:pk.status||'pick',qty,lineIdx:i,pickIdx:pi,sku:it.sku,name:it.name,color:it.color,total:itemTotal,created_at:pk.created_at,memo:pk.memo})}});
         safePOs(it).forEach((po,pi)=>{if(po.po_id){
-          const szKeysP=Object.keys(po).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='created_at'&&k!=='memo'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='drop_ship'&&typeof po[k]==='number');
+          const szKeysP=Object.keys(po).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','notes','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof po[k]==='number');
           const qty=szKeysP.reduce((a,sz)=>a+(po[sz]||0),0);
           const rcvdQty=szKeysP.reduce((a,sz)=>a+((po.received||{})[sz]||0),0);
           const openQty=szKeysP.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);
