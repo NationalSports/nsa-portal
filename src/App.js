@@ -13444,19 +13444,19 @@ export default function App(){
       const openDetails=()=>{setArtJobDetailModal(j);setArtJobDetailMsg('');setArtJobDetailEditColors(null);setArtJobDetailApprovalMsg('')};
       return<div key={cardKey} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
         {/* COMPACT HEADER — always visible. Click toggles expand. */}
-        <div style={{padding:'8px 10px',cursor:'pointer'}} onClick={()=>setExpandedArtCard(isExp?null:cardKey)}>
-          <div style={{display:'flex',alignItems:'center',gap:4,marginBottom:4}}>
-            <span style={{fontSize:12,fontWeight:800,color:'#0f172a',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.customer}</span>
-            {urgent&&<span style={{fontSize:9,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 5px',borderRadius:3}}>🔥 {j.daysOut}d</span>}
-            {j.daysOut!=null&&!urgent&&j.daysOut<=14&&<span style={{fontSize:9,color:'#92400e'}}>{j.daysOut}d</span>}
+        <div style={{padding:'8px 10px',cursor:'pointer',minWidth:0}} onClick={()=>setExpandedArtCard(isExp?null:cardKey)}>
+          <div style={{display:'flex',alignItems:'center',gap:4,marginBottom:4,minWidth:0}}>
+            <span style={{fontSize:12,fontWeight:800,color:'#0f172a',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.customer}</span>
+            {urgent&&<span style={{fontSize:9,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 5px',borderRadius:3,flexShrink:0}}>🔥 {j.daysOut}d</span>}
+            {j.daysOut!=null&&!urgent&&j.daysOut<=14&&<span style={{fontSize:9,color:'#92400e',flexShrink:0}}>{j.daysOut}d</span>}
           </div>
-          <div style={{display:'flex',gap:5,alignItems:'center',marginBottom:2}}>
-            <span style={{fontSize:11,fontWeight:600,color:'#475569',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.art_name}</span>
-            {af&&(()=>{const fSt=af.status==='uploaded'?'needs_approval':af.status||'waiting_for_art';return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
+          <div style={{display:'flex',gap:5,alignItems:'center',marginBottom:2,minWidth:0}}>
+            <span style={{fontSize:11,fontWeight:600,color:'#475569',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.art_name}</span>
+            {af&&(()=>{const fSt=af.status==='uploaded'?'needs_approval':af.status||'waiting_for_art';return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
           </div>
-          <div style={{display:'flex',alignItems:'center',gap:4}}>
-            <span style={{fontSize:10,color:'#64748b',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.soId} · {j.total_units}u · {j.rep}</span>
-            <span style={{fontSize:10,color:'#94a3b8',transition:'transform 0.15s',transform:isExp?'rotate(180deg)':'rotate(0deg)'}}>▾</span>
+          <div style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
+            <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.soId} · {j.total_units}u · {j.rep}</span>
+            <span style={{fontSize:10,color:'#94a3b8',transition:'transform 0.15s',transform:isExp?'rotate(180deg)':'rotate(0deg)',flexShrink:0}}>▾</span>
           </div>
         </div>
         {/* EXPANDED — full details + actions. Collapsed by default, mirrors production board UX. */}
@@ -13629,7 +13629,7 @@ export default function App(){
           {artistCols.map(c=><div key={c.id} className="stat-card"><div className="stat-label">{c.label}</div><div className="stat-value" style={{color:c.color}}>{artistCounts[c.id]}</div></div>)}
           <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value">{artistJobs.length+inProductionJobs.length}</div></div>
         </div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,alignItems:'flex-start'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:10,alignItems:'flex-start'}}>
           {artistCols.map(col=>{
             const colJobs=col.id==='in_production'?inProductionJobs.sort((a,b)=>{
               if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;
