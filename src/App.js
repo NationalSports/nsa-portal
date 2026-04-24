@@ -3725,7 +3725,7 @@ export default function App(){
 
   // Shared data builder for warehouse + deco + dashboard pages
   function buildWarehouseData(){
-    const pullTasks=[];const shipTasks=[];const decoTasks=[];
+    const pullTasks=[];const shipTasks=[];const decoTasks=[];const deliverTasks=[];
     sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
@@ -3761,7 +3761,10 @@ export default function App(){
           const dest=picks.find(p=>p.ship_dest)?.ship_dest||'in_house';
           const pref=so.ship_preference||'ship_as_ready';
           const shipDateOk=pref!=='ship_on_date'||!so.ship_on_date||(new Date(so.ship_on_date)<=new Date());
-          if(pref!=='rep_delivery'&&pref!=='wait_complete'&&shipDateOk){
+          if(pref==='warehouse_delivery'){
+            deliverTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
+              desc:item.sku+' · '+item.name,units:totalOrdered,shipPref:pref});
+          } else if(pref!=='rep_delivery'&&pref!=='wait_complete'&&shipDateOk){
             shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
               desc:item.sku+' · '+item.name,units:totalOrdered,shipMethod:dest,shipPref:pref});
           }
@@ -3790,6 +3793,9 @@ export default function App(){
             const allSiblingsDone=siblingJobs.every(j2=>j2.prod_status==='completed'||j2.prod_status==='shipped');
             if(!allSiblingsDone){
               // Sibling jobs still in progress — this item stays in production queue, not ready to ship
+            } else if(shipPref==='warehouse_delivery'){
+              deliverTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
+                desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,shipPref});
             } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
               shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
                 desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,
@@ -3840,7 +3846,7 @@ export default function App(){
     });
     const sortU=(a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(a.daysOut||999)-(b.daysOut||999)};
     dedupPull.sort(sortU);shipTasks.sort(sortU);decoTasks.sort(sortU);
-    return{pullTasks:dedupPull,shipTasks,decoTasks};
+    return{pullTasks:dedupPull,shipTasks,decoTasks,deliverTasks};
   };
 
   // Helper: get rep ID for a customer (from customer.primary_rep_id or SO created_by)
@@ -11014,7 +11020,7 @@ export default function App(){
   }
 
   function rWarehouse(){
-    const{pullTasks,shipTasks,decoTasks}=buildWarehouseData();
+    const{pullTasks,shipTasks,decoTasks,deliverTasks}=buildWarehouseData();
     const filt=(arr)=>arr.filter(t=>{
       if(whRepF!=='all'&&t.so?.created_by!==whRepF)return false;
       if(whSearch){const s=whSearch.toLowerCase();
@@ -11023,19 +11029,20 @@ export default function App(){
           !(t.artName||'').toLowerCase().includes(s))return false}
       return true;
     });
-    const fPull=filt(pullTasks);const fShip=filt(shipTasks);
+    const fPull=filt(pullTasks);const fShip=filt(shipTasks);const fDeliver=filt(deliverTasks);
     const readyForDeco=decoTasks.filter(t=>t.isReady&&(t.prodStatus==='hold'||t.prodStatus==='draft')&&t.prodStatus!=='ready');const fDeco=filt(readyForDeco);
     const openStockPOs=invPOs.filter(p=>p.status!=='received'&&p.status!=='cancelled');
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)c++})});return c})();
     const tabs=[
-      {id:'receive',label:'📱 Scan to Receive',count:0,color:'#2563eb'},
-      {id:'pull',label:'📋 Item Fulfillment',count:fPull.length,color:'#d97706'},
-      {id:'deco',label:'🎨 Ready for Deco',count:fDeco.length,color:'#7c3aed'},
-      {id:'ship',label:'📦 Ready to Ship',count:fShip.length,color:'#166534'},
-      {id:'pickup',label:'🚚 Awaiting Pickup',count:awaitingPickupCount,color:'#d97706'},
-      {id:'stockpo',label:'📋 Stock POs',count:openStockPOs.length,color:'#6366f1'},
-      {id:'recent',label:'🕐 Recent Actions',count:whRecentActions.filter(a=>(a.ts||0)>=Date.now()-7*86400000).length,color:'#475569'},
+      {id:'receive',label:'Scan to Receive',icon:'📱',count:0,color:'#2563eb'},
+      {id:'pull',label:'Item Fulfillment',icon:'📋',count:fPull.length,color:'#d97706'},
+      {id:'deco',label:'Ready for Deco',icon:'🎨',count:fDeco.length,color:'#7c3aed'},
+      {id:'ship',label:'Ready to Ship',icon:'📦',count:fShip.length,color:'#166534'},
+      {id:'deliver',label:'Deliver',icon:'🚚',count:fDeliver.length,color:'#d97706'},
+      {id:'pickup',label:'Awaiting Pickup',icon:'🚚',count:awaitingPickupCount,color:'#d97706'},
+      {id:'stockpo',label:'Stock POs',icon:'📋',count:openStockPOs.length,color:'#6366f1'},
+      {id:'recent',label:'Recent Actions',icon:'🕐',count:whRecentActions.filter(a=>(a.ts||0)>=Date.now()-7*86400000).length,color:'#475569'},
     ];
 
     return(<>
@@ -11391,6 +11398,21 @@ export default function App(){
         </div>
       </div>
 
+      {/* Portal cards — click to switch view */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10,marginBottom:14}}>
+        {tabs.map(t=>{const active=whTab===t.id;
+          return<button key={t.id} onClick={()=>setWhTab(t.id)}
+            style={{padding:'14px 12px',borderRadius:10,border:active?'2px solid '+t.color:'1px solid #e2e8f0',
+              background:active?t.color:'#fff',color:active?'#fff':'#0f172a',cursor:'pointer',
+              boxShadow:active?'0 4px 12px rgba(0,0,0,0.12)':'0 1px 2px rgba(0,0,0,0.04)',
+              display:'flex',flexDirection:'column',alignItems:'center',gap:4,transition:'all 0.15s',
+              borderLeft:active?'2px solid '+t.color:'4px solid '+t.color}}>
+            <div style={{fontSize:22,lineHeight:1}}>{t.icon}</div>
+            <div style={{fontSize:28,fontWeight:900,lineHeight:1,color:active?'#fff':t.color}}>{t.count}</div>
+            <div style={{fontSize:11,fontWeight:700,textAlign:'center',opacity:active?0.95:0.8}}>{t.label}</div>
+          </button>})}
+      </div>
+
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
         <input className="form-input" placeholder="Search SO#, customer, SKU..." value={whSearch}
@@ -11400,11 +11422,6 @@ export default function App(){
         </select>
         <button className="btn btn-sm" style={{fontSize:10,background:'#92400e',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
           onClick={()=>setManualShipModal({soSearch:'',so:null,cust:null,carrier:'fedex',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}>⚡ Manual Ship</button>
-        <div style={{display:'flex',gap:2,marginLeft:'auto'}}>
-          {tabs.map(t=><button key={t.id} className={`btn btn-sm ${whTab===t.id?'btn-primary':'btn-secondary'}`}
-            style={{background:whTab===t.id?t.color:'',borderColor:whTab===t.id?t.color:''}}
-            onClick={()=>setWhTab(t.id)}>{t.label} ({t.count})</button>)}
-        </div>
       </div>
 
       {/* ── SCAN TO RECEIVE ── */}
@@ -12921,6 +12938,39 @@ export default function App(){
           </>}
         </div>
       </div></div>}
+
+      {/* ── DELIVER TAB — Warehouse delivers directly ── */}
+      {whTab==='deliver'&&<>
+        {fDeliver.length===0?<div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'#64748b'}}>
+          <div style={{fontSize:36,marginBottom:8}}>🚚</div>
+          <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>No deliveries ready</div>
+          <div style={{fontSize:12}}>Orders with Ship Preference set to <strong>🚚 Deliver</strong> will appear here once production is complete.</div>
+        </div></div>
+        :<div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {fDeliver.map((t,ti)=>{
+            const c=cust.find(x=>x.id===t.so.customer_id);
+            const addr=c?getAddrs(c,cust)?.[0]:null;
+            return<div key={ti} className="card" style={{borderLeft:'4px solid #d97706',cursor:'pointer'}}
+              onClick={()=>{setESO(t.so);setESOC(c);setPg('orders')}}>
+              <div style={{padding:'12px 16px',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+                <div style={{flex:1,minWidth:200}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                    <span style={{fontSize:14,fontWeight:800,color:'#1e40af'}}>{t.soId}</span>
+                    <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{t.cName}</span>
+                    {t.urgent&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fee2e2',color:'#dc2626',fontWeight:700}}>🔥 Rush — {t.daysOut}d</span>}
+                    <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fef3c7',color:'#92400e',fontWeight:700}}>{t.units} units</span>
+                  </div>
+                  <div style={{fontSize:12,color:'#475569'}}>{t.desc}</div>
+                  {addr&&<div style={{fontSize:11,color:'#64748b',marginTop:4}}>📍 {addr.addr}</div>}
+                </div>
+                <div style={{fontSize:11,color:'#64748b',textAlign:'right'}}>
+                  <div>Rep: <strong>{t.rep}</strong></div>
+                  {t.daysOut!=null&&<div>{t.daysOut>=0?'Due in '+t.daysOut+'d':Math.abs(t.daysOut)+'d overdue'}</div>}
+                </div>
+              </div>
+            </div>})}
+        </div>}
+      </>}
 
       {/* ── AWAITING PICKUP TAB ── */}
       {whTab==='pickup'&&<>

@@ -1734,7 +1734,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div>
           <label className="form-label" style={{fontSize:11}}>Ship Preference</label>
           <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
-            {[{v:'ship_as_ready',l:'Ship as Ready',icon:'📦',desc:'Each IF/job ships as completed'},{v:'wait_complete',l:'Wait to Ship Complete',icon:'⏳',desc:'Wait for entire order to complete'},{v:'rep_delivery',l:'Rep Delivery',icon:'🚗',desc:'Rep delivers when jobs complete'},{v:'ship_on_date',l:'Ship on Date',icon:'📅',desc:'Hold until specific date'}].map(sp=>{
+            {[{v:'ship_as_ready',l:'Ship as Ready',icon:'📦',desc:'Each IF/job ships as completed'},{v:'wait_complete',l:'Wait to Ship Complete',icon:'⏳',desc:'Wait for entire order to complete'},{v:'rep_delivery',l:'Rep Delivery',icon:'🚗',desc:'Rep delivers when jobs complete'},{v:'warehouse_delivery',l:'Deliver',icon:'🚚',desc:'Warehouse delivers when jobs complete'},{v:'ship_on_date',l:'Ship on Date',icon:'📅',desc:'Hold until specific date'}].map(sp=>{
               const cur=(o.ship_preference||'ship_as_ready')===sp.v;
               return<button key={sp.v} className={`btn btn-sm ${cur?'btn-primary':'btn-secondary'}`}
                 style={{fontSize:10,padding:'3px 8px',whiteSpace:'nowrap'}} title={sp.desc}
