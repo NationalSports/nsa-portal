@@ -664,8 +664,42 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       </div>
       <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setCustArtDetail(null)}>Close</button></div>
     </div></div>})()}
-  {tab==='reporting'&&<div className="card"><div className="card-header"><h2>Reporting</h2><div style={{display:'flex',gap:4}}>{[['thisyear','This Year'],['lastyear','Last Year'],['rolling','Rolling 12'],['alltime','All']].map(([v,l])=><button key={v} className={`btn btn-sm ${rR===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRR(v)}>{l}</button>)}</div></div>
-    <div className="card-body"><div className="stats-row"><div className="stat-card"><div className="stat-label">Revenue</div><div className="stat-value">{rR==='thisyear'?'$15,600':'$32,600'}</div></div><div className="stat-card"><div className="stat-label">Orders</div><div className="stat-value">{rR==='thisyear'?'4':'8'}</div></div><div className="stat-card"><div className="stat-label">Avg Order</div><div className="stat-value">{rR==='thisyear'?'$3,900':'$4,075'}</div></div></div></div></div>}
+  {tab==='reporting'&&(()=>{
+    // Pull every invoice-type row out of allOrders for this customer (or parent+subs).
+    // allOrders already merges portal invs with NetSuite hist_invoices, so hist rows
+    // (marked _hist) report revenue and dates here even though they carry no items/margin.
+    const allInvs=allOrders.filter(o=>ids.includes(o.customer_id)&&o.type==='invoice');
+    const now=new Date();const curY=now.getFullYear();
+    // Tolerate MM/DD/YY, ISO YYYY-MM-DD, or anything Date can parse.
+    const pd=ds=>{if(!ds)return null;const m=String(ds).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+      if(m){let y=parseInt(m[3]);if(y<100)y+=2000;const d=new Date(y,parseInt(m[1])-1,parseInt(m[2]));return isNaN(d)?null:d}
+      const d2=new Date(ds);return isNaN(d2)?null:d2};
+    const inRange=(inv)=>{const d=pd(inv.date);if(!d&&rR!=='alltime')return false;
+      if(rR==='thisyear')return d.getFullYear()===curY;
+      if(rR==='lastyear')return d.getFullYear()===curY-1;
+      if(rR==='rolling'){const cutoff=new Date(now);cutoff.setFullYear(cutoff.getFullYear()-1);return d>=cutoff}
+      return true};
+    const filt=allInvs.filter(inRange);
+    const rev=filt.reduce((a,i)=>a+(Number(i.total)||0),0);
+    const count=filt.length;
+    const avg=count>0?Math.round(rev/count):0;
+    const dates=filt.map(i=>pd(i.date)).filter(Boolean).sort((a,b)=>a-b);
+    const first=dates[0];const last=dates[dates.length-1];
+    const fmt=n=>'$'+Math.round(n).toLocaleString();
+    const fmtD=d=>d?d.toISOString().slice(0,10):'—';
+    const histCount=filt.filter(i=>i._hist).length;
+    return<div className="card"><div className="card-header"><h2>Reporting</h2><div style={{display:'flex',gap:4}}>{[['thisyear','This Year'],['lastyear','Last Year'],['rolling','Rolling 12'],['alltime','All']].map(([v,l])=><button key={v} className={`btn btn-sm ${rR===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRR(v)}>{l}</button>)}</div></div>
+      <div className="card-body">
+        <div className="stats-row">
+          <div className="stat-card"><div className="stat-label">Revenue</div><div className="stat-value">{fmt(rev)}</div></div>
+          <div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{count}</div></div>
+          <div className="stat-card"><div className="stat-label">Avg Invoice</div><div className="stat-value">{fmt(avg)}</div></div>
+          <div className="stat-card"><div className="stat-label">First → Last</div><div className="stat-value" style={{fontSize:13}}>{fmtD(first)} → {fmtD(last)}</div></div>
+        </div>
+        {histCount>0&&<div style={{fontSize:10,color:'#94a3b8',marginTop:8}}>Includes {histCount} NetSuite historical invoice{histCount===1?'':'s'} (revenue and dates only — no line items).</div>}
+      </div>
+    </div>;
+  })()}
 
   {/* EMAIL INVOICE MODAL */}
   {showInvEmail&&(()=>{
