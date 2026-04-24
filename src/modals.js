@@ -277,7 +277,7 @@ function AddressAutocomplete({value,onChange,onPlaceSelect,placeholder,style,cla
   return <input ref={inputRef} className={className||'form-input'} placeholder={placeholder||'Street'} value={value} onChange={e=>onChange(e.target.value)} style={style}/>;
 }
 
-function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase}){
+function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCustomers}){
   const b={parent_id:null,name:'',alpha_tag:'',contacts:[{name:'',email:'',phone:'',role:'Head Coach'}],shipping_city:'',shipping_state:'',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',tax_exempt:false,tax_rate:0};
   const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});const[tcLook,setTcLook]=useState({loading:false,msg:''});
   const doTcLookup=async(fields)=>{if(!supabase||!fields.shipping_state||!fields.shipping_zip)return null;try{return await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:fields.shipping_address_line1||'',city:fields.shipping_city||'',state:fields.shipping_state,zip5:fields.shipping_zip})}catch(e){return{ok:false,error:'Error: '+e.message}}};
@@ -294,7 +294,16 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase}){
   const addC=()=>sv('contacts',[...(f.contacts||[]),{name:'',email:'',phone:'',role:'Head Coach'}]);const rmC=i=>sv('contacts',(f.contacts||[]).filter((_,x)=>x!==i));
   const upC=(i,k,v)=>sv('contacts',(f.contacts||[]).map((c,x)=>x===i?{...c,[k]:v}:c));
   const[valMsg,setValMsg]=useState('');
-  const ok=()=>{const e={};if(!f.name)e.n=1;if(!f.alpha_tag)e.a=1;if(!f.shipping_city)e.c=1;if(!f.shipping_state)e.s=1;if(ct==='sub'&&!f.parent_id)e.p=1;if(!(f.contacts||[])[0]?.name)e.cn=1;if(!(f.contacts||[])[0]?.email)e.ce=1;setErr(e);const missing=[];if(e.n)missing.push('Name');if(e.a)missing.push('Alpha Tag');if(e.c)missing.push('City');if(e.s)missing.push('State');if(e.p)missing.push('Parent');if(e.cn)missing.push('Contact Name');if(e.ce)missing.push('Contact Email');if(missing.length)setValMsg('Missing: '+missing.join(', '));else setValMsg('');return!missing.length};
+  const ok=()=>{const e={};if(!f.name)e.n=1;if(!f.alpha_tag)e.a=1;if(!f.shipping_city)e.c=1;if(!f.shipping_state)e.s=1;if(ct==='sub'&&!f.parent_id)e.p=1;if(!(f.contacts||[])[0]?.name)e.cn=1;if(!(f.contacts||[])[0]?.email)e.ce=1;
+    // Alpha tag must be unique — it's the portal URL identifier.
+    const dupTag=f.alpha_tag&&(allCustomers||[]).find(c=>c.id!==f.id&&(c.alpha_tag||'').trim().toLowerCase()===f.alpha_tag.trim().toLowerCase());
+    if(dupTag)e.a=1;
+    setErr(e);const missing=[];if(e.n)missing.push('Name');if(e.a&&!dupTag)missing.push('Alpha Tag');if(e.c)missing.push('City');if(e.s)missing.push('State');if(e.p)missing.push('Parent');if(e.cn)missing.push('Contact Name');if(e.ce)missing.push('Contact Email');
+    if(dupTag)setValMsg('Alpha Tag "'+f.alpha_tag+'" is already used by '+dupTag.name+'. Alpha tags must be unique — they identify the customer portal.');
+    else if(missing.length)setValMsg('Missing: '+missing.join(', '));
+    else setValMsg('');
+    return!missing.length&&!dupTag;
+  };
   const _isDirty=()=>_initRef.current!==null&&JSON.stringify(f)!==_initRef.current;
   const safeClose=()=>{if(_isDirty()){if(!window.confirm('You have unsaved changes. Discard?'))return}onClose()};
   if(!isOpen)return null;
