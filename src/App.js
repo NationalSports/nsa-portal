@@ -1353,20 +1353,24 @@ const parseNetSuitePdf=(text,docType,products)=>{
       if(!line.trim()||isPageBreak(line)||isRepeatedHeader(line)||isMetadataLine(line)){i++;continue}
 
       if(isItemLine(line)){
-        // This is a data line (qty/sku/rate/amount) — next non-empty line is description
-        let descLine='';
+        // This is a data line (qty/sku/rate/amount). Collect description from all
+        // non-item lines that follow (shoes often split sizes across multiple lines).
+        const descLines=[];
         let nextIdx=i+1;
-        // Skip page breaks/headers between data line and description
-        while(nextIdx<lines.length&&(isPageBreak(lines[nextIdx])||isRepeatedHeader(lines[nextIdx])||!lines[nextIdx].trim()))nextIdx++;
-        if(nextIdx<lines.length&&!isItemLine(lines[nextIdx])&&!isEndMarker(lines[nextIdx])){
-          descLine=lines[nextIdx];
-          i=nextIdx+1;
-        } else {i++}
-        itemPairs.push({dataLine:line,descLine});
+        while(nextIdx<lines.length){
+          const nl=lines[nextIdx];
+          if(isPageBreak(nl)||isRepeatedHeader(nl)||!nl.trim()){nextIdx++;continue}
+          if(isItemLine(nl)||isEndMarker(nl)||isMetadataLine(nl))break;
+          descLines.push(nl);
+          nextIdx++;
+        }
+        i=descLines.length>0?nextIdx:i+1;
+        itemPairs.push({dataLine:line,descLine:descLines.join(' ')});
       } else {
-        // Standalone description line (might be continuation or orphan)
-        if(itemPairs.length>0&&!itemPairs[itemPairs.length-1].descLine){
-          itemPairs[itemPairs.length-1].descLine=line;
+        // Standalone description line (continuation or orphan) — append
+        if(itemPairs.length>0){
+          const last=itemPairs[itemPairs.length-1];
+          last.descLine=last.descLine?last.descLine+' '+line:line;
         }
         i++;
       }
@@ -1501,8 +1505,9 @@ const parseNetSuitePdf=(text,docType,products)=>{
         const numSizeRe=/(\d+)\s*\/\s*(\d{1,2}(?:\.\d)?)(?![\d.])/g;
         let nm;while((nm=numSizeRe.exec(description)))sizes[nm[2]]=(sizes[nm[2]]||0)+parseInt(nm[1]);
       }
-      if(Object.keys(sizes).length===0)sizes['OSFA']=qty;
-      result.lineItems.push({sku:baseSku||'MISC',description:productName||description,color,quantity:qty,rate,amount,isDecoration:false,sizes,raw:dataLine});
+      const sizesUnknown=Object.keys(sizes).length===0;
+      if(sizesUnknown)sizes['OSFA']=qty;
+      result.lineItems.push({sku:baseSku||'MISC',description:productName||description,color,quantity:qty,rate,amount,isDecoration:false,sizes,_sizesUnknown:sizesUnknown,raw:dataLine});
     }
   });
 
@@ -16781,7 +16786,14 @@ export default function App(){
                 const pdfItems=imp.pdfParsed.lineItems.map((li,idx)=>{
                   const baseSku=li.sku;
                   const catMatch=prod.find(p=>p.sku===baseSku)||(baseSku.length>3?prod.find(p=>p.sku.toLowerCase()===baseSku.toLowerCase()):null)||(baseSku.length>3?prod.find(p=>_skuNorm(p.sku)===_skuNorm(baseSku)):null);
-                  const sizes=li.sizes&&Object.keys(li.sizes).length>0?li.sizes:{OSFA:li.quantity};
+                  let sizes=li.sizes&&Object.keys(li.sizes).length>0?li.sizes:{OSFA:li.quantity};
+                  // Footwear with unknown sizes: swap OSFA for blank shoe-size grid
+                  if(catMatch?.category==='Footwear'&&li._sizesUnknown){
+                    const shoeSz=(catMatch.available_sizes||[]).filter(s=>/^\d{1,2}(\.\d)?$/.test(s));
+                    const grid={};
+                    (shoeSz.length>0?shoeSz:['7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','13']).forEach(s=>{grid[s]=0});
+                    sizes=grid;
+                  }
 
                   let brand=catMatch?.brand||'';
                   if(!brand){
@@ -16810,7 +16822,8 @@ export default function App(){
                     is_decoration:li.isDecoration||false,
                     decoType:li.decoType||null,
                     decoColors:li.colors||1,
-                    issues:catMatch?[]:['Not in catalog — create product or match manually'],
+                    _sizesUnknown:li._sizesUnknown||false,
+                    issues:[...(catMatch?[]:['Not in catalog — create product or match manually']),...(li._sizesUnknown&&catMatch?.category==='Footwear'?['⚠️ Sizes need to be entered manually']:[])],
                     _pdfRaw:li.raw
                   };
                 });
@@ -17084,23 +17097,25 @@ export default function App(){
                   const costMult=it.brand==='Adidas'?0.375:(it.brand==='Under Armour'||it.brand==='New Balance')?0.425:0;
                   const adiRetailDiv=0.6;// Adidas contract: always 40% off MSRP
                   const retail=it._retail!=null?it._retail:(it.brand==='Adidas'?rQ(sell/adiRetailDiv):au?rQ(sell/(1-disc)):0);
-                  const cost=au?rQ(retail*costMult):rQ(sell/mk);const szKeys=Object.keys(it.sizes||{});
+                  const cost=au?rQ(retail*costMult):rQ(sell/mk);
                   const itemName=it._name!=null?it._name:(it.catMatch?.name||it.name);
                   const itemColor=it._color!=null?it._color:(it.color||it.catMatch?.color||'');
                   // Always include standard sizes S-2XL so the size grid shows all columns
                   const STD_SZ=['S','M','L','XL','2XL'];
                   const isFootwear=it.catMatch?.category==='Footwear';
                   const catalogShoeSizes=isFootwear?(it.catMatch?.available_sizes||[]).filter(s=>/^\d{1,2}(\.\d)?$/.test(s)):[];
-                  const mergedSizes={...it.sizes||{}};
+                  // For footwear, strip OSFA from the parsed sizes — we only want real shoe sizes
+                  const rawSizes={...it.sizes||{}};
+                  if(isFootwear)delete rawSizes['OSFA'];
+                  const mergedSizes={...rawSizes};
+                  const szKeys=Object.keys(rawSizes);
                   const hasApparel=szKeys.some(s=>STD_SZ.includes(s)||SZ_ORD.slice(0,6).includes(s));
                   const hasNumeric=szKeys.some(s=>/^\d{1,2}(\.\d)?$/.test(s));
                   if(isFootwear){
-                    // Footwear: use shoe sizes from catalog, never OSFA
+                    // Footwear: build size grid from catalog sizes (or common fallback). Never OSFA.
                     if(catalogShoeSizes.length>0)catalogShoeSizes.forEach(s=>{if(!(s in mergedSizes))mergedSizes[s]=0});
-                    // If no sizes parsed and no catalog sizes, fall back to common shoe sizes
                     if(Object.keys(mergedSizes).length===0){['7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','13'].forEach(s=>{mergedSizes[s]=0})}
-                    // Dump untracked qty into first size so it's not lost
-                    if(it.totalQty>0&&Object.values(mergedSizes).every(v=>!v)){const k=Object.keys(mergedSizes)[0];mergedSizes[k]=it.totalQty}
+                    // If sizes couldn't be parsed, leave qtys blank so rep fills them in
                   } else if(hasApparel||(szKeys.length===0&&!hasNumeric)){
                     STD_SZ.forEach(s=>{if(!(s in mergedSizes))mergedSizes[s]=0})
                   }
