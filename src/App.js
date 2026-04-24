@@ -5664,6 +5664,7 @@ export default function App(){
   const[artJobDetailUploading,setArtJobDetailUploading]=useState(false);// upload in-progress flag
   const[artProdAssignModal,setArtProdAssignModal]=useState(null);// {files:File[], assignments:{[idx]:artId}} — per-file art picker for multi-art jobs
   React.useEffect(()=>{if(!artJobDetailModal)setArtProdAssignModal(null)},[artJobDetailModal]);
+  const[expandedArtCard,setExpandedArtCard]=useState(null);// key of the art kanban card currently expanded (null = all collapsed)
   const[artJobDetailEditColors,setArtJobDetailEditColors]=useState(null);// editing color string or null
   const[artJobDetailEditSize,setArtJobDetailEditSize]=useState(null);// editing art size string or null
   // Helper: build product search URL — uses Google Images to find the product
@@ -13438,18 +13439,28 @@ export default function App(){
       const urgent=j.daysOut!=null&&j.daysOut<=3;
       const artist=REPS.find(r=>r.id===j.assigned_artist);
       const af=j.artFile;
-      return<div key={j.id+j.soId+view} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',cursor:'pointer'}} onClick={()=>{setArtJobDetailModal(j);setArtJobDetailMsg('');setArtJobDetailEditColors(null);setArtJobDetailApprovalMsg('')}}>
-        <div style={{padding:'8px 10px'}}>
+      const cardKey=j.id+j.soId+view;
+      const isExp=expandedArtCard===cardKey;
+      const openDetails=()=>{setArtJobDetailModal(j);setArtJobDetailMsg('');setArtJobDetailEditColors(null);setArtJobDetailApprovalMsg('')};
+      return<div key={cardKey} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+        {/* COMPACT HEADER — always visible. Click toggles expand. */}
+        <div style={{padding:'8px 10px',cursor:'pointer'}} onClick={()=>setExpandedArtCard(isExp?null:cardKey)}>
           <div style={{display:'flex',alignItems:'center',gap:4,marginBottom:4}}>
             <span style={{fontSize:12,fontWeight:800,color:'#0f172a',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.customer}</span>
             {urgent&&<span style={{fontSize:9,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 5px',borderRadius:3}}>🔥 {j.daysOut}d</span>}
             {j.daysOut!=null&&!urgent&&j.daysOut<=14&&<span style={{fontSize:9,color:'#92400e'}}>{j.daysOut}d</span>}
           </div>
           <div style={{display:'flex',gap:5,alignItems:'center',marginBottom:2}}>
-            <span style={{fontSize:11,fontWeight:600,color:'#475569'}}>{j.art_name}</span>
+            <span style={{fontSize:11,fontWeight:600,color:'#475569',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.art_name}</span>
             {af&&(()=>{const fSt=af.status==='uploaded'?'needs_approval':af.status||'waiting_for_art';return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
           </div>
-          <div style={{fontSize:10,color:'#64748b',marginBottom:4}}>{j.deco_type?.replace(/_/g,' ')} · {j.soId} · {j.total_units}u</div>
+          <div style={{display:'flex',alignItems:'center',gap:4}}>
+            <span style={{fontSize:10,color:'#64748b',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.soId} · {j.total_units}u · {j.rep}</span>
+            <span style={{fontSize:10,color:'#94a3b8',transition:'transform 0.15s',transform:isExp?'rotate(180deg)':'rotate(0deg)'}}>▾</span>
+          </div>
+        </div>
+        {/* EXPANDED — full details + actions. Collapsed by default, mirrors production board UX. */}
+        {isExp&&<div style={{padding:'6px 10px 10px',borderTop:'1px solid #e2e8f0'}}>
           {af&&(()=>{const genMocks=(af.mockup_files||af.files||[]).length;const itemMocks=Object.values(af.item_mockups||{}).reduce((a,arr)=>a+(arr||[]).length,0);const totalMocks=Math.max(genMocks,itemMocks);
             return<div style={{marginBottom:4}}>
             {totalMocks>0&&<div style={{fontSize:9,color:'#166534',fontWeight:700,padding:'1px 5px',background:'#dcfce7',borderRadius:3,display:'inline-block',marginBottom:2}}>{totalMocks} mockup{totalMocks!==1?'s':''} uploaded</div>}
@@ -13539,7 +13550,8 @@ export default function App(){
               <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();window.open(window.location.origin+window.location.pathname+'?so='+j.soId,'_blank')}}>Open SO ↗</button>
             </div>
           </>}
-        </div>
+          <button className="btn btn-sm" style={{fontSize:10,padding:'4px 8px',marginTop:6,width:'100%',background:'#f1f5f9',color:'#1e293b',border:'1px solid #cbd5e1',fontWeight:600}} onClick={e=>{e.stopPropagation();openDetails()}}>🔍 Open Details</button>
+        </div>}
       </div>};
 
     return(<>
