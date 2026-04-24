@@ -142,7 +142,30 @@ const checkBrevoEmailOpens=async(messageId)=>{
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
 const _sbKey = process.env.REACT_APP_SUPABASE_ANON_KEY || '';
 let supabase = null;
-try { if (_sbUrl && _sbKey && _sbUrl.startsWith('https://') && !_sbUrl.includes('your-project')) supabase = createClient(_sbUrl, _sbKey); }
+// Per-tab mutex replaces the default Navigator LockManager, which can deadlock across tabs and time out the auth token refresh.
+const _sbAuthLock = (() => {
+  let chain = Promise.resolve();
+  return async (_name, _acquireTimeout, fn) => {
+    const prev = chain;
+    let release;
+    chain = new Promise(r => { release = r; });
+    try { await prev; return await fn(); }
+    finally { release(); }
+  };
+})();
+try {
+  if (_sbUrl && _sbKey && _sbUrl.startsWith('https://') && !_sbUrl.includes('your-project')) {
+    supabase = createClient(_sbUrl, _sbKey, {
+      auth: {
+        storage: typeof window !== 'undefined' ? window.localStorage : undefined,
+        autoRefreshToken: true,
+        persistSession: true,
+        detectSessionInUrl: true,
+        lock: _sbAuthLock,
+      },
+    });
+  }
+}
 catch(e) { console.warn('[Supabase] Init failed:', e.message); }
 
 // Track tables that returned 404 so we skip them on future polls (avoids console spam)
