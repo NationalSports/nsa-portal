@@ -1242,7 +1242,7 @@ const parseNetSuitePdf=(text,docType,products)=>{
   const result={docNumber:'',date:'',customerName:'',terms:'',memo:'',subtotal:0,tax:0,shipping:0,total:0,lineItems:[],rawText:text,confidence:'low',warnings:[]};
   const _products=products||[];
   const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
-  const SZ_RE=/[-\s](XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.5)?)$/i;
+  const SZ_RE=/[-\s](XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.\d)?)$/i;
 
   // ── Extract document number ──
   const docPatterns=[
@@ -1430,8 +1430,8 @@ const parseNetSuitePdf=(text,docType,products)=>{
     let color='';
     // NSA descriptions use both - and – (en-dash): "Adidas Creator Tee - Black - S" or "Pant – White Pins"
     const DASH=/\s*[-–—]\s*/;
-    const SIZE_WORDS=/^(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.5)?)$/i;
-    const colorSizeMatch=description.match(/\s*[-–—]\s*([A-Za-z][A-Za-z\s,\/]+?)\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.5)?)\s*$/i);
+    const SIZE_WORDS=/^(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.\d)?)$/i;
+    const colorSizeMatch=description.match(/\s*[-–—]\s*([A-Za-z][A-Za-z\s,\/]+?)\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.\d)?)\s*$/i);
     if(colorSizeMatch)color=colorSizeMatch[1].trim();
     else{
       // Try: "Name – Color" or "Name – Color Variant" (no size at end)
@@ -1445,7 +1445,7 @@ const parseNetSuitePdf=(text,docType,products)=>{
       const slashColorMatch=description.match(new RegExp('\\b((?:'+COLOR_ALT+')\\s*\\/\\s*\\w+)','i'));
       if(slashColorMatch)color=slashColorMatch[1].trim();
       // Pattern: known color word at end after a space (no dash), e.g. "Hood Black/White"
-      if(!color){const kcm=description.replace(/\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.5)?)\s*$/i,'').match(new RegExp('\\s('+COLOR_ALT+')\\s*$','i'));if(kcm)color=kcm[1].trim()}
+      if(!color){const kcm=description.replace(/\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.\d)?)\s*$/i,'').match(new RegExp('\\s('+COLOR_ALT+')\\s*$','i'));if(kcm)color=kcm[1].trim()}
     }
     // Simplify compound colors: "Black/White" → "Black", "Power Red/Wh" → "Power Red"
     if(color&&color.includes('/'))color=color.split('/')[0].trim();
@@ -1461,8 +1461,9 @@ const parseNetSuitePdf=(text,docType,products)=>{
       result.shipping+=amount||rate;return;
     }
 
-    // Detect decoration lines: "Screen 1", "Screen 2", "Emb 1", "DTF 1", etc.
-    const isDecoration=/^(Screen|Emb|Embr|DTF|Heat|Vinyl|Sublim|Deco)\s*\d*$/i.test(baseSku);
+    // Detect decoration lines: "Screen 1", "Emb 1", "Emb-NSA", "Screen-Print-1", "DTF-Logo", etc.
+    const isDecoration=/^(Screen|Embr?|Embroidery|DTF|Heat|Vinyl|Sublim|Deco)(\b|[-_\s])/i.test(baseSku)
+      ||/^(screen\s*print|embroid|dtf|heat\s*trans|vinyl\s*print|sublim)/i.test(description);
     if(isDecoration){
       // Parse decoration type from description: "Screen Print 1 Color", "Embroidery up to 8000 stitches"
       let decoType='art';
@@ -15007,7 +15008,7 @@ export default function App(){
 
       if(rawItem.toUpperCase()==='ITEM'||desc.toUpperCase()==='DESCRIPTION')return;
       if(rawItem.toLowerCase().includes('shipping')||desc.toLowerCase().includes('shipping')){shipping.push({desc,amount,rate});return}
-      if(/^(screen\s*print|embroid|dtf|heat\s*trans|vinyl|sublim)/i.test(desc)||rawItem.toLowerCase().includes('screen')||rawItem.toLowerCase().includes('embroid')||/^emb[-\s]/i.test(rawItem)){
+      if(/^(screen\s*print|embroid|dtf|heat\s*trans|vinyl|sublim)/i.test(desc)||/^(Screen|Embr?|Embroidery|DTF|Heat|Vinyl|Sublim|Deco)(\b|[-_\s])/i.test(rawItem)){
         decoLines.push({rawItem,desc,qty,rate,amount,poRef,_assignTo:'all'});return}
 
       const skuParts=rawItem.split(/\s*:\s*/);let itemCode=skuParts[0]||rawItem;
@@ -17082,10 +17083,22 @@ export default function App(){
                   const itemColor=it._color!=null?it._color:(it.color||it.catMatch?.color||'');
                   // Always include standard sizes S-2XL so the size grid shows all columns
                   const STD_SZ=['S','M','L','XL','2XL'];
+                  const isFootwear=it.catMatch?.category==='Footwear';
+                  const catalogShoeSizes=isFootwear?(it.catMatch?.available_sizes||[]).filter(s=>/^\d{1,2}(\.\d)?$/.test(s)):[];
                   const mergedSizes={...it.sizes||{}};
                   const hasApparel=szKeys.some(s=>STD_SZ.includes(s)||SZ_ORD.slice(0,6).includes(s));
-                  if(hasApparel||szKeys.length===0){STD_SZ.forEach(s=>{if(!(s in mergedSizes))mergedSizes[s]=0})}
-                  const mergedAvail=[...new Set([...(hasApparel?STD_SZ:[]),...szKeys,...(it.catMatch?.available_sizes||[])])].sort((a,b)=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b));
+                  const hasNumeric=szKeys.some(s=>/^\d{1,2}(\.\d)?$/.test(s));
+                  if(isFootwear){
+                    // Footwear: use shoe sizes from catalog, never OSFA
+                    if(catalogShoeSizes.length>0)catalogShoeSizes.forEach(s=>{if(!(s in mergedSizes))mergedSizes[s]=0});
+                    // If no sizes parsed and no catalog sizes, fall back to common shoe sizes
+                    if(Object.keys(mergedSizes).length===0){['7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','13'].forEach(s=>{mergedSizes[s]=0})}
+                    // Dump untracked qty into first size so it's not lost
+                    if(it.totalQty>0&&Object.values(mergedSizes).every(v=>!v)){const k=Object.keys(mergedSizes)[0];mergedSizes[k]=it.totalQty}
+                  } else if(hasApparel||(szKeys.length===0&&!hasNumeric)){
+                    STD_SZ.forEach(s=>{if(!(s in mergedSizes))mergedSizes[s]=0})
+                  }
+                  const mergedAvail=[...new Set([...(isFootwear?catalogShoeSizes:(hasApparel?STD_SZ:[])),...szKeys,...(it.catMatch?.available_sizes||[])])].sort((a,b)=>{const ai=SZ_ORD_I.indexOf(a),bi=SZ_ORD_I.indexOf(b);if(ai<0&&bi<0)return parseFloat(a)-parseFloat(b);if(ai<0)return 1;if(bi<0)return -1;return ai-bi});
                   return{product_id:it.catMatch?.id||null,sku:it.sku,name:itemName,brand:it.catMatch?.brand||it.brand,
                     color:itemColor,nsa_cost:it.catMatch?.nsa_cost||cost,retail_price:it.catMatch?.retail_price||retail,unit_sell:sell,
                     available_sizes:mergedAvail.length>0?mergedAvail:['S','M','L','XL','2XL'],
