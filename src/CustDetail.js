@@ -59,7 +59,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     :_isPdfUrl(mockupLightbox)?<iframe title="PDF Preview" src={'https://docs.google.com/gview?url='+encodeURIComponent(mockupLightbox)+'&embedded=true'} style={{width:'90vw',height:'90vh',border:'none',borderRadius:8,background:'white'}} onClick={e=>e.stopPropagation()}/>
     :<div style={{color:'white',fontSize:16}} onClick={e=>e.stopPropagation()}>Cannot preview this file type</div>}
   </div>}
-  <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="back" size={14}/> All Customers</button>
+  <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap'}}>
+    <button className="btn btn-secondary" onClick={onBack}><Icon name="back" size={14}/> All Customers</button>
+    {customer.parent_id&&(()=>{const par=allCustomers.find(c=>c.id===customer.parent_id);return par?<button className="btn btn-secondary" onClick={()=>onSelCust(par)}><Icon name="back" size={14}/> {par.name}</button>:null})()}
+  </div>
   <div className="card" style={{marginBottom:16,overflow:'visible'}}><div style={{padding:'20px 24px',display:'flex',gap:16,alignItems:'flex-start'}}>
   <div style={{width:56,height:56,borderRadius:12,background:'#dbeafe',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><Icon name="building" size={28}/></div>
   <div style={{flex:1}}>
