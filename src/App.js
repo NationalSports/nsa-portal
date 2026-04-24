@@ -3800,7 +3800,7 @@ export default function App(){
         }
         // Deco tasks — include jobs waiting for sibling completion
         if(j.prod_status!=='completed'&&j.prod_status!=='shipped'){
-          const isReady=j.art_status==='art_complete'&&j.item_status==='items_received';
+          const isReady=isJobReady(j,so);
           decoTasks.push({so,soId:so.id,job:j,cName,alpha,rep,daysOut,urgent,
             artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
             prodStatus:j.prod_status,artStatus:j.art_status,itemStatus:j.item_status,isReady,
@@ -11171,7 +11171,22 @@ export default function App(){
                           return{...it2,pick_lines:[...existingPicks,newPick]};
                         }
                       });
-                      const updatedSO={...so,items:updatedItems,updated_at:new Date().toLocaleString()};
+                      // Recalculate job item_status after pulling — mirrors PO receive flow so the warehouse "Ready for Deco" tab and job-level todos reflect stock-pull fulfillment.
+                      const updatedJobs=safeJobs(so).map(j=>{
+                        let total=0,fulfilled=0;
+                        (j.items||[]).forEach(gi=>{const it=updatedItems[gi.item_idx];if(!it)return;
+                          Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
+                            total+=v;
+                            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+                            const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+                            fulfilled+=Math.min(v,pQ+rQ);
+                          });
+                        });
+                        const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
+                        if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
+                        return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
+                      });
+                      const updatedSO={...so,items:updatedItems,jobs:updatedJobs,updated_at:new Date().toLocaleString()};
                       if(p){const newInv={...p._inv};szKeys.forEach(sz=>{const v=actualQtys2[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v)}});setProd(pp=>pp.map(x=>x.id===p.id?{...x,_inv:newInv}:x))}
                       if(showShipping&&boxes.some(bx=>bx.tracking_number)){
                         const shipments=[...(updatedSO._shipments||[])];
