@@ -1495,9 +1495,10 @@ const parseNetSuitePdf=(text,docType,products)=>{
       // Check for letter sizes: "12/S, 14/M, 8/L"
       const embSizeRe=/(\d+)\s*\/\s*(XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL)/gi;
       let embMatch;while((embMatch=embSizeRe.exec(description)))sizes[embMatch[2].toUpperCase()]=parseInt(embMatch[1]);
-      // Check for numeric sizes: "1/38 – knickers 1/40 – knickers 2/42" → sizes {38:1, 40:1, 42:2}
+      // Check for numeric sizes: "1/38 – knickers 2/42" → {38:1, 42:2}
+      // Also shoe sizes: "1/7.5, 5/8.5, 5/9, 10/10, 8/10.5" → {7.5:1, 8.5:5, 9:5, 10:10, 10.5:8}
       if(Object.keys(sizes).length===0){
-        const numSizeRe=/(\d+)\s*\/\s*(\d{2,3})/g;
+        const numSizeRe=/(\d+)\s*\/\s*(\d{1,2}(?:\.\d)?)(?![\d.])/g;
         let nm;while((nm=numSizeRe.exec(description)))sizes[nm[2]]=(sizes[nm[2]]||0)+parseInt(nm[1]);
       }
       if(Object.keys(sizes).length===0)sizes['OSFA']=qty;
@@ -15063,6 +15064,11 @@ export default function App(){
       } else {
         const embSizes={};let m;const sr=/(\d+)\s*\/\s*(S|M|L|XL|2XL|3XL|4XL|XXS|XS|YS|YM|YL|YXL)/gi;
         while((m=sr.exec(desc))!==null)embSizes[m[2].toUpperCase()]=parseInt(m[1]);
+        // Also shoe/numeric sizes: "1/7.5, 5/8.5, 10/10"
+        if(Object.keys(embSizes).length===0){
+          const numSr=/(\d+)\s*\/\s*(\d{1,2}(?:\.\d)?)(?![\d.])/g;
+          let nm;while((nm=numSr.exec(desc))!==null)embSizes[nm[2]]=(embSizes[nm[2]]||0)+parseInt(nm[1]);
+        }
         const hasSz=Object.keys(embSizes).length>0;
         const key=baseSku+'_'+li;
         items[key]={sku:catMatch?.sku||baseSku,name:catMatch?.name||desc,brand:catMatch?.brand||brand,color,rate,
