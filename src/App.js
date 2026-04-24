@@ -3161,7 +3161,7 @@ export default function App(){
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id),[cust]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
   const cols=useMemo(()=>COLOR_CATEGORIES,[]);
   const savC=c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});
-    let subCount=0;
+    let subCount=0;let tagCount=0;
     setCust(p=>{
       const e=p.find(x=>x.id===c.id);
       let next=e?p.map(x=>x.id===c.id?c:x):[...p,c];
@@ -3169,10 +3169,23 @@ export default function App(){
       if(!c.parent_id){
         const inherit={pantone_colors:c.pantone_colors||[],thread_colors:c.thread_colors||[],adidas_ua_tier:c.adidas_ua_tier,catalog_markup:c.catalog_markup};
         next=next.map(x=>{if(x.parent_id!==c.id)return x;const differs=JSON.stringify(x.pantone_colors||[])!==JSON.stringify(inherit.pantone_colors)||JSON.stringify(x.thread_colors||[])!==JSON.stringify(inherit.thread_colors)||x.adidas_ua_tier!==inherit.adidas_ua_tier||x.catalog_markup!==inherit.catalog_markup;if(differs)subCount++;return differs?{...x,...inherit}:x});
+        // Cascade alpha_tag prefix: any sub whose tag starts with the parent's old tag is rewritten with the new prefix (e.g. OLHS → OLu renames OLHSF to OLuF).
+        const oldPrefix=(e?.alpha_tag||'').trim();
+        const newPrefix=(c.alpha_tag||'').trim();
+        if(oldPrefix&&newPrefix&&oldPrefix.toLowerCase()!==newPrefix.toLowerCase()){
+          next=next.map(x=>{
+            if(x.parent_id!==c.id)return x;
+            const tag=(x.alpha_tag||'').trim();
+            if(!tag||!tag.toLowerCase().startsWith(oldPrefix.toLowerCase()))return x;
+            tagCount++;
+            return{...x,alpha_tag:newPrefix+tag.slice(oldPrefix.length)};
+          });
+        }
       }
       return next;
     });
-    nf(subCount>0?'Saved — synced '+subCount+' sub-account'+(subCount===1?'':'s'):'Saved');
+    const parts=[];if(subCount)parts.push('synced '+subCount+' sub-account'+(subCount===1?'':'s'));if(tagCount)parts.push('renamed '+tagCount+' sub alpha tag'+(tagCount===1?'':'s'));
+    nf(parts.length?'Saved — '+parts.join(', '):'Saved');
   };
   // Lock decoration pricing on save so matrix changes don't affect existing orders
   const lockPrices=(order)=>{const af=order.art_files||[];
@@ -4774,48 +4787,65 @@ export default function App(){
     const refreshTaxRates=async()=>{if(!supabase){nf('Supabase not configured','error');return}nf('Refreshing tax rates from TaxCloud...');try{const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{});if(d?.ok){if(d.changes?.length>0)setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));nf('TaxCloud: '+d.updated+' of '+d.total_customers+' customer rate(s) updated'+(d.errors?' ('+d.errors+' errors)':''))}else{nf(d?.error||'Refresh failed','error')}}catch(e){nf('Error: '+e.message,'error')}};
     const autoFixAlphaTags=()=>{
       if(!dupAlphaGroups.length){nf('No duplicate alpha tags');return}
-      // Words to skip when deriving a tag from a customer's name (noise words shared across schools/teams).
+      // Noise words stripped before deriving a tag (shared across schools/teams).
       const STOP=new Set(['HS','MS','JHS','HIGH','MIDDLE','SCHOOL','SCHOOLS','JR','JUNIOR','SR','SENIOR','THE','OF','AND','AT','FOR','COLLEGE','UNIVERSITY','UNI','ACADEMY','PREP','ELEMENTARY','ELEM','DISTRICT','USD','CLUB','ASSOC','ASSOCIATION','TEAM','TEAMS','YOUTH']);
-      const smartVariants=(name)=>{
+      // Common sport abbreviations so subs get OLuF / OLuBB / OLuVB instead of OLu2, OLu3…
+      const SPORT={FOOTBALL:'F',BASKETBALL:'BB',BASEBALL:'BSB',SOFTBALL:'SB',VOLLEYBALL:'VB',SOCCER:'SOC',TRACK:'TR',TENNIS:'TN',GOLF:'G',WRESTLING:'WR',WRESTLE:'WR',SWIMMING:'SW',SWIM:'SW',DIVE:'SW',DIVING:'SW',CHEER:'CH',DANCE:'D',HOCKEY:'HK',LACROSSE:'LAX',POLO:'WP',XC:'XC',BAND:'BND',GYMNASTICS:'GYM',FIELD:'TF',ROWING:'ROW',CREW:'ROW'};
+      const GEN={BOYS:'B',BOY:'B',GIRLS:'G',GIRL:'G',MENS:'M',MEN:'M',WOMENS:'W',WOMEN:'W'};
+      const LVL={VARSITY:'V',FROSH:'FR',FRESHMAN:'FR',FRESHMEN:'FR',JV:'JV'};
+      // Base name-based variants (used for parents and as a fallback for subs).
+      const nameVariants=(name)=>{
         const words=(name||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
-        const kept=words.filter(w=>!STOP.has(w));
-        const pool=kept.length?kept:words;// if every word was a stopword, fall back to all words
+        const kept=words.filter(w=>!STOP.has(w));const pool=kept.length?kept:words;
         if(!pool.length)return [];
         const v=[];const push=(s)=>{if(s&&s.length>=2&&s.length<=8&&!v.includes(s))v.push(s)};
         const w0=pool[0],w1=pool[1]||'',w2=pool[2]||'';
-        // Preferred: first 3 of the distinguishing word + first letter of the sport/suffix word (Arcata Football → ARCF)
-        push(w0.slice(0,3)+w1.slice(0,1));
-        push(w0.slice(0,4)+w1.slice(0,1));
-        push(w0.slice(0,3)+w1.slice(0,2));
-        push(w0.slice(0,2)+w1.slice(0,2));
+        push(w0.slice(0,3)+w1.slice(0,1));push(w0.slice(0,4)+w1.slice(0,1));push(w0.slice(0,3)+w1.slice(0,2));push(w0.slice(0,2)+w1.slice(0,2));
         if(w2){push(w0.slice(0,3)+w1.slice(0,1)+w2.slice(0,1));push(w0.slice(0,2)+w1.slice(0,1)+w2.slice(0,1))}
-        push(w0.slice(0,4)+w1.slice(0,2));
-        push(w0.slice(0,5)+w1.slice(0,1));
-        push(w0.slice(0,6));
-        push(pool.map(w=>w[0]).join(''));// initials as last resort
+        push(w0.slice(0,4)+w1.slice(0,2));push(w0.slice(0,5)+w1.slice(0,1));push(w0.slice(0,6));push(pool.map(w=>w[0]).join(''));
         return v;
+      };
+      // Sub variants: prefix = parent's alpha_tag (case preserved), suffix = sport/gender/level tokens.
+      const subVariants=(subName,parent)=>{
+        const variants=[];const push=(s)=>{if(s&&s.length>=2&&s.length<=10&&!variants.includes(s))variants.push(s)};
+        const prefix=(parent?.alpha_tag||'').trim();
+        if(prefix){
+          const parentW=new Set((parent.name||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(Boolean));
+          const subW=(subName||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
+          const distinct=subW.filter(w=>!parentW.has(w)&&!STOP.has(w));
+          const src=distinct.length?distinct:subW.filter(w=>!STOP.has(w));
+          const sport=src.find(w=>SPORT[w]);const gender=src.find(w=>GEN[w]);const level=src.find(w=>LVL[w]);
+          const suffixes=[];const pushS=(s)=>{if(s&&!suffixes.includes(s))suffixes.push(s)};
+          if(sport){const a=SPORT[sport];pushS(a);if(gender)pushS(a+GEN[gender]);if(level)pushS(a+LVL[level]);if(gender&&level)pushS(a+GEN[gender]+LVL[level]);pushS(sport.slice(0,2));pushS(sport.slice(0,3))}
+          if(src.length){pushS(src.map(w=>w[0]).join(''));pushS(src[0].slice(0,2));pushS(src[0].slice(0,3));pushS(src[0].slice(0,1))}
+          if(gender)pushS(GEN[gender]);if(level)pushS(LVL[level]);
+          suffixes.forEach(s=>push(prefix+s));
+        }
+        nameVariants(subName).forEach(v=>push(v));
+        return variants;
       };
       // Tags held by customers NOT in a duplicate group — we must not collide with these.
       const dupIds=new Set();dupAlphaGroups.forEach(([,arr])=>arr.forEach(c=>dupIds.add(c.id)));
       const taken=new Set(cust.filter(c=>c.is_active!==false&&c.alpha_tag&&!dupIds.has(c.id)).map(c=>c.alpha_tag.trim().toUpperCase()));
       const renames=[];
       dupAlphaGroups.forEach(([,arr])=>{
-        // Process parents first, then by created_at so rename order is stable across runs.
+        // Parents first, then by created_at so runs are deterministic.
         const sorted=[...arr].sort((a,b)=>{
           if(!a.parent_id&&b.parent_id)return -1;
           if(a.parent_id&&!b.parent_id)return 1;
           return (a.created_at||'').localeCompare(b.created_at||'')||a.id.localeCompare(b.id);
         });
         sorted.forEach(c=>{
-          const variants=smartVariants(c.name);
-          let chosen=variants.find(v=>!taken.has(v))||null;
+          const parent=c.parent_id?cust.find(x=>x.id===c.parent_id):null;
+          const variants=parent?subVariants(c.name,parent):nameVariants(c.name);
+          let chosen=variants.find(v=>!taken.has(v.toUpperCase()))||null;
           if(!chosen){
-            const base=variants[0]||(c.alpha_tag||'').trim().toUpperCase()||'CUST';
-            for(let n=2;n<10000;n++){const cand=base+n;if(!taken.has(cand)){chosen=cand;break}}
+            const base=variants[0]||(c.alpha_tag||'').trim()||'CUST';
+            for(let n=2;n<10000;n++){const cand=base+n;if(!taken.has(cand.toUpperCase())){chosen=cand;break}}
           }
-          if(!chosen)chosen=(c.alpha_tag||'CUST').toUpperCase()+'-'+c.id.slice(-4).toUpperCase();
-          taken.add(chosen);
-          if(chosen!==(c.alpha_tag||'').trim().toUpperCase()){
+          if(!chosen)chosen=((c.alpha_tag||'CUST')+'-'+c.id.slice(-4)).toUpperCase();
+          taken.add(chosen.toUpperCase());
+          if(chosen.toUpperCase()!==(c.alpha_tag||'').trim().toUpperCase()){
             renames.push({id:c.id,name:c.name,oldTag:c.alpha_tag,newTag:chosen});
           }
         });
@@ -4823,7 +4853,7 @@ export default function App(){
       if(!renames.length){nf('Alpha tags are already unique');return}
       const preview=renames.slice(0,5).map(r=>'  '+r.name+': '+r.oldTag+' → '+r.newTag).join('\n');
       const more=renames.length>5?'\n  ...and '+(renames.length-5)+' more':'';
-      if(!window.confirm('Auto-rename '+renames.length+' customer alpha tag'+(renames.length===1?'':'s')+' to make them unique?\n\n'+preview+more+'\n\nYou can still edit any tag manually afterward.'))return;
+      if(!window.confirm('Auto-rename '+renames.length+' customer alpha tag'+(renames.length===1?'':'s')+' to make them unique?\n\n'+preview+more+'\n\nSub-accounts use the parent\'s tag as a prefix (e.g. OLu → OLuF, OLuBB). You can still edit any tag manually.'))return;
       const rMap=new Map(renames.map(r=>[r.id,r.newTag]));
       setCust(prev=>prev.map(c=>rMap.has(c.id)?{...c,alpha_tag:rMap.get(c.id)}:c));
       nf('Renamed '+renames.length+' alpha tag'+(renames.length===1?'':'s'));
@@ -4847,7 +4877,7 @@ export default function App(){
           <div key={tag} style={{fontSize:11}}><span style={{fontFamily:'monospace',fontWeight:700,background:'#fee2e2',padding:'1px 6px',borderRadius:4,marginRight:6}}>{tag}</span>
             {arr.map((c,ix)=><React.Fragment key={c.id}>{ix>0&&<span style={{color:'#94a3b8'}}> · </span>}<button style={{background:'none',border:'none',padding:0,color:'#1e40af',textDecoration:'underline',cursor:'pointer',fontSize:11}} onClick={()=>setCM({open:true,c})}>{c.name}</button></React.Fragment>)}
           </div>)}</div>
-        <div style={{marginTop:4,color:'#7f1d1d',fontSize:10}}>Auto-Fix derives a unique code from each customer's name (e.g. Arcata HS Football → ARCF, Alisal HS Football → ALIF). You can still edit any tag manually.</div>
+        <div style={{marginTop:4,color:'#7f1d1d',fontSize:10}}>Auto-Fix derives a unique code from each customer's name. Sub-accounts use the parent's alpha tag as a prefix — e.g. Orange Lutheran → OLu, Orange Lutheran Football → OLuF, Orange Lutheran Basketball → OLuBB. Renaming a parent's tag later cascades to its subs automatically.</div>
       </div>
     </div>}
     {custSearching&&<div style={{textAlign:'center',padding:12,color:'#64748b',fontSize:13}}>Searching...</div>}
