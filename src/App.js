@@ -3150,8 +3150,9 @@ export default function App(){
       setOmgReportLoading(false);
     }
   };
-  const[estF,setEstF]=useState({status:'open',rep:'all',search:'',sort:'date_desc'});
-  const[soF,setSOF]=useState({status:'active',rep:'all',search:'',sort:'date_desc'});
+  const _initRepF=(()=>{try{const s=localStorage.getItem('nsa_user');const u=s?JSON.parse(s):null;if(u&&(u.role==='rep'||u.role==='admin'||u.role==='super_admin'||u.role==='gm'))return'_me_';return'all'}catch{return'all'}})();
+  const[estF,setEstF]=useState({status:'open',rep:_initRepF,search:'',sort:'date_desc'});
+  const[soF,setSOF]=useState({status:'active',rep:_initRepF,search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
   const dirtyRef=React.useRef(false);
   const[favSkus,setFavSkus]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_fav_skus')||'[]')}catch{return[]}});
@@ -4055,9 +4056,9 @@ export default function App(){
 
     {/* ═══ ADMIN VIEW ═══ */}
     {dashView==='admin'&&<>
-    <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{borderColor:'#f59e0b'}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
-      {isA&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
-      <div className="stat-card" style={{borderColor:ssConnected?'#22c55e':'#ef4444'}}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
+    <div className="stats-row"><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setJobFilters({statuses:['hold','staging','in_process'],rep:'_me_',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});setPg('jobs')}}><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#f59e0b'}} onClick={()=>{setMF('mentions');setMEntityF('all');setPg('messages')}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
+      {isA&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#fbbf24'}} onClick={()=>{setInvTab('stock');setPg('inventory')}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
+      <div className="stat-card" style={{cursor:'pointer',borderColor:ssConnected?'#22c55e':'#ef4444'}} onClick={()=>setPg('warehouse')}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
     {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
@@ -4134,8 +4135,8 @@ export default function App(){
     {/* ═══ SALES REP VIEW ═══ */}
     {dashView==='sales'&&<>
     <div className="stats-row">
-      <div className="stat-card"><div className="stat-label">My Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>(e.status==='draft'||e.status==='open'||e.status==='sent')&&e.created_by===cu.id).length}</div></div>
-      <div className="stat-card"><div className="stat-label">My Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>s.created_by===cu.id&&calcSOStatus(s)!=='complete').length}</div></div>
+      <div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">My Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>(e.status==='draft'||e.status==='open'||e.status==='sent')&&e.created_by===cu.id).length}</div></div>
+      <div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">My Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>s.created_by===cu.id&&calcSOStatus(s)!=='complete').length}</div></div>
       <div className="stat-card"><div className="stat-label">Pending Approvals</div><div className="stat-value" style={{color:'#7c3aed'}}>{myTodos.filter(t=>t.type==='art').length}</div></div>
       <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
       <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
@@ -4706,7 +4707,8 @@ export default function App(){
     let fSOs=[...sos];
     if(soF.status==='active')fSOs=fSOs.filter(s=>calcSOStatus(s)!=='complete');
     else if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
-    if(soF.rep!=='all')fSOs=fSOs.filter(s=>s.created_by===soF.rep);
+    const soRepId=soF.rep==='_me_'?cu?.id:soF.rep;
+    if(soRepId&&soRepId!=='all')fSOs=fSOs.filter(s=>s.created_by===soRepId);
     if(soF.search){const ss=soF.search.toLowerCase();fSOs=fSOs.filter(s=>{const c2=cust.find(x=>x.id===s.customer_id);return s.id.toLowerCase().includes(ss)||(s.memo||'').toLowerCase().includes(ss)||(c2?.name||'').toLowerCase().includes(ss)||(c2?.alpha_tag||'').toLowerCase().includes(ss)||(s.po_number||'').toLowerCase().includes(ss)||safeItems(s).some(it=>(it.sku||'').toLowerCase().includes(ss)||(it.name||'').toLowerCase().includes(ss))})}
     // Sort
     if(soF.sort==='date_desc')fSOs.sort((a,b)=>(new Date(b.created_at||0).getTime()||0)-(new Date(a.created_at||0).getTime()||0));
@@ -4742,7 +4744,7 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search SOs, customers, SKUs, PO#..." value={soF.search} onChange={e=>setSOF(f=>({...f,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:140}} value={soF.rep} onChange={e=>setSOF(f=>({...f,rep:e.target.value}))}>
-          <option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+          <option value="all">All Reps</option><option value="_me_">My Orders</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={soF.sort} onChange={e=>setSOF(f=>({...f,sort:e.target.value}))}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="expected">By Expected Date</option><option value="customer">By Customer</option></select>
         {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setSOF({status:'active',rep:'all',search:'',sort:'date_desc'})}>\u2715 Clear</button>}
@@ -5485,7 +5487,7 @@ export default function App(){
   </>);
 
   // JOBS LIST
-  const[jobFilters,_setJobFilters]=useState({statuses:[],rep:'all',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});
+  const[jobFilters,_setJobFilters]=useState({statuses:[],rep:_initRepF,deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});
   const[activeSavedFilterIdx,setActiveSavedFilterIdx]=useState(null);
   const setJobFilters=(v)=>{setActiveSavedFilterIdx(null);_setJobFilters(v)};
   const[jobSortField,setJobSortField]=useState('expected');const[jobSortDir,setJobSortDir]=useState('asc');
@@ -5510,7 +5512,8 @@ export default function App(){
     let fj=allJobs;
     const jf=jobFilters;
     if(jf.statuses.length>0)fj=fj.filter(j=>jf.statuses.includes(j.prod_status));
-    if(jf.rep!=='all')fj=fj.filter(j=>j.repId===jf.rep);
+    const jfRepId=jf.rep==='_me_'?cu?.id:jf.rep;
+    if(jfRepId&&jfRepId!=='all')fj=fj.filter(j=>j.repId===jfRepId);
     if(jf.deco!=='all')fj=fj.filter(j=>j.deco_type===jf.deco);
     if(jf.artSt!=='all')fj=fj.filter(j=>j.art_status===jf.artSt);
     if(jf.itemSt!=='all')fj=fj.filter(j=>j.item_status===jf.itemSt);
@@ -5557,7 +5560,7 @@ export default function App(){
         <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:10}}>
           <div className="search-bar" style={{flex:1,minWidth:200,maxWidth:300}}><Icon name="search"/><input placeholder="Search jobs, SKUs, customers..." value={jf.search} onChange={e=>setJF('search',e.target.value)}/></div>
           <select className="form-select" style={{width:130,fontSize:11}} value={jf.rep} onChange={e=>setJF('rep',e.target.value)}>
-            <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+            <option value="all">All Reps</option><option value="_me_">My Jobs</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
           <select className="form-select" style={{width:140,fontSize:11}} value={jf.deco} onChange={e=>setJF('deco',e.target.value)}>
             <option value="all">All Deco Types</option>{decoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}</select>
           <div style={{display:'flex',alignItems:'center',gap:4,fontSize:11,color:'#64748b'}}><span>Due by:</span><input type="date" className="form-input" style={{width:130,padding:'3px 6px',fontSize:11}} value={jf.dueBefore} onChange={e=>setJF('dueBefore',e.target.value)}/></div>
@@ -7217,7 +7220,7 @@ export default function App(){
   // INVOICES PAGE
   const CC_FEE_PCT=0.029;// 2.9% credit card surcharge
   const PAY_METHODS=[{id:'check',label:'Check',icon:'📝'},{id:'ach',label:'ACH/Wire',icon:'🏦'},{id:'venmo',label:'Venmo',icon:'💜'},{id:'zelle',label:'Zelle',icon:'⚡'},{id:'cash',label:'Cash',icon:'💵'},{id:'cc',label:'Credit Card (+2.9%)',icon:'💳'}];
-  const[invF,setInvF]=useState({search:'',status:'all',group:'list',aging:'all',rep:'all'});
+  const[invF,setInvF]=useState({search:'',status:'all',group:'list',aging:'all',rep:_initRepF});
   const[invSort,setInvSort]=useState({f:'due_date',d:'asc'});
   const[invEdit,setInvEdit]=useState(null);
   const[payModal,setPayModal]=useState(null);
@@ -8083,7 +8086,8 @@ export default function App(){
     else if(invF.aging==='90')fi=fi.filter(i=>i._age>=61&&i._age<=90&&i.status!=='paid');
     else if(invF.aging==='120')fi=fi.filter(i=>i._age>90&&i.status!=='paid');
     else if(invF.aging==='overdue')fi=fi.filter(i=>i._overdue);
-    if(invF.rep!=='all')fi=fi.filter(i=>i._rep===invF.rep);
+    const invRepId=invF.rep==='_me_'?cu?.id:invF.rep;
+    if(invRepId&&invRepId!=='all')fi=fi.filter(i=>i._rep===invRepId);
     if(invF.search){const s=invF.search.toLowerCase();fi=fi.filter(i=>(i.id||'').toLowerCase().includes(s)||(i.memo||'').toLowerCase().includes(s)||i._cname.toLowerCase().includes(s))}
 
     // Sort
@@ -8166,7 +8170,7 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
         <div className="search-bar" style={{flex:1,minWidth:200,maxWidth:300}}><Icon name="search"/><input placeholder="Search invoices, customers..." value={invF.search} onChange={e=>setInvF(f=>({...f,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:130,fontSize:11}} value={invF.rep} onChange={e=>setInvF(f=>({...f,rep:e.target.value}))}>
-          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+          <option value="all">All Reps</option><option value="_me_">My Invoices</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <div style={{display:'flex',gap:4}}>
           {[['list','📋 List'],['customer','👥 By Customer']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${invF.group===v?'btn-primary':'btn-secondary'}`} onClick={()=>setInvF(f=>({...f,group:v}))}>{l}</button>)}
