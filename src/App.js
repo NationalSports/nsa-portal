@@ -4774,25 +4774,53 @@ export default function App(){
     const refreshTaxRates=async()=>{if(!supabase){nf('Supabase not configured','error');return}nf('Refreshing tax rates from TaxCloud...');try{const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{});if(d?.ok){if(d.changes?.length>0)setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));nf('TaxCloud: '+d.updated+' of '+d.total_customers+' customer rate(s) updated'+(d.errors?' ('+d.errors+' errors)':''))}else{nf(d?.error||'Refresh failed','error')}}catch(e){nf('Error: '+e.message,'error')}};
     const autoFixAlphaTags=()=>{
       if(!dupAlphaGroups.length){nf('No duplicate alpha tags');return}
-      const taken=new Set(cust.filter(c=>c.is_active!==false&&c.alpha_tag).map(c=>c.alpha_tag.trim().toUpperCase()));
+      // Words to skip when deriving a tag from a customer's name (noise words shared across schools/teams).
+      const STOP=new Set(['HS','MS','JHS','HIGH','MIDDLE','SCHOOL','SCHOOLS','JR','JUNIOR','SR','SENIOR','THE','OF','AND','AT','FOR','COLLEGE','UNIVERSITY','UNI','ACADEMY','PREP','ELEMENTARY','ELEM','DISTRICT','USD','CLUB','ASSOC','ASSOCIATION','TEAM','TEAMS','YOUTH']);
+      const smartVariants=(name)=>{
+        const words=(name||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
+        const kept=words.filter(w=>!STOP.has(w));
+        const pool=kept.length?kept:words;// if every word was a stopword, fall back to all words
+        if(!pool.length)return [];
+        const v=[];const push=(s)=>{if(s&&s.length>=2&&s.length<=8&&!v.includes(s))v.push(s)};
+        const w0=pool[0],w1=pool[1]||'',w2=pool[2]||'';
+        // Preferred: first 3 of the distinguishing word + first letter of the sport/suffix word (Arcata Football → ARCF)
+        push(w0.slice(0,3)+w1.slice(0,1));
+        push(w0.slice(0,4)+w1.slice(0,1));
+        push(w0.slice(0,3)+w1.slice(0,2));
+        push(w0.slice(0,2)+w1.slice(0,2));
+        if(w2){push(w0.slice(0,3)+w1.slice(0,1)+w2.slice(0,1));push(w0.slice(0,2)+w1.slice(0,1)+w2.slice(0,1))}
+        push(w0.slice(0,4)+w1.slice(0,2));
+        push(w0.slice(0,5)+w1.slice(0,1));
+        push(w0.slice(0,6));
+        push(pool.map(w=>w[0]).join(''));// initials as last resort
+        return v;
+      };
+      // Tags held by customers NOT in a duplicate group — we must not collide with these.
+      const dupIds=new Set();dupAlphaGroups.forEach(([,arr])=>arr.forEach(c=>dupIds.add(c.id)));
+      const taken=new Set(cust.filter(c=>c.is_active!==false&&c.alpha_tag&&!dupIds.has(c.id)).map(c=>c.alpha_tag.trim().toUpperCase()));
       const renames=[];
-      dupAlphaGroups.forEach(([tag,arr])=>{
-        // Keep the oldest (or parent) tag unchanged; rename the rest.
+      dupAlphaGroups.forEach(([,arr])=>{
+        // Process parents first, then by created_at so rename order is stable across runs.
         const sorted=[...arr].sort((a,b)=>{
           if(!a.parent_id&&b.parent_id)return -1;
           if(a.parent_id&&!b.parent_id)return 1;
           return (a.created_at||'').localeCompare(b.created_at||'')||a.id.localeCompare(b.id);
         });
-        sorted.slice(1).forEach(c=>{
-          let newTag=null;
-          for(let n=2;n<10000;n++){const cand=tag+n;if(!taken.has(cand)){newTag=cand;break}}
-          if(!newTag)newTag=tag+'-'+c.id.slice(-4).toUpperCase();
-          taken.delete(c.alpha_tag.trim().toUpperCase());
-          taken.add(newTag);
-          renames.push({id:c.id,name:c.name,oldTag:c.alpha_tag,newTag});
+        sorted.forEach(c=>{
+          const variants=smartVariants(c.name);
+          let chosen=variants.find(v=>!taken.has(v))||null;
+          if(!chosen){
+            const base=variants[0]||(c.alpha_tag||'').trim().toUpperCase()||'CUST';
+            for(let n=2;n<10000;n++){const cand=base+n;if(!taken.has(cand)){chosen=cand;break}}
+          }
+          if(!chosen)chosen=(c.alpha_tag||'CUST').toUpperCase()+'-'+c.id.slice(-4).toUpperCase();
+          taken.add(chosen);
+          if(chosen!==(c.alpha_tag||'').trim().toUpperCase()){
+            renames.push({id:c.id,name:c.name,oldTag:c.alpha_tag,newTag:chosen});
+          }
         });
       });
-      if(!renames.length)return;
+      if(!renames.length){nf('Alpha tags are already unique');return}
       const preview=renames.slice(0,5).map(r=>'  '+r.name+': '+r.oldTag+' → '+r.newTag).join('\n');
       const more=renames.length>5?'\n  ...and '+(renames.length-5)+' more':'';
       if(!window.confirm('Auto-rename '+renames.length+' customer alpha tag'+(renames.length===1?'':'s')+' to make them unique?\n\n'+preview+more+'\n\nYou can still edit any tag manually afterward.'))return;
@@ -4819,7 +4847,7 @@ export default function App(){
           <div key={tag} style={{fontSize:11}}><span style={{fontFamily:'monospace',fontWeight:700,background:'#fee2e2',padding:'1px 6px',borderRadius:4,marginRight:6}}>{tag}</span>
             {arr.map((c,ix)=><React.Fragment key={c.id}>{ix>0&&<span style={{color:'#94a3b8'}}> · </span>}<button style={{background:'none',border:'none',padding:0,color:'#1e40af',textDecoration:'underline',cursor:'pointer',fontSize:11}} onClick={()=>setCM({open:true,c})}>{c.name}</button></React.Fragment>)}
           </div>)}</div>
-        <div style={{marginTop:4,color:'#7f1d1d',fontSize:10}}>Auto-Fix keeps the oldest customer's tag and renames the rest (e.g. SB → SB2, SB3). You can still edit any tag manually.</div>
+        <div style={{marginTop:4,color:'#7f1d1d',fontSize:10}}>Auto-Fix derives a unique code from each customer's name (e.g. Arcata HS Football → ARCF, Alisal HS Football → ALIF). You can still edit any tag manually.</div>
       </div>
     </div>}
     {custSearching&&<div style={{textAlign:'center',padding:12,color:'#64748b',fontSize:13}}>Searching...</div>}
