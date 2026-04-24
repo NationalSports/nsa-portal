@@ -8053,11 +8053,19 @@ export default function App(){
       </>);
     }
 
-    // Enrich invoices with computed fields
-    let fi=invs.map(i=>{const age=agingDays(i.date);const dd=dueDays(i.due_date);const bal=i.total-i.paid;
+    // Enrich invoices with computed fields — portal invs plus NetSuite invoice history (read-only).
+    const enrichedInvs=invs.map(i=>{const age=agingDays(i.date);const dd=dueDays(i.due_date);const bal=i.total-i.paid;
       const overdue=dd!==null&&dd<0&&i.status!=='paid';
       const so=sos.find(s=>s.id===i.so_id);const rep=so?so.created_by:null;
       return{...i,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||'Unknown'}});
+    // Historical rows from NetSuite — no so_id, no due_date, no payments.
+    // Treat status='paid' as fully paid; anything else leaves total as balance.
+    const enrichedHist=(histInvs||[]).map(i=>{const age=agingDays(i.date);
+      const paid=i.status==='paid'?safeNum(i.total):0;
+      const bal=safeNum(i.total)-paid;
+      const rep=REPS.find(r=>r.name&&(i.rep_name||'').toLowerCase()===r.name.toLowerCase())?.id||null;
+      return{...i,paid,_age:age,_dd:null,_bal:bal,_overdue:false,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||i.raw_customer_name||'Unknown'}});
+    let fi=[...enrichedInvs,...enrichedHist];
 
     // Filters
     if(invF.status==='open')fi=fi.filter(i=>i.status==='open'||i.status==='partial');
@@ -8088,11 +8096,12 @@ export default function App(){
       return invSort.d==='asc'?cmp:-cmp;
     });
 
-    // Stats (from all invs, not filtered)
-    const allOpen=invs.filter(i=>i.status==='open'||i.status==='partial');
-    const totalOpen=allOpen.reduce((a,i)=>a+(i.total-i.paid),0);
-    const totalOverdue=allOpen.filter(i=>dueDays(i.due_date)<0).reduce((a,i)=>a+(i.total-i.paid),0);
-    const totalPaid=invs.filter(i=>i.status==='paid').reduce((a,i)=>a+i.paid,0);
+    // Stats computed from the combined (portal + historical) list, not the filtered view.
+    const allInvsCombined=[...enrichedInvs,...enrichedHist];
+    const allOpen=allInvsCombined.filter(i=>i.status==='open'||i.status==='partial');
+    const totalOpen=allOpen.reduce((a,i)=>a+(safeNum(i.total)-safeNum(i.paid)),0);
+    const totalOverdue=allOpen.filter(i=>i._dd!==null&&i._dd<0).reduce((a,i)=>a+(safeNum(i.total)-safeNum(i.paid)),0);
+    const totalPaid=allInvsCombined.filter(i=>i.status==='paid').reduce((a,i)=>a+safeNum(i.paid),0);
     const agingBuckets={current:0,d30:0,d60:0,d90:0,d120p:0};
     allOpen.forEach(i=>{const dd=dueDays(i.due_date);const bal=i.total-i.paid;
       if(dd>=0)agingBuckets.current+=bal;
@@ -8121,7 +8130,7 @@ export default function App(){
       {/* Stats */}
       <div className="stats-row">
         <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='all'&&invF.aging==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'all',aging:'all'}))}>
-          <div className="stat-label">All Invoices</div><div className="stat-value">{invs.length}</div></div>
+          <div className="stat-label">All Invoices</div><div className="stat-value">{allInvsCombined.length}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='open'&&invF.aging==='all'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'open',aging:'all'}))}>
           <div className="stat-label">Open</div><div className="stat-value" style={{color:'#d97706'}}>${totalOpen.toLocaleString()}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:invF.aging==='overdue'?'2px solid #dc2626':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'all',aging:f.aging==='overdue'?'all':'overdue'}))}>
@@ -8181,8 +8190,9 @@ export default function App(){
         </tr></thead>
         <tbody>{fi.map(inv=>{
           const repObj=REPS.find(r=>r.id===inv._rep);
-          return<tr key={inv.id} style={{background:inv._overdue?'#fef2f2':undefined,cursor:'pointer'}} onClick={()=>setViewInvoice(inv)}>
-            <td style={{fontWeight:700,color:'#1e40af',fontSize:12,cursor:'pointer',textDecoration:'underline'}}>{inv.id}</td>
+          const rowKey=inv._hist?'h:'+(inv.netsuite_internal_id||inv.id):inv.id;
+          return<tr key={rowKey} style={{background:inv._overdue?'#fef2f2':inv._hist?'#fafbfc':undefined,cursor:inv._hist?'default':'pointer',color:inv._hist?'#475569':undefined}} onClick={inv._hist?undefined:()=>setViewInvoice(inv)} title={inv._hist?'NetSuite history — read only':undefined}>
+            <td style={{fontWeight:700,color:inv._hist?'#64748b':'#1e40af',fontSize:12,cursor:inv._hist?'default':'pointer',textDecoration:inv._hist?'none':'underline'}}>{inv.id}{inv._hist&&<span style={{marginLeft:4,fontSize:8,padding:'1px 4px',borderRadius:3,background:'#e2e8f0',color:'#475569',fontWeight:700,letterSpacing:0.5}}>NS</span>}</td>
             <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtCreatedAt(inv.created_at)}</td>
             <td style={{fontSize:12}}>{inv._cname}</td>
             <td style={{fontSize:11,color:'#7c3aed',cursor:inv.so_id?'pointer':'default',textDecoration:inv.so_id?'underline':'none'}}
@@ -8199,7 +8209,7 @@ export default function App(){
               color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
               {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
               {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3,verticalAlign:'middle'}} title="Reported to TaxCloud for filing">TC</span>}</td>
-            <td onClick={e=>e.stopPropagation()}>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
+            <td onClick={e=>e.stopPropagation()}>{inv._hist?<span style={{fontSize:9,color:'#94a3b8',fontStyle:'italic'}}>—</span>:<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
               onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
               {inv.status==='paid'&&!inv.tc_reported&&inv.tax>0&&<button className="btn btn-sm" style={{fontSize:8,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} title="Report this invoice to TaxCloud for state tax filing" onClick={async()=>{const c=cust.find(x=>x.id===inv.customer_id);if(!c)return;if(!supabase){nf('Supabase not configured','error');return}try{const d=await invokeEdgeFn(supabase,'taxcloud-capture',{action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}});if(d?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:d.total_tax}:i));nf('Reported to TaxCloud — $'+d.total_tax+' tax filed')}else{nf(d?.error||'TaxCloud capture failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>TC File</button>}
               <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',marginLeft:2}} onClick={()=>{
@@ -8264,7 +8274,7 @@ export default function App(){
                   }],
                   footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms
                 });
-              }}>🖨️</button>{canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} onClick={()=>deleteInvoice(inv.id)}><Icon name="trash" size={10}/></button>}</td>
+              }}>🖨️</button>{canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} onClick={()=>deleteInvoice(inv.id)}><Icon name="trash" size={10}/></button>}</>}</td>
           </tr>})}</tbody></table>}
       </div></div>}
 
@@ -8284,8 +8294,8 @@ export default function App(){
           <div className="card-body" style={{padding:0}}>
             <table><thead><tr><th>Invoice</th><th>SO</th><th>Memo</th><th>Date</th><th>Age</th><th>Due</th><th>Total</th><th>Balance</th><th>Status</th><th></th></tr></thead>
             <tbody>{g.invoices.map(inv=>
-              <tr key={inv.id} style={{background:inv._overdue?'#fef2f2':undefined,cursor:'pointer'}} onClick={()=>setViewInvoice(inv)}>
-                <td style={{fontWeight:700,color:'#1e40af',fontSize:12,cursor:'pointer',textDecoration:'underline'}}>{inv.id}</td>
+              <tr key={inv._hist?'h:'+(inv.netsuite_internal_id||inv.id):inv.id} style={{background:inv._overdue?'#fef2f2':inv._hist?'#fafbfc':undefined,cursor:inv._hist?'default':'pointer',color:inv._hist?'#475569':undefined}} onClick={inv._hist?undefined:()=>setViewInvoice(inv)} title={inv._hist?'NetSuite history — read only':undefined}>
+                <td style={{fontWeight:700,color:inv._hist?'#64748b':'#1e40af',fontSize:12,cursor:inv._hist?'default':'pointer',textDecoration:inv._hist?'none':'underline'}}>{inv.id}{inv._hist&&<span style={{marginLeft:4,fontSize:8,padding:'1px 4px',borderRadius:3,background:'#e2e8f0',color:'#475569',fontWeight:700,letterSpacing:0.5}}>NS</span>}</td>
                 <td style={{fontSize:11,color:'#7c3aed',cursor:inv.so_id?'pointer':'default',textDecoration:inv.so_id?'underline':'none'}}
                   onClick={e=>{e.stopPropagation();if(inv.so_id){const so=sos.find(s=>s.id===inv.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}}>{inv.so_id||'—'}</td>
                 <td style={{fontSize:11}}>{inv.memo}</td>
@@ -8299,7 +8309,7 @@ export default function App(){
                   color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
                   {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
                   {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3}} title="Reported to TaxCloud">TC</span>}</td>
-                <td onClick={e=>e.stopPropagation()}>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
+                <td onClick={e=>e.stopPropagation()}>{!inv._hist&&inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
                   onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}</td>
               </tr>)}</tbody></table>
             {/* Payment history */}
