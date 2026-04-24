@@ -1802,7 +1802,7 @@ export default function App(){
   const[vecCredits,setVecCredits]=useState(null);
   const vecCanvasRef=useRef(null);
   const[issueModal,setIssueModal]=useState({open:false,desc:'',priority:'medium'});
-  const[issueFilter,setIssueFilter]=useState('all');// all|open|resolved
+  const[issueFilter,setIssueFilter]=useState('open');// all|open|resolved
   const[editMember,setEditMember]=useState(null);
   const[showInactive,setShowInactive]=useState(false);
   // Rep-CSR assignments and assigned todos
