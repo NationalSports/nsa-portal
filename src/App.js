@@ -3224,6 +3224,44 @@ export default function App(){
     }
   },[REPS]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ─── PAGE ACCESS CONTROL ───
+  // Pages whose access is admin-controlled per-user (match the 22 checkboxes in the Team edit modal).
+  // Pages NOT in this set (purchase_orders, issues, settings) fall through to role-level gates in `nav`.
+  const RESTRICTED_PAGES=useMemo(()=>new Set(['dashboard','estimates','orders','invoices','omg','jobs','art','production','warehouse','batch_pos','customers','vendors','products','inventory','messages','commissions','reports','team','import','qb','backup','sales_tools']),[]);
+  // Role-based defaults used when a team member has no explicit access array.
+  const DEFAULT_ACCESS_BY_ROLE=useMemo(()=>({
+    super_admin:Array.from(RESTRICTED_PAGES),
+    admin:Array.from(RESTRICTED_PAGES),
+    rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools'],
+    csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools'],
+    accounting:['dashboard','invoices','customers','reports','qb'],
+    warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
+    prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
+    prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','reports'],
+    production:['dashboard','orders','jobs','art','production','warehouse','inventory','reports'],
+    artist:['dashboard','orders','art','jobs','production'],
+  }),[RESTRICTED_PAGES]);
+  const effectiveAccess=useMemo(()=>{
+    if(!cu)return[];
+    if(cu.role==='admin'||cu.role==='super_admin')return Array.from(RESTRICTED_PAGES);
+    if(Array.isArray(cu.access)&&cu.access.length>0)return cu.access;
+    return DEFAULT_ACCESS_BY_ROLE[cu.role]||['dashboard'];
+  },[cu,RESTRICTED_PAGES,DEFAULT_ACCESS_BY_ROLE]);
+  const canAccess=useCallback((pageId)=>{
+    if(!cu)return false;
+    if(cu.role==='admin'||cu.role==='super_admin')return true;
+    if(!RESTRICTED_PAGES.has(pageId))return true; // purchase_orders / issues / settings gated only by role in `nav`
+    return effectiveAccess.includes(pageId);
+  },[cu,RESTRICTED_PAGES,effectiveAccess]);
+  // Redirect if programmatic setPg() landed the user on a page they no longer have access to.
+  React.useEffect(()=>{
+    if(!cu)return;
+    if(!canAccess(pg)){
+      const fallback=effectiveAccess[0]||'dashboard';
+      if(pg!==fallback)setPg(fallback);
+    }
+  },[pg,cu,canAccess,effectiveAccess]);
+
   // ─── MOBILE PORTAL DETECTION & TOGGLE ───
   const _isTouchDevice=()=>{try{return('ontouchstart'in window||navigator.maxTouchPoints>0)&&window.innerWidth<=1024}catch{return false}};
   const[mobileMode,setMobileMode]=useState(()=>{try{const pref=localStorage.getItem('nsa_mobile_mode');if(pref==='desktop')return false;if(pref==='mobile')return true;return _isTouchDevice()}catch{return false}});
@@ -21628,8 +21666,8 @@ export default function App(){
     </div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
         if(item.roles&&!item.roles.includes(cu.role)&&cu.role!=='super_admin')return null;
-        // Page access control: if employee has custom access list, enforce it (admins/super_admins always see all)
-        if(cu.role!=='admin'&&cu.role!=='super_admin'&&cu.access&&!cu.access.includes(item.id))return null;
+        // Page access control: admins see all; others honor per-user access array, falling back to role defaults.
+        if(!canAccess(item.id))return null;
         const _closedSt=new Set(['complete','shipped','closed']);
         const _sidebarMsgs=item.id==='messages'?msgs.filter(m=>{const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);if(!so&&(m.entity_type||'so')==='so')return true;if(!so)return true;const cSt=calcSOStatus(so);return!_closedSt.has(cSt)&&!_closedSt.has(so.status)}):[];
         const ubadge=_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;
@@ -21729,7 +21767,7 @@ export default function App(){
         <span style={{fontSize:14}}>&#9888;</span><span style={{flex:1}}>{failedSaveCount} item{failedSaveCount>1?'s':''} failed to save to cloud. Auto-retrying every 30s. Your data is safe locally.</span>
         <span style={{fontSize:11,color:'#b45309',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{(()=>{const ids=[..._dbSaveFailedIds];return ids.length<=3?ids.join(', '):ids.slice(0,3).join(', ')+' +' +(ids.length-3)+' more'})()}</span>
       </div>}
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='search'&&rSearch()}</div></div>
+      <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='search'&&rSearch()}</>}</div></div>
     {/* Assignment Modal — global, triggered from warehouse or production board */}
     {assignModal&&<div className="modal-overlay" onClick={()=>setAssignModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
         <div className="modal-header" style={{background:'#fffbeb'}}><h2>📋 Assign to Machine / Person</h2><button className="modal-close" onClick={()=>setAssignModal(null)}>×</button></div>
