@@ -4772,6 +4772,34 @@ export default function App(){
     // Detect duplicate alpha tags — they break portal routing since ?portal=<tag> picks the first match.
     const dupAlphaGroups=(()=>{const m=new Map();cust.filter(c=>c.is_active!==false&&c.alpha_tag).forEach(c=>{const k=c.alpha_tag.trim().toUpperCase();if(!m.has(k))m.set(k,[]);m.get(k).push(c)});return [...m.entries()].filter(([,arr])=>arr.length>1)})();
     const refreshTaxRates=async()=>{if(!supabase){nf('Supabase not configured','error');return}nf('Refreshing tax rates from TaxCloud...');try{const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{});if(d?.ok){if(d.changes?.length>0)setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));nf('TaxCloud: '+d.updated+' of '+d.total_customers+' customer rate(s) updated'+(d.errors?' ('+d.errors+' errors)':''))}else{nf(d?.error||'Refresh failed','error')}}catch(e){nf('Error: '+e.message,'error')}};
+    const autoFixAlphaTags=()=>{
+      if(!dupAlphaGroups.length){nf('No duplicate alpha tags');return}
+      const taken=new Set(cust.filter(c=>c.is_active!==false&&c.alpha_tag).map(c=>c.alpha_tag.trim().toUpperCase()));
+      const renames=[];
+      dupAlphaGroups.forEach(([tag,arr])=>{
+        // Keep the oldest (or parent) tag unchanged; rename the rest.
+        const sorted=[...arr].sort((a,b)=>{
+          if(!a.parent_id&&b.parent_id)return -1;
+          if(a.parent_id&&!b.parent_id)return 1;
+          return (a.created_at||'').localeCompare(b.created_at||'')||a.id.localeCompare(b.id);
+        });
+        sorted.slice(1).forEach(c=>{
+          let newTag=null;
+          for(let n=2;n<10000;n++){const cand=tag+n;if(!taken.has(cand)){newTag=cand;break}}
+          if(!newTag)newTag=tag+'-'+c.id.slice(-4).toUpperCase();
+          taken.delete(c.alpha_tag.trim().toUpperCase());
+          taken.add(newTag);
+          renames.push({id:c.id,name:c.name,oldTag:c.alpha_tag,newTag});
+        });
+      });
+      if(!renames.length)return;
+      const preview=renames.slice(0,5).map(r=>'  '+r.name+': '+r.oldTag+' → '+r.newTag).join('\n');
+      const more=renames.length>5?'\n  ...and '+(renames.length-5)+' more':'';
+      if(!window.confirm('Auto-rename '+renames.length+' customer alpha tag'+(renames.length===1?'':'s')+' to make them unique?\n\n'+preview+more+'\n\nYou can still edit any tag manually afterward.'))return;
+      const rMap=new Map(renames.map(r=>[r.id,r.newTag]));
+      setCust(prev=>prev.map(c=>rMap.has(c.id)?{...c,alpha_tag:rMap.get(c.id)}:c));
+      nf('Renamed '+renames.length+' alpha tag'+(renames.length===1?'':'s'));
+    };
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
       {isA&&<button className="btn btn-secondary" onClick={refreshTaxRates} title="Look up tax rates from TaxCloud for all active, non-exempt customers">Refresh Tax Rates</button>}
@@ -4783,12 +4811,15 @@ export default function App(){
     {isA&&dupAlphaGroups.length>0&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:12,display:'flex',alignItems:'flex-start',gap:12}}>
       <Icon name="alert" size={16}/>
       <div style={{flex:1,fontSize:12,color:'#991b1b'}}>
-        <div style={{fontWeight:700,marginBottom:4}}>{dupAlphaGroups.length} duplicate alpha tag{dupAlphaGroups.length===1?'':'s'} — portal links will open the wrong customer.</div>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}>
+          <div style={{fontWeight:700}}>{dupAlphaGroups.length} duplicate alpha tag{dupAlphaGroups.length===1?'':'s'} — portal links will open the wrong customer.</div>
+          <button className="btn btn-sm" style={{background:'#dc2626',color:'#fff',border:'none',fontSize:11,whiteSpace:'nowrap'}} onClick={autoFixAlphaTags}>Auto-Fix All</button>
+        </div>
         <div style={{display:'flex',flexDirection:'column',gap:4}}>{dupAlphaGroups.map(([tag,arr])=>
           <div key={tag} style={{fontSize:11}}><span style={{fontFamily:'monospace',fontWeight:700,background:'#fee2e2',padding:'1px 6px',borderRadius:4,marginRight:6}}>{tag}</span>
             {arr.map((c,ix)=><React.Fragment key={c.id}>{ix>0&&<span style={{color:'#94a3b8'}}> · </span>}<button style={{background:'none',border:'none',padding:0,color:'#1e40af',textDecoration:'underline',cursor:'pointer',fontSize:11}} onClick={()=>setCM({open:true,c})}>{c.name}</button></React.Fragment>)}
           </div>)}</div>
-        <div style={{marginTop:4,color:'#7f1d1d',fontSize:10}}>Click a name to edit and assign a unique alpha tag.</div>
+        <div style={{marginTop:4,color:'#7f1d1d',fontSize:10}}>Auto-Fix keeps the oldest customer's tag and renames the rest (e.g. SB → SB2, SB3). You can still edit any tag manually.</div>
       </div>
     </div>}
     {custSearching&&<div style={{textAlign:'center',padding:12,color:'#64748b',fontSize:13}}>Searching...</div>}
