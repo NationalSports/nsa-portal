@@ -11035,7 +11035,6 @@ export default function App(){
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)c++})});return c})();
     const tabs=[
-      {id:'receive',label:'Scan to Receive',icon:'📱',count:0,color:'#2563eb'},
       {id:'pull',label:'Item Fulfillment',icon:'📋',count:fPull.length,color:'#d97706'},
       {id:'deco',label:'Ready for Deco',icon:'🎨',count:fDeco.length,color:'#7c3aed'},
       {id:'ship',label:'Ready to Ship',icon:'📦',count:fShip.length,color:'#166534'},
@@ -11420,6 +11419,8 @@ export default function App(){
         <select className="form-select" style={{width:140,fontSize:11}} value={whRepF} onChange={e=>setWhRepF(e.target.value)}>
           <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
         </select>
+        <button className="btn btn-sm" style={{fontSize:10,background:whTab==='receive'?'#1e40af':'#2563eb',color:'white',border:whTab==='receive'?'2px solid #1e40af':'none',padding:whTab==='receive'?'3px 11px':'4px 12px',fontWeight:700,borderRadius:4,boxShadow:whTab==='receive'?'0 2px 6px rgba(37,99,235,0.4)':'none'}}
+          onClick={()=>setWhTab('receive')}>📱 Scan to Receive</button>
         <button className="btn btn-sm" style={{fontSize:10,background:'#92400e',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
           onClick={()=>setManualShipModal({soSearch:'',so:null,cust:null,carrier:'fedex',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}>⚡ Manual Ship</button>
       </div>
