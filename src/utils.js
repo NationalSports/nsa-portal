@@ -121,7 +121,7 @@ export const printDoc=opts=>{
   const w=window.open('','_blank');if(!w)return;
   w.document.write(docHtml);w.document.close();setTimeout(()=>w.print(),300);
 };
-export const nextInvId=invs=>{const nums=(invs||[]).map(i=>{const m=String(i.id).match(/(\d+)$/);return m?parseInt(m[1]):0});return'INV-'+(Math.max(0,...nums)+1)};
+export const nextInvId=invs=>{const nums=(invs||[]).map(i=>{const m=String(i.id).match(/(\d+)$/);return m?parseInt(m[1]):0});return'INV-'+(Math.max(1000,...nums)+1)};
 
 // ── Supabase Edge Function helper ──
 export async function invokeEdgeFn(supabase,fnName,body){

@@ -20,9 +20,9 @@ const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}}
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
 const _syncDbMaxIds=async()=>{if(!supabase)return;try{const[e,s,i]=await Promise.all([supabase.from('estimates').select('id').order('id',{ascending:false}).limit(1),supabase.from('sales_orders').select('id').order('id',{ascending:false}).limit(1),supabase.from('invoices').select('id').order('id',{ascending:false}).limit(1)]);const p=r=>{const m=String(r?.data?.[0]?.id||'').match(/(\d+)/);return m?parseInt(m[1]):0};_dbMaxIds.est=p(e);_dbMaxIds.so=p(s);_dbMaxIds.inv=p(i)}catch(e){console.warn('[DB] Failed to sync max IDs:',e)}};
-const nextEstId=ests=>'EST-'+(Math.max(_maxNum(ests),_dbMaxIds.est)+1);
-const nextSOId=sos=>'SO-'+(Math.max(_maxNum(sos),_dbMaxIds.so)+1);
-const nextInvId=invs=>'INV-'+(Math.max(_maxNum(invs),_dbMaxIds.inv)+1);
+const nextEstId=ests=>'EST-'+(Math.max(_maxNum(ests),_dbMaxIds.est,1000)+1);
+const nextSOId=sos=>'SO-'+(Math.max(_maxNum(sos),_dbMaxIds.so,1000)+1);
+const nextInvId=invs=>'INV-'+(Math.max(_maxNum(invs),_dbMaxIds.inv,1000)+1);
 const fmtCreatedAt=s=>{if(!s)return'—';if(String(s).includes(','))return String(s).split(',')[0];const d=new Date(s);return isNaN(d)?String(s):d.toLocaleDateString('en-US')};
 const isDualRunJob=(j)=>j&&j.items&&j.items.length>1&&j.items.some(gi=>gi.run_order);
 const mapColorCategory=color=>{if(!color)return'';const c=color.toLowerCase();if(/white|natural|cream|ivory/.test(c))return'White';if(/black|charcoal/.test(c))return'Black';if(/navy|blue|royal|columbia|carolina/.test(c))return'Blue';if(/red|cardinal|scarlet|crimson/.test(c))return'Red';if(/green|forest|kelly|lime|hunter/.test(c))return'Green';if(/grey|gray|heather|silver|graphite/.test(c))return'Grey';if(/gold|yellow|vegas|athletic/.test(c))return'Gold';if(/orange|texas/.test(c))return'Orange';if(/purple|maroon|wine|burgundy/.test(c))return'Purple';if(/pink|fuchsia/.test(c))return'Pink';if(/brown|tan|khaki|sand|coyote/.test(c))return'Brown';return''};
@@ -1696,8 +1696,28 @@ export default function App(){
   const[editingBatchId,setEditingBatchId]=useState(null);// batch PO id being edited in queue
   // Inventory adjustments log & inventory POs
   const[invAdjLog,setInvAdjLog]=useState(()=>loadState('inv_adj_log',[]));// [{id,product_id,sku,product_name,size,qty_change,prev_qty,new_qty,reason,adjustment_type,performed_by,created_at}]
-  const[invPOs,setInvPOs]=useState(()=>loadState('inv_pos',[]));// [{id,po_number,vendor_id,vendor_name,items:[{product_id,sku,name,color,sizes:{},received:{},nsa_cost}],status,created_at,expected_date,memo,created_by,received_at,received_by}]
-  const[invPOCounter,setInvPOCounter]=useState(()=>loadState('inv_po_counter',1001));// sequential: PO-1001-NSA, PO-1002-NSA...
+  const[invPOs,setInvPOs]=useState(()=>{
+    const inv=loadState('inv_pos',[]);
+    const stock=loadState('stock_pos',[]);
+    if(!stock||stock.length===0)return inv;
+    // Migrate legacy warehouse Stock POs into the unified invPOs list. Preserve original PO numbers.
+    const existing=new Set(inv.map(p=>p.po_number));
+    const migrated=stock.filter(sp=>sp&&sp.id&&!existing.has(sp.id)).map(sp=>({
+      id:'spo-'+String(sp.id).replace(/[^a-z0-9]/gi,'')+'-'+Math.random().toString(36).slice(2,6),
+      po_number:sp.id,vendor_id:sp.vendor_id||'',vendor_name:sp.vendor_name||'',
+      items:(sp.items||[]).map(it=>({product_id:null,sku:it.sku||'',name:it.name||'',color:it.color||'',available_sizes:Object.keys(it.sizes||{}),sizes:{...(it.sizes||{})},received:{...(it.received||{})},nsa_cost:0})),
+      status:sp.status==='waiting'?'ordered':(sp.status||'ordered'),
+      created_at:sp.created_at||new Date().toLocaleString(),expected_date:'',memo:sp.notes||'',
+      created_by:sp.created_by||'Warehouse',received_at:sp.received_at||(sp.status==='received'?sp.created_at:null),received_by:sp.received_by||null,_qb_synced:false
+    }));
+    try{localStorage.removeItem('nsa_stock_pos')}catch(e){}
+    return[...migrated,...inv];
+  });// [{id,po_number,vendor_id,vendor_name,items:[{product_id,sku,name,color,sizes:{},received:{},nsa_cost}],status,created_at,expected_date,memo,created_by,received_at,received_by}]
+  const[invPOCounter,setInvPOCounter]=useState(()=>{
+    const ipo=loadState('inv_po_counter',1001);const spo=loadState('stock_po_counter',0);
+    try{localStorage.removeItem('nsa_stock_po_counter')}catch(e){}
+    return Math.max(ipo,spo,1001);
+  });// sequential: PO-1001-NSA, PO-1002-NSA... (unified for inventory + warehouse POs)
   const[invTab,setInvTab]=useState('stock');// stock | log | pos
   const[invPOModal,setInvPOModal]=useState({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null});// create/edit PO modal
   const[invPOReceive,setInvPOReceive]=useState(null);// PO being received
@@ -4781,7 +4801,7 @@ export default function App(){
   // causes React to remount them on every parent re-render (losing state like editing mode)
   const _pdRef=React.useRef(null);
   if(!_pdRef.current){_pdRef.current=({product,onBack,ctx})=>{
-    const{vend,cust,ests,sos,invPOs,stockPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES}=ctx.current;
+    const{vend,cust,ests,sos,invPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES}=ctx.current;
     const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());
     const[autoSaved,setAutoSaved]=useState(false);
     // Sync ep with product prop when inventory changes externally (e.g. AdjModal)
@@ -4806,7 +4826,6 @@ export default function App(){
     const pPOs=[];pSOs.forEach(so=>{so.items?.forEach(it=>{if(it.product_id===product.id||it.sku===product.sku){(it.po_lines||[]).forEach(po=>{pPOs.push({...po,soId:so.id,sku:it.sku,name:it.name,customer:cust.find(c=>c.id===so.customer_id)})})}})});
     // Inventory POs (not tied to SOs)
     const pInvPOs=invPOs.filter(po=>po.items?.some(it=>it.sku===product.sku));
-    const pStockPOs=stockPOs.filter(po=>po.items?.some(it=>it.sku===product.sku));
     const pInvs=invs.filter(inv=>pSOs.some(s=>s.id===inv.so_id));
     // Sales volume by month
     const parseDt=(d)=>{if(!d)return null;const m=d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return null;let y=parseInt(m[3]);if(y<100)y+=2000;return{m:parseInt(m[1])-1,y}};
@@ -4912,7 +4931,7 @@ export default function App(){
       {/* Tabs */}
       <div style={{display:'flex',gap:4,marginBottom:12}}>
         {[['history','Order History'],['sales','Sales Volume'],['estimates','Estimates'],['pos','POs'],['invpos','Inv POs'],['jobs','Jobs'],['invoices','Invoices']].map(([k,label])=>
-          <button key={k} className={`btn btn-sm ${tab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setTab(k)}>{label} {k==='invpos'&&(pInvPOs.length+pStockPOs.length)>0?'('+( pInvPOs.length+pStockPOs.length)+')':''}</button>)}
+          <button key={k} className={`btn btn-sm ${tab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setTab(k)}>{label} {k==='invpos'&&pInvPOs.length>0?'('+pInvPOs.length+')':''}</button>)}
       </div>
 
       {/* ORDER HISTORY (ALL) */}
@@ -4932,11 +4951,9 @@ export default function App(){
             onClick:()=>{setPg('invoices');setSelP(null)}}}),
         ...pInvPOs.map(po=>{const it=po.items?.find(i=>i.sku===product.sku);const qty=it?Object.values(it.sizes||{}).reduce((a,v2)=>a+v2,0):0;const rcvd=it?Object.values(it.received||{}).reduce((a,v2)=>a+v2,0):0;
             return{type:'Inv PO',id:po.po_number||po.id,cust:null,memo:po.vendor_name+(po.memo?' · '+po.memo:''),qty,status:po.status==='received'?'received':rcvd>0?'partial':'waiting',date:po.created_at,badge:po.status==='received'?'badge-green':rcvd>0?'badge-amber':'badge-blue',onClick:()=>{}}}),
-        ...pStockPOs.map(po=>{const it=po.items?.find(i=>i.sku===product.sku);const qty=it?Object.values(it.sizes||{}).reduce((a,v2)=>a+v2,0):0;const rcvd=it?Object.values(it.received||{}).reduce((a,v2)=>a+v2,0):0;
-            return{type:'Stock PO',id:po.id,cust:null,memo:po.vendor_name+(po.notes?' · '+po.notes:''),qty,status:po.status==='received'?'received':rcvd>0?'partial':'waiting',date:po.created_at,badge:po.status==='received'?'badge-green':rcvd>0?'badge-amber':'badge-blue',onClick:()=>{setPg('warehouse');setWhTab('stockpo');setSelP(null)}}})
         ].sort((a,b)=>(b.date||'').localeCompare(a.date||'')).map((r,i)=>
           <tr key={i} style={{cursor:'pointer'}} onClick={r.onClick}>
-            <td><span className={`badge ${r.type==='Estimate'?'badge-amber':r.type==='SO'?'badge-blue':r.type==='PO'||r.type==='Inv PO'||r.type==='Stock PO'?'badge-purple':r.type==='Job'?'badge-gray':'badge-green'}`}>{r.type}</span></td>
+            <td><span className={`badge ${r.type==='Estimate'?'badge-amber':r.type==='SO'?'badge-blue':r.type==='PO'||r.type==='Inv PO'?'badge-purple':r.type==='Job'?'badge-gray':'badge-green'}`}>{r.type}</span></td>
             <td style={{fontWeight:700,color:'#1e40af'}}>{r.id}</td>
             <td>{r.cust?.name||'—'}</td>
             <td style={{fontSize:12}}>{r.memo}</td>
@@ -4944,7 +4961,7 @@ export default function App(){
             <td><span className={`badge ${r.badge}`}>{r.status}</span></td>
             <td style={{fontSize:11,color:'#64748b'}}>{r.date||'—'}</td>
           </tr>)}
-        {pEsts.length+pSOs.length+pPOs.length+pJobs.length+pInvs.length+pInvPOs.length+pStockPOs.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No orders found for this product</td></tr>}
+        {pEsts.length+pSOs.length+pPOs.length+pJobs.length+pInvs.length+pInvPOs.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No orders found for this product</td></tr>}
         </tbody></table></div></div>}
 
       {/* SALES VOLUME TAB */}
@@ -5011,23 +5028,16 @@ export default function App(){
         </tbody></table></div></div>}
 
       {/* INV POs TAB */}
-      {tab==='invpos'&&<div className="card"><div className="card-header"><h3>Inventory POs ({pInvPOs.length+pStockPOs.length})</h3></div><div className="card-body" style={{padding:0}}>
-        <table><thead><tr><th>PO</th><th>Type</th><th>Vendor</th><th>Qty Ordered</th><th>Qty Received</th><th>Status</th><th>Date</th></tr></thead><tbody>
+      {tab==='invpos'&&<div className="card"><div className="card-header"><h3>Inventory POs ({pInvPOs.length})</h3></div><div className="card-body" style={{padding:0}}>
+        <table><thead><tr><th>PO</th><th>Vendor</th><th>Qty Ordered</th><th>Qty Received</th><th>Status</th><th>Date</th></tr></thead><tbody>
         {pInvPOs.map((po,i)=>{const it=po.items?.find(x=>x.sku===product.sku);const qty=it?Object.values(it.sizes||{}).reduce((a,v2)=>a+v2,0):0;const rcvd=it?Object.values(it.received||{}).reduce((a,v2)=>a+v2,0):0;
           return<tr key={'inv'+i}>
-            <td style={{fontWeight:700,color:'#7c3aed'}}>{po.po_id||po.id}</td><td><span className="badge badge-blue">Inv PO</span></td>
-            <td>{vend.find(v=>v.id===po.vendor_id)?.name||po.vendor||'—'}</td>
+            <td style={{fontWeight:700,color:'#7c3aed'}}>{po.po_number||po.id}</td>
+            <td>{vend.find(v=>v.id===po.vendor_id)?.name||po.vendor_name||'—'}</td>
             <td>{qty}</td><td>{rcvd}</td>
             <td><span className={`badge ${po.status==='received'?'badge-green':po.status==='ordered'?'badge-amber':'badge-gray'}`}>{po.status||'draft'}</span></td>
             <td style={{fontSize:11,color:'#64748b'}}>{po.created_at||'—'}</td></tr>})}
-        {pStockPOs.map((po,i)=>{const it=po.items?.find(x=>x.sku===product.sku);const qty=it?Object.values(it.sizes||{}).reduce((a,v2)=>a+v2,0):0;const rcvd=it?Object.values(it.received||{}).reduce((a,v2)=>a+v2,0):0;
-          return<tr key={'stk'+i}>
-            <td style={{fontWeight:700,color:'#7c3aed'}}>{po.po_id||po.id}</td><td><span className="badge badge-amber">Stock PO</span></td>
-            <td>{vend.find(v=>v.id===po.vendor_id)?.name||po.vendor||'—'}</td>
-            <td>{qty}</td><td>{rcvd}</td>
-            <td><span className={`badge ${po.status==='received'?'badge-green':po.status==='ordered'?'badge-amber':'badge-gray'}`}>{po.status||'draft'}</span></td>
-            <td style={{fontSize:11,color:'#64748b'}}>{po.created_at||'—'}</td></tr>})}
-        {pInvPOs.length+pStockPOs.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No inventory POs</td></tr>}
+        {pInvPOs.length===0&&<tr><td colSpan={6} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No inventory POs</td></tr>}
         </tbody></table></div></div>}
 
       {/* JOBS TAB */}
@@ -10927,12 +10937,9 @@ export default function App(){
   const[whActionSearch,setWhActionSearch]=useState('');
   const[whEditActionIdx,setWhEditActionIdx]=useState(null);
   const[whEditOrigSizes,setWhEditOrigSizes]=useState(null);
-  const[stockPOs,setStockPOs]=useState(()=>loadState('stock_pos',[]));
-  React.useEffect(()=>{_saveAppState('stock_pos',stockPOs)},[stockPOs]);
-  const[showStockPO,setShowStockPO]=useState(null);const[stockPOCounter,setStockPOCounter]=useState(()=>loadState('stock_po_counter',5001));
-  React.useEffect(()=>{_saveAppState('stock_po_counter',stockPOCounter)},[stockPOCounter]);
-  // Populate ProductDetail context ref — must be after setWhTab and stockPOs are declared
-  _pdCtx.current={vend,cust,ests,sos,invPOs,stockPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES};
+  const[showStockPO,setShowStockPO]=useState(null);
+  // Populate ProductDetail context ref — must be after setWhTab is declared
+  _pdCtx.current={vend,cust,ests,sos,invPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES};
   // Ship package modal: {grp, soMap:{soId:so}, boxes:[{items:[{sku,name,color,sizes:{}}],tracking_number:'',carrier:'',weight:5,notes:''}]}
   const[shipModal,setShipModal]=useState(null);
   const[manualShipModal,setManualShipModal]=useState(null);
@@ -10950,10 +10957,8 @@ export default function App(){
     if(bm){setWhRecvPO(bm.po_number);nf('Loaded '+bm.po_number);return}
     for(const so of sos){for(const it of safeItems(so)){for(const po of safePOs(it)){
       if((po.po_id||'').toLowerCase()===lc){setWhRecvPO(po.po_id);nf('Loaded '+po.po_id);return}}}}
-    const im=invPOs.find(p=>p.po_number.toLowerCase()===lc);
-    if(im){setWhRecvPO(im.po_number);nf('Loaded '+im.po_number);return}
-    const sm=stockPOs.find(p=>p.id.toLowerCase()===lc);
-    if(sm){setWhRecvPO(sm.id);nf('Loaded '+sm.id);return}
+    const im=invPOs.find(p=>(p.po_number||p.id||'').toLowerCase()===lc);
+    if(im){const ref=im.po_number||im.id;setWhRecvPO(ref);nf('Loaded '+ref);return}
     nf('PO "'+sv+'" not found','warn');
   }
 
@@ -10969,7 +10974,7 @@ export default function App(){
     });
     const fPull=filt(pullTasks);const fShip=filt(shipTasks);
     const readyForDeco=decoTasks.filter(t=>t.isReady&&(t.prodStatus==='hold'||t.prodStatus==='draft')&&t.prodStatus!=='ready');const fDeco=filt(readyForDeco);
-    const openStockPOs=stockPOs.filter(p=>p.status!=='received');
+    const openStockPOs=invPOs.filter(p=>p.status!=='received'&&p.status!=='cancelled');
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)c++})});return c})();
     const tabs=[
@@ -11371,11 +11376,9 @@ export default function App(){
                 if(open>0&&!openPOs.find(x=>x.id===po.po_id))openPOs.push({id:po.po_id||'—',vendor:po.vendor||po.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'',units:open,date:po.created_at||'',type:'so'})
               })})});
               invPOs.filter(p=>p.status!=='received'&&p.status!=='cancelled').forEach(po=>{
-                const units=po.items.reduce((a,it)=>a+Object.values(it.sizes).reduce((a2,v)=>a2+v,0)-Object.values(it.received||{}).reduce((a2,v)=>a2+v,0),0);
-                if(!openPOs.find(x=>x.id===po.po_number))openPOs.push({id:po.po_number,vendor:po.vendor_name,units,date:po.created_at,type:'inv'})});
-              stockPOs.filter(p=>p.status!=='received').forEach(po=>{
                 const units=po.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0)-Object.values(it.received||{}).reduce((a2,v)=>a2+v,0),0);
-                if(!openPOs.find(x=>x.id===po.id))openPOs.push({id:po.id,vendor:po.vendor_name,units,date:po.created_at,type:'stock'})});
+                const ref=po.po_number||po.id;
+                if(!openPOs.find(x=>x.id===ref))openPOs.push({id:ref,vendor:po.vendor_name,units,date:po.created_at,type:'inv'})});
               if(openPOs.length===0)return<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:13}}>No open POs awaiting receive</div>;
               return<div className="card"><div className="card-body" style={{padding:0}}>
                 <table style={{fontSize:12}}><thead><tr><th>PO #</th><th>Vendor</th><th>Open Units</th><th>Date</th><th></th></tr></thead><tbody>
@@ -11401,8 +11404,7 @@ export default function App(){
             safeItems(so).forEach((it,idx)=>{safePOs(it).forEach((po,pli)=>{
               if((po.po_id||'').toLowerCase()===lc)soPOLines.push({so,soId:so.id,customer:c2?.name||c2?.alpha_tag||'',item:it,itemIdx:idx,poLine:po,poLineIdx:pli})
             })})});
-          const invMatch=invPOs.find(p=>p.po_number.toLowerCase()===lc);
-          const stockMatch=stockPOs.find(p=>p.id.toLowerCase()===lc);
+          const invMatch=invPOs.find(p=>(p.po_number||p.id||'').toLowerCase()===lc);
 
           // Build unified item list for display
           const poItems=[];let vendorName='';let poDate='';
@@ -11424,13 +11426,6 @@ export default function App(){
               const szKeys=Object.keys(it.sizes).filter(k=>(it.sizes[k]||0)>0);
               poItems.push({_idx:ii,sku:it.sku,name:it.name,color:it.color||'',szKeys,
                 ordered:{...it.sizes},received:{...(it.received||{})},cancelled:{}});
-            });
-          } else if(stockMatch){
-            vendorName=stockMatch.vendor_name;poDate=stockMatch.created_at;
-            stockMatch.items.forEach((it,ii)=>{
-              const szKeys=Object.keys(it.sizes||{}).filter(k=>((it.sizes||{})[k]||0)>0);
-              poItems.push({_idx:ii,sku:it.sku,name:it.name,color:it.color||'',szKeys,
-                ordered:{...(it.sizes||{})},received:{...(it.received||{})},cancelled:{}});
             });
           } else if(batchMatch){
             vendorName=batchMatch.vendor_name;poDate=batchMatch.submitted_at;
@@ -11683,21 +11678,6 @@ export default function App(){
                     const allDone=updInvItems.every(it=>Object.keys(it.sizes).every(sz=>((it.received||{})[sz]||0)>=(it.sizes[sz]||0)));
                     setInvPOs(prev=>prev.map(p=>p.po_number===invMatch.po_number?{...p,items:updInvItems,status:allDone?'received':'partial',
                       received_at:new Date().toLocaleString(),received_by:cu.name}:p));
-                  }
-
-                  // --- Stock POs ---
-                  if(stockMatch){
-                    const updStockItems=stockMatch.items.map((it,ii)=>{
-                      const newRcvd={...(it.received||{})};
-                      Object.keys(it.sizes||{}).forEach(sz=>{
-                        const open=Math.max(0,((it.sizes||{})[sz]||0)-((it.received||{})[sz]||0));
-                        if(open<=0)return;
-                        const qty=getRcvQty(ii,sz,open);
-                        if(qty>0){newRcvd[sz]=(newRcvd[sz]||0)+qty;anyReceived=true;totalQtyReceived+=qty}
-                      });return{...it,received:newRcvd};
-                    });
-                    const allDone=updStockItems.every(it=>Object.keys(it.sizes||{}).every(sz=>((it.received||{})[sz]||0)>=((it.sizes||{})[sz]||0)));
-                    setStockPOs(prev=>prev.map(p=>p.id===stockMatch.id?{...p,items:updStockItems,status:allDone?'received':'partial',received_at:new Date().toLocaleString(),received_by:cu.name}:p));
                   }
 
                   setWhReceiving(false);
@@ -12972,28 +12952,29 @@ export default function App(){
           </div>})()}
       </>}
 
-      {/* ── STOCK POs ── */}
+      {/* ── STOCK POs (unified view of all vendor POs — same data as Inventory POs) ── */}
       {whTab==='stockpo'&&<>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-          <div style={{fontSize:13,color:'#64748b'}}>Purchase orders for NSA warehouse stock (not tied to a sales order)</div>
-          <button className="btn btn-sm btn-primary" style={{background:'#6366f1',borderColor:'#6366f1'}} onClick={()=>setShowStockPO({vendor_id:'',items:[{sku:'',name:'',color:'',sizes:{S:0,M:0,L:0,XL:0,'2XL':0}}],notes:''})}>+ New Stock PO</button>
+          <div style={{fontSize:13,color:'#64748b'}}>Vendor purchase orders — receive stock into the warehouse</div>
+          <button className="btn btn-sm btn-primary" style={{background:'#6366f1',borderColor:'#6366f1'}} onClick={()=>setShowStockPO({vendor_id:'',items:[{product_id:null,sku:'',name:'',color:'',sizes:{S:0,M:0,L:0,XL:0,'2XL':0}}],memo:''})}>+ New Stock PO</button>
         </div>
-        {stockPOs.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No stock POs yet</div>:
+        {invPOs.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No POs yet</div>:
         <div style={{display:'grid',gap:10}}>
-          {stockPOs.map((po,pi)=>{
+          {invPOs.map((po,pi)=>{
+            const poRef=po.po_number||po.id;
             const totalOrd=po.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
             const totalRcvd=po.items.reduce((a,it)=>a+Object.values(it.received||{}).reduce((a2,v)=>a2+v,0),0);
             const st=po.status==='received'?'received':totalRcvd>0?'partial':'waiting';
-            return<div key={pi} className="card" style={{borderLeft:'3px solid '+(st==='received'?'#166534':st==='partial'?'#d97706':'#6366f1')}}>
+            return<div key={po.id||pi} className="card" style={{borderLeft:'3px solid '+(st==='received'?'#166534':st==='partial'?'#d97706':'#6366f1')}}>
               <div style={{padding:'12px 16px'}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
-                  <span style={{fontFamily:'monospace',fontWeight:900,fontSize:15,color:'#6366f1'}}>{po.id}</span>
+                  <span style={{fontFamily:'monospace',fontWeight:900,fontSize:15,color:'#6366f1'}}>{poRef}</span>
                   <span className="badge" style={{background:st==='received'?'#dcfce7':st==='partial'?'#fef3c7':'#eef2ff',color:st==='received'?'#166534':st==='partial'?'#92400e':'#4338ca',fontWeight:700,fontSize:10}}>{st==='received'?'Received':st==='partial'?totalRcvd+'/'+totalOrd+' Received':'Waiting'}</span>
                   <span style={{fontSize:11,color:'#94a3b8'}}>{po.vendor_name}</span>
                   <span style={{fontSize:10,color:'#94a3b8'}}>{po.created_at}</span>
                   <span style={{marginLeft:'auto',fontWeight:800,fontSize:13}}>{totalOrd} units</span>
                 </div>
-                {po.notes&&<div style={{fontSize:11,color:'#64748b',marginBottom:6}}>{po.notes}</div>}
+                {po.memo&&<div style={{fontSize:11,color:'#64748b',marginBottom:6}}>{po.memo}</div>}
                 <table style={{fontSize:11,width:'100%'}}><thead><tr style={{background:'#f8fafc'}}>
                   <th style={{padding:'4px 6px',textAlign:'left'}}>SKU</th><th style={{textAlign:'left'}}>Item</th><th style={{textAlign:'left'}}>Color</th>
                   {['S','M','L','XL','2XL'].map(sz=><th key={sz} style={{textAlign:'center',width:40}}>{sz}</th>)}
@@ -13015,20 +12996,25 @@ export default function App(){
                 <div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6,flexWrap:'wrap'}}>
                   {st!=='received'&&<>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
-                    onClick={()=>{setStockPOs(prev=>prev.map((p,i)=>i===pi?{...p,status:'received',items:p.items.map(it=>({...it,received:{...it.sizes}}))}:p));nf('✓ Marked '+po.id+' fully received')}}>✓ Mark All Received</button>
+                    onClick={()=>{
+                      const rcvMap={};
+                      po.items.forEach((it,idx)=>{const remaining={};Object.entries(it.sizes||{}).forEach(([sz,ord])=>{const rcvd=(it.received||{})[sz]||0;const open=Math.max(0,ord-rcvd);if(open>0)remaining[sz]=open});if(Object.keys(remaining).length>0)rcvMap[idx]=remaining});
+                      if(Object.keys(rcvMap).length===0){nf('Nothing left to receive','warn');return}
+                      receiveInvPO(po.id,rcvMap);
+                    }}>✓ Mark All Received</button>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{
-                    const updated=prompt('Enter received sizes (e.g. S:5,M:10,L:8)');if(!updated)return;
-                    const rcvd={};updated.split(',').forEach(p=>{const[sz,v]=p.trim().split(':');if(sz&&v)rcvd[sz.trim()]=parseInt(v)||0});
-                    setStockPOs(prev=>prev.map((p,i)=>i===pi?{...p,status:'partial',items:p.items.map((it,ii)=>ii===0?{...it,received:{...(it.received||{}),...rcvd}}:it)}:p));
-                    nf('Updated received quantities for '+po.id);
+                    const updated=prompt('Enter received sizes for first item (e.g. S:5,M:10,L:8)');if(!updated)return;
+                    const rcvd={};updated.split(',').forEach(p=>{const[sz,v]=p.trim().split(':');if(sz&&v){const q=parseInt(v)||0;if(q>0)rcvd[sz.trim()]=q}});
+                    if(Object.keys(rcvd).length===0)return;
+                    receiveInvPO(po.id,{0:rcvd});
                   }}>Partial Receive</button></>}
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:st==='received'?0:'auto'}} onClick={()=>{
                     const w=window.open('','_blank','width=400,height=600');if(!w)return;
-                    const scanUrl=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po.id);
+                    const scanUrl=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(poRef);
                     const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+encodeURIComponent(scanUrl);
-                    w.document.write('<html><head><title>'+po.id+'</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:12px;width:3.6in}.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}th,td{border:1px solid #ccc;padding:3px 6px;text-align:left}th{background:#f0f0f0;font-weight:700}.footer{font-size:9px;color:#999;text-align:center;margin-top:8px;border-top:1px solid #ddd;padding-top:4px}</style></head><body>');
+                    w.document.write('<html><head><title>'+poRef+'</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:12px;width:3.6in}.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}th,td{border:1px solid #ccc;padding:3px 6px;text-align:left}th{background:#f0f0f0;font-weight:700}.footer{font-size:9px;color:#999;text-align:center;margin-top:8px;border-top:1px solid #ddd;padding-top:4px}</style></head><body>');
                     w.document.write('<div style="text-align:center"><img src="'+qrUrl+'" width="120" height="120"/></div>');
-                    w.document.write('<div class="po">'+po.id+'</div>');
+                    w.document.write('<div class="po">'+poRef+'</div>');
                     if(po.vendor_name)w.document.write('<div style="text-align:center;font-size:12px;color:#666;margin-bottom:6px">'+po.vendor_name+'</div>');
                     w.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
                     po.items.forEach(it=>{const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
@@ -13038,27 +13024,27 @@ export default function App(){
                     w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Scan QR to open this PO</div>');
                     w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),400);
                   }}>🖨️ Print Label</button>
-                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{setWhRecvPO(po.id);setWhTab('receive')}}>📱 Receive</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{setWhRecvPO(poRef);setWhTab('receive')}}>📱 Receive</button>
                 </div>
               </div>
             </div>})}
         </div>}
 
-        {/* Stock PO Create Modal */}
+        {/* Stock PO Create Modal — writes into unified invPOs */}
         {showStockPO&&<div className="modal-overlay" onClick={()=>setShowStockPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:650}}>
           <div className="modal-header" style={{background:'#eef2ff'}}><h2>📋 New Stock PO</h2><button className="modal-close" onClick={()=>setShowStockPO(null)}>×</button></div>
           <div className="modal-body">
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}>
               <div><label className="form-label">Vendor *</label><select className="form-select" value={showStockPO.vendor_id} onChange={e=>{const v=D_V.find(x=>x.id===e.target.value);setShowStockPO(x=>({...x,vendor_id:e.target.value,vendor_name:v?.name||''}))}}>
                 <option value="">Select vendor...</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
-              <div><label className="form-label">Notes</label><input className="form-input" value={showStockPO.notes||''} onChange={e=>setShowStockPO(x=>({...x,notes:e.target.value}))} placeholder="Restock reason..."/></div>
+              <div><label className="form-label">Memo</label><input className="form-input" value={showStockPO.memo||''} onChange={e=>setShowStockPO(x=>({...x,memo:e.target.value}))} placeholder="Restock reason..."/></div>
             </div>
             <label className="form-label">Items</label>
             {(showStockPO.items||[]).map((it,ii)=>{
               const vProds=showStockPO.vendor_id?prod.filter(p=>p.vendor_id===showStockPO.vendor_id):prod;
               return<div key={ii} style={{padding:8,background:'#f8fafc',borderRadius:6,marginBottom:6}}>
                 <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:6}}>
-                  <select className="form-select" style={{flex:1,fontSize:11}} value={it.sku||''} onChange={e=>{const p=prod.find(x=>x.sku===e.target.value);setShowStockPO(x=>({...x,items:x.items.map((xi,xii)=>xii===ii?{...xi,sku:p?.sku||e.target.value,name:p?.name||'',color:p?.color||'',sizes:Object.fromEntries((p?.available_sizes||['S','M','L','XL','2XL']).map(s=>[s,0]))}:xi)}))}}>
+                  <select className="form-select" style={{flex:1,fontSize:11}} value={it.sku||''} onChange={e=>{const p=prod.find(x=>x.sku===e.target.value);setShowStockPO(x=>({...x,items:x.items.map((xi,xii)=>xii===ii?{...xi,product_id:p?.id||null,sku:p?.sku||e.target.value,name:p?.name||'',color:p?.color||'',available_sizes:p?.available_sizes||[],nsa_cost:p?.blank_cost||0,sizes:Object.fromEntries((p?.available_sizes||['S','M','L','XL','2XL']).map(s=>[s,0]))}:xi)}))}}>
                     <option value="">Select product...</option>{vProds.map(p=><option key={p.id} value={p.sku}>{p.sku} — {p.name}</option>)}</select>
                   <input className="form-input" value={it.color||''} onChange={e=>setShowStockPO(x=>({...x,items:x.items.map((xi,xii)=>xii===ii?{...xi,color:e.target.value}:xi)}))} placeholder="Color" style={{width:120,fontSize:11}}/>
                   {(showStockPO.items||[]).length>1&&<button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:2}} onClick={()=>setShowStockPO(x=>({...x,items:x.items.filter((_,xii)=>xii!==ii)}))}>×</button>}
@@ -13070,18 +13056,20 @@ export default function App(){
                   </div>)}
                 </div>}
               </div>})}
-            <button className="btn btn-sm btn-secondary" style={{marginTop:4}} onClick={()=>setShowStockPO(x=>({...x,items:[...x.items,{sku:'',name:'',color:'',sizes:{S:0,M:0,L:0,XL:0,'2XL':0}}]}))}>+ Add Item</button>
+            <button className="btn btn-sm btn-secondary" style={{marginTop:4}} onClick={()=>setShowStockPO(x=>({...x,items:[...x.items,{product_id:null,sku:'',name:'',color:'',sizes:{S:0,M:0,L:0,XL:0,'2XL':0}}]}))}>+ Add Item</button>
             <div style={{marginTop:12,display:'flex',gap:8}}>
               <button className="btn btn-primary" style={{background:'#6366f1',borderColor:'#6366f1'}} onClick={()=>{
                 if(!showStockPO.vendor_id){nf('Select a vendor','error');return}
                 const validItems=showStockPO.items.filter(it=>it.sku&&Object.values(it.sizes||{}).some(v=>v>0));
                 if(validItems.length===0){nf('Add at least one item with quantities','error');return}
-                const poId='PO-'+stockPOCounter+'-NSA';
-                const newPO={id:poId,vendor_id:showStockPO.vendor_id,vendor_name:showStockPO.vendor_name||D_V.find(v=>v.id===showStockPO.vendor_id)?.name||'',
-                  status:'waiting',created_at:new Date().toLocaleDateString(),notes:showStockPO.notes||'',
-                  items:validItems.map(it=>({sku:it.sku,name:it.name,color:it.color||'',sizes:{...it.sizes},received:{}}))};
-                setStockPOs(prev=>[newPO,...prev]);setStockPOCounter(c=>c+1);setShowStockPO(null);
-                nf('📋 Created '+poId+' — '+validItems.length+' item'+(validItems.length>1?'s':''));
+                const poNum='PO-'+invPOCounter+'-NSA';
+                const newPO={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:showStockPO.vendor_id,vendor_name:showStockPO.vendor_name||D_V.find(v=>v.id===showStockPO.vendor_id)?.name||'',
+                  items:validItems.map(it=>({product_id:it.product_id||null,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||Object.keys(it.sizes||{}),sizes:{...it.sizes},received:{},nsa_cost:it.nsa_cost||0})),
+                  status:'ordered',created_at:new Date().toLocaleString(),expected_date:'',memo:showStockPO.memo||'',
+                  created_by:cu?.name||'Warehouse',received_at:null,received_by:null,_qb_synced:false};
+                setInvPOs(prev=>[newPO,...prev]);setInvPOCounter(c=>c+1);setShowStockPO(null);
+                logChange('created','Inventory PO',poNum,newPO.vendor_name+' — '+validItems.length+' items');
+                nf('📋 Created '+poNum+' — '+validItems.length+' item'+(validItems.length>1?'s':''));
               }}>Create PO</button>
               <button className="btn btn-secondary" onClick={()=>setShowStockPO(null)}>Cancel</button>
             </div>
@@ -21157,12 +21145,9 @@ export default function App(){
         }
       }
     }
-    // Check inventory POs
-    const invMatch=invPOs.find(p=>p.po_number.toLowerCase()===lc);
-    if(invMatch){setInvTab('pos');setInvPOSearch(scanVal);setPg('inventory');nf('Scanned: '+invMatch.po_number);return}
-    // Check stock POs
-    const stockMatch=stockPOs.find(p=>p.id.toLowerCase()===lc);
-    if(stockMatch){setWhTab('stockpo');setPg('warehouse');nf('Scanned: '+stockMatch.id);return}
+    // Check inventory POs (unified: includes legacy stock POs)
+    const invMatch=invPOs.find(p=>(p.po_number||p.id||'').toLowerCase()===lc);
+    if(invMatch){const ref=invMatch.po_number||invMatch.id;setInvTab('pos');setInvPOSearch(scanVal);setPg('inventory');nf('Scanned: '+ref);return}
     // Also search SO IDs directly
     const soMatch=sos.find(s=>s.id.toLowerCase()===lc);
     if(soMatch){const cc=cust.find(x=>x.id===soMatch.customer_id);setESO(soMatch);setESOC(cc);setPg('orders');nf('Scanned: '+soMatch.id);return}
