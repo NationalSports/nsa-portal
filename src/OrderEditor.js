@@ -2666,12 +2666,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const custId=o.customer_id;const parentCust2=allCustomers.find(c=>c.id===custId);
       const custIds2=parentCust2?.parent_id?[parentCust2.parent_id,custId,...allCustomers.filter(c=>c.parent_id===parentCust2.parent_id).map(c=>c.id)]:[custId,...allCustomers.filter(c=>c.parent_id===custId).map(c=>c.id)];
       const prevArtList=[];
+      const _seenKeys=new Set();
+      const _dedupKey=a=>(a.id||'')+'|'+(a.name||'').toLowerCase().trim()+'|'+(a.deco_type||'')+'|'+(a.art_size||'')+'|'+((a.color_ways||[]).length);
       // Include customer-level art library
-      custIds2.forEach(cid=>{const c=allCustomers.find(cc=>cc.id===cid);(c?.art_files||[]).forEach(art=>{if(!prevArtList.some(a=>a.name===art.name&&a.deco_type===art.deco_type))prevArtList.push({...art,_so_id:'Library',_so_memo:c.alpha_tag||c.name||''})})});
+      custIds2.forEach(cid=>{const c=allCustomers.find(cc=>cc.id===cid);(c?.art_files||[]).forEach(art=>{const k=_dedupKey(art);if(!_seenKeys.has(k)){_seenKeys.add(k);prevArtList.push({...art,_so_id:'Library',_so_memo:c.alpha_tag||c.name||''})}})});
       (allOrders||[]).filter(so=>custIds2.includes(so.customer_id)&&so.id!==o.id).forEach(so=>{
         (so.art_files||[]).forEach(art=>{
-          if(!prevArtList.some(a=>a.name===art.name&&a.deco_type===art.deco_type))
-            prevArtList.push({...art,_so_id:so.id,_so_memo:so.memo||''});
+          const k=_dedupKey(art);
+          if(!_seenKeys.has(k)){_seenKeys.add(k);prevArtList.push({...art,_so_id:so.id,_so_memo:so.memo||''})}
         });
       });
       return<div className="modal-overlay" onClick={()=>setShowPrevArt(false)}><div className="modal" style={{maxWidth:700}} onClick={e=>e.stopPropagation()}>
@@ -2680,10 +2682,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {prevArtList.length===0?<div className="empty">No previous artwork found for this customer</div>:
           <div style={{display:'flex',flexDirection:'column',gap:8}}>
             {prevArtList.map((art,i)=>{
-              const alreadyAdded=af.some(a=>a.name===art.name&&a.deco_type===art.deco_type);
+              const alreadyAdded=af.some(a=>a.id===art.id||(a.name===art.name&&a.deco_type===art.deco_type&&a.art_size===art.art_size));
               const previewImg=art.preview_url||'';
-              const mockups=[...(art.mockup_files||[]),...(art.files||[]),...(art.prod_files||[]),...Object.values(art.item_mockups||{}).flat()].filter(f=>f);
-              const firstMockup=mockups.find(f=>{const u=typeof f==='string'?f:(f?.url||'');return _isImgUrl(u,f)})||mockups[0];const imgUrl=previewImg||(firstMockup?(typeof firstMockup==='string'?firstMockup:firstMockup.url):'');
+              // Only include actual mockup sources (not prod seps/AIs) and filter to files tagged for this art when art_file_id is present.
+              const _artId=art.id;
+              const _tagMatches=f=>{const fid=typeof f==='object'&&f?.art_file_id;return!fid||fid===_artId};
+              const _rawMocks=[...(art.mockup_files||[]),...(art.files||[]),...Object.values(art.item_mockups||{}).flat()].filter(f=>f&&_tagMatches(f));
+              const _urlOf=f=>typeof f==='string'?f:(f?.url||'');
+              const _seenUrls=new Set();
+              const mockups=_rawMocks.filter(f=>{const u=_urlOf(f);if(!u||_seenUrls.has(u))return false;_seenUrls.add(u);return true});
+              const firstMockup=mockups.find(f=>{const u=_urlOf(f);return _isImgUrl(u,f)})||mockups[0];const imgUrl=previewImg||(firstMockup?_urlOf(firstMockup):'');
               return<div key={art.id+'-'+i} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
                 <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
                   {imgUrl&&_isImgUrl(imgUrl)?<img src={imgUrl} alt="" style={{width:80,height:80,borderRadius:8,objectFit:'contain',flexShrink:0,cursor:'pointer',background:'white',border:'1px solid #e2e8f0'}} onClick={()=>previewImg?window.open(previewImg,'_blank'):openFile(firstMockup)}/>:
@@ -2693,7 +2701,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{(art.color_ways||[]).length>0?' · '+art.color_ways.length+' CW'+(art.color_ways.length>1?'s':''):art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':art.thread_colors?' · '+art.thread_colors:''}{art.art_size?' · '+art.art_size:''}</div>
                     <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{art._so_id} — {art._so_memo}</div>
                     {mockups.length>1&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:6}}>
-                      {mockups.slice(1,5).map((f,fi)=>{const fUrl=typeof f==='string'?f:(f?.url||'');return _isImgUrl(fUrl)?<img key={fi} src={fUrl} alt="" style={{width:48,height:48,borderRadius:4,objectFit:'contain',cursor:'pointer',background:'white',border:'1px solid #e2e8f0'}} onClick={e=>{e.stopPropagation();openFile(f)}}/>:null})}
+                      {mockups.slice(1,5).map((f,fi)=>{const fUrl=_urlOf(f);return _isImgUrl(fUrl)?<img key={fi} src={fUrl} alt="" style={{width:48,height:48,borderRadius:4,objectFit:'contain',cursor:'pointer',background:'white',border:'1px solid #e2e8f0'}} onClick={e=>{e.stopPropagation();openFile(f)}}/>:null})}
                       {mockups.length>5&&<span style={{fontSize:10,color:'#64748b',alignSelf:'center'}}>+{mockups.length-5} more</span>}
                     </div>}
                   </div>
