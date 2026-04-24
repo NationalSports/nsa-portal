@@ -102,6 +102,50 @@ class ComponentErrorBoundary extends React.Component{
 // Merge customer + parent colors (pantone or thread), deduplicating by code/name
 const mergeColors=(cust,allCustomers,field)=>{const own=cust?.[field]||[];if(!cust?.parent_id)return own;const parent=allCustomers?.find(c=>c.id===cust.parent_id);const parentColors=parent?.[field]||[];if(!parentColors.length)return own;const key=field==='pantone_colors'?'code':'name';const seen=new Set(own.map(c=>(c[key]||'').toUpperCase()));return[...own,...parentColors.filter(c=>!seen.has((c[key]||'').toUpperCase()))]};
 
+// ─── Alpha tag generation ───
+// Shared by Auto-Fix and the parent→sub rename cascade so codes stay consistent.
+const _ALPHA_STOP=new Set(['HS','MS','JHS','HIGH','MIDDLE','SCHOOL','SCHOOLS','JR','JUNIOR','SR','SENIOR','THE','OF','AND','AT','FOR','COLLEGE','UNIVERSITY','UNI','ACADEMY','PREP','ELEMENTARY','ELEM','DISTRICT','USD','CLUB','ASSOC','ASSOCIATION','TEAM','TEAMS','YOUTH']);
+const _SPORT_ABBR={FOOTBALL:'F',BASKETBALL:'BB',BASEBALL:'BSB',SOFTBALL:'SB',VOLLEYBALL:'VB',SOCCER:'SOC',TRACK:'TR',TENNIS:'TN',GOLF:'G',WRESTLING:'WR',WRESTLE:'WR',SWIMMING:'SW',SWIM:'SW',DIVE:'SW',DIVING:'SW',CHEER:'CH',DANCE:'D',HOCKEY:'HK',LACROSSE:'LAX',POLO:'WP',XC:'XC',BAND:'BND',GYMNASTICS:'GYM',FIELD:'TF',ROWING:'ROW',CREW:'ROW'};
+const _GENDER_MOD={BOYS:'B',BOY:'B',GIRLS:'G',GIRL:'G',MENS:'M',MEN:'M',WOMENS:'W',WOMEN:'W'};
+const _LEVEL_MOD={VARSITY:'V',FROSH:'FR',FRESHMAN:'FR',FRESHMEN:'FR',JV:'JV'};
+const _alphaNameVariants=(name)=>{
+  const words=(name||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
+  const kept=words.filter(w=>!_ALPHA_STOP.has(w));const pool=kept.length?kept:words;
+  if(!pool.length)return [];
+  const v=[];const push=(s)=>{if(s&&s.length>=2&&s.length<=8&&!v.includes(s))v.push(s)};
+  const w0=pool[0],w1=pool[1]||'',w2=pool[2]||'';
+  push(w0.slice(0,3)+w1.slice(0,1));push(w0.slice(0,4)+w1.slice(0,1));push(w0.slice(0,3)+w1.slice(0,2));push(w0.slice(0,2)+w1.slice(0,2));
+  if(w2){push(w0.slice(0,3)+w1.slice(0,1)+w2.slice(0,1));push(w0.slice(0,2)+w1.slice(0,1)+w2.slice(0,1))}
+  push(w0.slice(0,4)+w1.slice(0,2));push(w0.slice(0,5)+w1.slice(0,1));push(w0.slice(0,6));push(pool.map(w=>w[0]).join(''));
+  return v;
+};
+const _alphaSubVariants=(subName,parent)=>{
+  const variants=[];const push=(s)=>{if(s&&s.length>=2&&s.length<=10&&!variants.includes(s))variants.push(s)};
+  const prefix=(parent?.alpha_tag||'').trim();
+  if(prefix){
+    const parentW=new Set((parent.name||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(Boolean));
+    const subW=(subName||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
+    const distinct=subW.filter(w=>!parentW.has(w)&&!_ALPHA_STOP.has(w));
+    const src=distinct.length?distinct:subW.filter(w=>!_ALPHA_STOP.has(w));
+    const sport=src.find(w=>_SPORT_ABBR[w]);const gender=src.find(w=>_GENDER_MOD[w]);const level=src.find(w=>_LEVEL_MOD[w]);
+    const suffixes=[];const pushS=(s)=>{if(s&&!suffixes.includes(s))suffixes.push(s)};
+    if(sport){const a=_SPORT_ABBR[sport];pushS(a);if(gender)pushS(a+_GENDER_MOD[gender]);if(level)pushS(a+_LEVEL_MOD[level]);if(gender&&level)pushS(a+_GENDER_MOD[gender]+_LEVEL_MOD[level]);pushS(sport.slice(0,2));pushS(sport.slice(0,3))}
+    if(src.length){pushS(src.map(w=>w[0]).join(''));pushS(src[0].slice(0,2));pushS(src[0].slice(0,3));pushS(src[0].slice(0,1))}
+    if(gender)pushS(_GENDER_MOD[gender]);if(level)pushS(_LEVEL_MOD[level]);
+    suffixes.forEach(s=>push(prefix+s));
+  }
+  _alphaNameVariants(subName).forEach(v=>push(v));
+  return variants;
+};
+// Pick the first candidate not in `taken` (case-insensitive); falls back to numeric suffix.
+const pickUniqueAlphaTag=(candidates,taken,fallbackBase)=>{
+  for(const v of candidates){if(v&&!taken.has(v.toUpperCase()))return v}
+  const base=candidates[0]||fallbackBase||'CUST';
+  for(let n=2;n<10000;n++){const c=base+n;if(!taken.has(c.toUpperCase()))return c}
+  return base+'-'+Date.now().toString(36).toUpperCase().slice(-4);
+};
+const generateAlphaCandidates=(customer,parent)=>parent&&parent.alpha_tag?_alphaSubVariants(customer.name,parent):_alphaNameVariants(customer.name);
+
 // ─── Stripe Setup ───
 const _stripePk = process.env.REACT_APP_STRIPE_PK || '';
 let stripePromise = null;
@@ -3169,22 +3213,26 @@ export default function App(){
       if(!c.parent_id){
         const inherit={pantone_colors:c.pantone_colors||[],thread_colors:c.thread_colors||[],adidas_ua_tier:c.adidas_ua_tier,catalog_markup:c.catalog_markup};
         next=next.map(x=>{if(x.parent_id!==c.id)return x;const differs=JSON.stringify(x.pantone_colors||[])!==JSON.stringify(inherit.pantone_colors)||JSON.stringify(x.thread_colors||[])!==JSON.stringify(inherit.thread_colors)||x.adidas_ua_tier!==inherit.adidas_ua_tier||x.catalog_markup!==inherit.catalog_markup;if(differs)subCount++;return differs?{...x,...inherit}:x});
-        // Cascade alpha_tag prefix: any sub whose tag starts with the parent's old tag is rewritten with the new prefix (e.g. OLHS → OLu renames OLHSF to OLuF).
-        const oldPrefix=(e?.alpha_tag||'').trim();
-        const newPrefix=(c.alpha_tag||'').trim();
-        if(oldPrefix&&newPrefix&&oldPrefix.toLowerCase()!==newPrefix.toLowerCase()){
-          next=next.map(x=>{
-            if(x.parent_id!==c.id)return x;
-            const tag=(x.alpha_tag||'').trim();
-            if(!tag||!tag.toLowerCase().startsWith(oldPrefix.toLowerCase()))return x;
-            tagCount++;
-            return{...x,alpha_tag:newPrefix+tag.slice(oldPrefix.length)};
+        // Alpha-tag cascade — when the parent's alpha tag changes, regenerate every sub's tag as parent_prefix + sport/suffix (OLu → OLuF, OLuBB, OLuBSB, ...).
+        const oldTag=(e?.alpha_tag||'').trim();
+        const newTag=(c.alpha_tag||'').trim();
+        if(oldTag&&newTag&&oldTag.toLowerCase()!==newTag.toLowerCase()){
+          const subIds=new Set(next.filter(x=>x.parent_id===c.id).map(x=>x.id));
+          const taken=new Set(next.filter(x=>x.id!==c.id&&!subIds.has(x.id)&&x.alpha_tag).map(x=>x.alpha_tag.trim().toUpperCase()));
+          taken.add(newTag.toUpperCase());
+          const renames=new Map();
+          next.filter(x=>x.parent_id===c.id).forEach(sub=>{
+            const candidates=generateAlphaCandidates(sub,c);
+            const pick=pickUniqueAlphaTag(candidates,taken,sub.alpha_tag);
+            taken.add(pick.toUpperCase());
+            if(pick.toUpperCase()!==(sub.alpha_tag||'').trim().toUpperCase())renames.set(sub.id,pick);
           });
+          if(renames.size){next=next.map(x=>renames.has(x.id)?{...x,alpha_tag:renames.get(x.id)}:x);tagCount=renames.size}
         }
       }
       return next;
     });
-    const parts=[];if(subCount)parts.push('synced '+subCount+' sub-account'+(subCount===1?'':'s'));if(tagCount)parts.push('renamed '+tagCount+' sub alpha tag'+(tagCount===1?'':'s'));
+    const parts=[];if(subCount)parts.push('synced '+subCount+' sub-account'+(subCount===1?'':'s'));if(tagCount)parts.push('retagged '+tagCount+' sub alpha tag'+(tagCount===1?'':'s'));
     nf(parts.length?'Saved — '+parts.join(', '):'Saved');
   };
   // Lock decoration pricing on save so matrix changes don't affect existing orders
@@ -4787,45 +4835,8 @@ export default function App(){
     const refreshTaxRates=async()=>{if(!supabase){nf('Supabase not configured','error');return}nf('Refreshing tax rates from TaxCloud...');try{const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{});if(d?.ok){if(d.changes?.length>0)setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));nf('TaxCloud: '+d.updated+' of '+d.total_customers+' customer rate(s) updated'+(d.errors?' ('+d.errors+' errors)':''))}else{nf(d?.error||'Refresh failed','error')}}catch(e){nf('Error: '+e.message,'error')}};
     const autoFixAlphaTags=()=>{
       if(!dupAlphaGroups.length){nf('No duplicate alpha tags');return}
-      // Noise words stripped before deriving a tag (shared across schools/teams).
-      const STOP=new Set(['HS','MS','JHS','HIGH','MIDDLE','SCHOOL','SCHOOLS','JR','JUNIOR','SR','SENIOR','THE','OF','AND','AT','FOR','COLLEGE','UNIVERSITY','UNI','ACADEMY','PREP','ELEMENTARY','ELEM','DISTRICT','USD','CLUB','ASSOC','ASSOCIATION','TEAM','TEAMS','YOUTH']);
-      // Common sport abbreviations so subs get OLuF / OLuBB / OLuVB instead of OLu2, OLu3…
-      const SPORT={FOOTBALL:'F',BASKETBALL:'BB',BASEBALL:'BSB',SOFTBALL:'SB',VOLLEYBALL:'VB',SOCCER:'SOC',TRACK:'TR',TENNIS:'TN',GOLF:'G',WRESTLING:'WR',WRESTLE:'WR',SWIMMING:'SW',SWIM:'SW',DIVE:'SW',DIVING:'SW',CHEER:'CH',DANCE:'D',HOCKEY:'HK',LACROSSE:'LAX',POLO:'WP',XC:'XC',BAND:'BND',GYMNASTICS:'GYM',FIELD:'TF',ROWING:'ROW',CREW:'ROW'};
-      const GEN={BOYS:'B',BOY:'B',GIRLS:'G',GIRL:'G',MENS:'M',MEN:'M',WOMENS:'W',WOMEN:'W'};
-      const LVL={VARSITY:'V',FROSH:'FR',FRESHMAN:'FR',FRESHMEN:'FR',JV:'JV'};
-      // Base name-based variants (used for parents and as a fallback for subs).
-      const nameVariants=(name)=>{
-        const words=(name||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
-        const kept=words.filter(w=>!STOP.has(w));const pool=kept.length?kept:words;
-        if(!pool.length)return [];
-        const v=[];const push=(s)=>{if(s&&s.length>=2&&s.length<=8&&!v.includes(s))v.push(s)};
-        const w0=pool[0],w1=pool[1]||'',w2=pool[2]||'';
-        push(w0.slice(0,3)+w1.slice(0,1));push(w0.slice(0,4)+w1.slice(0,1));push(w0.slice(0,3)+w1.slice(0,2));push(w0.slice(0,2)+w1.slice(0,2));
-        if(w2){push(w0.slice(0,3)+w1.slice(0,1)+w2.slice(0,1));push(w0.slice(0,2)+w1.slice(0,1)+w2.slice(0,1))}
-        push(w0.slice(0,4)+w1.slice(0,2));push(w0.slice(0,5)+w1.slice(0,1));push(w0.slice(0,6));push(pool.map(w=>w[0]).join(''));
-        return v;
-      };
-      // Sub variants: prefix = parent's alpha_tag (case preserved), suffix = sport/gender/level tokens.
-      const subVariants=(subName,parent)=>{
-        const variants=[];const push=(s)=>{if(s&&s.length>=2&&s.length<=10&&!variants.includes(s))variants.push(s)};
-        const prefix=(parent?.alpha_tag||'').trim();
-        if(prefix){
-          const parentW=new Set((parent.name||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(Boolean));
-          const subW=(subName||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
-          const distinct=subW.filter(w=>!parentW.has(w)&&!STOP.has(w));
-          const src=distinct.length?distinct:subW.filter(w=>!STOP.has(w));
-          const sport=src.find(w=>SPORT[w]);const gender=src.find(w=>GEN[w]);const level=src.find(w=>LVL[w]);
-          const suffixes=[];const pushS=(s)=>{if(s&&!suffixes.includes(s))suffixes.push(s)};
-          if(sport){const a=SPORT[sport];pushS(a);if(gender)pushS(a+GEN[gender]);if(level)pushS(a+LVL[level]);if(gender&&level)pushS(a+GEN[gender]+LVL[level]);pushS(sport.slice(0,2));pushS(sport.slice(0,3))}
-          if(src.length){pushS(src.map(w=>w[0]).join(''));pushS(src[0].slice(0,2));pushS(src[0].slice(0,3));pushS(src[0].slice(0,1))}
-          if(gender)pushS(GEN[gender]);if(level)pushS(LVL[level]);
-          suffixes.forEach(s=>push(prefix+s));
-        }
-        nameVariants(subName).forEach(v=>push(v));
-        return variants;
-      };
-      // Tags held by customers NOT in a duplicate group — we must not collide with these.
       const dupIds=new Set();dupAlphaGroups.forEach(([,arr])=>arr.forEach(c=>dupIds.add(c.id)));
+      // Tags held by customers NOT in a duplicate group — we must not collide with these.
       const taken=new Set(cust.filter(c=>c.is_active!==false&&c.alpha_tag&&!dupIds.has(c.id)).map(c=>c.alpha_tag.trim().toUpperCase()));
       const renames=[];
       dupAlphaGroups.forEach(([,arr])=>{
@@ -4837,17 +4848,9 @@ export default function App(){
         });
         sorted.forEach(c=>{
           const parent=c.parent_id?cust.find(x=>x.id===c.parent_id):null;
-          const variants=parent?subVariants(c.name,parent):nameVariants(c.name);
-          let chosen=variants.find(v=>!taken.has(v.toUpperCase()))||null;
-          if(!chosen){
-            const base=variants[0]||(c.alpha_tag||'').trim()||'CUST';
-            for(let n=2;n<10000;n++){const cand=base+n;if(!taken.has(cand.toUpperCase())){chosen=cand;break}}
-          }
-          if(!chosen)chosen=((c.alpha_tag||'CUST')+'-'+c.id.slice(-4)).toUpperCase();
+          const chosen=pickUniqueAlphaTag(generateAlphaCandidates(c,parent),taken,c.alpha_tag);
           taken.add(chosen.toUpperCase());
-          if(chosen.toUpperCase()!==(c.alpha_tag||'').trim().toUpperCase()){
-            renames.push({id:c.id,name:c.name,oldTag:c.alpha_tag,newTag:chosen});
-          }
+          if(chosen.toUpperCase()!==(c.alpha_tag||'').trim().toUpperCase())renames.push({id:c.id,name:c.name,oldTag:c.alpha_tag,newTag:chosen});
         });
       });
       if(!renames.length){nf('Alpha tags are already unique');return}
