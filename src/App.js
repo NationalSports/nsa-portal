@@ -1696,11 +1696,14 @@ export default function App(){
   const[editingBatchId,setEditingBatchId]=useState(null);// batch PO id being edited in queue
   // Inventory adjustments log & inventory POs
   const[invAdjLog,setInvAdjLog]=useState(()=>loadState('inv_adj_log',[]));// [{id,product_id,sku,product_name,size,qty_change,prev_qty,new_qty,reason,adjustment_type,performed_by,created_at}]
+  // Pure initializer — no side effects so StrictMode double-invocation is safe.
+  // Legacy nsa_stock_pos / nsa_stock_po_counter are cleaned up in a useEffect below after mount.
   const[invPOs,setInvPOs]=useState(()=>{
     const inv=loadState('inv_pos',[]);
     const stock=loadState('stock_pos',[]);
     if(!stock||stock.length===0)return inv;
     // Migrate legacy warehouse Stock POs into the unified invPOs list. Preserve original PO numbers.
+    // _qb_synced:true — treat migrated POs as already accounted-for so the QB sync flow doesn't push them retroactively.
     const existing=new Set(inv.map(p=>p.po_number));
     const migrated=stock.filter(sp=>sp&&sp.id&&!existing.has(sp.id)).map(sp=>({
       id:'spo-'+String(sp.id).replace(/[^a-z0-9]/gi,'')+'-'+Math.random().toString(36).slice(2,6),
@@ -1708,16 +1711,16 @@ export default function App(){
       items:(sp.items||[]).map(it=>({product_id:null,sku:it.sku||'',name:it.name||'',color:it.color||'',available_sizes:Object.keys(it.sizes||{}),sizes:{...(it.sizes||{})},received:{...(it.received||{})},nsa_cost:0})),
       status:sp.status==='waiting'?'ordered':(sp.status||'ordered'),
       created_at:sp.created_at||new Date().toLocaleString(),expected_date:'',memo:sp.notes||'',
-      created_by:sp.created_by||'Warehouse',received_at:sp.received_at||(sp.status==='received'?sp.created_at:null),received_by:sp.received_by||null,_qb_synced:false
+      created_by:sp.created_by||'Warehouse',received_at:sp.received_at||(sp.status==='received'?sp.created_at:null),received_by:sp.received_by||null,_qb_synced:true,_legacy_stock:true
     }));
-    try{localStorage.removeItem('nsa_stock_pos')}catch(e){}
     return[...migrated,...inv];
   });// [{id,po_number,vendor_id,vendor_name,items:[{product_id,sku,name,color,sizes:{},received:{},nsa_cost}],status,created_at,expected_date,memo,created_by,received_at,received_by}]
   const[invPOCounter,setInvPOCounter]=useState(()=>{
     const ipo=loadState('inv_po_counter',1001);const spo=loadState('stock_po_counter',0);
-    try{localStorage.removeItem('nsa_stock_po_counter')}catch(e){}
     return Math.max(ipo,spo,1001);
   });// sequential: PO-1001-NSA, PO-1002-NSA... (unified for inventory + warehouse POs)
+  // One-shot cleanup of legacy Stock PO localStorage keys. Runs after mount so StrictMode's double-invoke of useState initializers above is harmless.
+  React.useEffect(()=>{try{if(localStorage.getItem('nsa_stock_pos')!==null)localStorage.removeItem('nsa_stock_pos');if(localStorage.getItem('nsa_stock_po_counter')!==null)localStorage.removeItem('nsa_stock_po_counter')}catch(e){}},[]);
   const[invTab,setInvTab]=useState('stock');// stock | log | pos
   const[invPOModal,setInvPOModal]=useState({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null});// create/edit PO modal
   const[invPOReceive,setInvPOReceive]=useState(null);// PO being received
