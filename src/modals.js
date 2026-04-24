@@ -686,7 +686,77 @@ function QuoteForm({token,supabaseClient}){
   </div>;
 }
 
+// ─── VENDOR MODAL (create / edit) ───
+
+function VendorModal({isOpen,onClose,onSave,vendor,allVendors}){
+  const baseV={id:null,name:'',vendor_type:'upload',api_provider:'',contact_name:'',contact_email:'',contact_phone:'',website:'',rep_name:'',payment_terms:'net30',nsa_carries_inventory:false,click_automation:false,invoice_scan_enabled:false,notes:'',is_active:true};
+  const[f,setF]=useState(baseV);
+  const[err,setErr]=useState('');
+  useEffect(()=>{if(isOpen){setF(vendor?{...baseV,...vendor}:baseV);setErr('')}},[isOpen,vendor]);
+  if(!isOpen)return null;
+  const sv=(k,v)=>setF(x=>({...x,[k]:v}));
+  const save=()=>{
+    const name=(f.name||'').trim();
+    if(!name){setErr('Vendor name is required');return}
+    const dup=(allVendors||[]).find(v=>v.id!==f.id&&(v.name||'').trim().toLowerCase()===name.toLowerCase());
+    if(dup){setErr('A vendor with this name already exists');return}
+    const out={...f,name,id:f.id||'v'+Date.now()};
+    if(out.vendor_type!=='api')out.api_provider=null;
+    else if(!out.api_provider)out.api_provider=null;
+    // Initialize display aggregates for list page
+    if(out._oi==null)out._oi=0;if(out._it==null)out._it=0;if(out._ac==null)out._ac=0;if(out._a3==null)out._a3=0;if(out._a6==null)out._a6=0;if(out._a9==null)out._a9=0;
+    onSave(out);
+    onClose();
+  };
+  return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
+    <div className="modal-header"><h2>{f.id?'Edit Vendor':'New Vendor'}</h2><button className="modal-close" onClick={onClose}>x</button></div>
+    <div className="modal-body">
+      {err&&<div style={{background:'#fef2f2',border:'1px solid #fca5a5',color:'#991b1b',padding:'8px 12px',borderRadius:6,fontSize:12,marginBottom:12}}>{err}</div>}
+      <div style={{display:'flex',gap:8,marginBottom:14}}>
+        {[['upload','Upload'],['api','API']].map(([k,l])=><button key={k} className={`btn btn-sm ${f.vendor_type===k?'btn-primary':'btn-secondary'}`} onClick={()=>sv('vendor_type',k)}>{l}</button>)}
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+        <div><label className="form-label">Vendor Name *</label><input className="form-input" value={f.name} onChange={e=>sv('name',e.target.value)} autoFocus/></div>
+        <div><label className="form-label">Payment Terms</label><select className="form-select" value={f.payment_terms||'net30'} onChange={e=>sv('payment_terms',e.target.value)}>
+          <option value="prepay">Prepay</option><option value="net15">Net 15</option><option value="net30">Net 30</option><option value="net45">Net 45</option><option value="net60">Net 60</option><option value="net90">Net 90</option>
+        </select></div>
+      </div>
+      {f.vendor_type==='api'&&<div style={{marginTop:10}}>
+        <label className="form-label">API Provider</label>
+        <select className="form-select" value={f.api_provider||''} onChange={e=>sv('api_provider',e.target.value)}>
+          <option value="">— None —</option><option value="sanmar">SanMar</option><option value="ss_activewear">S&amp;S Activewear</option><option value="momentec">Momentec</option><option value="richardson">Richardson</option><option value="a4">A4</option>
+        </select>
+      </div>}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginTop:10}}>
+        <div><label className="form-label">Contact Name</label><input className="form-input" value={f.contact_name||''} onChange={e=>sv('contact_name',e.target.value)}/></div>
+        <div><label className="form-label">Rep Name</label><input className="form-input" value={f.rep_name||''} onChange={e=>sv('rep_name',e.target.value)}/></div>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginTop:10}}>
+        <div><label className="form-label">Contact Email</label><input className="form-input" value={f.contact_email||''} onChange={e=>sv('contact_email',e.target.value)} placeholder="orders@vendor.com"/></div>
+        <div><label className="form-label">Phone</label><input className="form-input" value={f.contact_phone||''} onChange={e=>sv('contact_phone',e.target.value)}/></div>
+      </div>
+      <div style={{marginTop:10}}>
+        <label className="form-label">Website</label><input className="form-input" value={f.website||''} onChange={e=>sv('website',e.target.value)} placeholder="https://"/>
+      </div>
+      <div style={{marginTop:14,display:'flex',flexDirection:'column',gap:6}}>
+        <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13}}><input type="checkbox" checked={!!f.nsa_carries_inventory} onChange={e=>sv('nsa_carries_inventory',e.target.checked)}/>NSA carries inventory</label>
+        <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13}}><input type="checkbox" checked={!!f.click_automation} onChange={e=>sv('click_automation',e.target.checked)}/>Click automation enabled</label>
+        <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13}}><input type="checkbox" checked={!!f.invoice_scan_enabled} onChange={e=>sv('invoice_scan_enabled',e.target.checked)}/>Invoice scan enabled</label>
+        <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13}}><input type="checkbox" checked={f.is_active!==false} onChange={e=>sv('is_active',e.target.checked)}/>Active</label>
+      </div>
+      <div style={{marginTop:12}}>
+        <label className="form-label">Notes</label>
+        <textarea className="form-input" value={f.notes||''} onChange={e=>sv('notes',e.target.value)} style={{minHeight:70,fontSize:12}}/>
+      </div>
+    </div>
+    <div className="modal-footer">
+      <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+      <button className="btn btn-primary" onClick={save}>{f.id&&(allVendors||[]).some(v=>v.id===f.id)?'Save':'Create Vendor'}</button>
+    </div>
+  </div></div>);
+}
+
 // ─── STANDALONE COACH PORTAL ───
 
 
-export { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm };
+export { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal };
