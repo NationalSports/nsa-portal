@@ -15060,14 +15060,30 @@ export default function App(){
     return{parsed,decoLines,issues,questions,shipping};
   };
 
-  // Customer detection from text
+  // Customer detection from text — scored match, not first-hit
+  // Guards against short alpha_tags (e.g. "A") matching any text containing that letter
   const detectCustomer=(text)=>{
-    const lower=text.toLowerCase();
-    return cust.find(c=>{
-      if(c.alpha_tag&&lower.includes(c.alpha_tag.toLowerCase()))return true;
-      if(c.name&&lower.includes(c.name.toLowerCase()))return true;
-      return c.contacts?.some(ct=>ct.name&&lower.includes(ct.name.toLowerCase()));
-    });
+    const lower=(text||'').toLowerCase().trim();
+    if(!lower)return;
+    const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    const wordHit=(needle)=>new RegExp('\\b'+esc(needle)+'\\b','i').test(lower);
+    let best=null,bestScore=0;
+    for(const c of cust){
+      let score=0;
+      const name=(c.name||'').toLowerCase().trim();
+      const tag=(c.alpha_tag||'').toLowerCase().trim();
+      if(name){
+        if(lower===name)score=Math.max(score,10000);
+        else if(name.length>=3&&wordHit(name))score=Math.max(score,1000+name.length);
+      }
+      if(tag&&tag.length>=2&&wordHit(tag))score=Math.max(score,100+tag.length);
+      if(c.contacts)for(const ct of c.contacts){
+        const cn=(ct.name||'').toLowerCase().trim();
+        if(cn&&cn.length>=4&&wordHit(cn)){score=Math.max(score,50+cn.length);break}
+      }
+      if(score>bestScore){bestScore=score;best=c}
+    }
+    return best;
   };
 
   // ── QB API helper (shared by rImport and rQB) ──
