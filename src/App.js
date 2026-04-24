@@ -4769,6 +4769,8 @@ export default function App(){
     // Use server-side results when searching/filtering, fall back to client-side
     const f=custServerResults&&(q||rF!=='all')?custServerResults.customers.filter(c=>!c.parent_id):pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF&&!gK(p.id).some(c=>c.primary_rep_id===rF))return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
     const missingRateCount=cust.filter(c=>c.is_active!==false&&!c.tax_exempt&&!(c.tax_rate>0)&&c.shipping_state&&c.shipping_zip).length;
+    // Detect duplicate alpha tags — they break portal routing since ?portal=<tag> picks the first match.
+    const dupAlphaGroups=(()=>{const m=new Map();cust.filter(c=>c.is_active!==false&&c.alpha_tag).forEach(c=>{const k=c.alpha_tag.trim().toUpperCase();if(!m.has(k))m.set(k,[]);m.get(k).push(c)});return [...m.entries()].filter(([,arr])=>arr.length>1)})();
     const refreshTaxRates=async()=>{if(!supabase){nf('Supabase not configured','error');return}nf('Refreshing tax rates from TaxCloud...');try{const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{});if(d?.ok){if(d.changes?.length>0)setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));nf('TaxCloud: '+d.updated+' of '+d.total_customers+' customer rate(s) updated'+(d.errors?' ('+d.errors+' errors)':''))}else{nf(d?.error||'Refresh failed','error')}}catch(e){nf('Error: '+e.message,'error')}};
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
@@ -4777,6 +4779,17 @@ export default function App(){
     {isA&&missingRateCount>0&&<div style={{padding:'10px 14px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,marginBottom:12,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
       <Icon name="alert" size={16}/><div style={{flex:1,fontSize:12,color:'#92400e'}}><strong>{missingRateCount}</strong> customer{missingRateCount===1?'':'s'} missing a tax rate. Click <strong>Refresh Tax Rates</strong> to look them up via TaxCloud.</div>
       <button className="btn btn-sm" style={{background:'#d97706',color:'#fff',border:'none',fontSize:11}} onClick={refreshTaxRates}>Refresh Now</button>
+    </div>}
+    {isA&&dupAlphaGroups.length>0&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:12,display:'flex',alignItems:'flex-start',gap:12}}>
+      <Icon name="alert" size={16}/>
+      <div style={{flex:1,fontSize:12,color:'#991b1b'}}>
+        <div style={{fontWeight:700,marginBottom:4}}>{dupAlphaGroups.length} duplicate alpha tag{dupAlphaGroups.length===1?'':'s'} — portal links will open the wrong customer.</div>
+        <div style={{display:'flex',flexDirection:'column',gap:4}}>{dupAlphaGroups.map(([tag,arr])=>
+          <div key={tag} style={{fontSize:11}}><span style={{fontFamily:'monospace',fontWeight:700,background:'#fee2e2',padding:'1px 6px',borderRadius:4,marginRight:6}}>{tag}</span>
+            {arr.map((c,ix)=><React.Fragment key={c.id}>{ix>0&&<span style={{color:'#94a3b8'}}> · </span>}<button style={{background:'none',border:'none',padding:0,color:'#1e40af',textDecoration:'underline',cursor:'pointer',fontSize:11}} onClick={()=>setCM({open:true,c})}>{c.name}</button></React.Fragment>)}
+          </div>)}</div>
+        <div style={{marginTop:4,color:'#7f1d1d',fontSize:10}}>Click a name to edit and assign a unique alpha tag.</div>
+      </div>
     </div>}
     {custSearching&&<div style={{textAlign:'center',padding:12,color:'#64748b',fontSize:13}}>Searching...</div>}
     {f.map(p=>{const kids=gK(p.id);const bal=kids.reduce((a,c)=>a+(c._ob||0),p._ob||0);
@@ -15339,6 +15352,14 @@ export default function App(){
         if(num>30)return 'net60';
         return 'net30';
       };
+      // Helper: generate a unique alpha_tag within the current set. Falls back to SB2, SB3, etc.
+      const uniqueAlphaTag=(desired,pool)=>{
+        const taken=new Set(pool.map(c=>(c.alpha_tag||'').trim().toUpperCase()).filter(Boolean));
+        const base=(desired||'').trim().toUpperCase()||'CUST';
+        if(!taken.has(base))return base;
+        for(let n=2;n<10000;n++){const candidate=base+n;if(!taken.has(candidate))return candidate}
+        return base+'-'+Date.now();
+      };
       // Two passes: parents first, then subs (so parent IDs exist when subs reference them)
       const allExisting=[...cust];
       // Pass 1: Import parents (account_type 'parent' or no parent_name specified)
@@ -15354,9 +15375,10 @@ export default function App(){
         if(acctType==='sub')return;
         const rawTerms=row[colMap.payment_terms]||'';
         const rawRep=row[colMap.primary_rep_id]||'';
+        const desiredTag=row[colMap.alpha_tag]||name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,4);
         const c={
           id:'c-'+Date.now()+'-'+i,parent_id:null,name,
-          alpha_tag:row[colMap.alpha_tag]||name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,4),
+          alpha_tag:uniqueAlphaTag(desiredTag,[...allExisting,...added]),
           contacts:row[colMap.contact_name]?[{name:row[colMap.contact_name],email:row[colMap.contact_email]||'',phone:row[colMap.contact_phone]||'',role:row[colMap.contact_role]||'Head Coach'}]:[],
           billing_address_line1:row[colMap.billing_address_line1]||'',billing_city:row[colMap.billing_city]||'',
           billing_state:row[colMap.billing_state]||'',billing_zip:row[colMap.billing_zip]||'',
@@ -15393,7 +15415,7 @@ export default function App(){
             // Auto-create the parent account so subs can link to it
             const autoParent={
               id:'c-'+Date.now()+'-ap-'+i,parent_id:null,name:parentName,
-              alpha_tag:parentName.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,4),
+              alpha_tag:uniqueAlphaTag(parentName.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,4),allNow),
               contacts:[],
               billing_address_line1:'',billing_city:'',billing_state:'',billing_zip:'',
               shipping_address_line1:'',shipping_city:'',shipping_state:'',shipping_zip:'',
@@ -15406,9 +15428,10 @@ export default function App(){
         const parent=parentId?allNow.find(c=>c.id===parentId):null;
         const rawTerms=row[colMap.payment_terms]||'';
         const rawRep=row[colMap.primary_rep_id]||'';
+        const desiredSubTag=row[colMap.alpha_tag]||name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,4);
         const c={
           id:'c-'+Date.now()+'-sub-'+i,parent_id:parentId,name,
-          alpha_tag:row[colMap.alpha_tag]||name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,4),
+          alpha_tag:uniqueAlphaTag(desiredSubTag,[...allExisting,...added]),
           contacts:row[colMap.contact_name]?[{name:row[colMap.contact_name],email:row[colMap.contact_email]||'',phone:row[colMap.contact_phone]||'',role:row[colMap.contact_role]||'Head Coach'}]:[],
           billing_address_line1:row[colMap.billing_address_line1]||parent?.billing_address_line1||'',
           billing_city:row[colMap.billing_city]||parent?.billing_city||'',
@@ -16713,7 +16736,7 @@ export default function App(){
                   </div>
                 </div>}
               </div>
-              <CustModal isOpen={impNewCust} onClose={()=>setImpNewCust(false)} onSave={(newC)=>{savC(newC);setImp(x=>({...x,custId:newC.id}));setImpNewCust(false);nf('Customer "'+newC.name+'" created and selected')}} customer={imp.pdfParsed?.customerName&&!imp.custId?{name:imp.pdfParsed.customerName,alpha_tag:imp.pdfParsed.customerName.replace(/[^a-zA-Z0-9 ]/g,'').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase()}:null} parents={pars} reps={REPS} supabase={supabase}/>
+              <CustModal isOpen={impNewCust} onClose={()=>setImpNewCust(false)} onSave={(newC)=>{savC(newC);setImp(x=>({...x,custId:newC.id}));setImpNewCust(false);nf('Customer "'+newC.name+'" created and selected')}} customer={imp.pdfParsed?.customerName&&!imp.custId?{name:imp.pdfParsed.customerName,alpha_tag:imp.pdfParsed.customerName.replace(/[^a-zA-Z0-9 ]/g,'').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase()}:null} parents={pars} reps={REPS} supabase={supabase} allCustomers={cust}/>
               {imp.custId&&(()=>{const c=cust.find(x=>x.id===imp.custId);if(!c)return null;
                 return<div style={{padding:10,background:'#f0fdf4',borderRadius:6,marginBottom:12}}>
                   <div style={{fontWeight:700}}>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></div>
@@ -21235,11 +21258,16 @@ export default function App(){
 
   // ─── COACH PORTAL GATE — public access via ?portal=<alpha_tag> ───
   const _portalTag=useMemo(()=>{try{return new URLSearchParams(window.location.search).get('portal')}catch{return null}},[]);
-  const _portalCust=_portalTag?cust.find(c=>(c.alpha_tag||'').toLowerCase()===_portalTag.toLowerCase()):null;
+  const _portalMatches=_portalTag?cust.filter(c=>(c.alpha_tag||'').trim().toLowerCase()===_portalTag.trim().toLowerCase()):[];
+  const _portalCust=_portalMatches.length===1?_portalMatches[0]:null;
   if(_portalTag){
     if(dbLoading)return<div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
       <div style={{fontSize:48,fontWeight:900,color:'white',letterSpacing:-2}}>NSA</div>
       <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3}}>Loading portal...</div></div>;
+    if(_portalMatches.length>1)return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12,padding:24}}>
+      <div style={{fontSize:48,fontWeight:900,color:'#1e3a5f'}}>NSA</div>
+      <div style={{fontSize:16,color:'#64748b'}}>This portal code matches more than one account.</div>
+      <div style={{fontSize:13,color:'#94a3b8'}}>Please contact your NSA rep for an updated portal link.</div></div>;
     if(!_portalCust)return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12}}>
       <div style={{fontSize:48,fontWeight:900,color:'#1e3a5f'}}>NSA</div>
       <div style={{fontSize:16,color:'#64748b'}}>Portal not found for "<strong>{_portalTag}</strong>"</div>
@@ -21433,7 +21461,7 @@ export default function App(){
         </div>
       </div>
     </div></div>}
-    <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars} reps={REPS} supabase={supabase}/>
+    <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars} reps={REPS} supabase={supabase} allCustomers={cust}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
     {/* INVENTORY PO CREATE MODAL */}
