@@ -1242,7 +1242,7 @@ const parseNetSuitePdf=(text,docType,products)=>{
   const result={docNumber:'',date:'',customerName:'',terms:'',memo:'',subtotal:0,tax:0,shipping:0,total:0,lineItems:[],rawText:text,confidence:'low',warnings:[]};
   const _products=products||[];
   const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
-  const SZ_RE=/[-\s](XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.5)?)$/i;
+  const SZ_RE=/[-\s](XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.\d)?)$/i;
 
   // ── Extract document number ──
   const docPatterns=[
@@ -1353,20 +1353,24 @@ const parseNetSuitePdf=(text,docType,products)=>{
       if(!line.trim()||isPageBreak(line)||isRepeatedHeader(line)||isMetadataLine(line)){i++;continue}
 
       if(isItemLine(line)){
-        // This is a data line (qty/sku/rate/amount) — next non-empty line is description
-        let descLine='';
+        // This is a data line (qty/sku/rate/amount). Collect description from all
+        // non-item lines that follow (shoes often split sizes across multiple lines).
+        const descLines=[];
         let nextIdx=i+1;
-        // Skip page breaks/headers between data line and description
-        while(nextIdx<lines.length&&(isPageBreak(lines[nextIdx])||isRepeatedHeader(lines[nextIdx])||!lines[nextIdx].trim()))nextIdx++;
-        if(nextIdx<lines.length&&!isItemLine(lines[nextIdx])&&!isEndMarker(lines[nextIdx])){
-          descLine=lines[nextIdx];
-          i=nextIdx+1;
-        } else {i++}
-        itemPairs.push({dataLine:line,descLine});
+        while(nextIdx<lines.length){
+          const nl=lines[nextIdx];
+          if(isPageBreak(nl)||isRepeatedHeader(nl)||!nl.trim()){nextIdx++;continue}
+          if(isItemLine(nl)||isEndMarker(nl)||isMetadataLine(nl))break;
+          descLines.push(nl);
+          nextIdx++;
+        }
+        i=descLines.length>0?nextIdx:i+1;
+        itemPairs.push({dataLine:line,descLine:descLines.join(' ')});
       } else {
-        // Standalone description line (might be continuation or orphan)
-        if(itemPairs.length>0&&!itemPairs[itemPairs.length-1].descLine){
-          itemPairs[itemPairs.length-1].descLine=line;
+        // Standalone description line (continuation or orphan) — append
+        if(itemPairs.length>0){
+          const last=itemPairs[itemPairs.length-1];
+          last.descLine=last.descLine?last.descLine+' '+line:line;
         }
         i++;
       }
@@ -1430,8 +1434,8 @@ const parseNetSuitePdf=(text,docType,products)=>{
     let color='';
     // NSA descriptions use both - and – (en-dash): "Adidas Creator Tee - Black - S" or "Pant – White Pins"
     const DASH=/\s*[-–—]\s*/;
-    const SIZE_WORDS=/^(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.5)?)$/i;
-    const colorSizeMatch=description.match(/\s*[-–—]\s*([A-Za-z][A-Za-z\s,\/]+?)\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.5)?)\s*$/i);
+    const SIZE_WORDS=/^(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.\d)?)$/i;
+    const colorSizeMatch=description.match(/\s*[-–—]\s*([A-Za-z][A-Za-z\s,\/]+?)\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.\d)?)\s*$/i);
     if(colorSizeMatch)color=colorSizeMatch[1].trim();
     else{
       // Try: "Name – Color" or "Name – Color Variant" (no size at end)
@@ -1445,7 +1449,7 @@ const parseNetSuitePdf=(text,docType,products)=>{
       const slashColorMatch=description.match(new RegExp('\\b((?:'+COLOR_ALT+')\\s*\\/\\s*\\w+)','i'));
       if(slashColorMatch)color=slashColorMatch[1].trim();
       // Pattern: known color word at end after a space (no dash), e.g. "Hood Black/White"
-      if(!color){const kcm=description.replace(/\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.5)?)\s*$/i,'').match(new RegExp('\\s('+COLOR_ALT+')\\s*$','i'));if(kcm)color=kcm[1].trim()}
+      if(!color){const kcm=description.replace(/\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA|\d{1,2}(?:\.\d)?)\s*$/i,'').match(new RegExp('\\s('+COLOR_ALT+')\\s*$','i'));if(kcm)color=kcm[1].trim()}
     }
     // Simplify compound colors: "Black/White" → "Black", "Power Red/Wh" → "Power Red"
     if(color&&color.includes('/'))color=color.split('/')[0].trim();
@@ -1461,8 +1465,9 @@ const parseNetSuitePdf=(text,docType,products)=>{
       result.shipping+=amount||rate;return;
     }
 
-    // Detect decoration lines: "Screen 1", "Screen 2", "Emb 1", "DTF 1", etc.
-    const isDecoration=/^(Screen|Emb|Embr|DTF|Heat|Vinyl|Sublim|Deco)\s*\d*$/i.test(baseSku);
+    // Detect decoration lines: "Screen 1", "Emb 1", "Emb-NSA", "Screen-Print-1", "DTF-Logo", etc.
+    const isDecoration=/^(Screen|Embr?|Embroidery|DTF|Heat|Vinyl|Sublim|Deco)(\b|[-_\s])/i.test(baseSku)
+      ||/^(screen\s*print|embroid|dtf|heat\s*trans|vinyl\s*print|sublim)/i.test(description);
     if(isDecoration){
       // Parse decoration type from description: "Screen Print 1 Color", "Embroidery up to 8000 stitches"
       let decoType='art';
@@ -1494,13 +1499,15 @@ const parseNetSuitePdf=(text,docType,products)=>{
       // Check for letter sizes: "12/S, 14/M, 8/L"
       const embSizeRe=/(\d+)\s*\/\s*(XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL)/gi;
       let embMatch;while((embMatch=embSizeRe.exec(description)))sizes[embMatch[2].toUpperCase()]=parseInt(embMatch[1]);
-      // Check for numeric sizes: "1/38 – knickers 1/40 – knickers 2/42" → sizes {38:1, 40:1, 42:2}
+      // Check for numeric sizes: "1/38 – knickers 2/42" → {38:1, 42:2}
+      // Also shoe sizes: "1/7.5, 5/8.5, 5/9, 10/10, 8/10.5" → {7.5:1, 8.5:5, 9:5, 10:10, 10.5:8}
       if(Object.keys(sizes).length===0){
-        const numSizeRe=/(\d+)\s*\/\s*(\d{2,3})/g;
+        const numSizeRe=/(\d+)\s*\/\s*(\d{1,2}(?:\.\d)?)(?![\d.])/g;
         let nm;while((nm=numSizeRe.exec(description)))sizes[nm[2]]=(sizes[nm[2]]||0)+parseInt(nm[1]);
       }
-      if(Object.keys(sizes).length===0)sizes['OSFA']=qty;
-      result.lineItems.push({sku:baseSku||'MISC',description:productName||description,color,quantity:qty,rate,amount,isDecoration:false,sizes,raw:dataLine});
+      const sizesUnknown=Object.keys(sizes).length===0;
+      if(sizesUnknown)sizes['OSFA']=qty;
+      result.lineItems.push({sku:baseSku||'MISC',description:productName||description,color,quantity:qty,rate,amount,isDecoration:false,sizes,_sizesUnknown:sizesUnknown,raw:dataLine});
     }
   });
 
@@ -14998,7 +15005,7 @@ export default function App(){
 
       if(rawItem.toUpperCase()==='ITEM'||desc.toUpperCase()==='DESCRIPTION')return;
       if(rawItem.toLowerCase().includes('shipping')||desc.toLowerCase().includes('shipping')){shipping.push({desc,amount,rate});return}
-      if(/^(screen\s*print|embroid|dtf|heat\s*trans|vinyl|sublim)/i.test(desc)||rawItem.toLowerCase().includes('screen')||rawItem.toLowerCase().includes('embroid')||/^emb[-\s]/i.test(rawItem)){
+      if(/^(screen\s*print|embroid|dtf|heat\s*trans|vinyl|sublim)/i.test(desc)||/^(Screen|Embr?|Embroidery|DTF|Heat|Vinyl|Sublim|Deco)(\b|[-_\s])/i.test(rawItem)){
         decoLines.push({rawItem,desc,qty,rate,amount,poRef,_assignTo:'all'});return}
 
       const skuParts=rawItem.split(/\s*:\s*/);let itemCode=skuParts[0]||rawItem;
@@ -15053,6 +15060,11 @@ export default function App(){
       } else {
         const embSizes={};let m;const sr=/(\d+)\s*\/\s*(S|M|L|XL|2XL|3XL|4XL|XXS|XS|YS|YM|YL|YXL)/gi;
         while((m=sr.exec(desc))!==null)embSizes[m[2].toUpperCase()]=parseInt(m[1]);
+        // Also shoe/numeric sizes: "1/7.5, 5/8.5, 10/10"
+        if(Object.keys(embSizes).length===0){
+          const numSr=/(\d+)\s*\/\s*(\d{1,2}(?:\.\d)?)(?![\d.])/g;
+          let nm;while((nm=numSr.exec(desc))!==null)embSizes[nm[2]]=(embSizes[nm[2]]||0)+parseInt(nm[1]);
+        }
         const hasSz=Object.keys(embSizes).length>0;
         const key=baseSku+'_'+li;
         items[key]={sku:catMatch?.sku||baseSku,name:catMatch?.name||desc,brand:catMatch?.brand||brand,color,rate,
@@ -16765,7 +16777,14 @@ export default function App(){
                 const pdfItems=imp.pdfParsed.lineItems.map((li,idx)=>{
                   const baseSku=li.sku;
                   const catMatch=prod.find(p=>p.sku===baseSku)||(baseSku.length>3?prod.find(p=>p.sku.toLowerCase()===baseSku.toLowerCase()):null)||(baseSku.length>3?prod.find(p=>_skuNorm(p.sku)===_skuNorm(baseSku)):null);
-                  const sizes=li.sizes&&Object.keys(li.sizes).length>0?li.sizes:{OSFA:li.quantity};
+                  let sizes=li.sizes&&Object.keys(li.sizes).length>0?li.sizes:{OSFA:li.quantity};
+                  // Footwear with unknown sizes: swap OSFA for blank shoe-size grid
+                  if(catMatch?.category==='Footwear'&&li._sizesUnknown){
+                    const shoeSz=(catMatch.available_sizes||[]).filter(s=>/^\d{1,2}(\.\d)?$/.test(s));
+                    const grid={};
+                    (shoeSz.length>0?shoeSz:['7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','13']).forEach(s=>{grid[s]=0});
+                    sizes=grid;
+                  }
 
                   let brand=catMatch?.brand||'';
                   if(!brand){
@@ -16794,7 +16813,8 @@ export default function App(){
                     is_decoration:li.isDecoration||false,
                     decoType:li.decoType||null,
                     decoColors:li.colors||1,
-                    issues:catMatch?[]:['Not in catalog — create product or match manually'],
+                    _sizesUnknown:li._sizesUnknown||false,
+                    issues:[...(catMatch?[]:['Not in catalog — create product or match manually']),...(li._sizesUnknown&&catMatch?.category==='Footwear'?['⚠️ Sizes need to be entered manually']:[])],
                     _pdfRaw:li.raw
                   };
                 });
@@ -17068,15 +17088,29 @@ export default function App(){
                   const costMult=it.brand==='Adidas'?0.375:(it.brand==='Under Armour'||it.brand==='New Balance')?0.425:0;
                   const adiRetailDiv=0.6;// Adidas contract: always 40% off MSRP
                   const retail=it._retail!=null?it._retail:(it.brand==='Adidas'?rQ(sell/adiRetailDiv):au?rQ(sell/(1-disc)):0);
-                  const cost=au?rQ(retail*costMult):rQ(sell/mk);const szKeys=Object.keys(it.sizes||{});
+                  const cost=au?rQ(retail*costMult):rQ(sell/mk);
                   const itemName=it._name!=null?it._name:(it.catMatch?.name||it.name);
                   const itemColor=it._color!=null?it._color:(it.color||it.catMatch?.color||'');
                   // Always include standard sizes S-2XL so the size grid shows all columns
                   const STD_SZ=['S','M','L','XL','2XL'];
-                  const mergedSizes={...it.sizes||{}};
+                  const isFootwear=it.catMatch?.category==='Footwear';
+                  const catalogShoeSizes=isFootwear?(it.catMatch?.available_sizes||[]).filter(s=>/^\d{1,2}(\.\d)?$/.test(s)):[];
+                  // For footwear, strip OSFA from the parsed sizes — we only want real shoe sizes
+                  const rawSizes={...it.sizes||{}};
+                  if(isFootwear)delete rawSizes['OSFA'];
+                  const mergedSizes={...rawSizes};
+                  const szKeys=Object.keys(rawSizes);
                   const hasApparel=szKeys.some(s=>STD_SZ.includes(s)||SZ_ORD.slice(0,6).includes(s));
-                  if(hasApparel||szKeys.length===0){STD_SZ.forEach(s=>{if(!(s in mergedSizes))mergedSizes[s]=0})}
-                  const mergedAvail=[...new Set([...(hasApparel?STD_SZ:[]),...szKeys,...(it.catMatch?.available_sizes||[])])].sort((a,b)=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b));
+                  const hasNumeric=szKeys.some(s=>/^\d{1,2}(\.\d)?$/.test(s));
+                  if(isFootwear){
+                    // Footwear: build size grid from catalog sizes (or common fallback). Never OSFA.
+                    if(catalogShoeSizes.length>0)catalogShoeSizes.forEach(s=>{if(!(s in mergedSizes))mergedSizes[s]=0});
+                    if(Object.keys(mergedSizes).length===0){['7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','13'].forEach(s=>{mergedSizes[s]=0})}
+                    // If sizes couldn't be parsed, leave qtys blank so rep fills them in
+                  } else if(hasApparel||(szKeys.length===0&&!hasNumeric)){
+                    STD_SZ.forEach(s=>{if(!(s in mergedSizes))mergedSizes[s]=0})
+                  }
+                  const mergedAvail=[...new Set([...(isFootwear?catalogShoeSizes:(hasApparel?STD_SZ:[])),...szKeys,...(it.catMatch?.available_sizes||[])])].sort((a,b)=>{const ai=SZ_ORD_I.indexOf(a),bi=SZ_ORD_I.indexOf(b);if(ai<0&&bi<0)return parseFloat(a)-parseFloat(b);if(ai<0)return 1;if(bi<0)return -1;return ai-bi});
                   return{product_id:it.catMatch?.id||null,sku:it.sku,name:itemName,brand:it.catMatch?.brand||it.brand,
                     color:itemColor,nsa_cost:it.catMatch?.nsa_cost||cost,retail_price:it.catMatch?.retail_price||retail,unit_sell:sell,
                     available_sizes:mergedAvail.length>0?mergedAvail:['S','M','L','XL','2XL'],
