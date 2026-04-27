@@ -17381,6 +17381,9 @@ export default function App(){
             </div></div>
 
             <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:0}}>
+              <datalist id="impBrandList2">
+                {[...new Set([...prod.map(p=>p.brand),...vend.map(v=>v.name)].filter(Boolean))].sort().map(b=><option key={b} value={b}/>)}
+              </datalist>
               <table style={{fontSize:11}}><thead><tr><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th><th>Retail</th><th>Cost</th><th>Sell</th><th>Sizes</th><th>Qty</th><th>Total</th></tr></thead>
               <tbody>{keeping.map((it,i)=>{
                 const au=isAUi(it.brand);
@@ -17393,7 +17396,7 @@ export default function App(){
                 return<tr key={i}>
                   <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
                   <td><input className="form-input" style={{fontSize:11,padding:'2px 4px',width:'100%',minWidth:120}} value={displayName} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_name:v}:p)}))}}/></td>
-                  <td style={{fontSize:10}}>{it.brand}</td>
+                  <td><input className="form-input" list="impBrandList2" value={it.brand||''} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,brand:v}:p)}))}} placeholder="—" style={{fontSize:10,padding:'2px 4px',width:100,border:it.brand?'1px solid #e2e8f0':'1px solid #fca5a5'}}/></td>
                   <td><input className="form-input" style={{fontSize:10,padding:'2px 4px',width:90}} value={displayColor} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_color:v}:p)}))}}/></td>
                   <td style={{textAlign:'right'}}><input type="number" step="0.01" min="0" className="form-input" style={{width:75,fontSize:11,textAlign:'right',padding:'2px 4px'}} value={retail||''} onChange={e=>{const v=parseFloat(e.target.value)||0;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_retail:v}:p)}))}}/></td>
                   <td style={{textAlign:'right'}}><input type="number" step="0.01" min="0" className="form-input" style={{width:75,fontSize:11,textAlign:'right',padding:'2px 4px'}} value={cost||''} onChange={e=>{const v=parseFloat(e.target.value)||0;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_cost:v}:p)}))}}/></td>
