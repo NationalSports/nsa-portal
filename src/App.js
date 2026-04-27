@@ -16,6 +16,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, sendBrevoEmail } from './utils';
+import { calcOrderTotals } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
@@ -3513,10 +3514,10 @@ export default function App(){
     const c=cust.find(x=>x.id===targetEst.customer_id);setEEst(targetEst);setEEstC(c);setPg('estimates');
     nf(parentEst?`Reopened ${targetEst.id} from ${so.id} — SO deleted`:`${targetEst.id} created from ${so.id} — SO deleted`)};
   const aO=useMemo(()=>[
-    ...ests.map(e=>{const _eAQ={};safeItems(e).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const eaf=safeArt(e);const t=e.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+v,0);let r=qq*it.unit_sell;it.decorations?.forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp=dP(d,qq,eaf,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qq*2:qq);r+=eq*dp.sell});return a+r},0)||0;return{id:e.id,type:'estimate',customer_id:e.customer_id,date:e.created_at?.split(' ')[0],total:t,memo:e.memo,status:e.status}}),
-    ...sos.map(s=>{const _sAQ={};safeItems(s).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((ss,v)=>ss+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_sAQ[d.art_file_id]=(_sAQ[d.art_file_id]||0)+q2}})});const saf=safeArt(s);const t=s.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((ss,v)=>ss+v,0);let r=qq*(it.unit_sell||0);(it.decorations||[]).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_sAQ[d.art_file_id]:qq;const dp=dP(d,qq,saf,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qq*2:qq);r+=eq*dp.sell});return a+r},0)||0;return{id:s.id,type:'sales_order',customer_id:s.customer_id,date:s.created_at?.split(' ')[0],total:t,memo:s.memo,status:s.status}}),
+    ...ests.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const t=calcOrderTotals(e,c?.tax_rate||0).grand;return{id:e.id,type:'estimate',customer_id:e.customer_id,date:e.created_at?.split(' ')[0],total:t,memo:e.memo,status:e.status}}),
+    ...sos.map(s=>{const c=cust.find(x=>x.id===s.customer_id);const t=calcOrderTotals(s,c?.tax_rate||0).grand;return{id:s.id,type:'sales_order',customer_id:s.customer_id,date:s.created_at?.split(' ')[0],total:t,memo:s.memo,status:s.status}}),
     ...invs.map(i=>({...i,type:'invoice'})),
-    ...histInvs],[ests,sos,invs,histInvs]);
+    ...histInvs],[ests,sos,invs,histInvs,cust]);
   const fP=useMemo(()=>{
     // Use server-side results if available (paginated, indexed search)
     if(prodServerResults&&pg==='products')return prodServerResults.products;
@@ -4821,7 +4822,7 @@ export default function App(){
       {fe.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const rep=REPS.find(r=>r.id===e.created_by);const linkedSO=e.status==='converted'?sos.find(s=>s.estimate_id===e.id):null;return(<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>{setEEst(e);setEEstC(c)}}>
         <td style={{fontWeight:700,color:'#1e40af'}}>{e.id}</td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtCreatedAt(e.created_at)}</td><td>{c?<>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></>:'--'}</td>
         <td style={{fontSize:12}}>{e.memo}</td><td>{e.items?.length||0}</td>
-        <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>{(()=>{const t=(e.items||[]).reduce((a,it)=>{const sqq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const qq=sqq>0?sqq:safeNum(it.est_qty);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</td>
+        <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>{(()=>{const t=calcOrderTotals(e,c?.tax_rate||0).grand;return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</td>
         <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></td>
         <td><span className={`badge ${e.status==='draft'||e.status==='open'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':e.status==='converted'?'badge-purple':'badge-blue'}`}>{e.status}</span></td>
         <td onClick={ev=>ev.stopPropagation()}>{linkedSO?<span style={{color:'#1e40af',fontWeight:600,fontSize:11,cursor:'pointer',textDecoration:'underline'}} onClick={()=>{const cc=cust.find(x=>x.id===linkedSO.customer_id);setESO(linkedSO);setESOC(cc);setPg('orders')}}>{linkedSO.id}</span>:<span style={{color:'#94a3b8',fontSize:11}}>—</span>}</td>
@@ -4897,7 +4898,7 @@ export default function App(){
       return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
       <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}{so.order_type==='booking'&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700,verticalAlign:'middle'}}>B</span>}</td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtCreatedAt(so.created_at)}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}{so.po_number&&<span style={{fontSize:9,marginLeft:6,padding:'1px 5px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700,fontFamily:'monospace'}}>PO# {so.po_number}</span>}</td><td>{so.order_type==='booking'&&so.expected_ship_date?<span>{so.expected_ship_date}<div style={{fontSize:9,color:'#94a3b8'}}>ship date</div></span>:(so.expected_date||'--')}</td>
       <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></td>
-      <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>{(()=>{const t=safeItems(so).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,so.art_files||[],qq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</td>
+      <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>{(()=>{const t=calcOrderTotals(so,c?.tax_rate||0).grand;return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</td>
       <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} \u2713</span>:<span style={{fontSize:11,color:'#d97706'}}>\u2014</span>}</td>
       <td>{itemStatus&&<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,
         background:itemStatus==='received'?'#dcfce7':itemStatus==='partial'?'#fef3c7':itemStatus==='on_order'?'#dbeafe':'#fef2f2',

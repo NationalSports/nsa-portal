@@ -1490,10 +1490,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <input className="form-input" type="number" min="60" max="180" value={o.booking_alert_days||100} onChange={e=>sv('booking_alert_days',parseInt(e.target.value)||100)}/>
           <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>before ship</div>
         </div>}
-        {isSO&&o.order_type==='booking'&&!o.booking_confirmed&&<div style={{alignSelf:'end'}}>
-          <button style={{fontSize:11,padding:'6px 12px',borderRadius:6,background:'#059669',border:'none',color:'white',cursor:'pointer',fontWeight:700}} onClick={()=>{if(!window.confirm('Confirm this booking order with coach? It will enter the active pipeline.'))return;sv('booking_confirmed',true);sv('booking_confirmed_at',new Date().toISOString());sv('booking_confirmed_by',cu?.id||'');nf('Booking order confirmed — entering pipeline')}}>Confirm with Coach</button>
-        </div>}
-        {isSO&&o.order_type==='booking'&&o.booking_confirmed&&<div style={{alignSelf:'end',fontSize:11,color:'#059669',fontWeight:600,padding:'6px 0'}}>Confirmed</div>}
         <button className="btn btn-primary" onClick={()=>{
           if(!cust){nf('Select a customer first','error');return}
           if(!o.memo?.trim()){nf('Memo is required','error');return}
@@ -1669,7 +1665,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div></>})()}
         </div>
       </div>
-      {isSO&&<div style={{display:'flex',gap:6,marginTop:8}}>
+      {isSO&&<div style={{display:'flex',gap:6,marginTop:8,alignItems:'center'}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
         {o.promo_applied?<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={()=>{
           if(!window.confirm('Mark promo order '+o.id+' as complete? No invoice needed — costs are tracked on the SO.'))return;
@@ -1678,6 +1674,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         :<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
           setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('final');setInvDepositPct(50);setShowInvCreate(true);
         }}><Icon name="dollar" size={14}/> Create Invoice</button>}
+        {o.order_type==='booking'&&!o.booking_confirmed&&<button style={{fontSize:13,padding:'7px 14px',borderRadius:6,background:'#059669',border:'none',color:'white',cursor:'pointer',fontWeight:700}} onClick={()=>{if(!window.confirm('Confirm this booking order with coach? It will enter the active pipeline.'))return;sv('booking_confirmed',true);sv('booking_confirmed_at',new Date().toISOString());sv('booking_confirmed_by',cu?.id||'');nf('Booking order confirmed — entering pipeline')}}><Icon name="check" size={14}/> Confirm with Coach</button>}
+        {o.order_type==='booking'&&o.booking_confirmed&&<span style={{fontSize:12,color:'#059669',fontWeight:600,padding:'6px 8px',background:'#ecfdf5',borderRadius:6,border:'1px solid #86efac'}}>✓ Confirmed with Coach</span>}
       </div>}
       {/* SHIPPING */}
       <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>

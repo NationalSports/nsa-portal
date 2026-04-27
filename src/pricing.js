@@ -74,5 +74,43 @@ export function dP(d,q,artFiles,cq){
   if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
 
+// ── calcOrderTotals — single source of truth for order/estimate/SO totals ──
+// Mirrors the calculation in OrderEditor's `totals` memo so list views and the
+// editor agree. Returns { rev, ship, tax, grand }.
+import { safeNum as _sNum, safeItems as _sItems, safeSizes as _sSizes, safeDecos as _sDecos, safeArt as _sArt } from './safeHelpers';
+export const calcOrderTotals=(o,custTaxRate=0)=>{
+  if(!o)return{rev:0,ship:0,tax:0,grand:0};
+  const items=_sItems(o);const af=_sArt(o);
+  // Aggregate art quantities so volume-priced art uses the combined qty
+  const artQty={};
+  items.forEach(it=>{
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
+    const q=sq>0?sq:_sNum(it.est_qty);
+    if(!q)return;
+    _sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+q}});
+  });
+  let rev=0;
+  items.forEach(it=>{
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
+    const q=sq>0?sq:_sNum(it.est_qty);
+    if(!q)return;
+    if(it._sizeSells&&sq>0){
+      Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)rev+=n*(it._sizeSells?.[sz]||_sNum(it.unit_sell))});
+    }else{
+      rev+=q*_sNum(it.unit_sell);
+    }
+    _sDecos(it).forEach(d=>{
+      const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;
+      const dp=dP(d,q,af,cq);
+      const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);
+      rev+=eq*_sNum(dp.sell);
+    });
+  });
+  const ship=o.shipping_type==='pct'?rev*_sNum(o.shipping_value)/100:_sNum(o.shipping_value);
+  const taxRate=o.tax_exempt?0:_sNum(o.tax_rate||custTaxRate);
+  const tax=rev*taxRate;
+  return{rev,ship,tax,grand:rev+ship+tax};
+};
+
 // ── mergeColors — pure function for combining customer + parent colors ──
 export const mergeColors=(cust,allCustomers,field)=>{const own=cust?.[field]||[];if(!cust?.parent_id)return own;const parent=allCustomers?.find(c=>c.id===cust.parent_id);const parentColors=parent?.[field]||[];if(!parentColors.length)return own;const key=field==='pantone_colors'?'code':'name';const seen=new Set(own.map(c=>(c[key]||'').toUpperCase()));return[...own,...parentColors.filter(c=>!seen.has((c[key]||'').toUpperCase()))]};
