@@ -64,20 +64,23 @@ function buildFlatArgSoapEnvelope(action, args) {
 }
 
 // Build a SOAP envelope for PromoStandards services (e.g. getInventoryLevels)
-// PromoStandards uses document/literal style with named parameters (no arg0/arg1)
+// PromoStandards uses document/literal style with named parameters (no arg0/arg1).
+// The request wrapper element is the capitalized action + "Request"
+// (e.g. getInventoryLevels → GetInventoryLevelsRequest).
 // Namespace: http://www.promostandards.org/WSDL/InventoryService/1.0.0/
 function buildPromoStandardsSoapEnvelope(action, params) {
   const paramXml = Object.entries(params)
     .map(([k, v]) => `<ns:${k}>${escapeXml(String(v ?? ''))}</ns:${k}>`)
     .join('\n      ');
+  const wrapper = action.charAt(0).toUpperCase() + action.slice(1) + 'Request';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
                   xmlns:ns="http://www.promostandards.org/WSDL/InventoryService/1.0.0/">
   <soapenv:Header/>
   <soapenv:Body>
-    <ns:Request>
+    <ns:${wrapper}>
       ${paramXml}
-    </ns:Request>
+    </ns:${wrapper}>
   </soapenv:Body>
 </soapenv:Envelope>`;
 }
@@ -195,8 +198,17 @@ exports.handler = async (event) => {
     try {
       const parsed = JSON.parse(event.body);
       if (service === 'promostandards') {
-        // PromoStandards uses document/literal with named params — inject credentials
-        const promoParams = { ...parsed, id: parsed.id || customerNumber, password: parsed.password || password };
+        // PromoStandards uses document/literal with named params in schema-required
+        // order: wsVersion, id, password, then call-specific params (productId,
+        // productIdType, ...). The XSD enforces <sequence>, so out-of-order
+        // elements get rejected with cvc-complex-type.2.4.a.
+        const { wsVersion, id, password: pwd, ...rest } = parsed;
+        const promoParams = {
+          wsVersion: wsVersion || '1.2.1',
+          id: id || customerNumber,
+          password: pwd || password,
+          ...rest,
+        };
         soapBody = buildPromoStandardsSoapEnvelope(action, promoParams);
       } else if (service === 'inventory') {
         // Inventory service uses flat string args: arg0=custNum, arg1=user, arg2=pass, arg3=style, arg4=color, arg5=size
