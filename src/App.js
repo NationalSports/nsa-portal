@@ -1176,6 +1176,8 @@ const _lsSet=(key,value)=>{try{
   }
   localStorage.setItem(key,value);return true
 }catch(e){if((e.name==='QuotaExceededError'||e.message?.includes('quota'))&&!_lsQuotaWarned){_lsQuotaWarned=true;if(_onCacheFullChange)_onCacheFullChange(true);console.error('[Storage] localStorage quota exceeded writing key:',key)}return false}};
+// One-time cleanup: drop legacy heavy/unbounded keys on startup. Cloud is the source of truth.
+try{['nsa_auto_backup','nsa_auto_backup_ts','nsa_change_log','nsa_so_history','nsa_inv_adj_log'].forEach(k=>localStorage.removeItem(k));const _snapKeys=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('nsa_snap_'))_snapKeys.push(k)}_snapKeys.forEach(k=>localStorage.removeItem(k))}catch{}
 // Track IDs of estimates/SOs whose save failed — prevents reload/poll from overwriting local state
 // Persisted to localStorage so protection survives page refresh
 const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_ids')||'[]'));
@@ -1781,6 +1783,7 @@ export default function App(){
   const[omgProbing,setOmgProbing]=useState(false);
   const[omgProbeLines,setOmgProbeLines]=useState([]);
   const[dbLoading,setDbLoading]=useState(!!supabase);const[dbError,setDbError]=useState(null);const _dbReady=useRef(false);const _dbLoadSuccess=useRef(false);
+  const _runPollRef=useRef(null);const _lastNavRefreshAt=useRef(0);
   const[failedSaveCount,setFailedSaveCount]=useState(_dbSaveFailedIds.size);_onFailedIdsChange=setFailedSaveCount;
   const[cacheFull,setCacheFull]=useState(_lsQuotaWarned);_onCacheFullChange=setCacheFull;
   // Snapshot of last DB-loaded data — used to diff auto-save and only write changed records
@@ -2198,8 +2201,19 @@ export default function App(){
       schedulePoll();
     };
     schedulePoll();
-    return()=>{cancelled=true;if(pollTimer)clearTimeout(pollTimer)};
+    // Expose an early-trigger so navigation-driven refresh can pull fresh data without waiting for the next scheduled poll.
+    _runPollRef.current=()=>{if(cancelled)return;if(pollTimer)clearTimeout(pollTimer);runPoll()};
+    return()=>{cancelled=true;_runPollRef.current=null;if(pollTimer)clearTimeout(pollTimer)};
   },[]);
+  // Throttled refresh on navigation — pulls fresh data when user changes pages, but only if 5+ min since last refresh.
+  // Complements the 60s background poll (which browsers throttle in inactive tabs).
+  React.useEffect(()=>{
+    if(!supabase||!_dbReady.current)return;
+    const now=Date.now();
+    if(now-_lastNavRefreshAt.current<300000)return;// 5 min throttle
+    _lastNavRefreshAt.current=now;
+    _runPollRef.current?.();
+  },[pg]);
 
 
   // ─── Brevo email open tracking: poll for opens on recently sent documents ───
@@ -2724,11 +2738,11 @@ export default function App(){
       return t;
     }));
   },[sos,ests]);
-  // Batch POs, submitted batches, changelog, SO history — sync to localStorage + Supabase app_state table
-  // Wrap the DB write in _dbSavingGuard so polls/realtime reloads defer until it lands —
-  // otherwise a concurrent SO save (also guarded) can release the guard first and let a
-  // poll overwrite freshly-set batch_pos / submitted_batches state with stale DB data.
-  const _saveAppState=(key,val)=>{_lsSet('nsa_'+key,JSON.stringify(val));if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSavingGuard(()=>_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}]))};
+  // Batch POs, submitted batches, changelog, SO history — sync to Supabase app_state table.
+  // Unbounded log keys (change_log, so_history, inv_adj_log) skip localStorage — cloud-only to avoid quota pressure.
+  // Other keys still cache locally for fast cold-start.
+  const _LS_SKIP_APPSTATE=new Set(['change_log','so_history','inv_adj_log']);
+  const _saveAppState=(key,val)=>{if(!_LS_SKIP_APPSTATE.has(key))_lsSet('nsa_'+key,JSON.stringify(val));if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSavingGuard(()=>_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}]))};
   React.useEffect(()=>{_saveAppState('batch_pos',batchPOs)},[batchPOs]);
   React.useEffect(()=>{_saveAppState('submitted_batches',submittedBatches)},[submittedBatches]);
   React.useEffect(()=>{_saveAppState('batch_counter',batchCounter)},[batchCounter]);
@@ -2751,42 +2765,16 @@ export default function App(){
   // Ref for emergency flush — holds latest state for beforeunload and visibilitychange handlers
   const _visFlushRefs=useRef({});
   _visFlushRefs.current={cust,ests,sos,invs,msgs,prod,vend,REPS,omgStores,issues,batchPOs,submittedBatches,batchCounter,changeLog,soHistory,invAdjLog,invPOs,invPOCounter};
-  // Warn user before closing/reloading if there are failed saves (data at risk of loss)
-  // Also flush all current state to localStorage as a safety net before unload
+  // Warn user before closing/reloading if there are failed saves (data at risk of loss).
+  // Cloud is source of truth — heavy tables reload from Supabase, no need to flush them to localStorage.
   React.useEffect(()=>{const h=e=>{
-    // Emergency flush to localStorage on unload — ensures latest state is persisted as cache for next load
-    // Skip if quota already exceeded — these will reload from Supabase anyway
-    if(!_lsQuotaWarned){
-      const d=_visFlushRefs.current;
-      _lsSet('nsa_cust',JSON.stringify(d.cust));
-      _lsSet('nsa_ests',JSON.stringify(d.ests));
-      _lsSet('nsa_sos',JSON.stringify(d.sos));
-      _lsSet('nsa_invs',JSON.stringify(d.invs));
-      _lsSet('nsa_msgs',JSON.stringify(d.msgs));
-      _lsSet('nsa_prod',JSON.stringify(d.prod));
-    }
     if(window.location.search.includes('portal='))return;if(_dbSaveFailedIds.size>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
-  // Flush all state to localStorage when tab is hidden (prevents data loss on mobile tab-kill/timeout)
-  // Also retry failed saves immediately when tab regains visibility (don't wait 60s)
-  const _lastVisFlush=useRef(0);
+  // Retry failed saves immediately when tab regains visibility (don't wait 60s).
+  // Heavy tables are no longer flushed to localStorage on hide — cloud is the source of truth.
   React.useEffect(()=>{
     const onVis=()=>{
       if(document.hidden){
-        // Tab going hidden — emergency flush to localStorage as cache for next load
-        // Throttle: skip if flushed within last 30s to reduce memory/CPU pressure
-        // Skip if quota already exceeded — data will reload from Supabase
-        const now=Date.now();
-        if(!_lsQuotaWarned&&now-_lastVisFlush.current>30000){
-          _lastVisFlush.current=now;
-          const d=_visFlushRefs.current;
-          // Only cache core data needed for fast startup (skip large collections like products)
-          _lsSet('nsa_cust',JSON.stringify(d.cust));
-          _lsSet('nsa_ests',JSON.stringify(d.ests));
-          _lsSet('nsa_sos',JSON.stringify(d.sos));
-          _lsSet('nsa_invs',JSON.stringify(d.invs));
-          _lsSet('nsa_msgs',JSON.stringify(d.msgs));
-          _lsSet('nsa_prod',JSON.stringify(d.prod));
-        }
+        // No-op — heavy tables persist via _diffSave to Supabase on every change.
       }else if(_dbSaveFailedIds.size>0&&_initialLoadDone.current&&_dbLoadSuccess.current){
         // Tab returning — immediately retry failed saves instead of waiting for backoff timer
         // Reset backoff since user is actively using the tab
@@ -7379,22 +7367,11 @@ export default function App(){
     };
     reader.readAsText(file);
   };
-  // Auto-backup to localStorage every 5 minutes
-  // Only stores lightweight metadata — full data is in Supabase cloud + individual nsa_* keys
+  // Auto-backup to localStorage was removed — Supabase is the source of truth for all data.
+  // Legacy keys are cleaned up once on mount so existing users free localStorage immediately.
   React.useEffect(()=>{
-    if(!autoBackupEnabled)return;
-    // Clean up legacy full-snapshot backup that was filling localStorage
-    try{localStorage.removeItem('nsa_auto_backup')}catch{}
-    const interval=setInterval(()=>{
-      const data=JSON.stringify({_meta:{version:'2.0',auto_backup:true,saved_at:new Date().toISOString()},
-          batch_queue:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,
-          change_log:(changeLog||[]).slice(0,100),
-          inv_adj_log:(invAdjLog||[]).slice(0,100),inv_pos:invPOs,inv_po_counter:invPOCounter});
-      if(!_lsSet('nsa_auto_backup',data)){nf('Auto-backup failed — localStorage full. Export a manual backup.','error')}
-      else{_lsSet('nsa_auto_backup_ts',new Date().toISOString())}
-    },300000);// 5 min
-    return()=>clearInterval(interval);
-  },[autoBackupEnabled,batchPOs,submittedBatches,batchCounter,changeLog,invAdjLog,invPOs,invPOCounter]);
+    try{localStorage.removeItem('nsa_auto_backup');localStorage.removeItem('nsa_auto_backup_ts')}catch{}
+  },[]);
 
   const restoreAutoBackup=()=>{
     try{
@@ -21865,7 +21842,7 @@ export default function App(){
       </div>}
       {cacheFull&&<div style={{padding:'8px 16px',background:'#eff6ff',border:'1px solid #bfdbfe',color:'#1e40af',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
         <span style={{fontSize:14}}>&#128230;</span><span style={{flex:1}}>Local cache full &mdash; data is still saved to cloud. Clear browser data if issues persist.</span>
-        <button onClick={()=>{try{const heavyKeys=['nsa_auto_backup','nsa_cust','nsa_ests','nsa_sos','nsa_invs','nsa_msgs','nsa_prod','nsa_vend','nsa_change_log','nsa_wh_recent'];heavyKeys.forEach(k=>{try{localStorage.removeItem(k)}catch{}});const keys=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('nsa_snap_'))keys.push(k)}keys.forEach(k=>localStorage.removeItem(k));_lsQuotaWarned=false;setCacheFull(false);console.log('[Storage] Cleared heavy cache keys + snap keys')}catch(e){console.error('[Storage] cache clear failed:',e)}}} style={{background:'#1e40af',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Clear Cache</button>
+        <button onClick={()=>{try{const heavyKeys=['nsa_auto_backup','nsa_auto_backup_ts','nsa_cust','nsa_ests','nsa_sos','nsa_invs','nsa_msgs','nsa_prod','nsa_vend','nsa_change_log','nsa_so_history','nsa_inv_adj_log','nsa_wh_recent'];heavyKeys.forEach(k=>{try{localStorage.removeItem(k)}catch{}});const keys=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('nsa_snap_'))keys.push(k)}keys.forEach(k=>localStorage.removeItem(k));_lsQuotaWarned=false;setCacheFull(false);console.log('[Storage] Cleared heavy cache keys + snap keys')}catch(e){console.error('[Storage] cache clear failed:',e)}}} style={{background:'#1e40af',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Clear Cache</button>
         <button onClick={()=>setCacheFull(false)} style={{background:'none',border:'none',color:'#1e40af',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
       </div>}
       {failedSaveCount>0&&<div style={{padding:'8px 16px',background:'#fefce8',border:'1px solid #fde68a',color:'#92400e',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
