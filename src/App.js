@@ -1379,7 +1379,7 @@ const parseNetSuitePdf=(text,docType,products)=>{
   const isEndMarker=l=>{const t=l.replace(/\t.*/,'').trim();return/^(Subtotal|Total$|Tax\b|Discount|Thank you|Comments|Notes$|Memo$|Terms$|Merchandise\s*Total|Document\s*Total|Report\s*Problems)/i.test(t)};
   const isMetadataLine=l=>{const lo=l.toLowerCase();return/\b(weight\s*\(lb\)|shipment\s*method|ship\s*date|terms\s*of\s*(payment|delivery)|document\s*(number|date)|rqst\s*ship\s*date)/i.test(lo)};
   // Detect page breaks and repeated headers from multi-page PDFs (skip, don't end)
-  const isPageBreak=l=>{const t=l.replace(/\t.*/,'').trim();return/^Page\s+\d/i.test(t)||/^\d+\s+of\s+\d+$/i.test(t)};
+  const isPageBreak=l=>{const t=l.replace(/\t.*/,'').trim();if(/^Page\s+\d/i.test(t))return true;const flat=l.trim().replace(/\s+/g,' ');return/^\d+\s+of\s+\d+$/i.test(flat)};
   const isRepeatedHeader=l=>{const lo=l.toLowerCase();return(lo.includes('quantity')||lo.includes('qty'))&&(lo.includes('item')||lo.includes('sku')||lo.includes('description'))&&(lo.includes('amount')||lo.includes('rate')||lo.includes('price')||lo.includes('extension'))};
   // Check if a line starts with a quantity number (item data line vs description line)
   const isItemLine=line=>{
@@ -1555,8 +1555,24 @@ const parseNetSuitePdf=(text,docType,products)=>{
     }
   });
 
+  // Fold any color-less entry into its colored sibling for the same baseSku
+  // (handles cases where one row's color extraction failed due to footer/header noise)
+  const sizeItemsList=Object.values(sizeItems);
+  const colored={};
+  sizeItemsList.forEach(it=>{if(it.color)colored[it.sku]=colored[it.sku]||it});
+  const merged=[];
+  sizeItemsList.forEach(it=>{
+    if(!it.color&&colored[it.sku]&&colored[it.sku]!==it){
+      const target=colored[it.sku];
+      Object.entries(it.sizes).forEach(([sz,q])=>{target.sizes[sz]=(target.sizes[sz]||0)+q});
+      target.quantity+=it.quantity;
+      target.amount+=it.amount;
+      return;
+    }
+    merged.push(it);
+  });
   // Add collapsed size items to lineItems
-  Object.values(sizeItems).forEach(it=>{
+  merged.forEach(it=>{
     if(it.quantity>0&&it.rate===0&&it.amount>0)it.rate=rQ(it.amount/it.quantity);
     result.lineItems.push(it);
   });
