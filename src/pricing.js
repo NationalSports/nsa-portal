@@ -44,7 +44,7 @@ export let DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (1
 
 // ── Configurable lists ──
 export let POSITIONS=['Front','Back','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Collar','Hood','Left Leg','Right Leg','Other'];
-export let CONTACT_ROLES=['Primary','Accounting','Billing','Shipping','Coach','Athletic Director','Equipment Manager','Booster Club','Other'];
+export let CONTACT_ROLES=['Primary','Billing','Shipping','Coach','Athletic Director','Equipment Manager','Booster Club','Other'];
 
 // ── Load settings overrides from localStorage ──
 try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP)SP=_s.SP;if(_s.EM)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}

@@ -16,23 +16,23 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
   catch(e){return{ok:false,error:e.message}}
 };
 
-// ── Accounting contact resolution ──
-// Returns the accounting contacts that apply to a customer, including any inherited
-// from the parent customer. Sub-customers automatically pick up the parent's accounting
+// ── Billing contact resolution ──
+// Returns the billing contacts that apply to a customer, including any inherited
+// from the parent customer. Sub-customers automatically pick up the parent's billing
 // contact so we only have to set it once at the parent level.
-export const getAccountingContacts=(customer,allCustomers)=>{
+export const getBillingContacts=(customer,allCustomers)=>{
   if(!customer)return[];
   const out=[];const seen=new Set();
-  const pushAcct=(c,inheritedFrom)=>{
-    (c?.contacts||[]).filter(x=>x&&x.email&&(x.role||'').toLowerCase()==='accounting').forEach(x=>{
+  const pushBilling=(c,inheritedFrom)=>{
+    (c?.contacts||[]).filter(x=>x&&x.email&&(x.role||'').toLowerCase()==='billing').forEach(x=>{
       const key=x.email.toLowerCase();if(seen.has(key))return;seen.add(key);
       out.push(inheritedFrom?{...x,_inherited_from:inheritedFrom}:x);
     });
   };
-  pushAcct(customer,null);
+  pushBilling(customer,null);
   if(customer.parent_id&&Array.isArray(allCustomers)){
     const parent=allCustomers.find(c=>c.id===customer.parent_id);
-    if(parent)pushAcct(parent,parent.name||parent.alpha_tag||'parent');
+    if(parent)pushBilling(parent,parent.name||parent.alpha_tag||'parent');
   }
   return out;
 };
