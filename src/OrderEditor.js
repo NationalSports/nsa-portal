@@ -1308,8 +1308,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const updatedJobs=currentJobs.map(j=>{
         let total=0,fulfilled=0;
         (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{total+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)});});
-        if(j.total_units===total&&j.fulfilled_units===fulfilled)return j;
-        return{...j,total_units:total,fulfilled_units:fulfilled};
+        const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
+        if(j.total_units===total&&j.fulfilled_units===fulfilled&&j.item_status===itemSt)return j;
+        return{...j,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
       });
       if(updatedJobs.some((j,i)=>j!==currentJobs[i]))setO(e=>({...e,jobs:updatedJobs}));
       return;
