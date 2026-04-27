@@ -5835,7 +5835,8 @@ export default function App(){
   const[artJobDetailMsg,setArtJobDetailMsg]=useState('');// message text in artist detail popup
   const[artJobDetailUploading,setArtJobDetailUploading]=useState(false);// upload in-progress flag
   const[artProdAssignModal,setArtProdAssignModal]=useState(null);// {files:File[], assignments:{[idx]:artId}} — per-file art picker for multi-art jobs
-  React.useEffect(()=>{if(!artJobDetailModal)setArtProdAssignModal(null)},[artJobDetailModal]);
+  const[mockupArtPicker,setMockupArtPicker]=useState(null);// {files:File[], sku, arts} — art picker for per-item mockup uploads when SKU has multiple arts
+  React.useEffect(()=>{if(!artJobDetailModal){setArtProdAssignModal(null);setMockupArtPicker(null)}},[artJobDetailModal]);
   const[expandedArtCard,setExpandedArtCard]=useState(null);// key of the art kanban card currently expanded (null = all collapsed)
   const[artJobDetailEditColors,setArtJobDetailEditColors]=useState(null);// editing color string or null
   const[artJobDetailEditSize,setArtJobDetailEditSize]=useState(null);// editing art size string or null
@@ -6406,8 +6407,8 @@ export default function App(){
         const colorList=(()=>{const d2=allArtFiles.flatMap(a=>(a.ink_colors||a.thread_colors||'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean));if(d2.length>0)return d2;return[...new Set(allArtFiles.flatMap(a=>(a.color_ways||[]).flatMap(cw=>(cw.inks||[]).filter(c2=>c2&&c2.trim()))))];})();
         const isEmb=j.deco_type==='embroidery';
         const isSP=j.deco_type==='screen_print';
-        // Mockup files — aggregate from all art files in this job
-        const mockupFiles=allArtFiles.flatMap(a=>a?.mockup_files||a?.files||[]);
+        // Mockup files — aggregate from all art files in this job (general bucket + per-item mockups)
+        const mockupFiles=allArtFiles.flatMap(a=>[...(a?.mockup_files||a?.files||[]),...Object.values(a?.item_mockups||{}).flat()]).filter(f=>f);
         const prodFiles=allArtFiles.flatMap(a=>a?.prod_files||[]);
         // Numbers & Names roster data — extract from item decorations
         const numbersData=(()=>{const results=[];(j.items||[]).forEach(gi=>{
@@ -6733,7 +6734,7 @@ export default function App(){
         const so=prodJobModal.so||sos.find(s=>s.id===prodJobModal.soId);
         const allArtIds=prodJobModal._art_ids||[prodJobModal.art_file_id].filter(Boolean);
         const allMockups=[];
-        allArtIds.forEach(aid=>{const artF=so?safeArt(so).find(f=>f.id===aid):null;(artF?.mockup_files||artF?.files||[]).forEach(f=>allMockups.push(f))});
+        allArtIds.forEach(aid=>{const artF=so?safeArt(so).find(f=>f.id===aid):null;if(!artF)return;(artF?.mockup_files||artF?.files||[]).forEach(f=>allMockups.push(f));Object.values(artF?.item_mockups||{}).flat().forEach(f=>{if(f)allMockups.push(f)})});
         const idx=Math.min(prodLightboxIdx,allMockups.length-1);
         const curFile=allMockups[idx];
         const curUrl=curFile?(typeof curFile==='string'?curFile:(curFile?.url||'')):'';
@@ -13733,7 +13734,8 @@ export default function App(){
               {col?.id==='waiting_for_art'&&j.art_status==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();
                 const so2=sos.find(s=>s.id===j.soId);if(!so2)return;
                 const mf=(j.artFile?.mockup_files||j.artFile?.files||[]);
-                if(mf.length===0){nf('Upload a mockup before sending for approval','error');return}
+                const hasItemMocks=Object.values(j.artFile?.item_mockups||{}).some(arr=>arr&&arr.length>0);
+                if(mf.length===0&&!hasItemMocks){nf('Upload a mockup before sending for approval','error');return}
                 const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
                 const updJobs=buildJobs(so2).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',assigned_artist:jj.assigned_artist||j.assigned_artist}:jj);
                 const updArt3=safeArt(so2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
@@ -13991,7 +13993,7 @@ export default function App(){
         const allArtIds2=j._art_ids||[j.art_file_id].filter(Boolean);
         const allArtFiles2=allArtIds2.map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
         const af=j.artFile||allArtFiles2[0]||null;
-        const mockupFiles=(af?.mockup_files||af?.files||[]);
+        const mockupFiles=[...(af?.mockup_files||af?.files||[]),...Object.values(af?.item_mockups||{}).flat()].filter(f=>f);
         const prodFilesL=(af?.prod_files||[]);
         const colorList=af?(af.ink_colors||af.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean):[];
         const isEmb=allArtFiles2.some(a=>a.deco_type==='embroidery');
@@ -14206,7 +14208,7 @@ export default function App(){
         const allArtFiles=allArtIds.map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
         const af=j.artFile||allArtFiles[0]||null;
         const additionalArtFiles=allArtFiles.slice(1);
-        const mockupFiles=(af?.mockup_files||af?.files||[]);
+        const mockupFiles=[...(af?.mockup_files||af?.files||[]),...Object.values(af?.item_mockups||{}).flat()].filter(f=>f);
         const prodFilesL=allArtFiles.flatMap(artF=>(artF?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_artName:allArtFiles.length>1?(artF?.name||''):'',_artId:artF.id})));
         const colorList=af?(af.ink_colors||af.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean):[];
         const isEmb=allArtFiles.some(a=>a.deco_type==='embroidery');
@@ -14331,29 +14333,34 @@ export default function App(){
           setArtJobDetailModal({...j,artFile:updatedAf});
           nf('Set as primary mockup');
         };
-        // Upload handler for artist to upload updated art
-        const handleArtUpload=async(files)=>{
+        // Upload handler for artist to upload updated art.
+        // targetArtId: which art_file this mockup applies to (defaults to job's primary art).
+        const handleArtUpload=async(files,targetArtId)=>{
           setArtJobDetailUploading(true);
           try{
+            const artId=targetArtId||j.art_file_id;
             const uploaded=[];
             for(const f of files){
               nf('Uploading '+f.name+'...');
               const url=await fileUpload(f,'nsa-art-files');
-              uploaded.push({url,name:f.name});
+              uploaded.push({url,name:f.name,art_file_id:artId||null});
             }
             // Re-fetch the latest SO from state to avoid stale data
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const existingArt=safeArt(liveSO);
-            const hasMatch=j.art_file_id&&existingArt.some(a=>a.id===j.art_file_id);
+            const hasMatch=artId&&existingArt.some(a=>a.id===artId);
             // If no matching art file exists, create one so uploads have somewhere to attach
             let updArt;
+            let newArtFileId=artId;
             if(hasMatch){
-              updArt=existingArt.map(a=>a.id===j.art_file_id?{...a,mockup_files:[...(a.mockup_files||a.files||[]),...uploaded],status:'uploaded'}:a);
+              updArt=existingArt.map(a=>a.id===artId?{...a,mockup_files:[...(a.mockup_files||a.files||[]),...uploaded],status:'uploaded'}:a);
             }else{
-              const newAf={id:j.art_file_id||('af-'+Date.now()),name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:uploaded,item_mockups:{},prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
+              newArtFileId=artId||('af-'+Date.now());
+              uploaded.forEach(u=>{u.art_file_id=newArtFileId});
+              const newAf={id:newArtFileId,name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:uploaded,item_mockups:{},prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
               updArt=[...existingArt,newAf];
               // Update the job's art_file_id if it was null
-              if(!j.art_file_id)j.art_file_id=newAf.id;
+              if(!j.art_file_id)j.art_file_id=newArtFileId;
             }
             const updatedJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
             savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
@@ -14365,30 +14372,46 @@ export default function App(){
           finally{setArtJobDetailUploading(false)}
         };
 
-        // Upload handler for per-item mockups
-        const handleItemMockupUpload=async(files,sku)=>{
+        // Upload handler for per-item mockups.
+        // targetArtId: which art_file this mockup applies to. If omitted, derives from the SKU's decorations
+        // (the first art_file used on this SKU), falling back to the job's primary art.
+        const handleItemMockupUpload=async(files,sku,targetArtId)=>{
           setArtJobDetailUploading(true);
           try{
+            // Derive art_file_id from the SKU's decorations if not explicitly passed
+            let artId=targetArtId;
+            if(!artId){
+              const skuItem=(j.items||[]).find(gi=>gi.sku===sku);
+              const itIdx=skuItem?.item_idx;
+              const decos=itIdx!=null?safeDecos(safeItems(so)[itIdx]||{}):[];
+              const skuArtIds=decos.filter(d=>d.kind==='art'&&d.art_file_id).map(d=>d.art_file_id);
+              const uniqueSkuArts=[...new Set(skuArtIds)];
+              // If this SKU uses exactly one art, route there. Otherwise fall back to job primary.
+              artId=uniqueSkuArts.length===1?uniqueSkuArts[0]:j.art_file_id;
+            }
             const uploaded=[];
             for(const f of files){
               nf('Uploading '+f.name+' for '+sku+'...');
               const url=await fileUpload(f,'nsa-art-files');
-              uploaded.push({url,name:f.name});
+              uploaded.push({url,name:f.name,art_file_id:artId||null,sku});
             }
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const existingArt=safeArt(liveSO);
-            const hasMatch=j.art_file_id&&existingArt.some(a=>a.id===j.art_file_id);
-            const liveAf=hasMatch?existingArt.find(a=>a.id===j.art_file_id):af;
+            const hasMatch=artId&&existingArt.some(a=>a.id===artId);
+            const liveAf=hasMatch?existingArt.find(a=>a.id===artId):af;
             const curItemMockups=liveAf?.item_mockups||{};
             const updItemMockups={...curItemMockups,[sku]:[...(curItemMockups[sku]||[]),...uploaded]};
             let updArt;
+            let newArtFileId=artId;
             if(hasMatch){
-              updArt=existingArt.map(a=>a.id===j.art_file_id?{...a,item_mockups:updItemMockups,mockup_files:[...(a.mockup_files||a.files||[]),...uploaded],status:'uploaded'}:a);
+              updArt=existingArt.map(a=>a.id===artId?{...a,item_mockups:updItemMockups,status:'uploaded'}:a);
             }else{
               // Create art file if none exists for this job
-              const newAf={id:j.art_file_id||('af-'+Date.now()),name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:uploaded,item_mockups:updItemMockups,prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
+              newArtFileId=artId||('af-'+Date.now());
+              uploaded.forEach(u=>{u.art_file_id=newArtFileId});
+              const newAf={id:newArtFileId,name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:[],item_mockups:{[sku]:uploaded},prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
               updArt=[...existingArt,newAf];
-              if(!j.art_file_id)j.art_file_id=newAf.id;
+              if(!j.art_file_id)j.art_file_id=newArtFileId;
             }
             const updatedJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
             savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
@@ -14449,6 +14472,24 @@ export default function App(){
           }else{
             const assignments={};files.forEach((_,i)=>{assignments[i]=''});
             setArtProdAssignModal({files,assignments});
+          }
+        };
+
+        // Kick off per-item mockup upload: auto-route to the art used by the SKU's decorations.
+        // If the SKU uses multiple arts (multi-art decoration), open a picker so the artist tags which art the mockup shows.
+        const startMockupUpload=(files,sku)=>{
+          if(!files||files.length===0)return;
+          const skuItem=(j.items||[]).find(gi=>gi.sku===sku);
+          const itIdx=skuItem?.item_idx;
+          const decos=itIdx!=null?safeDecos(safeItems(so)[itIdx]||{}):[];
+          const skuArtIds=[...new Set(decos.filter(d=>d.kind==='art'&&d.art_file_id).map(d=>d.art_file_id))];
+          const skuArts=skuArtIds.map(aid=>allArtFiles.find(a=>a.id===aid)).filter(Boolean);
+          if(skuArts.length<=1||allArtFiles.length<=1){
+            // single art — just upload
+            handleItemMockupUpload(files,sku,skuArts[0]?.id);
+          }else{
+            // multiple arts on this SKU — prompt artist to pick which one this mockup shows
+            setMockupArtPicker({files,sku,arts:skuArts});
           }
         };
 
@@ -14598,8 +14639,8 @@ export default function App(){
                           <div style={{padding:8,textAlign:'center',borderRadius:6,border:'1px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer',fontSize:10}}
                             onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed'}}
                             onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa'}}
-                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';if(!artJobDetailUploading)handleItemMockupUpload(Array.from(e.dataTransfer.files),gi.sku)}}
-                            onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>handleItemMockupUpload(Array.from(inp.files),gi.sku);inp.click()}}>
+                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';if(!artJobDetailUploading)startMockupUpload(Array.from(e.dataTransfer.files),gi.sku)}}
+                            onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>startMockupUpload(Array.from(inp.files),gi.sku);inp.click()}}>
                             <div style={{color:'#7c3aed',fontWeight:600}}>+ Add More</div>
                           </div>
                         </div>
@@ -14607,8 +14648,8 @@ export default function App(){
                     :<div style={{padding:16,textAlign:'center',borderRadius:8,border:'2px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer'}}
                       onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#ede9fe'}}
                       onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff'}}
-                      onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff';if(!artJobDetailUploading)handleItemMockupUpload(Array.from(e.dataTransfer.files),gi.sku)}}
-                      onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>handleItemMockupUpload(Array.from(inp.files),gi.sku);inp.click()}}>
+                      onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff';if(!artJobDetailUploading)startMockupUpload(Array.from(e.dataTransfer.files),gi.sku)}}
+                      onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>startMockupUpload(Array.from(inp.files),gi.sku);inp.click()}}>
                       {artJobDetailUploading?<div style={{fontSize:11,color:'#7c3aed',fontWeight:600}}>Uploading...</div>
                       :<><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup for {gi.sku} here or click to upload</div></>}
                     </div>}
@@ -14911,6 +14952,25 @@ export default function App(){
                         setArtProdAssignModal(null);
                         await handleProdFileUpload(entries);
                       }}>{artJobDetailUploading?'Uploading...':'Upload '+files.length+' file'+(files.length>1?'s':'')}</button>
+                    </div>
+                  </div>
+                </div>;
+              })()}
+              {mockupArtPicker&&(()=>{
+                const {files,sku,arts}=mockupArtPicker;
+                return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(15,23,42,0.6)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:20}} onClick={()=>!artJobDetailUploading&&setMockupArtPicker(null)}>
+                  <div style={{background:'white',borderRadius:12,padding:20,maxWidth:480,width:'100%'}} onClick={e=>e.stopPropagation()}>
+                    <div style={{fontSize:16,fontWeight:800,color:'#1e293b',marginBottom:4}}>Which art is this mockup showing?</div>
+                    <div style={{fontSize:12,color:'#64748b',marginBottom:14}}>{sku} has {arts.length} different arts. Pick the one the mockup {files.length>1?'files show':'file shows'} so they're saved to the right art's folder.</div>
+                    <div style={{fontSize:11,color:'#94a3b8',marginBottom:10}}>{files.length} file{files.length>1?'s':''}: {files.map(f=>f.name).join(', ')}</div>
+                    <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:14}}>
+                      {arts.map(a=><button key={a.id} className="btn" style={{padding:'10px 14px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,textAlign:'left',cursor:'pointer'}} disabled={artJobDetailUploading} onClick={async()=>{setMockupArtPicker(null);await handleItemMockupUpload(files,sku,a.id)}}>
+                        <div style={{fontSize:13,fontWeight:700,color:'#1e3a5f'}}>{a.name||'Unnamed'}</div>
+                        <div style={{fontSize:10,color:'#64748b'}}>{(a.deco_type||'').replace(/_/g,' ')}{a.art_size?' · '+a.art_size:''}</div>
+                      </button>)}
+                    </div>
+                    <div style={{display:'flex',justifyContent:'flex-end'}}>
+                      <button className="btn btn-secondary" disabled={artJobDetailUploading} onClick={()=>setMockupArtPicker(null)}>Cancel</button>
                     </div>
                   </div>
                 </div>;

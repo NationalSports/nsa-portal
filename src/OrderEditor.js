@@ -75,6 +75,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
   const[artRevisionNote,setArtRevisionNote]=useState('');
   const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
+  const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
   const[collapsedArt,setCollapsedArt]=useState({});// Track collapsed art groups by id
   const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
   const[mockupLightbox,setMockupLightbox]=useState(null);// url string for image lightbox overlay
@@ -2625,9 +2626,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
                       <span style={{fontSize:10,fontWeight:700,color:'#2563eb'}}>📎 MOCKUP FILES</span>
                       <span style={{fontSize:9,color:'#94a3b8'}}>Shared with customer</span>
+                      {(art.mockup_files||art.files||[]).length>0&&safeItems(o).length>0&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto',background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a'}} onClick={()=>setRetagMockupModal({artIdx:i})} title="Tag general mockups to specific items (cleanup tool for legacy uploads)">🏷️ Retag</button>}
                     </div>
-                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.mockup_files||art.files||[]).map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#dbeafe',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fnUrl)?'Click to open':'Legacy file — re-upload'}>
-                      <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();const mf=[...(art.mockup_files||art.files||[])];mf.splice(fi,1);uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[])}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(()=>{const _gen=(art.mockup_files||art.files||[]);const _itemMocks=Object.entries(art.item_mockups||{}).flatMap(([sku,arr])=>(arr||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_sku:sku,_perItem:true})));const _seen=new Set();const _all=[..._gen,..._itemMocks].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});return _all.map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');const isPerItem=fn?._perItem;return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:isPerItem?'#ede9fe':'#dbeafe',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isPerItem?'Per-item mockup ('+fn._sku+') — manage in the artist Job Detail modal':isUrl(fnUrl)?'Click to open':'Legacy file — re-upload'}>
+                      <Icon name="file" size={10}/>{fileDisplayName(fn)}{isPerItem&&<span style={{fontSize:9,color:'#7c3aed',fontWeight:700}}>· {fn._sku}</span>}{!isPerItem&&<button onClick={e=>{e.stopPropagation();const mf=[...(art.mockup_files||art.files||[])];const ix=mf.findIndex(x=>(typeof x==='string'?x:x?.url)===fnUrl);if(ix>=0){mf.splice(ix,1);uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[])}}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button>}</span>})})()}</div>
                     <div style={{border:'2px dashed #bfdbfe',borderRadius:6,padding:12,textAlign:'center',cursor:'pointer',background:'#eff6ff',transition:'all 0.15s'}}
                       onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.multiple=true;inp.onchange=async()=>{let accumulated=[...(art.mockup_files||art.files||[])];for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');accumulated=[...accumulated,{url,name:f.name}];uArt(i,'mockup_files',accumulated);if(!art.mockup_files)uArt(i,'files',[]);nf('✅ '+f.name+' uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
                       onDragOver={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#dbeafe';e.currentTarget.style.borderColor='#3b82f6'}}
@@ -2666,17 +2668,65 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>}
       </div></div>}
 
+    {/* RETAG MOCKUPS — admin tool to move legacy general mockups into per-item buckets */}
+    {retagMockupModal&&(()=>{
+      const ai=retagMockupModal.artIdx;const art=af[ai];if(!art)return null;
+      const _gen=(art.mockup_files||art.files||[]).filter(f=>f);
+      const items=safeItems(o);
+      const skuList=[...new Set(items.map(it=>it.sku).filter(Boolean))];
+      const _urlOf=f=>typeof f==='string'?f:(f?.url||'');
+      const moveToSku=(file,sku)=>{
+        const fileUrl=_urlOf(file);
+        const cur=(art.mockup_files||art.files||[]);
+        const newGen=cur.filter(f=>_urlOf(f)!==fileUrl);
+        const tagged={...(typeof file==='string'?{url:file,name:file}:file),art_file_id:art.id,sku};
+        const curBucket=(art.item_mockups||{})[sku]||[];
+        const newItemMockups={...(art.item_mockups||{}),[sku]:[...curBucket,tagged]};
+        const updArt=[...af];
+        updArt[ai]={...art,mockup_files:newGen,item_mockups:newItemMockups};
+        if(!art.mockup_files)updArt[ai].files=newGen;
+        sv('art_files',updArt);
+        nf('Tagged "'+(file.name||fileUrl)+'" to '+sku);
+      };
+      return<div className="modal-overlay" onClick={()=>setRetagMockupModal(null)}><div className="modal" style={{maxWidth:640}} onClick={e=>e.stopPropagation()}>
+        <div className="modal-header"><h2>🏷️ Retag Mockups — {art.name||'Unnamed art'}</h2><button className="modal-close" onClick={()=>setRetagMockupModal(null)}>×</button></div>
+        <div className="modal-body" style={{maxHeight:520,overflowY:'auto'}}>
+          {_gen.length===0?<div className="empty">No general mockups to retag — all files are already item-tagged.</div>:
+          skuList.length===0?<div className="empty" style={{color:'#92400e'}}>This SO has no items yet — add line items before retagging.</div>:
+          <>
+            <div style={{padding:'10px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e',marginBottom:12}}>Move each general mockup into a specific item's bucket so it shows under the right SKU and is correctly attributed in Previous Artwork.</div>
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              {_gen.map((f,fi)=>{const url=_urlOf(f);const name=fileDisplayName(f);
+                return<div key={fi} style={{display:'flex',gap:10,padding:10,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,alignItems:'center'}}>
+                  {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:60,height:60,objectFit:'contain',borderRadius:4,background:'white',border:'1px solid #e2e8f0',cursor:'pointer'}} onClick={()=>openFile(f)}/>:
+                    <div style={{width:60,height:60,borderRadius:4,background:'#dbeafe',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,cursor:'pointer'}} onClick={()=>openFile(f)}>📄</div>}
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:12,fontWeight:600,color:'#0f172a',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={name}>{name}</div>
+                    <div style={{fontSize:10,color:'#64748b',marginTop:2}}>Tag to SKU:</div>
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:4}}>
+                      {skuList.map(sku=><button key={sku} className="btn btn-sm" style={{fontSize:10,padding:'3px 8px',background:'#ede9fe',color:'#6d28d9',border:'1px solid #ddd6fe',borderRadius:4,fontWeight:700,cursor:'pointer'}} onClick={()=>moveToSku(f,sku)}>{sku}</button>)}
+                    </div>
+                  </div>
+                </div>;})}
+            </div>
+          </>}
+        </div>
+      </div></div>;
+    })()}
+
     {/* PREVIOUS ARTWORK PICKER MODAL */}
     {showPrevArt&&(()=>{
       const custId=o.customer_id;const parentCust2=allCustomers.find(c=>c.id===custId);
       const custIds2=parentCust2?.parent_id?[parentCust2.parent_id,custId,...allCustomers.filter(c=>c.parent_id===parentCust2.parent_id).map(c=>c.id)]:[custId,...allCustomers.filter(c=>c.parent_id===custId).map(c=>c.id)];
       const prevArtList=[];
+      const _seenKeys=new Set();
+      const _dedupKey=a=>(a.id||'')+'|'+(a.name||'').toLowerCase().trim()+'|'+(a.deco_type||'')+'|'+(a.art_size||'')+'|'+((a.color_ways||[]).length);
       // Include customer-level art library
-      custIds2.forEach(cid=>{const c=allCustomers.find(cc=>cc.id===cid);(c?.art_files||[]).forEach(art=>{if(!prevArtList.some(a=>a.name===art.name&&a.deco_type===art.deco_type))prevArtList.push({...art,_so_id:'Library',_so_memo:c.alpha_tag||c.name||''})})});
+      custIds2.forEach(cid=>{const c=allCustomers.find(cc=>cc.id===cid);(c?.art_files||[]).forEach(art=>{const k=_dedupKey(art);if(!_seenKeys.has(k)){_seenKeys.add(k);prevArtList.push({...art,_so_id:'Library',_so_memo:c.alpha_tag||c.name||''})}})});
       (allOrders||[]).filter(so=>custIds2.includes(so.customer_id)&&so.id!==o.id).forEach(so=>{
         (so.art_files||[]).forEach(art=>{
-          if(!prevArtList.some(a=>a.name===art.name&&a.deco_type===art.deco_type))
-            prevArtList.push({...art,_so_id:so.id,_so_memo:so.memo||''});
+          const k=_dedupKey(art);
+          if(!_seenKeys.has(k)){_seenKeys.add(k);prevArtList.push({...art,_so_id:so.id,_so_memo:so.memo||''})}
         });
       });
       return<div className="modal-overlay" onClick={()=>setShowPrevArt(false)}><div className="modal" style={{maxWidth:700}} onClick={e=>e.stopPropagation()}>
@@ -2685,10 +2735,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {prevArtList.length===0?<div className="empty">No previous artwork found for this customer</div>:
           <div style={{display:'flex',flexDirection:'column',gap:8}}>
             {prevArtList.map((art,i)=>{
-              const alreadyAdded=af.some(a=>a.name===art.name&&a.deco_type===art.deco_type);
+              const alreadyAdded=af.some(a=>a.id===art.id||(a.name===art.name&&a.deco_type===art.deco_type&&a.art_size===art.art_size));
               const previewImg=art.preview_url||'';
-              const mockups=[...(art.mockup_files||[]),...(art.files||[]),...(art.prod_files||[]),...Object.values(art.item_mockups||{}).flat()].filter(f=>f);
-              const firstMockup=mockups.find(f=>{const u=typeof f==='string'?f:(f?.url||'');return _isImgUrl(u,f)})||mockups[0];const imgUrl=previewImg||(firstMockup?(typeof firstMockup==='string'?firstMockup:firstMockup.url):'');
+              // Only include actual mockup sources (not prod seps/AIs) and filter to files tagged for this art when art_file_id is present.
+              const _artId=art.id;
+              const _tagMatches=f=>{const fid=typeof f==='object'&&f?.art_file_id;return!fid||fid===_artId};
+              const _rawMocks=[...(art.mockup_files||[]),...(art.files||[]),...Object.values(art.item_mockups||{}).flat()].filter(f=>f&&_tagMatches(f));
+              const _urlOf=f=>typeof f==='string'?f:(f?.url||'');
+              const _seenUrls=new Set();
+              const mockups=_rawMocks.filter(f=>{const u=_urlOf(f);if(!u||_seenUrls.has(u))return false;_seenUrls.add(u);return true});
+              const firstMockup=mockups.find(f=>{const u=_urlOf(f);return _isImgUrl(u,f)})||mockups[0];const imgUrl=previewImg||(firstMockup?_urlOf(firstMockup):'');
               return<div key={art.id+'-'+i} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
                 <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
                   {imgUrl&&_isImgUrl(imgUrl)?<img src={imgUrl} alt="" style={{width:80,height:80,borderRadius:8,objectFit:'contain',flexShrink:0,cursor:'pointer',background:'white',border:'1px solid #e2e8f0'}} onClick={()=>previewImg?window.open(previewImg,'_blank'):openFile(firstMockup)}/>:
@@ -2698,7 +2754,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{(art.color_ways||[]).length>0?' · '+art.color_ways.length+' CW'+(art.color_ways.length>1?'s':''):art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':art.thread_colors?' · '+art.thread_colors:''}{art.art_size?' · '+art.art_size:''}</div>
                     <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{art._so_id} — {art._so_memo}</div>
                     {mockups.length>1&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:6}}>
-                      {mockups.slice(1,5).map((f,fi)=>{const fUrl=typeof f==='string'?f:(f?.url||'');return _isImgUrl(fUrl)?<img key={fi} src={fUrl} alt="" style={{width:48,height:48,borderRadius:4,objectFit:'contain',cursor:'pointer',background:'white',border:'1px solid #e2e8f0'}} onClick={e=>{e.stopPropagation();openFile(f)}}/>:null})}
+                      {mockups.slice(1,5).map((f,fi)=>{const fUrl=_urlOf(f);return _isImgUrl(fUrl)?<img key={fi} src={fUrl} alt="" style={{width:48,height:48,borderRadius:4,objectFit:'contain',cursor:'pointer',background:'white',border:'1px solid #e2e8f0'}} onClick={e=>{e.stopPropagation();openFile(f)}}/>:null})}
                       {mockups.length>5&&<span style={{fontSize:10,color:'#64748b',alignSelf:'center'}}>+{mockups.length-5} more</span>}
                     </div>}
                   </div>
@@ -4977,7 +5033,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   w.document.write('<p>'+j.deco_type?.replace(/_/g,' ')+' · '+(j.positions||'').replace(/^,\s*/,'')+' · '+j.total_units+' total units</p>');
                   w.document.write('<p>SO: '+o.id+' — '+(o.memo||'')+'</p>');
                   // Mockup image at top
-                  const _jsMocks=(artF?.mockup_files||artF?.files||[]).filter(f=>f);
+                  const _jsMocks=[...(artF?.mockup_files||artF?.files||[]),...Object.values(artF?.item_mockups||{}).flat()].filter(f=>f);
                   const _jsMockUrl=(()=>{for(const f of _jsMocks){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f))return u;const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)return pt}return itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url||null})();
                   if(_jsMockUrl){w.document.write('<div style="text-align:center;margin:12px 0;padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><img src="'+_jsMockUrl+'" style="max-width:100%;max-height:350px;object-fit:contain;border-radius:6px"/><div style="font-size:10px;color:#666;margin-top:4px">Mockup Preview</div></div>')}
                   w.document.write('<div class="info"><div><div class="label">Art Status</div>'+artLabels[j.art_status]+'</div><div><div class="label">Item Status</div>'+itemLabels[j.item_status]+'</div><div><div class="label">Production</div>'+prodLabels[j.prod_status]+'</div><div><div class="label">Fulfilled</div>'+j.fulfilled_units+'/'+j.total_units+' ('+pct+'%)</div></div>');
