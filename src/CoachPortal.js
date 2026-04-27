@@ -4,7 +4,7 @@ import { SZ_ORD, pantoneHex, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP } from './pricing';
-import { sendBrevoEmail, _brevoKey, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml } from './utils';
+import { sendBrevoEmail, _brevoKey, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, getBillingContacts } from './utils';
 
 function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs,onUpdateSOs,onUpdateEsts,savSOFn,portalSettings,dbSaveEstimate:_dbSaveEstimate}){
   const _portalDisclaimer=portalSettings?.disclaimer||'';
@@ -198,7 +198,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             setEstView({...est,status:'approved'});
             // Email the assigned rep when coach approves estimate
             const rep=REPS.find(r=>r.id===est.created_by);
-            if(rep?.email&&_brevoKey){sendBrevoEmail({to:[{email:rep.email}],subject:'✅ Estimate approved by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><p>This estimate is ready to be converted to a sales order.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:rep.email?{email:rep.email,name:rep.name}:undefined})}
+            if(rep?.email&&_brevoKey){const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));sendBrevoEmail({to:[{email:rep.email}],cc:_accCc,subject:'✅ Estimate approved by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><p>This estimate is ready to be converted to a sales order.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:rep.email?{email:rep.email,name:rep.name}:undefined})}
           }}>✅ Approve This Estimate</button>}
           {canApprove&&<div style={{border:'1px solid #e2e8f0',borderRadius:10,padding:16,marginBottom:10}}>
             <div style={{fontSize:13,fontWeight:700,color:'#1e3a5f',marginBottom:8}}>Need changes? Request updates from your rep</div>
@@ -517,7 +517,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 // Email the assigned rep
                 const rep=REPS.find(r=>r.id===liveSO.created_by);
                 const commentHtml=coachComment?'<p style="margin-top:12px;padding:10px 14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px"><strong>Coach\'s note:</strong> '+coachComment+'</p>':'';
-                if(rep?.email&&_brevoKey){sendBrevoEmail({to:[{email:rep.email}],subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p>'+commentHtml+'<p>The job is now ready for production file prep.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:rep.email?{email:rep.email,name:rep.name}:undefined})}
+                if(rep?.email&&_brevoKey){const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));sendBrevoEmail({to:[{email:rep.email}],cc:_accCc,subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p>'+commentHtml+'<p>The job is now ready for production file prep.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:rep.email?{email:rep.email,name:rep.name}:undefined})}
                 setComment('');setJobView(null);
               }}>✅ Approve Artwork</button>
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={()=>{

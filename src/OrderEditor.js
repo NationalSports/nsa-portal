@@ -9,7 +9,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks, ImgGallery } from './components';
 import { CustModal } from './modals';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, nextInvId, _brevoKey } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, nextInvId, _brevoKey, getBillingContacts } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 
@@ -1490,10 +1490,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <input className="form-input" type="number" min="60" max="180" value={o.booking_alert_days||100} onChange={e=>sv('booking_alert_days',parseInt(e.target.value)||100)}/>
           <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>before ship</div>
         </div>}
-        {isSO&&o.order_type==='booking'&&!o.booking_confirmed&&<div style={{alignSelf:'end'}}>
-          <button style={{fontSize:11,padding:'6px 12px',borderRadius:6,background:'#059669',border:'none',color:'white',cursor:'pointer',fontWeight:700}} onClick={()=>{if(!window.confirm('Confirm this booking order with coach? It will enter the active pipeline.'))return;sv('booking_confirmed',true);sv('booking_confirmed_at',new Date().toISOString());sv('booking_confirmed_by',cu?.id||'');nf('Booking order confirmed — entering pipeline')}}>Confirm with Coach</button>
-        </div>}
-        {isSO&&o.order_type==='booking'&&o.booking_confirmed&&<div style={{alignSelf:'end',fontSize:11,color:'#059669',fontWeight:600,padding:'6px 0'}}>Confirmed</div>}
         <button className="btn btn-primary" onClick={()=>{
           if(!cust){nf('Select a customer first','error');return}
           if(!o.memo?.trim()){nf('Memo is required','error');return}
@@ -1669,7 +1665,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div></>})()}
         </div>
       </div>
-      {isSO&&<div style={{display:'flex',gap:6,marginTop:8}}>
+      {isSO&&<div style={{display:'flex',gap:6,marginTop:8,alignItems:'center'}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
         {o.promo_applied?<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={()=>{
           if(!window.confirm('Mark promo order '+o.id+' as complete? No invoice needed — costs are tracked on the SO.'))return;
@@ -1678,6 +1674,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         :<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
           setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('final');setInvDepositPct(50);setShowInvCreate(true);
         }}><Icon name="dollar" size={14}/> Create Invoice</button>}
+        {o.order_type==='booking'&&!o.booking_confirmed&&<button style={{fontSize:13,padding:'7px 14px',borderRadius:6,background:'#059669',border:'none',color:'white',cursor:'pointer',fontWeight:700}} onClick={()=>{if(!window.confirm('Confirm this booking order with coach? It will enter the active pipeline.'))return;sv('booking_confirmed',true);sv('booking_confirmed_at',new Date().toISOString());sv('booking_confirmed_by',cu?.id||'');nf('Booking order confirmed — entering pipeline')}}><Icon name="check" size={14}/> Confirm with Coach</button>}
+        {o.order_type==='booking'&&o.booking_confirmed&&<span style={{fontSize:12,color:'#059669',fontWeight:600,padding:'6px 8px',background:'#ecfdf5',borderRadius:6,border:'1px solid #86efac'}}>✓ Confirmed with Coach</span>}
       </div>}
       {/* SHIPPING */}
       <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
@@ -4037,7 +4035,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <button className="btn btn-secondary" onClick={()=>{setInvReview(null);if(onNavInvoice)onNavInvoice(ir)}}>Go to Invoices</button>
           <div style={{display:'flex',gap:8}}>
             <button className="btn btn-secondary" onClick={printInvoice}>🖨️ Print Invoice</button>
-            <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>{const _c=(cust?.contacts||[]).filter(c=>c.email);setInvSendTo(_c.length>0?[_c[0].email]:[]);setInvSendCustomEmail('');setInvSendModal(true)}}>📧 Send to Coach</button>
+            <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>{const _c=(cust?.contacts||[]).filter(c=>c.email);const _accts=getBillingContacts(cust,allCustomers).filter(a=>a.email);const _primary=_c.length>0?_c[0].email:null;const _sel=[...(_primary?[_primary]:[]),..._accts.map(a=>a.email).filter(e=>e!==_primary)];setInvSendTo(_sel);setInvSendCustomEmail('');setInvSendModal(true)}}>📧 Send to Coach</button>
           </div>
         </div>
       </div></div>
@@ -4046,7 +4044,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {/* ═══ SEND TO COACH MODAL ═══ */}
     {invSendModal&&invReview&&(()=>{
       const ir=invReview;const ic=ir._customer||cust;
-      const contacts=(ic?.contacts||[]).filter(c=>c.email);
+      const ownContacts=(ic?.contacts||[]).filter(c=>c.email);
+      const inheritedAccts=getBillingContacts(ic,allCustomers).filter(a=>a._inherited_from&&a.email&&!ownContacts.find(o=>o.email===a.email));
+      const contacts=[...ownContacts,...inheritedAccts];
       const selectedEmails=Array.isArray(invSendTo)?invSendTo:invSendTo?[invSendTo]:[];
       const allRecipients=[...selectedEmails];
       const hasRecipients=allRecipients.length>0;
@@ -4059,6 +4059,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {contacts.map(c=><label key={c.email} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',padding:'6px 8px',borderRadius:6,background:selectedEmails.includes(c.email)?'#eff6ff':'#f8fafc',border:'1px solid '+(selectedEmails.includes(c.email)?'#93c5fd':'#e2e8f0'),fontSize:13}}>
                 <input type="checkbox" checked={selectedEmails.includes(c.email)} onChange={e=>{if(e.target.checked)setInvSendTo([...selectedEmails,c.email]);else setInvSendTo(selectedEmails.filter(x=>x!==c.email))}} style={{width:15,height:15,accentColor:'#2563eb'}}/>
                 <span style={{fontWeight:selectedEmails.includes(c.email)?600:400}}>{c.name||'Contact'} — {c.email}{c.role?' ('+c.role+')':''}</span>
+                {c._inherited_from&&<span style={{fontSize:9,padding:'1px 6px',background:'#ede9fe',color:'#6d28d9',borderRadius:8,fontWeight:600,marginLeft:'auto'}}>from {c._inherited_from}</span>}
               </label>)}
             </div>}
             {contacts.length===0&&<div style={{fontSize:12,color:'#94a3b8',marginBottom:8}}>No contacts with email on file</div>}
@@ -4181,8 +4182,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const emailHtml='<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+invSendMsg.replace(/\n/g,'<br>')
               +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':'')
               +'</div>';
+            const _toEmailsLc=new Set(toList.map(t=>(t.email||'').toLowerCase()));
+            const _invCc=getBillingContacts(ic,allCustomers).filter(a=>a.email&&!_toEmailsLc.has(a.email.toLowerCase())).map(a=>({email:a.email,name:a.name||''}));
             const res=await sendBrevoEmail({
               to:toList,
+              cc:_invCc,
               subject:'Invoice '+ir.id+' — $'+ir.total.toFixed(2)+' from National Sports Apparel',
               htmlContent:emailHtml,
               senderName:cu.name||'National Sports Apparel',

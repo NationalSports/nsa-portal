@@ -5,7 +5,7 @@ import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES 
 import { safeNum, safeItems, safeSizes, safeArr, safeStr, safeDecos } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, SortHeader, PantoneAdder, SearchSelect } from './components';
 import { CONTACT_ROLES } from './pricing';
-import { invokeEdgeFn } from './utils';
+import { invokeEdgeFn, getBillingContacts } from './utils';
 
 function VendDetail({vendor,products,onUpdateProducts,onBack}){
   const[syncing,setSyncing]=React.useState(false);
@@ -317,6 +317,14 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
       <div><label className="form-label">Terms</label><select className="form-select" value={f.payment_terms||'net30'} onChange={e=>sv('payment_terms',e.target.value)}><option value="prepay">Prepay</option><option value="net15">Net 15</option><option value="net30">Net 30</option><option value="net60">Net 60</option></select></div>
       <div><label className="form-label">Rep</label><select className="form-select" value={f.primary_rep_id||''} onChange={e=>sv('primary_rep_id',e.target.value||null)}><option value="">— None —</option>{(reps||[]).filter(r=>['Steve Peterson','Mike Mercuriali','Jered Hunt','Chase Koissian','Gayle Peterson','Kevin McCormack','Jeff Bianchini','Sharon Day-Monroe','Kelly Bean'].includes(r.name)&&r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></div></div>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:8,marginBottom:6,textTransform:'uppercase'}}>Contacts</div>
+    {(()=>{const inheritedBilling=ct==='sub'&&f.parent_id?getBillingContacts({parent_id:f.parent_id,contacts:[]},allCustomers).filter(b=>b._inherited_from):[];
+      return inheritedBilling.length>0?<div style={{background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:6,padding:'8px 10px',marginBottom:8}}>
+        <div style={{fontSize:10,fontWeight:700,color:'#6d28d9',marginBottom:4,textTransform:'uppercase'}}>Inherited Billing Contact{inheritedBilling.length>1?'s':''} (auto-CC'd from parent)</div>
+        {inheritedBilling.map((b,bi)=><div key={bi} style={{fontSize:12,color:'#6d28d9'}}>
+          <strong>{b.name||'—'}</strong>{b.email?' · '+b.email:''}{b.phone?' · '+b.phone:''} <span style={{fontSize:10,color:'#94a3b8'}}>(edit on {b._inherited_from})</span>
+        </div>)}
+      </div>:null;
+    })()}
     {(f.contacts||[]).map((c,i)=><div key={i} style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 100px auto',gap:6,marginBottom:6}}>
       <input className="form-input" placeholder="Name *" value={c.name} onChange={e=>upC(i,'name',e.target.value)}/>
       <input className="form-input" placeholder="Email *" value={c.email} onChange={e=>upC(i,'email',e.target.value)}/>
