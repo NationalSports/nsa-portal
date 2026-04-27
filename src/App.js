@@ -1373,7 +1373,7 @@ const parseNetSuitePdf=(text,docType,products)=>{
   const isEndMarker=l=>{const t=l.replace(/\t.*/,'').trim();return/^(Subtotal|Total$|Tax\b|Discount|Thank you|Comments|Notes$|Memo$|Terms$|Merchandise\s*Total|Document\s*Total|Report\s*Problems)/i.test(t)};
   const isMetadataLine=l=>{const lo=l.toLowerCase();return/\b(weight\s*\(lb\)|shipment\s*method|ship\s*date|terms\s*of\s*(payment|delivery)|document\s*(number|date)|rqst\s*ship\s*date)/i.test(lo)};
   // Detect page breaks and repeated headers from multi-page PDFs (skip, don't end)
-  const isPageBreak=l=>{const t=l.replace(/\t.*/,'').trim();return/^Page\s+\d/i.test(t)};
+  const isPageBreak=l=>{const t=l.replace(/\t.*/,'').trim();if(/^Page\s+\d/i.test(t))return true;const flat=l.trim().replace(/\s+/g,' ');return/^\d+\s+of\s+\d+$/i.test(flat)};
   const isRepeatedHeader=l=>{const lo=l.toLowerCase();return(lo.includes('quantity')||lo.includes('qty'))&&(lo.includes('item')||lo.includes('sku')||lo.includes('description'))&&(lo.includes('amount')||lo.includes('rate')||lo.includes('price')||lo.includes('extension'))};
   // Check if a line starts with a quantity number (item data line vs description line)
   const isItemLine=line=>{
@@ -1429,7 +1429,14 @@ const parseNetSuitePdf=(text,docType,products)=>{
   }
 
   // Parse each item pair
-  const sizeItems={};// keyed by baseSku+color for collapsing sizes
+  const sizeItems={};// keyed by baseSku+color+group for collapsing sizes
+  // Decoration lines (Screen/Embroidery/etc) act as group boundaries on the
+  // source order — items above each decoration share that decoration, so the
+  // same SKU appearing again below a decoration is a separate group and must
+  // not be merged. groupIndex is bumped on the next size item AFTER a
+  // decoration line, so consecutive decorations stay in the same group.
+  let groupIndex=0;
+  let pendingNewGroup=false;
   itemPairs.forEach(({dataLine,descLine})=>{
     const parts=dataLine.split('\t').map(s=>s.trim());
     const qty=parseInt(parts[0])||0;
@@ -1517,14 +1524,18 @@ const parseNetSuitePdf=(text,docType,products)=>{
       const colors=colorCountMatch?parseInt(colorCountMatch[1]):1;
       result.lineItems.push({sku:baseSku,description,quantity:qty,rate:rate||0,amount:amount||0,
         isDecoration:true,decoType,colors,sizes:{},raw:dataLine});
+      // Mark that the next size item starts a new group; consecutive decos
+      // don't keep bumping (multiple decos can apply to the same item block).
+      pendingNewGroup=true;
       return;
     }
 
-    // Collapse sizes: same baseSku+color → one item with size breakdown
-    const collapseKey=baseSku+(color?'||'+color:'');
+    // Collapse sizes: same baseSku+color within the same group → one item
+    if(size&&baseSku&&pendingNewGroup){groupIndex++;pendingNewGroup=false}
+    const collapseKey=baseSku+'||'+(color||'')+'||'+groupIndex;
     if(size&&baseSku){
       if(!sizeItems[collapseKey]){
-        sizeItems[collapseKey]={sku:baseSku,description:productName,color,quantity:0,rate,amount:0,isDecoration:false,sizes:{},raw:dataLine};
+        sizeItems[collapseKey]={sku:baseSku,description:productName,color,quantity:0,rate,amount:0,isDecoration:false,sizes:{},raw:dataLine,_group:groupIndex};
       }
       sizeItems[collapseKey].sizes[size]=(sizeItems[collapseKey].sizes[size]||0)+qty;
       sizeItems[collapseKey].quantity+=qty;
@@ -1549,8 +1560,26 @@ const parseNetSuitePdf=(text,docType,products)=>{
     }
   });
 
+  // Fold any color-less entry into its colored sibling for the same baseSku
+  // and group (handles cases where one row's color extraction failed due to
+  // footer/header noise — but only within the same decoration group).
+  const sizeItemsList=Object.values(sizeItems);
+  const colored={};
+  sizeItemsList.forEach(it=>{if(it.color){const k=it.sku+'||'+it._group;colored[k]=colored[k]||it}});
+  const merged=[];
+  sizeItemsList.forEach(it=>{
+    const k=it.sku+'||'+it._group;
+    if(!it.color&&colored[k]&&colored[k]!==it){
+      const target=colored[k];
+      Object.entries(it.sizes).forEach(([sz,q])=>{target.sizes[sz]=(target.sizes[sz]||0)+q});
+      target.quantity+=it.quantity;
+      target.amount+=it.amount;
+      return;
+    }
+    merged.push(it);
+  });
   // Add collapsed size items to lineItems
-  Object.values(sizeItems).forEach(it=>{
+  merged.forEach(it=>{
     if(it.quantity>0&&it.rate===0&&it.amount>0)it.rate=rQ(it.amount/it.quantity);
     result.lineItems.push(it);
   });
@@ -15399,6 +15428,9 @@ export default function App(){
 ').filter(l=>l.trim());
     const items={};const decoLines=[];const issues=[];const shipping=[];const questions=[];
     const SZ_RE=/[-\s](XXS|XS|S|M|L|XL|2XL|3XL|4XL|5XL|YXS|YS|YM|YL|YXL|OSFA)$/i;
+    // Decoration lines act as group boundaries — same SKU appearing in
+    // separate decoration groups stays on separate rows (see PDF parser).
+    let nsGroupIndex=0;let nsPendingNewGroup=false;
 
     lines.forEach((line,li)=>{
       const cols=line.split('\	').map(c=>c.trim());
@@ -15410,7 +15442,7 @@ export default function App(){
       if(rawItem.toUpperCase()==='ITEM'||desc.toUpperCase()==='DESCRIPTION')return;
       if(rawItem.toLowerCase().includes('shipping')||desc.toLowerCase().includes('shipping')){shipping.push({desc,amount,rate});return}
       if(/^(screen\s*print|embroid|dtf|heat\s*trans|vinyl|sublim)/i.test(desc)||/^(Screen|Embr?|Embroidery|DTF|Heat|Vinyl|Sublim|Deco)(\b|[-_\s])/i.test(rawItem)){
-        decoLines.push({rawItem,desc,qty,rate,amount,poRef,_assignTo:'all'});return}
+        decoLines.push({rawItem,desc,qty,rate,amount,poRef,_assignTo:'all'});nsPendingNewGroup=true;return}
 
       const skuParts=rawItem.split(/\s*:\s*/);let itemCode=skuParts[0]||rawItem;
       let fullSku=skuParts[1]||itemCode;
@@ -15454,13 +15486,15 @@ export default function App(){
       const catMatch=prod.find(p=>p.sku===baseSku)||(baseSku.length>3?prod.find(p=>p.sku.toLowerCase()===baseSku.toLowerCase()):null);
 
       if(size&&baseSku){
-        if(!items[baseSku])items[baseSku]={sku:baseSku,name:catMatch?.name||desc.replace(/\s*[-–]\s*[A-Za-z\s\/]+?\s*[-–]\s*\w+$/,'').trim(),
+        if(nsPendingNewGroup){nsGroupIndex++;nsPendingNewGroup=false}
+        const groupKey=baseSku+'||'+nsGroupIndex;
+        if(!items[groupKey])items[groupKey]={sku:baseSku,name:catMatch?.name||desc.replace(/\s*[-–]\s*[A-Za-z\s\/]+?\s*[-–]\s*\w+$/,'').trim(),
           brand:catMatch?.brand||brand,color:color||catMatch?.color||'',rate,sizes:{},totalQty:0,totalAmt:0,poRef,priceLevel,
           catMatch:catMatch||null,is_custom:!catMatch&&(baseSku.toLowerCase().includes('misc')||priceLevel.toLowerCase()==='custom'),issues:[],onHand:null};
-        items[baseSku].sizes[size]=(items[baseSku].sizes[size]||0)+qty;
-        items[baseSku].totalQty+=qty;items[baseSku].totalAmt+=amount;
-        if(onHand!==null)items[baseSku].onHand=onHand;
-        if(color&&!items[baseSku].color)items[baseSku].color=color;
+        items[groupKey].sizes[size]=(items[groupKey].sizes[size]||0)+qty;
+        items[groupKey].totalQty+=qty;items[groupKey].totalAmt+=amount;
+        if(onHand!==null)items[groupKey].onHand=onHand;
+        if(color&&!items[groupKey].color)items[groupKey].color=color;
       } else {
         const embSizes={};let m;const sr=/(\d+)\s*\/\s*(S|M|L|XL|2XL|3XL|4XL|XXS|XS|YS|YM|YL|YXL)/gi;
         while((m=sr.exec(desc))!==null)embSizes[m[2].toUpperCase()]=parseInt(m[1]);
@@ -15480,11 +15514,10 @@ export default function App(){
 
     const parsed=Object.values(items);
 
-    // Generate questions for ambiguous items
+    // Generate questions for ambiguous items (color is now editable inline on the Review page)
     parsed.forEach((it,i)=>{
       if(!it.catMatch&&!it.is_custom)questions.push({idx:i,type:'match',msg:`"${it.sku}" not found in catalog. Is this a known product or a custom/special order?`,options:['match_catalog','custom','skip'],answer:null});
       if(it.is_custom&&it.sku==='Misc Adi')questions.push({idx:i,type:'sku',msg:`Custom item "${it.name.slice(0,50)}..." — do you know the real SKU?`,answer:''});
-      if(!it.color)questions.push({idx:i,type:'color',msg:`What color is "${it.sku} — ${it.name.slice(0,40)}"?`,answer:''});
     });
 
     return{parsed,decoLines,issues,questions,shipping};
@@ -16990,7 +17023,7 @@ export default function App(){
       {impTab==='orders'&&<>
       {/* Step indicators */}
       <div style={{display:'flex',gap:4,marginBottom:16}}>
-        {[['upload','1. Upload PDF'],['parse','2. Raw Text'],['review','3. Review Items'],['questions','4. Clarify'],['confirm','5. Create']].map(([id,label])=>
+        {[['upload','1. Upload PDF'],['parse','2. Raw Text'],['review','3. Review & Clarify'],['confirm','4. Create']].map(([id,label])=>
           <div key={id} style={{flex:1,padding:'8px 12px',borderRadius:6,textAlign:'center',fontSize:11,fontWeight:700,
             background:imp.step===id?'#1e40af':'#f1f5f9',color:imp.step===id?'white':'#64748b'}}>{label}</div>)}
       </div>
@@ -17256,15 +17289,14 @@ export default function App(){
                 const questions=[];
                 products.forEach((it,i)=>{
                   if(!it.catMatch&&!it.is_custom)questions.push({idx:i,type:'match',msg:'"'+it.sku+'" not found in catalog. Known product or custom?',options:['match_catalog','custom','skip'],answer:null});
-                  if(!it.color)questions.push({idx:i,type:'color',msg:'What color is "'+it.sku+' — '+it.name.slice(0,40)+'"?',answer:''});
                 });
 
-                setImp(x=>({...x,step:questions.length>0?'questions':'review',parsed:products,decoLines:[],issues:[],questions,
+                setImp(x=>({...x,step:'review',parsed:products,decoLines:[],issues:[],questions,
                   shipping:imp.pdfParsed.shipping>0?[{desc:'Shipping',amount:imp.pdfParsed.shipping,rate:imp.pdfParsed.shipping}]:[]
                 }));
               } else if(imp.raw.trim()){
                 const result=parseNSData(imp.raw);
-                setImp(x=>({...x,step:result.questions.length>0?'questions':'review',...result}));
+                setImp(x=>({...x,step:'review',...result}));
               } else if(imp.pdfParsed){
                 setImp(x=>({...x,step:'parse'}));
               }
@@ -17294,7 +17326,7 @@ export default function App(){
           <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'upload'}))}>← Back</button>
           <button className="btn btn-primary" disabled={!imp.raw.trim()} onClick={()=>{
             const result=parseNSData(imp.raw);
-            setImp(x=>({...x,step:result.questions.length>0?'questions':'review',...result}));
+            setImp(x=>({...x,step:'review',...result}));
           }}>📋 Parse Pasted Data →</button>
         </div>
       </>}
@@ -17316,16 +17348,19 @@ export default function App(){
         </div>
 
         <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:0}}>
+          <datalist id="impBrandList">
+            {[...new Set([...prod.map(p=>p.brand),...vend.map(v=>v.name)].filter(Boolean))].sort().map(b=><option key={b} value={b}/>)}
+          </datalist>
           <table style={{fontSize:11}}><thead><tr>
-            <th style={{width:30}}></th><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th>
+            <th style={{width:30}}></th><th>SKU</th><th>Name</th><th>Vendor</th><th>Color</th>
             <th style={{textAlign:'right'}}>Rate</th><th>Sizes</th><th style={{textAlign:'center'}}>Qty</th><th style={{textAlign:'right'}}>Amount</th>
           </tr></thead>
           <tbody>{imp.parsed.map((it,i)=><tr key={i} style={{background:it.catMatch?'#f0fdf4':it.is_custom?'#fffbeb':'#fef2f2'}}>
             <td style={{textAlign:'center'}}><input type="checkbox" checked={!it._skip} onChange={e=>updItem(i,'_skip',!e.target.checked)}/></td>
             <td style={{fontFamily:'monospace',fontWeight:700,color:it.catMatch?'#166534':'#dc2626'}}>{it.sku}</td>
             <td>{it.catMatch?<span>✅ {it.name.slice(0,35)}</span>:<span>⚠️ {it.name.slice(0,35)}</span>}</td>
-            <td style={{fontSize:10}}>{it.brand}</td>
-            <td style={{fontSize:10}}>{it.color||<span style={{color:'#dc2626'}}>?</span>}</td>
+            <td><input className="form-input" list="impBrandList" value={it.brand||''} onChange={e=>updItem(i,'brand',e.target.value)} placeholder="—" style={{fontSize:10,padding:'2px 4px',width:100,border:it.brand?'1px solid #e2e8f0':'1px solid #fca5a5'}}/></td>
+            <td><input className="form-input" value={it.color||''} onChange={e=>updItem(i,'color',e.target.value)} placeholder="—" style={{fontSize:10,padding:'2px 4px',width:90,border:it.color?'1px solid #e2e8f0':'1px solid #fca5a5'}}/></td>
             <td style={{textAlign:'right'}}>${it.rate?.toFixed(2)}</td>
             <td style={{fontSize:9}}>{Object.entries(it.sizes||{}).map(([s,q])=>s+':'+q).join(' ')}</td>
             <td style={{fontWeight:700,textAlign:'center'}}>{it.totalQty}</td>
@@ -17335,7 +17370,7 @@ export default function App(){
 
         {(()=>{const unmatched=imp.parsed.filter(p=>!p.catMatch&&!p._skip);return unmatched.length>0?<div style={{padding:12,background:'#fef3c7',borderRadius:6,marginBottom:12,border:'1px solid #fde68a'}}>
           <div style={{fontWeight:700,color:'#92400e',marginBottom:6}}>⚠️ {unmatched.length} item(s) not found in catalog</div>
-          <div style={{fontSize:11,color:'#78350f',marginBottom:8}}>These items need to be created as products before import, or kept as custom items. Use the "Clarify" step to resolve.</div>
+          <div style={{fontSize:11,color:'#78350f',marginBottom:8}}>These items need to be created as products before import, or kept as custom items. Use the "Clarify Items" section below to resolve.</div>
           {unmatched.map((it,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 0',fontSize:11}}>
             <span style={{fontFamily:'monospace',fontWeight:700,color:'#92400e'}}>{it.sku}</span>
             <span style={{color:'#78350f'}}>{it.name?.slice(0,40)}</span>
@@ -17352,17 +17387,7 @@ export default function App(){
           {imp.issues.map((iss,i)=><div key={i} style={{fontSize:11,color:'#dc2626'}}>Line {iss.line}: {iss.msg}</div>)}
         </div>}
 
-        <div style={{display:'flex',gap:8}}>
-          <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'upload'}))}>← Back</button>
-          <button className="btn btn-primary" onClick={()=>setImp(x=>({...x,step:x.questions.length>0?'questions':'confirm'}))}>
-            {imp.questions.length>0?'Answer '+imp.questions.length+' Questions →':'Review & Create →'}
-          </button>
-        </div>
-      </>}
-
-      {/* ═══ STEP 4: Questions ═══ */}
-      {imp.step==='questions'&&<>
-        <div className="card" style={{marginBottom:12}}><div className="card-header"><h2>❓ Clarify Items ({imp.questions.length})</h2></div>
+        {imp.questions.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>❓ Clarify Items ({imp.questions.length})</h2></div>
           <div className="card-body">
             {imp.questions.map((q,qi)=><div key={qi} style={{padding:10,marginBottom:8,background:q.answer?'#f0fdf4':'#fffbeb',borderRadius:6,border:'1px solid '+(q.answer?'#bbf7d0':'#fde68a')}}>
               <div style={{fontWeight:600,fontSize:12,marginBottom:6}}>{q.msg}</div>
@@ -17395,25 +17420,22 @@ export default function App(){
                 </select>
                 <button className={`btn btn-sm ${q.answer==='keep_custom'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'keep_custom')}>Keep as Custom</button>
               </div>}
-              {q.type==='color'&&<input className="form-input" value={q.answer||''} onChange={e=>applyAnswer(qi,e.target.value)} placeholder="Enter color..." style={{width:200,fontSize:11}}/>}
             </div>)}
-          </div></div>
+          </div></div>}
+
         <div style={{display:'flex',gap:8}}>
-          <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'review'}))}>← Back</button>
-          <button className="btn btn-primary" onClick={()=>setImp(x=>({...x,step:'confirm'}))}>Review Final →</button>
+          <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'upload'}))}>← Back</button>
+          <button className="btn btn-primary" onClick={()=>setImp(x=>({...x,step:'confirm'}))}>Continue to Create →</button>
         </div>
       </>}
+
 
       {/* ═══ STEP 5: Confirm & Create ═══ */}
       {imp.step==='confirm'&&<>
         {(()=>{try{
           console.log('CONFIRM STEP DEBUG:',JSON.stringify({custId:imp.custId,parsedLen:imp.parsed?.length,questionsLen:imp.questions?.length,shippingType:typeof imp.shipping,shipping:imp.shipping,parsed:imp.parsed?.map(p=>({sku:p.sku,rate:p.rate,sizes:p.sizes,color:p.color,totalAmt:p.totalAmt,totalQty:p.totalQty}))},null,2));
           const c=cust.find(x=>x.id===imp.custId);
-          // Apply color answers from questions back to parsed items
-          const resolved=(imp.parsed||[]).map((p,pi)=>{
-            const cq=(imp.questions||[]).find(q=>q.idx===pi&&q.type==='color'&&q.answer);
-            return cq?{...p,color:cq.answer,_pi:pi}:{...p,_pi:pi};
-          });
+          const resolved=(imp.parsed||[]).map((p,pi)=>({...p,_pi:pi}));
           const keeping=resolved.filter((p,pi)=>!p._skip&&!(imp.questions||[]).find(q=>q.idx===pi&&q.answer==='skip'));
           const isAUi=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';
           const mk=c?.catalog_markup||1.65;const tier=c?.adidas_ua_tier||'B';const tD={A:0.4,B:0.35,C:0.3};const disc=tD[tier]||0.35;
@@ -17442,7 +17464,10 @@ export default function App(){
             </div></div>
 
             <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:0}}>
-              <table style={{fontSize:11}}><thead><tr><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th><th>Retail</th><th>Cost</th><th>Sell</th><th>Sizes</th><th>Qty</th><th>Total</th></tr></thead>
+              <datalist id="impBrandList2">
+                {[...new Set([...prod.map(p=>p.brand),...vend.map(v=>v.name)].filter(Boolean))].sort().map(b=><option key={b} value={b}/>)}
+              </datalist>
+              <table style={{fontSize:11}}><thead><tr><th>SKU</th><th>Name</th><th>Vendor</th><th>Color</th><th>Retail</th><th>Cost</th><th>Sell</th><th>Sizes</th><th>Qty</th><th>Total</th></tr></thead>
               <tbody>{keeping.map((it,i)=>{
                 const au=isAUi(it.brand);
                 const cat=it.catMatch;
@@ -17450,11 +17475,11 @@ export default function App(){
                 const retail=it._retail!=null?it._retail:(cat?.retail_price||0);
                 const cost=it._cost!=null?it._cost:(au?(cat?.nsa_cost||rQ(retail*(it.brand==='Adidas'?0.375:0.425))):rQ(sell/mk));
                 const displayName=it._name!=null?it._name:(cat?.name||it.name||'');
-                const displayColor=it._color!=null?it._color:(cat?.color||it.color||'');
+                const displayColor=it._color!=null?it._color:(it.color||cat?.color||'');
                 return<tr key={i}>
                   <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
                   <td><input className="form-input" style={{fontSize:11,padding:'2px 4px',width:'100%',minWidth:120}} value={displayName} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_name:v}:p)}))}}/></td>
-                  <td style={{fontSize:10}}>{it.brand}</td>
+                  <td><input className="form-input" list="impBrandList2" value={it.brand||''} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,brand:v}:p)}))}} placeholder="—" style={{fontSize:10,padding:'2px 4px',width:100,border:it.brand?'1px solid #e2e8f0':'1px solid #fca5a5'}}/></td>
                   <td><input className="form-input" style={{fontSize:10,padding:'2px 4px',width:90}} value={displayColor} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_color:v}:p)}))}}/></td>
                   <td style={{textAlign:'right'}}><input type="number" step="0.01" min="0" className="form-input" style={{width:75,fontSize:11,textAlign:'right',padding:'2px 4px'}} value={retail||''} onChange={e=>{const v=parseFloat(e.target.value)||0;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_retail:v}:p)}))}}/></td>
                   <td style={{textAlign:'right'}}><input type="number" step="0.01" min="0" className="form-input" style={{width:75,fontSize:11,textAlign:'right',padding:'2px 4px'}} value={cost||''} onChange={e=>{const v=parseFloat(e.target.value)||0;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_cost:v}:p)}))}}/></td>
@@ -17474,7 +17499,7 @@ export default function App(){
             </div>
 
             <div style={{display:'flex',gap:8}}>
-              <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'questions'}))}>← Back</button>
+              <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'review'}))}>← Back</button>
               <button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
                 // Create new products for items marked "create_product"
                 const createdProducts=[];
@@ -17525,7 +17550,7 @@ export default function App(){
                     STD_SZ.forEach(s=>{if(!(s in mergedSizes))mergedSizes[s]=0})
                   }
                   const mergedAvail=[...new Set([...(isFootwear?catalogShoeSizes:(hasApparel?STD_SZ:[])),...szKeys,...(it.catMatch?.available_sizes||[])])].sort((a,b)=>{const ai=SZ_ORD_I.indexOf(a),bi=SZ_ORD_I.indexOf(b);if(ai<0&&bi<0)return parseFloat(a)-parseFloat(b);if(ai<0)return 1;if(bi<0)return -1;return ai-bi});
-                  return{product_id:it.catMatch?.id||null,sku:it.sku,name:itemName,brand:it.catMatch?.brand||it.brand,
+                  return{product_id:it.catMatch?.id||null,sku:it.sku,name:itemName,brand:it.brand||it.catMatch?.brand||'',
                     color:itemColor,nsa_cost:it.catMatch?.nsa_cost||cost,retail_price:it.catMatch?.retail_price||retail,unit_sell:sell,
                     available_sizes:mergedAvail.length>0?mergedAvail:['S','M','L','XL','2XL'],
                     sizes:Object.keys(mergedSizes).length>0?mergedSizes:{OSFA:it.totalQty||1},decorations:[],is_custom:it.is_custom||false,pick_lines:[],po_lines:[]};
@@ -17608,7 +17633,7 @@ export default function App(){
             <div style={{fontWeight:700,color:'#dc2626',marginBottom:8}}>⚠️ Render Error</div>
             <div style={{fontSize:12,fontFamily:'monospace',color:'#991b1b',whiteSpace:'pre-wrap'}}>{err?.message||String(err)}</div>
             <div style={{fontSize:11,color:'#64748b',marginTop:8}}>Items: {imp.parsed?.length}, Questions: {imp.questions?.length}, Shipping: {JSON.stringify(imp.shipping)?.slice(0,100)}</div>
-            <button className="btn btn-secondary" style={{marginTop:12}} onClick={()=>setImp(x=>({...x,step:'questions'}))}>← Back to Questions</button>
+            <button className="btn btn-secondary" style={{marginTop:12}} onClick={()=>setImp(x=>({...x,step:'review'}))}>← Back to Review</button>
           </div>}})()}
       </>}
 
