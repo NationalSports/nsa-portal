@@ -1435,7 +1435,14 @@ const parseNetSuitePdf=(text,docType,products)=>{
   }
 
   // Parse each item pair
-  const sizeItems={};// keyed by baseSku+color for collapsing sizes
+  const sizeItems={};// keyed by baseSku+color+group for collapsing sizes
+  // Decoration lines (Screen/Embroidery/etc) act as group boundaries on the
+  // source order — items above each decoration share that decoration, so the
+  // same SKU appearing again below a decoration is a separate group and must
+  // not be merged. groupIndex is bumped on the next size item AFTER a
+  // decoration line, so consecutive decorations stay in the same group.
+  let groupIndex=0;
+  let pendingNewGroup=false;
   itemPairs.forEach(({dataLine,descLine})=>{
     const parts=dataLine.split('\t').map(s=>s.trim());
     const qty=parseInt(parts[0])||0;
@@ -1523,14 +1530,18 @@ const parseNetSuitePdf=(text,docType,products)=>{
       const colors=colorCountMatch?parseInt(colorCountMatch[1]):1;
       result.lineItems.push({sku:baseSku,description,quantity:qty,rate:rate||0,amount:amount||0,
         isDecoration:true,decoType,colors,sizes:{},raw:dataLine});
+      // Mark that the next size item starts a new group; consecutive decos
+      // don't keep bumping (multiple decos can apply to the same item block).
+      pendingNewGroup=true;
       return;
     }
 
-    // Collapse sizes: same baseSku+color → one item with size breakdown
-    const collapseKey=baseSku+(color?'||'+color:'');
+    // Collapse sizes: same baseSku+color within the same group → one item
+    if(size&&baseSku&&pendingNewGroup){groupIndex++;pendingNewGroup=false}
+    const collapseKey=baseSku+'||'+(color||'')+'||'+groupIndex;
     if(size&&baseSku){
       if(!sizeItems[collapseKey]){
-        sizeItems[collapseKey]={sku:baseSku,description:productName,color,quantity:0,rate,amount:0,isDecoration:false,sizes:{},raw:dataLine};
+        sizeItems[collapseKey]={sku:baseSku,description:productName,color,quantity:0,rate,amount:0,isDecoration:false,sizes:{},raw:dataLine,_group:groupIndex};
       }
       sizeItems[collapseKey].sizes[size]=(sizeItems[collapseKey].sizes[size]||0)+qty;
       sizeItems[collapseKey].quantity+=qty;
@@ -1556,14 +1567,16 @@ const parseNetSuitePdf=(text,docType,products)=>{
   });
 
   // Fold any color-less entry into its colored sibling for the same baseSku
-  // (handles cases where one row's color extraction failed due to footer/header noise)
+  // and group (handles cases where one row's color extraction failed due to
+  // footer/header noise — but only within the same decoration group).
   const sizeItemsList=Object.values(sizeItems);
   const colored={};
-  sizeItemsList.forEach(it=>{if(it.color)colored[it.sku]=colored[it.sku]||it});
+  sizeItemsList.forEach(it=>{if(it.color){const k=it.sku+'||'+it._group;colored[k]=colored[k]||it}});
   const merged=[];
   sizeItemsList.forEach(it=>{
-    if(!it.color&&colored[it.sku]&&colored[it.sku]!==it){
-      const target=colored[it.sku];
+    const k=it.sku+'||'+it._group;
+    if(!it.color&&colored[k]&&colored[k]!==it){
+      const target=colored[k];
       Object.entries(it.sizes).forEach(([sz,q])=>{target.sizes[sz]=(target.sizes[sz]||0)+q});
       target.quantity+=it.quantity;
       target.amount+=it.amount;
@@ -15335,6 +15348,9 @@ export default function App(){
 ').filter(l=>l.trim());
     const items={};const decoLines=[];const issues=[];const shipping=[];const questions=[];
     const SZ_RE=/[-\s](XXS|XS|S|M|L|XL|2XL|3XL|4XL|5XL|YXS|YS|YM|YL|YXL|OSFA)$/i;
+    // Decoration lines act as group boundaries — same SKU appearing in
+    // separate decoration groups stays on separate rows (see PDF parser).
+    let nsGroupIndex=0;let nsPendingNewGroup=false;
 
     lines.forEach((line,li)=>{
       const cols=line.split('\	').map(c=>c.trim());
@@ -15346,7 +15362,7 @@ export default function App(){
       if(rawItem.toUpperCase()==='ITEM'||desc.toUpperCase()==='DESCRIPTION')return;
       if(rawItem.toLowerCase().includes('shipping')||desc.toLowerCase().includes('shipping')){shipping.push({desc,amount,rate});return}
       if(/^(screen\s*print|embroid|dtf|heat\s*trans|vinyl|sublim)/i.test(desc)||/^(Screen|Embr?|Embroidery|DTF|Heat|Vinyl|Sublim|Deco)(\b|[-_\s])/i.test(rawItem)){
-        decoLines.push({rawItem,desc,qty,rate,amount,poRef,_assignTo:'all'});return}
+        decoLines.push({rawItem,desc,qty,rate,amount,poRef,_assignTo:'all'});nsPendingNewGroup=true;return}
 
       const skuParts=rawItem.split(/\s*:\s*/);let itemCode=skuParts[0]||rawItem;
       let fullSku=skuParts[1]||itemCode;
@@ -15390,13 +15406,15 @@ export default function App(){
       const catMatch=prod.find(p=>p.sku===baseSku)||(baseSku.length>3?prod.find(p=>p.sku.toLowerCase()===baseSku.toLowerCase()):null);
 
       if(size&&baseSku){
-        if(!items[baseSku])items[baseSku]={sku:baseSku,name:catMatch?.name||desc.replace(/\s*[-–]\s*[A-Za-z\s\/]+?\s*[-–]\s*\w+$/,'').trim(),
+        if(nsPendingNewGroup){nsGroupIndex++;nsPendingNewGroup=false}
+        const groupKey=baseSku+'||'+nsGroupIndex;
+        if(!items[groupKey])items[groupKey]={sku:baseSku,name:catMatch?.name||desc.replace(/\s*[-–]\s*[A-Za-z\s\/]+?\s*[-–]\s*\w+$/,'').trim(),
           brand:catMatch?.brand||brand,color:color||catMatch?.color||'',rate,sizes:{},totalQty:0,totalAmt:0,poRef,priceLevel,
           catMatch:catMatch||null,is_custom:!catMatch&&(baseSku.toLowerCase().includes('misc')||priceLevel.toLowerCase()==='custom'),issues:[],onHand:null};
-        items[baseSku].sizes[size]=(items[baseSku].sizes[size]||0)+qty;
-        items[baseSku].totalQty+=qty;items[baseSku].totalAmt+=amount;
-        if(onHand!==null)items[baseSku].onHand=onHand;
-        if(color&&!items[baseSku].color)items[baseSku].color=color;
+        items[groupKey].sizes[size]=(items[groupKey].sizes[size]||0)+qty;
+        items[groupKey].totalQty+=qty;items[groupKey].totalAmt+=amount;
+        if(onHand!==null)items[groupKey].onHand=onHand;
+        if(color&&!items[groupKey].color)items[groupKey].color=color;
       } else {
         const embSizes={};let m;const sr=/(\d+)\s*\/\s*(S|M|L|XL|2XL|3XL|4XL|XXS|XS|YS|YM|YL|YXL)/gi;
         while((m=sr.exec(desc))!==null)embSizes[m[2].toUpperCase()]=parseInt(m[1]);
