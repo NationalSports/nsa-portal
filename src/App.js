@@ -6375,8 +6375,8 @@ export default function App(){
         const colorList=(()=>{const d2=allArtFiles.flatMap(a=>(a.ink_colors||a.thread_colors||'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean));if(d2.length>0)return d2;return[...new Set(allArtFiles.flatMap(a=>(a.color_ways||[]).flatMap(cw=>(cw.inks||[]).filter(c2=>c2&&c2.trim()))))];})();
         const isEmb=j.deco_type==='embroidery';
         const isSP=j.deco_type==='screen_print';
-        // Mockup files — aggregate from all art files in this job
-        const mockupFiles=allArtFiles.flatMap(a=>a?.mockup_files||a?.files||[]);
+        // Mockup files — aggregate from all art files in this job (general bucket + per-item mockups)
+        const mockupFiles=allArtFiles.flatMap(a=>[...(a?.mockup_files||a?.files||[]),...Object.values(a?.item_mockups||{}).flat()]).filter(f=>f);
         const prodFiles=allArtFiles.flatMap(a=>a?.prod_files||[]);
         // Numbers & Names roster data — extract from item decorations
         const numbersData=(()=>{const results=[];(j.items||[]).forEach(gi=>{
@@ -6702,7 +6702,7 @@ export default function App(){
         const so=prodJobModal.so||sos.find(s=>s.id===prodJobModal.soId);
         const allArtIds=prodJobModal._art_ids||[prodJobModal.art_file_id].filter(Boolean);
         const allMockups=[];
-        allArtIds.forEach(aid=>{const artF=so?safeArt(so).find(f=>f.id===aid):null;(artF?.mockup_files||artF?.files||[]).forEach(f=>allMockups.push(f))});
+        allArtIds.forEach(aid=>{const artF=so?safeArt(so).find(f=>f.id===aid):null;if(!artF)return;(artF?.mockup_files||artF?.files||[]).forEach(f=>allMockups.push(f));Object.values(artF?.item_mockups||{}).flat().forEach(f=>{if(f)allMockups.push(f)})});
         const idx=Math.min(prodLightboxIdx,allMockups.length-1);
         const curFile=allMockups[idx];
         const curUrl=curFile?(typeof curFile==='string'?curFile:(curFile?.url||'')):'';
@@ -13702,7 +13702,8 @@ export default function App(){
               {col?.id==='waiting_for_art'&&j.art_status==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();
                 const so2=sos.find(s=>s.id===j.soId);if(!so2)return;
                 const mf=(j.artFile?.mockup_files||j.artFile?.files||[]);
-                if(mf.length===0){nf('Upload a mockup before sending for approval','error');return}
+                const hasItemMocks=Object.values(j.artFile?.item_mockups||{}).some(arr=>arr&&arr.length>0);
+                if(mf.length===0&&!hasItemMocks){nf('Upload a mockup before sending for approval','error');return}
                 const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
                 const updJobs=buildJobs(so2).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',assigned_artist:jj.assigned_artist||j.assigned_artist}:jj);
                 const updArt3=safeArt(so2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
@@ -13960,7 +13961,7 @@ export default function App(){
         const allArtIds2=j._art_ids||[j.art_file_id].filter(Boolean);
         const allArtFiles2=allArtIds2.map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
         const af=j.artFile||allArtFiles2[0]||null;
-        const mockupFiles=(af?.mockup_files||af?.files||[]);
+        const mockupFiles=[...(af?.mockup_files||af?.files||[]),...Object.values(af?.item_mockups||{}).flat()].filter(f=>f);
         const prodFilesL=(af?.prod_files||[]);
         const colorList=af?(af.ink_colors||af.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean):[];
         const isEmb=allArtFiles2.some(a=>a.deco_type==='embroidery');
@@ -14175,7 +14176,7 @@ export default function App(){
         const allArtFiles=allArtIds.map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
         const af=j.artFile||allArtFiles[0]||null;
         const additionalArtFiles=allArtFiles.slice(1);
-        const mockupFiles=(af?.mockup_files||af?.files||[]);
+        const mockupFiles=[...(af?.mockup_files||af?.files||[]),...Object.values(af?.item_mockups||{}).flat()].filter(f=>f);
         const prodFilesL=allArtFiles.flatMap(artF=>(artF?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_artName:allArtFiles.length>1?(artF?.name||''):'',_artId:artF.id})));
         const colorList=af?(af.ink_colors||af.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean):[];
         const isEmb=allArtFiles.some(a=>a.deco_type==='embroidery');
@@ -14371,12 +14372,12 @@ export default function App(){
             let updArt;
             let newArtFileId=artId;
             if(hasMatch){
-              updArt=existingArt.map(a=>a.id===artId?{...a,item_mockups:updItemMockups,mockup_files:[...(a.mockup_files||a.files||[]),...uploaded],status:'uploaded'}:a);
+              updArt=existingArt.map(a=>a.id===artId?{...a,item_mockups:updItemMockups,status:'uploaded'}:a);
             }else{
               // Create art file if none exists for this job
               newArtFileId=artId||('af-'+Date.now());
               uploaded.forEach(u=>{u.art_file_id=newArtFileId});
-              const newAf={id:newArtFileId,name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:uploaded,item_mockups:{[sku]:uploaded},prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
+              const newAf={id:newArtFileId,name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:[],item_mockups:{[sku]:uploaded},prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
               updArt=[...existingArt,newAf];
               if(!j.art_file_id)j.art_file_id=newArtFileId;
             }
