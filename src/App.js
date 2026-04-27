@@ -5129,10 +5129,14 @@ export default function App(){
                 <span>Category: <strong>{ep.category}</strong></span>
                 {v&&<span>Vendor: <strong>{v.name}</strong></span>}
               </div>
-              <div style={{display:'flex',gap:16,fontSize:13,marginBottom:8}}>
+              <div style={{display:'flex',gap:16,fontSize:13,marginBottom:8,flexWrap:'wrap'}}>
                 <span>Cost: <strong>${ep.nsa_cost?.toFixed(2)}</strong></span>
                 <span>Retail: <strong>${ep.retail_price?.toFixed(2)}</strong></span>
-                <span>Sell: <strong>${rQ(ep.nsa_cost*1.65).toFixed(2)}</strong></span>
+                {(ep.brand==='Adidas'||ep.brand==='Under Armour'||ep.brand==='New Balance')?<>
+                  <span>Tier A: <strong>${rQ((ep.retail_price||0)*0.6).toFixed(2)}</strong></span>
+                  <span>Tier B: <strong>${rQ((ep.retail_price||0)*0.65).toFixed(2)}</strong></span>
+                  <span>Tier C: <strong>${rQ((ep.retail_price||0)*0.7).toFixed(2)}</strong></span>
+                </>:<span>Sell: <strong>${rQ(ep.nsa_cost*1.65).toFixed(2)}</strong></span>}
               </div>
               <div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
                 {_displaySz.map(sz=>{const val=ep._inv?.[sz]||0;return<div key={sz} className={`size-cell ${val>10?'in-stock':val>0?'low-stock':'no-stock'}`} style={{width:44}}><div className="size-label">{sz}</div><div className="size-qty">{val}</div></div>})}
