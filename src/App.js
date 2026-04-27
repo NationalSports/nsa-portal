@@ -1702,7 +1702,124 @@ function dP(d,q,artFiles,cq){
   if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
 
+// Magic-link landing page. When an admin sends an invite, the email link includes
+// a Supabase access token in the URL hash; supabase-js auto-detects it because
+// detectSessionInUrl is enabled. We just need to confirm a session exists and
+// prompt the user to set a password before redirecting back to the portal.
+function AuthSetupPage({mode}){
+  const isReset=mode==='reset';
+  const[pw,setPw]=React.useState('');
+  const[pw2,setPw2]=React.useState('');
+  const[saving,setSaving]=React.useState(false);
+  const[error,setError]=React.useState('');
+  const[user,setUser]=React.useState(null);
+  const[checking,setChecking]=React.useState(true);
+  const[done,setDone]=React.useState(false);
+
+  React.useEffect(()=>{
+    if(!supabase){setError('Supabase not configured');setChecking(false);return}
+    // Honor explicit error hashes (expired/used links) before checking session.
+    const hash=typeof window!=='undefined'?window.location.hash:'';
+    if(hash&&hash.includes('error_code=')){
+      const p=new URLSearchParams(hash.startsWith('#')?hash.substring(1):hash);
+      const desc=p.get('error_description');
+      setError((desc||p.get('error_code')||'Link expired').replace(/\+/g,' '));
+      setChecking(false);
+      return;
+    }
+    let cancelled=false;
+    // detectSessionInUrl runs asynchronously on first load, so wait briefly for the session.
+    const tryGet=async(retries=10)=>{
+      for(let i=0;i<retries&&!cancelled;i++){
+        const{data}=await supabase.auth.getSession();
+        if(data?.session){setUser(data.session.user);setChecking(false);return}
+        await new Promise(r=>setTimeout(r,200));
+      }
+      if(!cancelled){setError(isReset?'Invalid or expired reset link. Request a new one.':'Invalid or expired invite link. Ask an admin to resend.');setChecking(false)}
+    };
+    tryGet();
+    return()=>{cancelled=true};
+  },[isReset]);
+
+  const handleSubmit=async(e)=>{
+    e.preventDefault();
+    if(pw.length<8)return setError('Password must be at least 8 characters');
+    if(pw!==pw2)return setError('Passwords do not match');
+    setSaving(true);setError('');
+    try{
+      const{error:updErr}=await supabase.auth.updateUser({password:pw});
+      if(updErr){setError(updErr.message);setSaving(false);return}
+      // Mark password_set so the login flow knows this user is set up.
+      if(user){try{await supabase.from('team_members').update({password_set:true}).eq('auth_id',user.id)}catch{}}
+      setDone(true);
+      setTimeout(()=>{window.location.href='/'},1200);
+    }catch(err){setError(err.message||'Failed to save password');setSaving(false)}
+  };
+
+  return(
+    <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'Inter','Segoe UI',sans-serif"}}>
+      <div style={{width:420,padding:0}}>
+        <div style={{textAlign:'center',marginBottom:32}}>
+          <img src={NSA.logoUrl} alt="National Sports Apparel" style={{height:70,marginBottom:8,filter:'brightness(0) invert(1)'}}/>
+          <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3,textTransform:'uppercase'}}>Portal</div>
+        </div>
+        <div style={{background:'white',borderRadius:16,padding:32,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
+          {checking?(
+            <div style={{textAlign:'center',padding:'8px 0'}}>
+              <div style={{fontSize:13,color:'#64748b'}}>Verifying your link...</div>
+            </div>
+          ):done?(
+            <div style={{textAlign:'center',padding:'8px 0'}}>
+              <div style={{fontSize:40,marginBottom:12}}>✅</div>
+              <div style={{fontSize:18,fontWeight:700,color:'#0f172a',marginBottom:4}}>Password saved</div>
+              <div style={{fontSize:13,color:'#64748b'}}>Redirecting to the portal…</div>
+            </div>
+          ):!user?(
+            <div style={{textAlign:'center',padding:'8px 0'}}>
+              <div style={{fontSize:40,marginBottom:12}}>⚠️</div>
+              <div style={{fontSize:18,fontWeight:700,color:'#0f172a',marginBottom:8}}>Link Issue</div>
+              <div style={{fontSize:13,color:'#64748b',marginBottom:16,lineHeight:1.5}}>{error||'Your link is invalid or has expired.'}</div>
+              <button type="button" onClick={()=>{window.location.href='/'}}
+                style={{padding:'10px 24px',background:'#1e40af',color:'white',border:'none',borderRadius:8,fontWeight:700,fontSize:14,cursor:'pointer'}}>
+                Back to Sign In
+              </button>
+            </div>
+          ):(
+            <>
+              <div style={{fontSize:18,fontWeight:700,color:'#0f172a',marginBottom:4}}>{isReset?'Reset Your Password':'Welcome to NSA Portal'}</div>
+              <div style={{fontSize:13,color:'#64748b',marginBottom:20}}>
+                {isReset?'Enter a new password for your account.':'Create a password to finish setting up your account.'}
+                {user?.email&&<div style={{marginTop:6,fontSize:12,color:'#475569'}}><strong>{user.email}</strong></div>}
+              </div>
+              <form onSubmit={handleSubmit}>
+                <label style={{display:'block',fontSize:12,fontWeight:600,color:'#374151',marginBottom:4}}>New Password</label>
+                <input type="password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="At least 8 characters" autoFocus autoComplete="new-password"
+                  style={{width:'100%',padding:'10px 12px',border:'1px solid #d1d5db',borderRadius:8,marginBottom:12,fontSize:14,boxSizing:'border-box',outline:'none'}}/>
+                <label style={{display:'block',fontSize:12,fontWeight:600,color:'#374151',marginBottom:4}}>Confirm Password</label>
+                <input type="password" value={pw2} onChange={e=>setPw2(e.target.value)} placeholder="Re-enter your password" autoComplete="new-password"
+                  style={{width:'100%',padding:'10px 12px',border:'1px solid #d1d5db',borderRadius:8,marginBottom:4,fontSize:14,boxSizing:'border-box',outline:'none'}}/>
+                {error&&<div style={{color:'#dc2626',fontSize:13,marginTop:8,padding:'8px 12px',background:'#fef2f2',borderRadius:8}}>{error}</div>}
+                <button type="submit" disabled={saving}
+                  style={{width:'100%',padding:'11px',background:'#1e40af',color:'white',border:'none',borderRadius:8,fontWeight:700,fontSize:14,cursor:'pointer',marginTop:12,opacity:saving?0.6:1}}>
+                  {saving?'Saving…':(isReset?'Update Password':'Save & Sign In')}
+                </button>
+              </form>
+            </>
+          )}
+        </div>
+        <div style={{textAlign:'center',marginTop:20,fontSize:10,color:'#475569'}}>{NSA.name} · {NSA.fullAddr}</div>
+      </div>
+    </div>
+  );
+}
+
 export default function App(){
+  // /auth/setup and /auth/reset short-circuit the entire app — they live behind their own
+  // landing page that completes the magic-link / password reset flow before bouncing to /.
+  const _path=typeof window!=='undefined'?window.location.pathname:'';
+  if(_path==='/auth/setup')return<AuthSetupPage mode="setup"/>;
+  if(_path==='/auth/reset')return<AuthSetupPage mode="reset"/>;
+
   const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);const[mobileMenuOpen,setMobileMenuOpen]=useState(false);
   const[dashView,setDashView]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user'));if(u?.role==='csr')return'csr';if(u?.role==='rep')return'sales';if(u?.role==='warehouse')return'warehouse';if(u?.role==='artist'||u?.role==='art')return'decorator';if(u?.role==='production')return'production'}catch{}return'admin'});// admin|sales|warehouse|decorator|production|csr
   const[adminRepFilter,setAdminRepFilter]=useState('me');// 'me'|'all'|repId
@@ -1891,6 +2008,15 @@ export default function App(){
   const[issueFilter,setIssueFilter]=useState('open');// all|open|resolved
   const[editMember,setEditMember]=useState(null);
   const[showInactive,setShowInactive]=useState(false);
+  // Team Access page state — admin-only invite/deactivate management.
+  const[teamAuthData,setTeamAuthData]=useState(null);// null=not loaded yet; otherwise array of members w/ auth status
+  const[teamAuthLoading,setTeamAuthLoading]=useState(false);
+  const[teamAuthError,setTeamAuthError]=useState('');
+  const[teamFilter,setTeamFilter]=useState('all');// all|active|invited_pending|not_invited
+  const[teamTab,setTeamTab]=useState('access');// access|directory
+  const[teamRowBusy,setTeamRowBusy]=useState(null);// member id currently mid-action
+  const[teamInlineEmailFor,setTeamInlineEmailFor]=useState(null);// member id w/ inline email input open
+  const[teamInlineEmailVal,setTeamInlineEmailVal]=useState('');
   // Rep-CSR assignments and assigned todos
   const[repCsrAssignments,setRepCsrAssignments]=useState([]);
   const[assignedTodos,setAssignedTodos]=useState([]);
@@ -2958,6 +3084,8 @@ export default function App(){
   const[soBackPg,setSoBackPg]=useState(null);// page to return to when closing SO editor
   const prevPgRef=React.useRef(pg);
   React.useEffect(()=>{if(pg!==prevPgRef.current){if(pg==='orders')setSoBackPg(prevPgRef.current);else setSoBackPg(null);if(pg==='estimates')setEstBackPg(prevPgRef.current);else setEstBackPg(null);prevPgRef.current=pg}},[pg]);
+  // Auto-load team auth data when an admin opens the Team page in access mode.
+  React.useEffect(()=>{if(pg==='team'&&teamTab==='access'&&teamAuthData==null&&!teamAuthLoading&&(cu?.role==='admin'||cu?.role==='super_admin'))loadTeamAuth()},[pg,teamTab,teamAuthData,teamAuthLoading,cu]);// eslint-disable-line
   // Recently viewed records
   const[recentlyViewed,setRecentlyViewed]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_recent')||'[]')}catch{return[]}});
   const[recentOpen,setRecentOpen]=useState(false);
@@ -19804,13 +19932,89 @@ export default function App(){
     </>);
   };
 
-  // TEAM MANAGEMENT
+  // TEAM ACCESS / DIRECTORY (admin-only)
+  // Loads enriched member data from /.netlify/functions/team-list, which merges
+  // team_members rows with their Supabase auth.users record so we can show login
+  // status and drive invite/deactivate actions through service-role endpoints.
+  const loadTeamAuth=async()=>{
+    setTeamAuthLoading(true);setTeamAuthError('');
+    try{
+      const session=await _sbGetSession();
+      if(!session?.access_token){setTeamAuthError('Not signed in');setTeamAuthLoading(false);return}
+      const res=await fetch('/.netlify/functions/team-list',{headers:{Authorization:`Bearer ${session.access_token}`}});
+      const json=await res.json().catch(()=>({error:'Bad response'}));
+      if(!res.ok||json.error){setTeamAuthError(json.error||('HTTP '+res.status));setTeamAuthLoading(false);return}
+      setTeamAuthData(json.members||[]);
+    }catch(e){setTeamAuthError(e.message||'Load failed')}
+    setTeamAuthLoading(false);
+  };
+  const teamSendInvite=async(member)=>{
+    const target=member.email||teamInlineEmailVal.trim();
+    if(!target)return nf('Add an email first','warn');
+    if(!/^\S+@\S+\.\S+$/.test(target))return nf('Invalid email','warn');
+    if(!window.confirm(`Send invite to ${target}?`))return;
+    setTeamRowBusy(member.id);
+    try{
+      const session=await _sbGetSession();
+      const res=await fetch('/.netlify/functions/team-invite',{
+        method:'POST',
+        headers:{Authorization:`Bearer ${session.access_token}`,'Content-Type':'application/json'},
+        body:JSON.stringify({team_member_id:member.id,email:target})
+      });
+      const json=await res.json().catch(()=>({error:'Bad response'}));
+      if(!res.ok||json.error){nf('Invite failed: '+(json.error||('HTTP '+res.status)),'error')}
+      else{nf(json.resent?'Invite resent to '+target:'Invite sent to '+target);
+        // Reflect the email change locally so the directory view stays in sync.
+        setREPS(prev=>prev.map(r=>r.id===member.id?{...r,email:target}:r));
+        setTeamInlineEmailFor(null);setTeamInlineEmailVal('');
+        await loadTeamAuth();
+      }
+    }catch(e){nf('Invite failed: '+e.message,'error')}
+    setTeamRowBusy(null);
+  };
+  const teamDeactivate=async(member)=>{
+    if(member.id===cu.id)return nf('You cannot deactivate yourself','warn');
+    if(!window.confirm(`Deactivate ${member.name}? They will no longer be able to log in. Their data will be preserved.`))return;
+    setTeamRowBusy(member.id);
+    try{
+      const session=await _sbGetSession();
+      const res=await fetch('/.netlify/functions/team-deactivate',{
+        method:'POST',
+        headers:{Authorization:`Bearer ${session.access_token}`,'Content-Type':'application/json'},
+        body:JSON.stringify({team_member_id:member.id})
+      });
+      const json=await res.json().catch(()=>({error:'Bad response'}));
+      if(!res.ok||json.error){nf('Deactivate failed: '+(json.error||('HTTP '+res.status)),'error')}
+      else{nf(member.name+' deactivated');
+        setREPS(prev=>prev.map(r=>r.id===member.id?{...r,is_active:false}:r));
+        await loadTeamAuth();
+      }
+    }catch(e){nf('Deactivate failed: '+e.message,'error')}
+    setTeamRowBusy(null);
+  };
   function rTeam(){
     const roles={super_admin:'Super Admin',admin:'Admin',rep:'Sales Rep',csr:'Customer Service',accounting:'Accounting',warehouse:'Warehouse',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',artist:'Artist'};
     const roleBadge={super_admin:'badge-purple',admin:'badge-purple',rep:'badge-blue',csr:'badge-green',accounting:'badge-amber',warehouse:'badge-gray',prod_manager:'badge-amber',production:'badge-gray',prod_assistant:'badge-gray',artist:'badge-purple'};
     const isAdmin=cu.role==='admin'||cu.role==='super_admin';
     const initials=n=>{const p=(n||'').split(' ');return p.length>=2?(p[0][0]+p[p.length-1][0]).toUpperCase():(n||'??').slice(0,2).toUpperCase()};
     const avatarColors={super_admin:'#dc2626',admin:'#7c3aed',rep:'#2563eb',csr:'#16a34a',accounting:'#d97706',warehouse:'#475569',prod_manager:'#b45309',production:'#0891b2',prod_assistant:'#a16207'};
+
+    // Admins-only gate. Non-admins can no longer browse the team page directly.
+    if(!isAdmin)return<div style={{padding:60,textAlign:'center',color:'#64748b'}}>
+      <div style={{fontSize:48,marginBottom:12}}>🔒</div>
+      <div style={{fontSize:18,fontWeight:700,color:'#0f172a',marginBottom:6}}>Admins only</div>
+      <div style={{fontSize:13}}>Contact Steve, Gayle, Denis, or Mike to manage team access.</div>
+    </div>;
+
+    const timeAgo=(ts)=>{if(!ts)return null;const diff=Date.now()-new Date(ts).getTime();if(diff<0)return new Date(ts).toLocaleDateString();const m=Math.floor(diff/60000);if(m<1)return'just now';if(m<60)return m+'m ago';const h=Math.floor(m/60);if(h<24)return h+'h ago';const d=Math.floor(h/24);if(d<30)return d+'d ago';return new Date(ts).toLocaleDateString()};
+    const STATUS_META={
+      active:{label:'Active',color:'#16a34a',bg:'#dcfce7'},
+      confirmed_no_login:{label:'Set up — no login yet',color:'#2563eb',bg:'#dbeafe'},
+      invited_pending:{label:'Invite sent',color:'#d97706',bg:'#fef3c7'},
+      not_invited:{label:'Not invited',color:'#64748b',bg:'#f1f5f9'},
+      disabled:{label:'Disabled',color:'#dc2626',bg:'#fee2e2'},
+    };
+    const FILTERS=[['all','All'],['active','Active'],['invited_pending','Pending Invite'],['not_invited','Not Invited']];
 
     // Default page access by role
     const ALL_PAGES=[
@@ -19867,18 +20071,107 @@ export default function App(){
       setREPS(prev=>prev.map(r=>r.id===id?{...r,is_active:false}:r));nf('Employee deactivated')};
     const reactivateMember=(id)=>{setREPS(prev=>prev.map(r=>r.id===id?{...r,is_active:true}:r));nf('Employee reactivated')};
 
+    // Filter the auth-enriched member list for the access table.
+    const auMembers=teamAuthData||[];
+    const filteredAccess=auMembers.filter(m=>{
+      if(teamFilter==='all')return true;
+      if(teamFilter==='active')return m.status==='active'||m.status==='confirmed_no_login';
+      if(teamFilter==='invited_pending')return m.status==='invited_pending';
+      if(teamFilter==='not_invited')return m.status==='not_invited';
+      return true;
+    });
+    const accessCounts={
+      all:auMembers.length,
+      active:auMembers.filter(m=>m.status==='active'||m.status==='confirmed_no_login').length,
+      invited_pending:auMembers.filter(m=>m.status==='invited_pending').length,
+      not_invited:auMembers.filter(m=>m.status==='not_invited').length,
+    };
+
     return(<>
-      <div className="stats-row">
-        <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value" style={{color:'#166534'}}>{activeReps.length}</div></div>
-        <div className="stat-card"><div className="stat-label">Inactive</div><div className="stat-value" style={{color:'#94a3b8'}}>{inactiveReps.length}</div></div>
-        {grouped.map(g=><div key={g.role} className="stat-card"><div className="stat-label">{g.label}</div><div className="stat-value">{g.members.length}</div></div>)}
+      {/* Page header + tab switcher */}
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:14,flexWrap:'wrap',gap:8}}>
+        <div>
+          <div style={{fontSize:11,color:'#64748b',fontWeight:600,textTransform:'uppercase',letterSpacing:1}}>Team Access</div>
+          <div style={{fontSize:13,color:'#475569'}}>Invite team members, manage portal access, and deactivate people who leave.</div>
+        </div>
+        <div style={{display:'flex',gap:6}}>
+          <button className={`btn btn-sm ${teamTab==='access'?'btn-primary':'btn-secondary'}`} onClick={()=>{setTeamTab('access');if(teamAuthData==null&&!teamAuthLoading)loadTeamAuth()}}>Access Management</button>
+          <button className={`btn btn-sm ${teamTab==='directory'?'btn-primary':'btn-secondary'}`} onClick={()=>setTeamTab('directory')}>Team Directory</button>
+          <button className="btn btn-sm btn-primary" onClick={()=>setEditMember({id:'tm-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),name:'',role:'rep',is_active:true,email:'',phone:'',access:DEFAULT_ACCESS.rep,_isNew:true})}><Icon name="plus" size={12}/> Add Team Member</button>
+        </div>
       </div>
+
+      {teamTab==='access'&&<>
+        <div className="stats-row">
+          <div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{accessCounts.all}</div></div>
+          <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value" style={{color:'#166534'}}>{accessCounts.active}</div></div>
+          <div className="stat-card"><div className="stat-label">Pending Invite</div><div className="stat-value" style={{color:'#d97706'}}>{accessCounts.invited_pending}</div></div>
+          <div className="stat-card"><div className="stat-label">Not Invited</div><div className="stat-value" style={{color:'#64748b'}}>{accessCounts.not_invited}</div></div>
+        </div>
+
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+            <h2 style={{margin:0,flex:1}}>Portal Access</h2>
+            <div style={{display:'flex',gap:4}}>
+              {FILTERS.map(([k,label])=><button key={k} className={`btn btn-sm ${teamFilter===k?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>setTeamFilter(k)}>{label} {accessCounts[k]>0?'('+accessCounts[k]+')':''}</button>)}
+            </div>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} disabled={teamAuthLoading} onClick={loadTeamAuth} title="Refresh">{teamAuthLoading?'⟳ Loading…':'↻ Refresh'}</button>
+          </div>
+          <div className="card-body" style={{padding:0}}>
+            {teamAuthError&&<div style={{padding:14,fontSize:12,color:'#991b1b',background:'#fef2f2',borderBottom:'1px solid #fecaca'}}>Failed to load: {teamAuthError}</div>}
+            {teamAuthData==null&&!teamAuthError&&<div style={{padding:24,textAlign:'center',color:'#94a3b8',fontSize:12}}>{teamAuthLoading?'Loading team…':'Click Refresh to load team access data.'}</div>}
+            {teamAuthData!=null&&filteredAccess.length===0&&<div style={{padding:24,textAlign:'center',color:'#94a3b8',fontSize:12}}>No members match this filter.</div>}
+            {teamAuthData!=null&&filteredAccess.length>0&&<table style={{fontSize:12}}>
+              <thead><tr><th style={{width:40}}></th><th>Name</th><th>Role</th><th>Email</th><th>Status</th><th style={{textAlign:'right'}}>Actions</th></tr></thead>
+              <tbody>{filteredAccess.map(m=>{
+                const meta=STATUS_META[m.status]||STATUS_META.not_invited;
+                const last=m.auth?.last_sign_in_at?timeAgo(m.auth.last_sign_in_at):null;
+                const sent=m.auth?.invited_at||m.auth?.confirmation_sent_at;
+                const sentAgo=sent?timeAgo(sent):null;
+                const inlineOpen=teamInlineEmailFor===m.id;
+                const busy=teamRowBusy===m.id;
+                return<tr key={m.id}>
+                  <td><div style={{width:32,height:32,borderRadius:16,background:avatarColors[m.role]||'#64748b',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700}}>{initials(m.name)}</div></td>
+                  <td style={{fontWeight:700,fontSize:13}}>{m.name}</td>
+                  <td><span className={`badge ${roleBadge[m.role]||'badge-gray'}`}>{roles[m.role]||m.role}</span></td>
+                  <td style={{fontSize:11,color:'#475569'}}>
+                    {inlineOpen?<div style={{display:'flex',gap:4,alignItems:'center'}}>
+                      <input className="form-input" autoFocus value={teamInlineEmailVal} onChange={e=>setTeamInlineEmailVal(e.target.value)} placeholder="email@example.com" style={{padding:'4px 6px',fontSize:11,height:24,minWidth:180}} onKeyDown={e=>{if(e.key==='Enter')teamSendInvite(m);if(e.key==='Escape'){setTeamInlineEmailFor(null);setTeamInlineEmailVal('')}}}/>
+                      <button className="btn btn-sm btn-primary" style={{fontSize:10,padding:'2px 8px'}} disabled={busy} onClick={()=>teamSendInvite(m)}>Save & Invite</button>
+                      <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>{setTeamInlineEmailFor(null);setTeamInlineEmailVal('')}}>×</button>
+                    </div>:(m.email||<span style={{color:'#cbd5e1',fontStyle:'italic'}}>— no email —</span>)}
+                  </td>
+                  <td>
+                    <span style={{display:'inline-block',padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:meta.bg,color:meta.color}}>{meta.label}</span>
+                    {last&&<div style={{fontSize:10,color:'#64748b',marginTop:2}}>Last login: {last}</div>}
+                    {!last&&sentAgo&&m.status==='invited_pending'&&<div style={{fontSize:10,color:'#64748b',marginTop:2}}>Sent {sentAgo}</div>}
+                  </td>
+                  <td style={{textAlign:'right',whiteSpace:'nowrap'}}>
+                    {m.status==='not_invited'&&!m.email&&!inlineOpen&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,marginRight:4}} disabled={busy} onClick={()=>{setTeamInlineEmailFor(m.id);setTeamInlineEmailVal('')}}>+ Add Email</button>}
+                    {m.status==='not_invited'&&m.email&&<button className="btn btn-sm btn-primary" style={{fontSize:10,marginRight:4}} disabled={busy} onClick={()=>teamSendInvite(m)}>{busy?'…':'Send Invite'}</button>}
+                    {m.status==='invited_pending'&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,marginRight:4}} disabled={busy} onClick={()=>teamSendInvite(m)}>{busy?'…':'Resend Invite'}</button>}
+                    {m.status==='confirmed_no_login'&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,marginRight:4}} disabled={busy} onClick={()=>teamSendInvite(m)}>Resend Link</button>}
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginRight:4}} onClick={()=>setEditMember({...m,access:m.access||DEFAULT_ACCESS[m.role]||[]})}>✏️ Edit</button>
+                    {m.id!==cu.id&&<button className="btn btn-sm" style={{fontSize:10,color:'#dc2626',background:'#fef2f2',border:'1px solid #fecaca'}} disabled={busy} onClick={()=>teamDeactivate(m)}>{busy?'…':'Deactivate'}</button>}
+                  </td>
+                </tr>;
+              })}</tbody>
+            </table>}
+          </div>
+        </div>
+      </>}
+
+      {teamTab==='directory'&&<>
+        <div className="stats-row">
+          <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value" style={{color:'#166534'}}>{activeReps.length}</div></div>
+          <div className="stat-card"><div className="stat-label">Inactive</div><div className="stat-value" style={{color:'#94a3b8'}}>{inactiveReps.length}</div></div>
+          {grouped.map(g=><div key={g.role} className="stat-card"><div className="stat-label">{g.label}</div><div className="stat-value">{g.members.length}</div></div>)}
+        </div>
 
       {/* Company Info */}
       <div className="card" style={{marginBottom:16}}>
         <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
           <h2>Company Info</h2>
-          {isAdmin&&<button className="btn btn-sm btn-primary" onClick={()=>setEditMember({id:'00000000-0000-0000-0000-'+Date.now().toString().slice(-12),name:'',role:'rep',is_active:true,email:'',phone:'',access:DEFAULT_ACCESS.rep,_isNew:true})}><Icon name="plus" size={12}/> Add Employee</button>}
         </div>
         <div className="card-body">
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:16}}>
@@ -19930,6 +20223,7 @@ export default function App(){
           </tr>)}</tbody></table>
         </div>}
       </div>}
+      </>}
 
       {/* Edit/Add Employee Modal */}
       {editMember&&<div className="modal-overlay" onClick={()=>setEditMember(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640,maxHeight:'90vh',overflow:'auto'}}>
