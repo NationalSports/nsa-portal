@@ -26,26 +26,20 @@ const nextInvId=invs=>'INV-'+(Math.max(_maxNum(invs),_dbMaxIds.inv,1000)+1);
 const fmtCreatedAt=s=>{if(!s)return'—';if(String(s).includes(','))return String(s).split(',')[0];const d=new Date(s);return isNaN(d)?String(s):d.toLocaleDateString('en-US')};
 const isDualRunJob=(j)=>j&&j.items&&j.items.length>1&&j.items.some(gi=>gi.run_order);
 const mapColorCategory=color=>{if(!color)return'';const c=color.toLowerCase();if(/white|natural|cream|ivory/.test(c))return'White';if(/black|charcoal/.test(c))return'Black';if(/navy|blue|royal|columbia|carolina/.test(c))return'Blue';if(/red|cardinal|scarlet|crimson/.test(c))return'Red';if(/green|forest|kelly|lime|hunter/.test(c))return'Green';if(/grey|gray|heather|silver|graphite/.test(c))return'Grey';if(/gold|yellow|vegas|athletic/.test(c))return'Gold';if(/orange|texas/.test(c))return'Orange';if(/purple|maroon|wine|burgundy/.test(c))return'Purple';if(/pink|fuchsia/.test(c))return'Pink';if(/brown|tan|khaki|sand|coyote/.test(c))return'Brown';return''};
-// Dedup products by SKU — merges duplicates, prefers the copy with images
+// Dedup products by SKU+color — merges true duplicates, prefers the copy with images.
+// Different colors under the same SKU stay as separate products (do not merge or delete).
 const _dedupProducts=(products,onRemove)=>{
   const skuMap=new Map();const dupeIds=[];
   const _hasImg=p=>!!(p.image_url||p.back_image_url||(p.images&&p.images.length));
+  const _key=p=>(p.sku||'').toLowerCase()+'|'+(p.color||'').trim().toLowerCase();
   products.forEach(p=>{
-    const sk=(p.sku||'').toLowerCase();if(!sk)return;
+    if(!p.sku)return;
+    const sk=_key(p);
     if(skuMap.has(sk)){
       let primary=skuMap.get(sk);let dupe=p;
       // If the new copy has images but the current primary doesn't, swap them
       if(_hasImg(p)&&!_hasImg(primary)){skuMap.set(sk,p);dupe=primary;primary=p}
-      // Merge color from dupe into primary's _colors
-      const dupeColor=(dupe.color||'').trim();
-      if(dupeColor){
-        const pColors=primary._colors||[];
-        const pColor=(primary.color||'').trim();
-        if(dupeColor.toLowerCase()!==pColor.toLowerCase()&&!pColors.some(c=>c.toLowerCase()===dupeColor.toLowerCase())){
-          primary._colors=[...pColors,dupeColor];
-        }
-      }
-      // Merge _colors arrays
+      // Merge _colors arrays (preserve catalog-defined sibling colors only)
       (dupe._colors||[]).forEach(c=>{
         if(!primary._colors)primary._colors=[];
         if(!primary._colors.some(pc=>pc.toLowerCase()===c.toLowerCase()))primary._colors.push(c);
