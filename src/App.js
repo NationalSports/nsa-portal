@@ -17256,7 +17256,7 @@ export default function App(){
             {[...new Set([...prod.map(p=>p.brand),...vend.map(v=>v.name)].filter(Boolean))].sort().map(b=><option key={b} value={b}/>)}
           </datalist>
           <table style={{fontSize:11}}><thead><tr>
-            <th style={{width:30}}></th><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th>
+            <th style={{width:30}}></th><th>SKU</th><th>Name</th><th>Vendor</th><th>Color</th>
             <th style={{textAlign:'right'}}>Rate</th><th>Sizes</th><th style={{textAlign:'center'}}>Qty</th><th style={{textAlign:'right'}}>Amount</th>
           </tr></thead>
           <tbody>{imp.parsed.map((it,i)=><tr key={i} style={{background:it.catMatch?'#f0fdf4':it.is_custom?'#fffbeb':'#fef2f2'}}>
@@ -17384,7 +17384,7 @@ export default function App(){
               <datalist id="impBrandList2">
                 {[...new Set([...prod.map(p=>p.brand),...vend.map(v=>v.name)].filter(Boolean))].sort().map(b=><option key={b} value={b}/>)}
               </datalist>
-              <table style={{fontSize:11}}><thead><tr><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th><th>Retail</th><th>Cost</th><th>Sell</th><th>Sizes</th><th>Qty</th><th>Total</th></tr></thead>
+              <table style={{fontSize:11}}><thead><tr><th>SKU</th><th>Name</th><th>Vendor</th><th>Color</th><th>Retail</th><th>Cost</th><th>Sell</th><th>Sizes</th><th>Qty</th><th>Total</th></tr></thead>
               <tbody>{keeping.map((it,i)=>{
                 const au=isAUi(it.brand);
                 const cat=it.catMatch;
