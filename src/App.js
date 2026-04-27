@@ -2067,8 +2067,9 @@ export default function App(){
         const custMerge=_mergeProtected(d.customers,'cust');
         const msgMerge=_mergeProtected(d.messages,'msgs');
         const prodMerge=_mergeProtected(d.products,'prod');
-        // Update snapshot before state — auto-save effects will diff against this
-        _dbSnap.current={ests:estMerge.snap,sos:soMerge.snap,invs:invMerge.snap,msgs:msgMerge.snap,cust:custMerge.snap,prod:prodMerge.snap,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
+        // Update snapshot before state — auto-save effects will diff against this.
+        // Merge into existing snap so non-reloaded keys (assignedTodos, repCsr, etc.) aren't wiped.
+        _dbSnap.current={..._dbSnap.current,ests:estMerge.snap,sos:soMerge.snap,invs:invMerge.snap,msgs:msgMerge.snap,cust:custMerge.snap,prod:prodMerge.snap,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
         // Use change detection to avoid triggering save effects needlessly
         if(d.team.length)setREPS(prev=>_jsonEq(prev,d.team)?prev:d.team);
         setEsts(estMerge.apply);
@@ -4175,7 +4176,15 @@ export default function App(){
     }):myTodos;
     // Get assigned todos for this user (manually created)
     const myAssignedTodos=assignedTodos.filter(t=>t.status==='open'&&(t.assigned_to===cu.id||t.created_by===cu.id));
-    const _todoComplete=(id)=>{setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,status:'completed',completed_at:new Date().toISOString(),completed_by:cu.id,updated_at:new Date().toISOString()}:x));nf('Task completed!')};
+    const _todoComplete=(id,note)=>{
+      const ts=new Date().toISOString();
+      const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};
+      if(note)upd.completion_note=note;
+      setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,...upd}:x));
+      if(_dbSnap.current.assignedTodos)_dbSnap.current.assignedTodos=_dbSnap.current.assignedTodos.map(x=>x.id===id?{...x,...upd}:x);
+      if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));
+      nf('Task completed!')
+    };
     const _todoDelete=(id)=>{if(!window.confirm('Delete this task? This cannot be undone.'))return;setAssignedTodos(prev=>prev.filter(x=>x.id!==id));if(_dbSnap.current.assignedTodos)_dbSnap.current.assignedTodos=_dbSnap.current.assignedTodos.filter(x=>x.id!==id);if(supabase){supabase.from('todo_comments').delete().eq('todo_id',id);supabase.from('assigned_todos').delete().eq('id',id)}nf('Task deleted')};
 
     // Shared data builders
@@ -4778,8 +4787,8 @@ export default function App(){
               <input className="form-input" placeholder="Completion note (optional)..." style={{flex:1,fontSize:12}} id="_todo_complete_note"/>
               <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>{
                 const note=document.getElementById('_todo_complete_note')?.value?.trim()||'';
-                setAssignedTodos(prev=>prev.map(t=>t.id===td.id?{...t,status:'completed',completed_at:new Date().toISOString(),completed_by:cu.id,completion_note:note,updated_at:new Date().toISOString()}:t));
-                setTodoDetailId(null);nf('Task completed!')}}>Complete</button>
+                _todoComplete(td.id,note);
+                setTodoDetailId(null)}}>Complete</button>
             </div>
           </div>}
           {td.status==='completed'&&<div style={{background:'#f0fdf4',padding:10,borderRadius:6,border:'1px solid #bbf7d0',fontSize:12}}>
