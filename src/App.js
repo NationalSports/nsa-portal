@@ -1754,6 +1754,7 @@ export default function App(){
   const[omgProbing,setOmgProbing]=useState(false);
   const[omgProbeLines,setOmgProbeLines]=useState([]);
   const[dbLoading,setDbLoading]=useState(!!supabase);const[dbError,setDbError]=useState(null);const _dbReady=useRef(false);const _dbLoadSuccess=useRef(false);
+  const _runPollRef=useRef(null);const _lastNavRefreshAt=useRef(0);
   const[failedSaveCount,setFailedSaveCount]=useState(_dbSaveFailedIds.size);_onFailedIdsChange=setFailedSaveCount;
   const[cacheFull,setCacheFull]=useState(_lsQuotaWarned);_onCacheFullChange=setCacheFull;
   // Snapshot of last DB-loaded data — used to diff auto-save and only write changed records
@@ -2171,8 +2172,19 @@ export default function App(){
       schedulePoll();
     };
     schedulePoll();
-    return()=>{cancelled=true;if(pollTimer)clearTimeout(pollTimer)};
+    // Expose an early-trigger so navigation-driven refresh can pull fresh data without waiting for the next scheduled poll.
+    _runPollRef.current=()=>{if(cancelled)return;if(pollTimer)clearTimeout(pollTimer);runPoll()};
+    return()=>{cancelled=true;_runPollRef.current=null;if(pollTimer)clearTimeout(pollTimer)};
   },[]);
+  // Throttled refresh on navigation — pulls fresh data when user changes pages, but only if 5+ min since last refresh.
+  // Complements the 60s background poll (which browsers throttle in inactive tabs).
+  React.useEffect(()=>{
+    if(!supabase||!_dbReady.current)return;
+    const now=Date.now();
+    if(now-_lastNavRefreshAt.current<300000)return;// 5 min throttle
+    _lastNavRefreshAt.current=now;
+    _runPollRef.current?.();
+  },[pg]);
 
 
   // ─── Brevo email open tracking: poll for opens on recently sent documents ───
