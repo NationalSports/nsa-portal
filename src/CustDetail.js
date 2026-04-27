@@ -4,7 +4,7 @@ import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex } from './constan
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks } from './components';
 import { dP, rQ, DTF, mergeColors } from './pricing';
-import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile } from './utils';
+import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, getAccountingContacts } from './utils';
 
 // CUSTOMER DETAIL
 
@@ -80,14 +80,14 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <div style={{padding:'8px 14px',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #f1f5f9'}} className="hover-bg" onMouseEnter={e=>e.currentTarget.style.background='#f8fafc'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}
             onClick={()=>onCopy(customer)}><Icon name="copy" size={13}/> Copy Customer</div>
           <div style={{padding:'8px 14px',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #f1f5f9'}} onMouseEnter={e=>e.currentTarget.style.background='#f8fafc'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}
-            onClick={()=>{const acct=(customer.contacts||[]).find(c=>c.role==='Accounting')||(customer.contacts||[])[0];setStmtEmail(acct?.email||'');setStmtMsg('Hi '+(acct?.name||'')+',\n\nPlease find your current account statement below with all open invoices and aging details.\n\nPlease let us know if you have any questions.\n\nThank you,\nNSA Team');setShowStatement(true)}}><Icon name="file" size={13}/> Send Statement</div>
+            onClick={()=>{const accts=getAccountingContacts(customer,allCustomers);const acct=accts[0]||(customer.contacts||[])[0];setStmtEmail(accts.length>0?accts.map(a=>a.email).join(', '):(acct?.email||''));setStmtMsg('Hi '+(acct?.name||'')+',\n\nPlease find your current account statement below with all open invoices and aging details.\n\nPlease let us know if you have any questions.\n\nThank you,\nNSA Team');setShowStatement(true)}}><Icon name="file" size={13}/> Send Statement</div>
           <div style={{padding:'8px 14px',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',gap:8,color:'#dc2626'}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}
             onClick={()=>onDelete(customer)}><Icon name="trash" size={13}/> Delete Customer</div>
         </div>}
       </div>
       {(customer._oi||0)>0&&<>
         <span style={{width:1,background:'#e2e8f0',margin:'0 2px'}}/>
-        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{setInvEmailMsg('Hi '+(customer.contacts||[])[0]?.name+',\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setShowInvEmail(true)}}>📄 Email Invoices ({customer._oi})</button>
+        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _greet=getAccountingContacts(customer,allCustomers)[0]?.name||(customer.contacts||[])[0]?.name||'';setInvEmailMsg('Hi '+_greet+',\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setShowInvEmail(true)}}>📄 Email Invoices ({customer._oi})</button>
       </>}
       <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:11}} onClick={()=>setShowPortal(true)}>🔗 Portal</button>
       {customer.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const url=window.location.origin+'/?portal='+customer.alpha_tag;navigator.clipboard.writeText(url).then(()=>alert('Copied portal link:\n'+url)).catch(()=>{window.prompt('Copy this portal link:',url)})}}>📋 Copy Portal Link</button>}
@@ -214,10 +214,23 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   </>}
 
   {/* CONTACTS TAB — editable */}
-  {tab==='contacts'&&<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+  {tab==='contacts'&&(()=>{
+    const inheritedAccts=getAccountingContacts(customer,allCustomers).filter(a=>a._inherited_from);
+    return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
     <h2>Contacts</h2><button className="btn btn-sm btn-primary" onClick={addContact}><Icon name="plus" size={12}/> Add Contact</button>
   </div><div className="card-body" style={{padding:0}}>
-    {(customer.contacts||[]).length===0&&<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No contacts</div>}
+    {inheritedAccts.length>0&&<div style={{padding:'10px 18px',background:'#faf5ff',borderBottom:'1px solid #e9d5ff'}}>
+      <div style={{fontSize:11,fontWeight:700,color:'#6d28d9',marginBottom:6}}>INHERITED ACCOUNTING CONTACT{inheritedAccts.length>1?'S':''} (from parent)</div>
+      {inheritedAccts.map((c,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'6px 0'}}>
+        <div style={{width:32,height:32,borderRadius:16,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,color:'#6d28d9',fontSize:13}}>{(c.name||'?')[0]}</div>
+        <div style={{flex:1}}>
+          <div><strong>{c.name}</strong> <span style={{fontSize:11,color:'#6d28d9'}}>(Accounting · auto-CC'd)</span></div>
+          <div style={{fontSize:12,color:'#64748b'}}>{c.email}{c.phone&&` · ${c.phone}`}</div>
+          <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>From parent: {c._inherited_from} — edit on parent to change</div>
+        </div>
+      </div>)}
+    </div>}
+    {(customer.contacts||[]).length===0&&inheritedAccts.length===0&&<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No contacts</div>}
     {(customer.contacts||[]).map((c,i)=>editContact===i?
       <div key={i} style={{padding:14,borderBottom:'1px solid #f1f5f9',background:'#fffbeb'}}>
         <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
@@ -242,7 +255,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </div>
         <button className="btn btn-sm btn-secondary" onClick={()=>setEditContact(i)}><Icon name="edit" size={12}/></button>
       </div>)}
-  </div></div>}
+  </div></div>;
+  })()}
 
   {tab==='overview'&&<div className="card"><div className="card-header"><h2>Info</h2></div><div className="card-body">
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:12}}><div><div className="form-label">Billing</div><div style={{fontSize:13}}>{customer.billing_address_line1||'--'}<br/>{customer.billing_city}, {customer.billing_state} {customer.billing_zip}</div></div>
@@ -707,7 +721,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {/* EMAIL INVOICE MODAL */}
   {showInvEmail&&(()=>{
     const openInvs=allOrders.filter(oo=>ids.includes(oo.customer_id)&&oo.type==='invoice'&&oo.status==='open');
-    const acctContact=(customer.contacts||[]).find(c=>c.role==='Accounting')||(customer.contacts||[])[0];
+    const accts=getAccountingContacts(customer,allCustomers);
+    const acctContact=accts[0]||(customer.contacts||[])[0];
+    const ccAccts=accts.filter(a=>a.email&&a.email!==acctContact?.email);
     const totalDue=openInvs.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
     return<div className="modal-overlay" onClick={()=>setShowInvEmail(false)}><div className="modal" style={{maxWidth:560}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header"><h2>📄 Email Invoices</h2><button className="modal-close" onClick={()=>setShowInvEmail(false)}>×</button></div>
@@ -715,9 +731,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {/* Sending to */}
         <div style={{background:'#f8fafc',borderRadius:8,padding:12,marginBottom:14}}>
           <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>SENDING TO</div>
-          <div style={{fontSize:14,fontWeight:600}}>{acctContact?.name||'—'} <span style={{fontSize:12,color:'#64748b'}}>({acctContact?.role||'Primary'})</span></div>
+          <div style={{fontSize:14,fontWeight:600}}>{acctContact?.name||'—'} <span style={{fontSize:12,color:'#64748b'}}>({acctContact?.role||'Primary'})</span>{acctContact?._inherited_from&&<span style={{fontSize:10,marginLeft:6,padding:'1px 6px',background:'#ede9fe',color:'#6d28d9',borderRadius:10,fontWeight:600}}>from {acctContact._inherited_from}</span>}</div>
           <div style={{fontSize:13,color:'#2563eb'}}>{acctContact?.email||'No email on file'}</div>
-          {(customer.contacts||[]).length>1&&<div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Tip: Set a contact's role to "Accounting" to auto-send invoices there</div>}
+          {ccAccts.length>0&&<div style={{fontSize:11,color:'#64748b',marginTop:6}}><strong>CC:</strong> {ccAccts.map(a=>a.email+(a._inherited_from?' (from '+a._inherited_from+')':'')).join(', ')}</div>}
+          {accts.length===0&&(customer.contacts||[]).length>1&&<div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Tip: Set a contact's role to "Accounting" to auto-send invoices there{customer.parent_id?' — or set one on the parent customer to apply to all sub-customers':''}</div>}
         </div>
         {/* Invoice list */}
         <div style={{marginBottom:14}}>
@@ -752,7 +769,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setShowInvEmail(false)}>Cancel</button>
-        <button className="btn btn-primary" style={{background:'#dc2626'}} onClick={()=>{setShowInvEmail(false);alert('📧 Invoice email sent to '+acctContact?.email+' with '+openInvs.length+' invoice(s)! (demo)')}}>📧 Send {openInvs.length} Invoice{openInvs.length>1?'s':''}</button>
+        <button className="btn btn-primary" style={{background:'#dc2626'}} onClick={()=>{setShowInvEmail(false);const _ccLine=ccAccts.length>0?'\nCC: '+ccAccts.map(a=>a.email).join(', '):'';alert('📧 Invoice email sent to '+(acctContact?.email||'—')+_ccLine+'\n'+openInvs.length+' invoice(s) (demo)')}}>📧 Send {openInvs.length} Invoice{openInvs.length>1?'s':''}</button>
       </div>
     </div></div>})()}
 

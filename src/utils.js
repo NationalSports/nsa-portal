@@ -3,15 +3,38 @@ import { NSA as _NSA_CONST } from './constants';
 
 // ── Brevo Email ──
 export const _brevoKey = process.env.REACT_APP_BREVO_API_KEY || '';
-export const sendBrevoEmail=async({to,subject,htmlContent,textContent,senderName,senderEmail,replyTo,attachment})=>{
+export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,senderName,senderEmail,replyTo,attachment})=>{
   if(!_brevoKey){return{ok:false,error:'Brevo API key not configured (set REACT_APP_BREVO_API_KEY)'}}
   try{const payload={sender:{name:senderName||'National Sports Apparel',email:senderEmail||'noreply@nationalsportsapparel.com'},to:Array.isArray(to)?to:[{email:to}],subject,htmlContent:htmlContent||undefined,textContent:textContent||undefined};
     if(replyTo)payload.replyTo={email:replyTo.email,name:replyTo.name||senderName||'National Sports Apparel'};
+    if(cc){const ccArr=Array.isArray(cc)?cc:[cc];const _toEmails=new Set(payload.to.map(t=>(t.email||'').toLowerCase()));const _filtered=ccArr.filter(c=>c&&c.email&&!_toEmails.has(c.email.toLowerCase()));if(_filtered.length>0)payload.cc=_filtered}
+    if(bcc){const bccArr=Array.isArray(bcc)?bcc:[bcc];if(bccArr.length>0)payload.bcc=bccArr}
     if(attachment&&attachment.length>0)payload.attachment=attachment;
     const r=await fetch('https://api.brevo.com/v3/smtp/email',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
     body:JSON.stringify(payload)});
     const d=await r.json();if(!r.ok)return{ok:false,error:d.message||'Send failed'};return{ok:true,messageId:d.messageId}}
   catch(e){return{ok:false,error:e.message}}
+};
+
+// ── Accounting contact resolution ──
+// Returns the accounting contacts that apply to a customer, including any inherited
+// from the parent customer. Sub-customers automatically pick up the parent's accounting
+// contact so we only have to set it once at the parent level.
+export const getAccountingContacts=(customer,allCustomers)=>{
+  if(!customer)return[];
+  const out=[];const seen=new Set();
+  const pushAcct=(c,inheritedFrom)=>{
+    (c?.contacts||[]).filter(x=>x&&x.email&&(x.role||'').toLowerCase()==='accounting').forEach(x=>{
+      const key=x.email.toLowerCase();if(seen.has(key))return;seen.add(key);
+      out.push(inheritedFrom?{...x,_inherited_from:inheritedFrom}:x);
+    });
+  };
+  pushAcct(customer,null);
+  if(customer.parent_id&&Array.isArray(allCustomers)){
+    const parent=allCustomers.find(c=>c.id===customer.parent_id);
+    if(parent)pushAcct(parent,parent.name||parent.alpha_tag||'parent');
+  }
+  return out;
 };
 
 // ── Cloudinary Upload ──
