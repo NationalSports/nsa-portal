@@ -17252,6 +17252,9 @@ export default function App(){
         </div>
 
         <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:0}}>
+          <datalist id="impBrandList">
+            {[...new Set([...prod.map(p=>p.brand),...vend.map(v=>v.name)].filter(Boolean))].sort().map(b=><option key={b} value={b}/>)}
+          </datalist>
           <table style={{fontSize:11}}><thead><tr>
             <th style={{width:30}}></th><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th>
             <th style={{textAlign:'right'}}>Rate</th><th>Sizes</th><th style={{textAlign:'center'}}>Qty</th><th style={{textAlign:'right'}}>Amount</th>
@@ -17260,7 +17263,7 @@ export default function App(){
             <td style={{textAlign:'center'}}><input type="checkbox" checked={!it._skip} onChange={e=>updItem(i,'_skip',!e.target.checked)}/></td>
             <td style={{fontFamily:'monospace',fontWeight:700,color:it.catMatch?'#166534':'#dc2626'}}>{it.sku}</td>
             <td>{it.catMatch?<span>✅ {it.name.slice(0,35)}</span>:<span>⚠️ {it.name.slice(0,35)}</span>}</td>
-            <td style={{fontSize:10}}>{it.brand}</td>
+            <td><input className="form-input" list="impBrandList" value={it.brand||''} onChange={e=>updItem(i,'brand',e.target.value)} placeholder="—" style={{fontSize:10,padding:'2px 4px',width:100,border:it.brand?'1px solid #e2e8f0':'1px solid #fca5a5'}}/></td>
             <td style={{fontSize:10}}>{it.color||<span style={{color:'#dc2626'}}>?</span>}</td>
             <td style={{textAlign:'right'}}>${it.rate?.toFixed(2)}</td>
             <td style={{fontSize:9}}>{Object.entries(it.sizes||{}).map(([s,q])=>s+':'+q).join(' ')}</td>
