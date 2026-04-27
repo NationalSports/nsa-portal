@@ -5826,6 +5826,7 @@ export default function App(){
   const[artFilter,setArtFilter]=useState('all');const[artSearch,setArtSearch]=useState('');
   const[artDashView,setArtDashView]=useState('artist');// 'artist' | 'rep'
   const[artCompletedOpen,setArtCompletedOpen]=useState(false);// toggle completed jobs dropdown
+  const[artHiddenOpen,setArtHiddenOpen]=useState(false);// toggle hidden jobs dropdown
   const[artCompletedSearch,setArtCompletedSearch]=useState('');// search within completed jobs
   const[artRejectModal,setArtRejectModal]=useState(null);// {job, reason:''}
   const[artEditModal,setArtEditModal]=useState(null);// {job, instructions:'', notes:''}
@@ -13593,6 +13594,13 @@ export default function App(){
       if(newStatus==='art_complete'){nf('Art complete — job is Ready for Production!')}
       else nf('Art status → '+ART_LABELS[newStatus]);
     };
+    const setArtHidden=(j,hidden)=>{
+      const so=sos.find(s=>s.id===j.soId);if(!so)return;
+      const currentJobs=buildJobs(so);
+      const updJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,art_hidden:!!hidden}:jj);
+      savSO({...so,jobs:updJobs});
+      nf(hidden?'Job hidden from workboard':'Job restored to workboard');
+    };
     const assignArtist=(j,artistId)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
       const currentJobs=buildJobs(so);
@@ -13629,9 +13637,11 @@ export default function App(){
       if(wasRecalled)return'waiting_for_art';
       const s=j.artFile?.status;return s==='uploaded'?'needs_approval':(!s||s==='needs_art')?'waiting_for_art':s;
     };
-    const artistJobs=filtered.filter(j=>j.art_status!=='art_complete');
+    const artistJobs=filtered.filter(j=>j.art_status!=='art_complete'&&!j.art_hidden);
     // In Production: art complete but decoration not finished yet
-    const inProductionJobs=filtered.filter(j=>j.art_status==='art_complete'&&!['completed','shipped'].includes(j.prod_status));
+    const inProductionJobs=filtered.filter(j=>j.art_status==='art_complete'&&!['completed','shipped'].includes(j.prod_status)&&!j.art_hidden);
+    // Hidden: jobs the artist has hidden from the workboard (booking orders, far-out items, etc.)
+    const hiddenArtJobs=filtered.filter(j=>j.art_hidden&&!['completed','shipped'].includes(j.prod_status));
     // Completed: art complete AND decoration done (completed/shipped) — reference for artists
     const completedArtJobs=allArtJobs.filter(j=>{
       if(j.art_status!=='art_complete'||!['completed','shipped'].includes(j.prod_status))return false;
@@ -13649,7 +13659,7 @@ export default function App(){
     const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=c.id==='in_production'?inProductionJobs.length:artistJobs.filter(j=>getArtFileStatus(j)===c.id).length});
 
     // ─── Rep view data — all jobs grouped by rep ───
-    const repJobs=filtered.filter(j=>artDashView==='rep'?(cu.role==='admin'||cu.role==='super_admin'||j.repId===cu.id||artFilter!=='all'):true);
+    const repJobs=filtered.filter(j=>!j.art_hidden).filter(j=>artDashView==='rep'?(cu.role==='admin'||cu.role==='super_admin'||j.repId===cu.id||artFilter!=='all'):true);
     // Note: rep filtering by artFilter is now handled in filtered above
 
     // Card renderer shared between both views
@@ -13769,6 +13779,7 @@ export default function App(){
             </div>
           </>}
           <button className="btn btn-sm" style={{fontSize:10,padding:'4px 8px',marginTop:6,width:'100%',background:'#f1f5f9',color:'#1e293b',border:'1px solid #cbd5e1',fontWeight:600}} onClick={e=>{e.stopPropagation();openDetails()}}>🔍 Open Details</button>
+          {view==='artist'&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,width:'100%',background:'white',color:'#64748b',border:'1px dashed #cbd5e1',fontWeight:600}} onClick={e=>{e.stopPropagation();setArtHidden(j,!j.art_hidden)}} title={j.art_hidden?'Restore to workboard':'Hide from workboard (e.g. booking orders not yet in production)'}>{j.art_hidden?'👁️ Unhide':'🙈 Hide from board'}</button>}
         </div>}
       </div>};
 
@@ -13882,6 +13893,21 @@ export default function App(){
             </div>}
           </div>}
         </div>
+
+        {/* ═══ HIDDEN JOBS — booking orders / future work parked off the active board ═══ */}
+        {hiddenArtJobs.length>0&&<div style={{marginTop:8}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:'#f8fafc',borderRadius:artHiddenOpen?'10px 10px 0 0':'10px',border:'1px solid #e2e8f0',cursor:'pointer'}} onClick={()=>setArtHiddenOpen(v=>!v)}>
+            <span style={{fontSize:16,transform:artHiddenOpen?'rotate(90deg)':'rotate(0deg)',transition:'transform 0.2s'}}>&#9654;</span>
+            <span style={{fontSize:13,fontWeight:800,color:'#475569'}}>🙈 Hidden Jobs</span>
+            <span style={{fontSize:11,fontWeight:600,color:'#64748b',background:'#e2e8f0',borderRadius:10,padding:'1px 8px'}}>{hiddenArtJobs.length}</span>
+            <span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>Parked off the active board — click Unhide to restore</span>
+          </div>
+          {artHiddenOpen&&<div style={{border:'1px solid #e2e8f0',borderTop:'none',borderRadius:'0 0 10px 10px',padding:12,background:'white'}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:8}}>
+              {hiddenArtJobs.map(j=>renderArtCard(j,'artist',{id:'hidden',label:'Hidden',color:'#475569',bg:'#f8fafc'}))}
+            </div>
+          </div>}
+        </div>}
       </>}
 
       {/* ═══ REP ART TRACKER ═══ */}
