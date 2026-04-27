@@ -820,7 +820,7 @@ const sanmarGetPricing = async (style, color, size) =>
 // PromoStandards inventory — uses getInventoryLevels via InventoryServiceBinding
 const sanmarGetPromoInventory = async (productId) =>
   await sanmarApiCall('promostandards', 'getInventoryLevels', {
-    wsVersion: '1.2.1', productId, productIDtype: 'Supplier'
+    wsVersion: '1.2.1', productId, productIdType: 'Supplier'
   });
 
 const testSanMarConnection = async () => {
