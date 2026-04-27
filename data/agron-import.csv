@@ -1,0 +1,696 @@
+sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,vendor_name
+5159759,Adidas Three-Stripe Spinner Carry-On Wheel Bag,Adidas,Black,Bags,365.00,136.88,OSFA,Agron
+5159465,Adidas Team Wheel Bag,Adidas,Black,Bags,240.00,90.00,OSFA,Agron
+5160021,Adidas Duel 21-Inch Wheel Bag,Adidas,Black,Bags,195.00,73.13,OSFA,Agron
+5159456,Adidas Team XL II Wheel Bag,Adidas,Black,Bags,150.00,56.25,OSFA,Agron
+5159403,Adidas Locker Room Baseball Duffel,Adidas,Onix Grey/Black,Bags,130.00,48.75,OSFA,Agron
+5159420,Adidas Locker Room Baseball Duffel,Adidas,Black,Bags,130.00,48.75,OSFA,Agron
+5159523,Adidas Team Carry XL Duffel,Adidas,Black,Bags,130.00,48.75,OSFA,Agron
+5159520,Adidas Utility XL Team Backpack,Adidas,Team Onix Grey,Bags,105.00,39.38,OSFA,Agron
+5160158,Adidas Select Backpack,Adidas,Black,Bags,95.00,35.63,OSFA,Agron
+5161390,Adidas Select Backpack,Adidas,Team Power Red 2/Black,Bags,95.00,35.63,OSFA,Agron
+5161889,Adidas Select Backpack,Adidas,White/Black/Gold Metallic,Bags,95.00,35.63,OSFA,Agron
+5157751,Adidas 5-Star Team 2 Backpack,Adidas,Jersey Onix Grey,Bags,80.00,30.00,OSFA,Agron
+5157755,Adidas 5-Star Team 2 Backpack,Adidas,Team Royal Blue,Bags,80.00,30.00,OSFA,Agron
+5157762,Adidas 5-Star Team 2 Backpack,Adidas,Team Navy Blue 2,Bags,80.00,30.00,OSFA,Agron
+5157781,Adidas 5-Star Team 2 Backpack,Adidas,Team Dark Green,Bags,80.00,30.00,OSFA,Agron
+5157787,Adidas 5-Star Team 2 Backpack,Adidas,Black,Bags,80.00,30.00,OSFA,Agron
+5157793,Adidas 5-Star Team 2 Backpack,Adidas,White,Bags,80.00,30.00,OSFA,Agron
+5157796,Adidas 5-Star Team 2 Backpack,Adidas,Team Collegiate Burgundy,Bags,80.00,30.00,OSFA,Agron
+5157801,Adidas 5-Star Team 2 Backpack,Adidas,Team Collegiate Purple,Bags,80.00,30.00,OSFA,Agron
+5157814,Adidas 5-Star Team 2 Backpack,Adidas,Team Power Red 2,Bags,80.00,30.00,OSFA,Agron
+5159513,Adidas Stadium Messenger,Adidas,Black,Bags,75.00,28.13,OSFA,Agron
+5159368,Adidas Stadium 4 Backpack,Adidas,Team Dark Green,Bags,65.00,24.38,OSFA,Agron
+5159379,Adidas Stadium 4 Backpack,Adidas,Team Shock Pink 2,Bags,65.00,24.38,OSFA,Agron
+5159389,Adidas Stadium 4 Backpack,Adidas,Team Light Blue,Bags,65.00,24.38,OSFA,Agron
+5159406,Adidas Stadium 4 Backpack,Adidas,Team Navy Blue 2,Bags,65.00,24.38,OSFA,Agron
+5159407,Adidas Stadium 4 Backpack,Adidas,Team Power Red 2/White,Bags,65.00,24.38,OSFA,Agron
+5159440,Adidas Stadium 4 Backpack,Adidas,Team Royal Blue,Bags,65.00,24.38,OSFA,Agron
+5159481,Adidas Stadium 4 Backpack,Adidas,Team Dark Grey,Bags,65.00,24.38,OSFA,Agron
+5159492,Adidas Stadium 4 Backpack,Adidas,Team Light Grey,Bags,65.00,24.38,OSFA,Agron
+5159498,Adidas Stadium 4 Backpack,Adidas,Team Orange,Bags,65.00,24.38,OSFA,Agron
+5159512,Adidas Stadium 4 Backpack,Adidas,Black,Bags,65.00,24.38,OSFA,Agron
+5159382,Adidas Defender 5 Large Duffel,Adidas,Team Power Red 2/White,Bags,60.00,22.50,OSFA,Agron
+5159426,Adidas Defender 5 Large Duffel,Adidas,Team Royal Blue,Bags,60.00,22.50,OSFA,Agron
+5159439,Adidas Defender 5 Large Duffel,Adidas,Team Dark Grey,Bags,60.00,22.50,OSFA,Agron
+5159457,Adidas Defender 5 Large Duffel,Adidas,Black,Bags,60.00,22.50,OSFA,Agron
+5159370,Adidas Team Issue II Medium Duffel,Adidas,Jersey Onix Grey,Bags,60.00,22.50,OSFA,Agron
+5159386,Adidas Team Issue II Medium Duffel,Adidas,Team Power Red 2,Bags,60.00,22.50,OSFA,Agron
+5159402,Adidas Team Issue II Medium Duffel,Adidas,Team Collegiate Purple,Bags,60.00,22.50,OSFA,Agron
+5159419,Adidas Team Issue II Medium Duffel,Adidas,Team Orange,Bags,60.00,22.50,OSFA,Agron
+5159441,Adidas Team Issue II Medium Duffel,Adidas,Team Light Blue,Bags,60.00,22.50,OSFA,Agron
+5159448,Adidas Team Issue II Medium Duffel,Adidas,Team Navy Blue 2,Bags,60.00,22.50,OSFA,Agron
+5159458,Adidas Team Issue II Medium Duffel,Adidas,Team Dark Green,Bags,60.00,22.50,OSFA,Agron
+5159469,Adidas Team Issue II Medium Duffel,Adidas,Team Maroon,Bags,60.00,22.50,OSFA,Agron
+5159476,Adidas Team Issue II Medium Duffel,Adidas,White,Bags,60.00,22.50,OSFA,Agron
+5159479,Adidas Team Issue II Medium Duffel,Adidas,Team Onix Grey,Bags,60.00,22.50,OSFA,Agron
+5159487,Adidas Team Issue II Medium Duffel,Adidas,Team Royal Blue,Bags,60.00,22.50,OSFA,Agron
+5159501,Adidas Team Issue II Medium Duffel,Adidas,Black,Bags,60.00,22.50,OSFA,Agron
+5159515,Adidas Team Issue II Medium Duffel,Adidas,Team Shock Pink 2,Bags,60.00,22.50,OSFA,Agron
+5159373,Adidas Defender 5 Backpack,Adidas,Team Power Red 2/White,Bags,58.00,21.75,OSFA,Agron
+5159374,Adidas Defender 5 Backpack,Adidas,Twill Onix Grey/Black,Bags,58.00,21.75,OSFA,Agron
+5159381,Adidas Defender 5 Backpack,Adidas,Team Dark Grey,Bags,58.00,21.75,OSFA,Agron
+5159394,Adidas Defender 5 Backpack,Adidas,Black/Black,Bags,58.00,21.75,OSFA,Agron
+5159409,Adidas Defender 5 Backpack,Adidas,Black,Bags,58.00,21.75,OSFA,Agron
+5159496,Adidas Defender 5 Backpack,Adidas,Team Navy Blue 2,Bags,58.00,21.75,OSFA,Agron
+5159507,Adidas Defender 5 Backpack,Adidas,Team Royal Blue,Bags,58.00,21.75,OSFA,Agron
+5159508,Adidas Defender 5 Backpack,Adidas,White/Gold Metallic/Black,Bags,58.00,21.75,OSFA,Agron
+5160175,Adidas 30 Can Tote Cooler Bag,Adidas,Black,Bags,55.00,20.63,OSFA,Agron
+5160710,Adidas 30 Can Tote Cooler Bag,Adidas,Collegiate Navy/Black,Bags,55.00,20.63,OSFA,Agron
+5160712,Adidas 30 Can Tote Cooler Bag,Adidas,Silver Pebble Grey/Black,Bags,55.00,20.63,OSFA,Agron
+5160715,Adidas 30 Can Tote Cooler Bag,Adidas,Grey Four/Black,Bags,55.00,20.63,OSFA,Agron
+5159490,Adidas Stadium Ball Bag,Adidas,Black/White,Bags,55.00,20.63,OSFA,Agron
+5160159,Adidas 24 Can Cooler Bag,Adidas,Black,Bags,52.00,19.50,OSFA,Agron
+5160707,Adidas 24 Can Cooler Bag,Adidas,Silver Pebble Grey/Black,Bags,52.00,19.50,OSFA,Agron
+5160711,Adidas 24 Can Cooler Bag,Adidas,Grey Four/Black,Bags,52.00,19.50,OSFA,Agron
+5160713,Adidas 24 Can Cooler Bag,Adidas,Collegiate Navy/Black,Bags,52.00,19.50,OSFA,Agron
+5159376,Adidas Defender 5 Medium Duffel,Adidas,Team Power Red 2/White,Bags,50.00,18.75,OSFA,Agron
+5159395,Adidas Defender 5 Medium Duffel,Adidas,Team Navy Blue 2,Bags,50.00,18.75,OSFA,Agron
+5159410,Adidas Defender 5 Medium Duffel,Adidas,Team Royal Blue,Bags,50.00,18.75,OSFA,Agron
+5159430,Adidas Defender 5 Medium Duffel,Adidas,Twill Onix Grey/Black,Bags,50.00,18.75,OSFA,Agron
+5159442,Adidas Defender 5 Medium Duffel,Adidas,Team Dark Grey,Bags,50.00,18.75,OSFA,Agron
+5159446,Adidas Defender 5 Medium Duffel,Adidas,Team Shock Pink 2,Bags,50.00,18.75,OSFA,Agron
+5159459,Adidas Defender 5 Medium Duffel,Adidas,Black,Bags,50.00,18.75,OSFA,Agron
+5159460,Adidas Defender 5 Medium Duffel,Adidas,Team Dark Green,Bags,50.00,18.75,OSFA,Agron
+5159463,Adidas Defender 5 Medium Duffel,Adidas,Black/Silver Metallic,Bags,50.00,18.75,OSFA,Agron
+5160146,Adidas Striker 3 Backpack,Adidas,Team Maroon 2,Bags,48.00,18.00,OSFA,Agron
+5160189,Adidas Striker 3 Backpack,Adidas,Team Collegiate Purple,Bags,48.00,18.00,OSFA,Agron
+5160193,Adidas Striker 3 Backpack,Adidas,Black,Bags,48.00,18.00,OSFA,Agron
+5160194,Adidas Striker 3 Backpack,Adidas,Team Shock Pink 2,Bags,48.00,18.00,OSFA,Agron
+5160202,Adidas Striker 3 Backpack,Adidas,Team Navy Blue 2,Bags,48.00,18.00,OSFA,Agron
+5160219,Adidas Striker 3 Backpack,Adidas,Team Dark Green,Bags,48.00,18.00,OSFA,Agron
+5160245,Adidas Striker 3 Backpack,Adidas,Team Power Red 2,Bags,48.00,18.00,OSFA,Agron
+5160287,Adidas Striker 3 Backpack,Adidas,Team Royal Blue,Bags,48.00,18.00,OSFA,Agron
+5159391,Adidas Defender 5 Small Duffel,Adidas,Team Dark Green,Bags,45.00,16.88,OSFA,Agron
+5159399,Adidas Defender 5 Small Duffel,Adidas,Team Navy Blue 2,Bags,45.00,16.88,OSFA,Agron
+5159418,Adidas Defender 5 Small Duffel,Adidas,Twill Onix Grey/Black,Bags,45.00,16.88,OSFA,Agron
+5159425,Adidas Defender 5 Small Duffel,Adidas,Team Power Red 2/White,Bags,45.00,16.88,OSFA,Agron
+5159428,Adidas Defender 5 Small Duffel,Adidas,Team Royal Blue,Bags,45.00,16.88,OSFA,Agron
+5159434,Adidas Defender 5 Small Duffel,Adidas,Team Shock Pink 2,Bags,45.00,16.88,OSFA,Agron
+5159445,Adidas Defender 5 Small Duffel,Adidas,Team Dark Grey,Bags,45.00,16.88,OSFA,Agron
+5159451,Adidas Defender 5 Small Duffel,Adidas,Black/Silver Metallic,Bags,45.00,16.88,OSFA,Agron
+5159462,Adidas Defender 5 Small Duffel,Adidas,Black,Bags,45.00,16.88,OSFA,Agron
+5159482,Adidas Defender 5 Small Duffel,Adidas,Black/Gold Metallic,Bags,45.00,16.88,OSFA,Agron
+5159491,Adidas Defender 5 Small Duffel,Adidas,Twill White/Black,Bags,45.00,16.88,OSFA,Agron
+5159509,Adidas Defender 5 Small Duffel,Adidas,Twill Grey/Rose Gold,Bags,45.00,16.88,OSFA,Agron
+5160237,Adidas 12 Can Cooler Bag,Adidas,Black,Bags,42.00,15.75,OSFA,Agron
+5160708,Adidas 12 Can Cooler Bag,Adidas,Collegiate Navy/Black,Bags,42.00,15.75,OSFA,Agron
+5160709,Adidas 12 Can Cooler Bag,Adidas,Grey Four/Black,Bags,42.00,15.75,OSFA,Agron
+5160714,Adidas 12 Can Cooler Bag,Adidas,Silver Pebble Grey/Black,Bags,42.00,15.75,OSFA,Agron
+5160259,Adidas Clear Crossbody,Adidas,Clear/Black,Bags,30.00,11.25,OSFA,Agron
+5162196,Adidas Clear Crossbody,Adidas,Clear/Bold Blue/Better Scarlet,Bags,30.00,11.25,OSFA,Agron
+5159443,Adidas Stadium II Team Glove Bag,Adidas,Black,Bags,28.00,10.50,OSFA,Agron
+5159408,Adidas Team Toiletry Kit,Adidas,Black,Bags,28.00,10.50,OSFA,Agron
+5159488,Adidas Stadium II Team Shoe Bag,Adidas,Black,Bags,25.00,9.38,OSFA,Agron
+5160162,Adidas Alliance 3 Sackpack,Adidas,Twill Onix Grey/Black,Bags,22.00,8.25,OSFA,Agron
+5160183,Adidas Alliance 3 Sackpack,Adidas,Team Shock Pink 2/White,Bags,22.00,8.25,OSFA,Agron
+5160185,Adidas Alliance 3 Sackpack,Adidas,Black,Bags,22.00,8.25,OSFA,Agron
+5160223,Adidas Alliance 3 Sackpack,Adidas,Team Navy Blue 2,Bags,22.00,8.25,OSFA,Agron
+5160240,Adidas Alliance 3 Sackpack,Adidas,White/Black,Bags,22.00,8.25,OSFA,Agron
+5160250,Adidas Alliance 3 Sackpack,Adidas,Team Royal Blue,Bags,22.00,8.25,OSFA,Agron
+5160273,Adidas Alliance 3 Sackpack,Adidas,Team Power Red 2,Bags,22.00,8.25,OSFA,Agron
+5160280,Adidas Alliance 3 Sackpack,Adidas,Black/Gold Metallic,Bags,22.00,8.25,OSFA,Agron
+5160152,Adidas Stadium Sackpack,Adidas,Team Power Red 2/White,Bags,22.00,8.25,OSFA,Agron
+5160174,Adidas Stadium Sackpack,Adidas,Black,Bags,22.00,8.25,OSFA,Agron
+5160200,Adidas Stadium Sackpack,Adidas,True Pink/Black,Bags,22.00,8.25,OSFA,Agron
+5160241,Adidas Stadium Sackpack,Adidas,Team Light Grey/White,Bags,22.00,8.25,OSFA,Agron
+5160265,Adidas Stadium Sackpack,Adidas,Team Navy Blue 2/White,Bags,22.00,8.25,OSFA,Agron
+5159516,Adidas Tournament III Sackpack,Adidas,Black/White,Bags,14.00,5.25,OSFA,Agron
+5159519,Adidas Tournament III Sackpack,Adidas,Jersey Onix Grey/Black,Bags,14.00,5.25,OSFA,Agron
+5161242A,Adidas Unisex Fundamental Victory Bucket,Adidas,Black/White,Hats,36.00,13.50,S/M,Agron
+5161242B,Adidas Unisex Fundamental Victory Bucket,Adidas,Black/White,Hats,36.00,13.50,L/XL,Agron
+5161243A,Adidas Unisex Fundamental Victory Bucket,Adidas,Team Dark Grey/Black,Hats,36.00,13.50,S/M,Agron
+5161243B,Adidas Unisex Fundamental Victory Bucket,Adidas,Team Dark Grey/Black,Hats,36.00,13.50,L/XL,Agron
+5161244A,Adidas Unisex Fundamental Victory Bucket,Adidas,White/Black,Hats,36.00,13.50,S/M,Agron
+5161244B,Adidas Unisex Fundamental Victory Bucket,Adidas,White/Black,Hats,36.00,13.50,L/XL,Agron
+5161245A,Adidas Unisex Fundamental Victory Bucket,Adidas,Team Navy Blue 2/Black,Hats,36.00,13.50,S/M,Agron
+5161245B,Adidas Unisex Fundamental Victory Bucket,Adidas,Team Navy Blue 2/Black,Hats,36.00,13.50,L/XL,Agron
+5161234A,Adidas Unisex Fundamental Gameday Stretch,Adidas,Black/Team Dark Grey,Hats,30.00,11.25,S/M,Agron
+5161234B,Adidas Unisex Fundamental Gameday Stretch,Adidas,Black/Team Dark Grey,Hats,30.00,11.25,L/XL,Agron
+5161235A,Adidas Unisex Fundamental Gameday Stretch,Adidas,Team Dark Grey/White,Hats,30.00,11.25,S/M,Agron
+5161235B,Adidas Unisex Fundamental Gameday Stretch,Adidas,Team Dark Grey/White,Hats,30.00,11.25,L/XL,Agron
+5161236A,Adidas Unisex Fundamental Gameday Stretch,Adidas,White/Black,Hats,30.00,11.25,S/M,Agron
+5161236B,Adidas Unisex Fundamental Gameday Stretch,Adidas,White/Black,Hats,30.00,11.25,L/XL,Agron
+5161237A,Adidas Unisex Fundamental Gameday Stretch,Adidas,Team Navy Blue 2/Team Dark Grey,Hats,30.00,11.25,S/M,Agron
+5161237B,Adidas Unisex Fundamental Gameday Stretch,Adidas,Team Navy Blue 2/Team Dark Grey,Hats,30.00,11.25,L/XL,Agron
+5161238,Adidas Unisex Fundamental Structured Snapback,Adidas,Black/White,Hats,30.00,11.25,OSFA,Agron
+5161239,Adidas Unisex Fundamental Structured Snapback,Adidas,Team Dark Grey/White,Hats,30.00,11.25,OSFA,Agron
+5161240,Adidas Unisex Fundamental Structured Snapback,Adidas,White/Team Dark Grey,Hats,30.00,11.25,OSFA,Agron
+5161241,Adidas Unisex Fundamental Structured Snapback,Adidas,Team Navy Blue 2/Black,Hats,30.00,11.25,OSFA,Agron
+5161246,Adidas Unisex Fundamental Alliance,Adidas,Team Royal Blue/Black,Hats,28.00,10.50,OSFA,Agron
+5161247,Adidas Unisex Fundamental Alliance,Adidas,Team Dark Green/Black,Hats,28.00,10.50,OSFA,Agron
+5161248,Adidas Unisex Fundamental Alliance,Adidas,Team Power Red 2/Black,Hats,28.00,10.50,OSFA,Agron
+5161249,Adidas Unisex Fundamental Alliance,Adidas,Team Navy Blue 2/White,Hats,28.00,10.50,OSFA,Agron
+5161250,Adidas Unisex Fundamental Alliance,Adidas,Team Dark Grey/Black,Hats,28.00,10.50,OSFA,Agron
+5161251,Adidas Unisex Fundamental Alliance,Adidas,White/Black,Hats,28.00,10.50,OSFA,Agron
+5161252,Adidas Unisex Fundamental Alliance,Adidas,Black/White,Hats,28.00,10.50,OSFA,Agron
+5161230,Adidas Unisex Fundamental Dispatch Trucker,Adidas,Black/White,Hats,28.00,10.50,OSFA,Agron
+5161231,Adidas Unisex Fundamental Dispatch Trucker,Adidas,Team Dark Grey/Black/White,Hats,28.00,10.50,OSFA,Agron
+5161232,Adidas Unisex Fundamental Dispatch Trucker,Adidas,White/Black,Hats,28.00,10.50,OSFA,Agron
+5161233,Adidas Unisex Fundamental Dispatch Trucker,Adidas,Team Navy Blue 2/Black/White,Hats,28.00,10.50,OSFA,Agron
+5161253,Adidas Unisex Fundamental Washed Relaxed,Adidas,Black/White,Hats,28.00,10.50,OSFA,Agron
+5161254,Adidas Unisex Fundamental Washed Relaxed,Adidas,Team Dark Grey/Black,Hats,28.00,10.50,OSFA,Agron
+5161255,Adidas Unisex Fundamental Washed Relaxed,Adidas,White/Team Dark Grey,Hats,28.00,10.50,OSFA,Agron
+5161256,Adidas Unisex Fundamental Washed Relaxed,Adidas,Team Navy Blue 2/Black,Hats,28.00,10.50,OSFA,Agron
+5158631,Adidas Men's Superlite 3 Hat,Adidas,Black/White,Hats,28.00,10.50,OSFA,Agron
+5158660,Adidas Men's Superlite 3 Hat,Adidas,White/Black,Hats,28.00,10.50,OSFA,Agron
+5160078,Adidas Men's Superlite 4 Team Hat,Adidas,Black/White,Hats,28.00,10.50,OSFA,Agron
+5160086,Adidas Men's Superlite 4 Team Hat,Adidas,Grey Six/White,Hats,28.00,10.50,OSFA,Agron
+5160107,Adidas Men's Superlite 4 Team Hat,Adidas,Dark Blue/White,Hats,28.00,10.50,OSFA,Agron
+5160129,Adidas Men's Superlite 4 Team Hat,Adidas,White/Black,Hats,28.00,10.50,OSFA,Agron
+5161257,Adidas Men's Superlite 3 Team Visor,Adidas,Black/White,Hats,24.00,9.00,OSFA,Agron
+5161258,Adidas Men's Superlite 3 Team Visor,Adidas,White/Black,Hats,24.00,9.00,OSFA,Agron
+5161259,Adidas Men's Superlite 3 Team Visor,Adidas,Grey Six/White,Hats,24.00,9.00,OSFA,Agron
+5161260,Adidas Men's Superlite 3 Team Visor,Adidas,Dark Blue/White,Hats,24.00,9.00,OSFA,Agron
+5158625,Adidas Women's Superlite 3 Hat,Adidas,Black/White,Hats,28.00,10.50,OSFA,Agron
+5158692,Adidas Women's Superlite 3 Hat,Adidas,White/Silver Metallic,Hats,28.00,10.50,OSFA,Agron
+101639,Adidas Men's Athletic Cushioned 6-Pack Crew,Adidas,White/Black,Socks,26.00,9.75,L,Agron
+5125031,Adidas Men's Athletic Cushioned 6-Pack Crew,Adidas,Black/Aluminum 2,Socks,26.00,9.75,L,Agron
+101639C,Adidas Men's Athletic Cushioned 6-Pack Crew,Adidas,White/Black,Socks,26.00,9.75,M,Agron
+5125031C,Adidas Men's Athletic Cushioned 6-Pack Crew,Adidas,Black/Aluminum 2,Socks,26.00,9.75,M,Agron
+5140229B,Adidas Men's Athletic Cushioned 6-Pack Crew,Adidas,White/Black,Socks,26.00,9.75,XL,Agron
+5140230B,Adidas Men's Athletic Cushioned 6-Pack Crew,Adidas,Black/Aluminum 2,Socks,26.00,9.75,XL,Agron
+101641,Adidas Men's Athletic Cushioned 6-Pack Low Cut,Adidas,White/Black,Socks,26.00,9.75,L,Agron
+5125705,Adidas Men's Athletic Cushioned 6-Pack Low Cut,Adidas,Black/Aluminum 2,Socks,26.00,9.75,L,Agron
+101641C,Adidas Men's Athletic Cushioned 6-Pack Low Cut,Adidas,White/Black,Socks,26.00,9.75,M,Agron
+5125705C,Adidas Men's Athletic Cushioned 6-Pack Low Cut,Adidas,Black/Aluminum 2,Socks,26.00,9.75,M,Agron
+5140287B,Adidas Men's Athletic Cushioned 6-Pack Low Cut,Adidas,White/Black,Socks,26.00,9.75,XL,Agron
+5140288B,Adidas Men's Athletic Cushioned 6-Pack Low Cut,Adidas,Black/Aluminum 2,Socks,26.00,9.75,XL,Agron
+101642,Adidas Men's Athletic Cushioned 6-Pack No Show,Adidas,White/Black,Socks,26.00,9.75,L,Agron
+5124488,Adidas Men's Athletic Cushioned 6-Pack No Show,Adidas,Black/Aluminum 2,Socks,26.00,9.75,L,Agron
+101642C,Adidas Men's Athletic Cushioned 6-Pack No Show,Adidas,White/Black,Socks,26.00,9.75,M,Agron
+5124488C,Adidas Men's Athletic Cushioned 6-Pack No Show,Adidas,Black/Aluminum 2,Socks,26.00,9.75,M,Agron
+5140289B,Adidas Men's Athletic Cushioned 6-Pack No Show,Adidas,White/Black,Socks,26.00,9.75,XL,Agron
+5140290B,Adidas Men's Athletic Cushioned 6-Pack No Show,Adidas,Black/Aluminum 2,Socks,26.00,9.75,XL,Agron
+101640,Adidas Men's Athletic Cushioned 6-Pack Quarter,Adidas,White/Black,Socks,26.00,9.75,L,Agron
+5125358,Adidas Men's Athletic Cushioned 6-Pack Quarter,Adidas,Black/Aluminum 2,Socks,26.00,9.75,L,Agron
+101640C,Adidas Men's Athletic Cushioned 6-Pack Quarter,Adidas,White/Black,Socks,26.00,9.75,M,Agron
+5125358C,Adidas Men's Athletic Cushioned 6-Pack Quarter,Adidas,Black/Aluminum 2,Socks,26.00,9.75,M,Agron
+5140273B,Adidas Men's Athletic Cushioned 6-Pack Quarter,Adidas,Black/Aluminum 2,Socks,26.00,9.75,XL,Agron
+5140291B,Adidas Men's Athletic Cushioned 6-Pack Quarter,Adidas,White/Black,Socks,26.00,9.75,XL,Agron
+5161399B,Adidas Men's Superlite 3.0 6-Pack Crew,Adidas,White/Black,Socks,22.00,8.25,M,Agron
+5161399C,Adidas Men's Superlite 3.0 6-Pack Crew,Adidas,White/Black,Socks,22.00,8.25,L,Agron
+5161400B,Adidas Men's Superlite 3.0 6-Pack Crew,Adidas,Black/Night Grey,Socks,22.00,8.25,M,Agron
+5161400C,Adidas Men's Superlite 3.0 6-Pack Crew,Adidas,Black/Night Grey,Socks,22.00,8.25,L,Agron
+5157882A,Adidas Men's Superlite 3.0 6-Pack Low Cut,Adidas,White/Black,Socks,22.00,8.25,L,Agron
+5157882B,Adidas Men's Superlite 3.0 6-Pack Low Cut,Adidas,White/Black,Socks,22.00,8.25,XL,Agron
+5157882C,Adidas Men's Superlite 3.0 6-Pack Low Cut,Adidas,White/Black,Socks,22.00,8.25,M,Agron
+5157896A,Adidas Men's Superlite 3.0 6-Pack Low Cut,Adidas,Black/Night Grey,Socks,22.00,8.25,L,Agron
+5157896B,Adidas Men's Superlite 3.0 6-Pack Low Cut,Adidas,Black/Night Grey,Socks,22.00,8.25,XL,Agron
+5157896C,Adidas Men's Superlite 3.0 6-Pack Low Cut,Adidas,Black/Night Grey,Socks,22.00,8.25,M,Agron
+5157870A,Adidas Men's Superlite 3.0 6-Pack No Show,Adidas,White/Black,Socks,22.00,8.25,L,Agron
+5157870B,Adidas Men's Superlite 3.0 6-Pack No Show,Adidas,White/Black,Socks,22.00,8.25,XL,Agron
+5157870C,Adidas Men's Superlite 3.0 6-Pack No Show,Adidas,White/Black,Socks,22.00,8.25,M,Agron
+5157894A,Adidas Men's Superlite 3.0 6-Pack No Show,Adidas,Black/Night Grey,Socks,22.00,8.25,L,Agron
+5157894B,Adidas Men's Superlite 3.0 6-Pack No Show,Adidas,Black/Night Grey,Socks,22.00,8.25,XL,Agron
+5157894C,Adidas Men's Superlite 3.0 6-Pack No Show,Adidas,Black/Night Grey,Socks,22.00,8.25,M,Agron
+5157834A,Adidas Men's Superlite 3.0 6-Pack Quarter,Adidas,White/Black,Socks,22.00,8.25,L,Agron
+5157834B,Adidas Men's Superlite 3.0 6-Pack Quarter,Adidas,White/Black,Socks,22.00,8.25,XL,Agron
+5157834C,Adidas Men's Superlite 3.0 6-Pack Quarter,Adidas,White/Black,Socks,22.00,8.25,M,Agron
+5157850A,Adidas Men's Superlite 3.0 6-Pack Quarter,Adidas,Black/Night Grey,Socks,22.00,8.25,L,Agron
+5157850B,Adidas Men's Superlite 3.0 6-Pack Quarter,Adidas,Black/Night Grey,Socks,22.00,8.25,XL,Agron
+5157850C,Adidas Men's Superlite 3.0 6-Pack Quarter,Adidas,Black/Night Grey,Socks,22.00,8.25,M,Agron
+5157846A,Adidas Men's Superlite 3.0 6-Pack Super No Show,Adidas,White/Black,Socks,22.00,8.25,L,Agron
+5157846C,Adidas Men's Superlite 3.0 6-Pack Super No Show,Adidas,White/Black,Socks,22.00,8.25,M,Agron
+5157864A,Adidas Men's Superlite 3.0 6-Pack Super No Show,Adidas,Black/Night Grey,Socks,22.00,8.25,L,Agron
+5157864C,Adidas Men's Superlite 3.0 6-Pack Super No Show,Adidas,Black/Night Grey,Socks,22.00,8.25,M,Agron
+5155900A,Adidas Men's Cushioned 3.0 3-Pack Crew,Adidas,Black/Onix Grey/White,Socks,16.00,6.00,L,Agron
+5155900B,Adidas Men's Cushioned 3.0 3-Pack Crew,Adidas,Black/Onix Grey/White,Socks,16.00,6.00,XL,Agron
+5155901A,Adidas Men's Cushioned 3.0 3-Pack Crew,Adidas,White/Grey/Onix Grey,Socks,16.00,6.00,L,Agron
+5155901B,Adidas Men's Cushioned 3.0 3-Pack Crew,Adidas,White/Grey/Onix Grey,Socks,16.00,6.00,XL,Agron
+5125703,Adidas Women's Athletic Cushioned 6-Pack Crew,Adidas,Black/Aluminum 2,Socks,26.00,9.75,M,Agron
+5150380A,Adidas Women's Athletic Cushioned 6-Pack Low Cut,Adidas,Black/Aluminum 2,Socks,26.00,9.75,M,Agron
+5124824,Adidas Women's Athletic Cushioned 6-Pack No Show,Adidas,Black/Aluminum 2,Socks,26.00,9.75,M,Agron
+5150438A,Adidas Women's Athletic Cushioned 6-Pack Quarter,Adidas,Black/Aluminum 2,Socks,26.00,9.75,M,Agron
+5161781A,Adidas Women's Superlite 3.0 6-Pack Crew,Adidas,White/Black/Grey,Socks,22.00,8.25,M,Agron
+5157902A,Adidas Women's Superlite 3.0 6-Pack No Show,Adidas,White/Black/Grey,Socks,22.00,8.25,M,Agron
+5157902B,Adidas Women's Superlite 3.0 6-Pack No Show,Adidas,White/Black/Grey,Socks,22.00,8.25,L,Agron
+5157878A,Adidas Women's Superlite 3.0 6-Pack Quarter,Adidas,White/Black/Grey,Socks,22.00,8.25,M,Agron
+5157842A,Adidas Women's Superlite 3.0 6-Pack Super No Show,Adidas,White/Black/Grey,Socks,22.00,8.25,M,Agron
+5155919A,Adidas Women's Cushioned 3.0 3-Pack Crew,Adidas,Black/Night Grey/White,Socks,16.00,6.00,M,Agron
+5155919B,Adidas Women's Cushioned 3.0 3-Pack Crew,Adidas,Black/Night Grey/White,Socks,16.00,6.00,L,Agron
+5155927A,Adidas Women's Cushioned 3.0 3-Pack Crew,Adidas,White/Clear Onix Grey,Socks,16.00,6.00,M,Agron
+5155927B,Adidas Women's Cushioned 3.0 3-Pack Crew,Adidas,White/Clear Onix Grey,Socks,16.00,6.00,L,Agron
+5157319B,Adidas Team 6-Pack 2.0 OTC,Adidas,White/Black,Socks,50.00,18.75,M,Agron
+5157319C,Adidas Team 6-Pack 2.0 OTC,Adidas,White/Black,Socks,50.00,18.75,L,Agron
+5157319D,Adidas Team 6-Pack 2.0 OTC,Adidas,White/Black,Socks,50.00,18.75,XL,Agron
+5157320B,Adidas Team 6-Pack 2.0 OTC,Adidas,Black/White,Socks,50.00,18.75,M,Agron
+5157320C,Adidas Team 6-Pack 2.0 OTC,Adidas,Black/White,Socks,50.00,18.75,L,Agron
+5157320D,Adidas Team 6-Pack 2.0 OTC,Adidas,Black/White,Socks,50.00,18.75,XL,Agron
+5157317B,Adidas Team 6-Pack 2.0 Crew,Adidas,White/Black,Socks,45.00,16.88,M,Agron
+5157317C,Adidas Team 6-Pack 2.0 Crew,Adidas,White/Black,Socks,45.00,16.88,L,Agron
+5157317D,Adidas Team 6-Pack 2.0 Crew,Adidas,White/Black,Socks,45.00,16.88,XL,Agron
+5157318B,Adidas Team 6-Pack 2.0 Crew,Adidas,Black/White,Socks,45.00,16.88,M,Agron
+5157318C,Adidas Team 6-Pack 2.0 Crew,Adidas,Black/White,Socks,45.00,16.88,L,Agron
+5157318D,Adidas Team 6-Pack 2.0 Crew,Adidas,Black/White,Socks,45.00,16.88,XL,Agron
+5157321B,Adidas Team 6-Pack 2.0 Quarter,Adidas,White/Black,Socks,45.00,16.88,M,Agron
+5157321C,Adidas Team 6-Pack 2.0 Quarter,Adidas,White/Black,Socks,45.00,16.88,L,Agron
+5157321D,Adidas Team 6-Pack 2.0 Quarter,Adidas,White/Black,Socks,45.00,16.88,XL,Agron
+5157322B,Adidas Team 6-Pack 2.0 Quarter,Adidas,Black/White,Socks,45.00,16.88,M,Agron
+5157322C,Adidas Team 6-Pack 2.0 Quarter,Adidas,Black/White,Socks,45.00,16.88,L,Agron
+5157322D,Adidas Team 6-Pack 2.0 Quarter,Adidas,Black/White,Socks,45.00,16.88,XL,Agron
+5156842B,Adidas adizero 2 Football Cushioned OTC,Adidas,Black/White,Socks,28.00,10.50,M,Agron
+5156842C,Adidas adizero 2 Football Cushioned OTC,Adidas,Black/White,Socks,28.00,10.50,L,Agron
+5156843B,Adidas adizero 2 Football Cushioned OTC,Adidas,White/Black,Socks,28.00,10.50,M,Agron
+5156843C,Adidas adizero 2 Football Cushioned OTC,Adidas,White/Black,Socks,28.00,10.50,L,Agron
+5161961C,Adidas 5 Star Team Grip Crew,Adidas,White/Black,Socks,25.00,9.38,M,Agron
+5161961D,Adidas 5 Star Team Grip Crew,Adidas,White/Black,Socks,25.00,9.38,L,Agron
+5161962C,Adidas 5 Star Team Grip Crew,Adidas,Black/Onix Grey/White,Socks,25.00,9.38,M,Agron
+5161962D,Adidas 5 Star Team Grip Crew,Adidas,Black/Onix Grey/White,Socks,25.00,9.38,L,Agron
+5161963C,Adidas 5 Star Team Grip Crew,Adidas,Team Light Grey/Onix Grey/White,Socks,25.00,9.38,M,Agron
+5161963D,Adidas 5 Star Team Grip Crew,Adidas,Team Light Grey/Onix Grey/White,Socks,25.00,9.38,L,Agron
+5161201A,Adidas Team Speed 5 Calf Sleeve,Adidas,White/Black,Socks,20.00,7.50,S/M,Agron
+5161201B,Adidas Team Speed 5 Calf Sleeve,Adidas,White/Black,Socks,20.00,7.50,L/XL,Agron
+5161216A,Adidas Team Speed 5 Calf Sleeve,Adidas,Black/White,Socks,20.00,7.50,S/M,Agron
+5161216B,Adidas Team Speed 5 Calf Sleeve,Adidas,Black/White,Socks,20.00,7.50,L/XL,Agron
+5161217A,Adidas Team Speed 5 Calf Sleeve,Adidas,Team Light Grey/White,Socks,20.00,7.50,S/M,Agron
+5161217B,Adidas Team Speed 5 Calf Sleeve,Adidas,Team Light Grey/White,Socks,20.00,7.50,L/XL,Agron
+5161202B,Adidas Team Speed 5 OTC,Adidas,White/Black,Socks,20.00,7.50,S,Agron
+5161202C,Adidas Team Speed 5 OTC,Adidas,White/Black,Socks,20.00,7.50,M,Agron
+5161202D,Adidas Team Speed 5 OTC,Adidas,White/Black,Socks,20.00,7.50,L,Agron
+5161204B,Adidas Team Speed 5 OTC,Adidas,Black/White,Socks,20.00,7.50,S,Agron
+5161204C,Adidas Team Speed 5 OTC,Adidas,Black/White,Socks,20.00,7.50,M,Agron
+5161204D,Adidas Team Speed 5 OTC,Adidas,Black/White,Socks,20.00,7.50,L,Agron
+5161206B,Adidas Team Speed 5 OTC,Adidas,Team Power Red/White,Socks,20.00,7.50,S,Agron
+5161206C,Adidas Team Speed 5 OTC,Adidas,Team Power Red/White,Socks,20.00,7.50,M,Agron
+5161206D,Adidas Team Speed 5 OTC,Adidas,Team Power Red/White,Socks,20.00,7.50,L,Agron
+5161207B,Adidas Team Speed 5 OTC,Adidas,Team Navy Blue 2/White,Socks,20.00,7.50,S,Agron
+5161207C,Adidas Team Speed 5 OTC,Adidas,Team Navy Blue 2/White,Socks,20.00,7.50,M,Agron
+5161207D,Adidas Team Speed 5 OTC,Adidas,Team Navy Blue 2/White,Socks,20.00,7.50,L,Agron
+5161208B,Adidas Team Speed 5 OTC,Adidas,Team Royal Blue/White,Socks,20.00,7.50,S,Agron
+5161208C,Adidas Team Speed 5 OTC,Adidas,Team Royal Blue/White,Socks,20.00,7.50,M,Agron
+5161208D,Adidas Team Speed 5 OTC,Adidas,Team Royal Blue/White,Socks,20.00,7.50,L,Agron
+5161209B,Adidas Team Speed 5 OTC,Adidas,White/Team Navy Blue,Socks,20.00,7.50,S,Agron
+5161209C,Adidas Team Speed 5 OTC,Adidas,White/Team Navy Blue,Socks,20.00,7.50,M,Agron
+5161209D,Adidas Team Speed 5 OTC,Adidas,White/Team Navy Blue,Socks,20.00,7.50,L,Agron
+5161210B,Adidas Team Speed 5 OTC,Adidas,White/Team Royal Blue,Socks,20.00,7.50,S,Agron
+5161210C,Adidas Team Speed 5 OTC,Adidas,White/Team Royal Blue,Socks,20.00,7.50,M,Agron
+5161210D,Adidas Team Speed 5 OTC,Adidas,White/Team Royal Blue,Socks,20.00,7.50,L,Agron
+5161211B,Adidas Team Speed 5 OTC,Adidas,White/Team Power Red 2,Socks,20.00,7.50,S,Agron
+5161211C,Adidas Team Speed 5 OTC,Adidas,White/Team Power Red 2,Socks,20.00,7.50,M,Agron
+5161211D,Adidas Team Speed 5 OTC,Adidas,White/Team Power Red 2,Socks,20.00,7.50,L,Agron
+5161212B,Adidas Team Speed 5 OTC,Adidas,Team Light Grey/White,Socks,20.00,7.50,S,Agron
+5161212C,Adidas Team Speed 5 OTC,Adidas,Team Light Grey/White,Socks,20.00,7.50,M,Agron
+5161212D,Adidas Team Speed 5 OTC,Adidas,Team Light Grey/White,Socks,20.00,7.50,L,Agron
+5157944B,Adidas Team Speed Pro 2 OTC,Adidas,Team Power Red/White,Socks,20.00,7.50,S,Agron
+5157944C,Adidas Team Speed Pro 2 OTC,Adidas,Team Power Red/White,Socks,20.00,7.50,M,Agron
+5157944D,Adidas Team Speed Pro 2 OTC,Adidas,Team Power Red/White,Socks,20.00,7.50,L,Agron
+5157946B,Adidas Team Speed Pro 2 OTC,Adidas,Team Navy Blue/White,Socks,20.00,7.50,S,Agron
+5157946C,Adidas Team Speed Pro 2 OTC,Adidas,Team Navy Blue/White,Socks,20.00,7.50,M,Agron
+5157946D,Adidas Team Speed Pro 2 OTC,Adidas,Team Navy Blue/White,Socks,20.00,7.50,L,Agron
+5157950C,Adidas Team Speed Pro 2 OTC,Adidas,Team Collegiate Purple/White,Socks,20.00,7.50,M,Agron
+5157950D,Adidas Team Speed Pro 2 OTC,Adidas,Team Collegiate Purple/White,Socks,20.00,7.50,L,Agron
+5157954B,Adidas Team Speed Pro 2 OTC,Adidas,White/Black,Socks,20.00,7.50,S,Agron
+5157954C,Adidas Team Speed Pro 2 OTC,Adidas,White/Black,Socks,20.00,7.50,M,Agron
+5157954D,Adidas Team Speed Pro 2 OTC,Adidas,White/Black,Socks,20.00,7.50,L,Agron
+5157955C,Adidas Team Speed Pro 2 OTC,Adidas,Team Dark Green/White,Socks,20.00,7.50,M,Agron
+5157955D,Adidas Team Speed Pro 2 OTC,Adidas,Team Dark Green/White,Socks,20.00,7.50,L,Agron
+5157959C,Adidas Team Speed Pro 2 OTC,Adidas,White/Team Royal Blue,Socks,20.00,7.50,M,Agron
+5157959D,Adidas Team Speed Pro 2 OTC,Adidas,White/Team Royal Blue,Socks,20.00,7.50,L,Agron
+5157963B,Adidas Team Speed Pro 2 OTC,Adidas,Team Royal Blue/White,Socks,20.00,7.50,S,Agron
+5157963C,Adidas Team Speed Pro 2 OTC,Adidas,Team Royal Blue/White,Socks,20.00,7.50,M,Agron
+5157963D,Adidas Team Speed Pro 2 OTC,Adidas,Team Royal Blue/White,Socks,20.00,7.50,L,Agron
+5157964B,Adidas Team Speed Pro 2 OTC,Adidas,Black/White,Socks,20.00,7.50,S,Agron
+5157964C,Adidas Team Speed Pro 2 OTC,Adidas,Black/White,Socks,20.00,7.50,M,Agron
+5157964D,Adidas Team Speed Pro 2 OTC,Adidas,Black/White,Socks,20.00,7.50,L,Agron
+5157965C,Adidas Team Speed Pro 2 OTC,Adidas,White/Team Navy Blue,Socks,20.00,7.50,M,Agron
+5157965D,Adidas Team Speed Pro 2 OTC,Adidas,White/Team Navy Blue,Socks,20.00,7.50,L,Agron
+5157969C,Adidas Team Speed Pro 2 OTC,Adidas,White/Team Power Red,Socks,20.00,7.50,M,Agron
+5157969D,Adidas Team Speed Pro 2 OTC,Adidas,White/Team Power Red,Socks,20.00,7.50,L,Agron
+5158484B,Adidas Team Speed Pro 2 OTC,Adidas,White/Team Collegiate Purple,Socks,20.00,7.50,S,Agron
+5158484C,Adidas Team Speed Pro 2 OTC,Adidas,White/Team Collegiate Purple,Socks,20.00,7.50,M,Agron
+5158484D,Adidas Team Speed Pro 2 OTC,Adidas,White/Team Collegiate Purple,Socks,20.00,7.50,L,Agron
+5158485B,Adidas Team Speed Pro 2 OTC,Adidas,Team Collegiate Purple/Sand Beige/White,Socks,20.00,7.50,S,Agron
+5158485C,Adidas Team Speed Pro 2 OTC,Adidas,Team Collegiate Purple/Sand Beige/White,Socks,20.00,7.50,M,Agron
+5158485D,Adidas Team Speed Pro 2 OTC,Adidas,Team Collegiate Purple/Sand Beige/White,Socks,20.00,7.50,L,Agron
+5158485E,Adidas Team Speed Pro 2 OTC,Adidas,Team Collegiate Purple/Sand Beige/White,Socks,20.00,7.50,XL,Agron
+5161199B,Adidas Team Speed Pro 2 OTC,Adidas,Team Victory Red/White,Socks,20.00,7.50,S,Agron
+5161199C,Adidas Team Speed Pro 2 OTC,Adidas,Team Victory Red/White,Socks,20.00,7.50,M,Agron
+5161199D,Adidas Team Speed Pro 2 OTC,Adidas,Team Victory Red/White,Socks,20.00,7.50,L,Agron
+5161199E,Adidas Team Speed Pro 2 OTC,Adidas,Team Victory Red/White,Socks,20.00,7.50,XL,Agron
+5161200B,Adidas Team Speed Pro 2 OTC,Adidas,White/Team Victory Red,Socks,20.00,7.50,S,Agron
+5161200C,Adidas Team Speed Pro 2 OTC,Adidas,White/Team Victory Red,Socks,20.00,7.50,M,Agron
+5161200D,Adidas Team Speed Pro 2 OTC,Adidas,White/Team Victory Red,Socks,20.00,7.50,L,Agron
+5161200E,Adidas Team Speed Pro 2 OTC,Adidas,White/Team Victory Red,Socks,20.00,7.50,XL,Agron
+5159078B,Adidas 3 Stripe Hoop 2 OTC,Adidas,Team Power Red 2/White,Socks,18.00,6.75,S,Agron
+5159078C,Adidas 3 Stripe Hoop 2 OTC,Adidas,Team Power Red 2/White,Socks,18.00,6.75,M,Agron
+5159078D,Adidas 3 Stripe Hoop 2 OTC,Adidas,Team Power Red 2/White,Socks,18.00,6.75,L,Agron
+5159079B,Adidas 3 Stripe Hoop 2 OTC,Adidas,Team Navy Blue 2/White,Socks,18.00,6.75,S,Agron
+5159079C,Adidas 3 Stripe Hoop 2 OTC,Adidas,Team Navy Blue 2/White,Socks,18.00,6.75,M,Agron
+5159079D,Adidas 3 Stripe Hoop 2 OTC,Adidas,Team Navy Blue 2/White,Socks,18.00,6.75,L,Agron
+5159080B,Adidas 3 Stripe Hoop 2 OTC,Adidas,Team Light Grey/White,Socks,18.00,6.75,S,Agron
+5159080C,Adidas 3 Stripe Hoop 2 OTC,Adidas,Team Light Grey/White,Socks,18.00,6.75,M,Agron
+5159080D,Adidas 3 Stripe Hoop 2 OTC,Adidas,Team Light Grey/White,Socks,18.00,6.75,L,Agron
+5159081B,Adidas 3 Stripe Hoop 2 OTC,Adidas,Team Royal Blue/White,Socks,18.00,6.75,S,Agron
+5159081C,Adidas 3 Stripe Hoop 2 OTC,Adidas,Team Royal Blue/White,Socks,18.00,6.75,M,Agron
+5159081D,Adidas 3 Stripe Hoop 2 OTC,Adidas,Team Royal Blue/White,Socks,18.00,6.75,L,Agron
+5159082B,Adidas 3 Stripe Hoop 2 OTC,Adidas,White/Black,Socks,18.00,6.75,S,Agron
+5159082C,Adidas 3 Stripe Hoop 2 OTC,Adidas,White/Black,Socks,18.00,6.75,M,Agron
+5159082D,Adidas 3 Stripe Hoop 2 OTC,Adidas,White/Black,Socks,18.00,6.75,L,Agron
+5159083B,Adidas 3 Stripe Hoop 2 OTC,Adidas,Black/White,Socks,18.00,6.75,S,Agron
+5159083C,Adidas 3 Stripe Hoop 2 OTC,Adidas,Black/White,Socks,18.00,6.75,M,Agron
+5159083D,Adidas 3 Stripe Hoop 2 OTC,Adidas,Black/White,Socks,18.00,6.75,L,Agron
+5156897B,Adidas 5-Star Team 2.0 Crew,Adidas,White/Black,Socks,18.00,6.75,M,Agron
+5156897C,Adidas 5-Star Team 2.0 Crew,Adidas,White/Black,Socks,18.00,6.75,L,Agron
+5156897D,Adidas 5-Star Team 2.0 Crew,Adidas,White/Black,Socks,18.00,6.75,XL,Agron
+5156898B,Adidas 5-Star Team 2.0 Crew,Adidas,Team Power Red/White,Socks,18.00,6.75,M,Agron
+5156898C,Adidas 5-Star Team 2.0 Crew,Adidas,Team Power Red/White,Socks,18.00,6.75,L,Agron
+5156898D,Adidas 5-Star Team 2.0 Crew,Adidas,Team Power Red/White,Socks,18.00,6.75,XL,Agron
+5156899B,Adidas 5-Star Team 2.0 Crew,Adidas,Team Dark Green/White,Socks,18.00,6.75,M,Agron
+5156899C,Adidas 5-Star Team 2.0 Crew,Adidas,Team Dark Green/White,Socks,18.00,6.75,L,Agron
+5156899D,Adidas 5-Star Team 2.0 Crew,Adidas,Team Dark Green/White,Socks,18.00,6.75,XL,Agron
+5156900B,Adidas 5-Star Team 2.0 Crew,Adidas,Team Collegiate Gold/White,Socks,18.00,6.75,M,Agron
+5156900C,Adidas 5-Star Team 2.0 Crew,Adidas,Team Collegiate Gold/White,Socks,18.00,6.75,L,Agron
+5156900D,Adidas 5-Star Team 2.0 Crew,Adidas,Team Collegiate Gold/White,Socks,18.00,6.75,XL,Agron
+5156902B,Adidas 5-Star Team 2.0 Crew,Adidas,Team Maroon/White,Socks,18.00,6.75,M,Agron
+5156902C,Adidas 5-Star Team 2.0 Crew,Adidas,Team Maroon/White,Socks,18.00,6.75,L,Agron
+5156902D,Adidas 5-Star Team 2.0 Crew,Adidas,Team Maroon/White,Socks,18.00,6.75,XL,Agron
+5156903B,Adidas 5-Star Team 2.0 Crew,Adidas,Team Collegiate Purple/White,Socks,18.00,6.75,M,Agron
+5156903C,Adidas 5-Star Team 2.0 Crew,Adidas,Team Collegiate Purple/White,Socks,18.00,6.75,L,Agron
+5156903D,Adidas 5-Star Team 2.0 Crew,Adidas,Team Collegiate Purple/White,Socks,18.00,6.75,XL,Agron
+5156904B,Adidas 5-Star Team 2.0 Crew,Adidas,Black/White,Socks,18.00,6.75,M,Agron
+5156904C,Adidas 5-Star Team 2.0 Crew,Adidas,Black/White,Socks,18.00,6.75,L,Agron
+5156904D,Adidas 5-Star Team 2.0 Crew,Adidas,Black/White,Socks,18.00,6.75,XL,Agron
+5156905B,Adidas 5-Star Team 2.0 Crew,Adidas,Team Royal Blue/White,Socks,18.00,6.75,M,Agron
+5156905C,Adidas 5-Star Team 2.0 Crew,Adidas,Team Royal Blue/White,Socks,18.00,6.75,L,Agron
+5156905D,Adidas 5-Star Team 2.0 Crew,Adidas,Team Royal Blue/White,Socks,18.00,6.75,XL,Agron
+5156907B,Adidas 5-Star Team 2.0 Crew,Adidas,Team Collegiate Burgundy/White,Socks,18.00,6.75,M,Agron
+5156907C,Adidas 5-Star Team 2.0 Crew,Adidas,Team Collegiate Burgundy/White,Socks,18.00,6.75,L,Agron
+5156907D,Adidas 5-Star Team 2.0 Crew,Adidas,Team Collegiate Burgundy/White,Socks,18.00,6.75,XL,Agron
+5156908B,Adidas 5-Star Team 2.0 Crew,Adidas,Team Navy Blue/White,Socks,18.00,6.75,M,Agron
+5156908C,Adidas 5-Star Team 2.0 Crew,Adidas,Team Navy Blue/White,Socks,18.00,6.75,L,Agron
+5156908D,Adidas 5-Star Team 2.0 Crew,Adidas,Team Navy Blue/White,Socks,18.00,6.75,XL,Agron
+5156901B,Adidas 5-Star Team 2.0 High Quarter,Adidas,White/Black,Socks,18.00,6.75,M,Agron
+5156901C,Adidas 5-Star Team 2.0 High Quarter,Adidas,White/Black,Socks,18.00,6.75,L,Agron
+5156901D,Adidas 5-Star Team 2.0 High Quarter,Adidas,White/Black,Socks,18.00,6.75,XL,Agron
+5156906B,Adidas 5-Star Team 2.0 High Quarter,Adidas,Black/White,Socks,18.00,6.75,M,Agron
+5156906C,Adidas 5-Star Team 2.0 High Quarter,Adidas,Black/White,Socks,18.00,6.75,L,Agron
+5156906D,Adidas 5-Star Team 2.0 High Quarter,Adidas,Black/White,Socks,18.00,6.75,XL,Agron
+5159075C,Adidas Pure Training 2-Pack High Quarter,Adidas,White/Black,Socks,18.00,6.75,M,Agron
+5159075D,Adidas Pure Training 2-Pack High Quarter,Adidas,White/Black,Socks,18.00,6.75,L,Agron
+5159076C,Adidas Pure Training 2-Pack High Quarter,Adidas,Black/White/Onix Grey,Socks,18.00,6.75,M,Agron
+5159076D,Adidas Pure Training 2-Pack High Quarter,Adidas,Black/White/Onix Grey,Socks,18.00,6.75,L,Agron
+5159077C,Adidas Pure Training 2-Pack High Quarter,Adidas,Team Light Grey/White,Socks,18.00,6.75,M,Agron
+5159077D,Adidas Pure Training 2-Pack High Quarter,Adidas,Team Light Grey/White,Socks,18.00,6.75,L,Agron
+5158876B,Adidas Select Basketball Slouch Crew,Adidas,White/Black/Clear Onix Grey,Socks,18.00,6.75,M,Agron
+5158876C,Adidas Select Basketball Slouch Crew,Adidas,White/Black/Clear Onix Grey,Socks,18.00,6.75,L,Agron
+5158876D,Adidas Select Basketball Slouch Crew,Adidas,White/Black/Clear Onix Grey,Socks,18.00,6.75,XL,Agron
+5158877B,Adidas Select Basketball Slouch Crew,Adidas,Black/White/Onix Grey,Socks,18.00,6.75,M,Agron
+5158877C,Adidas Select Basketball Slouch Crew,Adidas,Black/White/Onix Grey,Socks,18.00,6.75,L,Agron
+5158877D,Adidas Select Basketball Slouch Crew,Adidas,Black/White/Onix Grey,Socks,18.00,6.75,XL,Agron
+5156844B,Adidas adizero 2 Football Cushioned Crew,Adidas,Team Mid Grey/White,Socks,16.00,6.00,M,Agron
+5156844C,Adidas adizero 2 Football Cushioned Crew,Adidas,Team Mid Grey/White,Socks,16.00,6.00,L,Agron
+5156844D,Adidas adizero 2 Football Cushioned Crew,Adidas,Team Mid Grey/White,Socks,16.00,6.00,XL,Agron
+5156845B,Adidas adizero 2 Football Cushioned Crew,Adidas,Team Royal Blue/White,Socks,16.00,6.00,M,Agron
+5156845C,Adidas adizero 2 Football Cushioned Crew,Adidas,Team Royal Blue/White,Socks,16.00,6.00,L,Agron
+5156845D,Adidas adizero 2 Football Cushioned Crew,Adidas,Team Royal Blue/White,Socks,16.00,6.00,XL,Agron
+5156846B,Adidas adizero 2 Football Cushioned Crew,Adidas,White/Black,Socks,16.00,6.00,M,Agron
+5156846C,Adidas adizero 2 Football Cushioned Crew,Adidas,White/Black,Socks,16.00,6.00,L,Agron
+5156846D,Adidas adizero 2 Football Cushioned Crew,Adidas,White/Black,Socks,16.00,6.00,XL,Agron
+5156847B,Adidas adizero 2 Football Cushioned Crew,Adidas,Black/White,Socks,16.00,6.00,M,Agron
+5156847C,Adidas adizero 2 Football Cushioned Crew,Adidas,Black/White,Socks,16.00,6.00,L,Agron
+5156847D,Adidas adizero 2 Football Cushioned Crew,Adidas,Black/White,Socks,16.00,6.00,XL,Agron
+5156848B,Adidas adizero 2 Football Cushioned Crew,Adidas,Team Power Red/White,Socks,16.00,6.00,M,Agron
+5156848C,Adidas adizero 2 Football Cushioned Crew,Adidas,Team Power Red/White,Socks,16.00,6.00,L,Agron
+5156848D,Adidas adizero 2 Football Cushioned Crew,Adidas,Team Power Red/White,Socks,16.00,6.00,XL,Agron
+5157328B,Adidas adizero 2 Football Cushioned Crew,Adidas,White/Collegiate Orange/Black,Socks,16.00,6.00,M,Agron
+5157328C,Adidas adizero 2 Football Cushioned Crew,Adidas,White/Collegiate Orange/Black,Socks,16.00,6.00,L,Agron
+5157328D,Adidas adizero 2 Football Cushioned Crew,Adidas,White/Collegiate Orange/Black,Socks,16.00,6.00,XL,Agron
+5157329B,Adidas adizero 2 Football Cushioned Crew,Adidas,White/Team Navy Blue/Black,Socks,16.00,6.00,M,Agron
+5157329C,Adidas adizero 2 Football Cushioned Crew,Adidas,White/Team Navy Blue/Black,Socks,16.00,6.00,L,Agron
+5157329D,Adidas adizero 2 Football Cushioned Crew,Adidas,White/Team Navy Blue/Black,Socks,16.00,6.00,XL,Agron
+5157330B,Adidas adizero 2 Football Cushioned Crew,Adidas,Collegiate Purple/White,Socks,16.00,6.00,M,Agron
+5157330C,Adidas adizero 2 Football Cushioned Crew,Adidas,Collegiate Purple/White,Socks,16.00,6.00,L,Agron
+5157330D,Adidas adizero 2 Football Cushioned Crew,Adidas,Collegiate Purple/White,Socks,16.00,6.00,XL,Agron
+5157331B,Adidas adizero 2 Football Cushioned Crew,Adidas,White/Collegiate Purple,Socks,16.00,6.00,M,Agron
+5157331C,Adidas adizero 2 Football Cushioned Crew,Adidas,White/Collegiate Purple,Socks,16.00,6.00,L,Agron
+5157331D,Adidas adizero 2 Football Cushioned Crew,Adidas,White/Collegiate Purple,Socks,16.00,6.00,XL,Agron
+5157332B,Adidas adizero 2 Football Cushioned Crew,Adidas,White/Team Power Red/Black,Socks,16.00,6.00,M,Agron
+5157332C,Adidas adizero 2 Football Cushioned Crew,Adidas,White/Team Power Red/Black,Socks,16.00,6.00,L,Agron
+5157332D,Adidas adizero 2 Football Cushioned Crew,Adidas,White/Team Power Red/Black,Socks,16.00,6.00,XL,Agron
+5157942B,Adidas Copa Zone Cushion 5 OTC,Adidas,White/Team Royal Blue,Socks,16.00,6.00,S,Agron
+5157942C,Adidas Copa Zone Cushion 5 OTC,Adidas,White/Team Royal Blue,Socks,16.00,6.00,M,Agron
+5157942D,Adidas Copa Zone Cushion 5 OTC,Adidas,White/Team Royal Blue,Socks,16.00,6.00,L,Agron
+5157943B,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Yellow/White,Socks,16.00,6.00,S,Agron
+5157943C,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Yellow/White,Socks,16.00,6.00,M,Agron
+5157943D,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Yellow/White,Socks,16.00,6.00,L,Agron
+5157945B,Adidas Copa Zone Cushion 5 OTC,Adidas,White/White,Socks,16.00,6.00,S,Agron
+5157945C,Adidas Copa Zone Cushion 5 OTC,Adidas,White/White,Socks,16.00,6.00,M,Agron
+5157945D,Adidas Copa Zone Cushion 5 OTC,Adidas,White/White,Socks,16.00,6.00,L,Agron
+5157947B,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Dark Green/White,Socks,16.00,6.00,S,Agron
+5157947C,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Dark Green/White,Socks,16.00,6.00,M,Agron
+5157947D,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Dark Green/White,Socks,16.00,6.00,L,Agron
+5157948A,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Navy Blue/White,Socks,16.00,6.00,XS,Agron
+5157948B,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Navy Blue/White,Socks,16.00,6.00,S,Agron
+5157948C,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Navy Blue/White,Socks,16.00,6.00,M,Agron
+5157948D,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Navy Blue/White,Socks,16.00,6.00,L,Agron
+5157949B,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Collegiate Purple/White,Socks,16.00,6.00,S,Agron
+5157949C,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Collegiate Purple/White,Socks,16.00,6.00,M,Agron
+5157949D,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Collegiate Purple/White,Socks,16.00,6.00,L,Agron
+5157951A,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Light Grey/White,Socks,16.00,6.00,XS,Agron
+5157951B,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Light Grey/White,Socks,16.00,6.00,S,Agron
+5157951C,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Light Grey/White,Socks,16.00,6.00,M,Agron
+5157951D,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Light Grey/White,Socks,16.00,6.00,L,Agron
+5157952B,Adidas Copa Zone Cushion 5 OTC,Adidas,White/Team Power Red,Socks,16.00,6.00,S,Agron
+5157952C,Adidas Copa Zone Cushion 5 OTC,Adidas,White/Team Power Red,Socks,16.00,6.00,M,Agron
+5157952D,Adidas Copa Zone Cushion 5 OTC,Adidas,White/Team Power Red,Socks,16.00,6.00,L,Agron
+5157953B,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Maroon/White,Socks,16.00,6.00,S,Agron
+5157953C,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Maroon/White,Socks,16.00,6.00,M,Agron
+5157953D,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Maroon/White,Socks,16.00,6.00,L,Agron
+5157956B,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Orange/White,Socks,16.00,6.00,S,Agron
+5157956C,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Orange/White,Socks,16.00,6.00,M,Agron
+5157956D,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Orange/White,Socks,16.00,6.00,L,Agron
+5157957A,Adidas Copa Zone Cushion 5 OTC,Adidas,White/Black,Socks,16.00,6.00,XS,Agron
+5157957B,Adidas Copa Zone Cushion 5 OTC,Adidas,White/Black,Socks,16.00,6.00,S,Agron
+5157957C,Adidas Copa Zone Cushion 5 OTC,Adidas,White/Black,Socks,16.00,6.00,M,Agron
+5157957D,Adidas Copa Zone Cushion 5 OTC,Adidas,White/Black,Socks,16.00,6.00,L,Agron
+5157958B,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Green/White,Socks,16.00,6.00,S,Agron
+5157958C,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Green/White,Socks,16.00,6.00,M,Agron
+5157958D,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Green/White,Socks,16.00,6.00,L,Agron
+5157960B,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Light Blue/White,Socks,16.00,6.00,S,Agron
+5157960C,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Light Blue/White,Socks,16.00,6.00,M,Agron
+5157960D,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Light Blue/White,Socks,16.00,6.00,L,Agron
+5157961A,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Power Red/White,Socks,16.00,6.00,XS,Agron
+5157961B,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Power Red/White,Socks,16.00,6.00,S,Agron
+5157961C,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Power Red/White,Socks,16.00,6.00,M,Agron
+5157961D,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Power Red/White,Socks,16.00,6.00,L,Agron
+5157962B,Adidas Copa Zone Cushion 5 OTC,Adidas,Ultra Pop/Black,Socks,16.00,6.00,S,Agron
+5157962C,Adidas Copa Zone Cushion 5 OTC,Adidas,Ultra Pop/Black,Socks,16.00,6.00,M,Agron
+5157962D,Adidas Copa Zone Cushion 5 OTC,Adidas,Ultra Pop/Black,Socks,16.00,6.00,L,Agron
+5157966B,Adidas Copa Zone Cushion 5 OTC,Adidas,White/Team Navy Blue,Socks,16.00,6.00,S,Agron
+5157966C,Adidas Copa Zone Cushion 5 OTC,Adidas,White/Team Navy Blue,Socks,16.00,6.00,M,Agron
+5157966D,Adidas Copa Zone Cushion 5 OTC,Adidas,White/Team Navy Blue,Socks,16.00,6.00,L,Agron
+5157967A,Adidas Copa Zone Cushion 5 OTC,Adidas,Black/White,Socks,16.00,6.00,XS,Agron
+5157967B,Adidas Copa Zone Cushion 5 OTC,Adidas,Black/White,Socks,16.00,6.00,S,Agron
+5157967C,Adidas Copa Zone Cushion 5 OTC,Adidas,Black/White,Socks,16.00,6.00,M,Agron
+5157967D,Adidas Copa Zone Cushion 5 OTC,Adidas,Black/White,Socks,16.00,6.00,L,Agron
+5157968A,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Royal Blue/White,Socks,16.00,6.00,XS,Agron
+5157968B,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Royal Blue/White,Socks,16.00,6.00,S,Agron
+5157968C,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Royal Blue/White,Socks,16.00,6.00,M,Agron
+5157968D,Adidas Copa Zone Cushion 5 OTC,Adidas,Team Royal Blue/White,Socks,16.00,6.00,L,Agron
+5158340A,Adidas Rivalry Multisport 2.0 OTC,Adidas,White/Black,Socks,16.00,6.00,XS,Agron
+5158340B,Adidas Rivalry Multisport 2.0 OTC,Adidas,White/Black,Socks,16.00,6.00,S,Agron
+5158340C,Adidas Rivalry Multisport 2.0 OTC,Adidas,White/Black,Socks,16.00,6.00,M,Agron
+5158340D,Adidas Rivalry Multisport 2.0 OTC,Adidas,White/Black,Socks,16.00,6.00,L,Agron
+5158341A,Adidas Rivalry Multisport 2.0 OTC,Adidas,Team Power Red/White,Socks,16.00,6.00,XS,Agron
+5158341B,Adidas Rivalry Multisport 2.0 OTC,Adidas,Team Power Red/White,Socks,16.00,6.00,S,Agron
+5158341C,Adidas Rivalry Multisport 2.0 OTC,Adidas,Team Power Red/White,Socks,16.00,6.00,M,Agron
+5158341D,Adidas Rivalry Multisport 2.0 OTC,Adidas,Team Power Red/White,Socks,16.00,6.00,L,Agron
+5158345A,Adidas Rivalry Multisport 2.0 OTC,Adidas,Black/White,Socks,16.00,6.00,XS,Agron
+5158345B,Adidas Rivalry Multisport 2.0 OTC,Adidas,Black/White,Socks,16.00,6.00,S,Agron
+5158345C,Adidas Rivalry Multisport 2.0 OTC,Adidas,Black/White,Socks,16.00,6.00,M,Agron
+5158345D,Adidas Rivalry Multisport 2.0 OTC,Adidas,Black/White,Socks,16.00,6.00,L,Agron
+5158346A,Adidas Rivalry Multisport 2.0 OTC,Adidas,Team Royal Blue/White,Socks,16.00,6.00,XS,Agron
+5158346B,Adidas Rivalry Multisport 2.0 OTC,Adidas,Team Royal Blue/White,Socks,16.00,6.00,S,Agron
+5158346C,Adidas Rivalry Multisport 2.0 OTC,Adidas,Team Royal Blue/White,Socks,16.00,6.00,M,Agron
+5158346D,Adidas Rivalry Multisport 2.0 OTC,Adidas,Team Royal Blue/White,Socks,16.00,6.00,L,Agron
+5158339A,Adidas Rivalry Soccer 2.0 OTC,Adidas,Team Navy Blue 2/White,Socks,16.00,6.00,XS,Agron
+5158339B,Adidas Rivalry Soccer 2.0 OTC,Adidas,Team Navy Blue 2/White,Socks,16.00,6.00,S,Agron
+5158339C,Adidas Rivalry Soccer 2.0 OTC,Adidas,Team Navy Blue 2/White,Socks,16.00,6.00,M,Agron
+5158339D,Adidas Rivalry Soccer 2.0 OTC,Adidas,Team Navy Blue 2/White,Socks,16.00,6.00,L,Agron
+5158342A,Adidas Rivalry Soccer 2.0 OTC,Adidas,Black/White,Socks,16.00,6.00,XS,Agron
+5158342B,Adidas Rivalry Soccer 2.0 OTC,Adidas,Black/White,Socks,16.00,6.00,S,Agron
+5158342C,Adidas Rivalry Soccer 2.0 OTC,Adidas,Black/White,Socks,16.00,6.00,M,Agron
+5158342D,Adidas Rivalry Soccer 2.0 OTC,Adidas,Black/White,Socks,16.00,6.00,L,Agron
+5158343A,Adidas Rivalry Soccer 2.0 OTC,Adidas,Ultra Pop/Black,Socks,16.00,6.00,XS,Agron
+5158343B,Adidas Rivalry Soccer 2.0 OTC,Adidas,Ultra Pop/Black,Socks,16.00,6.00,S,Agron
+5158343C,Adidas Rivalry Soccer 2.0 OTC,Adidas,Ultra Pop/Black,Socks,16.00,6.00,M,Agron
+5158343D,Adidas Rivalry Soccer 2.0 OTC,Adidas,Ultra Pop/Black,Socks,16.00,6.00,L,Agron
+5158344A,Adidas Rivalry Soccer 2.0 OTC,Adidas,Team Power Red/White,Socks,16.00,6.00,XS,Agron
+5158344B,Adidas Rivalry Soccer 2.0 OTC,Adidas,Team Power Red/White,Socks,16.00,6.00,S,Agron
+5158344C,Adidas Rivalry Soccer 2.0 OTC,Adidas,Team Power Red/White,Socks,16.00,6.00,M,Agron
+5158344D,Adidas Rivalry Soccer 2.0 OTC,Adidas,Team Power Red/White,Socks,16.00,6.00,L,Agron
+5158347A,Adidas Rivalry Soccer 2.0 OTC,Adidas,White/Black,Socks,16.00,6.00,XS,Agron
+5158347B,Adidas Rivalry Soccer 2.0 OTC,Adidas,White/Black,Socks,16.00,6.00,S,Agron
+5158347C,Adidas Rivalry Soccer 2.0 OTC,Adidas,White/Black,Socks,16.00,6.00,M,Agron
+5158347D,Adidas Rivalry Soccer 2.0 OTC,Adidas,White/Black,Socks,16.00,6.00,L,Agron
+5158348A,Adidas Rivalry Soccer 2.0 OTC,Adidas,Team Royal Blue/White,Socks,16.00,6.00,XS,Agron
+5158348B,Adidas Rivalry Soccer 2.0 OTC,Adidas,Team Royal Blue/White,Socks,16.00,6.00,S,Agron
+5158348C,Adidas Rivalry Soccer 2.0 OTC,Adidas,Team Royal Blue/White,Socks,16.00,6.00,M,Agron
+5158348D,Adidas Rivalry Soccer 2.0 OTC,Adidas,Team Royal Blue/White,Socks,16.00,6.00,L,Agron
+5154655A,Adidas Select Basketball Crew,Adidas,White/Black,Socks,16.00,6.00,S,Agron
+5154655B,Adidas Select Basketball Crew,Adidas,White/Black,Socks,16.00,6.00,M,Agron
+5154655C,Adidas Select Basketball Crew,Adidas,White/Black,Socks,16.00,6.00,L,Agron
+5154655D,Adidas Select Basketball Crew,Adidas,White/Black,Socks,16.00,6.00,XL,Agron
+5154667B,Adidas Select Basketball Crew,Adidas,Team Navy Blue/White,Socks,16.00,6.00,M,Agron
+5154667C,Adidas Select Basketball Crew,Adidas,Team Navy Blue/White,Socks,16.00,6.00,L,Agron
+5154667D,Adidas Select Basketball Crew,Adidas,Team Navy Blue/White,Socks,16.00,6.00,XL,Agron
+5154672B,Adidas Select Basketball Crew,Adidas,Team Royal Blue/White,Socks,16.00,6.00,M,Agron
+5154672C,Adidas Select Basketball Crew,Adidas,Team Royal Blue/White,Socks,16.00,6.00,L,Agron
+5154672D,Adidas Select Basketball Crew,Adidas,Team Royal Blue/White,Socks,16.00,6.00,XL,Agron
+5154682B,Adidas Select Basketball Crew,Adidas,Team Power Red/White,Socks,16.00,6.00,M,Agron
+5154682C,Adidas Select Basketball Crew,Adidas,Team Power Red/White,Socks,16.00,6.00,L,Agron
+5154682D,Adidas Select Basketball Crew,Adidas,Team Power Red/White,Socks,16.00,6.00,XL,Agron
+5154760A,Adidas Select Basketball Crew,Adidas,Black/White,Socks,16.00,6.00,S,Agron
+5154760B,Adidas Select Basketball Crew,Adidas,Black/White,Socks,16.00,6.00,M,Agron
+5154760C,Adidas Select Basketball Crew,Adidas,Black/White,Socks,16.00,6.00,L,Agron
+5154760D,Adidas Select Basketball Crew,Adidas,Black/White,Socks,16.00,6.00,XL,Agron
+5154765B,Adidas Select Basketball Crew,Adidas,White/Light Onix Grey,Socks,16.00,6.00,M,Agron
+5154765C,Adidas Select Basketball Crew,Adidas,White/Light Onix Grey,Socks,16.00,6.00,L,Agron
+5154765D,Adidas Select Basketball Crew,Adidas,White/Light Onix Grey,Socks,16.00,6.00,XL,Agron
+5156909B,Adidas Utility 2.0 OTC,Adidas,Team Shock Pink/Black,Socks,14.00,5.25,S,Agron
+5156909C,Adidas Utility 2.0 OTC,Adidas,Team Shock Pink/Black,Socks,14.00,5.25,M,Agron
+5156909D,Adidas Utility 2.0 OTC,Adidas,Team Shock Pink/Black,Socks,14.00,5.25,L,Agron
+5156910B,Adidas Utility 2.0 OTC,Adidas,Team Maroon/White,Socks,14.00,5.25,S,Agron
+5156910C,Adidas Utility 2.0 OTC,Adidas,Team Maroon/White,Socks,14.00,5.25,M,Agron
+5156910D,Adidas Utility 2.0 OTC,Adidas,Team Maroon/White,Socks,14.00,5.25,L,Agron
+5156911B,Adidas Utility 2.0 OTC,Adidas,Team Dark Green/White,Socks,14.00,5.25,S,Agron
+5156911C,Adidas Utility 2.0 OTC,Adidas,Team Dark Green/White,Socks,14.00,5.25,M,Agron
+5156911D,Adidas Utility 2.0 OTC,Adidas,Team Dark Green/White,Socks,14.00,5.25,L,Agron
+5156912B,Adidas Utility 2.0 OTC,Adidas,Team Power Red/White,Socks,14.00,5.25,S,Agron
+5156912C,Adidas Utility 2.0 OTC,Adidas,Team Power Red/White,Socks,14.00,5.25,M,Agron
+5156912D,Adidas Utility 2.0 OTC,Adidas,Team Power Red/White,Socks,14.00,5.25,L,Agron
+5156913B,Adidas Utility 2.0 OTC,Adidas,Team Navy Blue/White,Socks,14.00,5.25,S,Agron
+5156913C,Adidas Utility 2.0 OTC,Adidas,Team Navy Blue/White,Socks,14.00,5.25,M,Agron
+5156913D,Adidas Utility 2.0 OTC,Adidas,Team Navy Blue/White,Socks,14.00,5.25,L,Agron
+5156914B,Adidas Utility 2.0 OTC,Adidas,Team Royal Blue/White,Socks,14.00,5.25,S,Agron
+5156914C,Adidas Utility 2.0 OTC,Adidas,Team Royal Blue/White,Socks,14.00,5.25,M,Agron
+5156914D,Adidas Utility 2.0 OTC,Adidas,Team Royal Blue/White,Socks,14.00,5.25,L,Agron
+5156915A,Adidas Utility 2.0 OTC,Adidas,Black/White,Socks,14.00,5.25,XS,Agron
+5156915B,Adidas Utility 2.0 OTC,Adidas,Black/White,Socks,14.00,5.25,S,Agron
+5156915C,Adidas Utility 2.0 OTC,Adidas,Black/White,Socks,14.00,5.25,M,Agron
+5156915D,Adidas Utility 2.0 OTC,Adidas,Black/White,Socks,14.00,5.25,L,Agron
+5156916A,Adidas Utility 2.0 OTC,Adidas,White/Black,Socks,14.00,5.25,XS,Agron
+5156916B,Adidas Utility 2.0 OTC,Adidas,White/Black,Socks,14.00,5.25,S,Agron
+5156916C,Adidas Utility 2.0 OTC,Adidas,White/Black,Socks,14.00,5.25,M,Agron
+5156916D,Adidas Utility 2.0 OTC,Adidas,White/Black,Socks,14.00,5.25,L,Agron
+5161326A,Adidas Metro 6 Calf Sleeve,Adidas,White/Black,Socks,12.00,4.50,S/M,Agron
+5161326B,Adidas Metro 6 Calf Sleeve,Adidas,White/Black,Socks,12.00,4.50,L/XL,Agron
+5161365A,Adidas Metro 6 Calf Sleeve,Adidas,Black/White,Socks,12.00,4.50,S/M,Agron
+5161365B,Adidas Metro 6 Calf Sleeve,Adidas,Black/White,Socks,12.00,4.50,L/XL,Agron
+5161366A,Adidas Metro 6 Calf Sleeve,Adidas,Team Light Grey/White,Socks,12.00,4.50,S/M,Agron
+5161366B,Adidas Metro 6 Calf Sleeve,Adidas,Team Light Grey/White,Socks,12.00,4.50,L/XL,Agron
+5161367A,Adidas Metro 6 Calf Sleeve,Adidas,Team Power Red/White,Socks,12.00,4.50,S/M,Agron
+5161367B,Adidas Metro 6 Calf Sleeve,Adidas,Team Power Red/White,Socks,12.00,4.50,L/XL,Agron
+5161368A,Adidas Metro 6 Calf Sleeve,Adidas,Team Royal Blue/White,Socks,12.00,4.50,S/M,Agron
+5161368B,Adidas Metro 6 Calf Sleeve,Adidas,Team Royal Blue/White,Socks,12.00,4.50,L/XL,Agron
+5161369A,Adidas Metro 6 Calf Sleeve,Adidas,Team Navy Blue,Socks,12.00,4.50,S/M,Agron
+5161369B,Adidas Metro 6 Calf Sleeve,Adidas,Team Navy Blue,Socks,12.00,4.50,L/XL,Agron
+5155945A,Adidas Metro 6 OTC,Adidas,Team Navy Blue/Clear Grey/White,Socks,12.00,4.50,XS,Agron
+5155945B,Adidas Metro 6 OTC,Adidas,Team Navy Blue/Clear Grey/White,Socks,12.00,4.50,S,Agron
+5155945C,Adidas Metro 6 OTC,Adidas,Team Navy Blue/Clear Grey/White,Socks,12.00,4.50,M,Agron
+5155945D,Adidas Metro 6 OTC,Adidas,Team Navy Blue/Clear Grey/White,Socks,12.00,4.50,L,Agron
+5155946A,Adidas Metro 6 OTC,Adidas,Ultra Pop/Clear Grey/Black,Socks,12.00,4.50,XS,Agron
+5155946B,Adidas Metro 6 OTC,Adidas,Ultra Pop/Clear Grey/Black,Socks,12.00,4.50,S,Agron
+5155946C,Adidas Metro 6 OTC,Adidas,Ultra Pop/Clear Grey/Black,Socks,12.00,4.50,M,Agron
+5155946D,Adidas Metro 6 OTC,Adidas,Ultra Pop/Clear Grey/Black,Socks,12.00,4.50,L,Agron
+5155947A,Adidas Metro 6 OTC,Adidas,Team Royal Blue/Clear Grey/White,Socks,12.00,4.50,XS,Agron
+5155947B,Adidas Metro 6 OTC,Adidas,Team Royal Blue/Clear Grey/White,Socks,12.00,4.50,S,Agron
+5155947C,Adidas Metro 6 OTC,Adidas,Team Royal Blue/Clear Grey/White,Socks,12.00,4.50,M,Agron
+5155947D,Adidas Metro 6 OTC,Adidas,Team Royal Blue/Clear Grey/White,Socks,12.00,4.50,L,Agron
+5155948A,Adidas Metro 6 OTC,Adidas,Team Power Red/Clear Grey/White,Socks,12.00,4.50,XS,Agron
+5155948B,Adidas Metro 6 OTC,Adidas,Team Power Red/Clear Grey/White,Socks,12.00,4.50,S,Agron
+5155948C,Adidas Metro 6 OTC,Adidas,Team Power Red/Clear Grey/White,Socks,12.00,4.50,M,Agron
+5155948D,Adidas Metro 6 OTC,Adidas,Team Power Red/Clear Grey/White,Socks,12.00,4.50,L,Agron
+5155949A,Adidas Metro 6 OTC,Adidas,Team Light Grey/White,Socks,12.00,4.50,XS,Agron
+5155949B,Adidas Metro 6 OTC,Adidas,Team Light Grey/White,Socks,12.00,4.50,S,Agron
+5155949C,Adidas Metro 6 OTC,Adidas,Team Light Grey/White,Socks,12.00,4.50,M,Agron
+5155949D,Adidas Metro 6 OTC,Adidas,Team Light Grey/White,Socks,12.00,4.50,L,Agron
+5155950A,Adidas Metro 6 OTC,Adidas,White/Clear Grey/Black,Socks,12.00,4.50,XS,Agron
+5155950B,Adidas Metro 6 OTC,Adidas,White/Clear Grey/Black,Socks,12.00,4.50,S,Agron
+5155950C,Adidas Metro 6 OTC,Adidas,White/Clear Grey/Black,Socks,12.00,4.50,M,Agron
+5155950D,Adidas Metro 6 OTC,Adidas,White/Clear Grey/Black,Socks,12.00,4.50,L,Agron
+5155951A,Adidas Metro 6 OTC,Adidas,Black/Night Grey/White,Socks,12.00,4.50,XS,Agron
+5155951B,Adidas Metro 6 OTC,Adidas,Black/Night Grey/White,Socks,12.00,4.50,S,Agron
+5155951C,Adidas Metro 6 OTC,Adidas,Black/Night Grey/White,Socks,12.00,4.50,M,Agron
+5155951D,Adidas Metro 6 OTC,Adidas,Black/Night Grey/White,Socks,12.00,4.50,L,Agron
+5157292B,Adidas Utility 2.0 Stirrup,Adidas,Team Power Red/White,Socks,12.00,4.50,M,Agron
+5157292C,Adidas Utility 2.0 Stirrup,Adidas,Team Power Red/White,Socks,12.00,4.50,L,Agron
+5157293B,Adidas Utility 2.0 Stirrup,Adidas,Team Navy Blue/White,Socks,12.00,4.50,M,Agron
+5157293C,Adidas Utility 2.0 Stirrup,Adidas,Team Navy Blue/White,Socks,12.00,4.50,L,Agron
+5157294B,Adidas Utility 2.0 Stirrup,Adidas,Team Maroon/White,Socks,12.00,4.50,M,Agron
+5157294C,Adidas Utility 2.0 Stirrup,Adidas,Team Maroon/White,Socks,12.00,4.50,L,Agron
+5157295B,Adidas Utility 2.0 Stirrup,Adidas,Black/White,Socks,12.00,4.50,M,Agron
+5157295C,Adidas Utility 2.0 Stirrup,Adidas,Black/White,Socks,12.00,4.50,L,Agron
+5156926C,Adidas Liner 2.0 OTC,Adidas,White/Black,Socks,8.00,3.00,M,Agron
+5156926D,Adidas Liner 2.0 OTC,Adidas,White/Black,Socks,8.00,3.00,L,Agron
+5157176,Adidas Football 2.0 Handwarmer,Adidas,Black/White,Sport Accessories,34.00,12.75,OSFA,Agron
+5157167,Adidas Team 2.0 Wrist Coach,Adidas,White/Black,Sport Accessories,25.00,9.38,OSFA,Agron
+5157168,Adidas Team 2.0 Wrist Coach,Adidas,Black/White,Sport Accessories,25.00,9.38,OSFA,Agron
+5157175,Adidas Football 2.0 Skull,Adidas,Black/White,Sport Accessories,22.00,8.25,OSFA,Agron
+5157172,Adidas Soccer 2.0 Field Cone,Adidas,Safety Orange/Black,Sport Accessories,22.00,8.25,OSFA,Agron
+5156314,Adidas Alphaskin Wide Headband,Adidas,Black/White,Sport Accessories,20.00,7.50,OSFA,Agron
+5156315,Adidas Alphaskin Wide Headband,Adidas,White/Black,Sport Accessories,20.00,7.50,OSFA,Agron
+5156316,Adidas Alphaskin Wide Headband,Adidas,Grey/White,Sport Accessories,20.00,7.50,OSFA,Agron
+5157174,Adidas Football Skull Wrap 2.0 Headband,Adidas,Black/White,Sport Accessories,20.00,7.50,OSFA,Agron
+5157185,Adidas Alphaskin 3 Headband,Adidas,Collegiate Royal Blue/Black,Sport Accessories,18.00,6.75,OSFA,Agron
+5157186,Adidas Alphaskin 3 Headband,Adidas,Red/Black,Sport Accessories,18.00,6.75,OSFA,Agron
+5157187,Adidas Alphaskin 3 Headband,Adidas,White/Black,Sport Accessories,18.00,6.75,OSFA,Agron
+5157188,Adidas Alphaskin 3 Headband,Adidas,Black/White,Sport Accessories,18.00,6.75,OSFA,Agron
+5157224,Adidas Interval 2.0 3/4-inch Bicep Band,Adidas,Team Power Red/White,Sport Accessories,15.00,5.63,OSFA,Agron
+5157225,Adidas Interval 2.0 3/4-inch Bicep Band,Adidas,Black/White,Sport Accessories,15.00,5.63,OSFA,Agron
+5157226,Adidas Interval 2.0 3/4-inch Bicep Band,Adidas,White/Black,Sport Accessories,15.00,5.63,OSFA,Agron
+5157213,Adidas Interval Large Reversible 2.0 Wristband,Adidas,Collegiate Navy/White,Sport Accessories,15.00,5.63,OSFA,Agron
+5157214,Adidas Interval Large Reversible 2.0 Wristband,Adidas,Black/Aluminum 2/White,Sport Accessories,15.00,5.63,OSFA,Agron
+5157215,Adidas Interval Large Reversible 2.0 Wristband,Adidas,Black/White,Sport Accessories,15.00,5.63,OSFA,Agron
+5157170,Adidas Soccer 2.0 Shin Guard Strap,Adidas,White/Black,Sport Accessories,15.00,5.63,OSFA,Agron
+5157171,Adidas Soccer 2.0 Shin Guard Strap,Adidas,Black/White,Sport Accessories,15.00,5.63,OSFA,Agron
+5157169,Adidas Team 2.0 Towel,Adidas,White/Black,Sport Accessories,15.00,5.63,OSFA,Agron
+5157180,Adidas Alphaskin Tie 2 Headband,Adidas,Collegiate Royal Blue/Black,Sport Accessories,14.00,5.25,OSFA,Agron
+5157181,Adidas Alphaskin Tie 2 Headband,Adidas,Red/Black,Sport Accessories,14.00,5.25,OSFA,Agron
+5157182,Adidas Alphaskin Tie 2 Headband,Adidas,Black/White,Sport Accessories,14.00,5.25,OSFA,Agron
+5157183,Adidas Alphaskin Tie 2 Headband,Adidas,White/Black,Sport Accessories,14.00,5.25,OSFA,Agron
+5157217,Adidas Interval 2.0 Lanyard,Adidas,Team Dark Green/White,Sport Accessories,14.00,5.25,OSFA,Agron
+5157218,Adidas Interval 2.0 Lanyard,Adidas,Team Shock Pink/White,Sport Accessories,14.00,5.25,OSFA,Agron
+5157219,Adidas Interval 2.0 Lanyard,Adidas,Team Power Red/White,Sport Accessories,14.00,5.25,OSFA,Agron
+5157220,Adidas Interval 2.0 Lanyard,Adidas,Team Royal Blue/White,Sport Accessories,14.00,5.25,OSFA,Agron
+5157221,Adidas Interval 2.0 Lanyard,Adidas,Team Navy Blue/White,Sport Accessories,14.00,5.25,OSFA,Agron
+5157223,Adidas Interval 2.0 Lanyard,Adidas,Black/White,Sport Accessories,14.00,5.25,OSFA,Agron
+5157179,Adidas Captain's 2.0 Armband,Adidas,Black/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157202,Adidas Interval Reversible 2.0 Headband,Adidas,Team Shock Pink/Black,Sport Accessories,12.00,4.50,OSFA,Agron
+5157203,Adidas Interval Reversible 2.0 Headband,Adidas,Black/Team Power Red,Sport Accessories,12.00,4.50,OSFA,Agron
+5157204,Adidas Interval Reversible 2.0 Headband,Adidas,Team Orange/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157205,Adidas Interval Reversible 2.0 Headband,Adidas,Team Maroon/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157206,Adidas Interval Reversible 2.0 Headband,Adidas,Team Dark Green/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157207,Adidas Interval Reversible 2.0 Headband,Adidas,Heather Light Grey/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157208,Adidas Interval Reversible 2.0 Headband,Adidas,Team Power Red/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157209,Adidas Interval Reversible 2.0 Headband,Adidas,Team Royal Blue/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157210,Adidas Interval Reversible 2.0 Headband,Adidas,Team Navy Blue/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157211,Adidas Interval Reversible 2.0 Headband,Adidas,Black/White/Aluminum 2,Sport Accessories,12.00,4.50,OSFA,Agron
+5157212,Adidas Interval Reversible 2.0 Headband,Adidas,White/Black,Sport Accessories,12.00,4.50,OSFA,Agron
+5157190,Adidas Interval Reversible 2.0 Wristband,Adidas,Collegiate Purple/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157191,Adidas Interval Reversible 2.0 Wristband,Adidas,Team Dark Green/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157192,Adidas Interval Reversible 2.0 Wristband,Adidas,Team Shock Pink/Black,Sport Accessories,12.00,4.50,OSFA,Agron
+5157193,Adidas Interval Reversible 2.0 Wristband,Adidas,Team Orange/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157194,Adidas Interval Reversible 2.0 Wristband,Adidas,Team Maroon/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157195,Adidas Interval Reversible 2.0 Wristband,Adidas,Black/Team Power Red,Sport Accessories,12.00,4.50,OSFA,Agron
+5157196,Adidas Interval Reversible 2.0 Wristband,Adidas,Heather Light Grey/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157197,Adidas Interval Reversible 2.0 Wristband,Adidas,Team Power Red/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157198,Adidas Interval Reversible 2.0 Wristband,Adidas,Team Royal Blue/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157199,Adidas Interval Reversible 2.0 Wristband,Adidas,Team Navy Blue/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157200,Adidas Interval Reversible 2.0 Wristband,Adidas,Black/White/Aluminum 2,Sport Accessories,12.00,4.50,OSFA,Agron
+5157201,Adidas Interval Reversible 2.0 Wristband,Adidas,White/Black,Sport Accessories,12.00,4.50,OSFA,Agron
+5161176,Adidas Interval Reversible 2.0 Wristband,Adidas,Team Victory Red/White,Sport Accessories,12.00,4.50,OSFA,Agron
+5157177,Adidas Football 2.0 Chin Strap,Adidas,White/Black,Sport Accessories,10.00,3.75,OSFA,Agron
+5157178,Adidas Football 2.0 Chin Strap,Adidas,Black/White,Sport Accessories,10.00,3.75,OSFA,Agron
+5157227,Adidas Interval 1-inch 2.0 Muscle Band,Adidas,White/Black,Sport Accessories,10.00,3.75,OSFA,Agron
+5157228,Adidas Interval 1-inch 2.0 Muscle Band,Adidas,Black/White,Sport Accessories,10.00,3.75,OSFA,Agron
+5157229,Adidas Interval 2.0 Wrist Lanyard,Adidas,Black/White,Sport Accessories,10.00,3.75,OSFA,Agron
+5157977A,Adidas Men's Performance Mesh 3-Pack Boxer Brief,Adidas,Black/Onix Grey/Black,Underwear,44.00,16.50,S,Agron
+5157977B,Adidas Men's Performance Mesh 3-Pack Boxer Brief,Adidas,Black/Onix Grey/Black,Underwear,44.00,16.50,M,Agron
+5157977C,Adidas Men's Performance Mesh 3-Pack Boxer Brief,Adidas,Black/Onix Grey/Black,Underwear,44.00,16.50,L,Agron
+5157977D,Adidas Men's Performance Mesh 3-Pack Boxer Brief,Adidas,Black/Onix Grey/Black,Underwear,44.00,16.50,XL,Agron
+5157977E,Adidas Men's Performance Mesh 3-Pack Boxer Brief,Adidas,Black/Onix Grey/Black,Underwear,44.00,16.50,XXL,Agron
+5158008A,Adidas Men's Performance Mesh Big & Tall 3-Pack Boxer Brief,Adidas,Black/Onix Grey/Black,Underwear,44.00,16.50,2XL,Agron
+5158008B,Adidas Men's Performance Mesh Big & Tall 3-Pack Boxer Brief,Adidas,Black/Onix Grey/Black,Underwear,44.00,16.50,3XL,Agron
+5158008C,Adidas Men's Performance Mesh Big & Tall 3-Pack Boxer Brief,Adidas,Black/Onix Grey/Black,Underwear,44.00,16.50,4XL,Agron
