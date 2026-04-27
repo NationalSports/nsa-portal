@@ -16927,7 +16927,7 @@ export default function App(){
       <div style={{display:'flex',gap:4,marginBottom:16}}>
         {[['upload','1. Upload PDF'],['parse','2. Raw Text'],['review','3. Review & Clarify'],['confirm','4. Create']].map(([id,label])=>
           <div key={id} style={{flex:1,padding:'8px 12px',borderRadius:6,textAlign:'center',fontSize:11,fontWeight:700,
-            background:imp.step===id||(id==='review'&&imp.step==='questions')?'#1e40af':'#f1f5f9',color:imp.step===id||(id==='review'&&imp.step==='questions')?'white':'#64748b'}}>{label}</div>)}
+            background:imp.step===id?'#1e40af':'#f1f5f9',color:imp.step===id?'white':'#64748b'}}>{label}</div>)}
       </div>
 
       {/* ═══ STEP 1: Upload PDF ═══ */}
@@ -17331,60 +17331,13 @@ export default function App(){
         </div>
       </>}
 
-      {/* ═══ STEP 4: Questions ═══ */}
-      {imp.step==='questions'&&<>
-        <div className="card" style={{marginBottom:12}}><div className="card-header"><h2>❓ Clarify Items ({imp.questions.length})</h2></div>
-          <div className="card-body">
-            {imp.questions.map((q,qi)=><div key={qi} style={{padding:10,marginBottom:8,background:q.answer?'#f0fdf4':'#fffbeb',borderRadius:6,border:'1px solid '+(q.answer?'#bbf7d0':'#fde68a')}}>
-              <div style={{fontWeight:600,fontSize:12,marginBottom:6}}>{q.msg}</div>
-              {q.type==='match'&&<div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center'}}>
-                <button className={`btn btn-sm ${q.answer==='match_catalog'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'match_catalog')}>Match to Catalog</button>
-                <button className={`btn btn-sm ${q.answer==='create_product'?'btn-primary':'btn-secondary'}`} style={{background:q.answer==='create_product'?'#7c3aed':undefined,borderColor:q.answer==='create_product'?'#7c3aed':undefined,color:q.answer==='create_product'?'white':undefined}} onClick={()=>applyAnswer(qi,'create_product')}>Create Product</button>
-                <button className={`btn btn-sm ${q.answer==='custom'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'custom')}>Import as Custom</button>
-                <button className={`btn btn-sm ${q.answer==='skip'?'btn-primary':'btn-secondary'}`} style={{background:q.answer==='skip'?'#dc2626':undefined,borderColor:q.answer==='skip'?'#dc2626':undefined}} onClick={()=>applyAnswer(qi,'skip')}>Skip</button>
-                {q.answer==='match_catalog'&&<select className="form-select" style={{fontSize:10,width:250}} onChange={e=>{if(e.target.value){applyAnswer(qi,e.target.value);const pm=prod.find(p=>p.sku===e.target.value);if(pm)updItem(q.idx,'catMatch',pm)}}}>
-                  <option value="">Pick from catalog...</option>
-                  {prod.map(p=><option key={p.id} value={p.sku}>{p.sku} — {p.name.slice(0,30)}</option>)}
-                </select>}
-                {q.answer==='create_product'&&<div style={{marginTop:6}}>
-                  <div style={{fontSize:10,color:'#7c3aed',fontWeight:600,marginBottom:4}}>Product will be created in catalog on import</div>
-                  <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                    <select className="form-select" style={{fontSize:10,width:130}} value={(imp.parsed[q.idx]||{})._category||''} onChange={e=>updItem(q.idx,'_category',e.target.value)}>
-                      <option value="">Item Type...</option>{CATEGORIES.map(c=><option key={c}>{c}</option>)}
-                    </select>
-                    <select className="form-select" style={{fontSize:10,width:130}} value={(imp.parsed[q.idx]||{})._color_category||mapColorCategory((imp.parsed[q.idx]||{}).color||'')} onChange={e=>updItem(q.idx,'_color_category',e.target.value)}>
-                      <option value="">Color Category...</option>{COLOR_CATEGORIES.map(c=><option key={c}>{c}</option>)}
-                    </select>
-                  </div>
-                </div>}
-              </div>}
-              {q.type==='sku'&&<div style={{display:'flex',gap:6,alignItems:'center'}}>
-                <input className="form-input" value={q.answer||''} onChange={e=>applyAnswer(qi,e.target.value)} placeholder="Enter real SKU..." style={{width:120,fontSize:11}}/>
-                <select className="form-select" style={{fontSize:10,width:200}} onChange={e=>{if(e.target.value){applyAnswer(qi,e.target.value);const pm=prod.find(p=>p.sku===e.target.value);if(pm)updItem(q.idx,'catMatch',pm)}}}>
-                  <option value="">Or pick from catalog...</option>
-                  {prod.map(p=><option key={p.id} value={p.sku}>{p.sku} — {p.name.slice(0,30)}</option>)}
-                </select>
-                <button className={`btn btn-sm ${q.answer==='keep_custom'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'keep_custom')}>Keep as Custom</button>
-              </div>}
-              {q.type==='color'&&<input className="form-input" value={q.answer||''} onChange={e=>applyAnswer(qi,e.target.value)} placeholder="Enter color..." style={{width:200,fontSize:11}}/>}
-            </div>)}
-          </div></div>
-        <div style={{display:'flex',gap:8}}>
-          <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'review'}))}>← Back</button>
-          <button className="btn btn-primary" onClick={()=>setImp(x=>({...x,step:'confirm'}))}>Review Final →</button>
-        </div>
-      </>}
 
       {/* ═══ STEP 5: Confirm & Create ═══ */}
       {imp.step==='confirm'&&<>
         {(()=>{try{
           console.log('CONFIRM STEP DEBUG:',JSON.stringify({custId:imp.custId,parsedLen:imp.parsed?.length,questionsLen:imp.questions?.length,shippingType:typeof imp.shipping,shipping:imp.shipping,parsed:imp.parsed?.map(p=>({sku:p.sku,rate:p.rate,sizes:p.sizes,color:p.color,totalAmt:p.totalAmt,totalQty:p.totalQty}))},null,2));
           const c=cust.find(x=>x.id===imp.custId);
-          // Apply color answers from questions back to parsed items
-          const resolved=(imp.parsed||[]).map((p,pi)=>{
-            const cq=(imp.questions||[]).find(q=>q.idx===pi&&q.type==='color'&&q.answer);
-            return cq?{...p,color:cq.answer,_pi:pi}:{...p,_pi:pi};
-          });
+          const resolved=(imp.parsed||[]).map((p,pi)=>({...p,_pi:pi}));
           const keeping=resolved.filter((p,pi)=>!p._skip&&!(imp.questions||[]).find(q=>q.idx===pi&&q.answer==='skip'));
           const isAUi=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';
           const mk=c?.catalog_markup||1.65;const tier=c?.adidas_ua_tier||'B';const tD={A:0.4,B:0.35,C:0.3};const disc=tD[tier]||0.35;
@@ -17424,7 +17377,7 @@ export default function App(){
                 const retail=it._retail!=null?it._retail:(cat?.retail_price||0);
                 const cost=it._cost!=null?it._cost:(au?(cat?.nsa_cost||rQ(retail*(it.brand==='Adidas'?0.375:0.425))):rQ(sell/mk));
                 const displayName=it._name!=null?it._name:(cat?.name||it.name||'');
-                const displayColor=it._color!=null?it._color:(cat?.color||it.color||'');
+                const displayColor=it._color!=null?it._color:(it.color||cat?.color||'');
                 return<tr key={i}>
                   <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
                   <td><input className="form-input" style={{fontSize:11,padding:'2px 4px',width:'100%',minWidth:120}} value={displayName} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_name:v}:p)}))}}/></td>
@@ -17499,7 +17452,7 @@ export default function App(){
                     STD_SZ.forEach(s=>{if(!(s in mergedSizes))mergedSizes[s]=0})
                   }
                   const mergedAvail=[...new Set([...(isFootwear?catalogShoeSizes:(hasApparel?STD_SZ:[])),...szKeys,...(it.catMatch?.available_sizes||[])])].sort((a,b)=>{const ai=SZ_ORD_I.indexOf(a),bi=SZ_ORD_I.indexOf(b);if(ai<0&&bi<0)return parseFloat(a)-parseFloat(b);if(ai<0)return 1;if(bi<0)return -1;return ai-bi});
-                  return{product_id:it.catMatch?.id||null,sku:it.sku,name:itemName,brand:it.catMatch?.brand||it.brand,
+                  return{product_id:it.catMatch?.id||null,sku:it.sku,name:itemName,brand:it.brand||it.catMatch?.brand||'',
                     color:itemColor,nsa_cost:it.catMatch?.nsa_cost||cost,retail_price:it.catMatch?.retail_price||retail,unit_sell:sell,
                     available_sizes:mergedAvail.length>0?mergedAvail:['S','M','L','XL','2XL'],
                     sizes:Object.keys(mergedSizes).length>0?mergedSizes:{OSFA:it.totalQty||1},decorations:[],is_custom:it.is_custom||false,pick_lines:[],po_lines:[]};
