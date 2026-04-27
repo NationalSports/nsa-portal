@@ -556,7 +556,9 @@ const _dbLoad = async (opts={}) => {
     const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>{const dt=(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||''}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,_artwork:p._artwork||[]}})}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
-    const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations');
+    // True if any SO/estimate child-row query timed out — used to skip polls and warn on initial load
+    // so transient empty results don't pollute client state and trigger destructive saves
+    const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations')||_lastLoadTimedOut.has('so_items')||_lastLoadTimedOut.has('estimate_items')||_lastLoadTimedOut.has('so_jobs')||_lastLoadTimedOut.has('so_art_files')||_lastLoadTimedOut.has('estimate_art_files');
     return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_coreOnly:coreOnly};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
@@ -640,6 +642,12 @@ const _dbSaveEstimateInner = async (est) => {
     }
     // Delete old children — must delete grandchildren (decorations) BEFORE estimate_items due to FK constraints
     const oldItemIds=(await supabase.from('estimate_items').select('id').eq('estimate_id',est.id)).data?.map(i=>i.id)||[];
+    // Safety check: if client has 0 items but DB has some, abort to prevent data loss
+    if((!items||items.length===0)&&oldItemIds.length>0){
+      console.error('[DB] SAFETY: Blocking estimate save — client has 0 items but DB has',oldItemIds.length,'for',est.id);
+      if(_dbNotify)_dbNotify('Save blocked — '+oldItemIds.length+' item(s) would be lost. Please reload the page.','error');
+      return false;
+    }
     // Safety check: if client has 0 decorations but DB has some, abort to prevent data loss
     const clientDecoCount=(items||[]).reduce((a,it)=>a+(it.decorations?.length||0),0);
     const allNoDeco=(items||[]).length>0&&(items||[]).every(it=>it.no_deco);
@@ -743,6 +751,13 @@ const _dbSaveSOInner = async (so) => {
     }
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
     const oldItemIds=(await supabase.from('so_items').select('id').eq('so_id',so.id)).data?.map(i=>i.id)||[];
+    // Safety check: if client has 0 items but DB has some, abort to prevent data loss
+    // Triggers when state was polluted by a timed-out so_items load and an autosave fires before a fresh load completes
+    if((!items||items.length===0)&&oldItemIds.length>0){
+      console.error('[DB] SAFETY: Blocking SO save — client has 0 items but DB has',oldItemIds.length,'for',so.id);
+      if(_dbNotify)_dbNotify('Save blocked — '+oldItemIds.length+' item(s) would be lost. Please reload the page.','error');
+      return false;
+    }
     // Safety check: if client has 0 decorations but DB has some, abort to prevent data loss
     const clientDecoCount=(items||[]).reduce((a,it)=>a+(it.decorations?.length||0),0);
     const allNoDeco=(items||[]).length>0&&(items||[]).every(it=>it.no_deco);
@@ -1876,7 +1891,7 @@ export default function App(){
           console.error('[DB] Load returned null — blocking Supabase writes');
         }else if(d.hasData){
           // If decoration queries timed out during initial load, warn user — data is incomplete
-          if(d._decoTimedOut){console.error('[DB] Initial load had decoration timeouts — decoration data may be incomplete');if(typeof nf==='function')nf('Some data took too long to load. Decorations may be incomplete — please refresh if items look wrong.','error')}
+          if(d._decoTimedOut){console.error('[DB] Initial load had child-table timeouts — items/decorations/jobs/art may be incomplete');if(typeof nf==='function')nf('Some data took too long to load. Items, decorations, jobs, or art may be incomplete — please refresh if anything looks wrong.','error')}
           // Supabase has data — use it as source of truth
           _dbLoadSuccess.current=true;_syncDbMaxIds();
           _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
@@ -2102,7 +2117,7 @@ export default function App(){
         if(_pollConsecutiveFailures>0)console.log('[DB] Poll recovered after '+_pollConsecutiveFailures+' failures');
         _pollConsecutiveFailures=0;
         // If decoration queries timed out, skip this poll entirely to prevent data loss
-        if(d._decoTimedOut){console.warn('[DB] Poll skipped — decoration query timed out, preserving local data');schedulePoll();return}
+        if(d._decoTimedOut){console.warn('[DB] Poll skipped — a child-table query timed out, preserving local data');schedulePoll();return}
         // If initial load failed but polling recovered, re-enable Supabase writes
         if(!_dbLoadSuccess.current){_dbLoadSuccess.current=true;setDbError(null);console.log('[DB] Poll recovered — Supabase writes re-enabled')}
         // Preserve local versions of entities whose saves failed — don't let DB data overwrite them
