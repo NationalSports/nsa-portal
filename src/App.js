@@ -15416,11 +15416,10 @@ export default function App(){
 
     const parsed=Object.values(items);
 
-    // Generate questions for ambiguous items
+    // Generate questions for ambiguous items (color is now editable inline on the Review page)
     parsed.forEach((it,i)=>{
       if(!it.catMatch&&!it.is_custom)questions.push({idx:i,type:'match',msg:`"${it.sku}" not found in catalog. Is this a known product or a custom/special order?`,options:['match_catalog','custom','skip'],answer:null});
       if(it.is_custom&&it.sku==='Misc Adi')questions.push({idx:i,type:'sku',msg:`Custom item "${it.name.slice(0,50)}..." — do you know the real SKU?`,answer:''});
-      if(!it.color)questions.push({idx:i,type:'color',msg:`What color is "${it.sku} — ${it.name.slice(0,40)}"?`,answer:''});
     });
 
     return{parsed,decoLines,issues,questions,shipping};
@@ -16926,9 +16925,9 @@ export default function App(){
       {impTab==='orders'&&<>
       {/* Step indicators */}
       <div style={{display:'flex',gap:4,marginBottom:16}}>
-        {[['upload','1. Upload PDF'],['parse','2. Raw Text'],['review','3. Review Items'],['questions','4. Clarify'],['confirm','5. Create']].map(([id,label])=>
+        {[['upload','1. Upload PDF'],['parse','2. Raw Text'],['review','3. Review & Clarify'],['confirm','4. Create']].map(([id,label])=>
           <div key={id} style={{flex:1,padding:'8px 12px',borderRadius:6,textAlign:'center',fontSize:11,fontWeight:700,
-            background:imp.step===id?'#1e40af':'#f1f5f9',color:imp.step===id?'white':'#64748b'}}>{label}</div>)}
+            background:imp.step===id||(id==='review'&&imp.step==='questions')?'#1e40af':'#f1f5f9',color:imp.step===id||(id==='review'&&imp.step==='questions')?'white':'#64748b'}}>{label}</div>)}
       </div>
 
       {/* ═══ STEP 1: Upload PDF ═══ */}
@@ -17192,15 +17191,14 @@ export default function App(){
                 const questions=[];
                 products.forEach((it,i)=>{
                   if(!it.catMatch&&!it.is_custom)questions.push({idx:i,type:'match',msg:'"'+it.sku+'" not found in catalog. Known product or custom?',options:['match_catalog','custom','skip'],answer:null});
-                  if(!it.color)questions.push({idx:i,type:'color',msg:'What color is "'+it.sku+' — '+it.name.slice(0,40)+'"?',answer:''});
                 });
 
-                setImp(x=>({...x,step:questions.length>0?'questions':'review',parsed:products,decoLines:[],issues:[],questions,
+                setImp(x=>({...x,step:'review',parsed:products,decoLines:[],issues:[],questions,
                   shipping:imp.pdfParsed.shipping>0?[{desc:'Shipping',amount:imp.pdfParsed.shipping,rate:imp.pdfParsed.shipping}]:[]
                 }));
               } else if(imp.raw.trim()){
                 const result=parseNSData(imp.raw);
-                setImp(x=>({...x,step:result.questions.length>0?'questions':'review',...result}));
+                setImp(x=>({...x,step:'review',...result}));
               } else if(imp.pdfParsed){
                 setImp(x=>({...x,step:'parse'}));
               }
@@ -17230,7 +17228,7 @@ export default function App(){
           <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'upload'}))}>← Back</button>
           <button className="btn btn-primary" disabled={!imp.raw.trim()} onClick={()=>{
             const result=parseNSData(imp.raw);
-            setImp(x=>({...x,step:result.questions.length>0?'questions':'review',...result}));
+            setImp(x=>({...x,step:'review',...result}));
           }}>📋 Parse Pasted Data →</button>
         </div>
       </>}
@@ -17264,7 +17262,7 @@ export default function App(){
             <td style={{fontFamily:'monospace',fontWeight:700,color:it.catMatch?'#166534':'#dc2626'}}>{it.sku}</td>
             <td>{it.catMatch?<span>✅ {it.name.slice(0,35)}</span>:<span>⚠️ {it.name.slice(0,35)}</span>}</td>
             <td><input className="form-input" list="impBrandList" value={it.brand||''} onChange={e=>updItem(i,'brand',e.target.value)} placeholder="—" style={{fontSize:10,padding:'2px 4px',width:100,border:it.brand?'1px solid #e2e8f0':'1px solid #fca5a5'}}/></td>
-            <td style={{fontSize:10}}>{it.color||<span style={{color:'#dc2626'}}>?</span>}</td>
+            <td><input className="form-input" value={it.color||''} onChange={e=>updItem(i,'color',e.target.value)} placeholder="—" style={{fontSize:10,padding:'2px 4px',width:90,border:it.color?'1px solid #e2e8f0':'1px solid #fca5a5'}}/></td>
             <td style={{textAlign:'right'}}>${it.rate?.toFixed(2)}</td>
             <td style={{fontSize:9}}>{Object.entries(it.sizes||{}).map(([s,q])=>s+':'+q).join(' ')}</td>
             <td style={{fontWeight:700,textAlign:'center'}}>{it.totalQty}</td>
@@ -17274,7 +17272,7 @@ export default function App(){
 
         {(()=>{const unmatched=imp.parsed.filter(p=>!p.catMatch&&!p._skip);return unmatched.length>0?<div style={{padding:12,background:'#fef3c7',borderRadius:6,marginBottom:12,border:'1px solid #fde68a'}}>
           <div style={{fontWeight:700,color:'#92400e',marginBottom:6}}>⚠️ {unmatched.length} item(s) not found in catalog</div>
-          <div style={{fontSize:11,color:'#78350f',marginBottom:8}}>These items need to be created as products before import, or kept as custom items. Use the "Clarify" step to resolve.</div>
+          <div style={{fontSize:11,color:'#78350f',marginBottom:8}}>These items need to be created as products before import, or kept as custom items. Use the "Clarify Items" section below to resolve.</div>
           {unmatched.map((it,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 0',fontSize:11}}>
             <span style={{fontFamily:'monospace',fontWeight:700,color:'#92400e'}}>{it.sku}</span>
             <span style={{color:'#78350f'}}>{it.name?.slice(0,40)}</span>
@@ -17291,11 +17289,45 @@ export default function App(){
           {imp.issues.map((iss,i)=><div key={i} style={{fontSize:11,color:'#dc2626'}}>Line {iss.line}: {iss.msg}</div>)}
         </div>}
 
+        {imp.questions.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>❓ Clarify Items ({imp.questions.length})</h2></div>
+          <div className="card-body">
+            {imp.questions.map((q,qi)=><div key={qi} style={{padding:10,marginBottom:8,background:q.answer?'#f0fdf4':'#fffbeb',borderRadius:6,border:'1px solid '+(q.answer?'#bbf7d0':'#fde68a')}}>
+              <div style={{fontWeight:600,fontSize:12,marginBottom:6}}>{q.msg}</div>
+              {q.type==='match'&&<div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center'}}>
+                <button className={`btn btn-sm ${q.answer==='match_catalog'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'match_catalog')}>Match to Catalog</button>
+                <button className={`btn btn-sm ${q.answer==='create_product'?'btn-primary':'btn-secondary'}`} style={{background:q.answer==='create_product'?'#7c3aed':undefined,borderColor:q.answer==='create_product'?'#7c3aed':undefined,color:q.answer==='create_product'?'white':undefined}} onClick={()=>applyAnswer(qi,'create_product')}>Create Product</button>
+                <button className={`btn btn-sm ${q.answer==='custom'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'custom')}>Import as Custom</button>
+                <button className={`btn btn-sm ${q.answer==='skip'?'btn-primary':'btn-secondary'}`} style={{background:q.answer==='skip'?'#dc2626':undefined,borderColor:q.answer==='skip'?'#dc2626':undefined}} onClick={()=>applyAnswer(qi,'skip')}>Skip</button>
+                {q.answer==='match_catalog'&&<select className="form-select" style={{fontSize:10,width:250}} onChange={e=>{if(e.target.value){applyAnswer(qi,e.target.value);const pm=prod.find(p=>p.sku===e.target.value);if(pm)updItem(q.idx,'catMatch',pm)}}}>
+                  <option value="">Pick from catalog...</option>
+                  {prod.map(p=><option key={p.id} value={p.sku}>{p.sku} — {p.name.slice(0,30)}</option>)}
+                </select>}
+                {q.answer==='create_product'&&<div style={{marginTop:6}}>
+                  <div style={{fontSize:10,color:'#7c3aed',fontWeight:600,marginBottom:4}}>Product will be created in catalog on import</div>
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                    <select className="form-select" style={{fontSize:10,width:130}} value={(imp.parsed[q.idx]||{})._category||''} onChange={e=>updItem(q.idx,'_category',e.target.value)}>
+                      <option value="">Item Type...</option>{CATEGORIES.map(c=><option key={c}>{c}</option>)}
+                    </select>
+                    <select className="form-select" style={{fontSize:10,width:130}} value={(imp.parsed[q.idx]||{})._color_category||mapColorCategory((imp.parsed[q.idx]||{}).color||'')} onChange={e=>updItem(q.idx,'_color_category',e.target.value)}>
+                      <option value="">Color Category...</option>{COLOR_CATEGORIES.map(c=><option key={c}>{c}</option>)}
+                    </select>
+                  </div>
+                </div>}
+              </div>}
+              {q.type==='sku'&&<div style={{display:'flex',gap:6,alignItems:'center'}}>
+                <input className="form-input" value={q.answer||''} onChange={e=>applyAnswer(qi,e.target.value)} placeholder="Enter real SKU..." style={{width:120,fontSize:11}}/>
+                <select className="form-select" style={{fontSize:10,width:200}} onChange={e=>{if(e.target.value){applyAnswer(qi,e.target.value);const pm=prod.find(p=>p.sku===e.target.value);if(pm)updItem(q.idx,'catMatch',pm)}}}>
+                  <option value="">Or pick from catalog...</option>
+                  {prod.map(p=><option key={p.id} value={p.sku}>{p.sku} — {p.name.slice(0,30)}</option>)}
+                </select>
+                <button className={`btn btn-sm ${q.answer==='keep_custom'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'keep_custom')}>Keep as Custom</button>
+              </div>}
+            </div>)}
+          </div></div>}
+
         <div style={{display:'flex',gap:8}}>
           <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'upload'}))}>← Back</button>
-          <button className="btn btn-primary" onClick={()=>setImp(x=>({...x,step:x.questions.length>0?'questions':'confirm'}))}>
-            {imp.questions.length>0?'Answer '+imp.questions.length+' Questions →':'Review & Create →'}
-          </button>
+          <button className="btn btn-primary" onClick={()=>setImp(x=>({...x,step:'confirm'}))}>Continue to Create →</button>
         </div>
       </>}
 
@@ -17416,7 +17448,7 @@ export default function App(){
             </div>
 
             <div style={{display:'flex',gap:8}}>
-              <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'questions'}))}>← Back</button>
+              <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'review'}))}>← Back</button>
               <button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
                 // Create new products for items marked "create_product"
                 const createdProducts=[];
@@ -17550,7 +17582,7 @@ export default function App(){
             <div style={{fontWeight:700,color:'#dc2626',marginBottom:8}}>⚠️ Render Error</div>
             <div style={{fontSize:12,fontFamily:'monospace',color:'#991b1b',whiteSpace:'pre-wrap'}}>{err?.message||String(err)}</div>
             <div style={{fontSize:11,color:'#64748b',marginTop:8}}>Items: {imp.parsed?.length}, Questions: {imp.questions?.length}, Shipping: {JSON.stringify(imp.shipping)?.slice(0,100)}</div>
-            <button className="btn btn-secondary" style={{marginTop:12}} onClick={()=>setImp(x=>({...x,step:'questions'}))}>← Back to Questions</button>
+            <button className="btn btn-secondary" style={{marginTop:12}} onClick={()=>setImp(x=>({...x,step:'review'}))}>← Back to Review</button>
           </div>}})()}
       </>}
 
