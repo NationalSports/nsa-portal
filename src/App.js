@@ -20102,12 +20102,22 @@ export default function App(){
     const grouped=Object.keys(roles).map(r=>({role:r,label:roles[r],members:activeReps.filter(m=>m.role===r)})).filter(g=>g.members.length>0);
 
     const saveMember=(m)=>{
-      if(REPS.find(r=>r.id===m.id)){
+      const isExisting=!!REPS.find(r=>r.id===m.id);
+      if(isExisting){
         setREPS(prev=>prev.map(r=>r.id===m.id?m:r));
       } else {
         setREPS(prev=>[...prev,m]);
       }
+      // Mirror the change into the auth-enriched directory cache so the access table
+      // reflects the save immediately (otherwise it stays stale until next page refresh).
+      setTeamAuthData(prev=>{
+        if(!Array.isArray(prev))return prev;
+        if(isExisting)return prev.map(r=>r.id===m.id?{...r,...m}:r);
+        return[...prev,{...m,auth:null,status:'not_invited'}];
+      });
       setEditMember(null);nf('✅ '+m.name+' saved');
+      // Reconcile from server (picks up new auth status if email matches an existing auth user)
+      loadTeamAuth();
     };
     const deactivateMember=(id)=>{
       if(!window.confirm('Deactivate this employee? They won\'t be able to log in.'))return;
