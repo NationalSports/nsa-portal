@@ -4314,13 +4314,26 @@ export default function App(){
     }):myTodos;
     // Get assigned todos for this user (manually created)
     const myAssignedTodos=assignedTodos.filter(t=>t.status==='open'&&(t.assigned_to===cu.id||t.created_by===cu.id));
-    const _todoComplete=(id,note)=>{
+    const _todoComplete=async(id,note)=>{
       const ts=new Date().toISOString();
       const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};
       if(note)upd.completion_note=note;
-      setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,...upd}:x));
+      let prevTask=null;
+      setAssignedTodos(prev=>prev.map(x=>{if(x.id!==id)return x;prevTask=x;return{...x,...upd}}));
       if(_dbSnap.current.assignedTodos)_dbSnap.current.assignedTodos=_dbSnap.current.assignedTodos.map(x=>x.id===id?{...x,...upd}:x);
-      if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));
+      if(supabase){
+        const r=await _dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id));
+        if(r&&r.error){
+          console.error('[DB] todo complete:',r.error);
+          // Revert optimistic update so the task reappears with status='open'
+          if(prevTask){
+            setAssignedTodos(prev=>prev.map(x=>x.id===id?prevTask:x));
+            if(_dbSnap.current.assignedTodos)_dbSnap.current.assignedTodos=_dbSnap.current.assignedTodos.map(x=>x.id===id?prevTask:x);
+          }
+          nf('Could not save task completion: '+(r.error.message||r.error.code||'unknown error'),'error');
+          return;
+        }
+      }
       nf('Task completed!')
     };
     const _todoDelete=(id)=>{if(!window.confirm('Delete this task? This cannot be undone.'))return;setAssignedTodos(prev=>prev.filter(x=>x.id!==id));if(_dbSnap.current.assignedTodos)_dbSnap.current.assignedTodos=_dbSnap.current.assignedTodos.filter(x=>x.id!==id);if(supabase){supabase.from('todo_comments').delete().eq('todo_id',id);supabase.from('assigned_todos').delete().eq('id',id)}nf('Task deleted')};
