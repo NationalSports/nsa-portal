@@ -632,13 +632,13 @@ const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
   // Optimistic locking: check version before saving (auto-heal on conflict)
   if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true&&typeof vc==='number')est._version=vc}
-  return _dbSavingGuard(async()=>{let decoFailed=false;try{
+  return _dbSavingGuard(async()=>{let decoFailed=false;let _failMsg='';try{
     const{items,art_files,...estRow}=est;
     let{error:estErr}=await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
     if(estErr){
       const coreEstRow={};Object.keys(_pick(estRow,_estCols)).forEach(k=>{if(!_estExtraCols.has(k))coreEstRow[k]=_pick(estRow,_estCols)[k]});
       const retry=await supabase.from('estimates').upsert(coreEstRow,{onConflict:'id'});
-      if(retry.error){console.error('[DB] estimates upsert failed:',retry.error.message);decoFailed=true}
+      if(retry.error){console.error('[DB] estimates upsert failed:',retry.error.message);decoFailed=true;_failMsg='estimates: '+retry.error.message}
       else console.warn('[DB] estimate saved with core columns only')
     }
     // Delete old children — must delete grandchildren (decorations) BEFORE estimate_items due to FK constraints
@@ -700,7 +700,7 @@ const _dbSaveEstimateInner = async (est) => {
           // Also try core rows with product_id nulled
           const coreNullPid=coreRows.map(r=>({...r,product_id:null}));
           const retry2=await supabase.from('estimate_items').insert(coreNullPid).select('id');
-          if(retry2.error){console.error('[DB] estimate_items batch insert failed:',retry2.error.message,retry2.error.details);decoFailed=true}
+          if(retry2.error){console.error('[DB] estimate_items batch insert failed:',retry2.error.message,retry2.error.details);decoFailed=true;_failMsg='estimate_items: '+retry2.error.message+(retry2.error.details?' ('+retry2.error.details+')':'')}
           else{insertedItems=retry2.data;console.warn('[DB] estimate items saved with core columns + product_id nulled')}
         }
         else{insertedItems=retry.data;console.warn('[DB] estimate items saved with core columns only')}
@@ -717,24 +717,24 @@ const _dbSaveEstimateInner = async (est) => {
         if(decoErr){
           const coreRows=allDecoRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_decoExtraCols.has(k))cr[k]=r[k]});return cr});
           const{error:coreErr}=await supabase.from('estimate_item_decorations').insert(coreRows);
-          if(coreErr){decoFailed=true;console.error('[DB] estimate_item_decorations batch failed:',coreErr.message)}
+          if(coreErr){decoFailed=true;_failMsg='estimate_item_decorations: '+coreErr.message+(coreErr.details?' ('+coreErr.details+')':'');console.error('[DB] estimate_item_decorations batch failed:',coreErr.message)}
           else console.warn('[DB] estimate decos saved with core columns only')
         }
       }
     }
-    if(decoFailed){_dbSaveFailedIds.add(est.id);_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete — some data may not have been saved to cloud','error');return false}
-    _dbSaveFailedIds.delete(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();
+    if(decoFailed){_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,_failMsg||'unknown estimate save error');_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete: '+(_failMsg||'see console'),'error');return false}
+    _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();
     // Bump local version to match server (DB trigger increments on UPDATE)
     if(est._version)est._version=est._version+1;
     return true;
-  }catch(e){console.error('[DB] save estimate:',e);_dbSaveFailedIds.add(est.id);_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
+  }catch(e){console.error('[DB] save estimate:',e);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
 const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateInner);
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
   // Optimistic locking: check version before saving (auto-heal on conflict)
   if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number')so._version=vc}
-  return _dbSavingGuard(async()=>{let saveFailed=false;try{
+  return _dbSavingGuard(async()=>{let saveFailed=false;let _failMsg='';try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     // Save SO row FIRST (FK constraint requires it before items), but with OLD updated_at
     // We'll bump updated_at LAST so cross-tab polls don't see stale items
@@ -747,7 +747,7 @@ const _dbSaveSOInner = async (so) => {
     if(soErr){
       const coreSoRow={};Object.keys(soRowInitial).forEach(k=>{if(!_soExtraCols.has(k))coreSoRow[k]=soRowInitial[k]});
       const retry=await supabase.from('sales_orders').upsert(coreSoRow,{onConflict:'id'});
-      if(retry.error){console.error('[DB] sales_orders upsert failed:',retry.error.message);saveFailed=true}
+      if(retry.error){console.error('[DB] sales_orders upsert failed:',retry.error.message);saveFailed=true;_failMsg='sales_orders: '+retry.error.message}
       else console.warn('[DB] SO saved with core columns only')
     }
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
@@ -782,8 +782,8 @@ const _dbSaveSOInner = async (so) => {
         if(jobErr.message?.includes('schema cache')||jobErr.message?.includes('column')||jobErr.code==='PGRST204'||jobErr.message?.includes('not found')){
           const coreRows=jobRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_jobExtraCols.has(k))cr[k]=r[k]});return cr});
           const{error:jobErr2}=await supabase.from('so_jobs').upsert(coreRows,{onConflict:'so_id,id'});
-          if(jobErr2){console.error('[DB] so_jobs upsert failed (core):',jobErr2.message,jobErr2.details);saveFailed=true}
-        }else{console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true}
+          if(jobErr2){console.error('[DB] so_jobs upsert failed (core):',jobErr2.message,jobErr2.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr2.message)}
+        }else{console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr.message)}
       }
       // Delete jobs that no longer exist
       const currentJobIds=jobs.map(j=>j.id).filter(Boolean);
@@ -805,9 +805,9 @@ const _dbSaveSOInner = async (so) => {
           console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
           const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
           const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
-          if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true}
+          if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr2.message)}
           else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
-        }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true}
+        }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message)}
       }
       // Delete art files that no longer exist
       const currentAfIds=art_files.map(a=>a.id).filter(Boolean);
@@ -818,8 +818,8 @@ const _dbSaveSOInner = async (so) => {
       }
     }
     // If art_files is empty/undefined, leave existing DB art files untouched to prevent accidental data loss
-    if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true}}
-    if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}_dbSaveFailedIds.delete(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
+    if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+fdErr.message)}}
+    if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}_dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
     const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}});
     let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id');
@@ -836,7 +836,7 @@ const _dbSaveSOInner = async (so) => {
         if(retry.error){
           const coreNullPid=coreRows.map(r=>({...r,product_id:null}));
           const retry2=await supabase.from('so_items').insert(coreNullPid).select('id');
-          if(retry2.error){console.error('[DB] so_items batch insert failed:',retry2.error.message,retry2.error.details);saveFailed=true}
+          if(retry2.error){console.error('[DB] so_items batch insert failed:',retry2.error.message,retry2.error.details);saveFailed=true;_failMsg=_failMsg||('so_items: '+retry2.error.message+(retry2.error.details?' ('+retry2.error.details+')':''))}
           else{insertedItems=retry2.data;console.warn('[DB] so items saved with core columns + product_id nulled')}
         }
         else{insertedItems=retry.data;console.warn('[DB] so items saved with core columns only')}
@@ -861,14 +861,14 @@ const _dbSaveSOInner = async (so) => {
         if(decoErr){
           const coreRows=allDecoRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_decoExtraCols.has(k))cr[k]=r[k]});return cr});
           const{error:coreErr}=await supabase.from('so_item_decorations').insert(coreRows);
-          if(coreErr){saveFailed=true;console.error('[DB] so_item_decorations batch failed:',coreErr.message)}
+          if(coreErr){saveFailed=true;_failMsg=_failMsg||('so_item_decorations: '+coreErr.message+(coreErr.details?' ('+coreErr.details+')':''));console.error('[DB] so_item_decorations batch failed:',coreErr.message)}
           else console.warn('[DB] so decos saved with core columns only')
         }
       }
       // Batch insert pick lines
       if(allPickRows.length){
         const{error:pickErr}=await supabase.from('so_item_pick_lines').insert(allPickRows);
-        if(pickErr){saveFailed=true;console.error('[DB] so_item_pick_lines batch failed:',pickErr.message)}
+        if(pickErr){saveFailed=true;_failMsg=_failMsg||('so_item_pick_lines: '+pickErr.message);console.error('[DB] so_item_pick_lines batch failed:',pickErr.message)}
       }
       // Batch insert PO lines
       if(allPoRows.length){
@@ -876,7 +876,7 @@ const _dbSaveSOInner = async (so) => {
         const{error:poErr}=await supabase.from('so_item_po_lines').insert(allPoRows);
         if(poErr){
           const{error:coreErr}=await supabase.from('so_item_po_lines').insert(corePoRows);
-          if(coreErr){saveFailed=true;console.error('[DB] so_item_po_lines batch failed:',coreErr.message)}
+          if(coreErr){saveFailed=true;_failMsg=_failMsg||('so_item_po_lines: '+coreErr.message);console.error('[DB] so_item_po_lines batch failed:',coreErr.message)}
           else console.warn('[DB] PO lines saved without billed/tracking_numbers columns')
         }
       }
@@ -885,12 +885,12 @@ const _dbSaveSOInner = async (so) => {
     if(finalUpdatedAt!==existingSO?.updated_at){
       await supabase.from('sales_orders').update({updated_at:finalUpdatedAt}).eq('id',so.id);
     }
-    if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}
-    _dbSaveFailedIds.delete(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();
+    if(saveFailed){_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
+    _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();
     // Bump local version to match server (DB trigger increments on UPDATE)
     if(so._version)so._version=so._version+1;
     return true;
-  }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
+  }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
 const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address'];
@@ -905,7 +905,7 @@ const _dbSaveInvoice = async (inv) => {
       console.warn('[DB] invoices upsert failed, retrying without extra cols:',invErr.message);
       const coreRow={};Object.keys(invRow).forEach(k=>{if(!_invExtraCols.has(k))coreRow[k]=invRow[k]});
       const{error:invErr2}=await supabase.from('invoices').upsert(coreRow,{onConflict:'id'});
-      if(invErr2){console.error('[DB] invoices upsert failed (core):',invErr2.message);_dbSaveFailedIds.add(inv.id);_persistFailedIds();return false}
+      if(invErr2){console.error('[DB] invoices upsert failed (core):',invErr2.message);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoices: '+invErr2.message);_persistFailedIds();return false}
     }
     // Sync payments: upsert current, then delete removed (avoids DELETE+INSERT race condition)
     if(payments?.length){
@@ -927,8 +927,8 @@ const _dbSaveInvoice = async (inv) => {
       await supabase.from('invoice_items').delete().eq('invoice_id',inv.id);
       await supabase.from('invoice_items').insert(items.map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description,invoice_id:inv.id})));
     }
-    _dbSaveFailedIds.delete(inv.id);_persistFailedIds();return true;
-  }catch(e){console.error('[DB] save invoice:',e);_dbSaveFailedIds.add(inv.id);_persistFailedIds();return false}});
+    _dbSaveFailedIds.delete(inv.id);_clearSaveError(inv.id);_persistFailedIds();return true;
+  }catch(e){console.error('[DB] save invoice:',e);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,e.message||String(e));_persistFailedIds();return false}});
 };
 let _dbNotify=null; // set by App component for visible error toasts
 const _dbSaveCustomer = async (c) => {
@@ -944,7 +944,7 @@ const _dbSaveCustomer = async (c) => {
       // Retry without art_files if column doesn't exist yet
       const coreCols=_custCols.filter(c2=>c2!=='art_files');
       const retry=await supabase.from('customers').upsert(_pick(custRow,coreCols),{onConflict:'id'});
-      if(retry.error){console.error('[DB] save customer upsert error:',retry.error.message);_dbSaveFailedIds.add(c.id);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+retry.error.message,'error');return false}
+      if(retry.error){console.error('[DB] save customer upsert error:',retry.error.message);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'customers: '+retry.error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+retry.error.message,'error');return false}
       else{console.warn('[DB] customer saved without art_files column (run migration 00027)')}
     }
     // Upsert contacts then delete removed ones (avoids DELETE+INSERT race condition)
@@ -963,11 +963,11 @@ const _dbSaveCustomer = async (c) => {
       }
     }
     // If contacts is empty/undefined, leave existing DB contacts untouched to prevent accidental data loss
-    _dbSaveFailedIds.delete(c.id);_persistFailedIds();_dbRecentSaves[c.id]=Date.now();
+    _dbSaveFailedIds.delete(c.id);_clearSaveError(c.id);_persistFailedIds();_dbRecentSaves[c.id]=Date.now();
     // Bump local version to match server (DB trigger increments on UPDATE)
     if(c._version)c._version=c._version+1;
     console.log('[DB] Customer saved:',c.id,c.name);return true;
-  }catch(e){console.error('[DB] save customer:',e);_dbSaveFailedIds.add(c.id);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
+  }catch(e){console.error('[DB] save customer:',e);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
 };
 const _dbSavePromoProgram = async (prog) => {
   if(!supabase)return false;
@@ -1053,14 +1053,14 @@ const _dbSaveProduct = async (p) => {
       // Duplicate SKU: another product already owns this SKU — suppress all future saves for this ID
       if(error.message?.includes('products_sku_unique')||error.message?.includes('duplicate key value')){
         console.warn('[DB] Duplicate SKU',p.sku,'for id',p.id,'— suppressing future saves');
-        _dbDuplicateSkuIds.add(p.id);_persistDuplicateSkuIds();_dbSaveFailedIds.delete(p.id);_persistFailedIds();return true;
+        _dbDuplicateSkuIds.add(p.id);_persistDuplicateSkuIds();_dbSaveFailedIds.delete(p.id);_clearSaveError(p.id);_persistFailedIds();return true;
       }
       // If image columns don't exist yet, retry without them (product data still saves)
       if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('color_category')||error.message?.includes('is_archived')){
         const{image_front_url,image_back_url,color_category,is_archived,...rowNoExtra}=row;
         const{error:e2}=await supabase.from('products').upsert(rowNoExtra,{onConflict:'id'});
-        if(e2){if(e2.message?.includes('products_sku_unique')||e2.message?.includes('duplicate key value')){console.warn('[DB] Skipping duplicate SKU:',p.sku);return false}console.error('[DB] save product (no extra cols):',e2.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
-      }else{console.error('[DB] save product:',error.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error');return false}
+        if(e2){if(e2.message?.includes('products_sku_unique')||e2.message?.includes('duplicate key value')){console.warn('[DB] Skipping duplicate SKU:',p.sku);return false}console.error('[DB] save product (no extra cols):',e2.message);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,'products: '+e2.message);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
+      }else{console.error('[DB] save product:',error.message);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,'products: '+error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error');return false}
     }
     // Always save product images to app_state as reliable backup (works even without image columns)
     const _imgF=p.image_url||p.image_front_url||null;const _imgB=p.back_image_url||p.image_back_url||null;const _imgG=p.images||null;
@@ -1073,8 +1073,8 @@ const _dbSaveProduct = async (p) => {
       const rows=[...allSizes].map(sz=>({product_id:p.id,size:sz,quantity:_inv[sz]||0,alert_threshold:_alerts[sz]||null}));
       await supabase.from('product_inventory').upsert(rows,{onConflict:'product_id,size'});
     }
-    _dbSaveFailedIds.delete(p.id);_persistFailedIds();return true;
-  }catch(e){console.error('[DB] save product:',e);_dbSaveFailedIds.add(p.id);_persistFailedIds();return false}
+    _dbSaveFailedIds.delete(p.id);_clearSaveError(p.id);_persistFailedIds();return true;
+  }catch(e){console.error('[DB] save product:',e);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,e.message||String(e));_persistFailedIds();return false}
 };
 const _dbSaveMessage = async (m) => {
   if(!supabase)return;
@@ -1085,8 +1085,8 @@ const _dbSaveMessage = async (m) => {
     const{error}=await supabase.from('messages').upsert(coreRow,{onConflict:'id'});
     if(error){
       // FK violation on so_id means the SO hasn't been saved yet — skip silently and retry later
-      if(error.message?.includes('messages_so_id_fkey')){console.warn('[DB] message save deferred — SO not yet in DB:',m.so_id);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false}
-      console.error('[DB] save message:',error.message);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false;
+      if(error.message?.includes('messages_so_id_fkey')){console.warn('[DB] message save deferred — SO not yet in DB:',m.so_id);_dbSaveFailedIds.add(m.id);_recordSaveError(m.id,'messages (FK): waiting for SO to save');_persistFailedIds();return false}
+      console.error('[DB] save message:',error.message);_dbSaveFailedIds.add(m.id);_recordSaveError(m.id,'messages: '+error.message);_persistFailedIds();return false;
     }
     // Try to save extra columns (tagged_members, entity_type, etc.) — silently ignore if columns don't exist yet
     const extraRow={id:m.id};let hasExtra=false;_msgExtraCols.forEach(k=>{if(k in row&&row[k]!=null){extraRow[k]=row[k];hasExtra=true}});
@@ -1095,8 +1095,8 @@ const _dbSaveMessage = async (m) => {
       const reads=m.read_by.map(uid=>({message_id:m.id,user_id:uid}));
       await supabase.from('message_reads').upsert(reads,{onConflict:'message_id,user_id'});
     }
-    _dbSaveFailedIds.delete(m.id);_persistFailedIds();return true;
-  }catch(e){console.error('[DB] save message:',e);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false}
+    _dbSaveFailedIds.delete(m.id);_clearSaveError(m.id);_persistFailedIds();return true;
+  }catch(e){console.error('[DB] save message:',e);_dbSaveFailedIds.add(m.id);_recordSaveError(m.id,e.message||String(e));_persistFailedIds();return false}
 };
 // ─── Delete Helpers ───
 const _dbDeleteEstimate = async (id) => {
@@ -1197,6 +1197,11 @@ try{['nsa_auto_backup','nsa_auto_backup_ts','nsa_change_log','nsa_so_history','n
 // Track IDs of estimates/SOs whose save failed — prevents reload/poll from overwriting local state
 // Persisted to localStorage so protection survives page refresh
 const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_ids')||'[]'));
+// Track WHY each save failed — surfaced in the banner so the team can see real DB errors
+// instead of just a count. Persisted alongside the IDs so the diagnosis survives reload.
+const _dbSaveFailedErrors=(()=>{try{const raw=localStorage.getItem('nsa_save_failed_errors');return raw?new Map(Object.entries(JSON.parse(raw))):new Map()}catch{return new Map()}})();
+const _recordSaveError=(id,msg)=>{if(!id)return;_dbSaveFailedErrors.set(id,{msg:String(msg||'unknown error').slice(0,400),ts:Date.now()});try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}};
+const _clearSaveError=(id)=>{if(!id)return;if(_dbSaveFailedErrors.delete(id)){try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}}};
 let _onFailedIdsChange=null;// set by App component to trigger UI updates
 const _persistFailedIds=()=>{_lsSet('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]));if(_onFailedIdsChange)_onFailedIdsChange(_dbSaveFailedIds.size)};
 // On startup, clear any duplicate-SKU product IDs from failed saves (they'll never succeed)
@@ -1918,6 +1923,8 @@ export default function App(){
   const[dbLoading,setDbLoading]=useState(!!supabase);const[dbError,setDbError]=useState(null);const _dbReady=useRef(false);const _dbLoadSuccess=useRef(false);
   const _runPollRef=useRef(null);const _lastNavRefreshAt=useRef(0);
   const[failedSaveCount,setFailedSaveCount]=useState(_dbSaveFailedIds.size);_onFailedIdsChange=setFailedSaveCount;
+  const[failedSaveOpen,setFailedSaveOpen]=useState(false);
+  const[failedSaveBusy,setFailedSaveBusy]=useState(false);
   const[cacheFull,setCacheFull]=useState(_lsQuotaWarned);_onCacheFullChange=setCacheFull;
   // Snapshot of last DB-loaded data — used to diff auto-save and only write changed records
   const _dbSnap=useRef({});
@@ -2165,7 +2172,7 @@ export default function App(){
           // Clean up failed IDs for entities that were deleted — prevents permanent error banner
           if(_dbSaveFailedIds.size){const d2=_visFlushRefs.current;const allIds2=new Set([...d2.ests,...d2.sos,...d2.invs,...d2.cust,...d2.prod,...d2.msgs].map(e=>e.id));
           const orphaned2=[..._dbSaveFailedIds].filter(id=>!allIds2.has(id));
-          if(orphaned2.length){orphaned2.forEach(id=>{_dbSaveFailedIds.delete(id);console.log('[DB] Startup cleanup — cleared orphaned failed ID:',id)});_persistFailedIds()}}
+          if(orphaned2.length){orphaned2.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);console.log('[DB] Startup cleanup — cleared orphaned failed ID:',id)});_persistFailedIds()}}
         },100);
       }}
     })();
@@ -2954,7 +2961,7 @@ export default function App(){
       // Clean up failed IDs for entities that no longer exist in state (deleted by user)
       const d=_visFlushRefs.current;const allIds=new Set([...d.ests,...d.sos,...d.invs,...d.cust,...d.prod,...d.msgs].map(e=>e.id));
       const orphaned=[..._dbSaveFailedIds].filter(id=>!allIds.has(id));
-      if(orphaned.length){orphaned.forEach(id=>{_dbSaveFailedIds.delete(id);console.log('[DB] Cleared orphaned failed ID:',id)});_persistFailedIds();if(!_dbSaveFailedIds.size){_retryBackoff.current=60000;scheduleRetry();return}}
+      if(orphaned.length){orphaned.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);console.log('[DB] Cleared orphaned failed ID:',id)});_persistFailedIds();if(!_dbSaveFailedIds.size){_retryBackoff.current=60000;scheduleRetry();return}}
       // Skip IDs that were recently saved (prevents rapid re-conflict loops)
       const retryIds=[..._dbSaveFailedIds].filter(id=>!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000));
       if(!retryIds.length){scheduleRetry();return}
@@ -22171,9 +22178,44 @@ export default function App(){
         <button onClick={()=>{try{const heavyKeys=['nsa_auto_backup','nsa_auto_backup_ts','nsa_cust','nsa_ests','nsa_sos','nsa_invs','nsa_msgs','nsa_prod','nsa_vend','nsa_change_log','nsa_so_history','nsa_inv_adj_log','nsa_wh_recent'];heavyKeys.forEach(k=>{try{localStorage.removeItem(k)}catch{}});const keys=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('nsa_snap_'))keys.push(k)}keys.forEach(k=>localStorage.removeItem(k));_lsQuotaWarned=false;setCacheFull(false);console.log('[Storage] Cleared heavy cache keys + snap keys')}catch(e){console.error('[Storage] cache clear failed:',e)}}} style={{background:'#1e40af',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Clear Cache</button>
         <button onClick={()=>setCacheFull(false)} style={{background:'none',border:'none',color:'#1e40af',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
       </div>}
-      {failedSaveCount>0&&<div style={{padding:'8px 16px',background:'#fefce8',border:'1px solid #fde68a',color:'#92400e',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
-        <span style={{fontSize:14}}>&#9888;</span><span style={{flex:1}}>{failedSaveCount} item{failedSaveCount>1?'s':''} failed to save to cloud. Auto-retrying every 30s. Your data is safe locally.</span>
-        <span style={{fontSize:11,color:'#b45309',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{(()=>{const ids=[..._dbSaveFailedIds];return ids.length<=3?ids.join(', '):ids.slice(0,3).join(', ')+' +' +(ids.length-3)+' more'})()}</span>
+      {failedSaveCount>0&&<div style={{background:'#fefce8',border:'1px solid #fde68a',color:'#92400e',fontSize:12,fontWeight:600}}>
+        <div style={{padding:'8px 16px',display:'flex',alignItems:'center',gap:8}}>
+          <span style={{fontSize:14}}>&#9888;</span>
+          <span style={{flex:1}}>{failedSaveCount} item{failedSaveCount>1?'s':''} failed to save to cloud. Auto-retrying in the background. Your data is safe locally.</span>
+          <button disabled={failedSaveBusy} onClick={async()=>{
+            setFailedSaveBusy(true);
+            const ids=[..._dbSaveFailedIds];let ok=0,fail=0;
+            for(const id of ids){
+              const sid=String(id);let r=null;
+              try{
+                if(sid.startsWith('EST-')){const it=ests.find(e=>e.id===id);if(it)r=await _dbSaveEstimate(it)}
+                else if(sid.startsWith('SO-')){const it=sos.find(s=>s.id===id);if(it)r=await _dbSaveSO(it)}
+                else if(sid.startsWith('INV-')){const it=invs.find(i=>i.id===id);if(it)r=await _dbSaveInvoice(it)}
+                else if(sid.startsWith('MSG-')){const it=msgs.find(m=>m.id===id);if(it)r=await _dbSaveMessage(it)}
+                else{const c=cust.find(x=>x.id===id);if(c){r=await _dbSaveCustomer(c)}else{const p=prod.find(x=>x.id===id);if(p)r=await _dbSaveProduct(p)}}
+              }catch(e){console.error('[Retry] error for',id,e);r=false}
+              if(r===false||r==null)fail++;else ok++;
+            }
+            setFailedSaveBusy(false);
+            nf((ok?ok+' saved':'')+(ok&&fail?' · ':'')+(fail?fail+' still failing':'')||'Nothing to retry',fail?'error':'success');
+          }} style={{background:'#92400e',border:'none',color:'#fff',cursor:failedSaveBusy?'wait':'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap',opacity:failedSaveBusy?0.6:1}}>{failedSaveBusy?'Retrying…':'Retry now'}</button>
+          <button onClick={()=>{
+            if(!window.confirm('Clear '+_dbSaveFailedIds.size+' failed-save flag(s)?\n\nUse this if the data is actually fine in the cloud (verified by reloading the page) but the flag is stuck. This does not delete any data.'))return;
+            const ids=[..._dbSaveFailedIds];ids.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id)});_persistFailedIds();
+            nf('Cleared '+ids.length+' failed-save flag(s)','success');
+          }} style={{background:'none',border:'1px solid #92400e',color:'#92400e',cursor:'pointer',fontWeight:600,fontSize:11,padding:'2px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Clear</button>
+          <button onClick={()=>setFailedSaveOpen(o=>!o)} style={{background:'none',border:'none',color:'#92400e',cursor:'pointer',fontWeight:700,fontSize:11,padding:'2px 4px'}}>{failedSaveOpen?'Hide details ▲':'Details ▼'}</button>
+        </div>
+        {failedSaveOpen&&<div style={{padding:'8px 16px 10px',borderTop:'1px solid #fde68a',background:'#fffbeb',maxHeight:240,overflowY:'auto',fontWeight:400}}>
+          {(()=>{const ids=[..._dbSaveFailedIds];if(!ids.length)return null;
+            return ids.slice(0,50).map(id=>{const err=_dbSaveFailedErrors.get(id);return(
+              <div key={id} style={{fontSize:11,padding:'4px 0',borderBottom:'1px dashed #fde68a',display:'flex',gap:8,alignItems:'flex-start'}}>
+                <span style={{fontWeight:700,minWidth:90,color:'#92400e'}}>{id}</span>
+                <span style={{flex:1,color:'#78350f',wordBreak:'break-word'}}>{err?err.msg:'(no error captured — pre-existing failure)'}</span>
+              </div>);
+            }).concat(ids.length>50?[<div key="more" style={{fontSize:11,padding:'4px 0',color:'#78350f',fontStyle:'italic'}}>+ {ids.length-50} more not shown</div>]:[]);
+          })()}
+        </div>}
       </div>}
       <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='search'&&rSearch()}</>}</div></div>
     {/* Assignment Modal — global, triggered from warehouse or production board */}
