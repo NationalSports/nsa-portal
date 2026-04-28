@@ -5998,6 +5998,7 @@ export default function App(){
           <th style={{cursor:'pointer'}} onClick={()=>toggleSort('units')}>Units {sortIcon('units')}</th>
           <th>Art</th><th>Items</th><th>Ready?</th><th>Board</th>
           <th style={{cursor:'pointer'}} onClick={()=>toggleSort('expected')}>Due {sortIcon('expected')}</th>
+          {isA&&<th></th>}
         </tr></thead><tbody>
         {fj.map(j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
           const ready=isJobReady(j,j.so);
@@ -6020,6 +6021,17 @@ export default function App(){
               :<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:ready?'#166534':'#64748b',color:'white',border:'none'}}
                 onClick={()=>promoteJob(j)}>→ Board</button>}</td>
             <td style={{fontSize:11,color:j.daysOut!=null&&j.daysOut<=7?'#dc2626':'#64748b',fontWeight:j.daysOut!=null&&j.daysOut<=3?700:400}}>{j.expected||'—'}{j.daysOut!=null&&j.daysOut<=3?' ⚠️':''}</td>
+            {isA&&<td onClick={e=>e.stopPropagation()}>
+              <button title={'Delete '+j.id+' (admin only)'} style={{background:'transparent',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:11,color:'#dc2626'}} onClick={()=>{
+                if(!window.confirm('Delete '+j.id+' ('+(j.art_name||'unnamed')+')?\n\nThis removes the job from '+j.soId+' and deletes the so_jobs row from the database. The SO itself stays.'))return;
+                const so=sos.find(s=>s.id===j.soId);
+                if(!so){nf(j.soId+' not found','error');return}
+                const updated={...so,jobs:safeJobs(so).filter(jj=>jj.id!==j.id),updated_at:new Date().toLocaleString()};
+                setSOs(prev=>prev.map(s=>s.id===so.id?updated:s));
+                _dbSaveSO(updated);
+                nf('Deleted '+j.id)
+              }}>🗑</button>
+            </td>}
           </tr>})}
         </tbody></table>}
       </div></div>
