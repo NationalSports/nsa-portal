@@ -3372,6 +3372,27 @@ export default function App(){
   const handleLogin=(user)=>{setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
 
+  // Detect stale legacy sessions — users with nsa_user in localStorage from before Supabase
+  // auth was added bypass LoginGate but have no JWT, so every write to an RLS-protected
+  // table fails with 401. Force them to sign in again so writes get a valid auth.uid().
+  React.useEffect(()=>{
+    if(!supabase||!cu)return;
+    let cancelled=false;
+    (async()=>{
+      // Supabase session restore is async on first load — retry briefly before kicking out
+      for(let i=0;i<10&&!cancelled;i++){
+        const{data}=await supabase.auth.getSession();
+        if(data?.session)return;
+        await new Promise(r=>setTimeout(r,200));
+      }
+      if(cancelled)return;
+      console.warn('[Auth] Cached user has no Supabase session — forcing re-login to restore RLS access');
+      setCu(null);try{localStorage.removeItem('nsa_user')}catch{}
+      setTimeout(()=>{if(typeof nf==='function')nf('Your session expired. Please sign in again so saves can sync to the cloud.','error')},150);
+    })();
+    return()=>{cancelled=true};
+  },[]);// eslint-disable-line react-hooks/exhaustive-deps
+
   // Auto-load Team Access data the first time an admin opens the Team page.
   // Defined here (after `cu` is declared) so the dependency array doesn't hit
   // a TDZ at render time.
