@@ -3084,8 +3084,6 @@ export default function App(){
   const[soBackPg,setSoBackPg]=useState(null);// page to return to when closing SO editor
   const prevPgRef=React.useRef(pg);
   React.useEffect(()=>{if(pg!==prevPgRef.current){if(pg==='orders')setSoBackPg(prevPgRef.current);else setSoBackPg(null);if(pg==='estimates')setEstBackPg(prevPgRef.current);else setEstBackPg(null);prevPgRef.current=pg}},[pg]);
-  // Auto-load team auth data when an admin opens the Team page in access mode.
-  React.useEffect(()=>{if(pg==='team'&&teamTab==='access'&&teamAuthData==null&&!teamAuthLoading&&(cu?.role==='admin'||cu?.role==='super_admin'))loadTeamAuth()},[pg,teamTab,teamAuthData,teamAuthLoading,cu]);// eslint-disable-line
   // Recently viewed records
   const[recentlyViewed,setRecentlyViewed]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_recent')||'[]')}catch{return[]}});
   const[recentOpen,setRecentOpen]=useState(false);
@@ -3366,6 +3364,11 @@ export default function App(){
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
   const handleLogin=(user)=>{setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
+
+  // Auto-load Team Access data the first time an admin opens the Team page.
+  // Defined here (after `cu` is declared) so the dependency array doesn't hit
+  // a TDZ at render time.
+  React.useEffect(()=>{if(pg==='team'&&teamTab==='access'&&teamAuthData==null&&!teamAuthLoading&&(cu?.role==='admin'||cu?.role==='super_admin')&&typeof loadTeamAuth==='function')loadTeamAuth()},[pg,teamTab,teamAuthData,teamAuthLoading,cu]);// eslint-disable-line
 
   // Sync current user's access/role from REPS when team data changes (e.g. admin updated page access)
   React.useEffect(()=>{
