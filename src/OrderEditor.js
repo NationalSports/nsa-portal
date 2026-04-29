@@ -1126,7 +1126,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Promo auto-repair removed — use "Apply Promo Funds" in Actions dropdown instead
 
   const addrs=useMemo(()=>getAddrs(cust,allCustomers),[cust,allCustomers]);
-  const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+q}})});return m},[o]);
+  const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+q*(d.reversible?2:1)}})});return m},[o]);
   const totals=useMemo(()=>{let rev=0,cost=0;safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;
     // Use per-size sells/costs when available (vendor items have _sizeCosts/_sizeSells for 2XL+ upcharges)
     if(it._sizeCosts&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0){rev+=n*(it._sizeSells?.[sz]||safeNum(it.unit_sell));cost+=n*(it._sizeCosts[sz]||safeNum(it.nsa_cost))}})}else{rev+=q*safeNum(it.unit_sell);cost+=q*safeNum(it.nsa_cost)}
@@ -1967,8 +1967,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       if(isTbd)return null;
                       if((artF.color_ways||[]).length>0){
                         if(artF.color_ways.length===1&&!deco.color_way_id){setTimeout(()=>uD(idx,di,'color_way_id',artF.color_ways[0].id),0)}
+                        const cwOpts=artF.color_ways.map((cw,ci)=><option key={cw.id} value={cw.id}>CW {ci+1}{cw.garment_color?' - '+cw.garment_color:''} ({cw.inks.filter(c=>c.trim()).length}c)</option>);
+                        if(deco.reversible&&artF.color_ways.length>=2){
+                          return<div style={{display:'flex',flexDirection:'column',gap:4}}>
+                            <div style={{display:'flex',alignItems:'center',gap:6}}>
+                              <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:46}}>Side A</span>
+                              <select className="form-select" style={{width:160,fontSize:11,borderColor:'#67e8f9'}} value={deco.color_way_id||''} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>
+                                <option value="">Select CW...</option>{cwOpts}</select>
+                            </div>
+                            <div style={{display:'flex',alignItems:'center',gap:6}}>
+                              <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:46}}>Side B</span>
+                              <select className="form-select" style={{width:160,fontSize:11,borderColor:'#67e8f9'}} value={deco.color_way_id_b||''} onChange={e=>uD(idx,di,'color_way_id_b',e.target.value||null)}>
+                                <option value="">Select CW...</option>{cwOpts}</select>
+                            </div>
+                          </div>;
+                        }
                         return<select className="form-select" style={{width:160,fontSize:11}} value={deco.color_way_id||(artF.color_ways.length===1?artF.color_ways[0].id:'')} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>
-                        {artF.color_ways.length>1&&<option value="">Select CW...</option>}{artF.color_ways.map((cw,ci)=><option key={cw.id} value={cw.id}>CW {ci+1}{cw.garment_color?' - '+cw.garment_color:''} ({cw.inks.filter(c=>c.trim()).length}c)</option>)}</select>}
+                        {artF.color_ways.length>1&&<option value="">Select CW...</option>}{cwOpts}</select>}
                       if(artF.ink_colors)return<span style={{fontSize:11,color:'#64748b'}}>{artF.ink_colors.split('\n').filter(l=>l.trim()).length} color(s)</span>;
                       if(artF.thread_colors)return<span style={{fontSize:11,color:'#64748b'}}>Thread: {artF.thread_colors}</span>;
                       return null})()}
@@ -2020,8 +2035,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>{deco.front_and_back?'Size (Front):':'Size:'}</span>
                 <Bg options={szOpts.map(s=>({value:s,label:s}))} value={deco.num_size||szOpts[0]} onChange={v=>uD(idx,di,'num_size',v)}/>
                 <label style={{fontSize:12,display:'flex',alignItems:'center',gap:4,marginLeft:4}}><input type="checkbox" checked={deco.two_color||false} onChange={e=>uD(idx,di,'two_color',e.target.checked)}/> 2-Color (+$3)</label>
-                <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>Color:</span>
-                <input className="form-input" style={{width:90,fontSize:12,padding:'2px 6px'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
+                {deco.reversible?(()=>{
+                  const sideLabels=(()=>{
+                    const artD=safeDecos(item).find(dd=>dd.kind==='art'&&dd.reversible&&dd.color_way_id&&dd.color_way_id_b);
+                    if(artD){const art=af.find(f=>f.id===artD.art_file_id);if(art&&art.color_ways){
+                      const cwA=art.color_ways.find(c=>c.id===artD.color_way_id);
+                      const cwB=art.color_ways.find(c=>c.id===artD.color_way_id_b);
+                      if(cwA||cwB)return[cwA?.garment_color||'Side A',cwB?.garment_color||'Side B']}}
+                    if(item.color&&item.color.includes('/')){const[a,b]=item.color.split('/').map(s=>s.trim());return[a||'Side A',b||'Side B']}
+                    return['Side A','Side B']})();
+                  return<div style={{display:'flex',flexDirection:'column',gap:4}}>
+                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:80}}>{sideLabels[0]} color</span>
+                      <input className="form-input" style={{width:110,fontSize:12,padding:'2px 6px',borderColor:'#67e8f9'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:80}}>{sideLabels[1]} color</span>
+                      <input className="form-input" style={{width:110,fontSize:12,padding:'2px 6px',borderColor:'#67e8f9'}} placeholder="e.g. Navy" value={deco.print_color_b||''} onChange={e=>uD(idx,di,'print_color_b',e.target.value)}/>
+                    </div>
+                  </div>})():<>
+                  <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>Color:</span>
+                  <input className="form-input" style={{width:90,fontSize:12,padding:'2px 6px'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
+                </>}
               </div>
               {deco.front_and_back&&<div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Size (Back):</span>
