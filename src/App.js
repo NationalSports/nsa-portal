@@ -4344,7 +4344,7 @@ export default function App(){
       if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));
       nf('Task completed!')
     };
-    const _todoDelete=(id)=>{if(!window.confirm('Delete this task? This cannot be undone.'))return;setAssignedTodos(prev=>prev.filter(x=>x.id!==id));if(_dbSnap.current.assignedTodos)_dbSnap.current.assignedTodos=_dbSnap.current.assignedTodos.filter(x=>x.id!==id);if(supabase){supabase.from('todo_comments').delete().eq('todo_id',id);supabase.from('assigned_todos').delete().eq('id',id)}nf('Task deleted')};
+    const _todoDelete=(id)=>{if(!window.confirm('Delete this task? This cannot be undone.'))return;setAssignedTodos(prev=>prev.filter(x=>x.id!==id));if(_dbSnap.current.assignedTodos)_dbSnap.current.assignedTodos=_dbSnap.current.assignedTodos.filter(x=>x.id!==id);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').delete().eq('id',id).then(r=>{if(r.error)console.error('[DB] todo delete:',r.error.message)}));nf('Task deleted')};
 
     // Shared data builders
     const{pullTasks,shipTasks,decoTasks}=buildWarehouseData();
