@@ -1971,18 +1971,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         if(deco.reversible&&artF.color_ways.length>=2){
                           const cwA=artF.color_ways.find(c=>c.id===deco.color_way_id);
                           const cwB=artF.color_ways.find(c=>c.id===deco.color_way_id_b);
-                          return<>
-                            <div style={{display:'flex',flexDirection:'column',gap:1}}>
-                              <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3}}>Side A{cwA?.garment_color?' — '+cwA.garment_color:''}</span>
+                          return<div style={{display:'flex',flexDirection:'column',gap:4}}>
+                            <div style={{display:'flex',alignItems:'center',gap:6}}>
+                              <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:46}}>Side A{cwA?.garment_color?' — '+cwA.garment_color:''}</span>
                               <select className="form-select" style={{width:160,fontSize:11,borderColor:'#67e8f9'}} value={deco.color_way_id||''} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>
                                 <option value="">Select CW...</option>{cwOpts}</select>
                             </div>
-                            <div style={{display:'flex',flexDirection:'column',gap:1}}>
-                              <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3}}>Side B{cwB?.garment_color?' — '+cwB.garment_color:''}</span>
+                            <div style={{display:'flex',alignItems:'center',gap:6}}>
+                              <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:46}}>Side B{cwB?.garment_color?' — '+cwB.garment_color:''}</span>
                               <select className="form-select" style={{width:160,fontSize:11,borderColor:'#67e8f9'}} value={deco.color_way_id_b||''} onChange={e=>uD(idx,di,'color_way_id_b',e.target.value||null)}>
                                 <option value="">Select CW...</option>{cwOpts}</select>
                             </div>
-                          </>;
+                          </div>;
                         }
                         return<select className="form-select" style={{width:160,fontSize:11}} value={deco.color_way_id||(artF.color_ways.length===1?artF.color_ways[0].id:'')} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>
                         {artF.color_ways.length>1&&<option value="">Select CW...</option>}{cwOpts}</select>}
@@ -2046,16 +2046,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       if(cwA||cwB)return[cwA?.garment_color||'Side A',cwB?.garment_color||'Side B']}}
                     if(item.color&&item.color.includes('/')){const[a,b]=item.color.split('/').map(s=>s.trim());return[a||'Side A',b||'Side B']}
                     return['Side A','Side B']})();
-                  return<>
-                    <div style={{display:'flex',flexDirection:'column',gap:1}}>
-                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3}}>{sideLabels[0]} color</span>
-                      <input className="form-input" style={{width:90,fontSize:12,padding:'2px 6px',borderColor:'#67e8f9'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
+                  return<div style={{display:'flex',flexDirection:'column',gap:4}}>
+                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:80}}>{sideLabels[0]} color</span>
+                      <input className="form-input" style={{width:110,fontSize:12,padding:'2px 6px',borderColor:'#67e8f9'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
                     </div>
-                    <div style={{display:'flex',flexDirection:'column',gap:1}}>
-                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3}}>{sideLabels[1]} color</span>
-                      <input className="form-input" style={{width:90,fontSize:12,padding:'2px 6px',borderColor:'#67e8f9'}} placeholder="e.g. Navy" value={deco.print_color_b||''} onChange={e=>uD(idx,di,'print_color_b',e.target.value)}/>
+                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:80}}>{sideLabels[1]} color</span>
+                      <input className="form-input" style={{width:110,fontSize:12,padding:'2px 6px',borderColor:'#67e8f9'}} placeholder="e.g. Navy" value={deco.print_color_b||''} onChange={e=>uD(idx,di,'print_color_b',e.target.value)}/>
                     </div>
-                  </>})():<>
+                  </div>})():<>
                   <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>Color:</span>
                   <input className="form-input" style={{width:90,fontSize:12,padding:'2px 6px'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
                 </>}
