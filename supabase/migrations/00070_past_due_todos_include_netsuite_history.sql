@@ -114,8 +114,9 @@ BEGIN
     END IF;
 
     INSERT INTO public.assigned_todos
-      (title, description, created_by, assigned_to, priority, status, source)
+      (id, title, description, created_by, assigned_to, priority, status, source)
     VALUES (
+      gen_random_uuid()::text,
       'Past-due invoices — ' || rep_record.cust_count || ' customer' ||
         CASE WHEN rep_record.cust_count <> 1 THEN 's' ELSE '' END ||
         ', $' || to_char(rep_record.total_owed, 'FM999,999,999.00'),
