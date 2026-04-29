@@ -15280,7 +15280,8 @@ export default function App(){
           savSO({...aso,art_files:safeArt(aso).map(a=>a.id===aj.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
           // 2. Handle notification
           if(notifyMethod==='email'&&ac.email){
-            const subj=encodeURIComponent('Artwork ready for approval — '+aj.art_name);
+            const _label=(aso.memo&&aso.memo.trim())||aj.art_name;
+            const subj=encodeURIComponent('Artwork ready for approval — '+_label);
             const body=encodeURIComponent(approvalNotifyModal.message);
             window.open('mailto:'+ac.email+'?subject='+subj+'&body='+body,'_blank');
           }else if(notifyMethod==='text'&&ac.phone){
