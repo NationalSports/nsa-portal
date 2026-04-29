@@ -6431,39 +6431,6 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Needs Art</div><div className="stat-value" style={{color:needsArt>0?'#d97706':''}}>{needsArt}</div></div>
         <div className="stat-card"><div className="stat-label">In Process</div><div className="stat-value" style={{color:'#2563eb'}}>{inProcess}</div></div>
       </div>
-      {/* Decorator Time Tracking — decorators see only their timers */}
-      {(()=>{
-        const myTimers=isDecorator?Object.entries(activeTimers).filter(([,t])=>t.person===cu?.name):Object.entries(activeTimers);
-        const myLogs=isDecorator?jobTimeLogs.filter(l=>l.person===cu?.name):jobTimeLogs;
-        if(myTimers.length===0&&myLogs.length===0)return null;
-        return<div className="card" style={{marginBottom:12,borderLeft:'3px solid #f59e0b'}}>
-          <div style={{padding:'10px 14px'}}>
-            <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:6}}>⏱️ {isDecorator?'My Time Tracking':'Time Tracking'}</div>
-            {myTimers.length>0&&<div style={{marginBottom:8}}>
-              <div style={{fontSize:10,fontWeight:600,color:'#166534',marginBottom:4}}>ACTIVE NOW:</div>
-              {myTimers.map(([key,timer])=>{
-                const[soId,jobId]=key.split('|');const mins=Math.round((Date.now()-timer.clockIn)/60000);
-                return<div key={key} style={{display:'flex',alignItems:'center',gap:8,padding:'3px 0',fontSize:11}}>
-                  <span style={{width:8,height:8,borderRadius:4,background:'#22c55e',animation:'pulse 2s infinite'}}/>
-                  <span style={{fontWeight:700}}>{timer.person}</span>
-                  <span style={{color:'#64748b'}}>on {jobId} ({soId})</span>
-                  <span style={{marginLeft:'auto',fontWeight:700,color:'#d97706'}}>{mins}m</span>
-                </div>})}
-            </div>}
-            {myLogs.length>0&&<div>
-              <div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:4}}>RECENT LOGS:</div>
-              {myLogs.slice(-5).reverse().map((log,i)=><div key={i} style={{display:'flex',gap:8,fontSize:10,color:'#475569',padding:'2px 0'}}>
-                <span style={{fontWeight:600}}>{log.person}</span>
-                <span>{log.jobId}</span>
-                <span style={{color:'#94a3b8'}}>{log.clockOut}</span>
-                <span style={{marginLeft:'auto',fontWeight:700,color:'#7c3aed'}}>{log.minutes}m</span>
-              </div>)}
-              <div style={{fontSize:10,color:'#64748b',marginTop:4,borderTop:'1px solid #f1f5f9',paddingTop:4}}>
-                Total logged: <strong>{myLogs.reduce((a,l)=>a+l.minutes,0)} min</strong> ({(myLogs.reduce((a,l)=>a+l.minutes,0)/60).toFixed(1)} hrs)
-              </div>
-            </div>}
-          </div>
-        </div>})()}
       {prodView==='board'&&<div style={{display:'flex',gap:12,overflowX:'auto',paddingBottom:12}}>
         {kanbanCols.map(col=>{const colJobs=col.filter?byStatus.filter(col.filter):byStatus.filter(j=>j.prod_status===col.id);
           return<div key={col.id} style={{minWidth:220,flex:1,background:col.bg,borderRadius:8,padding:8}}>
@@ -6612,25 +6579,64 @@ export default function App(){
               </div>})}
           </div>})}
       </div>}
-      {prodView==='list'&&<div className="card"><div className="card-body" style={{padding:0}}>
-        <table><thead><tr><th>Job</th><th>Artwork</th><th>Customer</th><th>SO</th><th>Rep</th><th>Units</th><th>Art</th><th>Items</th><th>Production</th><th>Expected</th><th></th></tr></thead><tbody>
-        {byStatus.map(j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
-          return<tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
-            <td style={{fontWeight:700,color:'#1e40af'}}>{j.id}</td>
-            <td><div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div><div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')}</div></td>
-            <td>{j.customer} <span className="badge badge-gray">{j.alpha}</span></td>
-            <td style={{fontSize:11,color:'#64748b'}}>{j.soId}</td>
-            <td style={{fontSize:11}}>{j.rep}</td>
-            <td><span style={{fontWeight:700}}>{j.fulfilled_units}/{j.total_units}</span>
-              <div style={{width:40,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
-            <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{j.art_status==='art_complete'?'Done':j.art_status==='waiting_approval'?'Wait':'Need'}</span></td>
-            <td style={{fontSize:11}}>{(j.items||[]).length}</td>
-            <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#64748b'}}>{j.prod_status?.replace(/_/g,' ')}</span></td>
-            <td style={{fontSize:11,color:j.daysOut!=null&&j.daysOut<=7?'#dc2626':'#64748b'}}>{j.expected||'—'}</td>
-            <td><button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#d97706',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋</button></td>
-          </tr>})}
-        </tbody></table>
-      </div></div>}
+      {prodView==='list'&&(()=>{
+        const statusOrder={hold:0,ready:0,staging:1,in_process:2,completed:3,shipped:4};
+        const statusLabel={hold:'Ready for Prod',ready:'Ready for Prod',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
+        const statusColors={hold:{bg:'#eef2ff',c:'#4f46e5'},ready:{bg:'#dcfce7',c:'#166534'},staging:{bg:'#fffbeb',c:'#d97706'},in_process:{bg:'#eff6ff',c:'#2563eb'},completed:{bg:'#f0fdf4',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'}};
+        const sorted=[...byStatus].sort((a,b)=>{
+          const f=prodSort.f,d=prodSort.d==='asc'?1:-1;
+          let av,bv;
+          if(f==='expected'){av=a.expected||'9999-12-31';bv=b.expected||'9999-12-31';}
+          else if(f==='status'){av=statusOrder[a.prod_status]??99;bv=statusOrder[b.prod_status]??99;}
+          else if(f==='units'){av=a.total_units||0;bv=b.total_units||0;}
+          else if(f==='customer'){av=(a.customer||'').toLowerCase();bv=(b.customer||'').toLowerCase();}
+          else if(f==='deco'){av=a.deco_type||'';bv=b.deco_type||'';}
+          else if(f==='rep'){av=a.rep||'';bv=b.rep||'';}
+          else if(f==='job'){av=a.id||'';bv=b.id||'';}
+          else{av=a[f]||'';bv=b[f]||'';}
+          if(av<bv)return -1*d;if(av>bv)return 1*d;
+          // Secondary sort: status when sorting by date, date when sorting by status, else expected date
+          if(f!=='status'){const sa=statusOrder[a.prod_status]??99;const sb=statusOrder[b.prod_status]??99;if(sa!==sb)return sa-sb;}
+          if(f!=='expected'){const ea=a.expected||'9999-12-31';const eb=b.expected||'9999-12-31';if(ea<eb)return -1;if(ea>eb)return 1;}
+          return 0;
+        });
+        const SortHdr=({f,label,align})=><th style={{cursor:'pointer',textAlign:align||'left',userSelect:'none',whiteSpace:'nowrap'}} onClick={()=>setProdSort(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}>
+          {label}{prodSort.f===f&&<span style={{marginLeft:4,fontSize:9}}>{prodSort.d==='asc'?'▲':'▼'}</span>}
+        </th>;
+        return<div className="card"><div className="card-body" style={{padding:0,overflowX:'auto'}}>
+          <table style={{fontSize:12,width:'100%'}}><thead><tr>
+            <SortHdr f="status" label="Status"/>
+            <SortHdr f="job" label="Job"/>
+            <SortHdr f="customer" label="Customer"/>
+            <SortHdr f="expected" label="Due"/>
+            <SortHdr f="units" label="Qty" align="right"/>
+            <SortHdr f="deco" label="Decoration"/>
+            <SortHdr f="rep" label="Rep"/>
+            <th style={{whiteSpace:'nowrap'}}>SO</th>
+            <th></th>
+          </tr></thead><tbody>
+          {sorted.map(j=>{
+            const stKey=j.prod_status||'hold';
+            const stColor=statusColors[stKey]||{bg:'#f1f5f9',c:'#64748b'};
+            const stLbl=statusLabel[stKey]||stKey.replace(/_/g,' ');
+            const urgent=j.daysOut!=null&&j.daysOut<=3;
+            return<tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
+              <td><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:stColor.bg,color:stColor.c,whiteSpace:'nowrap'}}>{stLbl}</span></td>
+              <td><div style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{j.id}</div><div style={{fontSize:10,color:'#64748b',maxWidth:240,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.art_name}</div></td>
+              <td>{j.customer}{j.alpha&&<span className="badge badge-gray" style={{marginLeft:4}}>{j.alpha}</span>}</td>
+              <td style={{fontSize:11,color:urgent?'#dc2626':j.daysOut!=null&&j.daysOut<=7?'#92400e':'#64748b',fontWeight:urgent?700:500,whiteSpace:'nowrap'}}>{j.expected||'—'}{j.daysOut!=null&&<span style={{marginLeft:6,fontSize:9,opacity:0.8}}>{j.daysOut}d</span>}</td>
+              <td style={{textAlign:'right',fontWeight:700,whiteSpace:'nowrap'}}>{j.fulfilled_units}/{j.total_units}</td>
+              <td><span style={{padding:'2px 6px',borderRadius:6,fontSize:10,fontWeight:600,whiteSpace:'nowrap',
+                background:j.deco_type==='screen_print'?'#dbeafe':j.deco_type==='embroidery'?'#ede9fe':j.deco_type==='heat_press'?'#fef3c7':'#f1f5f9',
+                color:j.deco_type==='screen_print'?'#1e40af':j.deco_type==='embroidery'?'#6d28d9':j.deco_type==='heat_press'?'#92400e':'#475569'}}>{j.deco_type?.replace(/_/g,' ')||'—'}</span></td>
+              <td style={{fontSize:11}}>{j.rep}</td>
+              <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{j.soId}</td>
+              <td><button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#d97706',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋</button></td>
+            </tr>;
+          })}
+          </tbody></table>
+        </div></div>;
+      })()}
 
       {/* ═══ PRODUCTION MOCKUP VIEW — full job detail for decorators ═══ */}
       {prodJobModal&&(()=>{
