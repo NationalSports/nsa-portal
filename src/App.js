@@ -20108,7 +20108,7 @@ export default function App(){
     const inactiveReps=REPS.filter(r=>r.is_active===false);
     const grouped=Object.keys(roles).map(r=>({role:r,label:roles[r],members:activeReps.filter(m=>m.role===r)})).filter(g=>g.members.length>0);
 
-    const saveMember=(m)=>{
+    const saveMember=async(m)=>{
       const isExisting=!!REPS.find(r=>r.id===m.id);
       if(isExisting){
         setREPS(prev=>prev.map(r=>r.id===m.id?m:r));
@@ -20123,6 +20123,28 @@ export default function App(){
         return[...prev,{...m,auth:null,status:'not_invited'}];
       });
       setEditMember(null);nf('✅ '+m.name+' saved');
+      // Auto-invite on new-member create when an email is present, so writes through RLS
+      // work as soon as they accept the invite. Without this the row exists in team_members
+      // with auth_id NULL and every save they attempt is silently RLS-denied.
+      if(!isExisting){
+        if(m.email&&/^\S+@\S+\.\S+$/.test(m.email)){
+          try{
+            const session=await _sbGetSession();
+            if(session?.access_token){
+              const res=await fetch('/.netlify/functions/team-invite',{
+                method:'POST',
+                headers:{Authorization:`Bearer ${session.access_token}`,'Content-Type':'application/json'},
+                body:JSON.stringify({team_member_id:m.id,email:m.email})
+              });
+              const json=await res.json().catch(()=>({error:'Bad response'}));
+              if(res.ok&&!json.error){nf('Invite sent to '+m.email)}
+              else{nf('Saved, but invite failed: '+(json.error||('HTTP '+res.status))+' — use Team Access → Send Invite to retry','warn')}
+            }
+          }catch(e){nf('Saved, but invite failed: '+e.message+' — use Team Access → Send Invite to retry','warn')}
+        }else{
+          nf('No email set — '+m.name+' will not be able to log in until invited from Team Access','warn');
+        }
+      }
       // Reconcile from server (picks up new auth status if email matches an existing auth user)
       loadTeamAuth();
     };
