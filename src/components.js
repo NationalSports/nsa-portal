@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs } from './safeHelpers';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC } from './constants';
 import html2pdf from 'html2pdf.js';
-import { sendBrevoEmail, _brevoKey, sendBrevoSms, cloudUpload } from './utils';
+import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload } from './utils';
 
 const ImgGallery=({images=[],onUpdate,onError,maxImages=10})=>{
   const[uploading,setUploading]=useState(false);const[drag,setDrag]=useState(false);
@@ -91,7 +91,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     setSmsPhone(primaryContact?.phone||'');
     const portalUrl2=cust2?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+cust2.alpha_tag:'';
     setSmsMsg('Hi '+(primaryContact?.name||'Coach')+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+portalUrl2);
-    setSmsEnabled(!!primaryContact?.phone);setFollowUpDays(defaultFollowUpRef.current||7);
+    setSmsEnabled(_smsUiEnabled&&!!primaryContact?.phone);setFollowUpDays(defaultFollowUpRef.current||7);
     setAttachments([]);setSending(false);sendingRef.current=false}}prevOpenRef.current=isOpen},[isOpen]);
   const handleFiles=(files)=>{const newFiles=Array.from(files).map(f=>({name:f.name,size:(f.size/1024).toFixed(0)+' KB',file:f}));setAttachments(a=>[...a,...newFiles])};
   const doSend=async()=>{
@@ -174,8 +174,8 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
           <Icon name="file" size={14}/><span style={{fontSize:12,flex:1}}>{f.name}</span><span style={{fontSize:10,color:'#94a3b8'}}>{f.size}</span>
           <button onClick={()=>setAttachments(a=>a.filter((_,x)=>x!==i))} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={12}/></button></div>)}</div>}
       </div>
-      {/* SMS Toggle */}
-      <div style={{marginBottom:12,padding:12,background:smsEnabled?'#f0fdf4':'#f8fafc',border:'1px solid '+(smsEnabled?'#86efac':'#e2e8f0'),borderRadius:8}}>
+      {/* SMS Toggle — hidden via _smsUiEnabled flag while SMS sending is unreliable */}
+      {_smsUiEnabled&&<div style={{marginBottom:12,padding:12,background:smsEnabled?'#f0fdf4':'#f8fafc',border:'1px solid '+(smsEnabled?'#86efac':'#e2e8f0'),borderRadius:8}}>
         <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',marginBottom:smsEnabled?10:0}}>
           <input type="checkbox" checked={smsEnabled} onChange={e=>setSmsEnabled(e.target.checked)} style={{width:16,height:16,accentColor:'#22c55e'}}/>
           <span style={{fontWeight:700,fontSize:13,color:smsEnabled?'#166534':'#64748b'}}>Also Text Coach</span>
@@ -185,7 +185,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
           <div style={{marginBottom:8}}><label className="form-label" style={{fontSize:11}}>Phone</label><input className="form-input" value={smsPhone} onChange={e=>setSmsPhone(e.target.value)} placeholder="Phone number" style={{fontSize:12}}/></div>
           <div><label className="form-label" style={{fontSize:11}}>Text Message <span style={{color:'#94a3b8',fontWeight:400}}>({smsMsg.length}/160)</span></label><textarea className="form-input" rows={2} value={smsMsg} onChange={e=>setSmsMsg(e.target.value)} maxLength={160} style={{fontSize:12,resize:'vertical'}}/></div>
         </div>}
-      </div>
+      </div>}
       {/* Follow-up reminder */}
       <div style={{marginBottom:12,padding:10,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
         <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up in</span>

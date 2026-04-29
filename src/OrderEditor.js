@@ -9,11 +9,11 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks, ImgGallery } from './components';
 import { CustModal } from './modals';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, nextInvId, _brevoKey, getBillingContacts } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -64,8 +64,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const DECO_VENDORS=(()=>{const names=decoVendors.filter(v=>v.is_active!==false).map(v=>v.name);return names.length>0?[...names,'Other']:['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','Other']})();
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
   const[showFirmApprove,setShowFirmApprove]=useState(false);const[firmRushPct,setFirmRushPct]=useState(0);
-  const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('final');const[invDepositPct,setInvDepositPct]=useState(50);const[invBilling,setInvBilling]=useState('');
-  const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');const[invSendTo,setInvSendTo]=useState('');const[invSendCustomEmail,setInvSendCustomEmail]=useState('');
+  const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('final');const[invDepositPct,setInvDepositPct]=useState(50);const[invBilling,setInvBilling]=useState('');const[invDate,setInvDate]=useState(()=>new Date().toLocaleDateString('en-CA'));
+  const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');const[invSendTo,setInvSendTo]=useState('');const[invSendCustomEmail,setInvSendCustomEmail]=useState('');const[invSendAt,setInvSendAt]=useState('');
   const[invSmsEnabled,setInvSmsEnabled]=useState(false);const[invSmsPhone,setInvSmsPhone]=useState('');const[invSmsMsg,setInvSmsMsg]=useState('');
   const[invFollowUpDays,setInvFollowUpDays]=useState(7);
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
@@ -1672,7 +1672,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' promo order closed');
         }}><Icon name="check" size={14}/> Close Promo Order</button>
         :<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
-          setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('final');setInvDepositPct(50);setShowInvCreate(true);
+          setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('final');setInvDepositPct(50);setInvDate(new Date().toLocaleDateString('en-CA'));setShowInvCreate(true);
         }}><Icon name="dollar" size={14}/> Create Invoice</button>}
         {o.order_type==='booking'&&!o.booking_confirmed&&<button style={{fontSize:13,padding:'7px 14px',borderRadius:6,background:'#059669',border:'none',color:'white',cursor:'pointer',fontWeight:700}} onClick={()=>{if(!window.confirm('Confirm this booking order with coach? It will enter the active pipeline.'))return;sv('booking_confirmed',true);sv('booking_confirmed_at',new Date().toISOString());sv('booking_confirmed_by',cu?.id||'');nf('Booking order confirmed — entering pipeline')}}><Icon name="check" size={14}/> Confirm with Coach</button>}
         {o.order_type==='booking'&&o.booking_confirmed&&<span style={{fontSize:12,color:'#059669',fontWeight:600,padding:'6px 8px',background:'#ecfdf5',borderRadius:6,border:'1px solid #86efac'}}>✓ Confirmed with Coach</span>}
@@ -3845,10 +3845,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {soInvTotal>0&&<div style={{fontSize:11,color:'#b91c1c',marginTop:4,padding:'4px 8px',background:'#fee2e2',borderRadius:4}}>Note: ${soInvTotal.toLocaleString()} already invoiced on this SO. This final invoice will be for the full remaining order value.</div>}
           </div>}
 
-          {/* Memo */}
-          <div style={{marginBottom:12}}>
-            <label className="form-label">Invoice Memo</label>
-            <input className="form-input" value={invMemo} onChange={e=>setInvMemo(e.target.value)} placeholder={invType==='deposit'?'e.g., '+invDepositPct+'% Deposit — '+o.memo:invType==='partial'?'e.g., Partial — Hats only':'e.g., Final Invoice — '+o.memo}/>
+          {/* Memo + Invoice Date */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 160px',gap:12,marginBottom:12}}>
+            <div>
+              <label className="form-label">Invoice Memo</label>
+              <input className="form-input" value={invMemo} onChange={e=>setInvMemo(e.target.value)} placeholder={invType==='deposit'?'e.g., '+invDepositPct+'% Deposit — '+o.memo:invType==='partial'?'e.g., Partial — Hats only':'e.g., Final Invoice — '+o.memo}/>
+            </div>
+            <div>
+              <label className="form-label">Invoice Date</label>
+              <input className="form-input" type="date" value={invDate} onChange={e=>setInvDate(e.target.value||new Date().toLocaleDateString('en-CA'))}/>
+              <div style={{fontSize:10,color:'#64748b',marginTop:2}}>Drives the due date based on customer terms.</div>
+            </div>
           </div>
 
           {/* Billing Address + PO# */}
@@ -3904,9 +3911,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <button className="btn btn-secondary" onClick={()=>setShowInvCreate(false)}>Cancel</button>
           <button className="btn btn-primary" style={{background:'#dc2626',borderColor:'#dc2626'}} disabled={invType==='partial'&&invSelItems.length===0} onClick={()=>{
             const invId=nextInvId(allInvoices);
-            const invDate=new Date().toLocaleDateString('en-CA');
+            const _invDateStr=invDate||new Date().toLocaleDateString('en-CA');
             const termDays=parseInt((cust?.payment_terms||'net30').replace(/\D/g,''))||30;
-            const due=new Date();due.setDate(due.getDate()+termDays);const dueDate=due.toLocaleDateString('en-CA');
+            const _dueBase=new Date(_invDateStr+'T00:00:00');_dueBase.setDate(_dueBase.getDate()+termDays);const dueDate=_dueBase.toLocaleDateString('en-CA');
             const lineItems=activeItems.map(idx=>{const it=items[idx];if(!it)return null;const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
               const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,safeArt(o),cq);return a+dp2.sell},0);
               const lineAmt=qty*(safeNum(it.unit_sell)+decoSell);
@@ -3916,7 +3923,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const defaultMemo=invType==='deposit'?invDepositPct+'% Deposit — '+o.memo:invType==='partial'?'Partial — '+o.memo:'Final Invoice — '+o.memo;
             const billingOverride=invBilling?JSON.parse(invBilling):null;
             const inv={id:invId,type:'invoice',inv_type:invType,customer_id:o.customer_id,so_id:o.id,
-              date:invDate,due_date:dueDate,total:Math.round(invTotal*100)/100,paid:0,
+              date:_invDateStr,due_date:dueDate,total:Math.round(invTotal*100)/100,paid:0,
               memo:invMemo||defaultMemo,status:'open',_rep:o.created_by||cu.id,
               tax:Math.round(invTaxAmt*100)/100,tax_rate:o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0),tax_exempt:o.tax_exempt||cust?.tax_exempt||false,shipping:Math.round(invShipAmt*100)/100,
               ...(invType==='deposit'?{deposit_pct:invDepositPct}:{}),
@@ -3935,7 +3942,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const contact=(cust?.contacts||[])[0];
             const invPortalUrl=cust?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+cust.alpha_tag:'';
             setInvSendMsg('Hi '+(contact?.name||'Coach')+',\n\nPlease find the attached invoice '+inv.id+' for $'+invTotal.toFixed(2)+'. Payment is due by '+dueDate+'.'+(invPortalUrl?'\n\nYou can also view your invoice through your portal:\n'+invPortalUrl:'')+'\n\nThank you,\nNSA Team');
-            setInvSmsPhone(contact?.phone||'');setInvSmsEnabled(!!contact?.phone);setInvFollowUpDays(portalSettings?.invFollowUpDays||7);
+            setInvSmsPhone(contact?.phone||'');setInvSmsEnabled(_smsUiEnabled&&!!contact?.phone);setInvFollowUpDays(portalSettings?.invFollowUpDays||7);setInvSendAt(_invDateStr);
             setInvSmsMsg('Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+invTotal.toFixed(2)+' is ready. Due by '+dueDate+'. View: https://nsa-portal.netlify.app/?portal='+(cust?.alpha_tag||''));
           }}>{isPromoOrder&&invTotal===0?(invType==='final'?'Close Promo Order — $0 Invoice':'Create $0 Promo Invoice'):(invType==='final'?'Create Final Invoice — Close SO':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice')} — ${invTotal.toFixed(2)}</button>
         </div>
@@ -4119,8 +4126,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <label className="form-label">Message to Coach</label>
             <textarea className="form-input" rows={6} value={invSendMsg} onChange={e=>setInvSendMsg(e.target.value)} style={{fontSize:13,lineHeight:1.5}}/>
           </div>
-          {/* SMS Toggle */}
-          <div style={{marginBottom:12,padding:12,background:invSmsEnabled?'#f0fdf4':'#f8fafc',border:'1px solid '+(invSmsEnabled?'#86efac':'#e2e8f0'),borderRadius:8}}>
+          {/* SMS Toggle — hidden via _smsUiEnabled flag while SMS sending is unreliable */}
+          {_smsUiEnabled&&<div style={{marginBottom:12,padding:12,background:invSmsEnabled?'#f0fdf4':'#f8fafc',border:'1px solid '+(invSmsEnabled?'#86efac':'#e2e8f0'),borderRadius:8}}>
             <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',marginBottom:invSmsEnabled?10:0}}>
               <input type="checkbox" checked={invSmsEnabled} onChange={e=>setInvSmsEnabled(e.target.checked)} style={{width:16,height:16,accentColor:'#22c55e'}}/>
               <span style={{fontWeight:700,fontSize:13,color:invSmsEnabled?'#166534':'#64748b'}}>Also Text Coach</span>
@@ -4130,7 +4137,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{marginBottom:8}}><label className="form-label" style={{fontSize:11}}>Phone</label><input className="form-input" value={invSmsPhone} onChange={e=>setInvSmsPhone(e.target.value)} placeholder="Phone number" style={{fontSize:12}}/></div>
               <div><label className="form-label" style={{fontSize:11}}>Text Message <span style={{color:'#94a3b8',fontWeight:400}}>({invSmsMsg.length}/160)</span></label><textarea className="form-input" rows={2} value={invSmsMsg} onChange={e=>setInvSmsMsg(e.target.value)} maxLength={160} style={{fontSize:12,resize:'vertical'}}/></div>
             </div>}
-          </div>
+          </div>}
+          {/* Send-on date picker — schedule the email for a future date */}
+          {(()=>{const _today=new Date().toLocaleDateString('en-CA');const _isFuture=invSendAt&&invSendAt>_today;return<div style={{marginBottom:12,padding:10,background:_isFuture?'#eff6ff':'#f8fafc',border:'1px solid '+(_isFuture?'#93c5fd':'#e2e8f0'),borderRadius:8,display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+            <span style={{fontSize:12,fontWeight:700,color:_isFuture?'#1e40af':'#475569'}}>Send on</span>
+            <input type="date" className="form-input" value={invSendAt||_today} min={_today} onChange={e=>setInvSendAt(e.target.value)} style={{fontSize:12,padding:'4px 6px',width:160}}/>
+            {invSendAt&&invSendAt!==_today&&<button type="button" onClick={()=>setInvSendAt(_today)} style={{fontSize:11,background:'none',border:'none',color:'#64748b',cursor:'pointer',padding:0,textDecoration:'underline'}}>Send now</button>}
+            <span style={{fontSize:11,color:_isFuture?'#1e40af':'#64748b',flex:1,minWidth:200}}>{_isFuture?'📅 Will be queued and sent automatically on '+invSendAt:'Will send immediately'}</span>
+          </div>})()}
           {/* Follow-up reminder */}
           <div style={{padding:10,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
             <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up in</span>
@@ -4219,34 +4233,66 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               +'</div>';
             const _toEmailsLc=new Set(toList.map(t=>(t.email||'').toLowerCase()));
             const _invCc=getBillingContacts(ic,allCustomers).filter(a=>a.email&&!_toEmailsLc.has(a.email.toLowerCase())).map(a=>({email:a.email,name:a.name||''}));
-            const res=await sendBrevoEmail({
-              to:toList,
-              cc:_invCc,
-              subject:'Invoice '+ir.id+' — $'+ir.total.toFixed(2)+' from National Sports Apparel',
-              htmlContent:emailHtml,
-              senderName:cu.name||'National Sports Apparel',
-              senderEmail:'noreply@nationalsportsapparel.com',
-              replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
-              attachment:brevoAttachments.length>0?brevoAttachments:undefined
-            });
-            if(res.ok){
-              nf('Invoice '+ir.id+' sent to '+toEmail);
+            const _today=new Date().toLocaleDateString('en-CA');
+            const _scheduleFuture=invSendAt&&invSendAt>_today&&onScheduleEmail;
+            const _emailSubject='Invoice '+ir.id+' — $'+ir.total.toFixed(2)+' from National Sports Apparel';
+            let res;
+            if(_scheduleFuture){
+              // Hold for the cron worker to send on the chosen date.
+              const _sendAtIso=new Date(invSendAt+'T09:00:00').toISOString();
+              const schedRes=await onScheduleEmail({
+                send_at:_sendAtIso,
+                to_emails:toList,
+                cc_emails:_invCc,
+                subject:_emailSubject,
+                html_content:emailHtml,
+                sender_name:cu.name||'National Sports Apparel',
+                sender_email:'noreply@nationalsportsapparel.com',
+                reply_to:cu?.email?{email:cu.email,name:cu.name}:null,
+                attachments:brevoAttachments,
+                related_type:'invoice',
+                related_id:ir.id,
+                created_by:cu.name||cu.id||'',
+              });
+              if(schedRes.ok){
+                nf('Invoice '+ir.id+' scheduled to send on '+invSendAt);
+                res={ok:true,messageId:null,scheduledId:schedRes.id};
+              }else{
+                nf('Failed to schedule invoice: '+(schedRes.error||'Unknown error'),'error');
+                res={ok:false,error:schedRes.error};
+              }
             }else{
-              nf('Failed to send invoice: '+(res.error||'Unknown error'),'error');
+              res=await sendBrevoEmail({
+                to:toList,
+                cc:_invCc,
+                subject:_emailSubject,
+                htmlContent:emailHtml,
+                senderName:cu.name||'National Sports Apparel',
+                senderEmail:'noreply@nationalsportsapparel.com',
+                replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
+                attachment:brevoAttachments.length>0?brevoAttachments:undefined
+              });
+              if(res.ok){
+                nf('Invoice '+ir.id+' sent to '+toEmail);
+              }else{
+                nf('Failed to send invoice: '+(res.error||'Unknown error'),'error');
+              }
+              // Send SMS if enabled (UI hidden via _smsUiEnabled but kept for future)
+              if(invSmsEnabled&&invSmsPhone&&_brevoKey){
+                const smsRes=await sendBrevoSms({to:invSmsPhone,content:invSmsMsg.substring(0,160)});
+                if(smsRes.ok){nf('Text sent to '+invSmsPhone)}else{nf('SMS failed: '+(smsRes.error||'Unknown'),'error')}
+              }
             }
-            // Send SMS if enabled
-            if(invSmsEnabled&&invSmsPhone&&_brevoKey){
-              const smsRes=await sendBrevoSms({to:invSmsPhone,content:invSmsMsg.substring(0,160)});
-              if(smsRes.ok){nf('Text sent to '+invSmsPhone)}else{nf('SMS failed: '+(smsRes.error||'Unknown'),'error')}
-            }
+            if(!res.ok)return;// don't record history on failure
             // Update invoice email status with follow-up and history
             const invNow=new Date().toLocaleString();const invFuAt=invFollowUpDays?new Date(Date.now()+invFollowUpDays*86400000).toISOString():null;
-            const invHist={sent_at:invNow,sent_by:cu.name||cu.id,to:toEmail,type:'invoice',methods:['email',...(invSmsEnabled?['sms']:[])],messageId:res.messageId||null};
-            onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:'sent',email_sent_at:invNow,follow_up_at:invFuAt,sent_history:[...(i.sent_history||[]),invHist]}:i));
+            const invHist={sent_at:invNow,sent_by:cu.name||cu.id,to:toEmail,type:'invoice',methods:['email',...(invSmsEnabled?['sms']:[])],messageId:res.messageId||null,...(_scheduleFuture?{scheduled_for:invSendAt,scheduled_id:res.scheduledId}:{})};
+            onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:_scheduleFuture?'scheduled':'sent',email_sent_at:invNow,...(_scheduleFuture?{scheduled_send_at:invSendAt}:{}),follow_up_at:invFuAt,sent_history:[...(i.sent_history||[]),invHist]}:i));
             // Also post to messages
-            const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] Sent to '+toName+' ('+toEmail+')'+(invSmsEnabled&&invSmsPhone?' + SMS to '+invSmsPhone:'')+'\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[],entity_type:'so',entity_id:ir.so_id};
+            const _msgVerb=_scheduleFuture?('Scheduled to send on '+invSendAt+' to '):'Sent to ';
+            const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] '+_msgVerb+toName+' ('+toEmail+')'+(invSmsEnabled&&invSmsPhone?' + SMS to '+invSmsPhone:'')+'\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[],entity_type:'so',entity_id:ir.so_id};
             if(onMsg)onMsg(prev=>[...prev,soMsg]);
-          }}>📧 Send Invoice{hasRecipients?' to '+allRecipients.length+' recipient'+(allRecipients.length>1?'s':''):' (No email)'}</button>
+          }}>{(()=>{const _today=new Date().toLocaleDateString('en-CA');const _isFuture=invSendAt&&invSendAt>_today;return(_isFuture?'📅 Schedule Invoice for '+invSendAt:'📧 Send Invoice')+(hasRecipients?' to '+allRecipients.length+' recipient'+(allRecipients.length>1?'s':''):' (No email)')})()}</button>
         </div>
       </div></div>
     })()}
@@ -4922,7 +4968,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div>:null})()}
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
                 <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}} onClick={()=>{const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'production_files_needed',art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);const updArt2=j.art_file_id?af.map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtRevisionNote('');nf('✅ Art approved — awaiting prod files')}}>✅ Approve Artwork</button>
-                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||j.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7})}}>📤 Send to Coach</button>
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||j.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7})}}>📤 Send to Coach</button>
               </div>
               <div style={{borderTop:'1px solid #fde68a',paddingTop:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Something wrong? Send it back to the artist:</div>
@@ -5476,14 +5522,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>}
             </div>
 
-            {/* ── Text toggle ── */}
-            <div style={{marginBottom:12,padding:12,background:cam.sendText?'#f0fdf4':'#f8fafc',border:'1px solid '+(cam.sendText?'#86efac':'#e2e8f0'),borderRadius:8}}>
+            {/* ── Text toggle — hidden via _smsUiEnabled flag while SMS sending is unreliable ── */}
+            {_smsUiEnabled&&<div style={{marginBottom:12,padding:12,background:cam.sendText?'#f0fdf4':'#f8fafc',border:'1px solid '+(cam.sendText?'#86efac':'#e2e8f0'),borderRadius:8}}>
               <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer'}}>
                 <input type="checkbox" checked={cam.sendText} onChange={e=>setCoachApprovalModal(m=>({...m,sendText:e.target.checked}))} style={{width:16,height:16,accentColor:'#22c55e'}}/>
                 <span style={{fontWeight:700,fontSize:13,color:cam.sendText?'#166534':'#64748b'}}>Text Coach</span>
                 {cam.contact.phone?<><span style={{fontSize:11,color:'#64748b'}}>{cam.contact.phone}</span>{_brevoKey&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:'#dcfce7',color:'#166534',fontWeight:600,marginLeft:4}}>Sends directly</span>}</>:<span style={{fontSize:11,color:'#dc2626'}}>No phone on file</span>}
               </label>
-            </div>
+            </div>}
 
             {/* ── Portal Link ── */}
             {cam.portalUrl&&<div style={{marginBottom:14}}>

@@ -3,6 +3,11 @@ import { NSA as _NSA_CONST } from './constants';
 
 // ── Brevo Email ──
 export const _brevoKey = process.env.REACT_APP_BREVO_API_KEY || '';
+
+// Toggles the "Also Text Coach" SMS UI in send modals. Disabled while SMS sending
+// is unreliable; flip to true (or wire to env) to re-enable. Send code paths
+// remain intact so re-enabling is a one-line change.
+export const _smsUiEnabled = false;
 export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,senderName,senderEmail,replyTo,attachment})=>{
   if(!_brevoKey){return{ok:false,error:'Brevo API key not configured (set REACT_APP_BREVO_API_KEY)'}}
   try{const payload={sender:{name:senderName||'National Sports Apparel',email:senderEmail||'noreply@nationalsportsapparel.com'},to:Array.isArray(to)?to:[{email:to}],subject,htmlContent:htmlContent||undefined,textContent:textContent||undefined};
