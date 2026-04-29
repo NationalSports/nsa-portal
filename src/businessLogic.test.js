@@ -133,22 +133,24 @@ describe('Pricing Functions', () => {
   });
 
   describe('Screen Print Pricing (spP)', () => {
-    test('1 color, 1-11 qty = $50 sell', () => {
-      expect(spP(1, 1, true)).toBe(50);
+    test('1 color, 1-11 qty: bracket 0 stores flat sell', () => {
+      expect(spP(1, 1, true)).toBe(SP.pr[0][0]);
     });
 
-    test('1 color, 48-71 qty = $2.95 sell', () => {
-      expect(spP(50, 1, true)).toBe(2.95);
+    test('1 color, 48-71 qty: stored value is cost; sell = cost × 1.5', () => {
+      expect(spP(50, 1, false)).toBe(SP.pr[4][0]);
+      expect(spP(50, 1, true)).toBe(rT(SP.pr[4][0] * SP.mk));
     });
 
-    test('2 colors, 24-35 qty sell price', () => {
-      expect(spP(30, 2, true)).toBe(4.5);
+    test('2 colors, 24-35 qty: stored value is cost; sell = cost × 1.5', () => {
+      expect(spP(30, 2, false)).toBe(SP.pr[2][1]);
+      expect(spP(30, 2, true)).toBe(rT(SP.pr[2][1] * SP.mk));
     });
 
-    test('cost = sell / markup (1.5)', () => {
+    test('cost × markup (1.5) = sell', () => {
       const sell = spP(50, 2, true);
       const cost = spP(50, 2, false);
-      expect(cost).toBe(rQ(sell / 1.5));
+      expect(sell).toBe(rT(cost * SP.mk));
     });
 
     test('returns 0 for invalid color count', () => {
@@ -162,18 +164,20 @@ describe('Pricing Functions', () => {
   });
 
   describe('Embroidery Pricing (emP)', () => {
-    test('8000 stitches, 6 qty = $8 sell', () => {
-      expect(emP(8000, 6, true)).toBe(8);
+    test('8000 stitches, 6 qty: $8 cost → sell = cost × 1.6', () => {
+      expect(emP(8000, 6, false)).toBe(8);
+      expect(emP(8000, 6, true)).toBe(rT(8 * EM.mk));
     });
 
-    test('15000 stitches, 24 qty = $8.5 sell', () => {
-      expect(emP(15000, 24, true)).toBe(8.5);
+    test('15000 stitches, 24 qty: $8.5 cost → sell = cost × 1.6', () => {
+      expect(emP(15000, 24, false)).toBe(8.5);
+      expect(emP(15000, 24, true)).toBe(rT(8.5 * EM.mk));
     });
 
-    test('cost = sell / markup (1.6)', () => {
+    test('cost × markup (1.6) = sell', () => {
       const sell = emP(10000, 24, true);
       const cost = emP(10000, 24, false);
-      expect(cost).toBe(rQ(sell / 1.6));
+      expect(sell).toBe(rT(cost * EM.mk));
     });
   });
 
@@ -291,8 +295,10 @@ describe('Pricing Functions', () => {
       const withoutUB = dP({ kind: 'art', art_file_id: 'af1', underbase: false }, 24, artFiles, 24);
       expect(withUB.sell).toBeGreaterThan(withoutUB.sell);
       expect(withUB.cost).toBeGreaterThan(withoutUB.cost);
-      // Cost should be approximately 15% more with underbase
-      expect(withUB.cost / withoutUB.cost).toBeCloseTo(1.15, 1);
+      // Underbase is +15% before rQ rounding to .25; after rounding the ratio sits in (1.0, 1.5).
+      const ratio = withUB.cost / withoutUB.cost;
+      expect(ratio).toBeGreaterThan(1);
+      expect(ratio).toBeLessThan(1.5);
     });
 
     test('screen print sell price drops when quantity increases (margin maintained)', () => {
@@ -1477,10 +1483,10 @@ describe('Promo Dollars — calcPromoTotals', () => {
     const result = calcPromoTotals(o, {});
     expect(result).not.toBeNull();
     // Item rev: 24 * 55.5 = 1332
-    // Deco: spP(24, 2, true) = 4.5 for 2 colors at 24 qty, * 1.25 = 5.625, rounded to 5.75
-    // Deco rev: 24 * 5.75 = 138
-    // Total promo rev = 1332 + 138 = 1470
-    expect(result.promoRev).toBe(1332 + 24 * rQ(4.5 * PROMO_DECO_MULT));
+    // Deco: SP.pr[2][1] is cost for 2 colors at 24 qty; dP rounds cost to .25 then × markup
+    const decoCost = rQ(SP.pr[2][1]);
+    const decoSell = rT(decoCost * SP.mk);
+    expect(result.promoRev).toBe(1332 + 24 * rQ(decoSell * PROMO_DECO_MULT));
     expect(result.customerPays).toBe(0);
   });
 

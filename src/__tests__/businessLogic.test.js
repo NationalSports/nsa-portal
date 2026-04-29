@@ -126,21 +126,20 @@ describe('Rounding Helpers', () => {
 // ═══════════════════════════════════════════════
 describe('Screen Print Pricing — spP()', () => {
   test('returns sell price for valid qty/color combos', () => {
-    // 1 color, qty 1-11 (bracket 0)
-    expect(BL.spP(1, 1)).toBe(50);
-    expect(BL.spP(5, 1)).toBe(50);
-    expect(BL.spP(11, 1)).toBe(50);
-    // 1 color, qty 12-23 (bracket 1)
-    expect(BL.spP(12, 1)).toBe(5);
-    expect(BL.spP(23, 1)).toBe(5);
-    // 2 colors, qty 24-35 (bracket 2)
-    expect(BL.spP(24, 2)).toBe(4.5);
+    // Bracket 0 (qty 1-11) stores sell directly (flat total price)
+    expect(BL.spP(1, 1)).toBe(BL.SP.pr[0][0]);
+    expect(BL.spP(11, 1)).toBe(BL.SP.pr[0][0]);
+    // Brackets 1+ store cost; sell = rT(cost * markup)
+    expect(BL.spP(12, 1)).toBe(BL.rT(BL.SP.pr[1][0] * BL.SP.mk));
+    expect(BL.spP(23, 1)).toBe(BL.rT(BL.SP.pr[1][0] * BL.SP.mk));
+    expect(BL.spP(24, 2)).toBe(BL.rT(BL.SP.pr[2][1] * BL.SP.mk));
   });
 
   test('returns cost price when sell=false', () => {
-    // Cost = sell / markup (1.5)
-    const cost = BL.spP(48, 1, false);
-    expect(cost).toBe(BL.rQ(BL.SP.pr[4][0] / BL.SP.mk));
+    // Brackets 1+: stored value IS the cost
+    expect(BL.spP(48, 1, false)).toBe(BL.SP.pr[4][0]);
+    // Bracket 0 (under-12): cost = sell / markup
+    expect(BL.spP(5, 1, false)).toBe(BL.rQ(BL.SP.pr[0][0] / BL.SP.mk));
   });
 
   test('returns 0 for invalid inputs', () => {
@@ -178,15 +177,16 @@ describe('Screen Print Pricing — spP()', () => {
 // ═══════════════════════════════════════════════
 describe('Embroidery Pricing — emP()', () => {
   test('returns sell price for valid stitch/qty combos', () => {
-    // ≤10000 stitches, ≤6 qty → EM.pr[0][0] = 8
-    expect(BL.emP(8000, 6)).toBe(8);
-    // ≤15000 stitches, ≤24 qty → EM.pr[1][1] = 8.5
-    expect(BL.emP(12000, 20)).toBe(8.5);
+    // EM.pr stores cost; sell = rT(cost * markup)
+    // ≤10000 stitches, ≤6 qty: cost 8 → sell = rT(8 * 1.6)
+    expect(BL.emP(8000, 6)).toBe(BL.rT(8 * BL.EM.mk));
+    // ≤15000 stitches, ≤24 qty: cost 8.5 → sell = rT(8.5 * 1.6)
+    expect(BL.emP(12000, 20)).toBe(BL.rT(8.5 * BL.EM.mk));
   });
 
   test('returns cost price when sell=false', () => {
-    const cost = BL.emP(8000, 6, false);
-    expect(cost).toBe(BL.rQ(8 / BL.EM.mk));
+    // Stored value IS the cost
+    expect(BL.emP(8000, 6, false)).toBe(BL.EM.pr[0][0]);
   });
 
   test('higher stitches cost more', () => {

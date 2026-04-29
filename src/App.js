@@ -1674,13 +1674,16 @@ const _decoVendorPrice=(pricingList,vendorId,decoType,params={})=>{
   }
   return price;
 };
-let SP={bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},{min:48,max:71},{min:72,max:107},{min:108,max:143},{min:144,max:215},{min:216,max:499},{min:500,max:99999}],pr:{0:[50,60,70,null,null],1:[5,6.5,8,9,null],2:[3.5,4.5,6,7,8],3:[3.2,4.25,4.75,6,7.5],4:[2.95,3.85,4.25,5,6],5:[2.75,3.5,3.95,4.5,5.25],6:[2.5,3.2,3.7,4,4.75],7:[2.25,3,3.5,3.75,4.25],8:[2.1,2.85,3.1,3.3,4],9:[1.9,2.75,2.9,3.1,3.75]},mk:1.5,ub:0.15};
-let EM={sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[8,8.5,8,7.5],[9,8.5,8,8],[10,9.5,9,9],[12,12.5,12,10]],mk:1.6};
+// _v bumps when default values change so cached localStorage from older versions is ignored.
+let SP={_v:2,bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},{min:48,max:71},{min:72,max:107},{min:108,max:143},{min:144,max:215},{min:216,max:499},{min:500,max:99999}],pr:{0:[50,60,70,null,null],1:[3.33,4.33,5.33,6,null],2:[2.33,3,4,4.67,5.33],3:[2.13,2.83,3.17,4,5],4:[1.97,2.57,2.83,3.33,4],5:[1.83,2.33,2.63,3,3.5],6:[1.67,2.13,2.47,2.67,3.17],7:[1.5,2,2.33,2.5,2.83],8:[1.4,1.9,2.07,2.2,2.67],9:[1.27,1.83,1.93,2.07,2.5]},mk:1.5,ub:0.15};
+let EM={_v:2,sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[8,8.5,8,7.5],[9,8.5,8,8],[10,9.5,9,9],[12,12.5,12,10]],mk:1.6};
 let NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};let DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
-// Load settings overrides from localStorage
-try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP)SP=_s.SP;if(_s.EM)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.CATEGORIES)CATEGORIES=_s.CATEGORIES;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
-function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0||c<1||c>5)return 0;const v=SP.pr[bi]?.[c-1];if(v==null)return 0;return s?v:rQ(v/SP.mk)}
-function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?v:rQ(v/EM.mk)}
+// Load settings overrides from localStorage. SP/EM honored only when _v matches current schema.
+try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP&&_s.SP._v===SP._v)SP=_s.SP;if(_s.EM&&_s.EM._v===EM._v)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.CATEGORIES)CATEGORIES=_s.CATEGORIES;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
+// Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
+function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0||c<1||c>5)return 0;const v=SP.pr[bi]?.[c-1];if(v==null)return 0;if(bi===0)return s?v:rQ(v/SP.mk);return s?rT(v*SP.mk):v}
+// EM.pr stores cost; sell = rT(cost × EM.mk).
+function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?rT(v*EM.mk):v}
 function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
 function dP(d,q,artFiles,cq){
   const pq=cq||q;
@@ -20593,7 +20596,7 @@ export default function App(){
                 value={SP.pr[bi]?.[ci]??''} onChange={e=>{const v=e.target.value===''?null:parseFloat(e.target.value);const pr={...SP.pr};if(!pr[bi])pr[bi]=[null,null,null,null,null];pr[bi]=[...pr[bi]];pr[bi][ci]=v;savSettings('SP',{...SP,pr})}}/></td>)}
             </tr>)}</tbody>
           </table></div>
-          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Sell prices shown. Cost = Sell / Markup ({SP.mk}x). Underbase adds {Math.round(SP.ub*100)}% to both.</div>
+          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Costs shown (except Under-12 row, which is the flat sell price). Sell = Cost × Markup ({SP.mk}x). Underbase adds {Math.round(SP.ub*100)}% to cost before markup.</div>
         </div></div>
 
         {/* Embroidery Matrix */}
@@ -20609,7 +20612,7 @@ export default function App(){
                 value={EM.pr[si]?.[qi]??0} onChange={e=>{const v=parseFloat(e.target.value)||0;const pr=EM.pr.map(r=>[...r]);pr[si][qi]=v;savSettings('EM',{...EM,pr})}}/></td>)}
             </tr>)}</tbody>
           </table></div>
-          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Sell prices shown. Cost = Sell / Markup ({EM.mk}x).</div>
+          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Costs shown. Sell = Cost × Markup ({EM.mk}x).</div>
         </div></div>
 
         {/* Number Press Pricing */}
