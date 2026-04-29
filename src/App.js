@@ -3154,6 +3154,9 @@ export default function App(){
   const[custPage,setCustPage]=useState(0);const CUST_PAGE_SIZE=50;
   const[custServerResults,setCustServerResults]=useState(null);
   const[custSearching,setCustSearching]=useState(false);
+  // Tax refresh auto-loop progress (null when idle)
+  const[taxRefresh,setTaxRefresh]=useState(null);// {processed,updated,errors,startedAt}
+  const taxRefreshAbortRef=useRef(false);
   // Customer list collapse state — parents with subs start collapsed; Set of expanded parent ids.
   const[custExpanded,setCustExpanded]=useState(()=>new Set());
   const _custSearchTimer=useRef(null);
@@ -5112,7 +5115,41 @@ export default function App(){
     const missingRateCount=cust.filter(c=>c.is_active!==false&&!c.tax_exempt&&!(c.tax_rate>0)&&c.shipping_state&&c.shipping_zip).length;
     // Detect duplicate alpha tags — they break portal routing since ?portal=<tag> picks the first match.
     const dupAlphaGroups=(()=>{const m=new Map();cust.filter(c=>c.is_active!==false&&c.alpha_tag).forEach(c=>{const k=c.alpha_tag.trim().toUpperCase();if(!m.has(k))m.set(k,[]);m.get(k).push(c)});return [...m.entries()].filter(([,arr])=>arr.length>1)})();
-    const refreshTaxRates=async()=>{if(!supabase){nf('Supabase not configured','error');return}nf('Refreshing tax rates from TaxCloud...');try{const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{});if(d?.ok){if(d.changes?.length>0)setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));nf('TaxCloud: '+d.updated+' of '+d.total_customers+' customer rate(s) updated'+(d.errors?' ('+d.errors+' errors)':''))}else{nf(d?.error||'Refresh failed','error')}}catch(e){nf('Error: '+e.message,'error')}};
+    const refreshTaxRates=async()=>{
+      if(!supabase){nf('Supabase not configured','error');return}
+      if(taxRefresh)return;// already running
+      taxRefreshAbortRef.current=false;
+      setTaxRefresh({processed:0,updated:0,errors:0,startedAt:Date.now()});
+      let totalProcessed=0,totalUpdated=0,totalErrors=0,chunks=0;
+      try{
+        // Loop chunks of 100 until remaining===0 or aborted/error
+        for(;;){
+          if(taxRefreshAbortRef.current)break;
+          const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{limit:100,only_missing:true});
+          if(!d?.ok){nf(d?.error||'Refresh failed','error');break}
+          chunks++;
+          totalProcessed+=d.processed||0;
+          totalUpdated+=d.updated||0;
+          totalErrors+=d.errors||0;
+          // Apply this chunk's changes to the in-memory customer list
+          if(d.changes?.length>0){
+            setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));
+          }
+          setTaxRefresh({processed:totalProcessed,updated:totalUpdated,errors:totalErrors,remaining:d.remaining,startedAt:Date.now()});
+          if(!d.remaining||d.remaining<=0)break;
+          if(d.processed===0)break;// safety: nothing happened, avoid infinite loop
+          // Brief pause between chunks
+          await new Promise(r=>setTimeout(r,2000));
+        }
+        const aborted=taxRefreshAbortRef.current;
+        nf('TaxCloud refresh '+(aborted?'stopped':'complete')+': '+totalUpdated+' rate(s) updated across '+chunks+' chunk(s)'+(totalErrors?' ('+totalErrors+' errors)':''));
+      }catch(e){
+        nf('Error: '+e.message,'error');
+      }finally{
+        setTaxRefresh(null);
+      }
+    };
+    const cancelTaxRefresh=()=>{taxRefreshAbortRef.current=true};
     const autoFixAlphaTags=()=>{
       if(!dupAlphaGroups.length){nf('No duplicate alpha tags');return}
       const dupIds=new Set();dupAlphaGroups.forEach(([,arr])=>arr.forEach(c=>dupIds.add(c.id)));
@@ -5143,10 +5180,18 @@ export default function App(){
     };
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
-      {isA&&<button className="btn btn-secondary" onClick={refreshTaxRates} title="Look up tax rates from TaxCloud for all active, non-exempt customers">Refresh Tax Rates</button>}
+      {isA&&<button className="btn btn-secondary" onClick={refreshTaxRates} disabled={!!taxRefresh} title="Look up tax rates from TaxCloud for all active, non-exempt customers missing a rate">{taxRefresh?'Refreshing…':'Refresh Tax Rates'}</button>}
       <button className="btn btn-primary" onClick={()=>setCM({open:true,c:null})}><Icon name="plus" size={14}/> New</button></div>
-    {isA&&missingRateCount>0&&<div style={{padding:'10px 14px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,marginBottom:12,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
-      <Icon name="alert" size={16}/><div style={{flex:1,fontSize:12,color:'#92400e'}}><strong>{missingRateCount}</strong> customer{missingRateCount===1?'':'s'} missing a tax rate. Click <strong>Refresh Tax Rates</strong> to look them up via TaxCloud.</div>
+    {isA&&taxRefresh&&<div style={{padding:'10px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:8,marginBottom:12,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+      <Icon name="clock" size={16}/>
+      <div style={{flex:1,fontSize:12,color:'#1e40af'}}>
+        <strong>Refreshing tax rates…</strong> {taxRefresh.processed} processed · {taxRefresh.updated} updated{taxRefresh.errors>0?' · '+taxRefresh.errors+' errors':''}{taxRefresh.remaining!=null?' · '+taxRefresh.remaining+' remaining':''}
+        <div style={{fontSize:10,color:'#475569',marginTop:2}}>You can leave this page open — it'll keep working. Closing the tab stops it; partial progress is saved.</div>
+      </div>
+      <button className="btn btn-sm" style={{background:'#64748b',color:'#fff',border:'none',fontSize:11}} onClick={cancelTaxRefresh}>Stop</button>
+    </div>}
+    {isA&&!taxRefresh&&missingRateCount>0&&<div style={{padding:'10px 14px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,marginBottom:12,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+      <Icon name="alert" size={16}/><div style={{flex:1,fontSize:12,color:'#92400e'}}><strong>{missingRateCount}</strong> customer{missingRateCount===1?'':'s'} missing a tax rate. Click <strong>Refresh Tax Rates</strong> to look them up via TaxCloud (processes 100 at a time, auto-loops until done).</div>
       <button className="btn btn-sm" style={{background:'#d97706',color:'#fff',border:'none',fontSize:11}} onClick={refreshTaxRates}>Refresh Now</button>
     </div>}
     {isA&&dupAlphaGroups.length>0&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:12,display:'flex',alignItems:'flex-start',gap:12}}>
