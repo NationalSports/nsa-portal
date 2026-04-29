@@ -879,7 +879,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           {af2&&(()=>{const _fallback2=(af2.ink_colors||af2.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isE2=af2.deco_type==='embroidery';
             const _dp2=new Set();const numDecos2=[];const _cwColors2=new Set();(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===j.art_file_id){if(d.position)_dp2.add(d.position);if(d.color_way_id&&af2.color_ways){const cw=af2.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim())_cwColors2.add(c.trim())})}}if(d.kind==='numbers')numDecos2.push(d)})});
             const _gcColors2=new Set();(j.items||[]).forEach(gi=>{const gk2=gi.sku+'|'+(gi.color||'');const gc2=af2.garment_colors?.[gk2]||{};Object.values(gc2).flat().forEach(c=>{if(c&&c.trim())_gcColors2.add(c.trim())})});
-            const _cl2=_gcColors2.size>0?[..._gcColors2]:_cwColors2.size>0?[..._cwColors2]:_fallback2;
+            // Final fallback: union of all CW inks on the art file. Covers SOs where CWs are defined but
+            // decorations don't carry an explicit color_way_id link — without this, colors render as empty.
+            const _allCwInks2=[...new Set((af2.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
+            const _cl2=_gcColors2.size>0?[..._gcColors2]:_cwColors2.size>0?[..._cwColors2]:_fallback2.length>0?_fallback2:_allCwInks2;
             const _pl2=_dp2.size>0?[..._dp2]:(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);const _as2=af2.art_sizes||{};
             const _cm2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
             const nd=numDecos2[0];
