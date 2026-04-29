@@ -1969,16 +1969,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         if(artF.color_ways.length===1&&!deco.color_way_id){setTimeout(()=>uD(idx,di,'color_way_id',artF.color_ways[0].id),0)}
                         const cwOpts=artF.color_ways.map((cw,ci)=><option key={cw.id} value={cw.id}>CW {ci+1}{cw.garment_color?' - '+cw.garment_color:''} ({cw.inks.filter(c=>c.trim()).length}c)</option>);
                         if(deco.reversible&&artF.color_ways.length>=2){
-                          const cwA=artF.color_ways.find(c=>c.id===deco.color_way_id);
-                          const cwB=artF.color_ways.find(c=>c.id===deco.color_way_id_b);
                           return<div style={{display:'flex',flexDirection:'column',gap:4}}>
                             <div style={{display:'flex',alignItems:'center',gap:6}}>
-                              <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:46}}>Side A{cwA?.garment_color?' — '+cwA.garment_color:''}</span>
+                              <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:46}}>Side A</span>
                               <select className="form-select" style={{width:160,fontSize:11,borderColor:'#67e8f9'}} value={deco.color_way_id||''} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>
                                 <option value="">Select CW...</option>{cwOpts}</select>
                             </div>
                             <div style={{display:'flex',alignItems:'center',gap:6}}>
-                              <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:46}}>Side B{cwB?.garment_color?' — '+cwB.garment_color:''}</span>
+                              <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:46}}>Side B</span>
                               <select className="form-select" style={{width:160,fontSize:11,borderColor:'#67e8f9'}} value={deco.color_way_id_b||''} onChange={e=>uD(idx,di,'color_way_id_b',e.target.value||null)}>
                                 <option value="">Select CW...</option>{cwOpts}</select>
                             </div>
