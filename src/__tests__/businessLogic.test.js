@@ -126,21 +126,23 @@ describe('Rounding Helpers', () => {
 // ═══════════════════════════════════════════════
 describe('Screen Print Pricing — spP()', () => {
   test('returns sell price for valid qty/color combos', () => {
-    // 1 color, qty 1-11 (bracket 0)
+    // Bracket 0 (qty 1-11) stores sell directly (flat total price)
     expect(BL.spP(1, 1)).toBe(50);
     expect(BL.spP(5, 1)).toBe(50);
     expect(BL.spP(11, 1)).toBe(50);
-    // 1 color, qty 12-23 (bracket 1)
-    expect(BL.spP(12, 1)).toBe(5);
-    expect(BL.spP(23, 1)).toBe(5);
-    // 2 colors, qty 24-35 (bracket 2)
-    expect(BL.spP(24, 2)).toBe(4.5);
+    // Brackets 1+ store cost; sell = rT(cost * markup)
+    // 1 color, qty 12-23: cost 5 → sell 7.5
+    expect(BL.spP(12, 1)).toBe(BL.rT(5 * BL.SP.mk));
+    expect(BL.spP(23, 1)).toBe(BL.rT(5 * BL.SP.mk));
+    // 2 colors, qty 24-35: cost 4.5 → sell 6.8
+    expect(BL.spP(24, 2)).toBe(BL.rT(4.5 * BL.SP.mk));
   });
 
   test('returns cost price when sell=false', () => {
-    // Cost = sell / markup (1.5)
-    const cost = BL.spP(48, 1, false);
-    expect(cost).toBe(BL.rQ(BL.SP.pr[4][0] / BL.SP.mk));
+    // Brackets 1+: stored value IS the cost
+    expect(BL.spP(48, 1, false)).toBe(BL.SP.pr[4][0]);
+    // Bracket 0 (under-12): cost = sell / markup
+    expect(BL.spP(5, 1, false)).toBe(BL.rQ(BL.SP.pr[0][0] / BL.SP.mk));
   });
 
   test('returns 0 for invalid inputs', () => {

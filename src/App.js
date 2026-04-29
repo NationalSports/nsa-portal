@@ -1679,7 +1679,8 @@ let EM={sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[8,8.5,8,7.5],[9,8.
 let NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};let DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
 // Load settings overrides from localStorage
 try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP)SP=_s.SP;if(_s.EM)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.CATEGORIES)CATEGORIES=_s.CATEGORIES;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
-function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0||c<1||c>5)return 0;const v=SP.pr[bi]?.[c-1];if(v==null)return 0;return s?v:rQ(v/SP.mk)}
+// Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
+function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0||c<1||c>5)return 0;const v=SP.pr[bi]?.[c-1];if(v==null)return 0;if(bi===0)return s?v:rQ(v/SP.mk);return s?rT(v*SP.mk):v}
 function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?v:rQ(v/EM.mk)}
 function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
 function dP(d,q,artFiles,cq){
@@ -20501,7 +20502,7 @@ export default function App(){
                 value={SP.pr[bi]?.[ci]??''} onChange={e=>{const v=e.target.value===''?null:parseFloat(e.target.value);const pr={...SP.pr};if(!pr[bi])pr[bi]=[null,null,null,null,null];pr[bi]=[...pr[bi]];pr[bi][ci]=v;savSettings('SP',{...SP,pr})}}/></td>)}
             </tr>)}</tbody>
           </table></div>
-          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Sell prices shown. Cost = Sell / Markup ({SP.mk}x). Underbase adds {Math.round(SP.ub*100)}% to both.</div>
+          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Costs shown (except Under-12 row, which is the flat sell price). Sell = Cost × Markup ({SP.mk}x). Underbase adds {Math.round(SP.ub*100)}% to cost before markup.</div>
         </div></div>
 
         {/* Embroidery Matrix */}

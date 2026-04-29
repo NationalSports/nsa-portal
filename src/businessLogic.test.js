@@ -137,18 +137,20 @@ describe('Pricing Functions', () => {
       expect(spP(1, 1, true)).toBe(50);
     });
 
-    test('1 color, 48-71 qty = $2.95 sell', () => {
-      expect(spP(50, 1, true)).toBe(2.95);
+    test('1 color, 48-71 qty: $2.95 cost → sell = cost × 1.5', () => {
+      expect(spP(50, 1, false)).toBe(2.95);
+      expect(spP(50, 1, true)).toBe(rT(2.95 * SP.mk));
     });
 
-    test('2 colors, 24-35 qty sell price', () => {
-      expect(spP(30, 2, true)).toBe(4.5);
+    test('2 colors, 24-35 qty: $4.50 cost → sell = cost × 1.5', () => {
+      expect(spP(30, 2, false)).toBe(4.5);
+      expect(spP(30, 2, true)).toBe(rT(4.5 * SP.mk));
     });
 
-    test('cost = sell / markup (1.5)', () => {
+    test('cost × markup (1.5) = sell', () => {
       const sell = spP(50, 2, true);
       const cost = spP(50, 2, false);
-      expect(cost).toBe(rQ(sell / 1.5));
+      expect(sell).toBe(rT(cost * SP.mk));
     });
 
     test('returns 0 for invalid color count', () => {
@@ -1477,10 +1479,10 @@ describe('Promo Dollars — calcPromoTotals', () => {
     const result = calcPromoTotals(o, {});
     expect(result).not.toBeNull();
     // Item rev: 24 * 55.5 = 1332
-    // Deco: spP(24, 2, true) = 4.5 for 2 colors at 24 qty, * 1.25 = 5.625, rounded to 5.75
-    // Deco rev: 24 * 5.75 = 138
-    // Total promo rev = 1332 + 138 = 1470
-    expect(result.promoRev).toBe(1332 + 24 * rQ(4.5 * PROMO_DECO_MULT));
+    // Deco cost (stored) = 4.5 for 2 colors at 24 qty; sell = rT(4.5*1.5) = 6.8
+    // Promo deco rev per piece = rQ(6.8 * 1.25)
+    const decoSell = rT(4.5 * SP.mk);
+    expect(result.promoRev).toBe(1332 + 24 * rQ(decoSell * PROMO_DECO_MULT));
     expect(result.customerPays).toBe(0);
   });
 
