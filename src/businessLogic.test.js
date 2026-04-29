@@ -164,18 +164,20 @@ describe('Pricing Functions', () => {
   });
 
   describe('Embroidery Pricing (emP)', () => {
-    test('8000 stitches, 6 qty = $8 sell', () => {
-      expect(emP(8000, 6, true)).toBe(8);
+    test('8000 stitches, 6 qty: $8 cost → sell = cost × 1.6', () => {
+      expect(emP(8000, 6, false)).toBe(8);
+      expect(emP(8000, 6, true)).toBe(rT(8 * EM.mk));
     });
 
-    test('15000 stitches, 24 qty = $8.5 sell', () => {
-      expect(emP(15000, 24, true)).toBe(8.5);
+    test('15000 stitches, 24 qty: $8.5 cost → sell = cost × 1.6', () => {
+      expect(emP(15000, 24, false)).toBe(8.5);
+      expect(emP(15000, 24, true)).toBe(rT(8.5 * EM.mk));
     });
 
-    test('cost = sell / markup (1.6)', () => {
+    test('cost × markup (1.6) = sell', () => {
       const sell = emP(10000, 24, true);
       const cost = emP(10000, 24, false);
-      expect(cost).toBe(rQ(sell / 1.6));
+      expect(sell).toBe(rT(cost * EM.mk));
     });
   });
 

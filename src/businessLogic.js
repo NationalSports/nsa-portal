@@ -28,7 +28,8 @@ const DTF = [{ label: '4" Sq & Under', cost: 2.5, sell: 4.5 }, { label: 'Front C
 
 // Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
 function spP(q, c, s = true) { const bi = SP.bk.findIndex(b => q >= b.min && q <= b.max); if (bi < 0 || c < 1 || c > 5) return 0; const v = SP.pr[bi]?.[c - 1]; if (v == null) return 0; if (bi === 0) return s ? v : rQ(v / SP.mk); return s ? rT(v * SP.mk) : v }
-function emP(st, q, s = true) { const si = EM.sb.findIndex(b => st <= b); const qi = EM.qb.findIndex(b => q <= b); if (si < 0 || qi < 0) return 0; const v = EM.pr[si][qi]; return s ? v : rQ(v / EM.mk) }
+// EM.pr stores cost; sell = rT(cost × EM.mk).
+function emP(st, q, s = true) { const si = EM.sb.findIndex(b => st <= b); const qi = EM.qb.findIndex(b => q <= b); if (si < 0 || qi < 0) return 0; const v = EM.pr[si][qi]; return s ? rT(v * EM.mk) : v }
 function npP(q, tw = false, s = true) { const bi = NP.bk.findIndex(b => q <= b); if (bi < 0) return 0; return s ? (NP.se[bi] + (tw ? rQ(NP.tc * 1.65) : 0)) : (NP.co[bi] + (tw ? NP.tc : 0)) }
 
 function dP(d, q, artFiles, cq) {

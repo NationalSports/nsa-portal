@@ -180,15 +180,16 @@ describe('Screen Print Pricing — spP()', () => {
 // ═══════════════════════════════════════════════
 describe('Embroidery Pricing — emP()', () => {
   test('returns sell price for valid stitch/qty combos', () => {
-    // ≤10000 stitches, ≤6 qty → EM.pr[0][0] = 8
-    expect(BL.emP(8000, 6)).toBe(8);
-    // ≤15000 stitches, ≤24 qty → EM.pr[1][1] = 8.5
-    expect(BL.emP(12000, 20)).toBe(8.5);
+    // EM.pr stores cost; sell = rT(cost * markup)
+    // ≤10000 stitches, ≤6 qty: cost 8 → sell = rT(8 * 1.6)
+    expect(BL.emP(8000, 6)).toBe(BL.rT(8 * BL.EM.mk));
+    // ≤15000 stitches, ≤24 qty: cost 8.5 → sell = rT(8.5 * 1.6)
+    expect(BL.emP(12000, 20)).toBe(BL.rT(8.5 * BL.EM.mk));
   });
 
   test('returns cost price when sell=false', () => {
-    const cost = BL.emP(8000, 6, false);
-    expect(cost).toBe(BL.rQ(8 / BL.EM.mk));
+    // Stored value IS the cost
+    expect(BL.emP(8000, 6, false)).toBe(BL.EM.pr[0][0]);
   });
 
   test('higher stitches cost more', () => {

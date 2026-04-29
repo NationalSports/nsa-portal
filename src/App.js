@@ -1681,7 +1681,8 @@ let NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};let DTF=[{label:'4" Sq & Un
 try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP)SP=_s.SP;if(_s.EM)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.CATEGORIES)CATEGORIES=_s.CATEGORIES;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
 // Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
 function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0||c<1||c>5)return 0;const v=SP.pr[bi]?.[c-1];if(v==null)return 0;if(bi===0)return s?v:rQ(v/SP.mk);return s?rT(v*SP.mk):v}
-function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?v:rQ(v/EM.mk)}
+// EM.pr stores cost; sell = rT(cost × EM.mk).
+function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?rT(v*EM.mk):v}
 function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
 function dP(d,q,artFiles,cq){
   const pq=cq||q;
@@ -20518,7 +20519,7 @@ export default function App(){
                 value={EM.pr[si]?.[qi]??0} onChange={e=>{const v=parseFloat(e.target.value)||0;const pr=EM.pr.map(r=>[...r]);pr[si][qi]=v;savSettings('EM',{...EM,pr})}}/></td>)}
             </tr>)}</tbody>
           </table></div>
-          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Sell prices shown. Cost = Sell / Markup ({EM.mk}x).</div>
+          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Costs shown. Sell = Cost × Markup ({EM.mk}x).</div>
         </div></div>
 
         {/* Number Press Pricing */}
