@@ -66,10 +66,14 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   <div className="card" style={{marginBottom:16,overflow:'visible'}}><div style={{padding:'20px 24px',display:'flex',gap:16,alignItems:'flex-start'}}>
   <div style={{width:56,height:56,borderRadius:12,background:'#dbeafe',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><Icon name="building" size={28}/></div>
   <div style={{flex:1}}>
-    <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:20,fontWeight:800}}>{customer.name}</span><span className="badge badge-blue">{customer.alpha_tag}</span><span className="badge badge-green">Tier {customer.adidas_ua_tier}</span><span className="badge badge-gray">{tl[customer.payment_terms]||'Net 30'}</span>
+    <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:20,fontWeight:800}}>{customer.name}</span><span className="badge badge-blue">{customer.alpha_tag}</span>{customer.adidas_ua_tier&&<span className="badge badge-green">Tier {customer.adidas_ua_tier}{({A:' (40%)',B:' (35%)',C:' (30%)'})[customer.adidas_ua_tier]||''}</span>}<span className="badge badge-gray">{tl[customer.payment_terms]||'Net 30'}</span>
       {custUnread>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'2px 8px',fontSize:10,fontWeight:700}}>{custUnread} unread</span>}
     </div>
     <div style={{fontSize:13,color:'#64748b',marginTop:4}}>{(customer.contacts||[]).map((c,i)=><span key={i}>{c.name} ({c.role}) {c.email}{i<customer.contacts.length-1&&' | '}</span>)}</div>
+    {((customer.pantone_colors||[]).length>0||(customer.thread_colors||[]).length>0)&&<div style={{display:'flex',gap:6,marginTop:6,flexWrap:'wrap',alignItems:'center'}}>
+      {(customer.pantone_colors||[]).map((pc,i)=>{const hex=pantoneHex(pc.code)||pc.hex||'#ccc';return<span key={'p'+i} title={'PMS '+pc.code+(pc.name?' — '+pc.name:'')} style={{display:'inline-flex',alignItems:'center',gap:4,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:10,padding:'2px 8px 2px 4px',fontSize:10,fontWeight:600,color:'#475569'}}><span style={{width:12,height:12,borderRadius:3,background:hex,border:'1px solid #d1d5db',display:'inline-block'}}/>PMS {pc.code}</span>})}
+      {(customer.thread_colors||[]).map((tc,i)=>{const hex=threadHex(tc.name)||tc.hex||'#ccc';return<span key={'t'+i} title={'Thread — '+tc.name} style={{display:'inline-flex',alignItems:'center',gap:4,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:10,padding:'2px 8px 2px 4px',fontSize:10,fontWeight:600,color:'#6d28d9'}}><span style={{width:12,height:12,borderRadius:3,background:hex,border:'1px solid #d1d5db',display:'inline-block'}}/>{tc.name}</span>})}
+    </div>}
     <div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap'}}>
       <button className="btn btn-sm btn-primary" onClick={()=>onNewEst(customer)}><Icon name="file" size={12}/> Estimate</button>
       <button className="btn btn-sm btn-secondary"><Icon name="mail" size={12}/> Email</button>
