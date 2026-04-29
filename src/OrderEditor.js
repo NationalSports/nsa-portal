@@ -4819,6 +4819,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {_allArt2.map((af3,afi)=>{
                     const _dp3=new Set();const _numDecos2=[];const _isE3=af3.deco_type==='embroidery';
                     const _fallback3=(af3.ink_colors||af3.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);
+                    // Final fallback: if CWs are defined on the art file but decorations don't carry color_way_id,
+                    // surface the union of all CW inks so the colors aren't silently hidden on the approval surface.
+                    const _allCwInks3=[...new Set((af3.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
                     const _as3=af3.art_sizes||{};
                     // Build per-item color data
                     const _itemColorData2=itemDetails.map(gi=>{
@@ -4826,7 +4829,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       const gc2=af3.garment_colors?.[gk2]||{};const gcCols=Object.values(gc2).flat().filter(c=>c&&c.trim());
                       const cwCols=[];
                       if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===af3.id){_dp3.add(d.position||'Front Center');if(d.color_way_id&&af3.color_ways){const cw=af3.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim()&&!cwCols.includes(c.trim()))cwCols.push(c.trim())})}}if(d.kind==='numbers')_numDecos2.push(d)});
-                      const colors=gcCols.length>0?gcCols:cwCols.length>0?cwCols:_fallback3;
+                      const colors=gcCols.length>0?gcCols:cwCols.length>0?cwCols:_fallback3.length>0?_fallback3:_allCwInks3;
                       return{...gi,colors,colorKey:colors.slice().sort().join('|')};
                     });
                     const _pl3=_dp3.size>0?[..._dp3]:[];const _nd2=_numDecos2[0];
@@ -4884,7 +4887,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div>:null})()}
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
                 <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}} onClick={()=>{const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'production_files_needed',art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);const updArt2=j.art_file_id?af.map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtRevisionNote('');nf('✅ Art approved — awaiting prod files')}}>✅ Approve Artwork</button>
-                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+j.art_name+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7})}}>📤 Send to Coach</button>
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||j.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7})}}>📤 Send to Coach</button>
               </div>
               <div style={{borderTop:'1px solid #fde68a',paddingTop:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Something wrong? Send it back to the artist:</div>
@@ -5360,6 +5363,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const cam=coachApprovalModal;
         const allEmails=[...new Set((cam.contacts||[]).filter(c3=>c3.email).map(c3=>c3.email))];
         const allTargets=[...allEmails,...(cam.customEmails||[])].filter(em=>cam.checkedEmails?.[em]);
+        // Subject + body label: prefer the SO memo (customer-facing), fall back to the internal art name.
+        const _emailLabel=(o.memo&&o.memo.trim())||j3.art_name;
+        const _emailSubject='Artwork ready for approval — '+_emailLabel;
+        // Build absolute URL for the logo so it renders in external email clients.
+        const _logoRaw=_ci.logoUrl||NSA.logoUrl||'/nsa-logo.svg';
+        const _logoSrc=/^https?:/i.test(_logoRaw)?_logoRaw:(window.location.origin+_logoRaw);
+        const _emailLogoHtml='<div style="text-align:center;padding:12px 0 18px;border-bottom:2px solid #e2e8f0;margin-bottom:18px"><img src="'+_logoSrc+'" alt="National Sports Apparel" style="max-height:60px;display:inline-block"/></div>';
         const doSendCoach=async()=>{
           const actions=[];
           if(cam.sendEmail&&allTargets.length>0){
@@ -5367,10 +5377,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               setCoachApprovalModal(m=>({...m,sending:true}));
               const htmlMsg=cam.message.replace(/\n/g,'<br/>');
               const toList=allTargets.map(em=>({email:em}));
-              const res=await sendBrevoEmail({to:toList,subject:'Artwork ready for approval — '+j3.art_name,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:cu?.email||'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
+              const res=await sendBrevoEmail({to:toList,subject:_emailSubject,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6;max-width:600px;margin:0 auto">'+_emailLogoHtml+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:cu?.email||'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
               if(res.ok){actions.push('email sent to '+allTargets.join(', '));actions._messageId=res.messageId}else{nf('Email failed: '+res.error,'error');setCoachApprovalModal(m=>({...m,sending:false}));return}
             }else{
-              const subj=encodeURIComponent('Artwork ready for approval — '+j3.art_name);
+              const subj=encodeURIComponent(_emailSubject);
               const body=encodeURIComponent(cam.message);
               window.open('mailto:'+allTargets.join(',')+'?subject='+subj+'&body='+body,'_blank');
               actions.push('email draft opened for '+allTargets.length+' recipient(s)');
