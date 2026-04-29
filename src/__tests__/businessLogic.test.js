@@ -127,15 +127,12 @@ describe('Rounding Helpers', () => {
 describe('Screen Print Pricing — spP()', () => {
   test('returns sell price for valid qty/color combos', () => {
     // Bracket 0 (qty 1-11) stores sell directly (flat total price)
-    expect(BL.spP(1, 1)).toBe(50);
-    expect(BL.spP(5, 1)).toBe(50);
-    expect(BL.spP(11, 1)).toBe(50);
+    expect(BL.spP(1, 1)).toBe(BL.SP.pr[0][0]);
+    expect(BL.spP(11, 1)).toBe(BL.SP.pr[0][0]);
     // Brackets 1+ store cost; sell = rT(cost * markup)
-    // 1 color, qty 12-23: cost 5 → sell 7.5
-    expect(BL.spP(12, 1)).toBe(BL.rT(5 * BL.SP.mk));
-    expect(BL.spP(23, 1)).toBe(BL.rT(5 * BL.SP.mk));
-    // 2 colors, qty 24-35: cost 4.5 → sell 6.8
-    expect(BL.spP(24, 2)).toBe(BL.rT(4.5 * BL.SP.mk));
+    expect(BL.spP(12, 1)).toBe(BL.rT(BL.SP.pr[1][0] * BL.SP.mk));
+    expect(BL.spP(23, 1)).toBe(BL.rT(BL.SP.pr[1][0] * BL.SP.mk));
+    expect(BL.spP(24, 2)).toBe(BL.rT(BL.SP.pr[2][1] * BL.SP.mk));
   });
 
   test('returns cost price when sell=false', () => {

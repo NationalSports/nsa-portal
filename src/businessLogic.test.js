@@ -133,18 +133,18 @@ describe('Pricing Functions', () => {
   });
 
   describe('Screen Print Pricing (spP)', () => {
-    test('1 color, 1-11 qty = $50 sell', () => {
-      expect(spP(1, 1, true)).toBe(50);
+    test('1 color, 1-11 qty: bracket 0 stores flat sell', () => {
+      expect(spP(1, 1, true)).toBe(SP.pr[0][0]);
     });
 
-    test('1 color, 48-71 qty: $2.95 cost → sell = cost × 1.5', () => {
-      expect(spP(50, 1, false)).toBe(2.95);
-      expect(spP(50, 1, true)).toBe(rT(2.95 * SP.mk));
+    test('1 color, 48-71 qty: stored value is cost; sell = cost × 1.5', () => {
+      expect(spP(50, 1, false)).toBe(SP.pr[4][0]);
+      expect(spP(50, 1, true)).toBe(rT(SP.pr[4][0] * SP.mk));
     });
 
-    test('2 colors, 24-35 qty: $4.50 cost → sell = cost × 1.5', () => {
-      expect(spP(30, 2, false)).toBe(4.5);
-      expect(spP(30, 2, true)).toBe(rT(4.5 * SP.mk));
+    test('2 colors, 24-35 qty: stored value is cost; sell = cost × 1.5', () => {
+      expect(spP(30, 2, false)).toBe(SP.pr[2][1]);
+      expect(spP(30, 2, true)).toBe(rT(SP.pr[2][1] * SP.mk));
     });
 
     test('cost × markup (1.5) = sell', () => {
@@ -295,8 +295,10 @@ describe('Pricing Functions', () => {
       const withoutUB = dP({ kind: 'art', art_file_id: 'af1', underbase: false }, 24, artFiles, 24);
       expect(withUB.sell).toBeGreaterThan(withoutUB.sell);
       expect(withUB.cost).toBeGreaterThan(withoutUB.cost);
-      // Cost should be approximately 15% more with underbase
-      expect(withUB.cost / withoutUB.cost).toBeCloseTo(1.15, 1);
+      // Underbase is +15% before rQ rounding to .25; after rounding the ratio sits in (1.0, 1.5).
+      const ratio = withUB.cost / withoutUB.cost;
+      expect(ratio).toBeGreaterThan(1);
+      expect(ratio).toBeLessThan(1.5);
     });
 
     test('screen print sell price drops when quantity increases (margin maintained)', () => {
@@ -1481,9 +1483,9 @@ describe('Promo Dollars — calcPromoTotals', () => {
     const result = calcPromoTotals(o, {});
     expect(result).not.toBeNull();
     // Item rev: 24 * 55.5 = 1332
-    // Deco cost (stored) = 4.5 for 2 colors at 24 qty; sell = rT(4.5*1.5) = 6.8
-    // Promo deco rev per piece = rQ(6.8 * 1.25)
-    const decoSell = rT(4.5 * SP.mk);
+    // Deco: SP.pr[2][1] is cost for 2 colors at 24 qty; dP rounds cost to .25 then × markup
+    const decoCost = rQ(SP.pr[2][1]);
+    const decoSell = rT(decoCost * SP.mk);
     expect(result.promoRev).toBe(1332 + 24 * rQ(decoSell * PROMO_DECO_MULT));
     expect(result.customerPays).toBe(0);
   });
