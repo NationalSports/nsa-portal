@@ -632,13 +632,13 @@ const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
   // Optimistic locking: check version before saving (auto-heal on conflict)
   if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true&&typeof vc==='number')est._version=vc}
-  return _dbSavingGuard(async()=>{let decoFailed=false;try{
+  return _dbSavingGuard(async()=>{let decoFailed=false;let _failMsg='';try{
     const{items,art_files,...estRow}=est;
     let{error:estErr}=await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
     if(estErr){
       const coreEstRow={};Object.keys(_pick(estRow,_estCols)).forEach(k=>{if(!_estExtraCols.has(k))coreEstRow[k]=_pick(estRow,_estCols)[k]});
       const retry=await supabase.from('estimates').upsert(coreEstRow,{onConflict:'id'});
-      if(retry.error){console.error('[DB] estimates upsert failed:',retry.error.message);decoFailed=true}
+      if(retry.error){console.error('[DB] estimates upsert failed:',retry.error.message);decoFailed=true;_failMsg='estimates: '+retry.error.message}
       else console.warn('[DB] estimate saved with core columns only')
     }
     // Delete old children — must delete grandchildren (decorations) BEFORE estimate_items due to FK constraints
@@ -700,7 +700,7 @@ const _dbSaveEstimateInner = async (est) => {
           // Also try core rows with product_id nulled
           const coreNullPid=coreRows.map(r=>({...r,product_id:null}));
           const retry2=await supabase.from('estimate_items').insert(coreNullPid).select('id');
-          if(retry2.error){console.error('[DB] estimate_items batch insert failed:',retry2.error.message,retry2.error.details);decoFailed=true}
+          if(retry2.error){console.error('[DB] estimate_items batch insert failed:',retry2.error.message,retry2.error.details);decoFailed=true;_failMsg='estimate_items: '+retry2.error.message+(retry2.error.details?' ('+retry2.error.details+')':'')}
           else{insertedItems=retry2.data;console.warn('[DB] estimate items saved with core columns + product_id nulled')}
         }
         else{insertedItems=retry.data;console.warn('[DB] estimate items saved with core columns only')}
@@ -717,24 +717,24 @@ const _dbSaveEstimateInner = async (est) => {
         if(decoErr){
           const coreRows=allDecoRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_decoExtraCols.has(k))cr[k]=r[k]});return cr});
           const{error:coreErr}=await supabase.from('estimate_item_decorations').insert(coreRows);
-          if(coreErr){decoFailed=true;console.error('[DB] estimate_item_decorations batch failed:',coreErr.message)}
+          if(coreErr){decoFailed=true;_failMsg='estimate_item_decorations: '+coreErr.message+(coreErr.details?' ('+coreErr.details+')':'');console.error('[DB] estimate_item_decorations batch failed:',coreErr.message)}
           else console.warn('[DB] estimate decos saved with core columns only')
         }
       }
     }
-    if(decoFailed){_dbSaveFailedIds.add(est.id);_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete — some data may not have been saved to cloud','error');return false}
-    _dbSaveFailedIds.delete(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();
+    if(decoFailed){_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,_failMsg||'unknown estimate save error');_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete: '+(_failMsg||'see console'),'error');return false}
+    _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();
     // Bump local version to match server (DB trigger increments on UPDATE)
     if(est._version)est._version=est._version+1;
     return true;
-  }catch(e){console.error('[DB] save estimate:',e);_dbSaveFailedIds.add(est.id);_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
+  }catch(e){console.error('[DB] save estimate:',e);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
 const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateInner);
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
   // Optimistic locking: check version before saving (auto-heal on conflict)
   if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number')so._version=vc}
-  return _dbSavingGuard(async()=>{let saveFailed=false;try{
+  return _dbSavingGuard(async()=>{let saveFailed=false;let _failMsg='';try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     // Save SO row FIRST (FK constraint requires it before items), but with OLD updated_at
     // We'll bump updated_at LAST so cross-tab polls don't see stale items
@@ -747,7 +747,7 @@ const _dbSaveSOInner = async (so) => {
     if(soErr){
       const coreSoRow={};Object.keys(soRowInitial).forEach(k=>{if(!_soExtraCols.has(k))coreSoRow[k]=soRowInitial[k]});
       const retry=await supabase.from('sales_orders').upsert(coreSoRow,{onConflict:'id'});
-      if(retry.error){console.error('[DB] sales_orders upsert failed:',retry.error.message);saveFailed=true}
+      if(retry.error){console.error('[DB] sales_orders upsert failed:',retry.error.message);saveFailed=true;_failMsg='sales_orders: '+retry.error.message}
       else console.warn('[DB] SO saved with core columns only')
     }
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
@@ -782,8 +782,8 @@ const _dbSaveSOInner = async (so) => {
         if(jobErr.message?.includes('schema cache')||jobErr.message?.includes('column')||jobErr.code==='PGRST204'||jobErr.message?.includes('not found')){
           const coreRows=jobRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_jobExtraCols.has(k))cr[k]=r[k]});return cr});
           const{error:jobErr2}=await supabase.from('so_jobs').upsert(coreRows,{onConflict:'so_id,id'});
-          if(jobErr2){console.error('[DB] so_jobs upsert failed (core):',jobErr2.message,jobErr2.details);saveFailed=true}
-        }else{console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true}
+          if(jobErr2){console.error('[DB] so_jobs upsert failed (core):',jobErr2.message,jobErr2.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr2.message)}
+        }else{console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr.message)}
       }
       // Delete jobs that no longer exist
       const currentJobIds=jobs.map(j=>j.id).filter(Boolean);
@@ -805,9 +805,9 @@ const _dbSaveSOInner = async (so) => {
           console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
           const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
           const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
-          if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true}
+          if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr2.message)}
           else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
-        }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true}
+        }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message)}
       }
       // Delete art files that no longer exist
       const currentAfIds=art_files.map(a=>a.id).filter(Boolean);
@@ -818,8 +818,8 @@ const _dbSaveSOInner = async (so) => {
       }
     }
     // If art_files is empty/undefined, leave existing DB art files untouched to prevent accidental data loss
-    if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true}}
-    if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}_dbSaveFailedIds.delete(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
+    if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+fdErr.message)}}
+    if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}_dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
     const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}});
     let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id');
@@ -836,7 +836,7 @@ const _dbSaveSOInner = async (so) => {
         if(retry.error){
           const coreNullPid=coreRows.map(r=>({...r,product_id:null}));
           const retry2=await supabase.from('so_items').insert(coreNullPid).select('id');
-          if(retry2.error){console.error('[DB] so_items batch insert failed:',retry2.error.message,retry2.error.details);saveFailed=true}
+          if(retry2.error){console.error('[DB] so_items batch insert failed:',retry2.error.message,retry2.error.details);saveFailed=true;_failMsg=_failMsg||('so_items: '+retry2.error.message+(retry2.error.details?' ('+retry2.error.details+')':''))}
           else{insertedItems=retry2.data;console.warn('[DB] so items saved with core columns + product_id nulled')}
         }
         else{insertedItems=retry.data;console.warn('[DB] so items saved with core columns only')}
@@ -861,14 +861,14 @@ const _dbSaveSOInner = async (so) => {
         if(decoErr){
           const coreRows=allDecoRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_decoExtraCols.has(k))cr[k]=r[k]});return cr});
           const{error:coreErr}=await supabase.from('so_item_decorations').insert(coreRows);
-          if(coreErr){saveFailed=true;console.error('[DB] so_item_decorations batch failed:',coreErr.message)}
+          if(coreErr){saveFailed=true;_failMsg=_failMsg||('so_item_decorations: '+coreErr.message+(coreErr.details?' ('+coreErr.details+')':''));console.error('[DB] so_item_decorations batch failed:',coreErr.message)}
           else console.warn('[DB] so decos saved with core columns only')
         }
       }
       // Batch insert pick lines
       if(allPickRows.length){
         const{error:pickErr}=await supabase.from('so_item_pick_lines').insert(allPickRows);
-        if(pickErr){saveFailed=true;console.error('[DB] so_item_pick_lines batch failed:',pickErr.message)}
+        if(pickErr){saveFailed=true;_failMsg=_failMsg||('so_item_pick_lines: '+pickErr.message);console.error('[DB] so_item_pick_lines batch failed:',pickErr.message)}
       }
       // Batch insert PO lines
       if(allPoRows.length){
@@ -876,7 +876,7 @@ const _dbSaveSOInner = async (so) => {
         const{error:poErr}=await supabase.from('so_item_po_lines').insert(allPoRows);
         if(poErr){
           const{error:coreErr}=await supabase.from('so_item_po_lines').insert(corePoRows);
-          if(coreErr){saveFailed=true;console.error('[DB] so_item_po_lines batch failed:',coreErr.message)}
+          if(coreErr){saveFailed=true;_failMsg=_failMsg||('so_item_po_lines: '+coreErr.message);console.error('[DB] so_item_po_lines batch failed:',coreErr.message)}
           else console.warn('[DB] PO lines saved without billed/tracking_numbers columns')
         }
       }
@@ -885,12 +885,12 @@ const _dbSaveSOInner = async (so) => {
     if(finalUpdatedAt!==existingSO?.updated_at){
       await supabase.from('sales_orders').update({updated_at:finalUpdatedAt}).eq('id',so.id);
     }
-    if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}
-    _dbSaveFailedIds.delete(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();
+    if(saveFailed){_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
+    _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();
     // Bump local version to match server (DB trigger increments on UPDATE)
     if(so._version)so._version=so._version+1;
     return true;
-  }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
+  }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
 const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address'];
@@ -905,7 +905,7 @@ const _dbSaveInvoice = async (inv) => {
       console.warn('[DB] invoices upsert failed, retrying without extra cols:',invErr.message);
       const coreRow={};Object.keys(invRow).forEach(k=>{if(!_invExtraCols.has(k))coreRow[k]=invRow[k]});
       const{error:invErr2}=await supabase.from('invoices').upsert(coreRow,{onConflict:'id'});
-      if(invErr2){console.error('[DB] invoices upsert failed (core):',invErr2.message);_dbSaveFailedIds.add(inv.id);_persistFailedIds();return false}
+      if(invErr2){console.error('[DB] invoices upsert failed (core):',invErr2.message);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoices: '+invErr2.message);_persistFailedIds();return false}
     }
     // Sync payments: upsert current, then delete removed (avoids DELETE+INSERT race condition)
     if(payments?.length){
@@ -927,8 +927,8 @@ const _dbSaveInvoice = async (inv) => {
       await supabase.from('invoice_items').delete().eq('invoice_id',inv.id);
       await supabase.from('invoice_items').insert(items.map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description,invoice_id:inv.id})));
     }
-    _dbSaveFailedIds.delete(inv.id);_persistFailedIds();return true;
-  }catch(e){console.error('[DB] save invoice:',e);_dbSaveFailedIds.add(inv.id);_persistFailedIds();return false}});
+    _dbSaveFailedIds.delete(inv.id);_clearSaveError(inv.id);_persistFailedIds();return true;
+  }catch(e){console.error('[DB] save invoice:',e);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,e.message||String(e));_persistFailedIds();return false}});
 };
 let _dbNotify=null; // set by App component for visible error toasts
 const _dbSaveCustomer = async (c) => {
@@ -944,7 +944,7 @@ const _dbSaveCustomer = async (c) => {
       // Retry without art_files if column doesn't exist yet
       const coreCols=_custCols.filter(c2=>c2!=='art_files');
       const retry=await supabase.from('customers').upsert(_pick(custRow,coreCols),{onConflict:'id'});
-      if(retry.error){console.error('[DB] save customer upsert error:',retry.error.message);_dbSaveFailedIds.add(c.id);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+retry.error.message,'error');return false}
+      if(retry.error){console.error('[DB] save customer upsert error:',retry.error.message);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'customers: '+retry.error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+retry.error.message,'error');return false}
       else{console.warn('[DB] customer saved without art_files column (run migration 00027)')}
     }
     // Upsert contacts then delete removed ones (avoids DELETE+INSERT race condition)
@@ -963,11 +963,11 @@ const _dbSaveCustomer = async (c) => {
       }
     }
     // If contacts is empty/undefined, leave existing DB contacts untouched to prevent accidental data loss
-    _dbSaveFailedIds.delete(c.id);_persistFailedIds();_dbRecentSaves[c.id]=Date.now();
+    _dbSaveFailedIds.delete(c.id);_clearSaveError(c.id);_persistFailedIds();_dbRecentSaves[c.id]=Date.now();
     // Bump local version to match server (DB trigger increments on UPDATE)
     if(c._version)c._version=c._version+1;
     console.log('[DB] Customer saved:',c.id,c.name);return true;
-  }catch(e){console.error('[DB] save customer:',e);_dbSaveFailedIds.add(c.id);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
+  }catch(e){console.error('[DB] save customer:',e);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
 };
 const _dbSavePromoProgram = async (prog) => {
   if(!supabase)return false;
@@ -1053,14 +1053,14 @@ const _dbSaveProduct = async (p) => {
       // Duplicate SKU: another product already owns this SKU — suppress all future saves for this ID
       if(error.message?.includes('products_sku_unique')||error.message?.includes('duplicate key value')){
         console.warn('[DB] Duplicate SKU',p.sku,'for id',p.id,'— suppressing future saves');
-        _dbDuplicateSkuIds.add(p.id);_persistDuplicateSkuIds();_dbSaveFailedIds.delete(p.id);_persistFailedIds();return true;
+        _dbDuplicateSkuIds.add(p.id);_persistDuplicateSkuIds();_dbSaveFailedIds.delete(p.id);_clearSaveError(p.id);_persistFailedIds();return true;
       }
       // If image columns don't exist yet, retry without them (product data still saves)
       if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('color_category')||error.message?.includes('is_archived')){
         const{image_front_url,image_back_url,color_category,is_archived,...rowNoExtra}=row;
         const{error:e2}=await supabase.from('products').upsert(rowNoExtra,{onConflict:'id'});
-        if(e2){if(e2.message?.includes('products_sku_unique')||e2.message?.includes('duplicate key value')){console.warn('[DB] Skipping duplicate SKU:',p.sku);return false}console.error('[DB] save product (no extra cols):',e2.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
-      }else{console.error('[DB] save product:',error.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error');return false}
+        if(e2){if(e2.message?.includes('products_sku_unique')||e2.message?.includes('duplicate key value')){console.warn('[DB] Skipping duplicate SKU:',p.sku);return false}console.error('[DB] save product (no extra cols):',e2.message);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,'products: '+e2.message);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
+      }else{console.error('[DB] save product:',error.message);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,'products: '+error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error');return false}
     }
     // Always save product images to app_state as reliable backup (works even without image columns)
     const _imgF=p.image_url||p.image_front_url||null;const _imgB=p.back_image_url||p.image_back_url||null;const _imgG=p.images||null;
@@ -1073,8 +1073,8 @@ const _dbSaveProduct = async (p) => {
       const rows=[...allSizes].map(sz=>({product_id:p.id,size:sz,quantity:_inv[sz]||0,alert_threshold:_alerts[sz]||null}));
       await supabase.from('product_inventory').upsert(rows,{onConflict:'product_id,size'});
     }
-    _dbSaveFailedIds.delete(p.id);_persistFailedIds();return true;
-  }catch(e){console.error('[DB] save product:',e);_dbSaveFailedIds.add(p.id);_persistFailedIds();return false}
+    _dbSaveFailedIds.delete(p.id);_clearSaveError(p.id);_persistFailedIds();return true;
+  }catch(e){console.error('[DB] save product:',e);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,e.message||String(e));_persistFailedIds();return false}
 };
 const _dbSaveMessage = async (m) => {
   if(!supabase)return;
@@ -1085,8 +1085,8 @@ const _dbSaveMessage = async (m) => {
     const{error}=await supabase.from('messages').upsert(coreRow,{onConflict:'id'});
     if(error){
       // FK violation on so_id means the SO hasn't been saved yet — skip silently and retry later
-      if(error.message?.includes('messages_so_id_fkey')){console.warn('[DB] message save deferred — SO not yet in DB:',m.so_id);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false}
-      console.error('[DB] save message:',error.message);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false;
+      if(error.message?.includes('messages_so_id_fkey')){console.warn('[DB] message save deferred — SO not yet in DB:',m.so_id);_dbSaveFailedIds.add(m.id);_recordSaveError(m.id,'messages (FK): waiting for SO to save');_persistFailedIds();return false}
+      console.error('[DB] save message:',error.message);_dbSaveFailedIds.add(m.id);_recordSaveError(m.id,'messages: '+error.message);_persistFailedIds();return false;
     }
     // Try to save extra columns (tagged_members, entity_type, etc.) — silently ignore if columns don't exist yet
     const extraRow={id:m.id};let hasExtra=false;_msgExtraCols.forEach(k=>{if(k in row&&row[k]!=null){extraRow[k]=row[k];hasExtra=true}});
@@ -1095,8 +1095,8 @@ const _dbSaveMessage = async (m) => {
       const reads=m.read_by.map(uid=>({message_id:m.id,user_id:uid}));
       await supabase.from('message_reads').upsert(reads,{onConflict:'message_id,user_id'});
     }
-    _dbSaveFailedIds.delete(m.id);_persistFailedIds();return true;
-  }catch(e){console.error('[DB] save message:',e);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false}
+    _dbSaveFailedIds.delete(m.id);_clearSaveError(m.id);_persistFailedIds();return true;
+  }catch(e){console.error('[DB] save message:',e);_dbSaveFailedIds.add(m.id);_recordSaveError(m.id,e.message||String(e));_persistFailedIds();return false}
 };
 // ─── Delete Helpers ───
 const _dbDeleteEstimate = async (id) => {
@@ -1197,6 +1197,11 @@ try{['nsa_auto_backup','nsa_auto_backup_ts','nsa_change_log','nsa_so_history','n
 // Track IDs of estimates/SOs whose save failed — prevents reload/poll from overwriting local state
 // Persisted to localStorage so protection survives page refresh
 const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_ids')||'[]'));
+// Track WHY each save failed — surfaced in the banner so the team can see real DB errors
+// instead of just a count. Persisted alongside the IDs so the diagnosis survives reload.
+const _dbSaveFailedErrors=(()=>{try{const raw=localStorage.getItem('nsa_save_failed_errors');return raw?new Map(Object.entries(JSON.parse(raw))):new Map()}catch{return new Map()}})();
+const _recordSaveError=(id,msg)=>{if(!id)return;_dbSaveFailedErrors.set(id,{msg:String(msg||'unknown error').slice(0,400),ts:Date.now()});try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}};
+const _clearSaveError=(id)=>{if(!id)return;if(_dbSaveFailedErrors.delete(id)){try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}}};
 let _onFailedIdsChange=null;// set by App component to trigger UI updates
 const _persistFailedIds=()=>{_lsSet('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]));if(_onFailedIdsChange)_onFailedIdsChange(_dbSaveFailedIds.size)};
 // On startup, clear any duplicate-SKU product IDs from failed saves (they'll never succeed)
@@ -1918,6 +1923,8 @@ export default function App(){
   const[dbLoading,setDbLoading]=useState(!!supabase);const[dbError,setDbError]=useState(null);const _dbReady=useRef(false);const _dbLoadSuccess=useRef(false);
   const _runPollRef=useRef(null);const _lastNavRefreshAt=useRef(0);
   const[failedSaveCount,setFailedSaveCount]=useState(_dbSaveFailedIds.size);_onFailedIdsChange=setFailedSaveCount;
+  const[failedSaveOpen,setFailedSaveOpen]=useState(false);
+  const[failedSaveBusy,setFailedSaveBusy]=useState(false);
   const[cacheFull,setCacheFull]=useState(_lsQuotaWarned);_onCacheFullChange=setCacheFull;
   // Snapshot of last DB-loaded data — used to diff auto-save and only write changed records
   const _dbSnap=useRef({});
@@ -2165,7 +2172,7 @@ export default function App(){
           // Clean up failed IDs for entities that were deleted — prevents permanent error banner
           if(_dbSaveFailedIds.size){const d2=_visFlushRefs.current;const allIds2=new Set([...d2.ests,...d2.sos,...d2.invs,...d2.cust,...d2.prod,...d2.msgs].map(e=>e.id));
           const orphaned2=[..._dbSaveFailedIds].filter(id=>!allIds2.has(id));
-          if(orphaned2.length){orphaned2.forEach(id=>{_dbSaveFailedIds.delete(id);console.log('[DB] Startup cleanup — cleared orphaned failed ID:',id)});_persistFailedIds()}}
+          if(orphaned2.length){orphaned2.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);console.log('[DB] Startup cleanup — cleared orphaned failed ID:',id)});_persistFailedIds()}}
         },100);
       }}
     })();
@@ -2193,8 +2200,9 @@ export default function App(){
         const custMerge=_mergeProtected(d.customers,'cust');
         const msgMerge=_mergeProtected(d.messages,'msgs');
         const prodMerge=_mergeProtected(d.products,'prod');
-        // Update snapshot before state — auto-save effects will diff against this
-        _dbSnap.current={ests:estMerge.snap,sos:soMerge.snap,invs:invMerge.snap,msgs:msgMerge.snap,cust:custMerge.snap,prod:prodMerge.snap,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
+        // Update snapshot before state — auto-save effects will diff against this.
+        // Merge into existing snap so non-reloaded keys (assignedTodos, repCsr, etc.) aren't wiped.
+        _dbSnap.current={..._dbSnap.current,ests:estMerge.snap,sos:soMerge.snap,invs:invMerge.snap,msgs:msgMerge.snap,cust:custMerge.snap,prod:prodMerge.snap,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
         // Use change detection to avoid triggering save effects needlessly
         if(d.team.length)setREPS(prev=>_jsonEq(prev,d.team)?prev:d.team);
         setEsts(estMerge.apply);
@@ -2953,7 +2961,7 @@ export default function App(){
       // Clean up failed IDs for entities that no longer exist in state (deleted by user)
       const d=_visFlushRefs.current;const allIds=new Set([...d.ests,...d.sos,...d.invs,...d.cust,...d.prod,...d.msgs].map(e=>e.id));
       const orphaned=[..._dbSaveFailedIds].filter(id=>!allIds.has(id));
-      if(orphaned.length){orphaned.forEach(id=>{_dbSaveFailedIds.delete(id);console.log('[DB] Cleared orphaned failed ID:',id)});_persistFailedIds();if(!_dbSaveFailedIds.size){_retryBackoff.current=60000;scheduleRetry();return}}
+      if(orphaned.length){orphaned.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);console.log('[DB] Cleared orphaned failed ID:',id)});_persistFailedIds();if(!_dbSaveFailedIds.size){_retryBackoff.current=60000;scheduleRetry();return}}
       // Skip IDs that were recently saved (prevents rapid re-conflict loops)
       const retryIds=[..._dbSaveFailedIds].filter(id=>!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000));
       if(!retryIds.length){scheduleRetry();return}
@@ -3146,6 +3154,9 @@ export default function App(){
   const[custPage,setCustPage]=useState(0);const CUST_PAGE_SIZE=50;
   const[custServerResults,setCustServerResults]=useState(null);
   const[custSearching,setCustSearching]=useState(false);
+  // Tax refresh auto-loop progress (null when idle)
+  const[taxRefresh,setTaxRefresh]=useState(null);// {processed,updated,errors,startedAt}
+  const taxRefreshAbortRef=useRef(false);
   // Customer list collapse state — parents with subs start collapsed; Set of expanded parent ids.
   const[custExpanded,setCustExpanded]=useState(()=>new Set());
   const _custSearchTimer=useRef(null);
@@ -3363,6 +3374,27 @@ export default function App(){
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
   const handleLogin=(user)=>{setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
+
+  // Detect stale legacy sessions — users with nsa_user in localStorage from before Supabase
+  // auth was added bypass LoginGate but have no JWT, so every write to an RLS-protected
+  // table fails with 401. Force them to sign in again so writes get a valid auth.uid().
+  React.useEffect(()=>{
+    if(!supabase||!cu)return;
+    let cancelled=false;
+    (async()=>{
+      // Supabase session restore is async on first load — retry briefly before kicking out
+      for(let i=0;i<10&&!cancelled;i++){
+        const{data}=await supabase.auth.getSession();
+        if(data?.session)return;
+        await new Promise(r=>setTimeout(r,200));
+      }
+      if(cancelled)return;
+      console.warn('[Auth] Cached user has no Supabase session — forcing re-login to restore RLS access');
+      setCu(null);try{localStorage.removeItem('nsa_user')}catch{}
+      setTimeout(()=>{if(typeof nf==='function')nf('Your session expired. Please sign in again so saves can sync to the cloud.','error')},150);
+    })();
+    return()=>{cancelled=true};
+  },[]);// eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-load Team Access data the first time an admin opens the Team page.
   // Defined here (after `cu` is declared) so the dependency array doesn't hit
@@ -4306,8 +4338,16 @@ export default function App(){
     }):myTodos;
     // Get assigned todos for this user (manually created)
     const myAssignedTodos=assignedTodos.filter(t=>t.status==='open'&&(t.assigned_to===cu.id||t.created_by===cu.id));
-    const _todoComplete=(id)=>{setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,status:'completed',completed_at:new Date().toISOString(),completed_by:cu.id,updated_at:new Date().toISOString()}:x));nf('Task completed!')};
-    const _todoDelete=(id)=>{if(!window.confirm('Delete this task? This cannot be undone.'))return;setAssignedTodos(prev=>prev.filter(x=>x.id!==id));if(_dbSnap.current.assignedTodos)_dbSnap.current.assignedTodos=_dbSnap.current.assignedTodos.filter(x=>x.id!==id);if(supabase){supabase.from('todo_comments').delete().eq('todo_id',id);supabase.from('assigned_todos').delete().eq('id',id)}nf('Task deleted')};
+    const _todoComplete=(id,note)=>{
+      const ts=new Date().toISOString();
+      const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};
+      if(note)upd.completion_note=note;
+      setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,...upd}:x));
+      if(_dbSnap.current.assignedTodos)_dbSnap.current.assignedTodos=_dbSnap.current.assignedTodos.map(x=>x.id===id?{...x,...upd}:x);
+      if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));
+      nf('Task completed!')
+    };
+    const _todoDelete=(id)=>{if(!window.confirm('Delete this task? This cannot be undone.'))return;setAssignedTodos(prev=>prev.filter(x=>x.id!==id));if(_dbSnap.current.assignedTodos)_dbSnap.current.assignedTodos=_dbSnap.current.assignedTodos.filter(x=>x.id!==id);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').delete().eq('id',id).then(r=>{if(r.error)console.error('[DB] todo delete:',r.error.message)}));nf('Task deleted')};
 
     // Shared data builders
     const{pullTasks,shipTasks,decoTasks}=buildWarehouseData();
@@ -4909,8 +4949,8 @@ export default function App(){
               <input className="form-input" placeholder="Completion note (optional)..." style={{flex:1,fontSize:12}} id="_todo_complete_note"/>
               <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>{
                 const note=document.getElementById('_todo_complete_note')?.value?.trim()||'';
-                setAssignedTodos(prev=>prev.map(t=>t.id===td.id?{...t,status:'completed',completed_at:new Date().toISOString(),completed_by:cu.id,completion_note:note,updated_at:new Date().toISOString()}:t));
-                setTodoDetailId(null);nf('Task completed!')}}>Complete</button>
+                _todoComplete(td.id,note);
+                setTodoDetailId(null)}}>Complete</button>
             </div>
           </div>}
           {td.status==='completed'&&<div style={{background:'#f0fdf4',padding:10,borderRadius:6,border:'1px solid #bbf7d0',fontSize:12}}>
@@ -5075,7 +5115,41 @@ export default function App(){
     const missingRateCount=cust.filter(c=>c.is_active!==false&&!c.tax_exempt&&!(c.tax_rate>0)&&c.shipping_state&&c.shipping_zip).length;
     // Detect duplicate alpha tags — they break portal routing since ?portal=<tag> picks the first match.
     const dupAlphaGroups=(()=>{const m=new Map();cust.filter(c=>c.is_active!==false&&c.alpha_tag).forEach(c=>{const k=c.alpha_tag.trim().toUpperCase();if(!m.has(k))m.set(k,[]);m.get(k).push(c)});return [...m.entries()].filter(([,arr])=>arr.length>1)})();
-    const refreshTaxRates=async()=>{if(!supabase){nf('Supabase not configured','error');return}nf('Refreshing tax rates from TaxCloud...');try{const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{});if(d?.ok){if(d.changes?.length>0)setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));nf('TaxCloud: '+d.updated+' of '+d.total_customers+' customer rate(s) updated'+(d.errors?' ('+d.errors+' errors)':''))}else{nf(d?.error||'Refresh failed','error')}}catch(e){nf('Error: '+e.message,'error')}};
+    const refreshTaxRates=async()=>{
+      if(!supabase){nf('Supabase not configured','error');return}
+      if(taxRefresh)return;// already running
+      taxRefreshAbortRef.current=false;
+      setTaxRefresh({processed:0,updated:0,errors:0,startedAt:Date.now()});
+      let totalProcessed=0,totalUpdated=0,totalErrors=0,chunks=0;
+      try{
+        // Loop chunks of 100 until remaining===0 or aborted/error
+        for(;;){
+          if(taxRefreshAbortRef.current)break;
+          const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{limit:100,only_missing:true});
+          if(!d?.ok){nf(d?.error||'Refresh failed','error');break}
+          chunks++;
+          totalProcessed+=d.processed||0;
+          totalUpdated+=d.updated||0;
+          totalErrors+=d.errors||0;
+          // Apply this chunk's changes to the in-memory customer list
+          if(d.changes?.length>0){
+            setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));
+          }
+          setTaxRefresh({processed:totalProcessed,updated:totalUpdated,errors:totalErrors,remaining:d.remaining,startedAt:Date.now()});
+          if(!d.remaining||d.remaining<=0)break;
+          if(d.processed===0)break;// safety: nothing happened, avoid infinite loop
+          // Brief pause between chunks
+          await new Promise(r=>setTimeout(r,2000));
+        }
+        const aborted=taxRefreshAbortRef.current;
+        nf('TaxCloud refresh '+(aborted?'stopped':'complete')+': '+totalUpdated+' rate(s) updated across '+chunks+' chunk(s)'+(totalErrors?' ('+totalErrors+' errors)':''));
+      }catch(e){
+        nf('Error: '+e.message,'error');
+      }finally{
+        setTaxRefresh(null);
+      }
+    };
+    const cancelTaxRefresh=()=>{taxRefreshAbortRef.current=true};
     const autoFixAlphaTags=()=>{
       if(!dupAlphaGroups.length){nf('No duplicate alpha tags');return}
       const dupIds=new Set();dupAlphaGroups.forEach(([,arr])=>arr.forEach(c=>dupIds.add(c.id)));
@@ -5106,10 +5180,18 @@ export default function App(){
     };
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
-      {isA&&<button className="btn btn-secondary" onClick={refreshTaxRates} title="Look up tax rates from TaxCloud for all active, non-exempt customers">Refresh Tax Rates</button>}
+      {isA&&<button className="btn btn-secondary" onClick={refreshTaxRates} disabled={!!taxRefresh} title="Look up tax rates from TaxCloud for all active, non-exempt customers missing a rate">{taxRefresh?'Refreshing…':'Refresh Tax Rates'}</button>}
       <button className="btn btn-primary" onClick={()=>setCM({open:true,c:null})}><Icon name="plus" size={14}/> New</button></div>
-    {isA&&missingRateCount>0&&<div style={{padding:'10px 14px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,marginBottom:12,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
-      <Icon name="alert" size={16}/><div style={{flex:1,fontSize:12,color:'#92400e'}}><strong>{missingRateCount}</strong> customer{missingRateCount===1?'':'s'} missing a tax rate. Click <strong>Refresh Tax Rates</strong> to look them up via TaxCloud.</div>
+    {isA&&taxRefresh&&<div style={{padding:'10px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:8,marginBottom:12,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+      <Icon name="clock" size={16}/>
+      <div style={{flex:1,fontSize:12,color:'#1e40af'}}>
+        <strong>Refreshing tax rates…</strong> {taxRefresh.processed} processed · {taxRefresh.updated} updated{taxRefresh.errors>0?' · '+taxRefresh.errors+' errors':''}{taxRefresh.remaining!=null?' · '+taxRefresh.remaining+' remaining':''}
+        <div style={{fontSize:10,color:'#475569',marginTop:2}}>You can leave this page open — it'll keep working. Closing the tab stops it; partial progress is saved.</div>
+      </div>
+      <button className="btn btn-sm" style={{background:'#64748b',color:'#fff',border:'none',fontSize:11}} onClick={cancelTaxRefresh}>Stop</button>
+    </div>}
+    {isA&&!taxRefresh&&missingRateCount>0&&<div style={{padding:'10px 14px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,marginBottom:12,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+      <Icon name="alert" size={16}/><div style={{flex:1,fontSize:12,color:'#92400e'}}><strong>{missingRateCount}</strong> customer{missingRateCount===1?'':'s'} missing a tax rate. Click <strong>Refresh Tax Rates</strong> to look them up via TaxCloud (processes 100 at a time, auto-loops until done).</div>
       <button className="btn btn-sm" style={{background:'#d97706',color:'#fff',border:'none',fontSize:11}} onClick={refreshTaxRates}>Refresh Now</button>
     </div>}
     {isA&&dupAlphaGroups.length>0&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:12,display:'flex',alignItems:'flex-start',gap:12}}>
@@ -5961,6 +6043,7 @@ export default function App(){
           <th style={{cursor:'pointer'}} onClick={()=>toggleSort('units')}>Units {sortIcon('units')}</th>
           <th>Art</th><th>Items</th><th>Ready?</th><th>Board</th>
           <th style={{cursor:'pointer'}} onClick={()=>toggleSort('expected')}>Due {sortIcon('expected')}</th>
+          {isA&&<th></th>}
         </tr></thead><tbody>
         {fj.map(j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
           const ready=isJobReady(j,j.so);
@@ -5983,6 +6066,17 @@ export default function App(){
               :<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:ready?'#166534':'#64748b',color:'white',border:'none'}}
                 onClick={()=>promoteJob(j)}>→ Board</button>}</td>
             <td style={{fontSize:11,color:j.daysOut!=null&&j.daysOut<=7?'#dc2626':'#64748b',fontWeight:j.daysOut!=null&&j.daysOut<=3?700:400}}>{j.expected||'—'}{j.daysOut!=null&&j.daysOut<=3?' ⚠️':''}</td>
+            {isA&&<td onClick={e=>e.stopPropagation()}>
+              <button title={'Delete '+j.id+' (admin only)'} style={{background:'transparent',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:11,color:'#dc2626'}} onClick={()=>{
+                if(!window.confirm('Delete '+j.id+' ('+(j.art_name||'unnamed')+')?\n\nThis removes the job from '+j.soId+' and deletes the so_jobs row from the database. The SO itself stays.'))return;
+                const so=sos.find(s=>s.id===j.soId);
+                if(!so){nf(j.soId+' not found','error');return}
+                const updated={...so,jobs:safeJobs(so).filter(jj=>jj.id!==j.id),updated_at:new Date().toLocaleString()};
+                setSOs(prev=>prev.map(s=>s.id===so.id?updated:s));
+                _dbSaveSO(updated);
+                nf('Deleted '+j.id)
+              }}>🗑</button>
+            </td>}
           </tr>})}
         </tbody></table>}
       </div></div>
@@ -14610,9 +14704,12 @@ export default function App(){
               if(!j.art_file_id)j.art_file_id=newArtFileId;
             }
             const updatedJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
-            savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
+            const newSO=savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
             setArtJobDetailModal({...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status});
+            // Block on the DB write so the success toast only fires after the mockup is actually persisted.
+            const ok=await _dbSaveSO(newSO);
+            if(ok===false){nf('Mockup file uploaded but failed to save to order. Please retry.','error');return}
             nf(uploaded.length+' mockup'+(uploaded.length>1?'s':'')+' uploaded for '+sku);
           }catch(err){nf('Upload failed: '+err.message,'error')}
           finally{setArtJobDetailUploading(false)}
@@ -14649,9 +14746,12 @@ export default function App(){
               const addl=uploads.filter(u=>u.artId===a.id).map(u=>u.file);
               return addl.length?{...a,prod_files:[...(a.prod_files||[]),...addl]}:a;
             });
-            savSO({...liveSO,art_files:updArt});
+            const newSO=savSO({...liveSO,art_files:updArt});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
             setArtJobDetailModal({...j,artFile:updatedAf});
+            // Block on the DB write so the success toast only fires after the file is actually persisted.
+            const ok=await _dbSaveSO(newSO);
+            if(ok===false){nf('Production file uploaded but failed to save to order. Please retry.','error');return}
             nf(uploads.length+' production file'+(uploads.length>1?'s':'')+' uploaded!');
           }catch(err){nf('Upload failed: '+err.message,'error')}
           finally{setArtJobDetailUploading(false)}
@@ -15238,7 +15338,8 @@ export default function App(){
           savSO({...aso,art_files:safeArt(aso).map(a=>a.id===aj.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
           // 2. Handle notification
           if(notifyMethod==='email'&&ac.email){
-            const subj=encodeURIComponent('Artwork ready for approval — '+aj.art_name);
+            const _label=(aso.memo&&aso.memo.trim())||aj.art_name;
+            const subj=encodeURIComponent('Artwork ready for approval — '+_label);
             const body=encodeURIComponent(approvalNotifyModal.message);
             window.open('mailto:'+ac.email+'?subject='+subj+'&body='+body,'_blank');
           }else if(notifyMethod==='text'&&ac.phone){
@@ -20065,13 +20166,45 @@ export default function App(){
     const inactiveReps=REPS.filter(r=>r.is_active===false);
     const grouped=Object.keys(roles).map(r=>({role:r,label:roles[r],members:activeReps.filter(m=>m.role===r)})).filter(g=>g.members.length>0);
 
-    const saveMember=(m)=>{
-      if(REPS.find(r=>r.id===m.id)){
+    const saveMember=async(m)=>{
+      const isExisting=!!REPS.find(r=>r.id===m.id);
+      if(isExisting){
         setREPS(prev=>prev.map(r=>r.id===m.id?m:r));
       } else {
         setREPS(prev=>[...prev,m]);
       }
+      // Mirror the change into the auth-enriched directory cache so the access table
+      // reflects the save immediately (otherwise it stays stale until next page refresh).
+      setTeamAuthData(prev=>{
+        if(!Array.isArray(prev))return prev;
+        if(isExisting)return prev.map(r=>r.id===m.id?{...r,...m}:r);
+        return[...prev,{...m,auth:null,status:'not_invited'}];
+      });
       setEditMember(null);nf('✅ '+m.name+' saved');
+      // Auto-invite on new-member create when an email is present, so writes through RLS
+      // work as soon as they accept the invite. Without this the row exists in team_members
+      // with auth_id NULL and every save they attempt is silently RLS-denied.
+      if(!isExisting){
+        if(m.email&&/^\S+@\S+\.\S+$/.test(m.email)){
+          try{
+            const session=await _sbGetSession();
+            if(session?.access_token){
+              const res=await fetch('/.netlify/functions/team-invite',{
+                method:'POST',
+                headers:{Authorization:`Bearer ${session.access_token}`,'Content-Type':'application/json'},
+                body:JSON.stringify({team_member_id:m.id,email:m.email})
+              });
+              const json=await res.json().catch(()=>({error:'Bad response'}));
+              if(res.ok&&!json.error){nf('Invite sent to '+m.email)}
+              else{nf('Saved, but invite failed: '+(json.error||('HTTP '+res.status))+' — use Team Access → Send Invite to retry','warn')}
+            }
+          }catch(e){nf('Saved, but invite failed: '+e.message+' — use Team Access → Send Invite to retry','warn')}
+        }else{
+          nf('No email set — '+m.name+' will not be able to log in until invited from Team Access','warn');
+        }
+      }
+      // Reconcile from server (picks up new auth status if email matches an existing auth user)
+      loadTeamAuth();
     };
     const saveMemberAndInvite=async(m)=>{
       const target=String(m.email||'').trim().toLowerCase();
@@ -22209,9 +22342,44 @@ export default function App(){
         <button onClick={()=>{try{const heavyKeys=['nsa_auto_backup','nsa_auto_backup_ts','nsa_cust','nsa_ests','nsa_sos','nsa_invs','nsa_msgs','nsa_prod','nsa_vend','nsa_change_log','nsa_so_history','nsa_inv_adj_log','nsa_wh_recent'];heavyKeys.forEach(k=>{try{localStorage.removeItem(k)}catch{}});const keys=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('nsa_snap_'))keys.push(k)}keys.forEach(k=>localStorage.removeItem(k));_lsQuotaWarned=false;setCacheFull(false);console.log('[Storage] Cleared heavy cache keys + snap keys')}catch(e){console.error('[Storage] cache clear failed:',e)}}} style={{background:'#1e40af',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Clear Cache</button>
         <button onClick={()=>setCacheFull(false)} style={{background:'none',border:'none',color:'#1e40af',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
       </div>}
-      {failedSaveCount>0&&<div style={{padding:'8px 16px',background:'#fefce8',border:'1px solid #fde68a',color:'#92400e',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
-        <span style={{fontSize:14}}>&#9888;</span><span style={{flex:1}}>{failedSaveCount} item{failedSaveCount>1?'s':''} failed to save to cloud. Auto-retrying every 30s. Your data is safe locally.</span>
-        <span style={{fontSize:11,color:'#b45309',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{(()=>{const ids=[..._dbSaveFailedIds];return ids.length<=3?ids.join(', '):ids.slice(0,3).join(', ')+' +' +(ids.length-3)+' more'})()}</span>
+      {failedSaveCount>0&&<div style={{background:'#fefce8',border:'1px solid #fde68a',color:'#92400e',fontSize:12,fontWeight:600}}>
+        <div style={{padding:'8px 16px',display:'flex',alignItems:'center',gap:8}}>
+          <span style={{fontSize:14}}>&#9888;</span>
+          <span style={{flex:1}}>{failedSaveCount} item{failedSaveCount>1?'s':''} failed to save to cloud. Auto-retrying in the background. Your data is safe locally.</span>
+          <button disabled={failedSaveBusy} onClick={async()=>{
+            setFailedSaveBusy(true);
+            const ids=[..._dbSaveFailedIds];let ok=0,fail=0;
+            for(const id of ids){
+              const sid=String(id);let r=null;
+              try{
+                if(sid.startsWith('EST-')){const it=ests.find(e=>e.id===id);if(it)r=await _dbSaveEstimate(it)}
+                else if(sid.startsWith('SO-')){const it=sos.find(s=>s.id===id);if(it)r=await _dbSaveSO(it)}
+                else if(sid.startsWith('INV-')){const it=invs.find(i=>i.id===id);if(it)r=await _dbSaveInvoice(it)}
+                else if(sid.startsWith('MSG-')){const it=msgs.find(m=>m.id===id);if(it)r=await _dbSaveMessage(it)}
+                else{const c=cust.find(x=>x.id===id);if(c){r=await _dbSaveCustomer(c)}else{const p=prod.find(x=>x.id===id);if(p)r=await _dbSaveProduct(p)}}
+              }catch(e){console.error('[Retry] error for',id,e);r=false}
+              if(r===false||r==null)fail++;else ok++;
+            }
+            setFailedSaveBusy(false);
+            nf((ok?ok+' saved':'')+(ok&&fail?' · ':'')+(fail?fail+' still failing':'')||'Nothing to retry',fail?'error':'success');
+          }} style={{background:'#92400e',border:'none',color:'#fff',cursor:failedSaveBusy?'wait':'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap',opacity:failedSaveBusy?0.6:1}}>{failedSaveBusy?'Retrying…':'Retry now'}</button>
+          <button onClick={()=>{
+            if(!window.confirm('Clear '+_dbSaveFailedIds.size+' failed-save flag(s)?\n\nUse this if the data is actually fine in the cloud (verified by reloading the page) but the flag is stuck. This does not delete any data.'))return;
+            const ids=[..._dbSaveFailedIds];ids.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id)});_persistFailedIds();
+            nf('Cleared '+ids.length+' failed-save flag(s)','success');
+          }} style={{background:'none',border:'1px solid #92400e',color:'#92400e',cursor:'pointer',fontWeight:600,fontSize:11,padding:'2px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Clear</button>
+          <button onClick={()=>setFailedSaveOpen(o=>!o)} style={{background:'none',border:'none',color:'#92400e',cursor:'pointer',fontWeight:700,fontSize:11,padding:'2px 4px'}}>{failedSaveOpen?'Hide details ▲':'Details ▼'}</button>
+        </div>
+        {failedSaveOpen&&<div style={{padding:'8px 16px 10px',borderTop:'1px solid #fde68a',background:'#fffbeb',maxHeight:240,overflowY:'auto',fontWeight:400}}>
+          {(()=>{const ids=[..._dbSaveFailedIds];if(!ids.length)return null;
+            return ids.slice(0,50).map(id=>{const err=_dbSaveFailedErrors.get(id);return(
+              <div key={id} style={{fontSize:11,padding:'4px 0',borderBottom:'1px dashed #fde68a',display:'flex',gap:8,alignItems:'flex-start'}}>
+                <span style={{fontWeight:700,minWidth:90,color:'#92400e'}}>{id}</span>
+                <span style={{flex:1,color:'#78350f',wordBreak:'break-word'}}>{err?err.msg:'(no error captured — pre-existing failure)'}</span>
+              </div>);
+            }).concat(ids.length>50?[<div key="more" style={{fontSize:11,padding:'4px 0',color:'#78350f',fontStyle:'italic'}}>+ {ids.length-50} more not shown</div>]:[]);
+          })()}
+        </div>}
       </div>}
       <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='search'&&rSearch()}</>}</div></div>
     {/* Assignment Modal — global, triggered from warehouse or production board */}

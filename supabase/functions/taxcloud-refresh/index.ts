@@ -1,13 +1,19 @@
 // supabase/functions/taxcloud-refresh/index.ts
 // ─────────────────────────────────────────────────────────
-// Quarterly batch refresh of tax rates for all active customers.
-// Schedule via pg_cron: SELECT cron.schedule('taxcloud-quarterly',
-//   '0 6 1 1,4,7,10 *',  -- 6AM on Jan 1, Apr 1, Jul 1, Oct 1
-//   $$SELECT net.http_post(
-//     url := '<SUPABASE_URL>/functions/v1/taxcloud-refresh',
-//     headers := '{"Authorization": "Bearer <SERVICE_ROLE_KEY>"}'::jsonb
-//   )$$
-// );
+// Chunked tax-rate refresh via TaxCloud.
+//
+// Body params (all optional):
+//   { limit?: number       // max customers to process this call (default 100, hard cap 200)
+//   , only_missing?: bool  // true → only customers with null/0 tax_rate (default true)
+//   }
+//
+// Returns:
+//   { ok, processed, updated, errors, remaining, changes, failed, total_missing }
+//
+// `remaining` is how many customers still need a rate AFTER this call completes.
+// The client loops, calling this until remaining === 0.
+//
+// Daily pg_cron job calls this with {} to keep new customers caught up automatically.
 // ─────────────────────────────────────────────────────────
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
@@ -33,6 +39,9 @@ const CORS = {
   "Content-Type": "application/json",
 };
 
+const DEFAULT_LIMIT = 100;
+const HARD_CAP = 200;
+
 async function lookupRate(address1: string, city: string, state: string, zip5: string): Promise<number | null> {
   try {
     const res = await fetch("https://api.taxcloud.net/1.0/TaxCloud/Lookup", {
@@ -41,7 +50,7 @@ async function lookupRate(address1: string, city: string, state: string, zip5: s
       body: JSON.stringify({
         apiLoginID: TAXCLOUD_API_ID,
         apiKey: TAXCLOUD_API_KEY,
-        customerID: "quarterly-refresh",
+        customerID: "rate-refresh",
         cartItems: [{ Index: 0, ItemID: "RATE_CHECK", TIC: "20010", Price: 100.0, Qty: 1 }],
         origin: ORIGIN,
         destination: { Address1: address1 || "", City: city || "", State: state, Zip5: zip5 },
@@ -57,31 +66,44 @@ async function lookupRate(address1: string, city: string, state: string, zip5: s
 }
 
 serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: CORS });
-  }
+  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+
+  let body: { limit?: number; only_missing?: boolean } = {};
+  try { body = await req.json(); } catch { /* empty body is fine */ }
+  const limit = Math.min(Math.max(1, body.limit ?? DEFAULT_LIMIT), HARD_CAP);
+  const onlyMissing = body.only_missing !== false; // default true
 
   try {
-    // Get all active, non-exempt customers with a shipping state + zip
-    const { data: customers, error } = await supabase
+    // Base query — active, non-exempt, has shipping state + zip
+    let q = supabase
       .from("customers")
-      .select("id, name, shipping_address_line1, shipping_city, shipping_state, shipping_zip, tax_rate")
+      .select("id, name, shipping_address_line1, shipping_city, shipping_state, shipping_zip, tax_rate", { count: "exact" })
       .eq("is_active", true)
       .eq("tax_exempt", false)
       .not("shipping_state", "is", null)
       .not("shipping_zip", "is", null);
 
+    if (onlyMissing) {
+      // tax_rate is null OR 0
+      q = q.or("tax_rate.is.null,tax_rate.eq.0");
+    }
+
+    const { data: customers, error, count } = await q.limit(limit);
     if (error) throw error;
+
+    const totalMissing = count ?? (customers?.length || 0);
 
     const results: { id: string; name: string; old_rate: number; new_rate: number }[] = [];
     const errors: { id: string; name: string; error: string }[] = [];
+    let processed = 0;
     let skipped = 0;
 
     for (const c of customers || []) {
+      processed++;
       if (!c.shipping_state?.trim() || !c.shipping_zip?.trim()) { skipped++; continue; }
 
-      // Rate-limit: ~1 req/sec to be respectful to TaxCloud
-      await new Promise(r => setTimeout(r, 500));
+      // Light pacing — 200ms between TaxCloud calls
+      await new Promise(r => setTimeout(r, 200));
 
       const newRate = await lookupRate(
         c.shipping_address_line1 || "",
@@ -95,28 +117,30 @@ serve(async (req: Request) => {
         continue;
       }
 
-      // Only update if rate actually changed
-      if (Math.abs((c.tax_rate || 0) - newRate) > 0.000001) {
-        const { error: updErr } = await supabase
-          .from("customers")
-          .update({ tax_rate: newRate, updated_at: new Date().toISOString() })
-          .eq("id", c.id);
+      // Always write when we got a rate back (even if numerically same, to update updated_at)
+      const { error: updErr } = await supabase
+        .from("customers")
+        .update({ tax_rate: newRate, updated_at: new Date().toISOString() })
+        .eq("id", c.id);
 
-        if (updErr) {
-          errors.push({ id: c.id, name: c.name, error: updErr.message });
-        } else {
-          results.push({ id: c.id, name: c.name, old_rate: c.tax_rate || 0, new_rate: newRate });
-        }
+      if (updErr) {
+        errors.push({ id: c.id, name: c.name, error: updErr.message });
+      } else {
+        results.push({ id: c.id, name: c.name, old_rate: c.tax_rate || 0, new_rate: newRate });
       }
     }
+
+    const remaining = Math.max(0, totalMissing - processed);
 
     return new Response(
       JSON.stringify({
         ok: true,
-        total_customers: customers?.length || 0,
+        processed,
         updated: results.length,
         skipped,
         errors: errors.length,
+        remaining,
+        total_missing: totalMissing,
         changes: results,
         failed: errors,
       }),

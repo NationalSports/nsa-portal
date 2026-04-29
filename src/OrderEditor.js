@@ -1126,7 +1126,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Promo auto-repair removed — use "Apply Promo Funds" in Actions dropdown instead
 
   const addrs=useMemo(()=>getAddrs(cust,allCustomers),[cust,allCustomers]);
-  const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+q}})});return m},[o]);
+  const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+q*(d.reversible?2:1)}})});return m},[o]);
   const totals=useMemo(()=>{let rev=0,cost=0;safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;
     // Use per-size sells/costs when available (vendor items have _sizeCosts/_sizeSells for 2XL+ upcharges)
     if(it._sizeCosts&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0){rev+=n*(it._sizeSells?.[sz]||safeNum(it.unit_sell));cost+=n*(it._sizeCosts[sz]||safeNum(it.nsa_cost))}})}else{rev+=q*safeNum(it.unit_sell);cost+=q*safeNum(it.nsa_cost)}
@@ -1967,8 +1967,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       if(isTbd)return null;
                       if((artF.color_ways||[]).length>0){
                         if(artF.color_ways.length===1&&!deco.color_way_id){setTimeout(()=>uD(idx,di,'color_way_id',artF.color_ways[0].id),0)}
+                        const cwOpts=artF.color_ways.map((cw,ci)=><option key={cw.id} value={cw.id}>CW {ci+1}{cw.garment_color?' - '+cw.garment_color:''} ({cw.inks.filter(c=>c.trim()).length}c)</option>);
+                        if(deco.reversible&&artF.color_ways.length>=2){
+                          return<div style={{display:'flex',flexDirection:'column',gap:4}}>
+                            <div style={{display:'flex',alignItems:'center',gap:6}}>
+                              <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:46}}>Side A</span>
+                              <select className="form-select" style={{width:160,fontSize:11,borderColor:'#67e8f9'}} value={deco.color_way_id||''} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>
+                                <option value="">Select CW...</option>{cwOpts}</select>
+                            </div>
+                            <div style={{display:'flex',alignItems:'center',gap:6}}>
+                              <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:46}}>Side B</span>
+                              <select className="form-select" style={{width:160,fontSize:11,borderColor:'#67e8f9'}} value={deco.color_way_id_b||''} onChange={e=>uD(idx,di,'color_way_id_b',e.target.value||null)}>
+                                <option value="">Select CW...</option>{cwOpts}</select>
+                            </div>
+                          </div>;
+                        }
                         return<select className="form-select" style={{width:160,fontSize:11}} value={deco.color_way_id||(artF.color_ways.length===1?artF.color_ways[0].id:'')} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>
-                        {artF.color_ways.length>1&&<option value="">Select CW...</option>}{artF.color_ways.map((cw,ci)=><option key={cw.id} value={cw.id}>CW {ci+1}{cw.garment_color?' - '+cw.garment_color:''} ({cw.inks.filter(c=>c.trim()).length}c)</option>)}</select>}
+                        {artF.color_ways.length>1&&<option value="">Select CW...</option>}{cwOpts}</select>}
                       if(artF.ink_colors)return<span style={{fontSize:11,color:'#64748b'}}>{artF.ink_colors.split('\n').filter(l=>l.trim()).length} color(s)</span>;
                       if(artF.thread_colors)return<span style={{fontSize:11,color:'#64748b'}}>Thread: {artF.thread_colors}</span>;
                       return null})()}
@@ -2020,8 +2035,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>{deco.front_and_back?'Size (Front):':'Size:'}</span>
                 <Bg options={szOpts.map(s=>({value:s,label:s}))} value={deco.num_size||szOpts[0]} onChange={v=>uD(idx,di,'num_size',v)}/>
                 <label style={{fontSize:12,display:'flex',alignItems:'center',gap:4,marginLeft:4}}><input type="checkbox" checked={deco.two_color||false} onChange={e=>uD(idx,di,'two_color',e.target.checked)}/> 2-Color (+$3)</label>
-                <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>Color:</span>
-                <input className="form-input" style={{width:90,fontSize:12,padding:'2px 6px'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
+                {deco.reversible?(()=>{
+                  const sideLabels=(()=>{
+                    const artD=safeDecos(item).find(dd=>dd.kind==='art'&&dd.reversible&&dd.color_way_id&&dd.color_way_id_b);
+                    if(artD){const art=af.find(f=>f.id===artD.art_file_id);if(art&&art.color_ways){
+                      const cwA=art.color_ways.find(c=>c.id===artD.color_way_id);
+                      const cwB=art.color_ways.find(c=>c.id===artD.color_way_id_b);
+                      if(cwA||cwB)return[cwA?.garment_color||'Side A',cwB?.garment_color||'Side B']}}
+                    if(item.color&&item.color.includes('/')){const[a,b]=item.color.split('/').map(s=>s.trim());return[a||'Side A',b||'Side B']}
+                    return['Side A','Side B']})();
+                  return<div style={{display:'flex',flexDirection:'column',gap:4}}>
+                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:80}}>{sideLabels[0]} color</span>
+                      <input className="form-input" style={{width:110,fontSize:12,padding:'2px 6px',borderColor:'#67e8f9'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:80}}>{sideLabels[1]} color</span>
+                      <input className="form-input" style={{width:110,fontSize:12,padding:'2px 6px',borderColor:'#67e8f9'}} placeholder="e.g. Navy" value={deco.print_color_b||''} onChange={e=>uD(idx,di,'print_color_b',e.target.value)}/>
+                    </div>
+                  </div>})():<>
+                  <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>Color:</span>
+                  <input className="form-input" style={{width:90,fontSize:12,padding:'2px 6px'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
+                </>}
               </div>
               {deco.front_and_back&&<div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Size (Back):</span>
@@ -2630,10 +2665,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(()=>{const _gen=(art.mockup_files||art.files||[]);const _itemMocks=Object.entries(art.item_mockups||{}).flatMap(([sku,arr])=>(arr||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_sku:sku,_perItem:true})));const _seen=new Set();const _all=[..._gen,..._itemMocks].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});return _all.map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');const isPerItem=fn?._perItem;return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:isPerItem?'#ede9fe':'#dbeafe',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isPerItem?'Per-item mockup ('+fn._sku+') — manage in the artist Job Detail modal':isUrl(fnUrl)?'Click to open':'Legacy file — re-upload'}>
                       <Icon name="file" size={10}/>{fileDisplayName(fn)}{isPerItem&&<span style={{fontSize:9,color:'#7c3aed',fontWeight:700}}>· {fn._sku}</span>}{!isPerItem&&<button onClick={e=>{e.stopPropagation();const mf=[...(art.mockup_files||art.files||[])];const ix=mf.findIndex(x=>(typeof x==='string'?x:x?.url)===fnUrl);if(ix>=0){mf.splice(ix,1);uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[])}}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button>}</span>})})()}</div>
                     <div style={{border:'2px dashed #bfdbfe',borderRadius:6,padding:12,textAlign:'center',cursor:'pointer',background:'#eff6ff',transition:'all 0.15s'}}
-                      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.multiple=true;inp.onchange=async()=>{let accumulated=[...(art.mockup_files||art.files||[])];for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');accumulated=[...accumulated,{url,name:f.name}];uArt(i,'mockup_files',accumulated);if(!art.mockup_files)uArt(i,'files',[]);nf('✅ '+f.name+' uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
+                      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.multiple=true;inp.onchange=async()=>{let accumulated=[...(art.mockup_files||art.files||[])];for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');accumulated=[...accumulated,{url,name:f.name}];uArt(i,'mockup_files',accumulated);if(!art.mockup_files)uArt(i,'files',[]);nf('📎 '+f.name+' attached — click Save to keep')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
                       onDragOver={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#dbeafe';e.currentTarget.style.borderColor='#3b82f6'}}
                       onDragLeave={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe'}}
-                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe';const files=Array.from(e.dataTransfer.files);let accumulated=[...(art.mockup_files||art.files||[])];for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');accumulated=[...accumulated,{url,name:f.name}];uArt(i,'mockup_files',accumulated);if(!art.mockup_files)uArt(i,'files',[]);nf('✅ '+f.name+' uploaded')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
+                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe';const files=Array.from(e.dataTransfer.files);let accumulated=[...(art.mockup_files||art.files||[])];for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');accumulated=[...accumulated,{url,name:f.name}];uArt(i,'mockup_files',accumulated);if(!art.mockup_files)uArt(i,'files',[]);nf('📎 '+f.name+' attached — click Save to keep')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
                       <div style={{fontSize:11,color:'#2563eb',fontWeight:600}}><Icon name="upload" size={14}/> Drop mockup files here or click to browse</div>
                       <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>PDF, PNG, JPG, AI, EPS</div></div>
                   </div>
@@ -2646,10 +2681,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fnUrl)?'Click to open':'Legacy file — re-upload'}>
                       <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>
                     <div style={{border:'2px dashed #fde68a',borderRadius:6,padding:12,textAlign:'center',cursor:'pointer',background:'#fffbeb',transition:'all 0.15s'}}
-                      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=async()=>{let accumulated=[...(art.prod_files||[])];for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');accumulated=[...accumulated,{url,name:f.name}];uArt(i,'prod_files',accumulated);nf('✅ '+f.name+' uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
+                      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=async()=>{let accumulated=[...(art.prod_files||[])];for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');accumulated=[...accumulated,{url,name:f.name}];uArt(i,'prod_files',accumulated);nf('📎 '+f.name+' attached — click Save to keep')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
                       onDragOver={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fef3c7';e.currentTarget.style.borderColor='#f59e0b'}}
                       onDragLeave={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a'}}
-                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';const files=Array.from(e.dataTransfer.files);let accumulated=[...(art.prod_files||[])];for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');accumulated=[...accumulated,{url,name:f.name}];uArt(i,'prod_files',accumulated);nf('✅ '+f.name+' uploaded')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
+                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';const files=Array.from(e.dataTransfer.files);let accumulated=[...(art.prod_files||[])];for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');accumulated=[...accumulated,{url,name:f.name}];uArt(i,'prod_files',accumulated);nf('📎 '+f.name+' attached — click Save to keep')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
                       <div style={{fontSize:11,color:'#d97706',fontWeight:600}}><Icon name="upload" size={14}/> Drop production files here or click to browse</div>
                       <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>DST, AI seps, PDF, PNG, JPG</div></div>
                   </div>
@@ -4819,6 +4854,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {_allArt2.map((af3,afi)=>{
                     const _dp3=new Set();const _numDecos2=[];const _isE3=af3.deco_type==='embroidery';
                     const _fallback3=(af3.ink_colors||af3.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);
+                    // Final fallback: if CWs are defined on the art file but decorations don't carry color_way_id,
+                    // surface the union of all CW inks so the colors aren't silently hidden on the approval surface.
+                    const _allCwInks3=[...new Set((af3.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
                     const _as3=af3.art_sizes||{};
                     // Build per-item color data
                     const _itemColorData2=itemDetails.map(gi=>{
@@ -4826,7 +4864,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       const gc2=af3.garment_colors?.[gk2]||{};const gcCols=Object.values(gc2).flat().filter(c=>c&&c.trim());
                       const cwCols=[];
                       if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===af3.id){_dp3.add(d.position||'Front Center');if(d.color_way_id&&af3.color_ways){const cw=af3.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim()&&!cwCols.includes(c.trim()))cwCols.push(c.trim())})}}if(d.kind==='numbers')_numDecos2.push(d)});
-                      const colors=gcCols.length>0?gcCols:cwCols.length>0?cwCols:_fallback3;
+                      const colors=gcCols.length>0?gcCols:cwCols.length>0?cwCols:_fallback3.length>0?_fallback3:_allCwInks3;
                       return{...gi,colors,colorKey:colors.slice().sort().join('|')};
                     });
                     const _pl3=_dp3.size>0?[..._dp3]:[];const _nd2=_numDecos2[0];
@@ -4884,7 +4922,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div>:null})()}
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
                 <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}} onClick={()=>{const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'production_files_needed',art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);const updArt2=j.art_file_id?af.map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtRevisionNote('');nf('✅ Art approved — awaiting prod files')}}>✅ Approve Artwork</button>
-                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+j.art_name+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7})}}>📤 Send to Coach</button>
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||j.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7})}}>📤 Send to Coach</button>
               </div>
               <div style={{borderTop:'1px solid #fde68a',paddingTop:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Something wrong? Send it back to the artist:</div>
@@ -5360,6 +5398,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const cam=coachApprovalModal;
         const allEmails=[...new Set((cam.contacts||[]).filter(c3=>c3.email).map(c3=>c3.email))];
         const allTargets=[...allEmails,...(cam.customEmails||[])].filter(em=>cam.checkedEmails?.[em]);
+        // Subject + body label: prefer the SO memo (customer-facing), fall back to the internal art name.
+        const _emailLabel=(o.memo&&o.memo.trim())||j3.art_name;
+        const _emailSubject='Artwork ready for approval — '+_emailLabel;
+        // Build absolute URL for the logo so it renders in external email clients.
+        const _logoRaw=_ci.logoUrl||NSA.logoUrl||'/nsa-logo.svg';
+        const _logoSrc=/^https?:/i.test(_logoRaw)?_logoRaw:(window.location.origin+_logoRaw);
+        const _emailLogoHtml='<div style="text-align:center;padding:12px 0 18px;border-bottom:2px solid #e2e8f0;margin-bottom:18px"><img src="'+_logoSrc+'" alt="National Sports Apparel" style="max-height:60px;display:inline-block"/></div>';
         const doSendCoach=async()=>{
           const actions=[];
           if(cam.sendEmail&&allTargets.length>0){
@@ -5367,10 +5412,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               setCoachApprovalModal(m=>({...m,sending:true}));
               const htmlMsg=cam.message.replace(/\n/g,'<br/>');
               const toList=allTargets.map(em=>({email:em}));
-              const res=await sendBrevoEmail({to:toList,subject:'Artwork ready for approval — '+j3.art_name,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:cu?.email||'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
+              const res=await sendBrevoEmail({to:toList,subject:_emailSubject,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6;max-width:600px;margin:0 auto">'+_emailLogoHtml+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:cu?.email||'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
               if(res.ok){actions.push('email sent to '+allTargets.join(', '));actions._messageId=res.messageId}else{nf('Email failed: '+res.error,'error');setCoachApprovalModal(m=>({...m,sending:false}));return}
             }else{
-              const subj=encodeURIComponent('Artwork ready for approval — '+j3.art_name);
+              const subj=encodeURIComponent(_emailSubject);
               const body=encodeURIComponent(cam.message);
               window.open('mailto:'+allTargets.join(',')+'?subject='+subj+'&body='+body,'_blank');
               actions.push('email draft opened for '+allTargets.length+' recipient(s)');
