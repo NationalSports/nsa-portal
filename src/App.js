@@ -8776,7 +8776,7 @@ export default function App(){
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
   const[rptRep,setRptRep]=useState(()=>cu?.role==='rep'?cu.id:'all');// default to logged-in rep so they see their own numbers
-  const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
+  const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true});
   // Historical sales chart UI state — hover tooltip + rep-vs-team mode
   const[histHover,setHistHover]=useState(null);// null | {x,y,label,value,year,scope}
   const[histShowTeam,setHistShowTeam]=useState(true);// when a rep is selected, overlay team totals so reps see their share
@@ -8791,6 +8791,11 @@ export default function App(){
   const[arSort,setArSort]=useState('total');
   const[arDir,setArDir]=useState('desc');
   const[arSearch,setArSearch]=useState('');
+  // Same-season retention widget (Customers tab) — sort/search/filter
+  const[ssSort,setSsSort]=useState('lyRev');
+  const[ssDir,setSsDir]=useState('desc');
+  const[ssSearch,setSsSearch]=useState('');
+  const[ssFilter,setSsFilter]=useState('all');// all | reordered | pending
   const[commOverrides,setCommOverrides]=useState(()=>loadState('comm_overrides',{}));// {invoiceId: true} = admin approved full commission on late invoice
   React.useEffect(()=>{_saveAppState('comm_overrides',commOverrides)},[commOverrides]);
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
@@ -9348,6 +9353,140 @@ export default function App(){
       </div>}
 
       {/* CUSTOMER HEALTH */}
+      {/* SAME-SEASON CUSTOMER RETENTION — who we sold to in this 3-month window last year, and whether they've reordered yet */}
+      {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
+        <WH id="sameSeason" title="Same-Season Customers — Retention Tracker" icon="🎯"/>
+        {rptWidgets.sameSeason&&(()=>{
+          const repObj=rptRep==='all'?null:REPS.find(r=>r.id===rptRep);
+          const repNameLc=repObj?.name?.toLowerCase()||null;
+          const matchesRep=(hi)=>{
+            if(!repNameLc)return true;
+            const rn=(hi.rep_name||'').toLowerCase();
+            if(!rn)return false;
+            return rn===repNameLc||rn.includes(repNameLc)||repNameLc.includes(rn);
+          };
+          const now=new Date();const curY=now.getFullYear();const curMonth=now.getMonth();
+          const lastY=curY-1;
+          // Build the 3-month rolling window (prev, current, next) — handles year wraparound correctly.
+          const monthShort=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+          const winMos=[-1,0,1].map(off=>{const d=new Date(curY,curMonth+off,1);return{y:d.getFullYear(),mo:d.getMonth()}});
+          const lyKeys=new Set(winMos.map(w=>(w.y-1)+'-'+w.mo));
+          const tyKeys=new Set(winMos.map(w=>w.y+'-'+w.mo));
+          const winLabel=monthShort[winMos[0].mo]+'–'+monthShort[winMos[2].mo];
+          // Aggregate revenue + order count per customer for both windows.
+          const custMap=new Map();
+          (histInvs||[]).forEach(hi=>{
+            if(!hi.date)return;
+            const m=hi.date.match(/^(\d{4})-(\d{2})-(\d{2})/);
+            if(!m)return;
+            const y=parseInt(m[1]);const mo=parseInt(m[2])-1;
+            const key=y+'-'+mo;
+            const inLY=lyKeys.has(key);const inTY=tyKeys.has(key);
+            if(!inLY&&!inTY)return;
+            if(!matchesRep(hi))return;
+            const cid=hi.customer_id||('_raw_'+(hi.raw_customer_name||'Unknown'));
+            let r=custMap.get(cid);
+            if(!r){
+              const c=hi.customer_id?cust.find(cc=>cc.id===hi.customer_id):null;
+              r={cid,custObjId:c?.id||null,name:c?.name||hi.raw_customer_name||'Unknown',alpha:c?.alpha_tag||'',repName:hi.rep_name||'',lyRev:0,lyCount:0,tyRev:0,tyCount:0,lastTyDate:null};
+              custMap.set(cid,r);
+            }
+            const t=safeNum(hi.total);
+            if(inLY){r.lyRev+=t;r.lyCount+=1}
+            if(inTY){r.tyRev+=t;r.tyCount+=1;if(!r.lastTyDate||hi.date>r.lastTyDate)r.lastTyDate=hi.date}
+          });
+          // Only customers we actually sold to in last year's window — that's the retention universe.
+          const allRows=Array.from(custMap.values()).filter(r=>r.lyRev>0);
+          allRows.forEach(r=>{r.status=r.tyRev>0?'reordered':'pending'});
+          const totalLY=allRows.length;
+          const reordered=allRows.filter(r=>r.status==='reordered').length;
+          const pending=allRows.filter(r=>r.status==='pending').length;
+          const retentionPct=totalLY>0?Math.round(reordered/totalLY*100):0;
+          const lyTotalRev=allRows.reduce((a,r)=>a+r.lyRev,0);
+          const tyTotalRev=allRows.reduce((a,r)=>a+r.tyRev,0);
+          const atRiskRev=allRows.filter(r=>r.status==='pending').reduce((a,r)=>a+r.lyRev,0);
+          const fmtFull=n=>(n<0?'-$':'$')+Math.round(Math.abs(n)).toLocaleString();
+          // Filter / search / sort
+          const filtered=allRows.filter(r=>(ssFilter==='all'||r.status===ssFilter)&&(!ssSearch||r.name.toLowerCase().includes(ssSearch.toLowerCase())||(r.alpha||'').toLowerCase().includes(ssSearch.toLowerCase())));
+          const sorted=[...filtered].sort((a,b)=>{let v;
+            if(ssSort==='name')v=a.name.localeCompare(b.name);
+            else if(ssSort==='lyRev')v=a.lyRev-b.lyRev;
+            else if(ssSort==='lyCount')v=a.lyCount-b.lyCount;
+            else if(ssSort==='tyRev')v=a.tyRev-b.tyRev;
+            else if(ssSort==='tyCount')v=a.tyCount-b.tyCount;
+            else if(ssSort==='lastTy')v=(a.lastTyDate||'').localeCompare(b.lastTyDate||'');
+            else v=0;
+            return ssDir==='asc'?v:-v;
+          });
+          const toggleSsSort=(col)=>{if(ssSort===col)setSsDir(d=>d==='asc'?'desc':'asc');else{setSsSort(col);setSsDir(col==='name'?'asc':'desc')}};
+          const SH=({col,children,align})=><th style={{cursor:'pointer',userSelect:'none',textAlign:align||'left'}} onClick={()=>toggleSsSort(col)}>{children} {ssSort===col?(ssDir==='asc'?'▲':'▼'):''}</th>;
+          const ownerLabel=repObj?repObj.name.split(' ')[0]:'Team';
+          return<div className="card-body">
+            <div style={{marginBottom:12,fontSize:12,color:'#475569'}}>
+              {repObj?<><strong>{repObj.name}</strong>'s</>:<><strong>Team's</strong></>} customers from <strong>{winLabel} {lastY}</strong> · who's reordered in <strong>{winLabel} {curY}</strong> so far?
+            </div>
+            <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap'}}>
+              <div style={{flex:1,minWidth:140,padding:10,background:'#dbeafe',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{totalLY}</div>
+                <div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>Sold last year</div>
+                <div style={{fontSize:10,color:'#475569',marginTop:2}}>{fmtFull(lyTotalRev)}</div>
+              </div>
+              <div style={{flex:1,minWidth:140,padding:10,background:'#dcfce7',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:20,fontWeight:800,color:'#166534'}}>{reordered}</div>
+                <div style={{fontSize:10,fontWeight:700,color:'#166534'}}>Reordered this year</div>
+                <div style={{fontSize:10,color:'#475569',marginTop:2}}>{fmtFull(tyTotalRev)}</div>
+              </div>
+              <div style={{flex:1,minWidth:140,padding:10,background:'#fecaca',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:20,fontWeight:800,color:'#dc2626'}}>{pending}</div>
+                <div style={{fontSize:10,fontWeight:700,color:'#dc2626'}}>Not yet reordered</div>
+                <div style={{fontSize:10,color:'#475569',marginTop:2}}>{fmtFull(atRiskRev)} at risk</div>
+              </div>
+              <div style={{flex:1,minWidth:140,padding:10,background:retentionPct>=70?'#dcfce7':retentionPct>=40?'#fef3c7':'#fecaca',borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:20,fontWeight:800,color:retentionPct>=70?'#166534':retentionPct>=40?'#92400e':'#dc2626'}}>{retentionPct}%</div>
+                <div style={{fontSize:10,fontWeight:700,color:retentionPct>=70?'#166534':retentionPct>=40?'#92400e':'#dc2626'}}>Retention rate</div>
+                <div style={{fontSize:10,color:'#475569',marginTop:2}}>{reordered}/{totalLY} reordered</div>
+              </div>
+            </div>
+            <div style={{display:'flex',gap:8,marginBottom:8}}>
+              <input placeholder="Search customers..." value={ssSearch} onChange={e=>setSsSearch(e.target.value)} style={{flex:1,padding:'6px 10px',border:'1px solid #e2e8f0',borderRadius:6,fontSize:12}}/>
+              <select value={ssFilter} onChange={e=>setSsFilter(e.target.value)} style={{padding:'6px 10px',border:'1px solid #e2e8f0',borderRadius:6,fontSize:12}}>
+                <option value="all">All ({totalLY})</option>
+                <option value="pending">Not yet reordered ({pending})</option>
+                <option value="reordered">Reordered ({reordered})</option>
+              </select>
+            </div>
+            {sorted.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:16,fontSize:13}}>No matching customers in {winLabel} {lastY}{repObj?` for ${repObj.name}`:''}.</div>:
+            <table style={{fontSize:12}}><thead><tr>
+              <SH col="name">Customer</SH>
+              <SH col="lyRev" align="right">{lastY} Revenue</SH>
+              <SH col="lyCount" align="center">{lastY} Orders</SH>
+              <SH col="tyRev" align="right">{curY} Revenue</SH>
+              <SH col="tyCount" align="center">{curY} Orders</SH>
+              <SH col="lastTy" align="center">Last {curY} Order</SH>
+              <th style={{textAlign:'center'}}>Status</th>
+            </tr></thead><tbody>
+              {sorted.map(r=>{
+                const stColor=r.status==='reordered'?'#166534':'#dc2626';
+                const stBg=r.status==='reordered'?'#dcfce7':'#fecaca';
+                const stLabel=r.status==='reordered'?'✓ Reordered':'⚠ Not Yet';
+                return<tr key={r.cid} style={{cursor:r.custObjId?'pointer':'default',background:r.status==='pending'?'#fffbf7':''}} onClick={()=>{if(r.custObjId){const c=cust.find(cc=>cc.id===r.custObjId);if(c){setSelC(c);setPg('customers')}}}}>
+                  <td style={{fontWeight:700}}>{r.name} {r.alpha&&<span style={{fontSize:9,color:'#94a3b8'}}>{r.alpha}</span>}{!r.custObjId&&<span style={{fontSize:9,color:'#94a3b8',marginLeft:4}}>(unlinked)</span>}</td>
+                  <td style={{textAlign:'right',fontWeight:600}}>{fmtFull(r.lyRev)}</td>
+                  <td style={{textAlign:'center'}}>{r.lyCount}</td>
+                  <td style={{textAlign:'right',fontWeight:600,color:r.tyRev>0?'#166534':'#94a3b8'}}>{r.tyRev>0?fmtFull(r.tyRev):'—'}</td>
+                  <td style={{textAlign:'center',color:r.tyCount>0?'#166534':'#94a3b8'}}>{r.tyCount||'—'}</td>
+                  <td style={{textAlign:'center',fontSize:11,color:'#64748b'}}>{r.lastTyDate||'—'}</td>
+                  <td style={{textAlign:'center'}}><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:stBg,color:stColor}}>{stLabel}</span></td>
+                </tr>;
+              })}
+            </tbody></table>}
+            <div style={{marginTop:10,fontSize:10,color:'#94a3b8',textAlign:'center'}}>
+              Window: {winLabel} (rolling 3 months around today). Source: NetSuite invoice history (customer_invoices).
+            </div>
+          </div>;
+        })()}
+      </div>}
+
       {(rptTab==='overview'||rptTab==='customers')&&<div className="card" style={{marginBottom:12}}>
         <WH id="custHealth" title="Customer Health & Retention" icon="❤️"/>
         {rptWidgets.custHealth&&<div className="card-body">
