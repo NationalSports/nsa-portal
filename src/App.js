@@ -10558,8 +10558,11 @@ export default function App(){
         const paidDate=inv.payments?.length>0?parseDate(inv.payments[inv.payments.length-1].date):(inv.updated_at?parseDate(inv.updated_at):invDate);
         const daysToPay=paidDate&&invDate?Math.round((paidDate-invDate)/(1000*60*60*24)):null;
         const isLate=daysToPay!==null&&daysToPay>90;
-        const overridden=commOverrides[inv.id]||false;
-        const commRate=isLate&&!overridden?0.15:0.30;
+        // Override shape: legacy `true` = restore to 30% on a late invoice; number = explicit per-invoice rate (decimal, e.g. 0.25 for 25%).
+        const ovr=commOverrides[inv.id];
+        const overridden=ovr!==undefined&&ovr!==false&&ovr!==null;
+        const customRate=typeof ovr==='number'?ovr:null;
+        const commRate=customRate!=null?customRate:(isLate&&!overridden?0.15:0.30);
         const commAmt=Math.round(gp.gp*commRate*100)/100;
         const paidAmt=inv.payments?.reduce((a,p)=>a+safeNum(p.amount),0)||0;
         const invMonth=inv.date?inv.date.substring(0,2)+'/'+inv.date.substring(6,8):'';// MM/YY
@@ -10713,7 +10716,7 @@ export default function App(){
             {salesReps.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
           </select></>}
         <div style={{display:'flex',gap:4,marginLeft:isAdmin?'auto':0}}>
-          {[['statement','Statement'],['pipeline','Pipeline'],['promo','Promo'],['ytd','YTD'],['byCustomer','By Customer']].map(([id,label])=>
+          {[['statement','Statement'],['pipeline','Pipeline'],['promo','Promo'],['ytd','YTD'],['byCustomer','By Customer'],...(isAdmin?[['monthly','📤 Monthly Reports']]:[])].map(([id,label])=>
             <button key={id} className={`btn btn-sm ${commTab===id?'btn-primary':'btn-secondary'}`} onClick={()=>setCommTab(id)}>{label}</button>)}
         </div>
       </div>
@@ -10740,66 +10743,82 @@ export default function App(){
         <div className="card-body" style={{padding:0}}>
           {monthLines.length===0&&monthPipeline.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No invoices this month</div>:
           <table style={{fontSize:12}}><thead><tr>
-            <th>Invoice</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>Days</th><th style={{textAlign:'center'}}>Rate</th><th style={{textAlign:'right'}}>Commission</th>{isAdmin&&<th></th>}
+            <th>Invoice</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'center'}}>Days</th><th style={{textAlign:'center'}}>Rate</th><th style={{textAlign:'right'}}>Commission</th>{isAdmin&&<th></th>}
           </tr></thead><tbody>
             {monthLines.map(l=><tr key={l.inv.id} style={{background:l.isLate&&!l.overridden?'#fef2f2':''}}>
-              <td style={{fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>{if(l.so){setESO(l.so);setESOC(l.customer);setPg('orders')}}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
+              <td style={{fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>{if(l.so){setESOTab('costs');setESO(l.so);setESOC(l.customer);setPg('orders')}}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
               <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
               {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
               <td style={{textAlign:'right'}}>${safeNum(l.inv.total).toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${l.gp.cost.toLocaleString()}</td>
               <td style={{textAlign:'right',fontWeight:700,color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString()}</td>
+              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:safeNum(l.inv.total)>0&&l.gp.gp/safeNum(l.inv.total)>=0.3?'#dcfce7':'#fef3c7',color:safeNum(l.inv.total)>0&&l.gp.gp/safeNum(l.inv.total)>=0.3?'#166534':'#92400e'}}>{safeNum(l.inv.total)>0?Math.round(l.gp.gp/safeNum(l.inv.total)*100):0}%</span></td>
               <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.isLate?'#fee2e2':'#dcfce7',color:l.isLate?'#dc2626':'#166534'}}>{l.daysToPay??'\u2014'}d</span></td>
               <td style={{textAlign:'center',fontWeight:600,color:l.commRate===0.30?'#166534':'#d97706'}}>{Math.round(l.commRate*100)}%</td>
               <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:'#166534'}}>${l.commAmt.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               {isAdmin&&<td style={{textAlign:'center'}}>
-                {l.isLate&&!l.overridden&&<button className="btn btn-sm" style={{fontSize:9,background:'#fef3c7',border:'1px solid #f59e0b',color:'#92400e',padding:'2px 6px'}} title="Approve full 30% commission" onClick={()=>setCommOverrides(p=>({...p,[l.inv.id]:true}))}>Full 30%</button>}
-                {l.isLate&&l.overridden&&<span style={{fontSize:9,color:'#166534',fontWeight:700}}>Approved</span>}
+                <div style={{display:'flex',gap:4,justifyContent:'center',alignItems:'center',flexWrap:'wrap'}}>
+                  {l.isLate&&!l.overridden&&<button className="btn btn-sm" style={{fontSize:9,background:'#fef3c7',border:'1px solid #f59e0b',color:'#92400e',padding:'2px 6px'}} title="Approve full 30% commission" onClick={()=>setCommOverrides(p=>({...p,[l.inv.id]:true}))}>Full 30%</button>}
+                  <button className="btn btn-sm" style={{fontSize:9,background:'#eff6ff',border:'1px solid #93c5fd',color:'#1e40af',padding:'2px 6px'}} title="Set a custom commission % for this invoice" onClick={()=>{
+                    const cur=Math.round(l.commRate*100);
+                    const v=window.prompt(`Set commission % for ${l.inv.id}\n(default: ${l.isLate?'15% late / 30% on-time':'30%'})`,String(cur));
+                    if(v===null)return;
+                    const t=v.trim();
+                    if(t===''){setCommOverrides(p=>{const n={...p};delete n[l.inv.id];return n});return}
+                    const n=parseFloat(t);
+                    if(!isNaN(n)&&n>=0&&n<=100)setCommOverrides(p=>({...p,[l.inv.id]:n/100}));
+                    else alert('Enter a number 0–100, or leave blank to clear the override.');
+                  }}>Edit %</button>
+                  {l.overridden&&<span style={{fontSize:9,color:'#166534',fontWeight:700}}>{typeof commOverrides[l.inv.id]==='number'?'Custom':'Approved'}</span>}
+                </div>
               </td>}
             </tr>)}
-            {monthLines.length>0&&<tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
+            {monthLines.length>0&&(()=>{const earnedRev=monthLines.reduce((a,l)=>a+safeNum(l.inv.total),0);const earnedGpPct=earnedRev>0?Math.round(monthGP/earnedRev*100):0;return<tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
               <td colSpan={isAdmin?3:2}>EARNED</td>
-              <td style={{textAlign:'right'}}>${monthLines.reduce((a,l)=>a+safeNum(l.inv.total),0).toLocaleString()}</td>
+              <td style={{textAlign:'right'}}>${earnedRev.toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${monthLines.reduce((a,l)=>a+l.gp.cost,0).toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#166534'}}>${monthGP.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'center',color:earnedGpPct>=30?'#166534':'#92400e'}}>{earnedGpPct}%</td>
               <td colSpan={2}></td>
               <td style={{textAlign:'right',fontSize:16,color:'#166534'}}>${monthTotal.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               {isAdmin&&<td/>}
-            </tr>}
+            </tr>})()}
             {monthPromoCost>0&&<tr style={{fontWeight:700,background:'#fef2f2',borderTop:'1px dashed #dc2626'}}>
               <td colSpan={isAdmin?3:2} style={{color:'#dc2626'}}>PROMO COST DEDUCTION ({monthPromoLines.length} order{monthPromoLines.length!==1?'s':''})</td>
-              <td colSpan={4}></td>
+              <td colSpan={5}></td>
               <td style={{textAlign:'right',fontSize:14,color:'#dc2626'}}>−${monthPromoCost.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               {isAdmin&&<td/>}
             </tr>}
             {monthPromoCost>0&&<tr style={{fontWeight:800,background:'#f0fdf4',borderTop:'2px solid #166534'}}>
               <td colSpan={isAdmin?3:2}>NET COMMISSION</td>
-              <td colSpan={4}></td>
+              <td colSpan={5}></td>
               <td style={{textAlign:'right',fontSize:16,color:monthNetComm>=0?'#166534':'#dc2626'}}>${monthNetComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               {isAdmin&&<td/>}
             </tr>}
-            {monthPipeline.length>0&&<tr style={{background:'#f5f3ff'}}><td colSpan={isAdmin?10:8} style={{fontWeight:700,fontSize:11,color:'#7c3aed',padding:'8px 12px',borderTop:'2px solid #7c3aed'}}>OPEN INVOICES — Awaiting Payment</td></tr>}
+            {monthPipeline.length>0&&<tr style={{background:'#f5f3ff'}}><td colSpan={isAdmin?11:9} style={{fontWeight:700,fontSize:11,color:'#7c3aed',padding:'8px 12px',borderTop:'2px solid #7c3aed'}}>OPEN INVOICES — Awaiting Payment</td></tr>}
             {monthPipeline.map(l=><tr key={l.inv.id} style={{background:'#faf5ff'}}>
-              <td style={{fontWeight:700,color:'#7c3aed',cursor:'pointer'}} onClick={()=>{if(l.so){setESO(l.so);setESOC(l.customer);setPg('orders')}}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
+              <td style={{fontWeight:700,color:'#7c3aed',cursor:'pointer'}} onClick={()=>{if(l.so){setESOTab('costs');setESO(l.so);setESOC(l.customer);setPg('orders')}}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
               <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
               {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
               <td style={{textAlign:'right'}}>${l.balance.toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${l.gp.cost.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td style={{textAlign:'right',fontWeight:700,color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.balance>0&&l.gp.gp/l.balance>=0.3?'#dcfce7':'#fef3c7',color:l.balance>0&&l.gp.gp/l.balance>=0.3?'#166534':'#92400e'}}>{l.balance>0?Math.round(l.gp.gp/l.balance*100):0}%</span></td>
               <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.willBeLate?'#fee2e2':l.daysOpen>60?'#fef3c7':'#dcfce7',color:l.willBeLate?'#dc2626':l.daysOpen>60?'#92400e':'#166534'}}>{l.daysOpen}d</span></td>
               <td style={{textAlign:'center',fontWeight:600,color:l.expRate===0.30?'#166534':'#d97706'}}>{Math.round(l.expRate*100)}%</td>
               <td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>${l.expComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               {isAdmin&&<td/>}
             </tr>)}
-            {monthPipeline.length>0&&<tr style={{fontWeight:800,background:'#f5f3ff',borderTop:'2px solid #7c3aed'}}>
+            {monthPipeline.length>0&&(()=>{const pipeRev=monthPipeline.reduce((a,l)=>a+l.balance,0);const pipeGP=monthPipeline.reduce((a,l)=>a+l.gp.gp,0);const pipeGpPct=pipeRev>0?Math.round(pipeGP/pipeRev*100):0;return<tr style={{fontWeight:800,background:'#f5f3ff',borderTop:'2px solid #7c3aed'}}>
               <td colSpan={isAdmin?3:2}>PIPELINE</td>
-              <td style={{textAlign:'right'}}>${monthPipeline.reduce((a,l)=>a+l.balance,0).toLocaleString()}</td>
+              <td style={{textAlign:'right'}}>${pipeRev.toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${monthPipeline.reduce((a,l)=>a+l.gp.cost,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-              <td style={{textAlign:'right',color:'#166534'}}>${monthPipeline.reduce((a,l)=>a+l.gp.gp,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'right',color:'#166534'}}>${pipeGP.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'center',color:pipeGpPct>=30?'#166534':'#92400e'}}>{pipeGpPct}%</td>
               <td colSpan={2}></td>
               <td style={{textAlign:'right',fontSize:14,color:'#7c3aed'}}>${monthPipeline.reduce((a,l)=>a+l.expComm,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               {isAdmin&&<td/>}
-            </tr>}
+            </tr>})()}
           </tbody></table>}
         </div>
       </div>}
@@ -10810,31 +10829,33 @@ export default function App(){
         <div className="card-body" style={{padding:0}}>
           {allPipeline.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No open orders or invoices</div>:
           <table style={{fontSize:12}}><thead><tr>
-            <th>Order</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th style={{textAlign:'center'}}>Status</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>Est. GP</th><th style={{textAlign:'center'}}>Days Open</th><th style={{textAlign:'center'}}>Est. Rate</th><th style={{textAlign:'right'}}>Expected Comm</th>
+            <th>Order</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th style={{textAlign:'center'}}>Status</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>Est. GP</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'center'}}>Days Open</th><th style={{textAlign:'center'}}>Est. Rate</th><th style={{textAlign:'right'}}>Expected Comm</th>
           </tr></thead><tbody>
             {allPipeline.sort((a,b)=>(b.type==='so'?1:0)-(a.type==='so'?1:0)||(b.daysOpen||0)-(a.daysOpen||0)).map(l=>{
               const stLabel={need_order:'Need Order',waiting_receive:'Waiting',items_received:'Items In',needs_pull:'Needs Pull',in_production:'In Prod',ready_to_invoice:'Ready Inv',complete:'Complete',booking:'Booking'};
               const isSOLine=l.type==='so';
               return<tr key={isSOLine?l.so.id:l.inv.id} style={{background:l.willBeLate?'#fef2f2':!isSOLine&&l.daysOpen>60?'#fffbeb':''}}>
-              <td style={{fontWeight:700,color:isSOLine?'#7c3aed':'#1e40af',cursor:'pointer'}} onClick={()=>{if(l.so){setESO(l.so);setESOC(l.customer);setPg('orders')}}}>{isSOLine?l.so.id:l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{isSOLine?l.so.created_at:l.inv.date}</div></td>
+              <td style={{fontWeight:700,color:isSOLine?'#7c3aed':'#1e40af',cursor:'pointer'}} onClick={()=>{if(l.so){setESOTab('costs');setESO(l.so);setESOC(l.customer);setPg('orders')}}}>{isSOLine?l.so.id:l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{isSOLine?l.so.created_at:l.inv.date}</div></td>
               <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{isSOLine?l.so.memo:l.inv.memo}</div></td>
               {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
               <td style={{textAlign:'center'}}>{isSOLine?<span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:'#ede9fe',color:'#6d28d9'}}>{stLabel[l.soStatus]||l.soStatus}</span>:<span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:'#dbeafe',color:'#1e40af'}}>Invoiced</span>}</td>
               <td style={{textAlign:'right',fontWeight:600}}>${l.balance.toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${l.gp.cost.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td style={{textAlign:'right',color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.balance>0&&l.gp.gp/l.balance>=0.3?'#dcfce7':'#fef3c7',color:l.balance>0&&l.gp.gp/l.balance>=0.3?'#166534':'#92400e'}}>{l.balance>0?Math.round(l.gp.gp/l.balance*100):0}%</span></td>
               <td style={{textAlign:'center'}}>{l.daysOpen!=null?<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:600,background:l.willBeLate?'#fee2e2':l.daysOpen>60?'#fef3c7':'#dcfce7',color:l.willBeLate?'#dc2626':l.daysOpen>60?'#92400e':'#166534'}}>{l.daysOpen}d</span>:'\u2014'}</td>
               <td style={{textAlign:'center',fontWeight:600,color:l.expRate===0.30?'#166534':'#d97706'}}>{Math.round(l.expRate*100)}%</td>
               <td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>${l.expComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
             </tr>})}
-            <tr style={{fontWeight:800,background:'#f5f3ff',borderTop:'2px solid #7c3aed'}}>
+            {(()=>{const tpGP=allPipeline.reduce((a,l)=>a+l.gp.gp,0);const tpGpPct=pipeBalance>0?Math.round(tpGP/pipeBalance*100):0;return<tr style={{fontWeight:800,background:'#f5f3ff',borderTop:'2px solid #7c3aed'}}>
               <td colSpan={isAdmin?4:3}>TOTAL PIPELINE</td>
               <td style={{textAlign:'right'}}>${pipeBalance.toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${allPipeline.reduce((a,l)=>a+l.gp.cost,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-              <td style={{textAlign:'right'}}>${allPipeline.reduce((a,l)=>a+l.gp.gp,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'right'}}>${tpGP.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'center',color:tpGpPct>=30?'#166534':'#92400e'}}>{tpGpPct}%</td>
               <td colSpan={2}></td>
               <td style={{textAlign:'right',fontSize:16,color:'#7c3aed'}}>${pipeTotal.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
-            </tr>
+            </tr>})()}
           </tbody></table>}
         </div>
       </div>}
@@ -10855,7 +10876,7 @@ export default function App(){
             <th>SO #</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th>Date</th><th style={{textAlign:'right'}}>Product Cost</th><th style={{textAlign:'right'}}>Deco Cost</th><th style={{textAlign:'right'}}>Shipping</th><th style={{textAlign:'right',fontWeight:800}}>Total Cost</th>
           </tr></thead><tbody>
             {monthPromoLines.map(l=><tr key={l.so.id}>
-              <td style={{fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>{setESO(l.so);setESOC(l.customer);setPg('orders')}}>{l.so.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.so.memo}</div></td>
+              <td style={{fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>{setESOTab('costs');setESO(l.so);setESOC(l.customer);setPg('orders')}}>{l.so.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.so.memo}</div></td>
               <td>{l.customer?.name||'\u2014'}</td>
               {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
               <td style={{fontSize:11,color:'#64748b'}}>{l.soDate}</td>
@@ -10960,9 +10981,108 @@ export default function App(){
         </div>
       </div>}
 
+      {/* MONTHLY REPORTS TAB — admin only. Per-rep statements for the selected month with a printable view. */}
+      {commTab==='monthly'&&isAdmin&&(()=>{
+        const reportableReps=salesReps.filter(r=>r.role==='rep'||r.role==='admin');
+        const repReports=reportableReps.map(r=>{
+          const lines=buildCommLines(r.id).filter(l=>{if(!l.paidDate)return false;const ym=l.paidDate.getFullYear()+'-'+String(l.paidDate.getMonth()+1).padStart(2,'0');return ym===commMonth});
+          const promo=buildPromoLines(r.id).filter(l=>l.soMonth===commMonth);
+          const earned=lines.reduce((a,l)=>a+l.commAmt,0);
+          const promoCost=promo.reduce((a,l)=>a+l.totalCost,0);
+          const net=Math.round((earned-promoCost)*100)/100;
+          const rev=lines.reduce((a,l)=>a+safeNum(l.inv.total),0);
+          const gp=lines.reduce((a,l)=>a+l.gp.gp,0);
+          return{rep:r,lines,promo,earned,promoCost,net,rev,gp};
+        }).filter(rr=>rr.lines.length>0||rr.promo.length>0).sort((a,b)=>b.net-a.net);
+        const monthLabel=(()=>{const[y,m]=commMonth.split('-').map(Number);return new Date(y,m-1,1).toLocaleString('en-US',{month:'long',year:'numeric'})})();
+        const fmt=n=>'$'+n.toLocaleString(undefined,{maximumFractionDigits:2});
+        const fmt0=n=>'$'+Math.round(n).toLocaleString();
+        const printRep=(rr)=>{
+          const w=window.open('','_blank','width=900,height=1100');
+          if(!w){alert('Popup blocked — please allow popups for this site.');return}
+          const css=`body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;padding:24px;max-width:780px;margin:0 auto}h1{margin:0 0 4px;font-size:22px}h2{margin:0 0 16px;font-size:14px;color:#64748b;font-weight:500}table{width:100%;border-collapse:collapse;font-size:12px;margin:12px 0}th{text-align:left;padding:8px 6px;border-bottom:2px solid #1e293b;background:#f8fafc;font-size:11px;text-transform:uppercase;color:#475569}td{padding:8px 6px;border-bottom:1px solid #e2e8f0}tfoot td{border-top:2px solid #1e293b;font-weight:700}.tr{text-align:right}.tc{text-align:center}.muted{color:#64748b;font-size:10px}.pos{color:#166534}.neg{color:#dc2626}.box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin:8px 0}.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}.tile{padding:12px;border-radius:8px;text-align:center}.tile .v{font-size:20px;font-weight:800}.tile .l{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px}.t1{background:#f0f9ff;color:#1e40af}.t2{background:#fef2f2;color:#dc2626}.t3{background:#f0fdf4;color:#166534}.t4{background:#f5f3ff;color:#6d28d9}@media print{button{display:none}}`;
+          const earnedRows=rr.lines.map(l=>`<tr><td><strong>${l.inv.id}</strong><div class="muted">${l.inv.date||''}</div></td><td>${(l.customer?.name||'—').replace(/</g,'&lt;')}</td><td class="tr">${fmt0(safeNum(l.inv.total))}</td><td class="tr neg">${fmt0(l.gp.cost)}</td><td class="tr pos">${fmt0(l.gp.gp)}</td><td class="tc">${safeNum(l.inv.total)>0?Math.round(l.gp.gp/safeNum(l.inv.total)*100):0}%</td><td class="tc">${l.daysToPay??'—'}d</td><td class="tc">${Math.round(l.commRate*100)}%</td><td class="tr"><strong>${fmt(l.commAmt)}</strong></td></tr>`).join('');
+          const promoRows=rr.promo.map(l=>`<tr><td><strong>${l.so.id}</strong><div class="muted">${l.soDate||''}</div></td><td>${(l.customer?.name||'—').replace(/</g,'&lt;')}</td><td class="tr neg">${fmt(l.productCost)}</td><td class="tr neg">${fmt(l.decoCost)}</td><td class="tr neg">${fmt(l.shipCost)}</td><td class="tr neg"><strong>−${fmt(l.totalCost)}</strong></td></tr>`).join('');
+          w.document.write(`<!doctype html><html><head><title>Commission — ${rr.rep.name} — ${monthLabel}</title><style>${css}</style></head><body>
+            <h1>Commission Statement</h1>
+            <h2>${rr.rep.name} · ${monthLabel}</h2>
+            <div class="tiles">
+              <div class="tile t1"><div class="l">Earned</div><div class="v">${fmt(rr.earned)}</div></div>
+              <div class="tile t2"><div class="l">Promo Costs</div><div class="v">−${fmt(rr.promoCost)}</div></div>
+              <div class="tile t3"><div class="l">Net Commission</div><div class="v">${fmt(rr.net)}</div></div>
+              <div class="tile t4"><div class="l">GP%</div><div class="v">${rr.rev>0?Math.round(rr.gp/rr.rev*100):0}%</div></div>
+            </div>
+            ${rr.lines.length>0?`<h3 style="margin-top:20px;font-size:13px">Earned — Paid Invoices</h3>
+            <table><thead><tr><th>Invoice</th><th>Customer</th><th class="tr">Revenue</th><th class="tr">Cost</th><th class="tr">GP</th><th class="tc">GP%</th><th class="tc">Days</th><th class="tc">Rate</th><th class="tr">Comm</th></tr></thead>
+            <tbody>${earnedRows}</tbody>
+            <tfoot><tr><td colspan="2">TOTAL EARNED</td><td class="tr">${fmt0(rr.rev)}</td><td colspan="2"></td><td colspan="3"></td><td class="tr pos">${fmt(rr.earned)}</td></tr></tfoot></table>`:''}
+            ${rr.promo.length>0?`<h3 style="margin-top:20px;font-size:13px">Promo Order Cost Deductions</h3>
+            <table><thead><tr><th>SO</th><th>Customer</th><th class="tr">Product</th><th class="tr">Deco</th><th class="tr">Shipping</th><th class="tr">Total</th></tr></thead>
+            <tbody>${promoRows}</tbody>
+            <tfoot><tr><td colspan="5">TOTAL PROMO COSTS</td><td class="tr neg">−${fmt(rr.promoCost)}</td></tr></tfoot></table>`:''}
+            <div class="box"><strong>Net Commission for ${monthLabel}: <span class="${rr.net>=0?'pos':'neg'}">${fmt(rr.net)}</span></strong></div>
+            <div style="margin-top:24px;font-size:10px;color:#64748b"><strong>Policy:</strong> 30% of gross profit on invoices paid within 90 days of invoice date. 15% on invoices paid after 90 days. Promo costs are deducted from net commission.</div>
+            <div style="margin-top:16px;text-align:center"><button onclick="window.print()" style="padding:8px 24px;font-size:13px;background:#1e40af;color:white;border:none;border-radius:6px;cursor:pointer">Print this report</button></div>
+          </body></html>`);
+          w.document.close();
+        };
+        return<div className="card">
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h2>📤 Monthly Commission Reports — {monthLabel}</h2>
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m-2,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>&#9664;</button>
+              <input type="month" className="form-input" style={{width:160}} value={commMonth} onChange={e=>setCommMonth(e.target.value)}/>
+              <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>&#9654;</button>
+              <button className="btn btn-sm btn-primary" disabled={repReports.length===0} onClick={()=>repReports.forEach((rr,i)=>setTimeout(()=>printRep(rr),i*250))}>Open all reports</button>
+            </div>
+          </div>
+          <div className="card-body">
+            {repReports.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No commission activity for any rep in {monthLabel}.</div>:
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(380px,1fr))',gap:12}}>
+              {repReports.map(rr=>{
+                const gpPct=rr.rev>0?Math.round(rr.gp/rr.rev*100):0;
+                return<div key={rr.rep.id} style={{border:'1px solid #e2e8f0',borderRadius:8,padding:14,background:'white'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:12}}>
+                    <div>
+                      <div style={{fontSize:15,fontWeight:800,color:'#0f172a'}}>{rr.rep.name}</div>
+                      <div style={{fontSize:11,color:'#64748b',textTransform:'capitalize'}}>{rr.rep.role}</div>
+                    </div>
+                    <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>printRep(rr)}>📄 Open / Print</button>
+                  </div>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:8,marginBottom:10}}>
+                    <div style={{padding:8,background:'#f0f9ff',borderRadius:6,textAlign:'center'}}>
+                      <div style={{fontSize:9,fontWeight:700,color:'#1e40af',textTransform:'uppercase'}}>Earned</div>
+                      <div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{fmt(rr.earned)}</div>
+                      <div style={{fontSize:10,color:'#64748b'}}>{rr.lines.length} invoice{rr.lines.length!==1?'s':''}</div>
+                    </div>
+                    <div style={{padding:8,background:rr.promoCost>0?'#fef2f2':'#f8fafc',borderRadius:6,textAlign:'center'}}>
+                      <div style={{fontSize:9,fontWeight:700,color:rr.promoCost>0?'#dc2626':'#94a3b8',textTransform:'uppercase'}}>Promo Cost</div>
+                      <div style={{fontSize:18,fontWeight:800,color:rr.promoCost>0?'#dc2626':'#94a3b8'}}>−{fmt(rr.promoCost)}</div>
+                      <div style={{fontSize:10,color:'#64748b'}}>{rr.promo.length} promo order{rr.promo.length!==1?'s':''}</div>
+                    </div>
+                    <div style={{padding:8,background:'#f0fdf4',borderRadius:6,textAlign:'center'}}>
+                      <div style={{fontSize:9,fontWeight:700,color:'#166534',textTransform:'uppercase'}}>Net Commission</div>
+                      <div style={{fontSize:20,fontWeight:800,color:rr.net>=0?'#166534':'#dc2626'}}>{fmt(rr.net)}</div>
+                    </div>
+                    <div style={{padding:8,background:'#f5f3ff',borderRadius:6,textAlign:'center'}}>
+                      <div style={{fontSize:9,fontWeight:700,color:'#6d28d9',textTransform:'uppercase'}}>Revenue · GP%</div>
+                      <div style={{fontSize:18,fontWeight:800,color:'#6d28d9'}}>{fmt0(rr.rev)}</div>
+                      <div style={{fontSize:10,color:gpPct>=30?'#166534':'#92400e',fontWeight:600}}>{gpPct}% GP</div>
+                    </div>
+                  </div>
+                </div>;
+              })}
+            </div>}
+            <div style={{marginTop:14,padding:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e'}}>
+              <strong>How to distribute:</strong> click <em>Open / Print</em> to launch a clean printable statement in a new tab. The reps' page already restricts each rep to their own data; you can hand them the printout, save as PDF, or use <em>Open all reports</em> to pop one window per rep.
+            </div>
+          </div>
+        </div>;
+      })()}
+
       {/* Commission policy note */}
       <div style={{marginTop:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>
-        <strong>Commission Policy:</strong> 30% of gross profit on invoices paid within 90 days of invoice date. 15% on invoices paid after 90 days (50% penalty). Admin may click to restore full 30% on any late invoice. Gross profit = Revenue &minus; Product Cost &minus; Decoration Cost &minus; Outbound Shipping (ShipStation, default $0) &minus; Inbound Freight (Supplier Bills, manual override until integration live). <strong>Promo orders:</strong> Costs from promo orders (product, decoration, shipping) are deducted from monthly commission as they represent real costs with no customer revenue.
+        <strong>Commission Policy:</strong> 30% of gross profit on invoices paid within 90 days of invoice date. 15% on invoices paid after 90 days (50% penalty). Admin may click to restore full 30% on any late invoice or set a custom rate per invoice via <em>Edit %</em>. Gross profit = Revenue &minus; Product Cost &minus; Decoration Cost &minus; Outbound Shipping (ShipStation, default $0) &minus; Inbound Freight (Supplier Bills, manual override until integration live). <strong>Promo orders:</strong> Costs from promo orders (product, decoration, shipping) are deducted from monthly commission as they represent real costs with no customer revenue.
       </div>
     </>);
   };
