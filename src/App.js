@@ -14633,9 +14633,55 @@ export default function App(){
           const it=safeItems(so)[gi.item_idx];if(!it)return null;
           const sizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
-          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
+          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,item_idx:gi.item_idx,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
+
+        // Resolve which art_file owns the mockups for a given item — falls back to the job's primary art.
+        // Items may use a different art_file than the job's primary (e.g. shorts using a separate logo art),
+        // so the mockup display and upload routing must follow the item's own decorations.
+        const resolveItemArtId=(sku)=>{
+          const skuItem=(j.items||[]).find(gi=>gi.sku===sku);
+          const itIdx=skuItem?.item_idx;
+          const decos=itIdx!=null?safeDecos(safeItems(so)[itIdx]||{}):[];
+          const skuArtIds=[...new Set(decos.filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id))];
+          // Prefer art files this item actually uses; if multiple, take the first; fall back to the job's primary
+          return skuArtIds[0]||j.art_file_id||null;
+        };
+        const handleMockupUploadForItem=async(files,sku)=>{
+          if(!files||files.length===0)return;
+          setArtJobDetailUploading(true);
+          try{
+            const artId=resolveItemArtId(sku);
+            const uploaded=[];
+            for(const f of files){
+              if(typeof nf==='function')nf('Uploading '+f.name+' for '+sku+'...');
+              const url=await fileUpload(f,'nsa-art-files');
+              uploaded.push({url,name:f.name,art_file_id:artId||null,sku});
+            }
+            const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+            const existingArt=safeArt(liveSO);
+            const hasMatch=artId&&existingArt.some(a=>a.id===artId);
+            let updArt;let newArtFileId=artId;
+            if(hasMatch){
+              const liveAf=existingArt.find(a=>a.id===artId);
+              const curItemMockups=liveAf?.item_mockups||{};
+              const updItemMockups={...curItemMockups,[sku]:[...(curItemMockups[sku]||[]),...uploaded]};
+              updArt=existingArt.map(a=>a.id===artId?{...a,item_mockups:updItemMockups,status:'uploaded'}:a);
+            }else{
+              newArtFileId=artId||('af-'+Date.now());
+              uploaded.forEach(u=>{u.art_file_id=newArtFileId});
+              const newAf={id:newArtFileId,name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:[],item_mockups:{[sku]:uploaded},prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
+              updArt=[...existingArt,newAf];
+            }
+            const newSO=savSO({...liveSO,art_files:updArt});
+            setArtMockupModal({...j,artFile:updArt.find(a=>a.id===(j.art_file_id||newArtFileId))||updArt[0]});
+            const ok=await _dbSaveSO(newSO);
+            if(ok===false){if(typeof nf==='function')nf('Mockup uploaded but failed to save to order. Please retry.','error');return}
+            if(typeof nf==='function')nf(uploaded.length+' mockup'+(uploaded.length>1?'s':'')+' uploaded for '+sku);
+          }catch(err){if(typeof nf==='function')nf('Upload failed: '+err.message,'error')}
+          finally{setArtJobDetailUploading(false)}
+        };
 
         return<div className="modal-overlay" onClick={()=>setArtMockupModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:900,maxHeight:'94vh',overflow:'auto'}}>
           <div className="modal-header" style={{background:'linear-gradient(135deg,#1e293b,#334155)',color:'white'}}>
@@ -14704,11 +14750,15 @@ export default function App(){
                   const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                   const repFallbackColors=colorList.length>0?colorList:(af?.color_ways||[]).length>0?(af.color_ways[0].inks||[]).filter(c=>c&&c.trim()):[];
                   const effectiveArtDecos=artDecos.length>0?artDecos:repPosList.length>0?repPosList.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:'',cwLabel:''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''}]:[];
-                  // Per-item mockup for this item
-                  const repItemMocks=af?.item_mockups?.[gi.sku]||[];
+                  // Per-item mockup for this item — look up in the item's actual art file (not just the job's primary art)
+                  const itemArtId=resolveItemArtId(gi.sku);
+                  const itemArtFile=itemArtId?safeArt(so).find(a=>a.id===itemArtId):af;
+                  const repItemMocks=itemArtFile?.item_mockups?.[gi.sku]||[];
                   const repPrimary=repItemMocks[0]||null;
+                  const repExtraMocks=repItemMocks.slice(1);
                   // Production files for this item's art
                   const repItemPFs=artDecos.filter(d=>d.artFile).flatMap(d=>(d.artFile?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f)})));
+                  const _openFilePicker=()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>handleMockupUploadForItem(Array.from(inp.files),gi.sku);inp.click()};
                   return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?16:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'white'}}>
                     {/* Item header */}
                     <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
@@ -14730,18 +14780,36 @@ export default function App(){
                         <div style={{fontSize:9,color:'#64748b',fontWeight:600,textTransform:'uppercase'}}>units</div>
                       </div>
                     </div>
-                    {/* Per-item mockup */}
-                    {repPrimary&&(()=>{const url=typeof repPrimary==='string'?repPrimary:(repPrimary?.url||'');const name=fileDisplayName(repPrimary);return<div style={{padding:12,borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
+                    {/* Per-item mockup — always rendered so each item has its own upload zone */}
+                    <div style={{padding:12,borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
                       <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',marginBottom:6}}>🖼️ Mockup</div>
-                      <div style={{borderRadius:8,border:'2px solid #7c3aed',overflow:'hidden',background:'white',maxWidth:480}}>
-                        {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:300,objectFit:'contain',display:'block',cursor:'pointer',background:'white'}} onClick={()=>openFile(url)}/>
-                        :_isPdfUrl(url)?<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}><span style={{fontSize:32}}>PDF</span><div style={{fontSize:11,color:'#1e40af',marginTop:4}}>{name}</div></div>
-                        :<div style={{padding:16,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}><span style={{fontSize:20}}>📄</span><div style={{fontSize:11,color:'#1e40af',marginTop:2}}>{name}</div></div>}
-                        <div style={{padding:'4px 10px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                          <span>{name}</span><button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
+                      {repPrimary?(()=>{const url=typeof repPrimary==='string'?repPrimary:(repPrimary?.url||'');const name=fileDisplayName(repPrimary);return<div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
+                        <div style={{flex:1,borderRadius:8,border:'2px solid #7c3aed',overflow:'hidden',background:'white',maxWidth:480}}>
+                          {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:300,objectFit:'contain',display:'block',cursor:'pointer',background:'white'}} onClick={()=>openFile(url)}/>
+                          :_isPdfUrl(url)?<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}><span style={{fontSize:32}}>PDF</span><div style={{fontSize:11,color:'#1e40af',marginTop:4}}>{name}</div></div>
+                          :<div style={{padding:16,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}><span style={{fontSize:20}}>📄</span><div style={{fontSize:11,color:'#1e40af',marginTop:2}}>{name}</div></div>}
+                          <div style={{padding:'4px 10px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                            <span>{name}{repExtraMocks.length>0?' (+'+repExtraMocks.length+' more)':''}</span><button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
+                          </div>
                         </div>
-                      </div>
-                    </div>;})()}
+                        <div style={{width:120,padding:8,textAlign:'center',borderRadius:6,border:'1px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer',fontSize:10,alignSelf:'stretch',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center'}}
+                          onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed'}}
+                          onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa'}}
+                          onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';if(!artJobDetailUploading)handleMockupUploadForItem(Array.from(e.dataTransfer.files),gi.sku)}}
+                          onClick={()=>{if(!artJobDetailUploading)_openFilePicker()}}>
+                          {artJobDetailUploading?<div style={{color:'#7c3aed',fontWeight:600}}>Uploading...</div>
+                          :<><div style={{fontSize:18,marginBottom:2}}>📎</div><div style={{color:'#7c3aed',fontWeight:600}}>+ Add More</div></>}
+                        </div>
+                      </div>;})()
+                      :<div style={{padding:16,textAlign:'center',borderRadius:8,border:'2px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer'}}
+                        onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#ede9fe'}}
+                        onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff'}}
+                        onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff';if(!artJobDetailUploading)handleMockupUploadForItem(Array.from(e.dataTransfer.files),gi.sku)}}
+                        onClick={()=>{if(!artJobDetailUploading)_openFilePicker()}}>
+                        {artJobDetailUploading?<div style={{fontSize:11,color:'#7c3aed',fontWeight:600}}>Uploading...</div>
+                        :<><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup for {gi.sku} here or click to upload</div></>}
+                      </div>}
+                    </div>
                     {/* Decoration spec */}
                     {effectiveArtDecos.length>0&&<div style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:'#f8fafc'}}>
                       <div style={{fontSize:11,fontWeight:800,color:'#1e3a5f',textTransform:'uppercase',marginBottom:6}}>📋 Decoration</div>
