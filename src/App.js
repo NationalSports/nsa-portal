@@ -6113,6 +6113,10 @@ export default function App(){
   const[prodLightboxZoom,setProdLightboxZoom]=useState(1);// zoom level for lightbox
   const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
   const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');const[prodDecoF,setProdDecoF]=useState('all');
+  const PROD_LIST_DEFAULT_COLS=['status','job','customer','expected','qty','deco','rep','so','actions'];
+  const[prodListCols,_setProdListCols]=useState(()=>loadState('prod_list_cols',PROD_LIST_DEFAULT_COLS));
+  const setProdListCols=v=>{_setProdListCols(prev=>{const next=typeof v==='function'?v(prev):v;try{localStorage.setItem('nsa_prod_list_cols',JSON.stringify(next))}catch(e){}return next})};
+  const[prodColsMenu,setProdColsMenu]=useState(false);
   const[assignModal,setAssignModal]=useState(null);// {job, soId, targetStatus}
   const[jobTimeLogs,setJobTimeLogs]=useState(()=>loadState('job_time_logs',[]));// [{jobId,soId,person,clockIn,clockOut,minutes,dept:'production'}]
   React.useEffect(()=>{_saveAppState('job_time_logs',jobTimeLogs)},[jobTimeLogs]);
@@ -6416,7 +6420,8 @@ export default function App(){
         {isAdmin&&<select className="form-select" style={{width:150,fontSize:11}} value={prodFilter==='all'?'all':prodFilter} onChange={e=>{const v=e.target.value;if(v.startsWith('deco_')){setProdFilter('all');setProdDecoF('all')}else{setProdFilter(v)}}}>
           <option value="all">All Decorators</option>{decorators.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
         </select>}
-        <div style={{marginLeft:'auto',display:'flex',gap:4}}>
+        <div style={{marginLeft:'auto',display:'flex',gap:4,position:'relative'}}>
+          {prodView==='list'&&<button className="btn btn-sm btn-secondary" title="Configure columns" onClick={()=>setProdColsMenu(v=>!v)}>⚙ Columns</button>}
           <button className={`btn btn-sm ${prodView==='board'?'btn-primary':'btn-secondary'}`} onClick={()=>setProdView('board')}>Board</button>
           <button className={`btn btn-sm ${prodView==='list'?'btn-primary':'btn-secondary'}`} onClick={()=>setProdView('list')}>List</button>
         </div>
@@ -6583,59 +6588,93 @@ export default function App(){
         const statusOrder={hold:0,ready:0,staging:1,in_process:2,completed:3,shipped:4};
         const statusLabel={hold:'Ready for Prod',ready:'Ready for Prod',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
         const statusColors={hold:{bg:'#eef2ff',c:'#4f46e5'},ready:{bg:'#dcfce7',c:'#166534'},staging:{bg:'#fffbeb',c:'#d97706'},in_process:{bg:'#eff6ff',c:'#2563eb'},completed:{bg:'#f0fdf4',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'}};
+        const decoColor=dt=>dt==='screen_print'?{bg:'#dbeafe',c:'#1e40af'}:dt==='embroidery'?{bg:'#ede9fe',c:'#6d28d9'}:dt==='heat_press'?{bg:'#fef3c7',c:'#92400e'}:{bg:'#f1f5f9',c:'#475569'};
+        // Column registry — id, label, sortable key (or null), render function, optional align
+        const ALL_COLS={
+          status:{label:'Status',sort:'status',render:j=>{const k=j.prod_status||'hold';const sc=statusColors[k]||{bg:'#f1f5f9',c:'#64748b'};return<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:sc.bg,color:sc.c,whiteSpace:'nowrap'}}>{statusLabel[k]||k.replace(/_/g,' ')}</span>}},
+          job:{label:'Job ID',sort:'job',render:j=><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span>},
+          job_name:{label:'Job Name',sort:'art_name',render:j=><div style={{maxWidth:280,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.art_name||'—'}</div>},
+          customer:{label:'Customer',sort:'customer',render:j=><span>{j.customer}{j.alpha&&<span className="badge badge-gray" style={{marginLeft:4}}>{j.alpha}</span>}</span>},
+          alpha:{label:'Alpha Tag',sort:'alpha',render:j=>j.alpha||'—'},
+          so:{label:'SO #',sort:'soId',render:j=><span style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{j.soId}</span>},
+          so_memo:{label:'SO Memo',render:j=><div style={{maxWidth:240,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:11}}>{j.soMemo||'—'}</div>},
+          expected:{label:'Due Date',sort:'expected',render:j=>{const urgent=j.daysOut!=null&&j.daysOut<=3;return<span style={{fontSize:11,color:urgent?'#dc2626':j.daysOut!=null&&j.daysOut<=7?'#92400e':'#64748b',fontWeight:urgent?700:500,whiteSpace:'nowrap'}}>{j.expected||'—'}{j.daysOut!=null&&<span style={{marginLeft:6,fontSize:9,opacity:0.8}}>{j.daysOut}d</span>}</span>}},
+          days_out:{label:'Days Out',sort:'daysOut',align:'right',render:j=><span style={{fontSize:11,whiteSpace:'nowrap'}}>{j.daysOut!=null?j.daysOut+'d':'—'}</span>},
+          qty:{label:'Qty',sort:'units',align:'right',render:j=><span style={{fontWeight:700,whiteSpace:'nowrap'}}>{j.fulfilled_units}/{j.total_units}</span>},
+          deco:{label:'Decoration',sort:'deco',render:j=>{const dc=decoColor(j.deco_type);return<span style={{padding:'2px 6px',borderRadius:6,fontSize:10,fontWeight:600,whiteSpace:'nowrap',background:dc.bg,color:dc.c}}>{j.deco_type?.replace(/_/g,' ')||'—'}</span>}},
+          positions:{label:'Positions',render:j=><div style={{fontSize:11,maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{(j.positions||'').replace(/^,\s*/,'')||'—'}</div>},
+          rep:{label:'Rep',sort:'rep',render:j=><span style={{fontSize:11}}>{j.rep||'—'}</span>},
+          decorator:{label:'Decorator',sort:'assigned_to',render:j=><span style={{fontSize:11}}>{j.assigned_to||'—'}</span>},
+          machine:{label:'Machine',render:j=>{const m=MACHINES.find(mm=>mm.id===j.assigned_machine);return<span style={{fontSize:11}}>{m?m.name:'—'}</span>}},
+          art_status:{label:'Artwork',sort:'art_status',render:j=><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.art_status]?.bg||'#f1f5f9',color:SC[j.art_status]?.c||'#64748b',whiteSpace:'nowrap'}}>{j.art_status?.replace(/_/g,' ')||'—'}</span>},
+          ship_method:{label:'Ship Method',render:j=><span style={{fontSize:11}}>{j.ship_method==='ship_customer'?'Ship':j.ship_method==='rep_delivery'?'Rep delivery':j.ship_method==='customer_pickup'?'Pickup':j.ship_method||'—'}</span>},
+          items_count:{label:'# Items',align:'right',render:j=><span style={{fontSize:11}}>{(j.items||[]).length}</span>},
+          notes:{label:'Notes',render:j=><div style={{fontSize:11,maxWidth:280,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.notes||j.so?.production_notes||'—'}</div>},
+          progress:{label:'Progress',align:'right',render:j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;return<span style={{fontSize:11,whiteSpace:'nowrap'}}>{pct}%</span>}},
+          actions:{label:'',render:j=><button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#d97706',color:'white',border:'none'}} title="Production sheet" onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋</button>},
+        };
+        const visibleCols=prodListCols.filter(id=>ALL_COLS[id]);
+        const sortVal=(j,key)=>{
+          if(key==='expected')return j.expected||'9999-12-31';
+          if(key==='status')return statusOrder[j.prod_status]??99;
+          if(key==='units')return j.total_units||0;
+          if(key==='customer')return(j.customer||'').toLowerCase();
+          if(key==='deco')return j.deco_type||'';
+          if(key==='rep')return(j.rep||'').toLowerCase();
+          if(key==='job')return j.id||'';
+          if(key==='soId')return j.soId||'';
+          if(key==='alpha')return j.alpha||'';
+          if(key==='art_name')return(j.art_name||'').toLowerCase();
+          if(key==='art_status')return j.art_status||'';
+          if(key==='daysOut')return j.daysOut??99999;
+          if(key==='assigned_to')return(j.assigned_to||'').toLowerCase();
+          return j[key]||'';
+        };
         const sorted=[...byStatus].sort((a,b)=>{
           const f=prodSort.f,d=prodSort.d==='asc'?1:-1;
-          let av,bv;
-          if(f==='expected'){av=a.expected||'9999-12-31';bv=b.expected||'9999-12-31';}
-          else if(f==='status'){av=statusOrder[a.prod_status]??99;bv=statusOrder[b.prod_status]??99;}
-          else if(f==='units'){av=a.total_units||0;bv=b.total_units||0;}
-          else if(f==='customer'){av=(a.customer||'').toLowerCase();bv=(b.customer||'').toLowerCase();}
-          else if(f==='deco'){av=a.deco_type||'';bv=b.deco_type||'';}
-          else if(f==='rep'){av=a.rep||'';bv=b.rep||'';}
-          else if(f==='job'){av=a.id||'';bv=b.id||'';}
-          else{av=a[f]||'';bv=b[f]||'';}
+          const av=sortVal(a,f),bv=sortVal(b,f);
           if(av<bv)return -1*d;if(av>bv)return 1*d;
-          // Secondary sort: status when sorting by date, date when sorting by status, else expected date
+          // Secondary: status when sorting by date, due date when sorting by status, else expected date
           if(f!=='status'){const sa=statusOrder[a.prod_status]??99;const sb=statusOrder[b.prod_status]??99;if(sa!==sb)return sa-sb;}
           if(f!=='expected'){const ea=a.expected||'9999-12-31';const eb=b.expected||'9999-12-31';if(ea<eb)return -1;if(ea>eb)return 1;}
           return 0;
         });
-        const SortHdr=({f,label,align})=><th style={{cursor:'pointer',textAlign:align||'left',userSelect:'none',whiteSpace:'nowrap'}} onClick={()=>setProdSort(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}>
-          {label}{prodSort.f===f&&<span style={{marginLeft:4,fontSize:9}}>{prodSort.d==='asc'?'▲':'▼'}</span>}
-        </th>;
-        return<div className="card"><div className="card-body" style={{padding:0,overflowX:'auto'}}>
-          <table style={{fontSize:12,width:'100%'}}><thead><tr>
-            <SortHdr f="status" label="Status"/>
-            <SortHdr f="job" label="Job"/>
-            <SortHdr f="customer" label="Customer"/>
-            <SortHdr f="expected" label="Due"/>
-            <SortHdr f="units" label="Qty" align="right"/>
-            <SortHdr f="deco" label="Decoration"/>
-            <SortHdr f="rep" label="Rep"/>
-            <th style={{whiteSpace:'nowrap'}}>SO</th>
-            <th></th>
-          </tr></thead><tbody>
-          {sorted.map(j=>{
-            const stKey=j.prod_status||'hold';
-            const stColor=statusColors[stKey]||{bg:'#f1f5f9',c:'#64748b'};
-            const stLbl=statusLabel[stKey]||stKey.replace(/_/g,' ');
-            const urgent=j.daysOut!=null&&j.daysOut<=3;
-            return<tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
-              <td><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:stColor.bg,color:stColor.c,whiteSpace:'nowrap'}}>{stLbl}</span></td>
-              <td><div style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{j.id}</div><div style={{fontSize:10,color:'#64748b',maxWidth:240,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.art_name}</div></td>
-              <td>{j.customer}{j.alpha&&<span className="badge badge-gray" style={{marginLeft:4}}>{j.alpha}</span>}</td>
-              <td style={{fontSize:11,color:urgent?'#dc2626':j.daysOut!=null&&j.daysOut<=7?'#92400e':'#64748b',fontWeight:urgent?700:500,whiteSpace:'nowrap'}}>{j.expected||'—'}{j.daysOut!=null&&<span style={{marginLeft:6,fontSize:9,opacity:0.8}}>{j.daysOut}d</span>}</td>
-              <td style={{textAlign:'right',fontWeight:700,whiteSpace:'nowrap'}}>{j.fulfilled_units}/{j.total_units}</td>
-              <td><span style={{padding:'2px 6px',borderRadius:6,fontSize:10,fontWeight:600,whiteSpace:'nowrap',
-                background:j.deco_type==='screen_print'?'#dbeafe':j.deco_type==='embroidery'?'#ede9fe':j.deco_type==='heat_press'?'#fef3c7':'#f1f5f9',
-                color:j.deco_type==='screen_print'?'#1e40af':j.deco_type==='embroidery'?'#6d28d9':j.deco_type==='heat_press'?'#92400e':'#475569'}}>{j.deco_type?.replace(/_/g,' ')||'—'}</span></td>
-              <td style={{fontSize:11}}>{j.rep}</td>
-              <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{j.soId}</td>
-              <td><button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#d97706',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋</button></td>
-            </tr>;
-          })}
-          </tbody></table>
-        </div></div>;
+        const moveCol=(id,dir)=>setProdListCols(prev=>{const arr=[...prev];const i=arr.indexOf(id);if(i<0)return prev;const ni=i+dir;if(ni<0||ni>=arr.length)return prev;[arr[i],arr[ni]]=[arr[ni],arr[i]];return arr});
+        const toggleCol=id=>setProdListCols(prev=>prev.includes(id)?prev.filter(x=>x!==id):[...prev,id]);
+        return<div style={{position:'relative'}}>
+          {prodColsMenu&&<div style={{position:'absolute',right:0,top:-8,zIndex:50,background:'white',border:'1px solid #cbd5e1',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',padding:12,minWidth:280,maxHeight:480,overflowY:'auto'}}>
+            <div style={{display:'flex',alignItems:'center',marginBottom:8}}>
+              <strong style={{fontSize:13}}>Configure columns</strong>
+              <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:10,padding:'2px 8px'}} onClick={()=>setProdListCols(PROD_LIST_DEFAULT_COLS)}>Reset</button>
+              <button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',marginLeft:4,background:'transparent',border:'none',color:'#64748b'}} onClick={()=>setProdColsMenu(false)}>✕</button>
+            </div>
+            <div style={{fontSize:10,color:'#64748b',marginBottom:6,fontWeight:600,textTransform:'uppercase'}}>Visible (drag with arrows to reorder)</div>
+            {prodListCols.filter(id=>ALL_COLS[id]).map((id,i,arr)=><div key={id} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 6px',background:'#f8fafc',borderRadius:4,marginBottom:3}}>
+              <input type="checkbox" checked onChange={()=>toggleCol(id)}/>
+              <span style={{flex:1,fontSize:12}}>{ALL_COLS[id].label||id}</span>
+              <button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px',background:'#e2e8f0',border:'none'}} disabled={i===0} onClick={()=>moveCol(id,-1)}>▲</button>
+              <button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px',background:'#e2e8f0',border:'none'}} disabled={i===arr.length-1} onClick={()=>moveCol(id,1)}>▼</button>
+            </div>)}
+            <div style={{fontSize:10,color:'#64748b',marginTop:8,marginBottom:6,fontWeight:600,textTransform:'uppercase'}}>Available</div>
+            {Object.keys(ALL_COLS).filter(id=>!prodListCols.includes(id)).map(id=><div key={id} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 6px',marginBottom:3}}>
+              <input type="checkbox" checked={false} onChange={()=>toggleCol(id)}/>
+              <span style={{flex:1,fontSize:12,color:'#64748b'}}>{ALL_COLS[id].label||id}</span>
+            </div>)}
+          </div>}
+          <div className="card"><div className="card-body" style={{padding:0,overflowX:'auto'}}>
+            <table style={{fontSize:12,width:'100%'}}><thead><tr>
+              {visibleCols.map(id=>{const c=ALL_COLS[id];const sortable=!!c.sort;
+                return<th key={id} style={{cursor:sortable?'pointer':'default',textAlign:c.align||'left',userSelect:'none',whiteSpace:'nowrap'}} onClick={sortable?()=>setProdSort(s=>({f:c.sort,d:s.f===c.sort&&s.d==='asc'?'desc':'asc'})):undefined}>
+                  {c.label}{sortable&&prodSort.f===c.sort&&<span style={{marginLeft:4,fontSize:9}}>{prodSort.d==='asc'?'▲':'▼'}</span>}
+                </th>;
+              })}
+            </tr></thead><tbody>
+            {sorted.map(j=><tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
+              {visibleCols.map(id=>{const c=ALL_COLS[id];return<td key={id} style={{textAlign:c.align||'left'}}>{c.render(j)}</td>;})}
+            </tr>)}
+            </tbody></table>
+          </div></div>
+        </div>;
       })()}
 
       {/* ═══ PRODUCTION MOCKUP VIEW — full job detail for decorators ═══ */}
