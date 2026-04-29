@@ -14646,9 +14646,12 @@ export default function App(){
               if(!j.art_file_id)j.art_file_id=newArtFileId;
             }
             const updatedJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
-            savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
+            const newSO=savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
             setArtJobDetailModal({...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status});
+            // Block on the DB write so the success toast only fires after the mockup is actually persisted.
+            const ok=await _dbSaveSO(newSO);
+            if(ok===false){nf('Mockup file uploaded but failed to save to order. Please retry.','error');return}
             nf(uploaded.length+' mockup'+(uploaded.length>1?'s':'')+' uploaded for '+sku);
           }catch(err){nf('Upload failed: '+err.message,'error')}
           finally{setArtJobDetailUploading(false)}
@@ -14685,9 +14688,12 @@ export default function App(){
               const addl=uploads.filter(u=>u.artId===a.id).map(u=>u.file);
               return addl.length?{...a,prod_files:[...(a.prod_files||[]),...addl]}:a;
             });
-            savSO({...liveSO,art_files:updArt});
+            const newSO=savSO({...liveSO,art_files:updArt});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
             setArtJobDetailModal({...j,artFile:updatedAf});
+            // Block on the DB write so the success toast only fires after the file is actually persisted.
+            const ok=await _dbSaveSO(newSO);
+            if(ok===false){nf('Production file uploaded but failed to save to order. Please retry.','error');return}
             nf(uploads.length+' production file'+(uploads.length>1?'s':'')+' uploaded!');
           }catch(err){nf('Upload failed: '+err.message,'error')}
           finally{setArtJobDetailUploading(false)}
