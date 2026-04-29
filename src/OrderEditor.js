@@ -80,6 +80,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
   const[mockupLightbox,setMockupLightbox]=useState(null);// url string for image lightbox overlay
   const[copySkuModal,setCopySkuModal]=useState(null);// {itemIdx, search:''}
+  const[colorPickerModal,setColorPickerModal]=useState(null);// {itemIdx, sku, source:'ss'|'sm'|'mt'|'rs'}
 
   // ─── Vendor Inventory Cache (S&S Activewear) ───
 
@@ -1009,23 +1010,38 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }finally{if(gen===rsSearchGen.current)setRsSearching(false)}
   },[products,vendorList]);
 
-  // Debounced S&S + SanMar + Momentec + Richardson search when typing in Add Product search
+  // Debounced S&S + SanMar + Momentec + Richardson search when typing in Add Product search OR Copy SKU modal
   React.useEffect(()=>{
     if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);
     if(smSearchTimer.current)clearTimeout(smSearchTimer.current);
     if(mtSearchTimer.current)clearTimeout(mtSearchTimer.current);
     if(rsSearchTimer.current)clearTimeout(rsSearchTimer.current);
-    if(!showAdd||!pS||pS.length<2){setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;setExpandedStyle(null);return}
+    // Determine active query: Add Product takes precedence, else Copy SKU modal
+    const copyQ=copySkuModal?.search||'';
+    const activeQ=showAdd?pS:copyQ;
+    const isActive=showAdd||!!copySkuModal;
+    if(!isActive||!activeQ||activeQ.length<2){setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;setExpandedStyle(null);return}
     // Bump generation to discard in-flight results from previous keystrokes
     ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;setExpandedStyle(null);
     const localCount=allFp.length;
     const delay=localCount>5?800:400;
-    ssSearchTimer.current=setTimeout(()=>ssLiveSearch(pS),delay);
-    smSearchTimer.current=setTimeout(()=>smLiveSearch(pS),delay+100);
-    mtSearchTimer.current=setTimeout(()=>mtLiveSearch(pS),delay+200);
-    rsSearchTimer.current=setTimeout(()=>rsLiveSearch(pS),delay+50);
+    ssSearchTimer.current=setTimeout(()=>ssLiveSearch(activeQ),delay);
+    smSearchTimer.current=setTimeout(()=>smLiveSearch(activeQ),delay+100);
+    mtSearchTimer.current=setTimeout(()=>mtLiveSearch(activeQ),delay+200);
+    rsSearchTimer.current=setTimeout(()=>rsLiveSearch(activeQ),delay+50);
     return()=>{if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);if(smSearchTimer.current)clearTimeout(smSearchTimer.current);if(mtSearchTimer.current)clearTimeout(mtSearchTimer.current);if(rsSearchTimer.current)clearTimeout(rsSearchTimer.current)};
-  },[pS,showAdd]);
+  },[pS,showAdd,copySkuModal?.search]);
+
+  // When color picker modal opens, fetch the SKU's vendor data to populate colors list
+  React.useEffect(()=>{
+    if(!colorPickerModal)return;
+    const{sku,source}=colorPickerModal;if(!sku||!source)return;
+    ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;
+    if(source==='ss')ssLiveSearch(sku);
+    else if(source==='sm')smLiveSearch(sku);
+    else if(source==='mt')mtLiveSearch(sku);
+    else if(source==='rs')rsLiveSearch(sku);
+  },[colorPickerModal,ssLiveSearch,smLiveSearch,mtLiveSearch,rsLiveSearch]);
 
   // Add a vendor search result as a line item (works for S&S, SanMar, and Momentec)
   // style = the style-level result, color = the selected color from style.colors
@@ -1090,6 +1106,60 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const uI=(i,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?{...it,[k]:v}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};const rmI=i=>{const item=safeItems(o)[i];if(item&&isSO){const pos=safePOs(item);if(pos.length>0){const hasReceived=pos.some(po=>Object.values(po.received||{}).some(v=>v>0));const hasBilled=pos.some(po=>Object.values(po.billed||{}).some(v=>v>0));if(hasReceived||hasBilled){nf('Cannot delete — this item has '+(hasReceived?'received':'')+(hasReceived&&hasBilled?' and ':'')+(hasBilled?'billed':'')+' PO quantities. Remove billing/receiving first.','error');return}nf('Cannot delete — this item has PO(s). Delete the PO(s) first before removing the item.','error');return}}sv('items',safeItems(o).filter((_,x)=>x!==i))};
   const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' with all sizes & decorations')};
   const copyIWithSku=(i,p)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];clone.product_id=p.id;clone.sku=p.sku;clone.name=p.name;clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=p.nsa_cost;clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.available_sizes=[...p.available_sizes];const au=isAU(p.brand);clone._colors=au?null:(p._colors||null);clone.unit_sell=au?rQ(p.retail_price*(1-(tD[cust?.adidas_ua_tier||'B']||0.35))):rQ(p.nsa_cost*(o.default_markup||1.65));sv('items',[...o.items,clone]);setCopySkuModal(null);nf('📋 Copied decorations from '+it.sku+' → '+p.sku)};
+  // Copy item to a vendor-search result (S&S/SanMar/Momentec/Richardson). Mirrors addSearchProduct
+  // but preserves source item's decorations + sizes by cloning it.
+  const copyIWithVendorResult=(i,style,color,source)=>{
+    const it=o.items[i];if(!it)return;
+    const isSM=source==='sm';const isMT=source==='mt';const isRS=source==='rs';
+    const vendor=vendorList.find(v=>isRS?(v.api_provider==='richardson'||v.name==='Richardson'):isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
+    const vId=vendor?.id||(isRS?'v5':isMT?'v8':isSM?'v3':'v4');
+    const cost=color.customerPrice||color.piecePrice||0;
+    const sell=rQ(cost*(o.default_markup||1.65));
+    const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);
+    const apiSizes=isRS?color.sizes.map(s=>s.sizeName).filter(Boolean):color.sizes.map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s));
+    const catSizes=isRS?(catMatch?.available_sizes||[]):(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
+    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(s=>s&&SZ_ORD.includes(s)):[];
+    const STD_SIZES=isRS?[]:['S','M','L','XL','2XL'];
+    let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
+    availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+    const vInv={};const vNextBySize={};
+    color.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
+    const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
+    const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
+    // Clone source item to preserve decorations, then override SKU/product fields
+    const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];
+    // Clear stale live-vendor flags from the source
+    delete clone._ss_live;delete clone._sm_live;delete clone._mt_live;delete clone._rs_live;delete clone._mtId;delete clone._colors;
+    clone.product_id=catMatch?.id||null;clone.sku=style.sku;clone.name=style.styleName;clone.brand=style.brandName;
+    clone.vendor_id=vId;clone.color=color.colorName;clone.nsa_cost=cost;clone.retail_price=catMatch?.retail_price||0;
+    clone.unit_sell=sell;clone.available_sizes=availSizes.length?availSizes:fallbackSizes;
+    clone.is_custom=false;clone[liveFlag]=true;
+    clone._colorImage=color.colorFrontImage||style.styleImage||'';
+    clone._colorBackImage=color.colorBackImage||'';
+    if(isMT&&style._mtId)clone._mtId=style._mtId;
+    const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
+    clone._sizeCosts=sizePrice;
+    const mk=o.default_markup||1.65;
+    const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
+    clone._sizeSells=sizeSell;
+    sv('items',[...o.items,clone]);
+    vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
+    setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
+    setCopySkuModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
+    nf('📋 Copied decorations from '+it.sku+' → '+style.sku);
+  };
+  // Change the color on an existing vendor-live item without losing decorations/sizes.
+  const changeItemVendorColor=(itemIdx,style,color)=>{
+    setO(e=>({...e,items:safeItems(e).map((it,x)=>x===itemIdx?{
+      ...it,
+      color:color.colorName,
+      _colorImage:color.colorFrontImage||style.styleImage||it._colorImage||'',
+      _colorBackImage:color.colorBackImage||it._colorBackImage||''
+    }:it),updated_at:new Date().toLocaleString()}));
+    setDirty(true);
+    setColorPickerModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);
+    nf('🎨 Color changed to '+color.colorName);
+  };
   const uSz=(i,sz,v)=>{
     const n=v===''?0:parseInt(v)||0;
     const item=o.items[i];if(!item)return;
@@ -1788,7 +1858,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   :<span style={{fontWeight:700,fontSize:15}}>{item.name}</span>}
                 {item._colors&&!isAU(item.brand)?(()=>{const opts=[...new Set([item.color,...item._colors].filter(Boolean))];return<select className="form-select" style={{fontSize:12,width:150}} value={item.color||opts[0]} onChange={e=>uI(idx,'color',e.target.value)}>{opts.map(c=><option key={c}>{c}</option>)}</select>})()
                   :item.is_custom?<input className="form-input" value={item.color||''} onChange={e=>uI(idx,'color',e.target.value)} style={{fontSize:12,width:100}} placeholder="Color"/>
-                  :<span className="badge badge-gray">{item.color}</span>}
+                  :(()=>{const liveSrc=item._ss_live?'ss':item._sm_live?'sm':item._mt_live?'mt':item._rs_live?'rs':(isSSItem(item)?'ss':isSanMarItem(item)?'sm':isMomentecItem(item)?'mt':isRichardsonItem(item)?'rs':null);
+                    return liveSrc?<button onClick={()=>setColorPickerModal({itemIdx:idx,sku:item.sku,source:liveSrc})} className="badge badge-gray" style={{cursor:'pointer',border:'1px dashed #94a3b8',display:'inline-flex',alignItems:'center',gap:4}} title="Click to change color">{item.color||'(set color)'} ▾</button>
+                      :<span className="badge badge-gray">{item.color}</span>;
+                  })()}
                 {item.is_custom&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Custom</span>}
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={dp.vendor+' — '+dp.deco_type?.replace(/_/g,' ')} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>{dp.po_id} · {dp.vendor}</span>)}
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
@@ -6946,22 +7019,87 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {/* Copy Item → New SKU Modal */}
       {copySkuModal&&(()=>{const srcIt=o.items[copySkuModal.itemIdx];if(!srcIt)return null;const sq=copySkuModal.search?.toLowerCase()||'';
         const matches=sq.length>=2?products.filter(p=>p.sku.toLowerCase().includes(sq)||p.name.toLowerCase().includes(sq)||p.brand?.toLowerCase().includes(sq)||p.color?.toLowerCase().includes(sq)).slice(0,8):[];
-        return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setCopySkuModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:480}}>
+        const anyVendor=ssResults.length>0||smResults.length>0||mtResults.length>0||rsResults.length>0;
+        const anySearching=ssSearching||smSearching||mtSearching||rsSearching;
+        const renderVendorBlock=(label,color,bg,results,searching,source)=>(results.length>0||searching)&&<div style={{marginTop:8,border:'1px solid '+bg,borderRadius:6,overflow:'hidden'}}>
+          <div style={{padding:'4px 10px',background:bg,fontSize:10,fontWeight:800,color,textTransform:'uppercase',letterSpacing:1,display:'flex',alignItems:'center',gap:6}}>
+            <span>{label}</span>{searching&&<span style={{fontWeight:500,opacity:0.7}}>Searching...</span>}{!searching&&<span style={{fontWeight:500,opacity:0.7}}>{results.length} style{results.length!==1?'s':''}</span>}
+          </div>
+          <div style={{maxHeight:200,overflowY:'auto'}}>
+            {results.slice(0,8).map((st,si)=>{const eKey=source+'-cp-'+si;const isExp=expandedStyle===eKey;return<div key={eKey}>
+              <div style={{padding:'6px 10px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',display:'flex',alignItems:'center',gap:8,fontSize:12}} onClick={()=>setExpandedStyle(isExp?null:eKey)}>
+                <span style={{fontFamily:'monospace',fontWeight:700,color,background:bg,padding:'1px 6px',borderRadius:3,fontSize:11}}>{st.sku}</span>
+                <span style={{fontWeight:600,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{st.styleName}</span>
+                <span style={{fontSize:9,color}}>{st.colors.length} clr</span>
+                <span style={{fontSize:11,color,fontWeight:700}}>{st.customerPrice>0?'$'+st.customerPrice.toFixed(2):'TBD'}</span>
+                <span style={{fontSize:10,color}}>{isExp?'▲':'▼'}</span>
+              </div>
+              {isExp&&<div style={{background:'#fafafa',padding:'6px 10px',display:'flex',flexWrap:'wrap',gap:4}}>
+                {st.colors.map((c,ci)=><div key={ci} style={{padding:'3px 7px',borderRadius:4,border:'1px solid '+bg,background:'white',cursor:'pointer',fontSize:10,display:'flex',alignItems:'center',gap:4}} onClick={()=>copyIWithVendorResult(copySkuModal.itemIdx,st,c,source)} title={c.colorName+(c.customerPrice?' — $'+c.customerPrice.toFixed(2):'')}>
+                  {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:16,height:16,objectFit:'contain',borderRadius:2}} onError={e=>{e.target.style.display='none'}}/>}
+                  <span style={{fontWeight:600,maxWidth:110,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.colorName||'Default'}</span>
+                  {c.customerPrice>0&&<span style={{fontSize:9,color}}>${c.customerPrice.toFixed(2)}</span>}
+                </div>)}
+              </div>}
+            </div>})}
+          </div>
+        </div>;
+        return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setCopySkuModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
           <div className="modal-header"><h2>Copy Item → New SKU</h2><button className="modal-close" onClick={()=>setCopySkuModal(null)}>×</button></div>
           <div className="modal-body">
             <div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:12,fontSize:12}}>
               <div style={{fontWeight:700}}>Copying from: {srcIt.sku} — {srcIt.name}</div>
               <div style={{color:'#64748b'}}>{safeDecos(srcIt).length} decoration(s) + sizes will carry over</div>
             </div>
-            <label className="form-label">Search for new product/SKU</label>
+            <label className="form-label">Search for new product/SKU (catalog + S&S, SanMar, Momentec, Richardson live)</label>
             <input className="form-input" placeholder="Type SKU, name, or brand..." value={copySkuModal.search||''} onChange={e=>setCopySkuModal(m=>({...m,search:e.target.value}))} autoFocus/>
-            {matches.length>0&&<div style={{maxHeight:240,overflowY:'auto',marginTop:8,border:'1px solid #e2e8f0',borderRadius:8}}>
-              {matches.map(p=><div key={p.id} style={{padding:'8px 12px',cursor:'pointer',borderBottom:'1px solid #f1f5f9',display:'flex',justifyContent:'space-between',alignItems:'center'}} onClick={()=>copyIWithSku(copySkuModal.itemIdx,p)} onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='white'}>
+            {matches.length>0&&<div style={{maxHeight:200,overflowY:'auto',marginTop:8,border:'1px solid #e2e8f0',borderRadius:6}}>
+              <div style={{padding:'4px 10px',background:'#eff6ff',fontSize:10,fontWeight:800,color:'#1e40af',textTransform:'uppercase',letterSpacing:1}}>NSA Catalog · {matches.length}</div>
+              {matches.map(p=><div key={p.id} style={{padding:'6px 10px',cursor:'pointer',borderBottom:'1px solid #f1f5f9',display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:12}} onClick={()=>copyIWithSku(copySkuModal.itemIdx,p)} onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='white'}>
                 <div><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span> <span style={{fontWeight:600}}>{p.name}</span>{p.color&&<span style={{color:'#64748b',fontSize:11}}> — {p.color}</span>}</div>
                 <span className="badge badge-blue" style={{fontSize:9}}>{p.brand}</span>
               </div>)}
             </div>}
-            {sq.length>=2&&matches.length===0&&<div style={{textAlign:'center',padding:16,color:'#94a3b8',fontSize:12}}>No products found</div>}
+            {renderVendorBlock('S&S Activewear','#7c3aed','#ede9fe',ssResults,ssSearching,'ss')}
+            {renderVendorBlock('SanMar','#0891b2','#cffafe',smResults,smSearching,'sm')}
+            {renderVendorBlock('Momentec','#b45309','#fde68a',mtResults,mtSearching,'mt')}
+            {renderVendorBlock('Richardson','#dc2626','#fecaca',rsResults,rsSearching,'rs')}
+            {sq.length>=2&&matches.length===0&&!anyVendor&&!anySearching&&<div style={{textAlign:'center',padding:16,color:'#94a3b8',fontSize:12}}>No products found</div>}
+            {sq.length>=2&&anySearching&&!anyVendor&&matches.length===0&&<div style={{textAlign:'center',padding:16,color:'#94a3b8',fontSize:12}}>Searching vendors...</div>}
+          </div>
+        </div></div>})()}
+
+      {/* Change Color Modal — for vendor-live items where the SKU stays the same but color varies */}
+      {colorPickerModal&&(()=>{const{itemIdx,sku,source}=colorPickerModal;const item=o.items[itemIdx];if(!item)return null;
+        const results=source==='ss'?ssResults:source==='sm'?smResults:source==='mt'?mtResults:source==='rs'?rsResults:[];
+        const searching=source==='ss'?ssSearching:source==='sm'?smSearching:source==='mt'?mtSearching:source==='rs'?rsSearching:false;
+        const skuU=(sku||'').toUpperCase();
+        const style=results.find(r=>(r.sku||'').toUpperCase()===skuU)||results[0];
+        const colors=style?.colors||[];
+        const label=source==='ss'?'S&S Activewear':source==='sm'?'SanMar':source==='mt'?'Momentec':'Richardson';
+        const accent=source==='ss'?'#7c3aed':source==='sm'?'#0891b2':source==='mt'?'#b45309':'#dc2626';
+        const bg=source==='ss'?'#ede9fe':source==='sm'?'#cffafe':source==='mt'?'#fde68a':'#fecaca';
+        return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setColorPickerModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+          <div className="modal-header"><h2>Change Color — {item.sku}</h2><button className="modal-close" onClick={()=>setColorPickerModal(null)}>×</button></div>
+          <div className="modal-body">
+            <div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:12,fontSize:12}}>
+              <div style={{fontWeight:700}}>{item.name}</div>
+              <div style={{color:'#64748b'}}>Current color: <strong>{item.color||'(none)'}</strong> · Source: {label}</div>
+            </div>
+            {searching&&colors.length===0&&<div style={{textAlign:'center',padding:16,color:'#94a3b8',fontSize:12}}>Loading colors from {label}...</div>}
+            {!searching&&colors.length===0&&<div style={{textAlign:'center',padding:16,color:'#94a3b8',fontSize:12}}>No colors available for this SKU.</div>}
+            {colors.length>0&&<>
+              <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>{colors.length} color{colors.length!==1?'s':''} available</div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:6,maxHeight:360,overflowY:'auto'}}>
+                {colors.map((c,ci)=>{const isCurrent=(c.colorName||'').toLowerCase()===(item.color||'').toLowerCase();return<button key={ci} onClick={()=>!isCurrent&&changeItemVendorColor(itemIdx,style,c)} disabled={isCurrent} style={{padding:'6px 10px',borderRadius:6,border:'1px solid '+(isCurrent?accent:bg),background:isCurrent?bg:'white',cursor:isCurrent?'default':'pointer',fontSize:11,display:'flex',alignItems:'center',gap:6,minWidth:0,opacity:isCurrent?0.7:1}} title={c.colorName+(c.customerPrice?' — $'+c.customerPrice.toFixed(2):'')+(c.totalQty?' · '+c.totalQty.toLocaleString()+' avail':'')}>
+                  {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:24,height:24,objectFit:'contain',borderRadius:2}} onError={e=>{e.target.style.display='none'}}/>}
+                  <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:130}}>{c.colorName||'Default'}</span>
+                  {c.customerPrice>0&&<span style={{fontSize:9,color:accent}}>${c.customerPrice.toFixed(2)}</span>}
+                  {c.totalQty>0&&<span style={{fontSize:9,color:'#22c55e'}}>{c.totalQty.toLocaleString()}</span>}
+                  {isCurrent&&<span style={{fontSize:9,color:accent,fontWeight:700}}>✓</span>}
+                </button>})}
+              </div>
+            </>}
           </div>
         </div></div>})()}
 
