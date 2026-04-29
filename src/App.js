@@ -7389,7 +7389,7 @@ export default function App(){
       {!batchScan.trim()&&submittedBatches.length>0&&<div className="card" style={{marginBottom:16}}>
         <div className="card-header"><h2>Ordered Batch POs</h2></div>
         <div className="card-body" style={{padding:0}}>
-          <table><thead><tr><th>PO#</th><th>Vendor</th><th>SOs</th><th>Units</th><th>Total</th><th>Ordered</th><th>By</th><th>Status</th></tr></thead><tbody>
+          <table><thead><tr><th>PO#</th><th>Vendor</th><th>SOs</th><th>Units</th><th>Total</th><th>Ordered</th><th>By</th><th>Status</th><th></th></tr></thead><tbody>
           {submittedBatches.map(sb=><tr key={sb.po_number} style={{cursor:'pointer'}} onClick={()=>setBatchScan(sb.po_number)}>
             <td style={{fontWeight:800,color:'#1e40af',fontFamily:'monospace'}}>{sb.po_number}</td>
             <td>{sb.vendor_name}</td>
@@ -7399,6 +7399,19 @@ export default function App(){
             <td style={{fontSize:11,color:'#64748b'}}>{sb.submitted_at}</td>
             <td style={{fontSize:11}}>{sb.submitted_by?.split(' ')[0]}</td>
             <td><span className={`badge ${sb.status==='received'?'badge-green':'badge-amber'}`}>{sb.status||'waiting'}</span></td>
+            <td style={{textAlign:'right',whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>
+              <button className="btn btn-sm" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'2px 6px',fontSize:11}} title={'Delete '+sb.po_number+' (removes the PO and unlinks it from any sales orders)'} onClick={()=>{
+                const warn=sb.status==='received'?`⚠️ ${sb.po_number} is marked Received. Inventory was already credited when it arrived — deleting will NOT reverse those quantities.\n\nDelete anyway?`:`Delete batch PO ${sb.po_number}?\n\nThis removes the PO and unlinks it from any source sales orders. This cannot be undone.`;
+                if(!window.confirm(warn))return;
+                const soIdsToFix=new Set((sb.source_pos||[]).map(sp=>sp.so_id).filter(Boolean));
+                soIdsToFix.forEach(sid=>{const so=sos.find(s=>s.id===sid);if(!so)return;
+                  const items2=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl.batch_po_number!==sb.po_number&&pl.po_id!==sb.po_number)}));
+                  savSO({...so,items:items2,updated_at:new Date().toLocaleString()});
+                });
+                setSubmittedBatches(prev=>prev.filter(b=>b.po_number!==sb.po_number));
+                nf('Deleted '+sb.po_number);
+              }}>🗑 Delete</button>
+            </td>
           </tr>)}
           </tbody></table>
         </div>
@@ -20193,6 +20206,36 @@ export default function App(){
       // Reconcile from server (picks up new auth status if email matches an existing auth user)
       loadTeamAuth();
     };
+    const saveMemberAndInvite=async(m)=>{
+      const target=String(m.email||'').trim().toLowerCase();
+      if(!target)return nf('Email required to send invite','warn');
+      if(!/^\S+@\S+\.\S+$/.test(target))return nf('Invalid email','warn');
+      const member={...m,email:target};delete member._isNew;
+      if(REPS.find(r=>r.id===member.id)){
+        setREPS(prev=>prev.map(r=>r.id===member.id?member:r));
+      } else {
+        setREPS(prev=>[...prev,member]);
+      }
+      setEditMember(null);
+      try{
+        await _dbSave('team_members',{id:member.id,name:member.name,role:member.role,email:target,phone:member.phone||null,is_active:member.is_active!==false,access:member.access||null});
+      }catch(e){nf('Save failed: '+e.message,'error');return}
+      setTeamRowBusy(member.id);
+      try{
+        const session=await _sbGetSession();
+        const res=await fetch('/.netlify/functions/team-invite',{
+          method:'POST',
+          headers:{Authorization:`Bearer ${session.access_token}`,'Content-Type':'application/json'},
+          body:JSON.stringify({team_member_id:member.id,email:target})
+        });
+        const json=await res.json().catch(()=>({error:'Bad response'}));
+        if(!res.ok||json.error){nf('Saved, but invite failed: '+(json.error||('HTTP '+res.status)),'error')}
+        else{nf(json.resent?'Invite resent to '+target:'✅ '+member.name+' added — invite sent to '+target);
+          await loadTeamAuth();
+        }
+      }catch(e){nf('Invite failed: '+e.message,'error')}
+      setTeamRowBusy(null);
+    };
     const deactivateMember=(id)=>{
       if(!window.confirm('Deactivate this employee? They won\'t be able to log in.'))return;
       setREPS(prev=>prev.map(r=>r.id===id?{...r,is_active:false}:r));nf('Employee deactivated')};
@@ -20410,10 +20453,14 @@ export default function App(){
             </div>
           </div>
         </div>
-        <div className="modal-footer" style={{display:'flex',justifyContent:'space-between'}}>
+        <div className="modal-footer" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}}>
           <button className="btn btn-secondary" onClick={()=>setEditMember(null)}>Cancel</button>
-          <button className="btn btn-primary" disabled={!editMember.name?.trim()} onClick={()=>{const m={...editMember};delete m._isNew;saveMember(m)}}>
-            {editMember._isNew?'➕ Add Employee':'✅ Save Changes'}</button>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            <button className="btn btn-secondary" disabled={!editMember.name?.trim()} onClick={()=>{const m={...editMember};delete m._isNew;saveMember(m)}}>
+              {editMember._isNew?'Add Without Invite':'✅ Save Changes'}</button>
+            <button className="btn btn-primary" disabled={!editMember.name?.trim()||!/^\S+@\S+\.\S+$/.test(String(editMember.email||'').trim())} title={!/^\S+@\S+\.\S+$/.test(String(editMember.email||'').trim())?'Enter a valid email to send an invite':'Save and email a portal invite link'} onClick={()=>saveMemberAndInvite(editMember)}>
+              ✉️ {editMember._isNew?'Add & Send Invite':'Save & Send Invite'}</button>
+          </div>
         </div>
       </div></div>}
     </>)};
