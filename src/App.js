@@ -15100,6 +15100,19 @@ export default function App(){
           <div className="modal-footer">
             {j.art_status!=='art_complete'&&<button className="btn btn-secondary" onClick={()=>setArtEditModal({job:j,instructions:(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1].instructions||'':'',notes:j.rep_notes||''})}>Edit Request</button>}
             <button className="btn btn-secondary" onClick={()=>{setESOTab('jobs');setESO(so);setESOC(c2);setPg('orders');setArtMockupModal(null)}}>Open Full Job</button>
+            {j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&j.art_status!=='production_files_needed'&&<button className="btn" style={{padding:'8px 16px',background:'linear-gradient(135deg,#f59e0b,#d97706)',color:'white',border:'none',borderRadius:8,fontSize:13,fontWeight:700}} onClick={()=>{
+              const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+              const liveAf=safeArt(liveSO).find(f=>f.id===j.art_file_id)||af;
+              const liveMockups=(liveAf?.mockup_files||liveAf?.files||[]);
+              const hasItemMockups=Object.values(liveAf?.item_mockups||{}).some(arr=>arr&&arr.length>0);
+              if(liveMockups.length===0&&!hasItemMockups){nf('Upload a mockup before sending for approval','error');return}
+              const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
+              const updJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',assigned_artist:jj.assigned_artist||j.assigned_artist}:jj);
+              const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
+              savSO({...liveSO,art_files:updArt,jobs:updJobs});
+              setArtMockupModal(null);
+              nf('Mockup sent to rep for approval');
+            }}>📤 Send to Rep</button>}
             <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setArtMockupModal(null)}>Close</button>
           </div>
         </div></div>
