@@ -4887,6 +4887,34 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         });
         return out;
       };
+      // Combine job items sharing the same item_idx+sku — sums units/fulfilled and merges per-size maps.
+      // Used when merging jobs back together so a previously size-split item rejoins as a single line.
+      const _mergeJobItems=(items)=>{
+        const map=new Map();const order=[];
+        (items||[]).forEach(gi=>{
+          const key=gi.item_idx+'-'+gi.sku;
+          const existing=map.get(key);
+          if(!existing){
+            const copy={...gi};
+            if(gi.sizes)copy.sizes={...gi.sizes};
+            if(gi.fulSizes)copy.fulSizes={...gi.fulSizes};
+            map.set(key,copy);order.push(key);return;
+          }
+          existing.units=safeNum(existing.units)+safeNum(gi.units);
+          existing.fulfilled=safeNum(existing.fulfilled)+safeNum(gi.fulfilled);
+          if(gi.sizes||existing.sizes){
+            const merged={...(existing.sizes||{})};
+            Object.entries(gi.sizes||{}).forEach(([sz,v])=>{merged[sz]=safeNum(merged[sz])+safeNum(v)});
+            existing.sizes=merged;
+          }
+          if(gi.fulSizes||existing.fulSizes){
+            const merged={...(existing.fulSizes||{})};
+            Object.entries(gi.fulSizes||{}).forEach(([sz,v])=>{merged[sz]=safeNum(merged[sz])+safeNum(v)});
+            existing.fulSizes=merged;
+          }
+        });
+        return order.map(k=>map.get(k));
+      };
       // Custom split — split specific sizes per item into a new job; items not flagged stay on the original.
       // splitItemSizes shape: { [item_idx]: { S: 2, M: 1, ... } } — only entries with at least one positive size are split.
       const splitCustom=(jIdx,splitItemSizes)=>{
@@ -5977,12 +6005,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>Production Jobs ({activeJobs.length}{hasDrafts?' + '+draftJobs.length+' drafts':''})</h2>
         <div style={{display:'flex',gap:6}}>
-          <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={openJobWizard}>Set Up Jobs</button>
+          {jobs.length===0&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={openJobWizard}>Set Up Jobs</button>}
           {jobs.length>1&&!mergeMode&&<button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={()=>setMergeMode({selected:[]})}>Merge Jobs</button>}
           {mergeMode&&<><button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} disabled={mergeMode.selected.length<2} onClick={()=>{
-            const sel=mergeMode.selected.sort((a,b)=>a-b);const target=jobs[sel[0]];const mergeItems=[...target.items||[]];let mergeUnits=target.total_units;
-            sel.slice(1).forEach(ji=>{const mj=jobs[ji];mergeItems.push(...(mj.items||[]));mergeUnits+=(mj.total_units||0)});
-            const merged={...target,items:mergeItems,total_units:mergeUnits,_merged:true};
+            const sel=mergeMode.selected.sort((a,b)=>a-b);const target=jobs[sel[0]];const allItems=[...(target.items||[])];
+            sel.slice(1).forEach(ji=>{const mj=jobs[ji];allItems.push(...(mj.items||[]))});
+            const mergeItems=_mergeJobItems(allItems);
+            const mergeUnits=mergeItems.reduce((a,gi)=>a+safeNum(gi.units),0);
+            const mergeFulfilled=mergeItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);
+            const merged={...target,items:mergeItems,total_units:mergeUnits,fulfilled_units:mergeFulfilled,_merged:true};
             const removeIdxs=new Set(sel.slice(1));const newJobs=jobs.map((j,i)=>i===sel[0]?merged:j).filter((j,i)=>!removeIdxs.has(i));
             const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setMergeMode(null);
             nf('Merged '+sel.length+' jobs into '+target.id);
@@ -6032,7 +6063,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {hasActiveReqs&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();const artIds=j._art_ids||[j.art_file_id].filter(Boolean);const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;return{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:''}});const updArt=af.map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art'}:a);const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Art recalled — you can re-request with new instructions')}} title="Recall art request and reset status">Recall Art</button>}
                   {hasAnyReqs&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#6d28d9',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'',files:[]})}} title="Send updated instructions to artist">Update Art</button>}</>})()}
                 {canSplit&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setSplitModal({jIdx:ji,mode:null,selectedSkus:[]})}} title="Split job">✂️ Split</button>}
-                {j.split_from&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();const parentIdx=jobs.findIndex(pj=>pj.id===j.split_from);if(parentIdx<0){nf('Parent job '+j.split_from+' not found','error');return}const parent=jobs[parentIdx];const existingKeys=new Set((parent.items||[]).map(gi=>gi.item_idx+'-'+gi.sku));const newItems=(j.items||[]).filter(gi=>!existingKeys.has(gi.item_idx+'-'+gi.sku));const mergedItems=[...(parent.items||[]),...newItems];const mergedUnits=mergedItems.reduce((a,gi)=>a+(gi.units||0),0);const mergedFulfilled=mergedItems.reduce((a,gi)=>a+(gi.fulfilled||0),0);const updJobs=jobs.map((jj,i2)=>i2===parentIdx?{...jj,items:mergedItems,total_units:mergedUnits,fulfilled_units:mergedFulfilled}:jj).filter((_,i2)=>i2!==ji);const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Merged back into '+j.split_from)}} title="Merge back into parent job">Merge Back</button>}
+                {j.split_from&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();const parentIdx=jobs.findIndex(pj=>pj.id===j.split_from);if(parentIdx<0){nf('Parent job '+j.split_from+' not found','error');return}const parent=jobs[parentIdx];const mergedItems=_mergeJobItems([...(parent.items||[]),...(j.items||[])]);const mergedUnits=mergedItems.reduce((a,gi)=>a+safeNum(gi.units),0);const mergedFulfilled=mergedItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);const updJobs=jobs.map((jj,i2)=>i2===parentIdx?{...jj,items:mergedItems,total_units:mergedUnits,fulfilled_units:mergedFulfilled}:jj).filter((_,i2)=>i2!==ji);const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Merged back into '+j.split_from)}} title="Merge back into parent job">Merge Back</button>}
               </td>
             </tr>
             {/* Grouped items under this job */}
