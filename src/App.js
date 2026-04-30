@@ -14682,6 +14682,24 @@ export default function App(){
           }catch(err){if(typeof nf==='function')nf('Upload failed: '+err.message,'error')}
           finally{setArtJobDetailUploading(false)}
         };
+        // Delete a per-item mockup. Removes from item_mockups[sku] on the SKU's resolved art file
+        // and from the legacy mockup_files bucket so the file disappears from every display.
+        const handleMockupDeleteForItem=async(fileUrl,sku)=>{
+          const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+          const artId=resolveItemArtId(sku);
+          const _fUrl=f=>(typeof f==='string'?f:(f?.url||''));
+          const updArt=safeArt(liveSO).map(a=>{
+            if(a.id!==artId)return a;
+            const curItemMockups=a.item_mockups||{};
+            const updItemMockups={...curItemMockups,[sku]:(curItemMockups[sku]||[]).filter(f=>_fUrl(f)!==fileUrl)};
+            const curFiles=(a.mockup_files||a.files||[]);
+            return{...a,item_mockups:updItemMockups,mockup_files:curFiles.filter(f=>_fUrl(f)!==fileUrl)};
+          });
+          const newSO=savSO({...liveSO,art_files:updArt});
+          setArtMockupModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]});
+          if(typeof nf==='function')nf('Mockup removed from '+sku);
+          await _dbSaveSO(newSO);
+        };
 
         return<div className="modal-overlay" onClick={()=>setArtMockupModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:900,maxHeight:'94vh',overflow:'auto'}}>
           <div className="modal-header" style={{background:'linear-gradient(135deg,#1e293b,#334155)',color:'white'}}>
@@ -14788,8 +14806,10 @@ export default function App(){
                           {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:300,objectFit:'contain',display:'block',cursor:'pointer',background:'white'}} onClick={()=>openFile(url)}/>
                           :_isPdfUrl(url)?<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}><span style={{fontSize:32}}>PDF</span><div style={{fontSize:11,color:'#1e40af',marginTop:4}}>{name}</div></div>
                           :<div style={{padding:16,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}><span style={{fontSize:20}}>📄</span><div style={{fontSize:11,color:'#1e40af',marginTop:2}}>{name}</div></div>}
-                          <div style={{padding:'4px 10px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                            <span>{name}{repExtraMocks.length>0?' (+'+repExtraMocks.length+' more)':''}</span><button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
+                          <div style={{padding:'4px 10px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:6}}>
+                            <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}{repExtraMocks.length>0?' (+'+repExtraMocks.length+' more)':''}</span>
+                            <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
+                            <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:14,padding:'0 4px',lineHeight:1,fontWeight:700}} onClick={()=>{if(window.confirm('Remove this mockup for '+gi.sku+'?'))handleMockupDeleteForItem(url,gi.sku)}} title="Remove mockup">×</button>
                           </div>
                         </div>
                         <div style={{width:120,padding:8,textAlign:'center',borderRadius:6,border:'1px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer',fontSize:10,alignSelf:'stretch',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center'}}
