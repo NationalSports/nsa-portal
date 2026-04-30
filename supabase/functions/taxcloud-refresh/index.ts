@@ -98,8 +98,10 @@ serve(async (req: Request) => {
       .not("shipping_zip", "is", null);
 
     if (onlyMissing) {
-      // tax_rate is null OR 0
-      q = q.or("tax_rate.is.null,tax_rate.eq.0");
+      // Only NULL means "never looked up". A stored 0 is a verified zero rate
+      // (tax-free states like OR/NH/MT/DE/AK, NV schools, etc.) and must not
+      // be re-queried — otherwise the loop reprocesses them forever.
+      q = q.is("tax_rate", null);
     }
 
     const { data: customers, error, count } = await q.limit(limit);
