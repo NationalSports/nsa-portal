@@ -5137,13 +5137,15 @@ export default function App(){
       if(!supabase){nf('Supabase not configured','error');return}
       if(taxRefresh)return;// already running
       taxRefreshAbortRef.current=false;
-      setTaxRefresh({processed:0,updated:0,errors:0,startedAt:Date.now()});
+      // Show progress immediately so the user sees activity even before the first chunk returns.
+      setTaxRefresh({processed:0,updated:0,errors:0,remaining:missingRateCount||null,startedAt:Date.now()});
       let totalProcessed=0,totalUpdated=0,totalErrors=0,chunks=0;
       try{
-        // Loop chunks of 100 until remaining===0 or aborted/error
+        // Loop chunks of 50 (parallelized 10-at-a-time inside the edge fn) until remaining===0 or aborted.
+        // Smaller chunks = more frequent UI progress updates.
         for(;;){
           if(taxRefreshAbortRef.current)break;
-          const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{limit:100,only_missing:true});
+          const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{limit:50,only_missing:true,concurrency:10});
           if(!d?.ok){nf(d?.error||'Refresh failed','error');break}
           chunks++;
           totalProcessed+=d.processed||0;
@@ -5157,7 +5159,7 @@ export default function App(){
           if(!d.remaining||d.remaining<=0)break;
           if(d.processed===0)break;// safety: nothing happened, avoid infinite loop
           // Brief pause between chunks
-          await new Promise(r=>setTimeout(r,2000));
+          await new Promise(r=>setTimeout(r,500));
         }
         const aborted=taxRefreshAbortRef.current;
         nf('TaxCloud refresh '+(aborted?'stopped':'complete')+': '+totalUpdated+' rate(s) updated across '+chunks+' chunk(s)'+(totalErrors?' ('+totalErrors+' errors)':''));
