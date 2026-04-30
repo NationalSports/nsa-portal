@@ -14615,7 +14615,10 @@ export default function App(){
       {/* ═══ ART MOCKUP POPUP — full detail with approve/revise ═══ */}
       {artMockupModal&&(()=>{
         const j=artMockupModal;
-        const so=j.so||sos.find(s=>s.id===j.soId);
+        // Prefer the live `sos` lookup over the `so` baked into `j` at art-dashboard build time —
+        // otherwise mockup deletes/uploads inside this modal don't refresh the rendered image,
+        // because the modal would keep reading from the stale snapshot.
+        const so=sos.find(s=>s.id===(j.soId||j.so?.id))||j.so;
         if(!so)return null;
         const c2=cust.find(x=>x.id===so.customer_id);
         const allArtIds2=j._art_ids||[j.art_file_id].filter(Boolean);
