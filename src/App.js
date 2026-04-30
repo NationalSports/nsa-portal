@@ -15,7 +15,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts } from './utils';
 import { calcOrderTotals } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -5122,6 +5122,7 @@ export default function App(){
       onSaveCredit={async(credit)=>{await _dbSaveCredit(credit);const updated={...selC,credits:[...(selC.credits||[]).filter(c=>c.id!==credit.id),credit]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit saved')}}
       onDeleteCredit={async(id)=>{await _dbDeleteCredit(id);const updated={...selC,credits:(selC.credits||[]).filter(c=>c.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit removed')}}
       onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}}
+      onReceivePayment={c=>{const portalOpen=(invs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&safeNum(i.total)>safeNum(i.paid));const histOpen=(histInvs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&i.status!=='void'&&safeNum(i.total)>0);if(portalOpen.length+histOpen.length===0){nf('No open invoices for this customer','error');return}setPg('invoices');setInvF(f=>({...f,search:c.name||'',status:'open',group:'list',aging:'all',rep:'all'}))}}
       nf={nf}
       onCopy={c=>{const copy={...c,id:'c'+Date.now(),name:c.name+' (Copy)',alpha_tag:'',contacts:(c.contacts||[]).map(ct=>({...ct})),_oe:0,_os:0,_oi:0,_ob:0};setCM({open:true,c:copy})}}
       onDelete={c=>{const hasOrders=aO.some(o=>o.customer_id===c.id);const kids=cust.filter(ch=>ch.parent_id===c.id);if(hasOrders){alert('Cannot delete — this customer has existing orders. Deactivate instead.');return}if(kids.length>0&&!window.confirm(c.name+' has '+kids.length+' sub-account(s) that will also be deleted. Continue?'))return;if(!window.confirm('Delete "'+c.name+'"? This cannot be undone.'))return;const idsToDelete=[c.id,...kids.map(k=>k.id)];setCust(prev=>prev.filter(x=>!idsToDelete.includes(x.id)));idsToDelete.forEach(id=>{if(supabase){supabase.from('customer_contacts').delete().eq('customer_id',id).then(()=>supabase.from('customers').delete().eq('id',id))}});setSelC(null);nf('Customer deleted')}}/></React.Suspense></ComponentErrorBoundary>;
@@ -7723,7 +7724,7 @@ export default function App(){
   // INVOICES PAGE
   const CC_FEE_PCT=0.029;// 2.9% credit card surcharge
   const PAY_METHODS=[{id:'check',label:'Check',icon:'📝'},{id:'ach',label:'ACH/Wire',icon:'🏦'},{id:'venmo',label:'Venmo',icon:'💜'},{id:'zelle',label:'Zelle',icon:'⚡'},{id:'cash',label:'Cash',icon:'💵'},{id:'cc',label:'Credit Card (+2.9%)',icon:'💳'}];
-  const[invF,setInvF]=useState({search:'',status:'all',group:'list',aging:'all',rep:_initRepF});
+  const[invF,setInvF]=useState({search:'',status:'open',group:'customer',aging:'all',rep:_initRepF});
   const[invSort,setInvSort]=useState({f:'due_date',d:'asc'});
   const[invEdit,setInvEdit]=useState(null);
   const[payModal,setPayModal]=useState(null);
@@ -7731,6 +7732,7 @@ export default function App(){
   const[splitModal,setSplitModal]=useState(null);// {inv, selItems:[indices], memo:''}
   const[invEditModal,setInvEditModal]=useState(null);// {inv, memo, due_date}
   const[invSendModalDirect,setInvSendModalDirect]=useState(null);// {inv, email, msg}
+  const[pdBulkModal,setPdBulkModal]=useState(null);// past-due bulk email modal: {customers, options, message, sending, progress}
 
   // Split invoice helper — creates two invoices from one based on selected item indices
   const splitInvoice=(inv,selIndices,splitMemo)=>{
@@ -7779,10 +7781,26 @@ export default function App(){
     const parseD=(ds)=>{if(!ds)return null;const m=ds.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?new Date('20'+m[3],m[1]-1,m[2]):new Date(ds)};
     const agingDays=(dateStr)=>{const d=parseD(dateStr);return d?Math.floor((today-d)/(1000*60*60*24)):0};
     const dueDays=(dateStr)=>{const d=parseD(dateStr);return d?Math.floor((d-today)/(1000*60*60*24)):null};
+    // Days for derived due date on NetSuite-imported invoices (mirrors the past-due SQL cron logic).
+    const _termDays=(t)=>({prepay:0,net15:15,net30:30,net60:60})[t||'net30']??30;
+    const _deriveDue=(invDate,terms)=>{const d=parseD(invDate);if(!d)return null;const x=new Date(d);x.setDate(x.getDate()+_termDays(terms));return x.toISOString().split('T')[0]};
     const invSortFn=(f)=>setInvSort(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}));
     const sortIcon=(f)=>invSort.f===f?(invSort.d==='asc'?'▲':'▼'):'⇅';
 
     const recordPayment=(inv,amount,method,ref)=>{
+      // NetSuite-imported invoices live in customer_invoices and don't track
+      // a `paid` numeric. We just flip the status locally so the portal stops
+      // showing them as open; reconciliation back to NetSuite is handled there.
+      if(inv._hist){
+        const newStatus=amount>=safeNum(inv.total)?'paid':'partial';
+        if(supabase&&inv.netsuite_internal_id){
+          (async()=>{try{await supabase.from('customer_invoices').update({status:newStatus}).eq('netsuite_internal_id',inv.netsuite_internal_id)}catch(e){console.warn('[recordPayment hist] failed:',e.message)}})();
+        }
+        setHistInvs(prev=>prev.map(i=>i.netsuite_internal_id===inv.netsuite_internal_id?{...i,status:newStatus}:i));
+        setPayModal(null);
+        nf('Marked '+inv.id+' as '+newStatus+' (NetSuite — please mark paid in NS to keep AR in sync)');
+        return;
+      }
       const fee=method==='cc'?Math.round(amount*CC_FEE_PCT*100)/100:0;
       const newTotal=inv.total+fee; // CC surcharge added to invoice total
       const newPaid=inv.paid+amount+fee; // Customer pays amount + fee
@@ -8572,13 +8590,23 @@ export default function App(){
       const overdue=dd!==null&&dd<0&&i.status!=='paid';
       const so=sos.find(s=>s.id===i.so_id);const rep=so?so.created_by:null;
       return{...i,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||'Unknown'}});
-    // Historical rows from NetSuite — no so_id, no due_date, no payments.
+    // Historical rows from NetSuite — no so_id, no payments, and no due_date column.
     // Treat status='paid' as fully paid; anything else leaves total as balance.
-    const enrichedHist=(histInvs||[]).map(i=>{const age=agingDays(i.date);
+    // Derive due_date from invoice_date + customer payment terms so aging buckets,
+    // Overdue stat, and the past-due bulk-email view all work for these rows too.
+    const enrichedHist=(histInvs||[]).map(i=>{
+      const c2=cust.find(c=>c.id===i.customer_id);
+      const baseDate=i.date||i.invoice_date;
+      const age=agingDays(baseDate);
       const paid=i.status==='paid'?safeNum(i.total):0;
       const bal=safeNum(i.total)-paid;
-      const rep=REPS.find(r=>r.name&&(i.rep_name||'').toLowerCase()===r.name.toLowerCase())?.id||null;
-      return{...i,paid,_age:age,_dd:null,_bal:bal,_overdue:false,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||i.raw_customer_name||'Unknown'}});
+      const derivedDue=i.due_date||_deriveDue(baseDate,c2?.payment_terms);
+      const dd=dueDays(derivedDue);
+      const overdue=bal>0&&dd!==null&&dd<0;
+      // Prefer the snapshot rep_name match; fall back to customer.primary_rep_id so
+      // imported invoices without a recognizable rep_name still attribute to a rep.
+      const rep=REPS.find(r=>r.name&&(i.rep_name||'').toLowerCase()===r.name.toLowerCase())?.id||c2?.primary_rep_id||null;
+      return{...i,paid,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:c2?.name||i.raw_customer_name||'Unknown',due_date:derivedDue,date:baseDate}});
     let fi=[...enrichedInvs,...enrichedHist];
 
     // Filters
@@ -8611,15 +8639,21 @@ export default function App(){
       return invSort.d==='asc'?cmp:-cmp;
     });
 
-    // Stats computed from the combined (portal + historical) list, not the filtered view.
+    // Stats scope: respect the rep filter so the top boxes match what the rep sees in the table.
+    // The status/aging chips themselves don't scope the boxes — those still toggle filters via clicks.
     const allInvsCombined=[...enrichedInvs,...enrichedHist];
-    const allOpen=allInvsCombined.filter(i=>i.status==='open'||i.status==='partial');
+    const _statsRepId=invF.rep==='_me_'?cu?.id:invF.rep;
+    const scopedInvs=(_statsRepId&&_statsRepId!=='all')?allInvsCombined.filter(i=>i._rep===_statsRepId):allInvsCombined;
+    const allOpen=scopedInvs.filter(i=>i.status==='open'||i.status==='partial');
     const totalOpen=allOpen.reduce((a,i)=>a+(safeNum(i.total)-safeNum(i.paid)),0);
     const totalOverdue=allOpen.filter(i=>i._dd!==null&&i._dd<0).reduce((a,i)=>a+(safeNum(i.total)-safeNum(i.paid)),0);
-    const totalPaid=allInvsCombined.filter(i=>i.status==='paid').reduce((a,i)=>a+safeNum(i.paid),0);
+    const totalPaid=scopedInvs.filter(i=>i.status==='paid').reduce((a,i)=>a+safeNum(i.paid),0);
+    // Aging by due-date offset: NetSuite rows now have a derived due_date from terms.
+    // `null >= 0` is true in JS via coercion, so we explicitly skip nulls before bucketing.
     const agingBuckets={current:0,d30:0,d60:0,d90:0,d120p:0};
-    allOpen.forEach(i=>{const dd=dueDays(i.due_date);const bal=i.total-i.paid;
-      if(dd>=0)agingBuckets.current+=bal;
+    allOpen.forEach(i=>{const dd=dueDays(i.due_date);const bal=safeNum(i.total)-safeNum(i.paid);
+      if(dd===null)agingBuckets.current+=bal;
+      else if(dd>=0)agingBuckets.current+=bal;
       else if(dd>=-30)agingBuckets.d30+=bal;
       else if(dd>=-60)agingBuckets.d60+=bal;
       else if(dd>=-90)agingBuckets.d90+=bal;
@@ -8645,7 +8679,7 @@ export default function App(){
       {/* Stats */}
       <div className="stats-row">
         <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='all'&&invF.aging==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'all',aging:'all'}))}>
-          <div className="stat-label">All Invoices</div><div className="stat-value">{allInvsCombined.length}</div></div>
+          <div className="stat-label">All Invoices</div><div className="stat-value">{scopedInvs.length}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='open'&&invF.aging==='all'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'open',aging:'all'}))}>
           <div className="stat-label">Open</div><div className="stat-value" style={{color:'#d97706'}}>${totalOpen.toLocaleString()}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:invF.aging==='overdue'?'2px solid #dc2626':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'all',aging:f.aging==='overdue'?'all':'overdue'}))}>
@@ -8676,7 +8710,7 @@ export default function App(){
           <option value="all">All Reps</option><option value="_me_">My Invoices</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <div style={{display:'flex',gap:4}}>
           {[['list','📋 List'],['customer','👥 By Customer']].map(([v,l])=>
-            <button key={v} className={`btn btn-sm ${invF.group===v?'btn-primary':'btn-secondary'}`} onClick={()=>setInvF(f=>({...f,group:v}))}>{l}</button>)}
+            <button key={v} className={`btn btn-sm ${invF.group===v?'btn-primary':'btn-secondary'}`} onClick={()=>setInvF(f=>({...f,group:v,status:v==='customer'&&f.status==='all'?'open':f.status}))}>{l}</button>)}
         </div>
         {(invF.status!=='all'||invF.aging!=='all'||invF.rep!=='all'||invF.search)&&
           <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>setInvF({search:'',status:'all',group:invF.group,aging:'all',rep:'all'})}>✕ Clear Filters</button>}
@@ -8724,7 +8758,7 @@ export default function App(){
               color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
               {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
               {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3,verticalAlign:'middle'}} title="Reported to TaxCloud for filing">TC</span>}</td>
-            <td onClick={e=>e.stopPropagation()}>{inv._hist?<span style={{fontSize:9,color:'#94a3b8',fontStyle:'italic'}}>—</span>:<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
+            <td onClick={e=>e.stopPropagation()}>{inv._hist?<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title="Mark this NetSuite-imported invoice as paid in the portal (sync to NetSuite separately)" onClick={()=>setPayModal({inv:{...inv,_bal:safeNum(inv.total)-safeNum(inv.paid),paid:safeNum(inv.paid)},amount:safeNum(inv.total)-safeNum(inv.paid),method:'check',ref:''})}>💰 Pay</button>}{inv.status==='paid'&&<span style={{fontSize:9,color:'#94a3b8',fontStyle:'italic'}}>—</span>}</>:<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
               onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
               {inv.status==='paid'&&!inv.tc_reported&&inv.tax>0&&<button className="btn btn-sm" style={{fontSize:8,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} title="Report this invoice to TaxCloud for state tax filing" onClick={async()=>{const c=cust.find(x=>x.id===inv.customer_id);if(!c)return;if(!supabase){nf('Supabase not configured','error');return}try{const d=await invokeEdgeFn(supabase,'taxcloud-capture',{action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}});if(d?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:d.total_tax}:i));nf('Reported to TaxCloud — $'+d.total_tax+' tax filed')}else{nf(d?.error||'TaxCloud capture failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>TC File</button>}
               <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',marginLeft:2}} onClick={()=>{
@@ -8793,17 +8827,21 @@ export default function App(){
           </tr>})}</tbody></table>}
       </div></div>}
 
-      {/* Customer grouped view */}
-      {invF.group==='customer'&&Object.entries(grouped).map(([cid,g])=>{
+      {/* Customer grouped view — sorted by open balance desc so biggest debtors come first */}
+      {invF.group==='customer'&&Object.entries(grouped).map(([cid,g])=>({cid,g,_open:g.invoices.filter(i=>i.status!=='paid').reduce((a,i)=>a+i._bal,0),_over:g.invoices.filter(i=>i._overdue).reduce((a,i)=>a+i._bal,0)})).sort((a,b)=>b._open-a._open).map(({cid,g})=>{
         const openBal=g.invoices.filter(i=>i.status!=='paid').reduce((a,i)=>a+i._bal,0);
         const overdueAmt=g.invoices.filter(i=>i._overdue).reduce((a,i)=>a+i._bal,0);
         return<div key={cid} className="card" style={{marginBottom:12}}>
-          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
             <div><h2 style={{margin:0}}>{g.customer?.name||'Unknown Customer'}</h2>
               <span style={{fontSize:11,color:'#64748b'}}>{g.customer?.alpha_tag} · {g.invoices.length} invoice{g.invoices.length!==1?'s':''}</span></div>
-            <div style={{textAlign:'right'}}>
-              <div style={{fontSize:18,fontWeight:800,color:openBal>0?'#dc2626':'#166534'}}>${openBal.toLocaleString()} <span style={{fontSize:11,fontWeight:400,color:'#64748b'}}>open</span></div>
-              {overdueAmt>0&&<div style={{fontSize:12,color:'#dc2626',fontWeight:600}}>⚠️ ${overdueAmt.toLocaleString()} overdue</div>}
+            <div style={{display:'flex',alignItems:'center',gap:12}}>
+              {(()=>{const openInvs=g.invoices.filter(i=>i.status!=='paid'&&i.status!=='void'&&i._bal>0);return openInvs.length>0&&<button className="btn btn-sm" style={{background:'#dcfce7',color:'#166534',border:'1px solid #86efac',fontSize:11,fontWeight:600,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();const sorted=[...openInvs].sort((a,b)=>(b._age||0)-(a._age||0));const inv=sorted[0];setPayModal({inv,amount:inv._bal,method:'check',ref:''})}} title={'Record a payment ('+openInvs.length+' open invoice'+(openInvs.length===1?'':'s')+')'}>💰 Receive Payment</button>})()}
+              {overdueAmt>0&&g.customer&&<button className="btn btn-sm" style={{background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',fontSize:11,fontWeight:600,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();const overdueInvs=g.invoices.filter(i=>i._overdue&&i._bal>0);if(overdueInvs.length===0)return;const ownContacts=(g.customer.contacts||[]).filter(ct=>ct.email);const inheritedBilling=getBillingContacts(g.customer,cust).filter(a=>a._inherited_from&&a.email&&!ownContacts.find(o=>o.email===a.email));const allContacts=[...ownContacts.map(ct=>({email:ct.email,name:ct.name||'',role:ct.role||''})),...inheritedBilling.map(a=>({email:a.email,name:a.name||'',role:a.role||'',_inherited_from:a._inherited_from}))];const billingEmails=new Set(getBillingContacts(g.customer,cust).map(b=>b.email));const checked={};allContacts.forEach(ct=>{checked[ct.email]=billingEmails.has(ct.email)});if(Object.values(checked).every(v=>!v)&&allContacts.length>0)checked[allContacts[0].email]=true;const greetName=getBillingContacts(g.customer,cust)[0]?.name||(g.customer.contacts||[])[0]?.name||'Coach';const customerObj={customer:g.customer,invoices:overdueInvs,contacts:allContacts,checked,customEmail:'',customEmails:[],total:overdueInvs.reduce((a,i)=>a+i._bal,0)};setPdBulkModal({customers:[customerObj],options:{includeStatement:true,includePayLink:true},senderKey:cu?.email?'rep':'accounting',message:'Hi '+greetName+',\n\nA gentle reminder that we have invoice(s) on your account that have moved past their due date. Please find your account statement below — you can review and pay open balances anytime through your customer portal.\n\nLet us know if you have any questions, or if any of these have already been paid and just need to be reconciled on our end.\n\nThank you,\nNSA Team',sending:false,progress:{done:0,total:0,sent:0,failed:0}})}}>📧 Email Past-Due</button>}
+              <div style={{textAlign:'right'}}>
+                <div style={{fontSize:18,fontWeight:800,color:'#0f172a'}}>${openBal.toLocaleString()} <span style={{fontSize:11,fontWeight:400,color:'#64748b'}}>open</span></div>
+                {overdueAmt>0&&<div style={{fontSize:12,color:'#dc2626',fontWeight:600}}>⚠️ ${overdueAmt.toLocaleString()} overdue</div>}
+              </div>
             </div>
           </div>
           <div className="card-body" style={{padding:0}}>
@@ -8824,7 +8862,7 @@ export default function App(){
                   color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
                   {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
                   {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3}} title="Reported to TaxCloud">TC</span>}</td>
-                <td onClick={e=>e.stopPropagation()}>{!inv._hist&&inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
+                <td onClick={e=>e.stopPropagation()}>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title={inv._hist?'Mark this NetSuite invoice paid in portal (sync to NetSuite separately)':undefined}
                   onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
                   {canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} title={inv._hist?'Delete NetSuite invoice':'Delete invoice'} onClick={()=>deleteInvoice(inv.id)}><Icon name="trash" size={10}/></button>}</td>
               </tr>)}</tbody></table>
@@ -8891,6 +8929,147 @@ export default function App(){
           }}>💰 Record ${payModal.amount.toLocaleString()}{payModal.method==='cc'?' + $'+(payModal.amount*CC_FEE_PCT).toFixed(2)+' fee':''}</button>
         </div>
       </div></div>}
+
+      {/* PAST-DUE EMAIL MODAL — sends one Brevo email per selected customer */}
+      {pdBulkModal&&(()=>{
+        const pd=pdBulkModal;
+        const upd=fn=>setPdBulkModal(s=>s?fn(s):s);
+        const updCustomer=(idx,patch)=>upd(s=>({...s,customers:s.customers.map((c,i)=>i===idx?{...c,...patch}:c)}));
+        const recipientsFor=(c)=>{const checkedEmails=Object.entries(c.checked||{}).filter(([,v])=>v).map(([k])=>k);return [...checkedEmails,...(c.customEmails||[])]};
+        const sendableCustomers=pd.customers.filter(c=>recipientsFor(c).length>0);
+        const totalInv=sendableCustomers.reduce((a,c)=>a+c.invoices.length,0);
+        const totalDollars=sendableCustomers.reduce((a,c)=>a+c.total,0);
+        // Sender options. The rep's own email shows whenever it's set; if Brevo
+        // rejects it as an unverified sender, the rep can fall back to the
+        // verified accounting@ / noreply@ options below.
+        const senderOpts=[
+          ...(cu?.email?[{key:'rep',name:cu.name||'My email',email:cu.email}]:[]),
+          {key:'accounting',name:'NSA Accounting',email:'accounting@nationalsportsapparel.com'},
+          {key:'noreply',name:'NSA Notifications',email:'noreply@nationalsportsapparel.com'},
+        ];
+        const activeSender=senderOpts.find(s=>s.key===pd.senderKey)||senderOpts[0];
+        const sendAll=async()=>{
+          if(sendableCustomers.length===0){nf('Pick at least one recipient','error');return}
+          upd(s=>({...s,sending:true,progress:{done:0,total:sendableCustomers.length,sent:0,failed:0}}));
+          const portalBase='https://nsa-portal.netlify.app/?portal=';
+          const _$ = n => '$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+          for(const t of sendableCustomers){
+            const c=t.customer;
+            // Build statement HTML — every past-due invoice for this customer.
+            const stmtRows=t.invoices.map(inv=>{
+              const memo=inv.memo||'—';
+              const po=inv._po_number||(sos.find(s=>s.id===inv.so_id)?.po_number)||'—';
+              const date=inv.date||inv.invoice_date||'—';
+              const due=inv.due_date||'—';
+              return '<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-weight:600">'+(inv.id||'')+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+memo+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-family:monospace;font-size:11px">'+po+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+date+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+due+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;color:#b91c1c;font-weight:600">'+_$(inv._bal)+'</td></tr>';
+            }).join('');
+            const stmtTable=pd.options.includeStatement?'<div style="margin:18px 0"><div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:6px">Past-Due Invoices</div><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:#f1f5f9"><th style="padding:8px 10px;text-align:left">Invoice</th><th style="padding:8px 10px;text-align:left">Memo</th><th style="padding:8px 10px;text-align:left">PO #</th><th style="padding:8px 10px;text-align:left">Date</th><th style="padding:8px 10px;text-align:left">Due</th><th style="padding:8px 10px;text-align:right">Balance</th></tr></thead><tbody>'+stmtRows+'<tr><td colspan="5" style="padding:8px 10px;text-align:right;font-weight:700;border-top:2px solid #1e293b">Total Owed</td><td style="padding:8px 10px;text-align:right;font-weight:800;color:#b91c1c;border-top:2px solid #1e293b">'+_$(t.total)+'</td></tr></tbody></table></div>':'';
+            const portalUrl=c.alpha_tag?(portalBase+c.alpha_tag):'';
+            const payButton=(pd.options.includePayLink&&portalUrl)?'<div style="margin:20px 0"><a href="'+portalUrl+'" style="display:inline-block;padding:12px 24px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:700;font-size:14px">View & Pay in Portal</a></div>':'';
+            const greeting=(getBillingContacts(c,cust)[0]?.name||(c.contacts||[])[0]?.name||'Coach');
+            const personalizedMsg=pd.message.replace(/\{name\}/g,greeting).replace(/\n/g,'<br/>');
+            const htmlContent='<div style="font-family:sans-serif;font-size:14px;line-height:1.6;color:#1e293b;max-width:720px">'+personalizedMsg+stmtTable+payButton+'</div>';
+            const toList=recipientsFor(t).map(email=>({email}));
+            const res=await sendBrevoEmail({
+              to:toList,
+              subject:'Past-Due Invoices — '+_$(t.total)+' on your '+(c.name||'')+' account',
+              htmlContent,
+              senderName:activeSender.name,
+              senderEmail:activeSender.email,
+              replyTo:{email:activeSender.email,name:activeSender.name},
+            });
+            const ok=res.ok;
+            upd(s=>({...s,progress:{...s.progress,done:s.progress.done+1,sent:s.progress.sent+(ok?1:0),failed:s.progress.failed+(ok?0:1)}}));
+            if(!ok)console.warn('[past-due] failed for '+c.name+':',res.error);
+          }
+          upd(s=>({...s,sending:false}));
+          nf('Past-due email: '+pd.progress.sent+' sent'+(pd.progress.failed>0?', '+pd.progress.failed+' failed':''));
+        };
+        return<div className="modal-overlay" onClick={()=>{if(!pd.sending)setPdBulkModal(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:760,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
+          <div className="modal-header" style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white'}}>
+            <h2 style={{color:'white',margin:0}}>📧 Email Past-Due Invoices</h2>
+            <button className="modal-close" style={{color:'white'}} disabled={pd.sending} onClick={()=>setPdBulkModal(null)}>×</button>
+          </div>
+          <div className="modal-body" style={{overflow:'auto'}}>
+            {/* Sender + include options */}
+            <div style={{padding:10,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:12}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                <label className="form-label" style={{margin:0,minWidth:78}}>Send from</label>
+                <select className="form-input" value={pd.senderKey} onChange={e=>upd(s=>({...s,senderKey:e.target.value}))} style={{fontSize:12,flex:1}}>
+                  {senderOpts.map(o=><option key={o.key} value={o.key}>{o.name} — {o.email}</option>)}
+                </select>
+              </div>
+              <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
+                <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'#475569',cursor:'pointer'}}>
+                  <input type="checkbox" checked={pd.options.includeStatement} onChange={e=>upd(s=>({...s,options:{...s.options,includeStatement:e.target.checked}}))}/>
+                  Include account statement
+                </label>
+                <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'#475569',cursor:'pointer'}}>
+                  <input type="checkbox" checked={pd.options.includePayLink} onChange={e=>upd(s=>({...s,options:{...s.options,includePayLink:e.target.checked}}))}/>
+                  Include portal pay link
+                </label>
+              </div>
+            </div>
+            {/* Message template */}
+            <div style={{marginBottom:12}}>
+              <label className="form-label">Message <span style={{fontWeight:400,color:'#94a3b8',fontSize:10}}>(use {'{name}'} for the contact's first name)</span></label>
+              <textarea className="form-input" rows={6} value={pd.message} onChange={e=>upd(s=>({...s,message:e.target.value}))} style={{fontSize:13,lineHeight:1.5}}/>
+            </div>
+            {/* Per-customer recipients */}
+            {pd.customers.map((c,i)=>{
+              const recCount=recipientsFor(c).length;
+              return<div key={c.customer.id||i} style={{border:'1px solid #e2e8f0',borderRadius:8,padding:12,marginBottom:10,background:recCount>0?'#f8fafc':'#fafafa'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8,gap:8}}>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:700,color:'#1e293b'}}>{c.customer.name||'—'}</div>
+                    {c.customer.alpha_tag&&<div style={{fontSize:10,color:'#64748b'}}>{c.customer.alpha_tag} · {c.invoices.length} past-due invoice{c.invoices.length!==1?'s':''}</div>}
+                  </div>
+                  <div style={{fontSize:14,fontWeight:700,color:'#b91c1c',whiteSpace:'nowrap'}}>${c.total.toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0})}</div>
+                </div>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4,textTransform:'uppercase'}}>Send to</div>
+                <div style={{display:'flex',flexDirection:'column',gap:2,marginBottom:6}}>
+                  {c.contacts.length===0&&<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No contacts with email on file — add one below.</div>}
+                  {c.contacts.map(ct=>{
+                    const sel=!!c.checked[ct.email];
+                    return<label key={ct.email} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 6px',borderRadius:4,background:sel?'#eff6ff':'transparent',fontSize:12,cursor:'pointer'}}>
+                      <input type="checkbox" checked={sel} onChange={e=>updCustomer(i,{checked:{...c.checked,[ct.email]:e.target.checked}})} style={{accentColor:'#2563eb'}}/>
+                      <span style={{fontWeight:sel?600:400,color:sel?'#1e40af':'#1e293b'}}>{ct.name||'Contact'}</span>
+                      <span style={{color:'#64748b'}}>{ct.email}</span>
+                      {ct.role&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:(ct.role||'').toLowerCase()==='billing'?'#ede9fe':'#f1f5f9',color:(ct.role||'').toLowerCase()==='billing'?'#6d28d9':'#64748b',fontWeight:600}}>{ct.role}</span>}
+                      {ct._inherited_from&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:600}}>from {ct._inherited_from}</span>}
+                    </label>;
+                  })}
+                  {(c.customEmails||[]).map(em=><label key={em} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 6px',borderRadius:4,background:'#eff6ff',fontSize:12}}>
+                    <input type="checkbox" checked readOnly style={{accentColor:'#2563eb'}}/>
+                    <span style={{color:'#1e40af',fontWeight:600}}>{em}</span>
+                    <span style={{fontSize:9,fontStyle:'italic',color:'#94a3b8'}}>(added)</span>
+                    <button onClick={()=>updCustomer(i,{customEmails:c.customEmails.filter(e=>e!==em)})} style={{marginLeft:'auto',background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:14,padding:0,lineHeight:1}}>×</button>
+                  </label>)}
+                </div>
+                <div style={{display:'flex',gap:6}}>
+                  <input type="email" placeholder="+ Add another email…" value={c.customEmail||''} onChange={e=>updCustomer(i,{customEmail:e.target.value})} onKeyDown={e=>{if(e.key==='Enter'&&(c.customEmail||'').includes('@')){e.preventDefault();const em=c.customEmail.trim();if(em&&!(c.customEmails||[]).includes(em))updCustomer(i,{customEmails:[...(c.customEmails||[]),em],customEmail:''})}}} className="form-input" style={{fontSize:11,padding:'4px 6px',flex:1}}/>
+                  <button className="btn btn-sm btn-secondary" disabled={!(c.customEmail||'').includes('@')} onClick={()=>{const em=(c.customEmail||'').trim();if(em&&!(c.customEmails||[]).includes(em))updCustomer(i,{customEmails:[...(c.customEmails||[]),em],customEmail:''})}} style={{fontSize:10,whiteSpace:'nowrap'}}>+ Add</button>
+                </div>
+              </div>;
+            })}
+            {/* Progress */}
+            {pd.sending&&<div style={{padding:10,background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:8}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#1e40af',marginBottom:4}}>Sending… {pd.progress.done}/{pd.progress.total}</div>
+              <div style={{height:6,background:'#dbeafe',borderRadius:3,overflow:'hidden'}}><div style={{height:6,background:'#2563eb',width:(pd.progress.total>0?(pd.progress.done/pd.progress.total*100):0)+'%',transition:'width 0.2s'}}/></div>
+              <div style={{fontSize:10,color:'#1e40af',marginTop:4}}>✓ {pd.progress.sent} sent · {pd.progress.failed>0?'✗ '+pd.progress.failed+' failed':''}</div>
+            </div>}
+            {!pd.sending&&pd.progress.done>0&&<div style={{padding:10,background:'#f0fdf4',border:'1px solid #86efac',borderRadius:8,fontSize:12,color:'#166534',fontWeight:600}}>
+              ✅ Done — {pd.progress.sent} sent{pd.progress.failed>0?', '+pd.progress.failed+' failed':''}.
+            </div>}
+          </div>
+          <div className="modal-footer">
+            <button className="btn btn-secondary" disabled={pd.sending} onClick={()=>setPdBulkModal(null)}>{pd.progress.done>0?'Close':'Cancel'}</button>
+            <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={pd.sending||sendableCustomers.length===0||pd.progress.done>0} onClick={sendAll}>
+              {pd.sending?'Sending…':'📧 Send to '+sendableCustomers.length+' customer'+(sendableCustomers.length===1?'':'s')+' ('+totalInv+' inv · $'+totalDollars.toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0})+')'}
+            </button>
+          </div>
+        </div></div>;
+      })()}
     </>);
   };
 
