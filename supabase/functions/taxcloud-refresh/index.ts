@@ -3,8 +3,9 @@
 // Chunked tax-rate refresh via TaxCloud.
 //
 // Body params (all optional):
-//   { limit?: number       // max customers to process this call (default 100, hard cap 200)
+//   { limit?: number       // max customers to process this call (default 50, hard cap 200)
 //   , only_missing?: bool  // true → only customers with null/0 tax_rate (default true)
+//   , concurrency?: number // parallel TaxCloud calls per chunk (default 10, cap 20)
 //   }
 //
 // Returns:
@@ -12,6 +13,10 @@
 //
 // `remaining` is how many customers still need a rate AFTER this call completes.
 // The client loops, calling this until remaining === 0.
+//
+// TaxCloud lookups are network-bound and independent, so we fan them out
+// concurrently in small batches. A serial loop at ~1–2s/customer easily
+// exceeds the edge-function wall-clock and shows zero progress to the UI.
 //
 // Daily pg_cron job calls this with {} to keep new customers caught up automatically.
 // ─────────────────────────────────────────────────────────
@@ -39,10 +44,15 @@ const CORS = {
   "Content-Type": "application/json",
 };
 
-const DEFAULT_LIMIT = 100;
+const DEFAULT_LIMIT = 50;
 const HARD_CAP = 200;
+const DEFAULT_CONCURRENCY = 10;
+const CONCURRENCY_CAP = 20;
+const TAXCLOUD_TIMEOUT_MS = 8000;
 
 async function lookupRate(address1: string, city: string, state: string, zip5: string): Promise<number | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TAXCLOUD_TIMEOUT_MS);
   try {
     const res = await fetch("https://api.taxcloud.net/1.0/TaxCloud/Lookup", {
       method: "POST",
@@ -55,6 +65,7 @@ async function lookupRate(address1: string, city: string, state: string, zip5: s
         origin: ORIGIN,
         destination: { Address1: address1 || "", City: city || "", State: state, Zip5: zip5 },
       }),
+      signal: ctrl.signal,
     });
     const data = await res.json();
     if (data.ResponseType === 0 || (!data.CartItemsResponse && data.Messages?.length)) return null;
@@ -62,16 +73,19 @@ async function lookupRate(address1: string, city: string, state: string, zip5: s
     return Math.round((taxAmount / 100) * 100000) / 100000;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
-  let body: { limit?: number; only_missing?: boolean } = {};
+  let body: { limit?: number; only_missing?: boolean; concurrency?: number } = {};
   try { body = await req.json(); } catch { /* empty body is fine */ }
   const limit = Math.min(Math.max(1, body.limit ?? DEFAULT_LIMIT), HARD_CAP);
   const onlyMissing = body.only_missing !== false; // default true
+  const concurrency = Math.min(Math.max(1, body.concurrency ?? DEFAULT_CONCURRENCY), CONCURRENCY_CAP);
 
   try {
     // Base query — active, non-exempt, has shipping state + zip
@@ -98,36 +112,34 @@ serve(async (req: Request) => {
     let processed = 0;
     let skipped = 0;
 
-    for (const c of customers || []) {
-      processed++;
-      if (!c.shipping_state?.trim() || !c.shipping_zip?.trim()) { skipped++; continue; }
-
-      // Light pacing — 200ms between TaxCloud calls
-      await new Promise(r => setTimeout(r, 200));
-
-      const newRate = await lookupRate(
-        c.shipping_address_line1 || "",
-        c.shipping_city || "",
-        c.shipping_state,
-        c.shipping_zip
-      );
-
-      if (newRate === null) {
-        errors.push({ id: c.id, name: c.name, error: "Lookup failed" });
-        continue;
-      }
-
-      // Always write when we got a rate back (even if numerically same, to update updated_at)
-      const { error: updErr } = await supabase
-        .from("customers")
-        .update({ tax_rate: newRate, updated_at: new Date().toISOString() })
-        .eq("id", c.id);
-
-      if (updErr) {
-        errors.push({ id: c.id, name: c.name, error: updErr.message });
-      } else {
-        results.push({ id: c.id, name: c.name, old_rate: c.tax_rate || 0, new_rate: newRate });
-      }
+    // Process customers in parallel batches. TaxCloud lookups are network-bound,
+    // so fanning out 10 at a time turns a 100s serial run into ~10s.
+    const list = customers || [];
+    for (let i = 0; i < list.length; i += concurrency) {
+      const batch = list.slice(i, i + concurrency);
+      await Promise.all(batch.map(async (c) => {
+        processed++;
+        if (!c.shipping_state?.trim() || !c.shipping_zip?.trim()) { skipped++; return; }
+        const newRate = await lookupRate(
+          c.shipping_address_line1 || "",
+          c.shipping_city || "",
+          c.shipping_state,
+          c.shipping_zip
+        );
+        if (newRate === null) {
+          errors.push({ id: c.id, name: c.name, error: "Lookup failed" });
+          return;
+        }
+        const { error: updErr } = await supabase
+          .from("customers")
+          .update({ tax_rate: newRate, updated_at: new Date().toISOString() })
+          .eq("id", c.id);
+        if (updErr) {
+          errors.push({ id: c.id, name: c.name, error: updErr.message });
+        } else {
+          results.push({ id: c.id, name: c.name, old_rate: c.tax_rate || 0, new_rate: newRate });
+        }
+      }));
     }
 
     const remaining = Math.max(0, totalMissing - processed);
