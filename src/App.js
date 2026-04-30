@@ -8823,7 +8823,7 @@ export default function App(){
             <div><h2 style={{margin:0}}>{g.customer?.name||'Unknown Customer'}</h2>
               <span style={{fontSize:11,color:'#64748b'}}>{g.customer?.alpha_tag} · {g.invoices.length} invoice{g.invoices.length!==1?'s':''}</span></div>
             <div style={{display:'flex',alignItems:'center',gap:12}}>
-              {overdueAmt>0&&g.customer&&<button className="btn btn-sm" style={{background:'#fef2f2',color:'#b91c1c',border:'1px solid #fecaca',fontSize:11,fontWeight:600,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();const overdueInvs=g.invoices.filter(i=>i._overdue&&i._bal>0);if(overdueInvs.length===0)return;const billing=getBillingContacts(g.customer,cust);const recipients=billing.map(b=>b.email).filter(Boolean);const greetName=billing[0]?.name||(g.customer.contacts||[])[0]?.name||'Coach';const customerObj={customer:g.customer,invoices:overdueInvs,recipients:recipients.join(', '),selected:recipients.length>0,total:overdueInvs.reduce((a,i)=>a+i._bal,0)};setPdBulkModal({customers:[customerObj],options:{includeStatement:true,includePayLink:true},message:'Hi '+greetName+',\n\nA gentle reminder that we have invoice(s) on your account that have moved past their due date. Please find your account statement below — you can review and pay open balances anytime through your customer portal.\n\nLet us know if you have any questions, or if any of these have already been paid and just need to be reconciled on our end.\n\nThank you,\nNSA Team',sending:false,progress:{done:0,total:0,sent:0,failed:0}})}}>📧 Email Past-Due</button>}
+              {overdueAmt>0&&g.customer&&<button className="btn btn-sm" style={{background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',fontSize:11,fontWeight:600,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();const overdueInvs=g.invoices.filter(i=>i._overdue&&i._bal>0);if(overdueInvs.length===0)return;const ownContacts=(g.customer.contacts||[]).filter(ct=>ct.email);const inheritedBilling=getBillingContacts(g.customer,cust).filter(a=>a._inherited_from&&a.email&&!ownContacts.find(o=>o.email===a.email));const allContacts=[...ownContacts.map(ct=>({email:ct.email,name:ct.name||'',role:ct.role||''})),...inheritedBilling.map(a=>({email:a.email,name:a.name||'',role:a.role||'',_inherited_from:a._inherited_from}))];const billingEmails=new Set(getBillingContacts(g.customer,cust).map(b=>b.email));const checked={};allContacts.forEach(ct=>{checked[ct.email]=billingEmails.has(ct.email)});if(Object.values(checked).every(v=>!v)&&allContacts.length>0)checked[allContacts[0].email]=true;const greetName=getBillingContacts(g.customer,cust)[0]?.name||(g.customer.contacts||[])[0]?.name||'Coach';const customerObj={customer:g.customer,invoices:overdueInvs,contacts:allContacts,checked,customEmail:'',customEmails:[],total:overdueInvs.reduce((a,i)=>a+i._bal,0)};setPdBulkModal({customers:[customerObj],options:{includeStatement:true,includePayLink:true},senderKey:cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email)?'rep':'accounting',message:'Hi '+greetName+',\n\nA gentle reminder that we have invoice(s) on your account that have moved past their due date. Please find your account statement below — you can review and pay open balances anytime through your customer portal.\n\nLet us know if you have any questions, or if any of these have already been paid and just need to be reconciled on our end.\n\nThank you,\nNSA Team',sending:false,progress:{done:0,total:0,sent:0,failed:0}})}}>📧 Email Past-Due</button>}
               <div style={{textAlign:'right'}}>
                 <div style={{fontSize:18,fontWeight:800,color:'#0f172a'}}>${openBal.toLocaleString()} <span style={{fontSize:11,fontWeight:400,color:'#64748b'}}>open</span></div>
                 {overdueAmt>0&&<div style={{fontSize:12,color:'#dc2626',fontWeight:600}}>⚠️ ${overdueAmt.toLocaleString()} overdue</div>}
@@ -8915,99 +8915,142 @@ export default function App(){
         </div>
       </div></div>}
 
-      {/* PAST-DUE BULK EMAIL MODAL — one Brevo email per selected customer */}
+      {/* PAST-DUE EMAIL MODAL — sends one Brevo email per selected customer */}
       {pdBulkModal&&(()=>{
         const pd=pdBulkModal;
-        const selectedCount=pd.customers.filter(c=>c.selected&&c.recipients.trim()).length;
-        const totalInv=pd.customers.filter(c=>c.selected&&c.recipients.trim()).reduce((a,c)=>a+c.invoices.length,0);
-        const totalDollars=pd.customers.filter(c=>c.selected&&c.recipients.trim()).reduce((a,c)=>a+c.total,0);
         const upd=fn=>setPdBulkModal(s=>s?fn(s):s);
         const updCustomer=(idx,patch)=>upd(s=>({...s,customers:s.customers.map((c,i)=>i===idx?{...c,...patch}:c)}));
+        const recipientsFor=(c)=>{const checkedEmails=Object.entries(c.checked||{}).filter(([,v])=>v).map(([k])=>k);return [...checkedEmails,...(c.customEmails||[])]};
+        const sendableCustomers=pd.customers.filter(c=>recipientsFor(c).length>0);
+        const totalInv=sendableCustomers.reduce((a,c)=>a+c.invoices.length,0);
+        const totalDollars=sendableCustomers.reduce((a,c)=>a+c.total,0);
+        // Sender options — Brevo requires a verified sender domain. Both
+        // accounting@ and noreply@ are on the verified NSA domain. The
+        // rep option only shows if the rep's email is also on that domain.
+        const senderOpts=[
+          ...(cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email)?[{key:'rep',name:cu.name||'My email',email:cu.email}]:[]),
+          {key:'accounting',name:'NSA Accounting',email:'accounting@nationalsportsapparel.com'},
+          {key:'noreply',name:'NSA Notifications',email:'noreply@nationalsportsapparel.com'},
+        ];
+        const activeSender=senderOpts.find(s=>s.key===pd.senderKey)||senderOpts[0];
         const sendAll=async()=>{
-          const targets=pd.customers.filter(c=>c.selected&&c.recipients.trim());
-          if(targets.length===0){nf('No customers selected with email','error');return}
-          upd(s=>({...s,sending:true,progress:{done:0,total:targets.length,sent:0,failed:0}}));
+          if(sendableCustomers.length===0){nf('Pick at least one recipient','error');return}
+          upd(s=>({...s,sending:true,progress:{done:0,total:sendableCustomers.length,sent:0,failed:0}}));
           const portalBase='https://nsa-portal.netlify.app/?portal=';
           const _$ = n => '$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-          for(const t of targets){
+          for(const t of sendableCustomers){
             const c=t.customer;
             // Build statement HTML — every past-due invoice for this customer.
-            const stmtRows=t.invoices.map(inv=>'<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+(inv.id||'')+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+(inv.date||inv.invoice_date||'')+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+(inv.due_date||'—')+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;color:#dc2626;font-weight:600">'+_$(inv._bal)+'</td></tr>').join('');
-            const stmtTable=pd.options.includeStatement?'<div style="margin:18px 0"><div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:6px">Past-Due Invoices</div><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:#f1f5f9"><th style="padding:8px 10px;text-align:left">Invoice</th><th style="padding:8px 10px;text-align:left">Date</th><th style="padding:8px 10px;text-align:left">Due</th><th style="padding:8px 10px;text-align:right">Balance</th></tr></thead><tbody>'+stmtRows+'<tr><td colspan="3" style="padding:8px 10px;text-align:right;font-weight:700;border-top:2px solid #1e293b">Total Owed</td><td style="padding:8px 10px;text-align:right;font-weight:800;color:#dc2626;border-top:2px solid #1e293b">'+_$(t.total)+'</td></tr></tbody></table></div>':'';
+            const stmtRows=t.invoices.map(inv=>{
+              const memo=inv.memo||'—';
+              const po=inv._po_number||(sos.find(s=>s.id===inv.so_id)?.po_number)||'—';
+              const date=inv.date||inv.invoice_date||'—';
+              const due=inv.due_date||'—';
+              return '<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-weight:600">'+(inv.id||'')+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+memo+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-family:monospace;font-size:11px">'+po+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+date+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+due+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;color:#b91c1c;font-weight:600">'+_$(inv._bal)+'</td></tr>';
+            }).join('');
+            const stmtTable=pd.options.includeStatement?'<div style="margin:18px 0"><div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:6px">Past-Due Invoices</div><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:#f1f5f9"><th style="padding:8px 10px;text-align:left">Invoice</th><th style="padding:8px 10px;text-align:left">Memo</th><th style="padding:8px 10px;text-align:left">PO #</th><th style="padding:8px 10px;text-align:left">Date</th><th style="padding:8px 10px;text-align:left">Due</th><th style="padding:8px 10px;text-align:right">Balance</th></tr></thead><tbody>'+stmtRows+'<tr><td colspan="5" style="padding:8px 10px;text-align:right;font-weight:700;border-top:2px solid #1e293b">Total Owed</td><td style="padding:8px 10px;text-align:right;font-weight:800;color:#b91c1c;border-top:2px solid #1e293b">'+_$(t.total)+'</td></tr></tbody></table></div>':'';
             const portalUrl=c.alpha_tag?(portalBase+c.alpha_tag):'';
             const payButton=(pd.options.includePayLink&&portalUrl)?'<div style="margin:20px 0"><a href="'+portalUrl+'" style="display:inline-block;padding:12px 24px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:700;font-size:14px">View & Pay in Portal</a></div>':'';
             const greeting=(getBillingContacts(c,cust)[0]?.name||(c.contacts||[])[0]?.name||'Coach');
             const personalizedMsg=pd.message.replace(/\{name\}/g,greeting).replace(/\n/g,'<br/>');
-            const htmlContent='<div style="font-family:sans-serif;font-size:14px;line-height:1.6;color:#1e293b;max-width:640px">'+personalizedMsg+stmtTable+payButton+'</div>';
-            const toList=t.recipients.split(',').map(s=>s.trim()).filter(Boolean).map(email=>({email}));
+            const htmlContent='<div style="font-family:sans-serif;font-size:14px;line-height:1.6;color:#1e293b;max-width:720px">'+personalizedMsg+stmtTable+payButton+'</div>';
+            const toList=recipientsFor(t).map(email=>({email}));
             const res=await sendBrevoEmail({
               to:toList,
               subject:'Past-Due Invoices — '+_$(t.total)+' on your '+(c.name||'')+' account',
               htmlContent,
-              senderName:cu?.name||'National Sports Apparel',
-              senderEmail:'noreply@nationalsportsapparel.com',
-              replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
+              senderName:activeSender.name,
+              senderEmail:activeSender.email,
+              replyTo:{email:activeSender.email,name:activeSender.name},
             });
             const ok=res.ok;
             upd(s=>({...s,progress:{...s.progress,done:s.progress.done+1,sent:s.progress.sent+(ok?1:0),failed:s.progress.failed+(ok?0:1)}}));
-            if(!ok)console.warn('[past-due bulk] failed for '+c.name+':',res.error);
+            if(!ok)console.warn('[past-due] failed for '+c.name+':',res.error);
           }
           upd(s=>({...s,sending:false}));
-          nf('Past-due email pack: '+pd.progress.sent+' sent, '+pd.progress.failed+' failed');
+          nf('Past-due email: '+pd.progress.sent+' sent'+(pd.progress.failed>0?', '+pd.progress.failed+' failed':''));
         };
-        return<div className="modal-overlay" onClick={()=>{if(!pd.sending)setPdBulkModal(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:780,maxHeight:'90vh',display:'flex',flexDirection:'column'}}>
-          <div className="modal-header" style={{background:'linear-gradient(135deg,#dc2626,#991b1b)',color:'white'}}>
-            <h2 style={{color:'white',margin:0}}>📧 Email Past-Due Pack</h2>
+        return<div className="modal-overlay" onClick={()=>{if(!pd.sending)setPdBulkModal(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:760,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
+          <div className="modal-header" style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white'}}>
+            <h2 style={{color:'white',margin:0}}>📧 Email Past-Due Invoices</h2>
             <button className="modal-close" style={{color:'white'}} disabled={pd.sending} onClick={()=>setPdBulkModal(null)}>×</button>
           </div>
           <div className="modal-body" style={{overflow:'auto'}}>
-            {/* Include options */}
-            <div style={{display:'flex',gap:16,padding:10,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:12,flexWrap:'wrap'}}>
-              <label style={{display:'flex',alignItems:'center',gap:6,fontSize:13,fontWeight:600,color:'#991b1b',cursor:'pointer'}}>
-                <input type="checkbox" checked={pd.options.includeStatement} onChange={e=>upd(s=>({...s,options:{...s.options,includeStatement:e.target.checked}}))}/>
-                Include account statement
-              </label>
-              <label style={{display:'flex',alignItems:'center',gap:6,fontSize:13,fontWeight:600,color:'#991b1b',cursor:'pointer'}}>
-                <input type="checkbox" checked={pd.options.includePayLink} onChange={e=>upd(s=>({...s,options:{...s.options,includePayLink:e.target.checked}}))}/>
-                Include portal pay link
-              </label>
+            {/* Sender + include options */}
+            <div style={{padding:10,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:12}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                <label className="form-label" style={{margin:0,minWidth:78}}>Send from</label>
+                <select className="form-input" value={pd.senderKey} onChange={e=>upd(s=>({...s,senderKey:e.target.value}))} style={{fontSize:12,flex:1}}>
+                  {senderOpts.map(o=><option key={o.key} value={o.key}>{o.name} — {o.email}</option>)}
+                </select>
+              </div>
+              <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
+                <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'#475569',cursor:'pointer'}}>
+                  <input type="checkbox" checked={pd.options.includeStatement} onChange={e=>upd(s=>({...s,options:{...s.options,includeStatement:e.target.checked}}))}/>
+                  Include account statement
+                </label>
+                <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'#475569',cursor:'pointer'}}>
+                  <input type="checkbox" checked={pd.options.includePayLink} onChange={e=>upd(s=>({...s,options:{...s.options,includePayLink:e.target.checked}}))}/>
+                  Include portal pay link
+                </label>
+              </div>
             </div>
             {/* Message template */}
             <div style={{marginBottom:12}}>
               <label className="form-label">Message <span style={{fontWeight:400,color:'#94a3b8',fontSize:10}}>(use {'{name}'} for the contact's first name)</span></label>
               <textarea className="form-input" rows={6} value={pd.message} onChange={e=>upd(s=>({...s,message:e.target.value}))} style={{fontSize:13,lineHeight:1.5}}/>
             </div>
-            {/* Per-customer rows */}
-            <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6,textTransform:'uppercase'}}>Customers ({pd.customers.length})</div>
-            <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
-              <div style={{display:'grid',gridTemplateColumns:'30px 1fr 1.5fr 80px 80px',gap:8,padding:'8px 10px',background:'#f8fafc',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>
-                <div></div><div>Customer</div><div>Recipients</div><div style={{textAlign:'right'}}>#</div><div style={{textAlign:'right'}}>Total</div>
-              </div>
-              {pd.customers.map((c,i)=><div key={c.customer.id||i} style={{display:'grid',gridTemplateColumns:'30px 1fr 1.5fr 80px 80px',gap:8,padding:'8px 10px',borderTop:'1px solid #f1f5f9',alignItems:'center',background:c.selected?'#fef2f2':'white',opacity:c.recipients.trim()?1:0.6}}>
-                <input type="checkbox" checked={c.selected} disabled={!c.recipients.trim()} onChange={e=>updCustomer(i,{selected:e.target.checked})} style={{width:15,height:15,accentColor:'#dc2626'}}/>
-                <div>
-                  <div style={{fontSize:12,fontWeight:600,color:'#1e293b'}}>{c.customer.name||'—'}</div>
-                  {c.customer.alpha_tag&&<div style={{fontSize:10,color:'#64748b'}}>{c.customer.alpha_tag}</div>}
+            {/* Per-customer recipients */}
+            {pd.customers.map((c,i)=>{
+              const recCount=recipientsFor(c).length;
+              return<div key={c.customer.id||i} style={{border:'1px solid #e2e8f0',borderRadius:8,padding:12,marginBottom:10,background:recCount>0?'#f8fafc':'#fafafa'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8,gap:8}}>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:700,color:'#1e293b'}}>{c.customer.name||'—'}</div>
+                    {c.customer.alpha_tag&&<div style={{fontSize:10,color:'#64748b'}}>{c.customer.alpha_tag} · {c.invoices.length} past-due invoice{c.invoices.length!==1?'s':''}</div>}
+                  </div>
+                  <div style={{fontSize:14,fontWeight:700,color:'#b91c1c',whiteSpace:'nowrap'}}>${c.total.toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0})}</div>
                 </div>
-                <input className="form-input" value={c.recipients} onChange={e=>updCustomer(i,{recipients:e.target.value,selected:!!e.target.value.trim()})} placeholder="comma-separated emails" style={{fontSize:11,padding:'4px 6px'}}/>
-                <div style={{fontSize:11,textAlign:'right'}}>{c.invoices.length}</div>
-                <div style={{fontSize:11,fontWeight:700,color:'#dc2626',textAlign:'right'}}>${c.total.toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0})}</div>
-              </div>)}
-            </div>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4,textTransform:'uppercase'}}>Send to</div>
+                <div style={{display:'flex',flexDirection:'column',gap:2,marginBottom:6}}>
+                  {c.contacts.length===0&&<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No contacts with email on file — add one below.</div>}
+                  {c.contacts.map(ct=>{
+                    const sel=!!c.checked[ct.email];
+                    return<label key={ct.email} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 6px',borderRadius:4,background:sel?'#eff6ff':'transparent',fontSize:12,cursor:'pointer'}}>
+                      <input type="checkbox" checked={sel} onChange={e=>updCustomer(i,{checked:{...c.checked,[ct.email]:e.target.checked}})} style={{accentColor:'#2563eb'}}/>
+                      <span style={{fontWeight:sel?600:400,color:sel?'#1e40af':'#1e293b'}}>{ct.name||'Contact'}</span>
+                      <span style={{color:'#64748b'}}>{ct.email}</span>
+                      {ct.role&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:(ct.role||'').toLowerCase()==='billing'?'#ede9fe':'#f1f5f9',color:(ct.role||'').toLowerCase()==='billing'?'#6d28d9':'#64748b',fontWeight:600}}>{ct.role}</span>}
+                      {ct._inherited_from&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:600}}>from {ct._inherited_from}</span>}
+                    </label>;
+                  })}
+                  {(c.customEmails||[]).map(em=><label key={em} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 6px',borderRadius:4,background:'#eff6ff',fontSize:12}}>
+                    <input type="checkbox" checked readOnly style={{accentColor:'#2563eb'}}/>
+                    <span style={{color:'#1e40af',fontWeight:600}}>{em}</span>
+                    <span style={{fontSize:9,fontStyle:'italic',color:'#94a3b8'}}>(added)</span>
+                    <button onClick={()=>updCustomer(i,{customEmails:c.customEmails.filter(e=>e!==em)})} style={{marginLeft:'auto',background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:14,padding:0,lineHeight:1}}>×</button>
+                  </label>)}
+                </div>
+                <div style={{display:'flex',gap:6}}>
+                  <input type="email" placeholder="+ Add another email…" value={c.customEmail||''} onChange={e=>updCustomer(i,{customEmail:e.target.value})} onKeyDown={e=>{if(e.key==='Enter'&&(c.customEmail||'').includes('@')){e.preventDefault();const em=c.customEmail.trim();if(em&&!(c.customEmails||[]).includes(em))updCustomer(i,{customEmails:[...(c.customEmails||[]),em],customEmail:''})}}} className="form-input" style={{fontSize:11,padding:'4px 6px',flex:1}}/>
+                  <button className="btn btn-sm btn-secondary" disabled={!(c.customEmail||'').includes('@')} onClick={()=>{const em=(c.customEmail||'').trim();if(em&&!(c.customEmails||[]).includes(em))updCustomer(i,{customEmails:[...(c.customEmails||[]),em],customEmail:''})}} style={{fontSize:10,whiteSpace:'nowrap'}}>+ Add</button>
+                </div>
+              </div>;
+            })}
             {/* Progress */}
-            {pd.sending&&<div style={{marginTop:12,padding:10,background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:8}}>
+            {pd.sending&&<div style={{padding:10,background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:8}}>
               <div style={{fontSize:12,fontWeight:700,color:'#1e40af',marginBottom:4}}>Sending… {pd.progress.done}/{pd.progress.total}</div>
               <div style={{height:6,background:'#dbeafe',borderRadius:3,overflow:'hidden'}}><div style={{height:6,background:'#2563eb',width:(pd.progress.total>0?(pd.progress.done/pd.progress.total*100):0)+'%',transition:'width 0.2s'}}/></div>
               <div style={{fontSize:10,color:'#1e40af',marginTop:4}}>✓ {pd.progress.sent} sent · {pd.progress.failed>0?'✗ '+pd.progress.failed+' failed':''}</div>
             </div>}
-            {!pd.sending&&pd.progress.done>0&&<div style={{marginTop:12,padding:10,background:'#f0fdf4',border:'1px solid #86efac',borderRadius:8,fontSize:12,color:'#166534',fontWeight:600}}>
-              ✅ Done — {pd.progress.sent} sent, {pd.progress.failed} failed.
+            {!pd.sending&&pd.progress.done>0&&<div style={{padding:10,background:'#f0fdf4',border:'1px solid #86efac',borderRadius:8,fontSize:12,color:'#166534',fontWeight:600}}>
+              ✅ Done — {pd.progress.sent} sent{pd.progress.failed>0?', '+pd.progress.failed+' failed':''}.
             </div>}
           </div>
           <div className="modal-footer">
             <button className="btn btn-secondary" disabled={pd.sending} onClick={()=>setPdBulkModal(null)}>{pd.progress.done>0?'Close':'Cancel'}</button>
-            <button className="btn btn-primary" style={{background:'#dc2626'}} disabled={pd.sending||selectedCount===0||pd.progress.done>0} onClick={sendAll}>
-              {pd.sending?'Sending…':'📧 Send to '+selectedCount+' customer'+(selectedCount===1?'':'s')+' ('+totalInv+' inv · $'+totalDollars.toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0})+')'}
+            <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={pd.sending||sendableCustomers.length===0||pd.progress.done>0} onClick={sendAll}>
+              {pd.sending?'Sending…':'📧 Send to '+sendableCustomers.length+' customer'+(sendableCustomers.length===1?'':'s')+' ('+totalInv+' inv · $'+totalDollars.toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0})+')'}
             </button>
           </div>
         </div></div>;
