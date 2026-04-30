@@ -15,7 +15,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, sendBrevoEmail, _smsUiEnabled } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel } from './utils';
 import { calcOrderTotals } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -7935,15 +7935,15 @@ export default function App(){
                     const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
                     const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*pDepPct*100)/100;pSubTotal+=lineAmt;
                     let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-                    if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+                    if(szStr)itemName+='<br/><span>'+szStr+'</span>';
                     if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
                     pRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
                     safeDecos(it).forEach(d=>{
                       const cq=d.kind==='art'&&d.art_file_id?_pAQ2[d.art_file_id]:qty;const dp2=dP(d,qty,pSoArt,cq);
                       const artF=pSoArt.find(a2=>a2.id===d.art_file_id);
-                      const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.front_and_back?'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"'):(d.num_size||'4"'))+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+                      const decoLabel=pdfDecoLabel(d,artF);
                       const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*pDepPct*100)/100;pSubTotal+=decoAmt;
-                      pRows.push({cells:[{value:qty,style:'text-align:center;color:#888'},{value:'',style:''},{value:'<span style="padding-left:16px;color:#666">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right;color:#888'},{value:_$(decoAmt),style:'text-align:right;color:#888'}]});
+                      pRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
                     });
                   });
                 }else{
@@ -8470,15 +8470,15 @@ export default function App(){
                     const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
                     const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*siDepPct*100)/100;siSubTotal+=lineAmt;
                     let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-                    if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+                    if(szStr)itemName+='<br/><span>'+szStr+'</span>';
                     if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
                     siRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$si(unitPrice),style:'text-align:right'},{value:_$si(lineAmt),style:'text-align:right;font-weight:600'}]});
                     safeDecos(it).forEach(d=>{
                       const cq=d.kind==='art'&&d.art_file_id?_siAQ[d.art_file_id]:qty;const dp2=dP(d,qty,siSoArt,cq);
                       const artF=siSoArt.find(a2=>a2.id===d.art_file_id);
-                      const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.front_and_back?'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"'):(d.num_size||'4"'))+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+                      const decoLabel=pdfDecoLabel(d,artF);
                       const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*siDepPct*100)/100;siSubTotal+=decoAmt;
-                      siRows.push({cells:[{value:qty,style:'text-align:center;color:#888'},{value:'',style:''},{value:'<span style="padding-left:16px;color:#666">'+decoLabel+posLabel+'</span>'},{value:_$si(dp2.sell),style:'text-align:right;color:#888'},{value:_$si(decoAmt),style:'text-align:right;color:#888'}]});
+                      siRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$si(dp2.sell),style:'text-align:right'},{value:_$si(decoAmt),style:'text-align:right'}]});
                     });
                   });
                 }else{
@@ -8749,15 +8749,15 @@ export default function App(){
                     const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
                     const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*fDepPct*100)/100;fSubTotal+=lineAmt;
                     let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-                    if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+                    if(szStr)itemName+='<br/><span>'+szStr+'</span>';
                     if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
                     fRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$f(unitPrice),style:'text-align:right'},{value:_$f(lineAmt),style:'text-align:right;font-weight:600'}]});
                     safeDecos(it).forEach(d=>{
                       const cq=d.kind==='art'&&d.art_file_id?_fAQ[d.art_file_id]:qty;const dp2=dP(d,qty,fSoArt,cq);
                       const artF=fSoArt.find(a2=>a2.id===d.art_file_id);
-                      const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.front_and_back?'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"'):(d.num_size||'4"'))+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+                      const decoLabel=pdfDecoLabel(d,artF);
                       const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*fDepPct*100)/100;fSubTotal+=decoAmt;
-                      fRows.push({cells:[{value:qty,style:'text-align:center;color:#888'},{value:'',style:''},{value:'<span style="padding-left:16px;color:#666">'+decoLabel+posLabel+'</span>'},{value:_$f(dp2.sell),style:'text-align:right;color:#888'},{value:_$f(decoAmt),style:'text-align:right;color:#888'}]});
+                      fRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$f(dp2.sell),style:'text-align:right'},{value:_$f(decoAmt),style:'text-align:right'}]});
                     });
                   });
                 }else{
