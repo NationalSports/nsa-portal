@@ -15,7 +15,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, sendBrevoEmail, _smsUiEnabled } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel } from './utils';
 import { calcOrderTotals } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -549,6 +549,7 @@ const _dbLoad = async (opts={}) => {
     // NetSuite historical invoices — read-only; reshape invoice_date → date and tag as historical.
     const hist_invoices=d(rHistInvs).map(hi=>({
       id:hi.document_number||hi.id,
+      _hist_id:hi.id,
       customer_id:hi.customer_id,
       date:hi.invoice_date,
       total:hi.total!=null?Number(hi.total):null,
@@ -1144,6 +1145,12 @@ const _dbDeleteInvoice = async (id) => {
     await supabase.from('invoice_items').delete().eq('invoice_id',id);
     await supabase.from('invoices').delete().eq('id',id);
   }catch(e){console.error('[DB] delete invoice:',e)}});
+};
+const _dbDeleteHistInvoice = async (id) => {
+  if(!supabase)return;
+  return _dbSavingGuard(async()=>{try{
+    await supabase.from('customer_invoices').delete().eq('id',id);
+  }catch(e){console.error('[DB] delete hist invoice:',e)}});
 };
 // Save-in-progress guard — prevents poll/realtime from loading partial data during delete-and-reinsert
 let _dbSavingCount=0;let _dbLastSaveAt=0;
@@ -3558,28 +3565,7 @@ export default function App(){
     setSOs(p=>{const ex=p.find(x=>x.id===sl.id);return ex?p.map(x=>x.id===sl.id?sl:x):[...p,sl]});
     logChange(prev?'updated':'created','SO',sl.id,sl.memo||'');
     // Promo usage is recorded in convertSO only — savSO does not duplicate it
-    // Auto-invoice: when SO reaches ready_to_invoice, create draft invoice if none exists
-    const newStatus=calcSOStatus(sl);
-    const prevStatus=prev?calcSOStatus(prev):null;
-    if(newStatus==='ready_to_invoice'&&prevStatus!=='ready_to_invoice'&&prevStatus!=='complete'){
-      // Use functional updater to check latest invs state — prevents duplicate invoice from stale closure
-      setInvs(prev2=>{
-        const hasInv=prev2.some(iv=>iv.so_id===sl.id);
-        if(hasInv)return prev2;
-        const _aq={};safeItems(sl).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
-        const saf=safeArt(sl);let subtotal=0;
-        safeItems(sl).forEach(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);subtotal+=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qq;const dp2=dP(d,qq,saf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;subtotal+=eq2*dp2.sell})});
-        const autoShip=sl.shipping_type==='pct'?Math.round(subtotal*(safeNum(sl.shipping_value)/100)*100)/100:Math.round(safeNum(sl.shipping_value)*100)/100;
-        const autoCust=cust.find(c=>c.id===sl.customer_id);const autoTaxRate=sl.tax_exempt?0:(sl.tax_rate||autoCust?.tax_rate||0);
-        const autoTax=Math.round(subtotal*autoTaxRate*100)/100;
-        const total=subtotal+autoShip+autoTax;
-        const invId=nextInvId(prev2);const today=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
-        const dueDate=new Date();dueDate.setDate(dueDate.getDate()+30);const due=dueDate.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
-        const newInv={id:invId,type:'invoice',customer_id:sl.customer_id,so_id:sl.id,date:today,due_date:due,total:Math.round(total*100)/100,paid:0,memo:sl.memo||'',status:'open',payments:[],cc_fee:0,shipping:autoShip,tax:autoTax,tax_rate:autoTaxRate,tax_exempt:sl.tax_exempt||autoCust?.tax_exempt||false};
-        nf('Auto-generated invoice '+invId+' for $'+Math.round(total*100)/100);
-        return[newInv,...prev2];
-      });
-    }
+    // Invoices are created explicitly via the Create Invoice modal — no auto-generation on status change.
     return sl;
   };
   const savI=(pid,inv,deltas,reason,adjType)=>{
@@ -4023,6 +4009,15 @@ export default function App(){
 
   const deleteInvoice = (invId) => {
     if(!canDelete)return nf('You do not have permission to delete','error');
+    const histInv=histInvs.find(i=>(i.id===invId)||(i._hist_id===invId));
+    if(histInv){
+      if(!window.confirm('Delete imported NetSuite invoice '+histInv.id+'? This removes it from this portal but does not affect NetSuite itself. The next NetSuite re-import would bring it back.'))return;
+      setHistInvs(prev=>prev.filter(i=>i!==histInv));
+      _dbDeleteHistInvoice(histInv._hist_id||histInv.id);
+      logChange('deleted','HistInvoice',histInv.id,histInv.memo||'');
+      nf('NetSuite invoice '+histInv.id+' deleted');
+      return;
+    }
     const inv=invs.find(i=>i.id===invId);if(!inv)return;
     if(inv.paid>0&&!window.confirm('This invoice has $'+inv.paid.toLocaleString()+' in payments recorded. Deleting will lose this payment history. Continue?'))return;
     if(!window.confirm('Delete invoice '+invId+'?'))return;
@@ -7940,15 +7935,15 @@ export default function App(){
                     const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
                     const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*pDepPct*100)/100;pSubTotal+=lineAmt;
                     let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-                    if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+                    if(szStr)itemName+='<br/><span>'+szStr+'</span>';
                     if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
                     pRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
                     safeDecos(it).forEach(d=>{
                       const cq=d.kind==='art'&&d.art_file_id?_pAQ2[d.art_file_id]:qty;const dp2=dP(d,qty,pSoArt,cq);
                       const artF=pSoArt.find(a2=>a2.id===d.art_file_id);
-                      const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.front_and_back?'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"'):(d.num_size||'4"'))+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+                      const decoLabel=pdfDecoLabel(d,artF);
                       const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*pDepPct*100)/100;pSubTotal+=decoAmt;
-                      pRows.push({cells:[{value:qty,style:'text-align:center;color:#888'},{value:'',style:''},{value:'<span style="padding-left:16px;color:#666">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right;color:#888'},{value:_$(decoAmt),style:'text-align:right;color:#888'}]});
+                      pRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
                     });
                   });
                 }else{
@@ -8475,15 +8470,15 @@ export default function App(){
                     const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
                     const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*siDepPct*100)/100;siSubTotal+=lineAmt;
                     let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-                    if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+                    if(szStr)itemName+='<br/><span>'+szStr+'</span>';
                     if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
                     siRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$si(unitPrice),style:'text-align:right'},{value:_$si(lineAmt),style:'text-align:right;font-weight:600'}]});
                     safeDecos(it).forEach(d=>{
                       const cq=d.kind==='art'&&d.art_file_id?_siAQ[d.art_file_id]:qty;const dp2=dP(d,qty,siSoArt,cq);
                       const artF=siSoArt.find(a2=>a2.id===d.art_file_id);
-                      const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.front_and_back?'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"'):(d.num_size||'4"'))+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+                      const decoLabel=pdfDecoLabel(d,artF);
                       const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*siDepPct*100)/100;siSubTotal+=decoAmt;
-                      siRows.push({cells:[{value:qty,style:'text-align:center;color:#888'},{value:'',style:''},{value:'<span style="padding-left:16px;color:#666">'+decoLabel+posLabel+'</span>'},{value:_$si(dp2.sell),style:'text-align:right;color:#888'},{value:_$si(decoAmt),style:'text-align:right;color:#888'}]});
+                      siRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$si(dp2.sell),style:'text-align:right'},{value:_$si(decoAmt),style:'text-align:right'}]});
                     });
                   });
                 }else{
@@ -8754,15 +8749,15 @@ export default function App(){
                     const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
                     const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*fDepPct*100)/100;fSubTotal+=lineAmt;
                     let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-                    if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+                    if(szStr)itemName+='<br/><span>'+szStr+'</span>';
                     if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
                     fRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$f(unitPrice),style:'text-align:right'},{value:_$f(lineAmt),style:'text-align:right;font-weight:600'}]});
                     safeDecos(it).forEach(d=>{
                       const cq=d.kind==='art'&&d.art_file_id?_fAQ[d.art_file_id]:qty;const dp2=dP(d,qty,fSoArt,cq);
                       const artF=fSoArt.find(a2=>a2.id===d.art_file_id);
-                      const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.front_and_back?'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"'):(d.num_size||'4"'))+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+                      const decoLabel=pdfDecoLabel(d,artF);
                       const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*fDepPct*100)/100;fSubTotal+=decoAmt;
-                      fRows.push({cells:[{value:qty,style:'text-align:center;color:#888'},{value:'',style:''},{value:'<span style="padding-left:16px;color:#666">'+decoLabel+posLabel+'</span>'},{value:_$f(dp2.sell),style:'text-align:right;color:#888'},{value:_$f(decoAmt),style:'text-align:right;color:#888'}]});
+                      fRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$f(dp2.sell),style:'text-align:right'},{value:_$f(decoAmt),style:'text-align:right'}]});
                     });
                   });
                 }else{
@@ -8830,7 +8825,8 @@ export default function App(){
                   {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
                   {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3}} title="Reported to TaxCloud">TC</span>}</td>
                 <td onClick={e=>e.stopPropagation()}>{!inv._hist&&inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
-                  onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}</td>
+                  onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
+                  {canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} title={inv._hist?'Delete NetSuite invoice':'Delete invoice'} onClick={()=>deleteInvoice(inv.id)}><Icon name="trash" size={10}/></button>}</td>
               </tr>)}</tbody></table>
             {/* Payment history */}
             {g.invoices.some(i=>(i.payments||[]).length>0)&&<div style={{padding:'8px 16px',borderTop:'1px solid #f1f5f9'}}>

@@ -393,7 +393,18 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
     if(billAlt&&(billAlt.street||billAlt.city)){dat.billing_address_line1=billAlt.street||'';dat.billing_city=billAlt.city||'';dat.billing_state=billAlt.state||'';dat.billing_zip=billAlt.zip||''}
     else{dat.billing_address_line1=dat.shipping_address_line1||'';dat.billing_city=dat.shipping_city||'';dat.billing_state=dat.shipping_state||'';dat.billing_zip=dat.shipping_zip||''}
     if(dat.tax_exempt){dat.tax_rate=0}
-    else{try{if(!(dat.tax_rate>0)&&dat.shipping_state&&dat.shipping_zip&&supabase){setTcLook({loading:true,msg:'Looking up tax rate...'});const d=await Promise.race([doTcLookup(dat),new Promise(r=>setTimeout(()=>r({ok:false,error:'timeout'}),8000))]);if(d?.ok){dat.tax_rate=d.tax_rate}}}catch(e){console.error('[CustModal] TaxCloud lookup error:',e)}finally{setTcLook({loading:false,msg:''})}}onSave(dat);onClose()}}>{tcLook.loading?'Saving...':'Save'}</button></div></div></div>);
+    else{try{if(!(dat.tax_rate>0)&&dat.shipping_state&&dat.shipping_zip&&supabase){setTcLook({loading:true,msg:'Looking up tax rate...'});const d=await Promise.race([doTcLookup(dat),new Promise(r=>setTimeout(()=>r({ok:false,error:'timeout'}),8000))]);if(d?.ok){dat.tax_rate=d.tax_rate}}}catch(e){console.error('[CustModal] TaxCloud lookup error:',e)}finally{setTcLook({loading:false,msg:''})}}
+    // Guard: converting an existing parent (with subs) into a sub would create a 3-level hierarchy
+    // that the customer list view doesn't render. Promote those subs to top-level so they stay visible.
+    const wasParent=customer&&!customer.parent_id&&customer.id;
+    const becomingSub=ct==='sub'&&!!dat.parent_id;
+    const orphans=wasParent&&becomingSub?(allCustomers||[]).filter(x=>x.parent_id===customer.id):[];
+    if(orphans.length){
+      const msg=orphans.length+' sub-customer'+(orphans.length===1?'':'s')+' currently roll up to '+customer.name+':\n\n'+orphans.map(o=>'• '+o.name+(o.alpha_tag?' ('+o.alpha_tag+')':'')).join('\n')+'\n\nMaking '+customer.name+' a sub would create a 3-level hierarchy that the list view does not show. Click OK to promote '+(orphans.length===1?'this account':'these accounts')+' to top-level parent'+(orphans.length===1?'':'s')+' and continue, or Cancel to abort.';
+      if(!window.confirm(msg)){return}
+      orphans.forEach(o=>onSave({...o,parent_id:null}));
+    }
+    onSave(dat);onClose()}}>{tcLook.loading?'Saving...':'Save'}</button></div></div></div>);
 }
 
 function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});const[d,setD]=useState({});const[reason,setReason]=useState('');const[adjType,setAdjType]=useState('manual');
