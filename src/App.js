@@ -7724,7 +7724,7 @@ export default function App(){
   // INVOICES PAGE
   const CC_FEE_PCT=0.029;// 2.9% credit card surcharge
   const PAY_METHODS=[{id:'check',label:'Check',icon:'📝'},{id:'ach',label:'ACH/Wire',icon:'🏦'},{id:'venmo',label:'Venmo',icon:'💜'},{id:'zelle',label:'Zelle',icon:'⚡'},{id:'cash',label:'Cash',icon:'💵'},{id:'cc',label:'Credit Card (+2.9%)',icon:'💳'}];
-  const[invF,setInvF]=useState({search:'',status:'all',group:'list',aging:'all',rep:_initRepF});
+  const[invF,setInvF]=useState({search:'',status:'open',group:'customer',aging:'all',rep:_initRepF});
   const[invSort,setInvSort]=useState({f:'due_date',d:'asc'});
   const[invEdit,setInvEdit]=useState(null);
   const[payModal,setPayModal]=useState(null);
@@ -8701,7 +8701,6 @@ export default function App(){
         </div>
         {(invF.status!=='all'||invF.aging!=='all'||invF.rep!=='all'||invF.search)&&
           <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>setInvF({search:'',status:'all',group:invF.group,aging:'all',rep:'all'})}>✕ Clear Filters</button>}
-        {(()=>{const overdueInVisible=fi.filter(i=>i._overdue&&i._bal>0);if(overdueInVisible.length===0)return null;const byC={};overdueInVisible.forEach(inv=>{const cid=inv.customer_id;if(!byC[cid])byC[cid]={cust:cust.find(c=>c.id===cid)||{id:cid,name:inv._cname},invoices:[]};byC[cid].invoices.push(inv)});const customerCount=Object.keys(byC).length;return<button className="btn btn-sm" style={{background:'#dc2626',color:'white',border:'none',fontSize:11,fontWeight:700}} onClick={()=>{const customers=Object.values(byC).map(g=>{const billing=getBillingContacts(g.cust,cust);const recipients=billing.map(b=>b.email).filter(Boolean);return{customer:g.cust,invoices:g.invoices,recipients:recipients.join(', '),selected:recipients.length>0,total:g.invoices.reduce((a,i)=>a+i._bal,0)}});setPdBulkModal({customers,options:{includeStatement:true,includePayLink:true},message:'Hi {name},\n\nA gentle reminder that we have invoice(s) on your account that have moved past their due date. Please find your account statement below — you can review and pay open balances anytime through your customer portal.\n\nLet us know if you have any questions, or if any of these have already been paid and just need to be reconciled on our end.\n\nThank you,\nNSA Team',sending:false,progress:{done:0,total:0,sent:0,failed:0}})}}>📧 Email Past-Due Pack ({customerCount})</button>})()}
       </div>
 
       {/* Results count */}
@@ -8820,12 +8819,15 @@ export default function App(){
         const openBal=g.invoices.filter(i=>i.status!=='paid').reduce((a,i)=>a+i._bal,0);
         const overdueAmt=g.invoices.filter(i=>i._overdue).reduce((a,i)=>a+i._bal,0);
         return<div key={cid} className="card" style={{marginBottom:12}}>
-          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
             <div><h2 style={{margin:0}}>{g.customer?.name||'Unknown Customer'}</h2>
               <span style={{fontSize:11,color:'#64748b'}}>{g.customer?.alpha_tag} · {g.invoices.length} invoice{g.invoices.length!==1?'s':''}</span></div>
-            <div style={{textAlign:'right'}}>
-              <div style={{fontSize:18,fontWeight:800,color:openBal>0?'#dc2626':'#166534'}}>${openBal.toLocaleString()} <span style={{fontSize:11,fontWeight:400,color:'#64748b'}}>open</span></div>
-              {overdueAmt>0&&<div style={{fontSize:12,color:'#dc2626',fontWeight:600}}>⚠️ ${overdueAmt.toLocaleString()} overdue</div>}
+            <div style={{display:'flex',alignItems:'center',gap:12}}>
+              {overdueAmt>0&&g.customer&&<button className="btn btn-sm" style={{background:'#dc2626',color:'white',border:'none',fontSize:11,fontWeight:700,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();const overdueInvs=g.invoices.filter(i=>i._overdue&&i._bal>0);if(overdueInvs.length===0)return;const billing=getBillingContacts(g.customer,cust);const recipients=billing.map(b=>b.email).filter(Boolean);const greetName=billing[0]?.name||(g.customer.contacts||[])[0]?.name||'Coach';const customerObj={customer:g.customer,invoices:overdueInvs,recipients:recipients.join(', '),selected:recipients.length>0,total:overdueInvs.reduce((a,i)=>a+i._bal,0)};setPdBulkModal({customers:[customerObj],options:{includeStatement:true,includePayLink:true},message:'Hi '+greetName+',\n\nA gentle reminder that we have invoice(s) on your account that have moved past their due date. Please find your account statement below — you can review and pay open balances anytime through your customer portal.\n\nLet us know if you have any questions, or if any of these have already been paid and just need to be reconciled on our end.\n\nThank you,\nNSA Team',sending:false,progress:{done:0,total:0,sent:0,failed:0}})}}>📧 Email Past-Due</button>}
+              <div style={{textAlign:'right'}}>
+                <div style={{fontSize:18,fontWeight:800,color:openBal>0?'#dc2626':'#166534'}}>${openBal.toLocaleString()} <span style={{fontSize:11,fontWeight:400,color:'#64748b'}}>open</span></div>
+                {overdueAmt>0&&<div style={{fontSize:12,color:'#dc2626',fontWeight:600}}>⚠️ ${overdueAmt.toLocaleString()} overdue</div>}
+              </div>
             </div>
           </div>
           <div className="card-body" style={{padding:0}}>
