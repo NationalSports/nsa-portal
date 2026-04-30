@@ -112,32 +112,55 @@ serve(async (req: Request) => {
     let processed = 0;
     let skipped = 0;
 
-    // Process customers in parallel batches. TaxCloud lookups are network-bound,
-    // so fanning out 10 at a time turns a 100s serial run into ~10s.
+    // Group customers by shipping jurisdiction (state + zip5). TaxCloud rates are
+    // determined by destination state/zip, so customers in the same jurisdiction
+    // share a rate — we look it up once and apply it to every customer in the group.
+    // For organizations with many sub-accounts in the same district this turns
+    // hundreds of TaxCloud calls into a handful.
     const list = customers || [];
-    for (let i = 0; i < list.length; i += concurrency) {
-      const batch = list.slice(i, i + concurrency);
-      await Promise.all(batch.map(async (c) => {
-        processed++;
-        if (!c.shipping_state?.trim() || !c.shipping_zip?.trim()) { skipped++; return; }
+    const groups = new Map<string, typeof list>();
+    for (const c of list) {
+      const state = (c.shipping_state || "").trim().toUpperCase();
+      const zip = (c.shipping_zip || "").trim();
+      if (!state || !zip) { processed++; skipped++; continue; }
+      const key = state + "|" + zip;
+      const arr = groups.get(key) || [];
+      arr.push(c);
+      groups.set(key, arr);
+    }
+
+    // Process unique jurisdictions in parallel batches.
+    const groupKeys = Array.from(groups.keys());
+    for (let i = 0; i < groupKeys.length; i += concurrency) {
+      const batchKeys = groupKeys.slice(i, i + concurrency);
+      await Promise.all(batchKeys.map(async (key) => {
+        const groupCustomers = groups.get(key)!;
+        // Use the first customer's address for the lookup — TaxCloud's rate is
+        // driven by destination state+zip so the street address is largely advisory.
+        const first = groupCustomers[0];
         const newRate = await lookupRate(
-          c.shipping_address_line1 || "",
-          c.shipping_city || "",
-          c.shipping_state,
-          c.shipping_zip
+          first.shipping_address_line1 || "",
+          first.shipping_city || "",
+          first.shipping_state!,
+          first.shipping_zip!
         );
+        processed += groupCustomers.length;
         if (newRate === null) {
-          errors.push({ id: c.id, name: c.name, error: "Lookup failed" });
+          for (const c of groupCustomers) errors.push({ id: c.id, name: c.name, error: "Lookup failed" });
           return;
         }
+        // Bulk update: write the same rate to every customer in this jurisdiction.
+        const ids = groupCustomers.map(c => c.id);
         const { error: updErr } = await supabase
           .from("customers")
           .update({ tax_rate: newRate, updated_at: new Date().toISOString() })
-          .eq("id", c.id);
+          .in("id", ids);
         if (updErr) {
-          errors.push({ id: c.id, name: c.name, error: updErr.message });
+          for (const c of groupCustomers) errors.push({ id: c.id, name: c.name, error: updErr.message });
         } else {
-          results.push({ id: c.id, name: c.name, old_rate: c.tax_rate || 0, new_rate: newRate });
+          for (const c of groupCustomers) {
+            results.push({ id: c.id, name: c.name, old_rate: c.tax_rate || 0, new_rate: newRate });
+          }
         }
       }));
     }

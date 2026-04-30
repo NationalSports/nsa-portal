@@ -3488,9 +3488,26 @@ export default function App(){
       const e=p.find(x=>x.id===c.id);
       let next=e?p.map(x=>x.id===c.id?c:x):[...p,c];
       // Parent accounts cascade Pantones, thread colors, and pricing (tier + markup) to all sub-accounts.
+      // Tax rate / tax-exempt also cascade — but ONLY to subs that share the parent's shipping
+      // jurisdiction (same state + zip), so subs in a different district keep their correct rate.
       if(!c.parent_id){
         const inherit={pantone_colors:c.pantone_colors||[],thread_colors:c.thread_colors||[],adidas_ua_tier:c.adidas_ua_tier,catalog_markup:c.catalog_markup};
-        next=next.map(x=>{if(x.parent_id!==c.id)return x;const differs=JSON.stringify(x.pantone_colors||[])!==JSON.stringify(inherit.pantone_colors)||JSON.stringify(x.thread_colors||[])!==JSON.stringify(inherit.thread_colors)||x.adidas_ua_tier!==inherit.adidas_ua_tier||x.catalog_markup!==inherit.catalog_markup;if(differs)subCount++;return differs?{...x,...inherit}:x});
+        const pState=(c.shipping_state||'').trim().toUpperCase();
+        const pZip=(c.shipping_zip||'').trim();
+        const taxRate=c.tax_rate;
+        const taxExempt=!!c.tax_exempt;
+        next=next.map(x=>{if(x.parent_id!==c.id)return x;
+          const differs=JSON.stringify(x.pantone_colors||[])!==JSON.stringify(inherit.pantone_colors)||JSON.stringify(x.thread_colors||[])!==JSON.stringify(inherit.thread_colors)||x.adidas_ua_tier!==inherit.adidas_ua_tier||x.catalog_markup!==inherit.catalog_markup;
+          // Cascade tax fields when the sub is in the same jurisdiction as the parent (same state + zip,
+          // OR sub has no shipping address yet so it inherits parent's by default).
+          const sState=(x.shipping_state||'').trim().toUpperCase();
+          const sZip=(x.shipping_zip||'').trim();
+          const sameJurisdiction=(!sState&&!sZip)||(sState===pState&&sZip===pZip);
+          const taxDiffers=sameJurisdiction&&((taxRate!=null&&x.tax_rate!==taxRate)||x.tax_exempt!==taxExempt);
+          if(differs||taxDiffers)subCount++;
+          if(!differs&&!taxDiffers)return x;
+          return{...x,...inherit,...(taxDiffers?{tax_rate:taxRate,tax_exempt:taxExempt}:{})};
+        });
         // Alpha-tag cascade — when the parent's alpha tag changes, regenerate every sub's tag as parent_prefix + sport/suffix (OLu → OLuF, OLuBB, OLuBSB, ...).
         const oldTag=(e?.alpha_tag||'').trim();
         const newTag=(c.alpha_tag||'').trim();
