@@ -21,6 +21,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);
+  // selJob is stored as a numeric index into the jobs array. The array can re-order
+  // when external updates merge in (coach approval, warehouse picks), making the
+  // index point at the wrong job or nothing. We capture the selected job's stable
+  // id here so the detail-view lookup can recover when the index goes stale.
+  const selJobIdRef=useRef(null);
+  React.useEffect(()=>{
+    if(selJob!=null){
+      const _j=safeJobs(o)[selJob];
+      if(_j)selJobIdRef.current=_j.id;
+    }else{
+      selJobIdRef.current=null;
+    }
+  },[selJob]);
   const[mentionQuery,setMentionQuery]=useState(null);const[mentionIdx,setMentionIdx]=useState(0);const mentionRef=useRef(null);const msgInputRef=useRef(null);
     // Sync from external updates (e.g., coach approval from portal) — merge job art_status + art_files
     // Use a ref to track the last order we synced from, to avoid re-triggering on format differences
@@ -4863,7 +4876,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
       // Job detail view
       if(selJob!=null){
-        const ji=selJob;const j=jobs[ji];
+        const ji=selJob;
+        // Try the stored index first; fall back to id-based lookup if the
+        // jobs array has reordered or refetched since selJob was set.
+        let j=jobs[ji];
+        if((!j||(selJobIdRef.current&&j.id!==selJobIdRef.current))&&selJobIdRef.current){
+          const _fallback=jobs.find(x=>x.id===selJobIdRef.current);
+          if(_fallback)j=_fallback;
+        }
         if(!j)return<div className="card"><div className="card-body"><button className="btn btn-sm btn-secondary" onClick={()=>setSelJob(null)}><Icon name="back" size={12}/> Back to Jobs</button><div style={{padding:20,color:'#94a3b8'}}>Job not found</div></div></div>;
         const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';
         const canOverride=cu.role==="admin"||cu.role==="production"||cu.role==="prod_manager"||cu.role==="gm";
