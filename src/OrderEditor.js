@@ -5162,6 +5162,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>}
             {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&(()=>{
                 const artFile3=safeArt(o).find(a=>a.id===j.art_file_id);if(!artFile3)return null;
+                // Pull per-item mockups from every art file referenced by job items, not just the
+                // primary. Mirrors the waiting_approval branch above. Multi-item jobs whose secondary
+                // item carries its own logo art on a separate art file would otherwise show no mockup.
+                const _allJobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
+                (j.items||[]).forEach(_gi=>{const _it=safeItems(o)[_gi.item_idx];if(!_it)return;safeDecos(_it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_allJobArtIds.add(d.art_file_id)})});
+                const _allJobArtFiles=[..._allJobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
                 const _isE3=artFile3.deco_type==='embroidery';
                 const _colorMap3={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
                 const _fallback3=(artFile3.ink_colors||artFile3.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);
@@ -5174,7 +5180,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===artFile3.id){_dp3.add(d.position||'Front Center');if(d.color_way_id&&artFile3.color_ways){const cw=artFile3.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim()&&!cwCols.includes(c.trim()))cwCols.push(c.trim())})}}if(d.kind==='numbers')_numDecos3.push(d)});
                   const colors=gcCols.length>0?gcCols:cwCols.length>0?cwCols:_fallback3;
                   const colorKey=colors.slice().sort().join('|');
-                  const mockups=_filterDisplayable(artFile3.item_mockups?.[gi.sku]||[]);
+                  // Search every relevant art file for mockups under this item's SKU, not just artFile3.
+                  const mockups=_filterDisplayable(_allJobArtFiles.flatMap(_af=>_af?.item_mockups?.[gi.sku]||[]));
                   return{...gi,colors,colorKey,mockups,it};
                 });
                 // Group items by color way
