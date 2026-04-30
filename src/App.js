@@ -14678,28 +14678,28 @@ export default function App(){
               updArt=[...existingArt,newAf];
             }
             const newSO=savSO({...liveSO,art_files:updArt});
-            setArtMockupModal({...j,artFile:updArt.find(a=>a.id===(j.art_file_id||newArtFileId))||updArt[0]});
+            setArtMockupModal({...j,so:newSO,artFile:updArt.find(a=>a.id===(j.art_file_id||newArtFileId))||updArt[0]});
             const ok=await _dbSaveSO(newSO);
             if(ok===false){if(typeof nf==='function')nf('Mockup uploaded but failed to save to order. Please retry.','error');return}
             if(typeof nf==='function')nf(uploaded.length+' mockup'+(uploaded.length>1?'s':'')+' uploaded for '+sku);
           }catch(err){if(typeof nf==='function')nf('Upload failed: '+err.message,'error')}
           finally{setArtJobDetailUploading(false)}
         };
-        // Delete a per-item mockup. Removes from item_mockups[sku] on the SKU's resolved art file
-        // and from the legacy mockup_files bucket so the file disappears from every display.
+        // Delete a per-item mockup. Scans every art file on the SO and removes the matching URL
+        // from item_mockups[sku] and mockup_files — defensive because mockups uploaded via different
+        // code paths (artist view, this view, legacy general bucket) may live on different art files.
         const handleMockupDeleteForItem=async(fileUrl,sku)=>{
           const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-          const artId=resolveItemArtId(sku);
           const _fUrl=f=>(typeof f==='string'?f:(f?.url||''));
           const updArt=safeArt(liveSO).map(a=>{
-            if(a.id!==artId)return a;
             const curItemMockups=a.item_mockups||{};
-            const updItemMockups={...curItemMockups,[sku]:(curItemMockups[sku]||[]).filter(f=>_fUrl(f)!==fileUrl)};
+            const updItemMockups={};
+            Object.entries(curItemMockups).forEach(([k,arr])=>{updItemMockups[k]=(arr||[]).filter(f=>_fUrl(f)!==fileUrl)});
             const curFiles=(a.mockup_files||a.files||[]);
             return{...a,item_mockups:updItemMockups,mockup_files:curFiles.filter(f=>_fUrl(f)!==fileUrl)};
           });
           const newSO=savSO({...liveSO,art_files:updArt});
-          setArtMockupModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]});
+          setArtMockupModal({...j,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]});
           if(typeof nf==='function')nf('Mockup removed from '+sku);
           await _dbSaveSO(newSO);
         };
