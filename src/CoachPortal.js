@@ -314,7 +314,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {/* Artwork & Decoration jobs */}
           {soJobsList.length>0&&<>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Artwork & Decoration</div>
-            {soJobsList.map(j=>{const artFile=soAF.find(a=>a.id===j.art_file_id);const mockups=_filterDisplayable(artFile?.mockup_files||artFile?.files||[]);
+            {soJobsList.map(j=>{const artFile=soAF.find(a=>a.id===j.art_file_id);const _jArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jArtIds.add(d.art_file_id)})});const _jArtFiles=[..._jArtIds].map(aid=>soAF.find(a=>a.id===aid)).filter(Boolean);const _jMf=_filterDisplayable(_jArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));const _jIm=_filterDisplayable(_jArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()));const _jSeen=new Set();const mockups=[..._jMf,..._jIm].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_jSeen.has(u))return false;_jSeen.add(u);return true});
               const _clickJob=()=>{setJobView({job:j,so});setComment('');if(j.sent_to_coach_at&&!j.coach_email_opened_at){const liveSO2=sos.find(s=>s.id===so.id);if(liveSO2){const updSO2={...liveSO2,jobs:(liveSO2.jobs||safeJobs(liveSO2)).map(jj=>jj.id===j.id?{...jj,coach_email_opened_at:new Date().toISOString()}:jj),updated_at:new Date().toLocaleString()};if(savSOFn)savSOFn(updSO2);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO2:s))}}};
               return<div key={j.id} style={{border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:10,marginBottom:8,overflow:'hidden',cursor:'pointer'}} onClick={_clickJob}>
                 {/* Mockup thumbnails — show all images in a grid */}
@@ -365,7 +365,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const _liveJob=(safeJobs(_liveSO)).find(jj=>jj.id===jobView.job.id)||jobView.job;
     const j=_liveJob;const so=_liveSO;
     const artFile=safeArt(so).find(a=>a.id===j.art_file_id);
-    const mockups=_filterDisplayable(artFile?.mockup_files||artFile?.files||[]);
+    const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
+    (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});
+    const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
+    const mockups=_filterDisplayable(_jobArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));
+    const _hasAnyItemMockup=gi=>_jobArtFiles.some(_af=>_filterDisplayable(_af?.item_mockups?.[gi.sku]||[]).length>0);
     const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd=it?prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku):null;return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it?._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it?._colorBackImage||''}});
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
       {/* ── Lightbox overlay ── */}
@@ -387,7 +391,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         <div style={{padding:'20px 24px'}}>
           {/* ── Per-item mockups + art details ── */}
           {items.map((gi,i)=>{const srcItem=safeItems(so)[gi.item_idx];
-            const itemMockups=_filterDisplayable(artFile?.item_mockups?.[gi.sku]||[]);
+            const _itemArtIds=srcItem?[...new Set(safeDecos(srcItem).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id))]:[];
+            const _itemArtFiles=[...new Set([artFile?.id,...(j._art_ids||[]),..._itemArtIds].filter(Boolean))].map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
+            const itemMockups=_filterDisplayable(_itemArtFiles.flatMap(_af=>_af?.item_mockups?.[gi.sku]||[]));
             const artDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'):[];
             const artPos=artDecos.map(d=>d.position||'Front Center').filter((v,idx,arr)=>arr.indexOf(v)===idx);
             const numDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='numbers'):[];
@@ -489,7 +495,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>
           </div>})}
           {/* General mockups (not per-item) */}
-          {mockups.length>0&&items.every(gi=>!_filterDisplayable(artFile?.item_mockups?.[gi.sku]||[]).length)&&<div style={{marginBottom:16}}>
+          {mockups.length>0&&items.every(gi=>!_hasAnyItemMockup(gi))&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Artwork Mockups</div>
             {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const isImg=_isImgUrl(url);
               return<div key={fi} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:10,marginBottom:8,cursor:isUrl(url)?'pointer':'default'}} onClick={()=>{if(isUrl(url))setLightbox(url)}}>
@@ -500,7 +506,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 </div>
               </div>})}
           </div>}
-          {mockups.length===0&&items.every(gi=>!_filterDisplayable(artFile?.item_mockups?.[gi.sku]||[]).length)&&<div style={{padding:16,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:10,marginBottom:16,textAlign:'center'}}>
+          {mockups.length===0&&items.every(gi=>!_hasAnyItemMockup(gi))&&<div style={{padding:16,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:10,marginBottom:16,textAlign:'center'}}>
             <div style={{fontSize:24,marginBottom:4}}>🎨</div>
             <div style={{fontSize:12,color:'#9a3412',fontWeight:600}}>Mockup files haven't been uploaded yet</div>
           </div>}

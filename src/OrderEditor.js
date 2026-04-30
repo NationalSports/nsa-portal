@@ -4940,7 +4940,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
             </div>}
-            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _mf=_filterDisplayable(artFile2?.mockup_files||artFile2?.files||[]);const _im=_filterDisplayable(Object.values(artFile2?.item_mockups||{}).flat());const _seen=new Set();const mockups=[..._mf,..._im].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;return<div style={{margin:'0 20px',padding:'16px',background:_stca?'linear-gradient(135deg,#dbeafe,#eff6ff)':'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid '+(_stca?'#93c5fd':'#fbbf24'),borderRadius:10}}>
+            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);const _mf=_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));const _im=_filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()));const _seen=new Set();const mockups=[..._mf,..._im].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;return<div style={{margin:'0 20px',padding:'16px',background:_stca?'linear-gradient(135deg,#dbeafe,#eff6ff)':'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid '+(_stca?'#93c5fd':'#fbbf24'),borderRadius:10}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
                 <span style={{fontSize:20}}>{_stca?'📤':'⚠️'}</span>
                 <span style={{fontWeight:800,fontSize:16,color:_stca?'#1e40af':'#92400e'}}>{_stca?'Sent to Coach for Approval':'Artwork Needs Your Approval'}</span>
@@ -4959,37 +4959,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {h.methods&&<span style={{fontSize:9,padding:'0 4px',marginLeft:4,borderRadius:3,background:'#eff6ff',color:'#1e40af'}}>{h.methods.join(', ')}</span>}
                 </div>)}
               </div>}
-              {mockups.length>0&&<div style={{marginBottom:12}}>
-                <div style={{fontSize:11,fontWeight:700,color:'#78350f',marginBottom:6}}>Review the mockup{mockups.length>1?'s':''}:</div>
-                <div style={{display:'grid',gridTemplateColumns:mockups.length>1?'1fr 1fr':'1fr',gap:8}}>
-                  {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                    return<div key={fi} style={{borderRadius:10,border:'2px solid #f59e0b',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                      {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:300,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                      :_isPdfUrl(url,f)?<div style={{position:'relative',height:300,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
-                        {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:300,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
-                        <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
-                          <span style={{fontSize:36}}>PDF</span><span style={{fontSize:13,color:'#1e40af'}}>{name}</span></div></div>
-                      :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:300,background:'#fafafa'}}>
-                        <span style={{fontSize:20}}>📄</span><span style={{fontSize:14,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                      <div style={{padding:'4px 10px',borderTop:'1px solid #fde68a',fontSize:11,color:'#92400e',fontWeight:600,display:'flex',justifyContent:'space-between'}}><span>{name}</span><span style={{color:'#2563eb'}}>Click to enlarge</span></div>
-                    </div>})}
-                </div>
-              </div>}
-              {mockups.length===0&&<div style={{padding:12,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,marginBottom:12,fontSize:12,color:'#9a3412'}}>No mockup files attached yet — check the Art Library tab for files.</div>}
-              {/* Artwork details — per-item CW breakdown with correct locations */}
-              {(()=>{const _allArt2=(j._art_ids||[j.art_file_id].filter(Boolean)).map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+              {mockups.length===0&&_jobArtFiles.length===0&&<div style={{padding:12,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,marginBottom:12,fontSize:12,color:'#9a3412'}}>No mockup files attached yet — check the Art Library tab for files.</div>}
+              {/* Per-art-file: mockup followed by its decoration info, mirroring the Art Dashboard layout */}
+              {(()=>{const _allArt2=_jobArtFiles;
                 const _colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
                 if(_allArt2.length===0)return null;
                 return<div style={{marginBottom:12}}>
                   {_allArt2.map((af3,afi)=>{
+                    // Mockups for this specific art file (general + per-item)
+                    const _afMf=_filterDisplayable(af3?.mockup_files||af3?.files||[]);
+                    const _afIm=_filterDisplayable(Object.values(af3?.item_mockups||{}).flat());
+                    const _afSeen=new Set();
+                    const afMockups=[..._afMf,..._afIm].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_afSeen.has(u))return false;_afSeen.add(u);return true});
                     const _dp3=new Set();const _numDecos2=[];const _isE3=af3.deco_type==='embroidery';
                     const _fallback3=(af3.ink_colors||af3.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);
                     // Final fallback: if CWs are defined on the art file but decorations don't carry color_way_id,
                     // surface the union of all CW inks so the colors aren't silently hidden on the approval surface.
                     const _allCwInks3=[...new Set((af3.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
                     const _as3=af3.art_sizes||{};
-                    // Build per-item color data
-                    const _itemColorData2=itemDetails.map(gi=>{
+                    // Build per-item color data — only items whose decorations reference this art file
+                    const _afItems=itemDetails.filter(gi=>{const it=safeItems(o)[gi.item_idx];return it&&safeDecos(it).some(d=>d.kind==='art'&&d.art_file_id===af3.id)});
+                    const _itemColorData2=(_afItems.length>0?_afItems:itemDetails).map(gi=>{
                       const it=safeItems(o)[gi.item_idx];const gk2=gi.sku+'|'+(gi.color||'');
                       const gc2=af3.garment_colors?.[gk2]||{};const gcCols=Object.values(gc2).flat().filter(c=>c&&c.trim());
                       const cwCols=[];
@@ -5001,7 +4991,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     // Group by CW
                     const _cwGrps=[];const _cwS={};
                     _itemColorData2.forEach(gi=>{if(!_cwS[gi.colorKey]){_cwS[gi.colorKey]={items:[],colors:gi.colors};_cwGrps.push(_cwS[gi.colorKey])}_cwS[gi.colorKey].items.push(gi)});
-                    return<div key={afi} style={{marginBottom:afi<_allArt2.length-1?8:0}}>
+                    return<div key={afi} style={{marginBottom:afi<_allArt2.length-1?16:0,paddingBottom:afi<_allArt2.length-1?16:0,borderBottom:afi<_allArt2.length-1?'1px dashed #fcd34d':'none'}}>
+                      {/* Mockup(s) for this art file */}
+                      {afMockups.length>0?<div style={{marginBottom:10}}>
+                        <div style={{fontSize:11,fontWeight:700,color:'#78350f',marginBottom:6}}>Review the mockup{afMockups.length>1?'s':''}:</div>
+                        <div style={{display:'grid',gridTemplateColumns:afMockups.length>1?'1fr 1fr':'1fr',gap:8}}>
+                          {afMockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
+                            return<div key={fi} style={{borderRadius:10,border:'2px solid #f59e0b',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
+                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:300,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                              :_isPdfUrl(url,f)?<div style={{position:'relative',height:300,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
+                                {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:300,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
+                                <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
+                                  <span style={{fontSize:36}}>PDF</span><span style={{fontSize:13,color:'#1e40af'}}>{name}</span></div></div>
+                              :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:300,background:'#fafafa'}}>
+                                <span style={{fontSize:20}}>📄</span><span style={{fontSize:14,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
+                              <div style={{padding:'4px 10px',borderTop:'1px solid #fde68a',fontSize:11,color:'#92400e',fontWeight:600,display:'flex',justifyContent:'space-between'}}><span>{name}</span><span style={{color:'#2563eb'}}>Click to enlarge</span></div>
+                            </div>})}
+                        </div>
+                      </div>:<div style={{padding:10,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,marginBottom:10,fontSize:12,color:'#9a3412'}}>No mockup uploaded yet for {af3.name||'this art'}.</div>}
                       {/* Art info header */}
                       <div style={{padding:'12px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8}}>
                         <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6,letterSpacing:0.5}}>{af3.name||'Art '+(afi+1)}</div>
