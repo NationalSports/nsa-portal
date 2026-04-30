@@ -1359,18 +1359,44 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         run_order:existing?.run_order||null,run1_done:existing?.run1_done||false,run2_done:existing?.run2_done||false,
       };
     });
+    // Preserve per-item sizes/fulSizes overrides from prior custom splits so the parent job keeps
+    // an accurate per-size remainder instead of being rebuilt from full order-item sizes.
+    newJobs.forEach(nj=>{
+      const existing=existingJobMap[nj.key]||(nj.art_file_id?existingByArtId[nj.art_file_id]:null);
+      if(!existing||!Array.isArray(existing.items))return;
+      let hasOverride=false;
+      nj.items=nj.items.map(gi=>{
+        const ex=existing.items.find(g=>g.item_idx===gi.item_idx&&g.sku===gi.sku);
+        if(!ex||!ex.sizes)return gi;
+        hasOverride=true;
+        const sizes={...ex.sizes};
+        const fulSizes=ex.fulSizes?{...ex.fulSizes}:{};
+        const u=Object.values(sizes).reduce((a,v)=>a+safeNum(v),0);
+        const f=Object.values(fulSizes).reduce((a,v)=>a+safeNum(v),0);
+        return{...gi,sizes,fulSizes,units:u,fulfilled:f};
+      });
+      if(hasOverride){
+        const total=nj.items.reduce((a,gi)=>a+safeNum(gi.units),0);
+        const ful=nj.items.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);
+        nj.total_units=total;nj.fulfilled_units=ful;
+        nj.item_status=ful>=total&&total>0?'items_received':ful>0?'partially_received':'need_to_order';
+        nj._hasSplitOverrides=true;
+      }
+    });
     // Preserve manually split jobs — they won't be auto-generated from decorations
     const splitJobs=safeJobs(o).filter(j=>j.split_from&&!newJobs.find(nj=>nj.id===j.id));
-    // Subtract split-off units from parent jobs so totals stay correct
+    // Subtract split-off units from parent jobs so totals stay correct (skip parents that already
+    // have per-item size overrides — those totals are derived from the preserved sizes).
     splitJobs.forEach(sj=>{
       const parent=newJobs.find(nj=>nj.id===sj.split_from);
-      if(parent){parent.total_units=Math.max(0,parent.total_units-sj.total_units);parent.fulfilled_units=Math.max(0,parent.fulfilled_units-sj.fulfilled_units)}
+      if(parent&&!parent._hasSplitOverrides){parent.total_units=Math.max(0,parent.total_units-sj.total_units);parent.fulfilled_units=Math.max(0,parent.fulfilled_units-sj.fulfilled_units)}
     });
     // Recalculate item_status on parents after unit adjustment
     newJobs.forEach(nj=>{
-      if(splitJobs.some(sj=>sj.split_from===nj.id)){
+      if(!nj._hasSplitOverrides&&splitJobs.some(sj=>sj.split_from===nj.id)){
         nj.item_status=nj.fulfilled_units>=nj.total_units&&nj.total_units>0?'items_received':nj.fulfilled_units>0?'partially_received':'need_to_order';
       }
+      delete nj._hasSplitOverrides;
     });
     return[...newJobs,...splitJobs];
   },[o,af]);// eslint-disable-line
@@ -4776,13 +4802,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Split job modal state
       // Split job modal state is at component level (splitModal/setSplitModal)
 
-      // Helper: copy art-related fields from parent job to split job
-      const _artFields=j=>({art_file_id:j.art_file_id,_art_ids:j._art_ids||null,art_name:j.art_name,art_status:j.art_status,deco_type:j.deco_type,positions:j.positions,
+      // Helper: copy art-related fields from parent job to split job (deep clones nested arrays so
+      // they aren't shared by reference; simple fields are already carried by the {...j} spread).
+      const _artFields=j=>({art_file_id:j.art_file_id,_art_ids:j._art_ids?[...j._art_ids]:null,art_name:j.art_name,art_status:j.art_status,deco_type:j.deco_type,positions:j.positions,
         art_requests:j.art_requests?JSON.parse(JSON.stringify(j.art_requests)):[],
         art_messages:j.art_messages?JSON.parse(JSON.stringify(j.art_messages)):[],
+        sent_history:j.sent_history?JSON.parse(JSON.stringify(j.sent_history)):[],
         assigned_artist:j.assigned_artist||null,rep_notes:j.rep_notes||null,
         rejections:j.rejections?JSON.parse(JSON.stringify(j.rejections)):null,
-        sent_to_coach_at:j.sent_to_coach_at||null,coach_approved_at:j.coach_approved_at||null,coach_rejected:j.coach_rejected||null,coach_email_opened_at:j.coach_email_opened_at||null});
+        sent_to_coach_at:j.sent_to_coach_at||null,coach_approved_at:j.coach_approved_at||null,coach_approval_comment:j.coach_approval_comment||null,coach_rejected:j.coach_rejected||null,coach_email_opened_at:j.coach_email_opened_at||null,
+        follow_up_at:j.follow_up_at||null});
 
       // Split job by received — create partial job with received items
       const splitByReceived=(jIdx)=>{
@@ -4826,32 +4855,74 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
         const updated={...o,jobs:newJobs2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Split by SKU! '+splitId+' with '+splitItems.length+' garment(s)');
       };
-      // Custom split — split specific unit counts per item/size
-      const splitCustom=(jIdx,splitQtys)=>{
+      // Resolve per-size totals/fulfillment for a given job item, honoring any prior split overrides.
+      const _giSizes=gi=>{
+        if(gi.sizes)return{...gi.sizes};
+        const it=safeItems(o)[gi.item_idx];if(!it)return{};
+        const out={};
+        Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{out[sz]=safeNum(v)});
+        return out;
+      };
+      const _giFulSizes=(gi,maxSizes)=>{
+        if(gi.fulSizes)return{...gi.fulSizes};
+        const it=safeItems(o)[gi.item_idx];if(!it)return{};
+        const out={};
+        Object.entries(maxSizes||_giSizes(gi)).forEach(([sz,cap])=>{
+          const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+          const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+          out[sz]=Math.min(safeNum(cap),pQ+rQ);
+        });
+        return out;
+      };
+      // Custom split — split specific sizes per item into a new job; items not flagged stay on the original.
+      // splitItemSizes shape: { [item_idx]: { S: 2, M: 1, ... } } — only entries with at least one positive size are split.
+      const splitCustom=(jIdx,splitItemSizes)=>{
         const j=jobs[jIdx];if(!j||!j.items?.length)return;
-        let splitTotal=0;
         const splitItems=[];const keepItems=[];
+        let splitTotal=0,splitFul=0,keepTotal=0,keepFul=0;
         j.items.forEach(gi=>{
-          const sqty=splitQtys[gi.item_idx]||0;
-          if(sqty>0&&sqty<gi.units){
-            splitItems.push({...gi,units:sqty,fulfilled:Math.min(gi.fulfilled||0,sqty)});
-            keepItems.push({...gi,units:gi.units-sqty,fulfilled:Math.max(0,(gi.fulfilled||0)-sqty)});
-            splitTotal+=sqty;
-          } else if(sqty>=gi.units){
-            splitItems.push({...gi});splitTotal+=gi.units;
-          } else {
-            keepItems.push({...gi});
+          const curSizes=_giSizes(gi);
+          const curFul=_giFulSizes(gi,curSizes);
+          const reqSizes=splitItemSizes?.[gi.item_idx]||{};
+          const splitSizes={};const remainSizes={};
+          let sUnits=0,rUnits=0;
+          Object.entries(curSizes).forEach(([sz,v])=>{
+            const want=Math.max(0,Math.min(safeNum(reqSizes[sz]),safeNum(v)));
+            if(want>0){splitSizes[sz]=want;sUnits+=want}
+            const rem=safeNum(v)-want;
+            if(rem>0){remainSizes[sz]=rem;rUnits+=rem}
+          });
+          // Allocate fulfillment proportionally: receipts go to the split portion first up to its size cap.
+          const splitFulSizes={};const remainFulSizes={};
+          let sFul=0,rFul=0;
+          Object.keys(curSizes).forEach(sz=>{
+            const ful=safeNum(curFul[sz]);
+            const sCap=safeNum(splitSizes[sz]);
+            const rCap=safeNum(remainSizes[sz]);
+            const sF=Math.min(ful,sCap);
+            const rF=Math.min(ful-sF,rCap);
+            if(sF>0){splitFulSizes[sz]=sF;sFul+=sF}
+            if(rF>0){remainFulSizes[sz]=rF;rFul+=rF}
+          });
+          if(sUnits>0){
+            splitItems.push({...gi,sizes:splitSizes,fulSizes:splitFulSizes,units:sUnits,fulfilled:sFul});
+            splitTotal+=sUnits;splitFul+=sFul;
+          }
+          if(rUnits>0){
+            keepItems.push({...gi,sizes:remainSizes,fulSizes:remainFulSizes,units:rUnits,fulfilled:rFul});
+            keepTotal+=rUnits;keepFul+=rFul;
           }
         });
-        if(splitTotal===0){nf('Enter units to split off','error');return}
-        if(keepItems.length===0||keepItems.reduce((a,gi)=>a+gi.units,0)===0){nf('Must leave some units on the original job','error');return}
+        if(splitTotal===0){nf('Select at least one size to split off','error');return}
+        if(keepItems.length===0||keepTotal===0){nf('Must leave some units on the original job','error');return}
         const existingSplits=jobs.filter(jj=>jj.split_from===j.id).length;
         const splitId=j.id+'-C'+(existingSplits+1);
         const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__C'+(existingSplits+1),split_from:j.id,items:splitItems,
-          total_units:splitTotal,fulfilled_units:splitItems.reduce((a,gi)=>a+(gi.fulfilled||0),0),
+          total_units:splitTotal,fulfilled_units:splitFul,
+          item_status:splitFul>=splitTotal&&splitTotal>0?'items_received':splitFul>0?'partially_received':'need_to_order',
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
-        const remainJob={...j,items:keepItems,total_units:keepItems.reduce((a,gi)=>a+gi.units,0),
-          fulfilled_units:keepItems.reduce((a,gi)=>a+(gi.fulfilled||0),0)};
+        const remainJob={...j,items:keepItems,total_units:keepTotal,fulfilled_units:keepFul,
+          item_status:keepFul>=keepTotal&&keepTotal>0?'items_received':keepFul>0?'partially_received':'need_to_order'};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
         const updated={...o,jobs:newJobs2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Custom split! '+splitId+' with '+splitTotal+' units');
       };
@@ -4870,14 +4941,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
         const artF=safeArt(o).find(a=>a.id===j.art_file_id);
         const allArtFiles=(j._art_ids||[j.art_file_id].filter(Boolean)).map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
-        // Get full size breakdowns per item
+        // Get full size breakdowns per item — split jobs carry per-item sizes/fulSizes overrides.
         const itemDetails=(j.items||[]).map(gi=>{
-          const it=safeItems(o)[gi.item_idx];if(!it)return{...gi,sizes:{},fulSizes:{}};
-          const sizes=safeSizes(it);const fulSizes={};
-          Object.entries(sizes).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
+          const it=safeItems(o)[gi.item_idx];if(!it)return{...gi,sizes:gi.sizes||{},fulSizes:gi.fulSizes||{}};
+          const sizes=gi.sizes?{...gi.sizes}:Object.fromEntries(Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).map(([sz,v])=>[sz,safeNum(v)]));
+          const fulSizes={};
+          if(gi.fulSizes){Object.entries(gi.fulSizes).forEach(([sz,v])=>{fulSizes[sz]=safeNum(v)})}
+          else Object.entries(sizes).forEach(([sz,v])=>{
             const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-            fulSizes[sz]=Math.min(v,pQ+rQ);
+            fulSizes[sz]=Math.min(safeNum(v),pQ+rQ);
           });
           const prd=products.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
           return{...gi,sizes,fulSizes,color:safeStr(it.color),brand:safeStr(it.brand),product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||_vImg(it,'front')||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||_vImg(it,'back')||'',images:prd?.images||[]};
@@ -5937,15 +6010,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {/* Split Job Modal */}
       {splitModal&&(()=>{
         const j=jobs[splitModal.jIdx];if(!j)return null;
+        const _szOrd=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
         const items=(j.items||[]).map(gi=>{
-          const it=safeItems(o)[gi.item_idx];
-          let ful=0;
-          if(it)Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-            const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-            ful+=Math.min(v,pQ+rQ);
-          });
-          return{...gi,received:ful};
+          const sizes=_giSizes(gi);
+          const fulSizes=_giFulSizes(gi,sizes);
+          const received=Object.values(fulSizes).reduce((a,v)=>a+safeNum(v),0);
+          return{...gi,sizes,fulSizes,received};
         });
         const totalReceived=items.reduce((a,gi)=>a+gi.received,0);
         return<div className="modal-overlay" onClick={()=>setSplitModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
@@ -5965,9 +6035,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div style={{fontSize:12,color:'#475569'}}>Select which garments to move to a new job. Useful when different garments arrive at different times or need separate production runs.</div>
                 {items.length<2&&<div style={{fontSize:11,color:'#dc2626',marginTop:4}}>⚠️ Only 1 garment on this job — can't split by SKU</div>}
               </button>
-              <button className="btn" style={{padding:16,background:'#faf5ff',border:'2px solid #c4b5fd',borderRadius:12,textAlign:'left',cursor:'pointer'}} onClick={()=>setSplitModal(m=>({...m,mode:'custom',customQtys:{}}))}>
-                <div style={{fontWeight:800,fontSize:14,color:'#7c3aed',marginBottom:4}}>✏️ Custom Split — Choose Quantities</div>
-                <div style={{fontSize:12,color:'#475569'}}>Enter exact number of units per garment to split into a new job.</div>
+              <button className="btn" style={{padding:16,background:'#faf5ff',border:'2px solid #c4b5fd',borderRadius:12,textAlign:'left',cursor:'pointer'}} onClick={()=>setSplitModal(m=>({...m,mode:'custom',customSizes:{},customInclude:{}}))}>
+                <div style={{fontWeight:800,fontSize:14,color:'#7c3aed',marginBottom:4}}>✏️ Custom Split — Choose Items & Sizes</div>
+                <div style={{fontSize:12,color:'#475569'}}>Pick which garments to split, then choose specific sizes from each. Art and approvals carry over to the new job.</div>
               </button>
             </div>}
 
@@ -6002,25 +6072,62 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {(splitModal.selectedSkus||[]).length>0&&(splitModal.selectedSkus||[]).length>=items.length&&<div style={{padding:8,background:'#fef2f2',borderRadius:6,marginTop:8,fontSize:12,color:'#dc2626'}}>Can't move all garments — deselect at least one to keep on the original job.</div>}
             </div>}
 
-            {/* Custom split — enter quantities */}
+            {/* Custom split — choose items + per-size quantities */}
             {splitModal.mode==='custom'&&(()=>{
-              const cq=splitModal.customQtys||{};
-              const totalSplit=items.reduce((a,gi)=>a+Math.min(safeNum(cq[gi.item_idx]),gi.units),0);
+              const cs=splitModal.customSizes||{};
+              const ci=splitModal.customInclude||{};
+              const _itemSplitQty=gi=>Object.entries(cs[gi.item_idx]||{}).reduce((a,[sz,v])=>a+(ci[gi.item_idx]?Math.min(safeNum(v),safeNum(gi.sizes[sz])):0),0);
+              const totalSplit=items.reduce((a,gi)=>a+_itemSplitQty(gi),0);
               const totalRemain=j.total_units-totalSplit;
+              const _setSizes=(item_idx,upd)=>setSplitModal(m=>({...m,customSizes:{...m.customSizes,[item_idx]:{...(m.customSizes?.[item_idx]||{}),...upd}}}));
+              const _toggleInclude=(item_idx,on)=>setSplitModal(m=>{
+                const next={...(m.customInclude||{}),[item_idx]:on};
+                // When turning on for the first time and no sizes selected yet, default to all sizes for convenience.
+                let nextSizes=m.customSizes||{};
+                if(on&&(!m.customSizes?.[item_idx]||Object.values(m.customSizes[item_idx]).every(v=>!safeNum(v)))){
+                  const gi=items.find(g=>g.item_idx===item_idx);
+                  if(gi)nextSizes={...nextSizes,[item_idx]:{...gi.sizes}};
+                }
+                return{...m,customInclude:next,customSizes:nextSizes};
+              });
               return<div>
-                <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Enter units to split off per garment:</div>
-                {items.map((gi,i)=><div key={i} style={{padding:10,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:6,display:'flex',gap:10,alignItems:'center',background:safeNum(cq[gi.item_idx])>0?'#faf5ff':'white'}}>
-                  <div style={{flex:1}}>
-                    <div><span style={{fontWeight:700,fontSize:12}}>{gi.sku}</span> <span style={{fontSize:12}}>{gi.name}</span> <span style={{color:'#94a3b8',fontSize:11}}>({gi.color})</span></div>
-                    <div style={{fontSize:10,color:'#64748b'}}>{gi.units} total · {gi.received} received</div>
-                  </div>
-                  <div style={{display:'flex',alignItems:'center',gap:6}}>
-                    <input type="number" className="form-input" min={0} max={gi.units} value={cq[gi.item_idx]||''} placeholder="0"
-                      style={{width:70,fontSize:13,fontWeight:700,textAlign:'center'}}
-                      onChange={e=>setSplitModal(m=>({...m,customQtys:{...m.customQtys,[gi.item_idx]:Math.min(parseInt(e.target.value)||0,gi.units)}}))}/>
-                    <span style={{fontSize:11,color:'#64748b'}}>/ {gi.units}</span>
-                  </div>
-                </div>)}
+                <div style={{fontSize:12,fontWeight:700,marginBottom:4}}>Pick the garments and sizes to split off:</div>
+                <div style={{fontSize:11,color:'#64748b',marginBottom:10}}>Tick a garment to include it in the new job, then dial in the sizes. Art status, mockups, and coach approval will carry over.</div>
+                {items.map((gi,i)=>{
+                  const incl=!!ci[gi.item_idx];
+                  const itemSplit=_itemSplitQty(gi);
+                  const sizesList=Object.entries(gi.sizes).filter(([,v])=>safeNum(v)>0).sort((a,b)=>{const ai=_szOrd.indexOf(a[0]),bi=_szOrd.indexOf(b[0]);return(ai===-1?99:ai)-(bi===-1?99:bi)});
+                  return<div key={i} style={{padding:10,border:incl?'2px solid #c4b5fd':'1px solid #e2e8f0',borderRadius:6,marginBottom:6,background:incl?'#faf5ff':'white'}}>
+                    <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:incl?8:0,cursor:'pointer'}} onClick={()=>_toggleInclude(gi.item_idx,!incl)}>
+                      <input type="checkbox" checked={incl} readOnly style={{width:18,height:18}}/>
+                      <div style={{flex:1}}>
+                        <div><span style={{fontWeight:700,fontSize:12}}>{gi.sku}</span> <span style={{fontSize:12}}>{gi.name}</span> <span style={{color:'#94a3b8',fontSize:11}}>({gi.color||'—'})</span></div>
+                        <div style={{fontSize:10,color:'#64748b'}}>{gi.units} total · {gi.received} received</div>
+                      </div>
+                      <div style={{fontSize:12,fontWeight:700,color:incl?'#7c3aed':'#94a3b8'}}>{itemSplit}<span style={{fontSize:10,color:'#94a3b8',fontWeight:400}}> / {gi.units} splitting</span></div>
+                    </div>
+                    {incl&&<div>
+                      <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:6}}>
+                        <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={e=>{e.stopPropagation();_setSizes(gi.item_idx,gi.sizes)}}>All sizes</button>
+                        {gi.received>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={e=>{e.stopPropagation();_setSizes(gi.item_idx,gi.fulSizes)}}>Received only ({gi.received})</button>}
+                        <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={e=>{e.stopPropagation();const z={};Object.keys(gi.sizes).forEach(sz=>z[sz]=0);_setSizes(gi.item_idx,z)}}>Clear</button>
+                      </div>
+                      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(72px,1fr))',gap:6}}>
+                        {sizesList.map(([sz,max])=>{
+                          const cur=safeNum(cs[gi.item_idx]?.[sz]);
+                          const fulMax=safeNum(gi.fulSizes?.[sz]);
+                          return<div key={sz} style={{padding:'4px 6px',background:'white',border:'1px solid #e2e8f0',borderRadius:5}}>
+                            <div style={{fontSize:9,fontWeight:700,color:'#64748b',display:'flex',justifyContent:'space-between'}}><span>{sz}</span>{fulMax>0&&<span style={{color:'#166534'}}>{fulMax} rcvd</span>}</div>
+                            <div style={{display:'flex',alignItems:'center',gap:3}}>
+                              <input type="number" className="form-input" min={0} max={max} value={cur||''} placeholder="0"
+                                style={{width:'100%',fontSize:12,fontWeight:700,textAlign:'center',padding:'2px 4px'}}
+                                onChange={e=>_setSizes(gi.item_idx,{[sz]:Math.max(0,Math.min(parseInt(e.target.value)||0,max))})}/>
+                              <span style={{fontSize:10,color:'#94a3b8'}}>/{max}</span>
+                            </div>
+                          </div>})}
+                      </div>
+                    </div>}
+                  </div>})}
                 {totalSplit>0&&totalRemain>0&&<div style={{padding:10,background:'#faf5ff',borderRadius:6,marginTop:8,fontSize:12}}>
                   <strong>New split job:</strong> {totalSplit} units<br/>
                   <strong>Remaining on {j.id}:</strong> {totalRemain} units
@@ -6033,7 +6140,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="btn btn-secondary" onClick={()=>setSplitModal(null)}>Cancel</button>
             {splitModal.mode==='received'&&totalReceived>0&&<button className="btn btn-primary" onClick={()=>splitByReceived(splitModal.jIdx)}>✂️ Split by Received ({totalReceived} units)</button>}
             {splitModal.mode==='sku'&&(splitModal.selectedSkus||[]).length>0&&(splitModal.selectedSkus||[]).length<items.length&&<button className="btn btn-primary" onClick={()=>splitBySku(splitModal.jIdx,splitModal.selectedSkus)}>✂️ Split Selected SKUs</button>}
-            {splitModal.mode==='custom'&&(()=>{const cq=splitModal.customQtys||{};const ts=items.reduce((a,gi)=>a+Math.min(safeNum(cq[gi.item_idx]),gi.units),0);const tr=j.total_units-ts;return ts>0&&tr>0?<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>splitCustom(splitModal.jIdx,cq)}>✂️ Split {ts} Units</button>:null})()}
+            {splitModal.mode==='custom'&&(()=>{
+              const cs=splitModal.customSizes||{};const ci=splitModal.customInclude||{};
+              const ts=items.reduce((a,gi)=>a+Object.entries(cs[gi.item_idx]||{}).reduce((b,[sz,v])=>b+(ci[gi.item_idx]?Math.min(safeNum(v),safeNum(gi.sizes[sz])):0),0),0);
+              const tr=j.total_units-ts;
+              if(!(ts>0&&tr>0))return null;
+              // Build payload: only included items, capped per size.
+              const payload={};items.forEach(gi=>{if(!ci[gi.item_idx])return;const out={};Object.entries(cs[gi.item_idx]||{}).forEach(([sz,v])=>{const want=Math.min(safeNum(v),safeNum(gi.sizes[sz]));if(want>0)out[sz]=want});if(Object.keys(out).length)payload[gi.item_idx]=out});
+              return<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>splitCustom(splitModal.jIdx,payload)}>✂️ Split {ts} Units</button>;
+            })()}
           </div>
         </div></div>})()}
 
