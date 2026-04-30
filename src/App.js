@@ -4083,10 +4083,11 @@ export default function App(){
           const dest=picks.find(p=>p.ship_dest)?.ship_dest||'in_house';
           const pref=so.ship_preference||'ship_as_ready';
           const shipDateOk=pref!=='ship_on_date'||!so.ship_on_date||(new Date(so.ship_on_date)<=new Date());
-          if(pref==='warehouse_delivery'){
+          const deliverDateOk=pref!=='deliver_on_date'||!so.deliver_on_date||(new Date(so.deliver_on_date)<=new Date());
+          if(pref==='warehouse_delivery'||(pref==='deliver_on_date'&&deliverDateOk)){
             deliverTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
               desc:item.sku+' · '+item.name,units:totalOrdered,shipPref:pref});
-          } else if(pref!=='rep_delivery'&&pref!=='wait_complete'&&shipDateOk){
+          } else if(pref!=='rep_delivery'&&pref!=='wait_complete'&&pref!=='deliver_on_date'&&shipDateOk){
             shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
               desc:item.sku+' · '+item.name,units:totalOrdered,shipMethod:dest,shipPref:pref});
           }
@@ -4096,6 +4097,7 @@ export default function App(){
       // Multi-job workflow: only ship after ALL jobs on the same item(s) are completed/shipped
       const shipPref=so.ship_preference||'ship_as_ready';
       const shipDateReady=shipPref!=='ship_on_date'||!so.ship_on_date||(new Date(so.ship_on_date)<=new Date());
+      const deliverDateReady=shipPref!=='deliver_on_date'||!so.deliver_on_date||(new Date(so.deliver_on_date)<=new Date());
       const allJobs=safeJobs(so);
       // Calculate already-shipped units for this SO
       const soShippedByItem={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
@@ -4115,10 +4117,10 @@ export default function App(){
             const allSiblingsDone=siblingJobs.every(j2=>j2.prod_status==='completed'||j2.prod_status==='shipped');
             if(!allSiblingsDone){
               // Sibling jobs still in progress — this item stays in production queue, not ready to ship
-            } else if(shipPref==='warehouse_delivery'){
+            } else if(shipPref==='warehouse_delivery'||(shipPref==='deliver_on_date'&&deliverDateReady)){
               deliverTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
                 desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,shipPref});
-            } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
+            } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipPref!=='deliver_on_date'&&shipDateReady){
               shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
                 desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,
                 shipMethod:j.ship_method||'pending',shipPref});
@@ -5082,7 +5084,7 @@ export default function App(){
           <option value="all">All Reps</option><option value="_me_">My Orders</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={soF.sort} onChange={e=>setSOF(f=>({...f,sort:e.target.value}))}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="expected">By Expected Date</option><option value="customer">By Customer</option></select>
-        {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setSOF({status:'active',rep:'all',search:'',sort:'date_desc'})}>\u2715 Clear</button>}
+        {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setSOF({status:'active',rep:'all',search:'',sort:'date_desc'})}>✕ Clear</button>}
         <span style={{fontSize:11,color:'#64748b'}}>{fSOs.length}{fSOs.length!==sos.length?' of '+sos.length:''} orders</span>
       </div>
 
@@ -5103,7 +5105,7 @@ export default function App(){
       <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}{so.order_type==='booking'&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700,verticalAlign:'middle'}}>B</span>}</td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtCreatedAt(so.created_at)}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}{so.po_number&&<span style={{fontSize:9,marginLeft:6,padding:'1px 5px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700,fontFamily:'monospace'}}>PO# {so.po_number}</span>}</td><td>{so.order_type==='booking'&&so.expected_ship_date?<span>{so.expected_ship_date}<div style={{fontSize:9,color:'#94a3b8'}}>ship date</div></span>:(so.expected_date||'--')}</td>
       <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></td>
       <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>{(()=>{const t=calcOrderTotals(so,c?.tax_rate||0).grand;return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</td>
-      <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} \u2713</span>:<span style={{fontSize:11,color:'#d97706'}}>\u2014</span>}</td>
+      <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} ✓</span>:<span style={{fontSize:11,color:'#d97706'}}>—</span>}</td>
       <td>{itemStatus&&<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,
         background:itemStatus==='received'?'#dcfce7':itemStatus==='partial'?'#fef3c7':itemStatus==='on_order'?'#dbeafe':'#fef2f2',
         color:itemStatus==='received'?'#166534':itemStatus==='partial'?'#92400e':itemStatus==='on_order'?'#1e40af':'#dc2626'}}>
@@ -7517,7 +7519,7 @@ export default function App(){
                   <button className="btn btn-sm" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'2px 6px'}} onClick={()=>{if(!window.confirm('Remove this batch PO from queue?'))return;
                     const so=sos.find(s=>s.id===bp.so_id);
                     if(so){const updatedItems=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()})}
-                    setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id))}}>\u2715</button>
+                    setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id))}}>✕</button>
                 </div>
               </div>
               {!isEditing&&<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>

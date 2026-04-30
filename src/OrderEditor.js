@@ -1735,7 +1735,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div>
           <label className="form-label" style={{fontSize:11}}>Ship Preference</label>
           <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
-            {[{v:'ship_as_ready',l:'Ship as Ready',icon:'📦',desc:'Each IF/job ships as completed'},{v:'wait_complete',l:'Wait to Ship Complete',icon:'⏳',desc:'Wait for entire order to complete'},{v:'rep_delivery',l:'Rep Delivery',icon:'🚗',desc:'Rep delivers when jobs complete'},{v:'warehouse_delivery',l:'Deliver',icon:'🚚',desc:'Warehouse delivers when jobs complete'},{v:'ship_on_date',l:'Ship on Date',icon:'📅',desc:'Hold until specific date'}].map(sp=>{
+            {[{v:'ship_as_ready',l:'Ship as Ready',icon:'📦',desc:'Each IF/job ships as completed'},{v:'wait_complete',l:'Wait to Ship Complete',icon:'⏳',desc:'Wait for entire order to complete'},{v:'rep_delivery',l:'Rep Delivery',icon:'🚗',desc:'Rep delivers when jobs complete'},{v:'warehouse_delivery',l:'Deliver',icon:'🚚',desc:'Warehouse delivers when jobs complete'},{v:'deliver_on_date',l:'Deliver on Date',icon:'🗓️',desc:'Warehouse delivers on a specific date — appears on Delivery tab when due'},{v:'ship_on_date',l:'Ship on Date',icon:'📅',desc:'Hold until specific date'}].map(sp=>{
               const cur=(o.ship_preference||'ship_as_ready')===sp.v;
               return<button key={sp.v} className={`btn btn-sm ${cur?'btn-primary':'btn-secondary'}`}
                 style={{fontSize:10,padding:'3px 8px',whiteSpace:'nowrap'}} title={sp.desc}
@@ -1745,6 +1745,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {o.ship_preference==='ship_on_date'&&<div>
           <label className="form-label" style={{fontSize:11}}>Ship Date</label>
           <input type="date" className="form-input" style={{fontSize:11,padding:'4px 8px'}} value={o.ship_on_date||''} onChange={e=>sv('ship_on_date',e.target.value)}/>
+        </div>}
+        {o.ship_preference==='deliver_on_date'&&<div>
+          <label className="form-label" style={{fontSize:11}}>Deliver Date</label>
+          <input type="date" className="form-input" style={{fontSize:11,padding:'4px 8px'}} value={o.deliver_on_date||''} onChange={e=>sv('deliver_on_date',e.target.value)}/>
         </div>}
       </div>}
       {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
@@ -4492,7 +4496,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div><label className="form-label">Ship To</label><select className="form-select" defaultValue="warehouse"><option value="warehouse">NSA Warehouse — Emerson</option>{addrs.map(a=><option key={a.id} value={a.id}>{a.label}</option>)}</select></div>
             <div><label className="form-label">Expected Date</label><input className="form-input" type="date" id={'po-date-'+(preexistingPO?'preexisting':autoPoId)}/></div></div>
           <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" id={'po-dropship-'+(preexistingPO?'preexisting':autoPoId)}/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school/decorator, skip warehouse receive</span></label></div>
-          {poItems.map((it,vi)=>{const soQ=Object.values(it.sizes).reduce((a,v)=>a+v,0);const excluded=!!poExcluded[vi];const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const catCost=catP?safeNum(catP.nsa_cost):safeNum(it.nsa_cost);
+          {poItems.map((it,vi)=>{const soQ=Object.values(it.sizes).reduce((a,v)=>a+v,0);const excluded=!!poExcluded[vi];const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const rawCost=catP?safeNum(catP.nsa_cost):safeNum(it.nsa_cost);const catCost=isAdidas?Math.floor(rawCost*100)/100:rawCost;
             return<div key={vi} style={{padding:12,border:'1px solid '+(excluded?'#f1f5f9':'#e2e8f0'),borderRadius:6,marginBottom:8,opacity:excluded?0.4:1,transition:'opacity 0.15s'}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
                 <div style={{display:'flex',alignItems:'center',gap:8}}><input type="checkbox" checked={!excluded} onChange={()=>setPOExcluded(x=>({...x,[vi]:!x[vi]}))} style={{marginTop:1}}/><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:4}}>{it.sku}</span><strong>{it.name}</strong> — {it.color}</div>
