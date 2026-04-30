@@ -14685,23 +14685,32 @@ export default function App(){
           }catch(err){if(typeof nf==='function')nf('Upload failed: '+err.message,'error')}
           finally{setArtJobDetailUploading(false)}
         };
-        // Delete a per-item mockup. Scans every art file on the SO and removes the matching URL
-        // from item_mockups[sku] and mockup_files — defensive because mockups uploaded via different
-        // code paths (artist view, this view, legacy general bucket) may live on different art files.
+        // Delete a per-item mockup. Awaits the DB write before updating local state so a realtime
+        // reload that fires between the optimistic update and the network commit can't resurrect
+        // the deleted file. Scans every art file on the SO so mockups uploaded via different code
+        // paths (artist view, this view, legacy general bucket) all get cleared.
         const handleMockupDeleteForItem=async(fileUrl,sku)=>{
-          const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-          const _fUrl=f=>(typeof f==='string'?f:(f?.url||''));
-          const updArt=safeArt(liveSO).map(a=>{
-            const curItemMockups=a.item_mockups||{};
-            const updItemMockups={};
-            Object.entries(curItemMockups).forEach(([k,arr])=>{updItemMockups[k]=(arr||[]).filter(f=>_fUrl(f)!==fileUrl)});
-            const curFiles=(a.mockup_files||a.files||[]);
-            return{...a,item_mockups:updItemMockups,mockup_files:curFiles.filter(f=>_fUrl(f)!==fileUrl)};
-          });
-          const newSO=savSO({...liveSO,art_files:updArt});
-          setArtMockupModal({...j,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]});
-          if(typeof nf==='function')nf('Mockup removed from '+sku);
-          await _dbSaveSO(newSO);
+          if(artJobDetailUploading)return;
+          setArtJobDetailUploading(true);
+          try{
+            if(typeof nf==='function')nf('Removing mockup...');
+            const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+            const _fUrl=f=>(typeof f==='string'?f:(f?.url||''));
+            const updArt=safeArt(liveSO).map(a=>{
+              const curItemMockups=a.item_mockups||{};
+              const updItemMockups={};
+              Object.entries(curItemMockups).forEach(([k,arr])=>{updItemMockups[k]=(arr||[]).filter(f=>_fUrl(f)!==fileUrl)});
+              const curFiles=(a.mockup_files||a.files||[]);
+              return{...a,item_mockups:updItemMockups,mockup_files:curFiles.filter(f=>_fUrl(f)!==fileUrl)};
+            });
+            const pendingSO={...liveSO,art_files:updArt};
+            // Persist FIRST so any realtime reload reflects the deletion; then update local state.
+            const ok=await _dbSaveSO(pendingSO);
+            if(ok===false){if(typeof nf==='function')nf('Failed to remove mockup. Please retry.','error');return}
+            const newSO=savSO(pendingSO);
+            setArtMockupModal({...j,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]});
+            if(typeof nf==='function')nf('Mockup removed from '+sku);
+          }finally{setArtJobDetailUploading(false)}
         };
 
         return<div className="modal-overlay" onClick={()=>setArtMockupModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:900,maxHeight:'94vh',overflow:'auto'}}>
