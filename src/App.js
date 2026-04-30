@@ -7781,6 +7781,9 @@ export default function App(){
     const parseD=(ds)=>{if(!ds)return null;const m=ds.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?new Date('20'+m[3],m[1]-1,m[2]):new Date(ds)};
     const agingDays=(dateStr)=>{const d=parseD(dateStr);return d?Math.floor((today-d)/(1000*60*60*24)):0};
     const dueDays=(dateStr)=>{const d=parseD(dateStr);return d?Math.floor((d-today)/(1000*60*60*24)):null};
+    // Days for derived due date on NetSuite-imported invoices (mirrors the past-due SQL cron logic).
+    const _termDays=(t)=>({prepay:0,net15:15,net30:30,net60:60})[t||'net30']??30;
+    const _deriveDue=(invDate,terms)=>{const d=parseD(invDate);if(!d)return null;const x=new Date(d);x.setDate(x.getDate()+_termDays(terms));return x.toISOString().split('T')[0]};
     const invSortFn=(f)=>setInvSort(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}));
     const sortIcon=(f)=>invSort.f===f?(invSort.d==='asc'?'▲':'▼'):'⇅';
 
@@ -8574,13 +8577,23 @@ export default function App(){
       const overdue=dd!==null&&dd<0&&i.status!=='paid';
       const so=sos.find(s=>s.id===i.so_id);const rep=so?so.created_by:null;
       return{...i,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||'Unknown'}});
-    // Historical rows from NetSuite — no so_id, no due_date, no payments.
+    // Historical rows from NetSuite — no so_id, no payments, and no due_date column.
     // Treat status='paid' as fully paid; anything else leaves total as balance.
-    const enrichedHist=(histInvs||[]).map(i=>{const age=agingDays(i.date);
+    // Derive due_date from invoice_date + customer payment terms so aging buckets,
+    // Overdue stat, and the past-due bulk-email view all work for these rows too.
+    const enrichedHist=(histInvs||[]).map(i=>{
+      const c2=cust.find(c=>c.id===i.customer_id);
+      const baseDate=i.date||i.invoice_date;
+      const age=agingDays(baseDate);
       const paid=i.status==='paid'?safeNum(i.total):0;
       const bal=safeNum(i.total)-paid;
-      const rep=REPS.find(r=>r.name&&(i.rep_name||'').toLowerCase()===r.name.toLowerCase())?.id||null;
-      return{...i,paid,_age:age,_dd:null,_bal:bal,_overdue:false,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||i.raw_customer_name||'Unknown'}});
+      const derivedDue=i.due_date||_deriveDue(baseDate,c2?.payment_terms);
+      const dd=dueDays(derivedDue);
+      const overdue=bal>0&&dd!==null&&dd<0;
+      // Prefer the snapshot rep_name match; fall back to customer.primary_rep_id so
+      // imported invoices without a recognizable rep_name still attribute to a rep.
+      const rep=REPS.find(r=>r.name&&(i.rep_name||'').toLowerCase()===r.name.toLowerCase())?.id||c2?.primary_rep_id||null;
+      return{...i,paid,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:c2?.name||i.raw_customer_name||'Unknown',due_date:derivedDue,date:baseDate}});
     let fi=[...enrichedInvs,...enrichedHist];
 
     // Filters
@@ -8613,15 +8626,21 @@ export default function App(){
       return invSort.d==='asc'?cmp:-cmp;
     });
 
-    // Stats computed from the combined (portal + historical) list, not the filtered view.
+    // Stats scope: respect the rep filter so the top boxes match what the rep sees in the table.
+    // The status/aging chips themselves don't scope the boxes — those still toggle filters via clicks.
     const allInvsCombined=[...enrichedInvs,...enrichedHist];
-    const allOpen=allInvsCombined.filter(i=>i.status==='open'||i.status==='partial');
+    const _statsRepId=invF.rep==='_me_'?cu?.id:invF.rep;
+    const scopedInvs=(_statsRepId&&_statsRepId!=='all')?allInvsCombined.filter(i=>i._rep===_statsRepId):allInvsCombined;
+    const allOpen=scopedInvs.filter(i=>i.status==='open'||i.status==='partial');
     const totalOpen=allOpen.reduce((a,i)=>a+(safeNum(i.total)-safeNum(i.paid)),0);
     const totalOverdue=allOpen.filter(i=>i._dd!==null&&i._dd<0).reduce((a,i)=>a+(safeNum(i.total)-safeNum(i.paid)),0);
-    const totalPaid=allInvsCombined.filter(i=>i.status==='paid').reduce((a,i)=>a+safeNum(i.paid),0);
+    const totalPaid=scopedInvs.filter(i=>i.status==='paid').reduce((a,i)=>a+safeNum(i.paid),0);
+    // Aging by due-date offset: NetSuite rows now have a derived due_date from terms.
+    // `null >= 0` is true in JS via coercion, so we explicitly skip nulls before bucketing.
     const agingBuckets={current:0,d30:0,d60:0,d90:0,d120p:0};
-    allOpen.forEach(i=>{const dd=dueDays(i.due_date);const bal=i.total-i.paid;
-      if(dd>=0)agingBuckets.current+=bal;
+    allOpen.forEach(i=>{const dd=dueDays(i.due_date);const bal=safeNum(i.total)-safeNum(i.paid);
+      if(dd===null)agingBuckets.current+=bal;
+      else if(dd>=0)agingBuckets.current+=bal;
       else if(dd>=-30)agingBuckets.d30+=bal;
       else if(dd>=-60)agingBuckets.d60+=bal;
       else if(dd>=-90)agingBuckets.d90+=bal;
@@ -8647,7 +8666,7 @@ export default function App(){
       {/* Stats */}
       <div className="stats-row">
         <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='all'&&invF.aging==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'all',aging:'all'}))}>
-          <div className="stat-label">All Invoices</div><div className="stat-value">{allInvsCombined.length}</div></div>
+          <div className="stat-label">All Invoices</div><div className="stat-value">{scopedInvs.length}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='open'&&invF.aging==='all'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'open',aging:'all'}))}>
           <div className="stat-label">Open</div><div className="stat-value" style={{color:'#d97706'}}>${totalOpen.toLocaleString()}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:invF.aging==='overdue'?'2px solid #dc2626':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'all',aging:f.aging==='overdue'?'all':'overdue'}))}>
@@ -8678,11 +8697,11 @@ export default function App(){
           <option value="all">All Reps</option><option value="_me_">My Invoices</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <div style={{display:'flex',gap:4}}>
           {[['list','📋 List'],['customer','👥 By Customer']].map(([v,l])=>
-            <button key={v} className={`btn btn-sm ${invF.group===v?'btn-primary':'btn-secondary'}`} onClick={()=>setInvF(f=>({...f,group:v}))}>{l}</button>)}
+            <button key={v} className={`btn btn-sm ${invF.group===v?'btn-primary':'btn-secondary'}`} onClick={()=>setInvF(f=>({...f,group:v,status:v==='customer'&&f.status==='all'?'open':f.status}))}>{l}</button>)}
         </div>
         {(invF.status!=='all'||invF.aging!=='all'||invF.rep!=='all'||invF.search)&&
           <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>setInvF({search:'',status:'all',group:invF.group,aging:'all',rep:'all'})}>✕ Clear Filters</button>}
-        {invF.aging==='overdue'&&fi.length>0&&(()=>{const byC={};fi.filter(i=>i._bal>0).forEach(inv=>{const cid=inv.customer_id;if(!byC[cid])byC[cid]={cust:cust.find(c=>c.id===cid)||{id:cid,name:inv._cname},invoices:[]};byC[cid].invoices.push(inv)});const customerCount=Object.keys(byC).length;return<button className="btn btn-sm" style={{background:'#dc2626',color:'white',border:'none',fontSize:11,fontWeight:700}} onClick={()=>{const customers=Object.values(byC).map(g=>{const billing=getBillingContacts(g.cust,cust);const recipients=billing.map(b=>b.email).filter(Boolean);return{customer:g.cust,invoices:g.invoices,recipients:recipients.join(', '),selected:recipients.length>0,total:g.invoices.reduce((a,i)=>a+i._bal,0)}});setPdBulkModal({customers,options:{includeStatement:true,includePayLink:true},message:'Hi {name},\n\nA gentle reminder that we have invoice(s) on your account that have moved past their due date. Please find your account statement below — you can review and pay open balances anytime through your customer portal.\n\nLet us know if you have any questions, or if any of these have already been paid and just need to be reconciled on our end.\n\nThank you,\nNSA Team',sending:false,progress:{done:0,total:0,sent:0,failed:0}})}}>📧 Email Past-Due Pack ({customerCount})</button>})()}
+        {(()=>{const overdueInVisible=fi.filter(i=>i._overdue&&i._bal>0);if(overdueInVisible.length===0)return null;const byC={};overdueInVisible.forEach(inv=>{const cid=inv.customer_id;if(!byC[cid])byC[cid]={cust:cust.find(c=>c.id===cid)||{id:cid,name:inv._cname},invoices:[]};byC[cid].invoices.push(inv)});const customerCount=Object.keys(byC).length;return<button className="btn btn-sm" style={{background:'#dc2626',color:'white',border:'none',fontSize:11,fontWeight:700}} onClick={()=>{const customers=Object.values(byC).map(g=>{const billing=getBillingContacts(g.cust,cust);const recipients=billing.map(b=>b.email).filter(Boolean);return{customer:g.cust,invoices:g.invoices,recipients:recipients.join(', '),selected:recipients.length>0,total:g.invoices.reduce((a,i)=>a+i._bal,0)}});setPdBulkModal({customers,options:{includeStatement:true,includePayLink:true},message:'Hi {name},\n\nA gentle reminder that we have invoice(s) on your account that have moved past their due date. Please find your account statement below — you can review and pay open balances anytime through your customer portal.\n\nLet us know if you have any questions, or if any of these have already been paid and just need to be reconciled on our end.\n\nThank you,\nNSA Team',sending:false,progress:{done:0,total:0,sent:0,failed:0}})}}>📧 Email Past-Due Pack ({customerCount})</button>})()}
       </div>
 
       {/* Results count */}
@@ -8796,8 +8815,8 @@ export default function App(){
           </tr>})}</tbody></table>}
       </div></div>}
 
-      {/* Customer grouped view */}
-      {invF.group==='customer'&&Object.entries(grouped).map(([cid,g])=>{
+      {/* Customer grouped view — sorted by open balance desc so biggest debtors come first */}
+      {invF.group==='customer'&&Object.entries(grouped).map(([cid,g])=>({cid,g,_open:g.invoices.filter(i=>i.status!=='paid').reduce((a,i)=>a+i._bal,0),_over:g.invoices.filter(i=>i._overdue).reduce((a,i)=>a+i._bal,0)})).sort((a,b)=>b._open-a._open).map(({cid,g})=>{
         const openBal=g.invoices.filter(i=>i.status!=='paid').reduce((a,i)=>a+i._bal,0);
         const overdueAmt=g.invoices.filter(i=>i._overdue).reduce((a,i)=>a+i._bal,0);
         return<div key={cid} className="card" style={{marginBottom:12}}>
