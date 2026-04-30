@@ -1736,6 +1736,76 @@ function dP(d,q,artFiles,cq){
 // a Supabase access token in the URL hash; supabase-js auto-detects it because
 // detectSessionInUrl is enabled. We just need to confirm a session exists and
 // prompt the user to set a password before redirecting back to the portal.
+function LostArtJobsCard(){
+  const[since,setSince]=React.useState(7);
+  const[rows,setRows]=React.useState(null);
+  const[err,setErr]=React.useState('');
+  const[loading,setLoading]=React.useState(false);
+  const load=React.useCallback(async()=>{
+    if(!supabase){setErr('No DB connection');return}
+    setLoading(true);setErr('');
+    try{
+      const sinceIso=new Date(Date.now()-since*86400000).toISOString();
+      const{data,error}=await supabase.rpc('recent_lost_art_and_jobs',{p_since:sinceIso});
+      if(error)throw error;
+      setRows(data||[]);
+    }catch(e){setErr(e.message||String(e));setRows([])}
+    finally{setLoading(false)}
+  },[since]);
+  React.useEffect(()=>{load()},[load]);
+  const total=rows?rows.length:0;
+  const byUser=rows?rows.filter(r=>r.removed_by_uid).length:0;
+  const bySystem=total-byUser;
+  const ok=total===0;
+  return(
+    <div className="card" style={{marginBottom:16,borderLeft:`4px solid ${ok?'#16a34a':'#dc2626'}`}}>
+      <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <h2>🎨 Lost Art &amp; Jobs</h2>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <select value={since} onChange={e=>setSince(parseInt(e.target.value))} style={{fontSize:12,padding:'4px 6px',border:'1px solid #cbd5e1',borderRadius:6}}>
+            <option value={1}>Last 24h</option>
+            <option value={7}>Last 7 days</option>
+            <option value={30}>Last 30 days</option>
+            <option value={90}>Last 90 days</option>
+          </select>
+          <button className="btn btn-sm btn-secondary" onClick={load} disabled={loading} style={{fontSize:11}}>{loading?'…':'Refresh'}</button>
+          <span style={{fontSize:12,color:ok?'#16a34a':'#dc2626',fontWeight:600}}>{ok?'No removals':`${total} removed`}</span>
+        </div>
+      </div>
+      <div className="card-body">
+        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Audit-log backed: shows ART decorations and jobs that were DELETED from sales orders, with attribution. Distinguishes a person removing it (named) vs a system / unknown actor.</div>
+        {err&&<div style={{padding:8,background:'#fef2f2',color:'#dc2626',fontSize:12,borderRadius:6,marginBottom:8}}>Error: {err}</div>}
+        <div style={{display:'flex',gap:12,marginBottom:10,fontSize:12}}>
+          <div style={{padding:'6px 10px',background:'#f1f5f9',borderRadius:6}}>Total: <strong>{total}</strong></div>
+          <div style={{padding:'6px 10px',background:'#fef2f2',borderRadius:6}}>By a person: <strong>{byUser}</strong></div>
+          <div style={{padding:'6px 10px',background:'#fffbeb',borderRadius:6}}>System / unknown: <strong>{bySystem}</strong></div>
+        </div>
+        {rows&&rows.length>0&&(
+          <div style={{maxHeight:280,overflowY:'auto',border:'1px solid #e2e8f0',borderRadius:6}}>
+            <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+              <thead style={{background:'#f8fafc',position:'sticky',top:0}}>
+                <tr><th style={{textAlign:'left',padding:'6px 8px'}}>When</th><th style={{textAlign:'left',padding:'6px 8px'}}>Type</th><th style={{textAlign:'left',padding:'6px 8px'}}>SO</th><th style={{textAlign:'left',padding:'6px 8px'}}>Detail</th><th style={{textAlign:'left',padding:'6px 8px'}}>Removed by</th></tr>
+              </thead>
+              <tbody>
+                {rows.map((r,i)=>(
+                  <tr key={i} style={{borderTop:'1px solid #e2e8f0'}}>
+                    <td style={{padding:'6px 8px',whiteSpace:'nowrap',color:'#64748b'}}>{new Date(r.removed_at).toLocaleString()}</td>
+                    <td style={{padding:'6px 8px'}}>{r.event_kind==='art'?'🎨 Art':'🛠 Job'}</td>
+                    <td style={{padding:'6px 8px',fontWeight:600}}>{r.so_id||'—'}</td>
+                    <td style={{padding:'6px 8px'}}>{r.detail}</td>
+                    <td style={{padding:'6px 8px',color:r.removed_by_uid?'#dc2626':'#92400e'}}>{r.removed_by||(r.removed_by_uid?r.removed_by_uid.slice(0,8):'system / unknown')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {rows&&rows.length===0&&!err&&<div style={{fontSize:12,color:'#16a34a'}}>✅ No art or jobs were removed in this window.</div>}
+      </div>
+    </div>
+  );
+}
+
 function AuthSetupPage({mode}){
   const isReset=mode==='reset';
   const[pw,setPw]=React.useState('');
@@ -19224,6 +19294,9 @@ export default function App(){
           </div>
         );
       })()}
+
+      {/* Lost Art / Jobs (audit-log backed) */}
+      <LostArtJobsCard/>
 
       {/* Google Drive Backup */}
       <div className="card" style={{marginBottom:16,borderLeft:'4px solid #4285f4'}}>
