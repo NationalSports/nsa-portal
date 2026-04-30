@@ -15074,25 +15074,7 @@ export default function App(){
               </div>)}
             </div>}
 
-            {/* ─── Approve / Reject section — only in popup ─── */}
-            {j.art_status==='waiting_approval'&&<div style={{padding:'24px',background:'linear-gradient(135deg,#fffbeb,#fef3c7)',borderBottom:'2px solid #f59e0b'}}>
-              <div style={{fontWeight:800,color:'#92400e',marginBottom:14,fontSize:16,display:'flex',alignItems:'center',gap:8}}>
-                <span style={{fontSize:20}}>⚠️</span> This artwork needs your review
-              </div>
-              <div style={{display:'flex',gap:16,alignItems:'stretch'}}>
-                <button className="btn" style={{padding:'16px 36px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',whiteSpace:'nowrap',boxShadow:'0 4px 12px rgba(34,197,94,0.3)',minWidth:140}} onClick={()=>{
-                  moveArtStatus(j,'production_files_needed');
-                  setArtMockupModal(null);
-                }}>Approve</button>
-                <div style={{flex:1,display:'flex',flexDirection:'column',gap:8}}>
-                  <textarea className="form-input" rows={3} placeholder="Tell the artist what needs to change — colors, sizing, placement, etc. (required to reject)" value={artMockupRevision} onChange={e=>setArtMockupRevision(e.target.value)} style={{resize:'vertical',fontSize:12,flex:1}}/>
-                  <button className="btn" style={{padding:'10px 24px',background:artMockupRevision.trim()?'linear-gradient(135deg,#dc2626,#b91c1c)':'#e5e7eb',color:artMockupRevision.trim()?'white':'#9ca3af',border:'none',borderRadius:8,fontSize:13,fontWeight:700,cursor:artMockupRevision.trim()?'pointer':'not-allowed',boxShadow:artMockupRevision.trim()?'0 4px 12px rgba(220,38,38,0.3)':'none'}} disabled={!artMockupRevision.trim()} onClick={()=>{
-                    rejectArt(j,artMockupRevision.trim());
-                    setArtMockupModal(null);setArtMockupRevision('');
-                  }}>Reject & Request Revision</button>
-                </div>
-              </div>
-            </div>}
+            {/* Approval is handled on the rep's SO page — Art Dashboard intentionally has no Approve/Reject UI */}
             {j.art_status==='art_complete'&&<div style={{padding:'16px 24px',background:'#f0fdf4',borderBottom:'1px solid #bbf7d0'}}>
               <div style={{fontSize:14,fontWeight:700,color:'#166534'}}>Approved</div>
             </div>}
