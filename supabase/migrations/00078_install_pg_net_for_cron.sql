@@ -1,0 +1,24 @@
+-- Enables the pg_net extension that the send-scheduled-emails cron
+-- needs to invoke the corresponding edge function.
+--
+-- Background: migration 00067_scheduled_emails.sql created a pg_cron
+-- job that calls net.http_post(...) every 15 minutes, but pg_net was
+-- never installed. Every cron tick has been failing silently with
+-- "schema net does not exist" since deployment.
+--
+-- This migration only installs the extension. The two database-level
+-- settings the cron also needs (app.settings.supabase_url and
+-- app.settings.service_role_key) require ALTER DATABASE privileges that
+-- aren't granted to the migration role on Supabase managed Postgres.
+-- They must be set manually in the Supabase SQL Editor:
+--
+--   ALTER DATABASE postgres SET "app.settings.supabase_url" = 'https://hpslkvngulqirmbstlfx.supabase.co';
+--   ALTER DATABASE postgres SET "app.settings.service_role_key" = 'eyJ...';
+--
+-- Get service_role_key from Supabase Dashboard → Project Settings → API.
+-- Both settings are persisted at the database level and survive sessions.
+--
+-- Rollback (run via SQL editor if needed):
+--   DROP EXTENSION IF EXISTS pg_net;
+
+CREATE EXTENSION IF NOT EXISTS pg_net WITH SCHEMA extensions;
