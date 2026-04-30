@@ -78,7 +78,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       <button className="btn btn-sm btn-primary" onClick={()=>onNewEst(customer)}><Icon name="file" size={12}/> Estimate</button>
       <button className="btn btn-sm btn-secondary"><Icon name="mail" size={12}/> Email</button>
       <button className="btn btn-sm btn-secondary" onClick={()=>onEdit(customer)}><Icon name="edit" size={12}/> Edit</button>
-      {onReceivePayment&&(customer._oi||0)>0&&<button className="btn btn-sm" style={{background:'#dcfce7',color:'#166534',border:'1px solid #86efac',fontSize:11,fontWeight:600}} onClick={()=>onReceivePayment(customer)} title="Open this customer's invoices to record a payment">💰 Receive Payment</button>}
+      {(()=>{const _hasOpen=(allOrders||[]).some(o=>o.customer_id===customer.id&&(o.type==='invoice')&&o.status!=='paid'&&o.status!=='void'&&o.status!=='cancelled'&&safeNum(o.total)>safeNum(o.paid));return onReceivePayment&&_hasOpen&&<button className="btn btn-sm" style={{background:'#dcfce7',color:'#166534',border:'1px solid #86efac',fontSize:11,fontWeight:600}} onClick={()=>onReceivePayment(customer)} title="Open this customer's invoices to record a payment">💰 Receive Payment</button>})()}
       <div style={{position:'relative'}}>
         <button className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();setShowActions(!showActions)}} style={{fontSize:11}}>Actions ▾</button>
         {showActions&&<div style={{position:'absolute',top:'100%',left:0,zIndex:999,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 4px 12px rgba(0,0,0,.12)',minWidth:180,marginTop:4,overflow:'hidden'}} onClick={()=>setShowActions(false)}>
