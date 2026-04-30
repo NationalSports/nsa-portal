@@ -62,8 +62,8 @@ function EmailBadge({e}){if(!e.email_status)return null;const s=e.email_status;r
 
 function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_line1||c.shipping_city)a.push({id:c.id,label:`${l}: ${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''}`.trim(),addr:`${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''}`.trim()})};
   const addAlts=(c)=>{(c.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city)).forEach(ab=>{a.push({id:c.id,label:`${ab.label||'Alt Shipping'}: ${ab.street||''} ${ab.city||''}, ${ab.state||''}`.trim(),addr:`${ab.street||''} ${ab.city||''}, ${ab.state||''}`.trim()})})};
-  if(!cu)return a;add(cu,'Default');addAlts(cu);if(cu.parent_id){const par=all.find(x=>x.id===cu.parent_id);if(par){add(par,par.alpha_tag);addAlts(par);all.filter(c=>c.parent_id===par.id&&c.id!==cu.id).forEach(s=>{add(s,s.alpha_tag);addAlts(s)})}}
-  else{all.filter(c=>c.parent_id===cu.id).forEach(s=>{add(s,s.alpha_tag);addAlts(s)})}return a}
+  if(!cu)return a;add(cu,'Default');addAlts(cu);if(cu.parent_id){const par=all.find(x=>x.id===cu.parent_id);if(par){add(par,par.alpha_tag);addAlts(par)}}
+  return a}
 
 
 // SEND ESTIMATE MODAL
