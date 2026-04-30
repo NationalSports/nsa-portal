@@ -5797,6 +5797,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         setJobWizard({groups:Object.values(dtMap)});
       };
       const wizActivate=(groups,activateAll)=>{
+        // Guard against accidental destruction. wizActivate replaces the entire
+        // jobs array with freshly-built jobs whose prod_status, item_status,
+        // fulfilled_units, art_requests history, etc. all reset. Confirm before
+        // doing this when any existing job has already advanced past hold.
+        const _activeJobs=safeJobs(o).filter(jj=>{const ps=jj.prod_status;return ps&&ps!=='draft'&&ps!=='hold'});
+        if(_activeJobs.length>0){
+          const _names=_activeJobs.map(jj=>(jj.id||'(unnamed)')+(jj.prod_status?' ['+jj.prod_status+']':'')).join('\n  ');
+          if(!window.confirm('This will replace '+_activeJobs.length+' job'+(_activeJobs.length===1?'':'s')+' that '+(_activeJobs.length===1?'is':'are')+' already in production:\n\n  '+_names+'\n\nTheir production status, fulfillment counts, and art request history will be lost. The new jobs will start fresh.\n\nContinue?')){
+            return;
+          }
+        }
         const wizArtistsAll=REPS.filter(r=>r.role==='art'||r.role==='artist').filter(r=>r.is_active!==false);
         const newJobs=[];
         groups.forEach((g,gi)=>{
