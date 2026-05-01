@@ -4,6 +4,28 @@ import { NSA as _NSA_CONST } from './constants';
 // ── Brevo Email ──
 export const _brevoKey = process.env.REACT_APP_BREVO_API_KEY || '';
 
+// Returns an absolute URL for the company logo so it renders inside external
+// email clients (Gmail, Apple Mail, etc.) which won't follow relative paths.
+export const _absLogoUrl=(companyInfo)=>{
+  const raw=companyInfo?.logoUrl||(_NSA_CONST&&_NSA_CONST.logoUrl)||'/nsa-logo.svg';
+  if(/^https?:/i.test(raw))return raw;
+  const origin=(typeof window!=='undefined'&&window.location?.origin)||'https://nsa-portal.netlify.app';
+  return origin+raw;
+};
+
+// Wraps an HTML email body with a centered logo header so every outgoing
+// estimate / SO / invoice email is branded consistently.
+export const buildBrandedEmailHtml=(innerHtml,companyInfo)=>{
+  const logo=_absLogoUrl(companyInfo);
+  const name=(companyInfo&&companyInfo.name)||(_NSA_CONST&&_NSA_CONST.name)||'National Sports Apparel';
+  return '<div style="font-family:sans-serif;font-size:14px;line-height:1.6;color:#1e293b;max-width:720px;margin:0 auto">'
+    +'<div style="text-align:center;padding:12px 0 18px;border-bottom:2px solid #e2e8f0;margin-bottom:18px">'
+    +'<img src="'+logo+'" alt="'+name+'" style="max-height:60px;display:inline-block"/>'
+    +'</div>'
+    +innerHtml
+    +'</div>';
+};
+
 // Toggles the "Also Text Coach" SMS UI in send modals. Disabled while SMS sending
 // is unreliable; flip to true (or wire to env) to re-enable. Send code paths
 // remain intact so re-enabling is a one-line change.

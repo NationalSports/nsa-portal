@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs } from './safeHelpers';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC } from './constants';
 import html2pdf from 'html2pdf.js';
-import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload } from './utils';
+import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml } from './utils';
 
 const ImgGallery=({images=[],onUpdate,onError,maxImages=10})=>{
   const[uploading,setUploading]=useState(false);const[drag,setDrag]=useState(false);
@@ -68,7 +68,7 @@ function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_lin
 
 // SEND ESTIMATE MODAL
 
-function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser,defaultFollowUpDays}){
+function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser,defaultFollowUpDays,companyInfo}){
   const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);const[toEmails,setToEmails]=useState('');
   const[sending,setSending]=useState(false);const[dragOver,setDragOver]=useState(false);
   const[smsEnabled,setSmsEnabled]=useState(false);const[smsPhone,setSmsPhone]=useState('');const[smsMsg,setSmsMsg]=useState('');
@@ -80,6 +80,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
   const estimateRef=React.useRef(estimate);estimateRef.current=estimate;
   const docTypeRef=React.useRef(docType);docTypeRef.current=docType;
   const defaultFollowUpRef=React.useRef(defaultFollowUpDays);defaultFollowUpRef.current=defaultFollowUpDays;
+  const repUserRef=React.useRef(repUser);repUserRef.current=repUser;
   React.useEffect(()=>{if(isOpen&&!prevOpenRef.current){
     const cust2=customerRef.current;const est2=estimateRef.current;const dt=docTypeRef.current;
     const lbl=dt==='so'?'Sales Order':'Estimate';
@@ -87,7 +88,8 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     const emails=(cust2?.contacts||[]).map(c=>c.email).filter(Boolean);
     const primaryContact=(cust2.contacts||[])[0];
     setToEmails(emails.join(', '));
-    setBody(`Hi ${primaryContact?.name||'Coach'},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nsa-portal.netlify.app/?portal=${cust2.alpha_tag}\n\nLet me know if you have any questions!\n\nSteve Peterson\nNational Sports Apparel`);
+    const _signer=repUserRef.current?.name||'National Sports Apparel';
+    setBody(`Hi ${primaryContact?.name||'Coach'},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nsa-portal.netlify.app/?portal=${cust2.alpha_tag}\n\nLet me know if you have any questions!\n\n${_signer}\nNational Sports Apparel`);
     setSmsPhone(primaryContact?.phone||'');
     const portalUrl2=cust2?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+cust2.alpha_tag:'';
     setSmsMsg('Hi '+(primaryContact?.name||'Coach')+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+portalUrl2);
@@ -99,9 +101,9 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     const emails=toEmails.split(',').map(e2=>e2.trim()).filter(Boolean);
     if(emails.length===0){alert('Please enter at least one email address');return}
     sendingRef.current=true;setSending(true);
-    const subject=`${label} ${estimate?.id} - ${estimate?.memo||''}`;
+    const subject=`National Sports ${label} - ${estimate?.id}${estimate?.memo?' - "'+estimate.memo+'"':''}`;
     const portalUrl=customer?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+customer.alpha_tag:'';
-    const htmlBody='<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+body.replace(/\n/g,'<br/>')+'</div>';
+    const htmlBody=buildBrandedEmailHtml(body.replace(/\n/g,'<br/>'),companyInfo);
     if(_brevoKey){
       const toList=emails.map(e2=>({email:e2}));
       // Auto-attach estimate/SO as PDF
@@ -142,7 +144,8 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
       }catch(err){console.warn('Failed to build PDF attachment:',err)}}
       // Convert file attachments to base64 for Brevo
       for(const att of attachments){if(att.file){try{const b64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(att.file)});brevoAttachments.push({name:att.name,content:b64})}catch(err){console.warn('Failed to read attachment:',att.name,err)}}}
-      const res=await sendBrevoEmail({to:toList,subject,htmlContent:htmlBody,senderName:repUser?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:repUser?.email?{email:repUser.email,name:repUser.name}:undefined,attachment:brevoAttachments.length>0?brevoAttachments:undefined});
+      const _fromEmail=(repUser?.email&&/@nationalsportsapparel\.com$/i.test(repUser.email))?repUser.email:'noreply@nationalsportsapparel.com';
+      const res=await sendBrevoEmail({to:toList,subject,htmlContent:htmlBody,senderName:repUser?.name||'National Sports Apparel',senderEmail:_fromEmail,replyTo:repUser?.email?{email:repUser.email,name:repUser.name}:undefined,attachment:brevoAttachments.length>0?brevoAttachments:undefined});
       if(!res.ok){alert('Email send failed: '+(res.error||'Unknown error'));setSending(false);return}
       // Send SMS notification if enabled
       if(smsEnabled&&smsPhone){
@@ -160,7 +163,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     <div className="modal-header"><h2>Send {label}</h2><button className="modal-close" onClick={onClose}>x</button></div>
     <div className="modal-body">
       <div style={{marginBottom:12}}><label className="form-label">To</label><input className="form-input" value={toEmails} onChange={e=>setToEmails(e.target.value)} placeholder="Enter email addresses separated by commas"/></div>
-      <div style={{marginBottom:12}}><label className="form-label">Subject</label><input className="form-input" value={`${label} ${estimate?.id} - ${estimate?.memo||''}`} readOnly style={{color:'#64748b'}}/></div>
+      <div style={{marginBottom:12}}><label className="form-label">Subject</label><input className="form-input" value={`National Sports ${label} - ${estimate?.id}${estimate?.memo?' - "'+estimate.memo+'"':''}`} readOnly style={{color:'#64748b'}}/></div>
       <div style={{marginBottom:12}}><label className="form-label">Message</label><textarea className="form-input" rows={8} value={body} onChange={e=>setBody(e.target.value)} style={{fontFamily:'inherit',resize:'vertical'}}/></div>
       <div style={{marginBottom:12}}><label className="form-label">Attachments</label>
         <div style={{border:'2px dashed '+(dragOver?'#3b82f6':'#d1d5db'),borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:dragOver?'#eff6ff':'#fafafa',transition:'all 0.15s'}}
