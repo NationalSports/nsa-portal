@@ -1089,7 +1089,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       product_id:catMatch?.id||null,sku:style.sku,name:style.styleName,brand:style.brandName,
       vendor_id:vId,color:color.colorName,nsa_cost:cost,retail_price:catMatch?.retail_price||0,
       unit_sell:sell,available_sizes:availSizes.length?availSizes:fallbackSizes,
-      sizes:{},qty_only:false,decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:null}]:[],
+      sizes:{},qty_only:false,decorations:[],no_deco:true,
       is_custom:false,[liveFlag]:true,
       _colorImage:color.colorFrontImage||style.styleImage||'',
       _colorBackImage:color.colorBackImage||'',
@@ -1114,7 +1114,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
   const addP=p=>{const au=isAU(p.brand);const sell=au?rQ(p.retail_price*(1-(tD[cust?.adidas_ua_tier||'B']||0.35))):rQ(p.nsa_cost*(o.default_markup||1.65));
     const avail=(p.available_sizes&&p.available_sizes.length)?[...p.available_sizes]:['S','M','L','XL','2XL'];
-    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,vendor_id:p.vendor_id||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),sizes:{},qty_only:false,decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:null}]:[]}]);setShowAdd(false);setPS('')};
+    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,vendor_id:p.vendor_id||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),sizes:{},qty_only:false,decorations:[],no_deco:true}]);setShowAdd(false);setPS('')};
   const mvI=(i,dir)=>{const items=safeItems(o);const j=i+dir;if(j<0||j>=items.length)return;const next=[...items];[next[i],next[j]]=[next[j],next[i]];sv('items',next)};
   const uI=(i,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?{...it,[k]:v}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};const rmI=i=>{const item=safeItems(o)[i];if(item&&isSO){const pos=safePOs(item);if(pos.length>0){const hasReceived=pos.some(po=>Object.values(po.received||{}).some(v=>v>0));const hasBilled=pos.some(po=>Object.values(po.billed||{}).some(v=>v>0));if(hasReceived||hasBilled){nf('Cannot delete — this item has '+(hasReceived?'received':'')+(hasReceived&&hasBilled?' and ':'')+(hasBilled?'billed':'')+' PO quantities. Remove billing/receiving first.','error');return}nf('Cannot delete — this item has PO(s). Delete the PO(s) first before removing the item.','error');return}}sv('items',safeItems(o).filter((_,x)=>x!==i))};
   const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' with all sizes & decorations')};
@@ -1203,7 +1203,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // (no schema change, no migration) we treat any deco being reversible as the item being reversible, and
   // toggling cascades to every deco so all CW/Side-A/B pickers and qty multipliers stay consistent.
   const setItemReversible=(ii,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map(d=>({...d,reversible:v}))}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
-  const rmD=(ii,di)=>{uI(ii,'decorations',o.items[ii].decorations.filter((_,i)=>i!==di))};
+  const rmD=(ii,di)=>{const next=o.items[ii].decorations.filter((_,i)=>i!==di);setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:next,...(next.length===0?{no_deco:true}:{})}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Art files (SO)
   const af=o.art_files||[];
   const addArt=()=>sv('art_files',[...af,{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}]);
