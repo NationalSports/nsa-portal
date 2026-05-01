@@ -1,3 +1,17 @@
+-- ARCHIVED — DO NOT APPLY. Preserved for history only.
+--
+-- This migration was never applied to prod. It uses the
+-- current_setting('app.settings.service_role_key') pattern, which
+-- does not work on Supabase managed Postgres (GUCs cannot be set).
+-- The daily-backup feature was eventually deployed via:
+--   - 00081_create_backups_bucket.sql       (the bucket)
+--   - 00082_schedule_daily_backup_cron.sql  (the cron, using the
+--                                             vault.decrypted_secrets
+--                                             pattern from 00079)
+--   - supabase/functions/daily-backup       (the edge function,
+--                                             deployed via MCP)
+-- See supabase/migrations/README.md for the archival policy.
+--
 -- Daily automatic full-database backup.
 --
 -- Creates a private 'backups' storage bucket and schedules the daily-backup
