@@ -63,43 +63,57 @@ SET search_path = public
 AS $$
 DECLARE
   _total BIGINT;
-  _q TEXT := '%' || COALESCE(p_query, '') || '%';
+  _toks TEXT[] := CASE WHEN COALESCE(p_query,'') = '' THEN '{}'::TEXT[]
+                       ELSE regexp_split_to_array(lower(trim(p_query)), '\s+') END;
 BEGIN
-  SELECT count(*) INTO _total
-  FROM customers c
-  LEFT JOIN customers p ON p.id = c.parent_id
-  WHERE (p_query IS NULL OR p_query = '' OR
-         c.name ILIKE _q OR
-         c.alpha_tag ILIKE _q OR
-         EXISTS (SELECT 1 FROM unnest(COALESCE(c.search_tags,'{}'::TEXT[])) t WHERE t ILIKE _q) OR
-         EXISTS (SELECT 1 FROM unnest(COALESCE(p.search_tags,'{}'::TEXT[])) t WHERE t ILIKE _q))
-    AND (p_rep_id IS NULL OR p_rep_id = 'all' OR c.primary_rep_id = p_rep_id)
-    AND (p_active_only = FALSE OR c.is_active IS NOT FALSE);
+  -- Build a per-row haystack (own name/alpha_tag/tags + parent's tags) and require
+  -- every whitespace-delimited query token to appear somewhere in it. This lets a
+  -- search like "FPU baseball" match a sub-account named "Fresno Pacific Baseball"
+  -- whose parent has the tag "FPU".
+  WITH base AS (
+    SELECT c.*,
+      lower(coalesce(c.name,'') || ' ' || coalesce(c.alpha_tag,'') || ' '
+            || array_to_string(coalesce(c.search_tags,'{}'::TEXT[]),' ') || ' '
+            || array_to_string(coalesce(p.search_tags,'{}'::TEXT[]),' ')) AS hay
+    FROM customers c
+    LEFT JOIN customers p ON p.id = c.parent_id
+  ), filt AS (
+    SELECT b.*
+    FROM base b
+    WHERE (cardinality(_toks) = 0 OR NOT EXISTS (
+            SELECT 1 FROM unnest(_toks) t WHERE b.hay NOT LIKE '%' || t || '%'))
+      AND (p_rep_id IS NULL OR p_rep_id = 'all' OR b.primary_rep_id = p_rep_id)
+      AND (p_active_only = FALSE OR b.is_active IS NOT FALSE)
+  )
+  SELECT count(*) INTO _total FROM filt;
 
   RETURN QUERY
   SELECT
-    c.id, c.parent_id, c.name, c.alpha_tag, COALESCE(c.search_tags,'{}'::TEXT[]),
-    c.adidas_ua_tier, c.catalog_markup, c.payment_terms,
-    c.tax_rate, c.tax_exempt, c.primary_rep_id,
-    c.billing_address_line1, c.billing_address_line2,
-    c.billing_city, c.billing_state, c.billing_zip,
-    c.shipping_address_line1, c.shipping_address_line2,
-    c.shipping_city, c.shipping_state, c.shipping_zip,
-    c.alt_billing_addresses, c.art_files,
-    c.pantone_colors, c.thread_colors,
-    c.notes, c.is_active, c.netsuite_internal_id,
-    c.created_at, c.updated_at, c._version,
+    f.id, f.parent_id, f.name, f.alpha_tag, COALESCE(f.search_tags,'{}'::TEXT[]),
+    f.adidas_ua_tier, f.catalog_markup, f.payment_terms,
+    f.tax_rate, f.tax_exempt, f.primary_rep_id,
+    f.billing_address_line1, f.billing_address_line2,
+    f.billing_city, f.billing_state, f.billing_zip,
+    f.shipping_address_line1, f.shipping_address_line2,
+    f.shipping_city, f.shipping_state, f.shipping_zip,
+    f.alt_billing_addresses, f.art_files,
+    f.pantone_colors, f.thread_colors,
+    f.notes, f.is_active, f.netsuite_internal_id,
+    f.created_at, f.updated_at, f._version,
     _total AS total_count
-  FROM customers c
-  LEFT JOIN customers p ON p.id = c.parent_id
-  WHERE (p_query IS NULL OR p_query = '' OR
-         c.name ILIKE _q OR
-         c.alpha_tag ILIKE _q OR
-         EXISTS (SELECT 1 FROM unnest(COALESCE(c.search_tags,'{}'::TEXT[])) t WHERE t ILIKE _q) OR
-         EXISTS (SELECT 1 FROM unnest(COALESCE(p.search_tags,'{}'::TEXT[])) t WHERE t ILIKE _q))
-    AND (p_rep_id IS NULL OR p_rep_id = 'all' OR c.primary_rep_id = p_rep_id)
-    AND (p_active_only = FALSE OR c.is_active IS NOT FALSE)
-  ORDER BY c.name
+  FROM (
+    SELECT c.*,
+      lower(coalesce(c.name,'') || ' ' || coalesce(c.alpha_tag,'') || ' '
+            || array_to_string(coalesce(c.search_tags,'{}'::TEXT[]),' ') || ' '
+            || array_to_string(coalesce(p.search_tags,'{}'::TEXT[]),' ')) AS hay
+    FROM customers c
+    LEFT JOIN customers p ON p.id = c.parent_id
+  ) f
+  WHERE (cardinality(_toks) = 0 OR NOT EXISTS (
+          SELECT 1 FROM unnest(_toks) t WHERE f.hay NOT LIKE '%' || t || '%'))
+    AND (p_rep_id IS NULL OR p_rep_id = 'all' OR f.primary_rep_id = p_rep_id)
+    AND (p_active_only = FALSE OR f.is_active IS NOT FALSE)
+  ORDER BY f.name
   LIMIT p_limit OFFSET p_offset;
 END;
 $$;
