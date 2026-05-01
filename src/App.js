@@ -2064,7 +2064,7 @@ export default function App(){
   const[changeLog,setChangeLog]=useState(()=>loadState('change_log',[]));// [{ts,user,action,entity,entityId,detail}]
   const[lastBackup,setLastBackup]=useState(null);
   const[autoBackupEnabled,setAutoBackupEnabled]=useState(true);
-  const logChange=(action,entity,entityId,detail)=>{setChangeLog(prev=>[{ts:new Date().toLocaleString(),user:cu.name,action,entity,entityId,detail},...prev].slice(0,500))};
+  const logChange=(action,entity,entityId,detail)=>{setChangeLog(prev=>[{ts:new Date().toLocaleString(),user:cu?.name||'Portal Coach',action,entity,entityId,detail},...prev].slice(0,500))};
   // Deco vendor management
   const[decoVendors,setDecoVendors]=useState([]);const[decoVendorPricing,setDecoVendorPricing]=useState([]);
   const decoVendorNames=useMemo(()=>decoVendors.filter(v=>v.is_active!==false).map(v=>v.name),[decoVendors]);
@@ -3605,7 +3605,7 @@ export default function App(){
   const savSO=(s,opts)=>{const sl=lockPrices(s);const skipMerge=opts?.skipMerge;
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===sl.id);
-    if(prev){setSOHistory(h=>{const existing=h[sl.id]||[];return{...h,[sl.id]:[{ts:new Date().toLocaleString(),user:cu.name,snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
+    if(prev){setSOHistory(h=>{const existing=h[sl.id]||[];return{...h,[sl.id]:[{ts:new Date().toLocaleString(),user:cu?.name||'Portal Coach',snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
     // Merge pick_line statuses — preserve 'pulled' status from current state so warehouse pulls aren't lost
     // Skip merge when warehouse is intentionally editing/reverting pick_line statuses
     if(!skipMerge&&prev&&sl.items&&prev.items){
