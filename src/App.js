@@ -957,11 +957,11 @@ const _dbSaveCustomer = async (c) => {
     if(!custRow.created_at)custRow.created_at=custRow.updated_at;
     let{error:custErr}=await supabase.from('customers').upsert(_pick(custRow,_custCols),{onConflict:'id'});
     if(custErr){
-      // Retry without art_files if column doesn't exist yet
-      const coreCols=_custCols.filter(c2=>c2!=='art_files');
+      // Retry without optional columns if they don't exist yet (art_files: 00027, search_tags: 00085)
+      const coreCols=_custCols.filter(c2=>c2!=='art_files'&&c2!=='search_tags');
       const retry=await supabase.from('customers').upsert(_pick(custRow,coreCols),{onConflict:'id'});
       if(retry.error){console.error('[DB] save customer upsert error:',retry.error.message);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'customers: '+retry.error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+retry.error.message,'error');return false}
-      else{console.warn('[DB] customer saved without art_files column (run migration 00027)')}
+      else{console.warn('[DB] customer saved without optional columns (run latest migrations)')}
     }
     // Upsert contacts then delete removed ones (avoids DELETE+INSERT race condition)
     if(contacts?.length){
@@ -5197,7 +5197,7 @@ export default function App(){
       onCopy={c=>{const{_version,created_at,updated_at,...rest}=c;const copy={...rest,id:'c'+Date.now(),name:c.name+' (Copy)',alpha_tag:'',netsuite_internal_id:null,contacts:(c.contacts||[]).map(ct=>({...ct})),_oe:0,_os:0,_oi:0,_ob:0};setCM({open:true,c:copy})}}
       onDelete={c=>{const hasOrders=aO.some(o=>o.customer_id===c.id);const kids=cust.filter(ch=>ch.parent_id===c.id);if(hasOrders){alert('Cannot delete — this customer has existing orders. Deactivate instead.');return}if(kids.length>0&&!window.confirm(c.name+' has '+kids.length+' sub-account(s) that will also be deleted. Continue?'))return;if(!window.confirm('Delete "'+c.name+'"? This cannot be undone.'))return;const idsToDelete=[c.id,...kids.map(k=>k.id)];setCust(prev=>prev.filter(x=>!idsToDelete.includes(x.id)));idsToDelete.forEach(id=>{if(supabase){supabase.from('customer_contacts').delete().eq('customer_id',id).then(()=>supabase.from('customers').delete().eq('id',id))}});setSelC(null);nf('Customer deleted')}}/></React.Suspense></ComponentErrorBoundary>;
     // Use server-side results when searching/filtering, fall back to client-side
-    const f=custServerResults&&(q||rF!=='all')?custServerResults.customers.filter(c=>!c.parent_id):pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF&&!gK(p.id).some(c=>c.primary_rep_id===rF))return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
+    const f=custServerResults&&(q||rF!=='all')?custServerResults.customers.filter(c=>!c.parent_id):pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF&&!gK(p.id).some(c=>c.primary_rep_id===rF))return false;if(q){const s=q.toLowerCase();const pTags=(p.search_tags||[]).join(' ').toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||pTags.includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s)||(c.search_tags||[]).join(' ').toLowerCase().includes(s))}return true});
     const missingRateCount=cust.filter(c=>c.is_active!==false&&!c.tax_exempt&&c.tax_rate==null&&c.shipping_state&&c.shipping_zip).length;
     // Detect duplicate alpha tags — they break portal routing since ?portal=<tag> picks the first match.
     const dupAlphaGroups=(()=>{const m=new Map();cust.filter(c=>c.is_active!==false&&c.alpha_tag).forEach(c=>{const k=c.alpha_tag.trim().toUpperCase();if(!m.has(k))m.set(k,[]);m.get(k).push(c)});return [...m.entries()].filter(([,arr])=>arr.length>1)})();
@@ -22759,10 +22759,11 @@ export default function App(){
       </div></div>;
     }
     const s=q.toLowerCase();
-    const rcAll=cust.filter(cc=>((cc.name||'')+' '+(cc.alpha_tag||'')).toLowerCase().includes(s));
+    const _custHay=(cc)=>{if(!cc)return'';const par=cc.parent_id?cust.find(x=>x.id===cc.parent_id):null;return((cc.name||'')+' '+(cc.alpha_tag||'')+' '+((cc.search_tags||[]).join(' '))+' '+((par?.search_tags||[]).join(' '))).toLowerCase()};
+    const rcAll=cust.filter(cc=>_custHay(cc).includes(s));
     const rc=[...rcAll.filter(cc=>!cc.parent_id),...rcAll.filter(cc=>cc.parent_id)];
-    const re=ests.filter(e=>{const cc=cust.find(x=>x.id===e.customer_id);return(e.id+' '+(e.memo||'')+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')).toLowerCase().includes(s)});
-    const rs=sos.filter(so=>{const cc=cust.find(x=>x.id===so.customer_id);return(so.id+' '+(so.memo||'')+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')).toLowerCase().includes(s)});
+    const re=ests.filter(e=>{const cc=cust.find(x=>x.id===e.customer_id);return((e.id+' '+(e.memo||'')).toLowerCase()+' '+_custHay(cc)).includes(s)});
+    const rs=sos.filter(so=>{const cc=cust.find(x=>x.id===so.customer_id);return((so.id+' '+(so.memo||'')).toLowerCase()+' '+_custHay(cc)).includes(s)});
     const rp=prod.filter(p=>((p.sku||'')+' '+(p.name||'')+' '+(p.brand||'')+' '+(p.color||'')).toLowerCase().includes(s));
     const allPicks=[];sos.forEach(so=>{safeItems(so).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&pk.pick_id.toLowerCase().includes(s)&&!allPicks.find(x=>x.pick_id===pk.pick_id)){allPicks.push({pick_id:pk.pick_id,so_id:so.id,so,status:pk.status||'pick'})}})})});
     const rpk=allPicks;
@@ -22944,12 +22945,13 @@ export default function App(){
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
           <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>{setGQ(e.target.value);if(e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(gQ.length>=2)setGOpen(true)}} onKeyDown={e=>{if(e.key==='Enter'){const q=gQ.trim();if(q.length>=2){setGSearchQ(q);setPg('search');setGOpen(false)}}else if(e.key==='Escape'){setGOpen(false)}}}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
           {gOpen&&gQ.length>=2&&(()=>{const s=gQ.toLowerCase();
-            const rcAll=cust.filter(cc=>(cc.name+' '+cc.alpha_tag).toLowerCase().includes(s));
+            const _custHay=(cc)=>{if(!cc)return'';const par=cc.parent_id?cust.find(x=>x.id===cc.parent_id):null;return((cc.name||'')+' '+(cc.alpha_tag||'')+' '+((cc.search_tags||[]).join(' '))+' '+((par?.search_tags||[]).join(' '))).toLowerCase()};
+            const rcAll=cust.filter(cc=>_custHay(cc).includes(s));
             // Parents first so e.g. "Orange Lutheran High School" isn't pushed out of the slice
             // by its own subs (which sort alphabetically before it).
             const rc=[...rcAll.filter(cc=>!cc.parent_id),...rcAll.filter(cc=>cc.parent_id)].slice(0,6);
-            const re=ests.filter(e=>{const cc=cust.find(x=>x.id===e.customer_id);return(e.id+' '+(e.memo||'')+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')).toLowerCase().includes(s)}).slice(0,4);
-            const rs=sos.filter(so=>{const cc=cust.find(x=>x.id===so.customer_id);return(so.id+' '+(so.memo||'')+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')).toLowerCase().includes(s)}).slice(0,4);
+            const re=ests.filter(e=>{const cc=cust.find(x=>x.id===e.customer_id);return((e.id+' '+(e.memo||'')).toLowerCase()+' '+_custHay(cc)).includes(s)}).slice(0,4);
+            const rs=sos.filter(so=>{const cc=cust.find(x=>x.id===so.customer_id);return((so.id+' '+(so.memo||'')).toLowerCase()+' '+_custHay(cc)).includes(s)}).slice(0,4);
             const rp=gProdResults.slice(0,6);
             // Build IF index from all SOs
             const allPicks=[];sos.forEach(so=>{safeItems(so).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&pk.pick_id.toLowerCase().includes(s)&&!allPicks.find(x=>x.pick_id===pk.pick_id)){allPicks.push({pick_id:pk.pick_id,so_id:so.id,so,status:pk.status||'pick'})}})})});

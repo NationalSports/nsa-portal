@@ -277,8 +277,22 @@ function AddressAutocomplete({value,onChange,onPlaceSelect,placeholder,style,cla
   return <input ref={inputRef} className={className||'form-input'} placeholder={placeholder||'Street'} value={value} onChange={e=>onChange(e.target.value)} style={style}/>;
 }
 
+function SearchTagsInput({tags,onChange}){
+  const[draft,setDraft]=useState('');
+  const list=Array.isArray(tags)?tags:[];
+  const add=()=>{const t=draft.trim();if(!t)return;const norm=t.toLowerCase();if(list.some(x=>(x||'').trim().toLowerCase()===norm)){setDraft('');return}onChange([...list,t]);setDraft('')};
+  const rm=(i)=>onChange(list.filter((_,x)=>x!==i));
+  return(<div style={{display:'flex',flexWrap:'wrap',gap:6,alignItems:'center',padding:'6px 8px',border:'1px solid #d1d5db',borderRadius:6,background:'white',minHeight:38}}>
+    {list.map((t,i)=><span key={i} style={{display:'inline-flex',alignItems:'center',gap:4,background:'#eef2ff',color:'#3730a3',border:'1px solid #c7d2fe',borderRadius:10,padding:'2px 4px 2px 8px',fontSize:11,fontWeight:600}}>
+      {t}
+      <button type="button" onClick={()=>rm(i)} style={{background:'none',border:'none',cursor:'pointer',color:'#6366f1',padding:'0 2px',fontSize:14,lineHeight:1}} title="Remove tag">×</button>
+    </span>)}
+    <input style={{flex:1,minWidth:140,border:'none',outline:'none',fontSize:12,padding:'4px 2px',background:'transparent'}} placeholder={list.length?'Add another...':'e.g. FPU baseball, WVC basketball'} value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'||e.key===','){e.preventDefault();add()}else if(e.key==='Backspace'&&!draft&&list.length){rm(list.length-1)}}} onBlur={()=>{if(draft.trim())add()}}/>
+  </div>);
+}
+
 function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCustomers}){
-  const b={parent_id:null,name:'',alpha_tag:'',contacts:[{name:'',email:'',phone:'',role:'Head Coach'}],shipping_city:'',shipping_state:'',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',tax_exempt:false,tax_rate:0};
+  const b={parent_id:null,name:'',alpha_tag:'',search_tags:[],contacts:[{name:'',email:'',phone:'',role:'Head Coach'}],shipping_city:'',shipping_state:'',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',tax_exempt:false,tax_rate:0};
   const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});const[tcLook,setTcLook]=useState({loading:false,msg:''});
   const doTcLookup=async(fields)=>{if(!supabase||!fields.shipping_state||!fields.shipping_zip)return null;try{return await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:fields.shipping_address_line1||'',city:fields.shipping_city||'',state:fields.shipping_state,zip5:fields.shipping_zip})}catch(e){return{ok:false,error:'Error: '+e.message}}};
   const APPAREL_EXEMPT=['MN','NJ','PA','VT','AK','DE','MT','NH','OR'];const APPAREL_THRESHOLD=['MA','NY','RI'];
@@ -316,6 +330,11 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
       <div><label className="form-label">Alpha Tag *</label><input className="form-input" value={f.alpha_tag||''} onChange={e=>sv('alpha_tag',e.target.value)} style={err.a?{borderColor:'#dc2626'}:{}}/></div>
       <div><label className="form-label">Terms</label><select className="form-select" value={f.payment_terms||'net30'} onChange={e=>sv('payment_terms',e.target.value)}><option value="prepay">Prepay</option><option value="net15">Net 15</option><option value="net30">Net 30</option><option value="net60">Net 60</option></select></div>
       <div><label className="form-label">Rep</label><select className="form-select" value={f.primary_rep_id||''} onChange={e=>sv('primary_rep_id',e.target.value||null)}><option value="">— None —</option>{(reps||[]).filter(r=>['Steve Peterson','Mike Mercuriali','Jered Hunt','Chase Koissian','Gayle Peterson','Kevin McCormack','Jeff Bianchini','Sharon Day-Monroe','Kelly Bean'].includes(r.name)&&r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></div></div>
+    <div style={{marginTop:10}}>
+      <label className="form-label">Search Tags <span style={{fontWeight:400,color:'#94a3b8',fontSize:10}}>— short aliases (e.g. "FPU baseball", "WVC basketball"). {ct==='parent'?'Tags on a parent also match its sub-accounts.':'Parent tags are inherited automatically.'}</span></label>
+      <SearchTagsInput tags={f.search_tags||[]} onChange={v=>sv('search_tags',v)}/>
+      {ct==='sub'&&f.parent_id&&(()=>{const par=(allCustomers||[]).find(c=>c.id===f.parent_id);const pTags=(par?.search_tags||[]).filter(Boolean);return pTags.length>0?<div style={{fontSize:10,color:'#6d28d9',marginTop:4}}>Inherited from {par.name}: {pTags.join(', ')}</div>:null})()}
+    </div>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:8,marginBottom:6,textTransform:'uppercase'}}>Contacts</div>
     {(()=>{const inheritedBilling=ct==='sub'&&f.parent_id?getBillingContacts({parent_id:f.parent_id,contacts:[]},allCustomers).filter(b=>b._inherited_from):[];
       return inheritedBilling.length>0?<div style={{background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:6,padding:'8px 10px',marginBottom:8}}>
