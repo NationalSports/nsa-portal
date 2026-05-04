@@ -5,6 +5,12 @@ import { safeNum } from './safeHelpers';
 // ── Utility helpers ──
 export const rQ=v=>Math.round(v*4)/4;
 export const rT=v=>Math.round(v*10)/10;
+// Locker-room SKUs (uploaded with color='CUSTOM') get a different tier-discount table
+// and a different cost multiplier (retail × 0.55 × 0.75) vs. standard Adidas (× 0.375).
+export const isLockerRoom=p=>p?.brand==='Adidas'&&(p?.color||'').toUpperCase()==='CUSTOM';
+export const tierDisc=(tier,isLR)=>{const m=isLR?{A:0.35,B:0.30,C:0.25}:{A:0.40,B:0.35,C:0.30};return m[tier||'B']??(isLR?0.30:0.35)};
+// Cost is floored to the nearest cent for all Adidas items.
+export const adidasCost=(retail,isLR)=>Math.floor((retail||0)*(isLR?0.4125:0.375)*100)/100;
 export const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();return SZ_NORM[u]||u};
 export const showSz=(s,inv)=>{const c=['S','M','L','XL','2XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
 

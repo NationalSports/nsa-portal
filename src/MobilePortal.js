@@ -368,6 +368,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
 
   // ─── HELPER: round to quarter ───
   const rQ=v=>Math.round(v*4)/4;
+  const isLockerRoom=p=>p?.brand==='Adidas'&&(p?.color||'').toUpperCase()==='CUSTOM';
+  const tierDisc=(tier,isLR)=>{const m=isLR?{A:0.35,B:0.30,C:0.25}:{A:0.40,B:0.35,C:0.30};return m[tier||'B']??(isLR?0.30:0.35)};
 
   // ─── DECORATION CONSTANTS ───
   const POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
@@ -402,7 +404,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
     const mk=cc?.catalog_markup||1.65;
     const au=p.brand==='Adidas'||p.brand==='Under Armour'||p.brand==='New Balance';
     const repCost=p.is_clearance&&p.clearance_cost!=null?p.clearance_cost:p.nsa_cost;
-    const sell=au?rQ(p.retail_price*(1-(({A:0.4,B:0.35,C:0.3})[cc?.adidas_ua_tier||'B']||0.35))):rQ(repCost*mk);
+    const sell=au?rQ(p.retail_price*(1-tierDisc(cc?.adidas_ua_tier,isLockerRoom(p)))):rQ(repCost*mk);
     const item={product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,color:p.color,nsa_cost:repCost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...(p.available_sizes||['S','M','L','XL','2XL'])],sizes:{},decorations:[]};
     setNewEst(e=>({...e,items:[...e.items,item]}));
     setNewEstProdQ('');
