@@ -480,8 +480,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 <div style={{fontSize:11,fontWeight:700,color:'#6d28d9',marginBottom:6}}>#️⃣ Numbers</div>
                 {sortedSizes.map(sz=>{const nums=(roster[sz]||[]).filter(n=>n!=='');
                   if(nums.length===0)return null;
-                  return<div key={sz} style={{marginBottom:6}}>
-                    <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>{sz}</div>
+                  return<div key={sz} style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                    <div style={{fontSize:10,fontWeight:700,color:'#64748b',minWidth:56,flexShrink:0}}>{sz} ({nums.length})</div>
                     <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
                       {nums.sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>
                         <span key={ni} style={{display:'inline-block',minWidth:32,textAlign:'center',padding:'3px 6px',background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:4,fontSize:12,fontWeight:700,color:'#6d28d9'}}>{n}</span>)}

@@ -5275,8 +5275,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                           const _szRows=Object.entries(_agg).sort((a,b)=>(_szOrd.indexOf(a[0])<0?99:_szOrd.indexOf(a[0]))-(_szOrd.indexOf(b[0])<0?99:_szOrd.indexOf(b[0])));
                           if(_szRows.length===0)return null;
                           return<div style={{marginTop:8,paddingTop:8,borderTop:'1px solid #bbf7d0'}}>
-                            {_szRows.map(([sz,nums])=><div key={sz} style={{marginBottom:4}}>
-                              <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:2}}>{sz} ({nums.length})</div>
+                            {_szRows.map(([sz,nums])=><div key={sz} style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                              <div style={{fontSize:10,fontWeight:700,color:'#64748b',minWidth:56,flexShrink:0}}>{sz} ({nums.length})</div>
                               <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
                                 {nums.slice().sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>
                                   <span key={ni} style={{display:'inline-block',minWidth:30,textAlign:'center',padding:'2px 6px',background:'white',border:'1px solid #bbf7d0',borderRadius:4,fontSize:11,fontWeight:700,color:'#166534'}}>{n}</span>)}
@@ -5435,8 +5435,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       const _szRows=Object.entries(_agg).sort((a,b)=>(_szOrd.indexOf(a[0])<0?99:_szOrd.indexOf(a[0]))-(_szOrd.indexOf(b[0])<0?99:_szOrd.indexOf(b[0])));
                       if(_szRows.length===0)return null;
                       return<div style={{marginTop:8,paddingTop:8,borderTop:'1px solid #bbf7d0'}}>
-                        {_szRows.map(([sz,nums])=><div key={sz} style={{marginBottom:4}}>
-                          <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:2}}>{sz} ({nums.length})</div>
+                        {_szRows.map(([sz,nums])=><div key={sz} style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                          <div style={{fontSize:10,fontWeight:700,color:'#64748b',minWidth:56,flexShrink:0}}>{sz} ({nums.length})</div>
                           <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
                             {nums.slice().sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>
                               <span key={ni} style={{display:'inline-block',minWidth:30,textAlign:'center',padding:'2px 6px',background:'white',border:'1px solid #bbf7d0',borderRadius:4,fontSize:11,fontWeight:700,color:'#166534'}}>{n}</span>)}
