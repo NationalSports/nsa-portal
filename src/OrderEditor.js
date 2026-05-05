@@ -20,7 +20,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const cuEmail=(cu?.email)||(REPS||[]).find(r=>r.id===cu?.id)?.email||'';
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
-  const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);
+  const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);const[editingJobName,setEditingJobName]=useState(null);
   // selJob is stored as a numeric index into the jobs array. The array can re-order
   // when external updates merge in (coach approval, warehouse picks), making the
   // index point at the wrong job or nothing. We capture the selected job's stable
@@ -89,7 +89,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[artRevisionNote,setArtRevisionNote]=useState('');
   const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
-  const[collapsedArt,setCollapsedArt]=useState({});// Track collapsed art groups by id
+  const[expandedArt,setExpandedArt]=useState({});// Track expanded art groups by id (default collapsed)
   const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
   const[mockupLightbox,setMockupLightbox]=useState(null);// url string for image lightbox overlay
   const[copySkuModal,setCopySkuModal]=useState(null);// {itemIdx, search:''}
@@ -1265,6 +1265,36 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const addOutsideDeco=i=>{const it=o.items[i];sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'outside_deco',position:'Front Center',vendor:'',deco_type:'embroidery',cost_each:0,sell_each:0,notes:'',sell_override:null}]}:x))};
   const uD=(ii,di,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,[k]:v}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   const uDM=(ii,di,updates)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,...updates}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
+  // Swap art on a decoration. If it's part of a released or in-progress art job, recall the
+  // existing request and drop the released flag so syncJobs regenerates the job under the new art name.
+  const changeArtFileId=(ii,di,newId)=>{
+    setO(e=>{
+      const newItems=safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,art_file_id:newId}:d)}:it);
+      const oldArtIds=new Set();let touched=false;
+      const updJobs=safeArr(e.jobs).flatMap(j=>{
+        const inJob=(j.items||[]).some(gi=>{
+          if(gi.item_idx!==ii)return false;
+          const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx];
+          return dis.includes(di);
+        });
+        if(!inJob)return[j];
+        const hasActiveReq=(j.art_requests||[]).some(r=>r.status!=='recalled');
+        if(!j._released&&!hasActiveReq)return[j];
+        (j._art_ids||[j.art_file_id].filter(Boolean)).forEach(aid=>{if(aid&&aid!=='__tbd')oldArtIds.add(aid)});
+        touched=true;
+        // Released jobs are dropped so syncJobs regenerates fresh under the new art (and new name).
+        if(j._released)return[];
+        // Non-released jobs with active requests: reset status and mark requests as recalled.
+        return[{...j,art_status:'needs_art',
+          art_requests:(j.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),
+          assigned_artist:''}];
+      });
+      const updArt=touched?safeArr(e.art_files).map(a=>oldArtIds.has(a.id)?{...a,status:'waiting_for_art'}:a):e.art_files;
+      if(touched)setTimeout(()=>nf('Art changed — previous request recalled, job will refresh'),0);
+      return{...e,items:newItems,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
+    });
+    setDirty(true);
+  };
   // Item-level reversible: a single toggle that syncs `reversible` across every decoration on the item.
   // Reversible is a property of the GARMENT (both sides need decoration), not of an individual deco — but the
   // existing data model stores it per-deco and pricing logic reads it per-deco. To keep the data model stable
@@ -1274,9 +1304,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const rmD=(ii,di)=>{const next=o.items[ii].decorations.filter((_,i)=>i!==di);setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:next,...(next.length===0?{no_deco:true}:{})}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Art files (SO)
   const af=o.art_files||[];
-  const addArt=()=>sv('art_files',[...af,{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}]);
-  const uArt=(i,k,v)=>sv('art_files',af.map((f,x)=>x===i?{...f,[k]:v}:f));
-  const rmArt=i=>{const removed=af[i];sv('art_files',af.filter((_,x)=>x!==i));if(removed?.id){sv('items',safeItems(o).map(it=>({...it,decorations:safeDecos(it).map(d=>d.art_file_id===removed.id?{...d,art_file_id:null}:d)})))}};
+  // Art-folder mutators use the functional setO form so they always read the
+  // latest art_files. Closure-captured `af` would be stale across async gaps
+  // (file uploads, auto-save flips of dirty, parent prop refreshes), and
+  // writing back a stale snapshot would clobber unsaved color ways / size.
+  const addArt=()=>{setO(e=>({...e,art_files:[...(e.art_files||[]),{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}],updated_at:new Date().toLocaleString()}));setDirty(true)};
+  const uArt=(i,k,v)=>{setO(e=>({...e,art_files:(e.art_files||[]).map((f,x)=>x===i?{...f,[k]:v}:f),updated_at:new Date().toLocaleString()}));setDirty(true)};
+  const rmArt=i=>{setO(e=>{const arr=e.art_files||[];const removedId=arr[i]?.id||null;const newAf=arr.filter((_,x)=>x!==i);const newItems=removedId?safeItems(e).map(it=>({...it,decorations:safeDecos(it).map(d=>d.art_file_id===removedId?{...d,art_file_id:null}:d)})):e.items;return{...e,art_files:newAf,items:newItems,updated_at:new Date().toLocaleString()}});setDirty(true)};
 
   const addFileToArt=i=>{const a=af[i];if(!a)return;uArt(i,'files',[...(a.files||[]),'new_file_'+((a.files||[]).length+1)+'.ai'])};
 
@@ -1324,6 +1358,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Items that share the exact same set of decorations AND deco type are grouped into one job
   // Different deco types (e.g. screen_print vs embroidery) always create separate jobs
   const syncJobs=useCallback(()=>{
+    // Released jobs (submitted via the wizard) are frozen — their items are
+    // committed to art and shouldn't be re-merged into auto-generated groups.
+    // Build a set of (item_idx, deco_idx) pairs already covered by a released
+    // job so we can skip them when assembling itemSigs below.
+    const releasedJobs=safeJobs(o).filter(j=>j._released);
+    const releasedItemDecos=new Set();
+    releasedJobs.forEach(j=>(j.items||[]).forEach(gi=>{
+      const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx];
+      dis.forEach(di=>releasedItemDecos.add(gi.item_idx+'::'+di));
+    }));
     // Step 1: Build decoration entries per item, grouped by deco type
     // Each item may produce multiple entries if it has decorations with different deco types
     const itemSigs=[];
@@ -1331,6 +1375,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // First, classify each decoration by its resolved deco type
       const decosByType={};
       safeDecos(it).forEach((d,di)=>{
+        if(releasedItemDecos.has(ii+'::'+di))return;
         if(d.kind==='art'){
           const artF=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
           const dt=artF?.deco_type||d.deco_type||'screen_print';
@@ -1419,7 +1464,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const id=existing?.id||('JOB-'+soNum+'-'+String(jIdx).padStart(2,'0'));
       jIdx++;
       return{
-        id,key:j.key,art_file_id:j.art_file_id,art_name:j.art_name,deco_type:j.deco_type,
+        id,key:j.key,art_file_id:j.art_file_id,art_name:existing?._name_locked?(existing.art_name||j.art_name):j.art_name,deco_type:j.deco_type,
         positions:[...j.positions].filter(Boolean).join(', '),items:j.items,
         art_status:existing?.art_status||j.art_status,item_status:itemSt,prod_status:prodSt,
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
@@ -1429,6 +1474,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         counted_at:existing?.counted_at||null,counted_by:existing?.counted_by||null,
         count_discrepancy:existing?.count_discrepancy||null,notes:existing?.notes||null,
         _auto:existing?._auto!=null?existing._auto:true,
+        _name_locked:existing?._name_locked||false,
         // Preserve art workflow fields from existing job
         art_requests:existing?.art_requests||[],art_messages:existing?.art_messages||[],
         assigned_artist:existing?.assigned_artist||null,rep_notes:existing?.rep_notes||null,
@@ -1479,7 +1525,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       }
       delete nj._hasSplitOverrides;
     });
-    return[...newJobs,...splitJobs];
+    // Released jobs aren't in newJobs (their items were skipped); preserve them as-is.
+    return[...newJobs,...splitJobs,...releasedJobs];
   },[o,af]);// eslint-disable-line
 
   // Auto-sync jobs whenever decorations or items change (does NOT mark dirty — auto-sync is not a user edit)
@@ -1776,9 +1823,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               printDoc(_makeDocOpts());
               const ph=[...(o.print_history||[]),{printed_at:new Date().toLocaleString(),printed_by:cu.name||cu.id}];sv('print_history',ph);onSave({...o,print_history:ph});
             }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🖨️ Print</button>
-            <button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
-              downloadDoc(_makeDocOpts(),(isE?'Estimate-':'SO-')+o.id+(cust?.name?'-'+cust.name:''));
-              nf('📥 Downloaded '+o.id+'.html');
+            <button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
+              try{await downloadDoc(_makeDocOpts(),(isE?'Estimate-':'SO-')+o.id+(cust?.name?'-'+cust.name:''));nf('📥 Downloaded '+o.id+'.pdf');}
+              catch(err){console.warn('PDF download failed:',err);nf('Download failed: '+(err?.message||'unknown error'),'error');}
             }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>📥 Download</button>
             {isE&&onCopyEstimate&&saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Create a copy of this estimate?'))return;onCopyEstimate(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={12}/> Copy</button>}
             {isE&&o.status==='approved'&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Unapprove estimate '+o.id+'? Status will be set back to open.'))return;sv('status','open');const updated={...o,status:'open',approved_by:null,approved_at:null};setO(updated);onSave(updated);nf('Estimate unapproved')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Unapprove</button>}
@@ -2139,7 +2186,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {artF.notes&&<div style={{fontSize:10,color:'#7c3aed'}}>{artF.notes}</div>}
                     <div style={{fontSize:10,marginTop:4,padding:'2px 6px',display:'inline-block',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>{artF.status}</div>
                   </div></div>}
-                  <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else if(v==='__new_tbd'){const tbdCount=af.filter(f=>f.name&&f.name.startsWith('ART TBD')).length;const newName='ART TBD '+(tbdCount+1);const newTbd={id:'af'+Date.now(),name:newName,deco_type:'screen_print',status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};setO(e=>({...e,art_files:[...(e.art_files||[]),newTbd],items:safeItems(e).map((it,x)=>x===idx?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,art_file_id:newTbd.id}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Created '+newName)}else{uD(idx,di,'art_file_id',v||null)}}}>
+                  <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else if(v==='__new_tbd'){const tbdCount=af.filter(f=>f.name&&f.name.startsWith('ART TBD')).length;const newName='ART TBD '+(tbdCount+1);const newTbd={id:'af'+Date.now(),name:newName,deco_type:'screen_print',status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};setO(e=>({...e,art_files:[...(e.art_files||[]),newTbd],items:safeItems(e).map((it,x)=>x===idx?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,art_file_id:newTbd.id}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Created '+newName)}else{changeArtFileId(idx,di,v||null)}}}>
                     <option value="">⚠️ Select artwork...</option>
                     <option value="__tbd">🎨 Art TBD (pricing only)</option>
                     <option value="__new_tbd">➕ New Art TBD...</option>{af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}</select>
@@ -2786,10 +2833,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {af.map((art,i)=>{const usedIn=safeItems(o).reduce((a,it)=>a+safeDecos(it).filter(d=>d.art_file_id===art.id).length,0);
             const afSt=art.status==='uploaded'?'needs_approval':art.status||'waiting_for_art';
-            const isCollapsed=collapsedArt[art.id];
+            const isCollapsed=!expandedArt[art.id];
             return(<div key={art.id} style={{padding:0,background:'#f8fafc',borderRadius:8,border:afSt==='approved'?'2px solid #22c55e':afSt==='needs_approval'?'2px solid #f59e0b':'1px solid #e2e8f0'}}>
               {/* Collapsible header */}
-              <div style={{display:'flex',gap:12,alignItems:'center',padding:'10px 14px',cursor:'pointer',userSelect:'none'}} onClick={()=>setCollapsedArt(prev=>({...prev,[art.id]:!prev[art.id]}))}>
+              <div style={{display:'flex',gap:12,alignItems:'center',padding:'10px 14px',cursor:'pointer',userSelect:'none'}} onClick={()=>setExpandedArt(prev=>({...prev,[art.id]:!prev[art.id]}))}>
                 <span style={{fontSize:12,color:'#64748b',transition:'transform 0.2s',transform:isCollapsed?'rotate(-90deg)':'rotate(0deg)',flexShrink:0}}>▼</span>
                 <div style={{width:36,height:36,borderRadius:6,flexShrink:0,overflow:'hidden',border:'1px solid #e2e8f0',background:art.preview_url?'white':art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':art.deco_type==='dtf'?'#fef3c7':'#f0fdf4',display:'flex',alignItems:'center',justifyContent:'center'}}>
                   {art.preview_url?<img src={art.preview_url} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>
@@ -2864,10 +2911,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(()=>{const _gen=(art.mockup_files||art.files||[]);const _itemMocks=Object.entries(art.item_mockups||{}).flatMap(([sku,arr])=>(arr||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_sku:sku,_perItem:true})));const _seen=new Set();const _all=[..._gen,..._itemMocks].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});return _all.map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');const isPerItem=fn?._perItem;return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:isPerItem?'#ede9fe':'#dbeafe',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isPerItem?'Per-item mockup ('+fn._sku+') — manage in the artist Job Detail modal':isUrl(fnUrl)?'Click to open':'Legacy file — re-upload'}>
                       <Icon name="file" size={10}/>{fileDisplayName(fn)}{isPerItem&&<span style={{fontSize:9,color:'#7c3aed',fontWeight:700}}>· {fn._sku}</span>}{!isPerItem&&<button onClick={e=>{e.stopPropagation();const mf=[...(art.mockup_files||art.files||[])];const ix=mf.findIndex(x=>(typeof x==='string'?x:x?.url)===fnUrl);if(ix>=0){mf.splice(ix,1);uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[])}}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button>}</span>})})()}</div>
                     <div style={{border:'2px dashed #bfdbfe',borderRadius:6,padding:12,textAlign:'center',cursor:'pointer',background:'#eff6ff',transition:'all 0.15s'}}
-                      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.multiple=true;inp.onchange=async()=>{let accumulated=[...(art.mockup_files||art.files||[])];for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');accumulated=[...accumulated,{url,name:f.name}];uArt(i,'mockup_files',accumulated);if(!art.mockup_files)uArt(i,'files',[]);nf('📎 '+f.name+' attached — click Save to keep')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
+                      onClick={()=>{const folderId=art.id;const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.multiple=true;inp.onchange=async()=>{for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');setO(e=>({...e,art_files:(e.art_files||[]).map(fa=>fa.id===folderId?{...fa,mockup_files:[...(fa.mockup_files||fa.files||[]),{url,name:f.name}],files:fa.mockup_files?fa.files:[]}:fa),updated_at:new Date().toLocaleString()}));setDirty(true);nf('📎 '+f.name+' attached — click Save to keep')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
                       onDragOver={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#dbeafe';e.currentTarget.style.borderColor='#3b82f6'}}
                       onDragLeave={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe'}}
-                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe';const files=Array.from(e.dataTransfer.files);let accumulated=[...(art.mockup_files||art.files||[])];for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');accumulated=[...accumulated,{url,name:f.name}];uArt(i,'mockup_files',accumulated);if(!art.mockup_files)uArt(i,'files',[]);nf('📎 '+f.name+' attached — click Save to keep')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
+                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe';const folderId=art.id;const files=Array.from(e.dataTransfer.files);for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');setO(ev=>({...ev,art_files:(ev.art_files||[]).map(fa=>fa.id===folderId?{...fa,mockup_files:[...(fa.mockup_files||fa.files||[]),{url,name:f.name}],files:fa.mockup_files?fa.files:[]}:fa),updated_at:new Date().toLocaleString()}));setDirty(true);nf('📎 '+f.name+' attached — click Save to keep')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
                       <div style={{fontSize:11,color:'#2563eb',fontWeight:600}}><Icon name="upload" size={14}/> Drop mockup files here or click to browse</div>
                       <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>PDF, PNG, JPG, AI, EPS</div></div>
                   </div>
@@ -2880,10 +2927,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fnUrl)?'Click to open':'Legacy file — re-upload'}>
                       <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>
                     <div style={{border:'2px dashed #fde68a',borderRadius:6,padding:12,textAlign:'center',cursor:'pointer',background:'#fffbeb',transition:'all 0.15s'}}
-                      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=async()=>{let accumulated=[...(art.prod_files||[])];for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');accumulated=[...accumulated,{url,name:f.name}];uArt(i,'prod_files',accumulated);nf('📎 '+f.name+' attached — click Save to keep')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
+                      onClick={()=>{const folderId=art.id;const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=async()=>{for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');setO(e=>({...e,art_files:(e.art_files||[]).map(fa=>fa.id===folderId?{...fa,prod_files:[...(fa.prod_files||[]),{url,name:f.name}]}:fa),updated_at:new Date().toLocaleString()}));setDirty(true);nf('📎 '+f.name+' attached — click Save to keep')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
                       onDragOver={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fef3c7';e.currentTarget.style.borderColor='#f59e0b'}}
                       onDragLeave={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a'}}
-                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';const files=Array.from(e.dataTransfer.files);let accumulated=[...(art.prod_files||[])];for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');accumulated=[...accumulated,{url,name:f.name}];uArt(i,'prod_files',accumulated);nf('📎 '+f.name+' attached — click Save to keep')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
+                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';const folderId=art.id;const files=Array.from(e.dataTransfer.files);for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');setO(ev=>({...ev,art_files:(ev.art_files||[]).map(fa=>fa.id===folderId?{...fa,prod_files:[...(fa.prod_files||[]),{url,name:f.name}]}:fa),updated_at:new Date().toLocaleString()}));setDirty(true);nf('📎 '+f.name+' attached — click Save to keep')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
                       <div style={{fontSize:11,color:'#d97706',fontWeight:600}}><Icon name="upload" size={14}/> Drop production files here or click to browse</div>
                       <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>DST, AI seps, PDF, PNG, JPG</div></div>
                   </div>
@@ -2895,8 +2942,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>}
             </div>)})}
           {af.length>1&&<div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
-            <button style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#2563eb',fontWeight:600,padding:'4px 8px'}} onClick={()=>{const all={};af.forEach(a=>all[a.id]=true);setCollapsedArt(all)}}>Collapse All</button>
-            <button style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#2563eb',fontWeight:600,padding:'4px 8px'}} onClick={()=>setCollapsedArt({})}>Expand All</button>
+            <button style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#2563eb',fontWeight:600,padding:'4px 8px'}} onClick={()=>setExpandedArt({})}>Collapse All</button>
+            <button style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#2563eb',fontWeight:600,padding:'4px 8px'}} onClick={()=>{const all={};af.forEach(a=>all[a.id]=true);setExpandedArt(all)}}>Expand All</button>
           </div>}
         </div>}
       </div></div>}
@@ -5122,7 +5169,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.item_status]?.bg,color:SC[j.item_status]?.c}}>{itemLabels[j.item_status]}</span>
                   <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}}>{prodLabels[j.prod_status]}</span>
                 </div>
-                <div style={{fontSize:15,fontWeight:700,marginTop:4}}>{j.art_name}</div>
+                <div style={{display:'flex',alignItems:'center',gap:6,marginTop:4,flexWrap:'wrap'}}>
+                  {editingJobName===j.id?<input type="text" autoFocus className="form-input" defaultValue={j.art_name||''}
+                    style={{fontSize:15,fontWeight:700,padding:'2px 8px',minWidth:240}}
+                    onKeyDown={e=>{if(e.key==='Enter')e.target.blur();else if(e.key==='Escape'){setEditingJobName(null)}}}
+                    onBlur={e=>{const v=e.target.value.trim();const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,art_name:v||jj.art_name,_name_locked:true}:jj);setO(e2=>({...e2,jobs:updJobs,updated_at:new Date().toLocaleString()}));setDirty(true);setEditingJobName(null)}}/>
+                  :<><span style={{fontSize:15,fontWeight:700}}>{j.art_name}</span>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>setEditingJobName(j.id)} title="Rename this job">✏️ Rename</button>
+                    {j._name_locked&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,_name_locked:false}:jj);setO(e2=>({...e2,jobs:updJobs,updated_at:new Date().toLocaleString()}));setDirty(true);nf('Job name will sync from artwork on next change')}} title="Stop overriding — name will follow the artwork again">🔓 Unlock</button>}
+                    {j._name_locked&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:700}}>Custom name</span>}
+                  </>}
+                </div>
                 <div style={{fontSize:12,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
                 {(()=>{const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
                   const siblings=safeJobs(o).filter(j2=>j2.id!==j.id&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
@@ -5183,89 +5240,124 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div>)}
               </div>}
               {mockups.length===0&&_jobArtFiles.length===0&&<div style={{padding:12,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,marginBottom:12,fontSize:12,color:'#9a3412'}}>No mockup files attached yet — check the Art Library tab for files.</div>}
-              {/* Per-art-file: mockup followed by its decoration info, mirroring the Art Dashboard layout */}
-              {(()=>{const _allArt2=_jobArtFiles;
+              {/* Per-item: mockup + decoration spec + size grid + production files (mirrors Art Dashboard) */}
+              {(()=>{
                 const _colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
-                if(_allArt2.length===0)return null;
+                if(itemDetails.length===0)return null;
                 return<div style={{marginBottom:12}}>
-                  {_allArt2.map((af3,afi)=>{
-                    // Mockups for this specific art file (general + per-item)
-                    const _afMf=_filterDisplayable(af3?.mockup_files||af3?.files||[]);
-                    const _afIm=_filterDisplayable(Object.values(af3?.item_mockups||{}).flat());
-                    const _afSeen=new Set();
-                    const afMockups=[..._afMf,..._afIm].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_afSeen.has(u))return false;_afSeen.add(u);return true});
-                    const _dp3=new Set();const _numDecos2=[];const _isE3=af3.deco_type==='embroidery';
-                    const _fallback3=(af3.ink_colors||af3.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);
-                    // Final fallback: if CWs are defined on the art file but decorations don't carry color_way_id,
-                    // surface the union of all CW inks so the colors aren't silently hidden on the approval surface.
-                    const _allCwInks3=[...new Set((af3.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
-                    const _as3=af3.art_sizes||{};
-                    // Build per-item color data — only items whose decorations reference this art file
-                    const _afItems=itemDetails.filter(gi=>{const it=safeItems(o)[gi.item_idx];return it&&safeDecos(it).some(d=>d.kind==='art'&&d.art_file_id===af3.id)});
-                    const _itemColorData2=(_afItems.length>0?_afItems:itemDetails).map(gi=>{
-                      const it=safeItems(o)[gi.item_idx];const gk2=gi.sku+'|'+(gi.color||'');
-                      const gc2=af3.garment_colors?.[gk2]||{};const gcCols=Object.values(gc2).flat().filter(c=>c&&c.trim());
-                      const cwCols=[];
-                      if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===af3.id){_dp3.add(d.position||'Front Center');if(d.color_way_id&&af3.color_ways){const cw=af3.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim()&&!cwCols.includes(c.trim()))cwCols.push(c.trim())})}}if(d.kind==='numbers')_numDecos2.push(d)});
-                      const colors=gcCols.length>0?gcCols:cwCols.length>0?cwCols:_fallback3.length>0?_fallback3:_allCwInks3;
-                      return{...gi,colors,colorKey:colors.slice().sort().join('|')};
-                    });
-                    const _pl3=_dp3.size>0?[..._dp3]:[];const _nd2=_numDecos2[0];
-                    // Group by CW
-                    const _cwGrps=[];const _cwS={};
-                    _itemColorData2.forEach(gi=>{if(!_cwS[gi.colorKey]){_cwS[gi.colorKey]={items:[],colors:gi.colors};_cwGrps.push(_cwS[gi.colorKey])}_cwS[gi.colorKey].items.push(gi)});
-                    return<div key={afi} style={{marginBottom:afi<_allArt2.length-1?16:0,paddingBottom:afi<_allArt2.length-1?16:0,borderBottom:afi<_allArt2.length-1?'1px dashed #fcd34d':'none'}}>
-                      {/* Mockup(s) for this art file */}
-                      {afMockups.length>0?<div style={{marginBottom:10}}>
-                        <div style={{fontSize:11,fontWeight:700,color:'#78350f',marginBottom:6}}>Review the mockup{afMockups.length>1?'s':''}:</div>
-                        <div style={{display:'grid',gridTemplateColumns:afMockups.length>1?'1fr 1fr':'1fr',gap:8}}>
-                          {afMockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                            return<div key={fi} style={{borderRadius:10,border:'2px solid #f59e0b',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:300,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                              :_isPdfUrl(url,f)?<div style={{position:'relative',height:300,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
-                                {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:300,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
+                  {itemDetails.map((gi,gii)=>{
+                    const it=safeItems(o)[gi.item_idx];
+                    // Art files referenced by THIS item's decorations, intersected with this job's art set.
+                    const itemArtIds=it?[...new Set(safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&_jobArtIds.has(d.art_file_id)).map(d=>d.art_file_id))]:[];
+                    const _useIds=itemArtIds.length>0?itemArtIds:(j.art_file_id&&_jobArtIds.has(j.art_file_id)?[j.art_file_id]:[]);
+                    const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+                    // Mockups: per-item (scoped to this SKU), then general (only if no per-item mockups exist for this SKU)
+                    const _seen=new Set();
+                    const perSkuMocks=_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.item_mockups?.[gi.sku]||[]));
+                    const generalMocks=perSkuMocks.length===0?_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[])):[];
+                    const itemMockups=[...perSkuMocks,...generalMocks].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
+                    const artDecos=it?safeDecos(it).filter(d=>d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||_jobArtIds.has(d.art_file_id))):[];
+                    const numDecos=it?safeDecos(it).filter(d=>d.kind==='numbers'):[];
+                    const nameDecos=it?safeDecos(it).filter(d=>d.kind==='names'):[];
+                    const totalUnits=Object.values(gi.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
+                    const _itemPFs=itemArtFiles.flatMap(_af=>(_af?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_afName:itemArtFiles.length>1?(_af?.name||''):''})));
+                    return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #fcd34d',borderRadius:10,overflow:'hidden',background:'white'}}>
+                      {/* Item header */}
+                      <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
+                        <div style={{display:'flex',gap:4,flexShrink:0}}>
+                          {gi.image_url&&<img src={gi.image_url} alt="Front" style={{width:44,height:44,objectFit:'contain',borderRadius:6,border:'1px solid #fde68a',background:'white'}}/>}
+                          {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:44,height:44,objectFit:'contain',borderRadius:6,border:'1px solid #fde68a',background:'white'}}/>}
+                        </div>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                            <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:4,fontSize:11}}>{gi.sku}</span>
+                            <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{gi.name}</span>
+                            {gi.color&&<span style={{color:'#6d28d9',fontWeight:700,fontSize:12}}>— {gi.color}</span>}
+                            {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
+                          </div>
+                        </div>
+                        <div style={{textAlign:'right',flexShrink:0}}>
+                          <div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>{totalUnits}</div>
+                          <div style={{fontSize:9,color:'#78350f',fontWeight:600,textTransform:'uppercase'}}>units</div>
+                        </div>
+                      </div>
+                      {/* Mockup */}
+                      {itemMockups.length>0?<div style={{padding:10}}>
+                        <div style={{display:'grid',gridTemplateColumns:itemMockups.length>1?'1fr 1fr':'1fr',gap:8}}>
+                          {itemMockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
+                            return<div key={fi} style={{borderRadius:8,border:'2px solid #f59e0b',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
+                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                              :_isPdfUrl(url,f)?<div style={{position:'relative',height:280,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
+                                {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
                                 <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
-                                  <span style={{fontSize:36}}>PDF</span><span style={{fontSize:13,color:'#1e40af'}}>{name}</span></div></div>
-                              :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:300,background:'#fafafa'}}>
-                                <span style={{fontSize:20}}>📄</span><span style={{fontSize:14,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
+                                  <span style={{fontSize:32}}>PDF</span><span style={{fontSize:12,color:'#1e40af'}}>{name}</span></div></div>
+                              :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:280,background:'#fafafa'}}>
+                                <span style={{fontSize:20}}>📄</span><span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
                               <div style={{padding:'4px 10px',borderTop:'1px solid #fde68a',fontSize:11,color:'#92400e',fontWeight:600,display:'flex',justifyContent:'space-between'}}><span>{name}</span><span style={{color:'#2563eb'}}>Click to enlarge</span></div>
                             </div>})}
                         </div>
-                      </div>:<div style={{padding:10,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,marginBottom:10,fontSize:12,color:'#9a3412'}}>No mockup uploaded yet for {af3.name||'this art'}.</div>}
-                      {/* Art info header */}
-                      <div style={{padding:'12px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8}}>
-                        <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6,letterSpacing:0.5}}>{af3.name||'Art '+(afi+1)}</div>
-                        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10}}>
-                          <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Method</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{af3.deco_type?.replace(/_/g,' ')||'—'}</div></div>
-                          <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Location{_pl3.length>1?'s':''}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_pl3.join(', ')||'—'}</div></div>
-                          {_pl3.length<=1?<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Art Size</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{af3.art_size||'—'}</div></div>
-                          :_pl3.map((pos,pi)=><div key={pi}><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Size — {pos}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_as3[pos]||(pi===0?af3.art_size:'')||'—'}</div></div>)}
-                        </div>
-                      </div>
-                      {/* Per-CW color groups */}
-                      {_cwGrps.map((grp,gi2)=><div key={gi2} style={{padding:'8px 14px',background:'white',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:6}}>
-                        <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:grp.colors.length>0?6:0}}>
-                          {grp.items.map((it2,ii)=><div key={ii} style={{display:'flex',alignItems:'center',gap:4}}>
-                            {it2.image_url&&<img src={it2.image_url} alt="" style={{width:22,height:22,objectFit:'cover',borderRadius:3,border:'1px solid #e2e8f0'}}/>}
-                            <span style={{fontSize:11,fontWeight:700,color:'#0f172a'}}>{it2.color||it2.sku}</span>
-                            <span style={{fontSize:10,color:'#94a3b8'}}>({it2.units})</span>
-                          </div>)}
-                        </div>
-                        {grp.colors.length>0&&<div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
-                          {grp.colors.map((cl,i)=>{const clL=cl.toLowerCase();const sw=_colorMap2[cl]||Object.entries(_colorMap2).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
-                            return<div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 10px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6}}>
-                              <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
-                              <span style={{fontSize:11,fontWeight:600}}>{cl}</span></div>})}
-                        </div>}
-                      </div>)}
-                      {_nd2&&<div style={{padding:'12px 14px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,marginTop:4}}>
-                        <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>Numbers</div>
-                        <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:12}}>
-                          <span><strong>{(_nd2.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
-                          <span>Size: <strong>{_nd2.num_size||'—'}</strong></span>
-                          {_nd2.front_and_back&&<span>Back: <strong>{_nd2.num_size_back||_nd2.num_size||'—'}</strong></span>}
-                          {_nd2.print_color&&<span>Color: <strong>{_nd2.print_color}</strong></span>}
-                          {_nd2.front_and_back&&<span style={{padding:'1px 6px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span>}
+                      </div>:<div style={{padding:14,margin:10,textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>}
+                      {/* Decoration spec */}
+                      {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #fde68a',background:'#f8fafc'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Decoration Spec</div>
+                        {artDecos.map((d,di)=>{
+                          const dAf=d.art_file_id?safeArt(o).find(a=>a.id===d.art_file_id):null;
+                          const cwObj=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;
+                          const _gk2=gi.sku+'|'+(gi.color||'');
+                          const _gc2=dAf?.garment_colors?.[_gk2]||{};
+                          const _gcCols=Object.values(_gc2).flat().filter(c=>c&&c.trim());
+                          const _cwCols=cwObj?cwObj.inks.filter(c=>c&&c.trim()):[];
+                          const _fbCols=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+                          const _allCwInks=[...new Set((dAf?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
+                          const dColors=_gcCols.length>0?_gcCols:_cwCols.length>0?_cwCols:_fbCols.length>0?_fbCols:_allCwInks;
+                          const cwLabel=cwObj?.garment_color||'';
+                          const method=(d.type||dAf?.deco_type||j.deco_type||'screen_print').replace(/_/g,' ');
+                          const size=(dAf?.art_sizes?.[d.position])||dAf?.art_size||'';
+                          return<div key={di} style={{display:'flex',alignItems:'flex-start',gap:8,flexWrap:'wrap',padding:'5px 0',borderTop:di>0?'1px solid #e2e8f0':'none'}}>
+                            <div style={{minWidth:120}}>
+                              <div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{d.position||'—'}</div>
+                              {dAf&&<div style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>{dAf.title||dAf.name||'—'}</div>}
+                              {cwLabel&&<div style={{fontSize:10,fontWeight:600,color:'#0369a1',background:'#e0f2fe',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>CW: {cwLabel}</div>}
+                            </div>
+                            <div style={{flex:1,display:'flex',flexWrap:'wrap',gap:4,alignItems:'center'}}>
+                              <span style={{fontSize:11,color:'#475569',fontWeight:600}}>{method}</span>
+                              {d.underbase&&<span style={{fontSize:10,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 6px',borderRadius:3,border:'1px solid #fbbf24'}}>Underbase</span>}
+                              {d.reversible&&<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 6px',borderRadius:3,border:'1px solid #86efac'}}>Reversible</span>}
+                              <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>{size||'—'}</span>
+                              {dColors.length>0&&<><span style={{fontSize:11,color:'#94a3b8'}}>—</span>
+                                <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+                                  {dColors.map((cl,ci)=>{const sw=_colorMap2[cl]||Object.entries(_colorMap2).find(([k])=>cl.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
+                                    return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}>
+                                      <span style={{width:11,height:11,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{cl}</span>})}
+                                </div></>}
+                            </div>
+                          </div>})}
+                        {numDecos.map((nd,ni)=><div key={'n'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                          <span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 7px',borderRadius:3}}>Numbers{nd.front_and_back?' — Front + Back':''}</span>
+                          <span style={{fontSize:11,color:'#1e293b'}}>{(nd.num_method||'heat_transfer').replace(/_/g,' ')} · Size {nd.num_size||'—'}{nd.num_font?' · '+nd.num_font:''}{nd.print_color?' · '+nd.print_color:''}</span>
+                        </div>)}
+                        {nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                          <span style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 7px',borderRadius:3}}>Names{nd.front_and_back?' — Front + Back':''}</span>
+                        </div>)}
+                      </div>}
+                      {/* Size grid */}
+                      {totalUnits>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #fde68a'}}>
+                        <div style={{overflowX:'auto'}}><table style={{fontSize:11,minWidth:240,width:'100%'}}><thead><tr style={{background:'#f0f2f5'}}>
+                          <th style={{textAlign:'left',padding:'3px 6px',fontSize:9,fontWeight:700}}>SIZE</th>
+                          {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'3px 6px',fontSize:9,fontWeight:700,minWidth:28}}>{sz}</th>)}
+                          <th style={{textAlign:'center',padding:'3px 6px',fontSize:9,fontWeight:800}}>TOTAL</th>
+                        </tr></thead><tbody>
+                          <tr>
+                            <td style={{textAlign:'left',padding:'3px 6px',fontWeight:700,color:'#475569'}}>QTY</td>
+                            {allSizes.map(sz=>{const v=safeNum(gi.sizes?.[sz]);return<td key={sz} style={{textAlign:'center',padding:'3px 6px',fontWeight:v>0?800:400,color:v>0?'#1e40af':'#cbd5e1',background:v>0?'#eef2ff':''}}>{v>0?v:'—'}</td>})}
+                            <td style={{textAlign:'center',padding:'3px 6px',fontWeight:800,color:'#1e40af',background:'#f0f2f5'}}>{totalUnits}</td>
+                          </tr>
+                        </tbody></table></div>
+                      </div>}
+                      {/* Production files (when present) */}
+                      {_itemPFs.length>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #fde68a'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:'#92400e',marginBottom:4}}>Production Files ({_itemPFs.length})</div>
+                        <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{_itemPFs.map((f,fi)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);return<div key={fi} style={{padding:'4px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:3}} onClick={()=>openFile(url)}>📁 {name}{f._afName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({f._afName})</span>}</div>;})}
                         </div>
                         {(()=>{const _job2Items=(j.items||[]);
                           const _rosters=_job2Items.map(_gi=>{const _it=safeItems(o)[_gi.item_idx];const _nd=_it?safeDecos(_it).find(d=>d.kind==='numbers'):null;return _gi.roster||_nd?.roster||null}).filter(r=>r&&Object.keys(r).length>0);
@@ -5284,8 +5376,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                             </div>)}
                           </div>})()}
                       </div>}
-                    </div>})}
-                </div>})()}
+                    </div>;
+                  })}
+                </div>;
+              })()}
               {/* Artist notes / messages */}
               {(()=>{const artMsgs=(j.art_messages||[]).filter(m=>!m.is_system);const artFileNotes=artFile2?.notes;
                 return(artMsgs.length>0||artFileNotes)?<div style={{marginBottom:12,padding:'10px 14px',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:8}}>
@@ -5327,124 +5421,145 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
             </div>}
             {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&(()=>{
-                const artFile3=safeArt(o).find(a=>a.id===j.art_file_id);if(!artFile3)return null;
-                // Pull per-item mockups from every art file referenced by job items, not just the
-                // primary. Mirrors the waiting_approval branch above. Multi-item jobs whose secondary
-                // item carries its own logo art on a separate art file would otherwise show no mockup.
-                const _allJobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
-                (j.items||[]).forEach(_gi=>{const _it=safeItems(o)[_gi.item_idx];if(!_it)return;safeDecos(_it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_allJobArtIds.add(d.art_file_id)})});
-                const _allJobArtFiles=[..._allJobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
-                const _isE3=artFile3.deco_type==='embroidery';
+                // Per-item layout: mockup + decoration spec + size grid + production files (mirrors Art Dashboard).
+                const _jArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
+                (j.items||[]).forEach(_gi=>{const _it=safeItems(o)[_gi.item_idx];if(!_it)return;safeDecos(_it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jArtIds.add(d.art_file_id)})});
                 const _colorMap3={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
-                const _fallback3=(artFile3.ink_colors||artFile3.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);
-                const _dp3=new Set();const _numDecos3=[];
-                // Build per-item color data
-                const _itemColorData=itemDetails.map(gi=>{
-                  const it=safeItems(o)[gi.item_idx];const gk2=gi.sku+'|'+(gi.color||'');
-                  const gc2=artFile3.garment_colors?.[gk2]||{};const gcCols=Object.values(gc2).flat().filter(c=>c&&c.trim());
-                  const cwCols=[];
-                  if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===artFile3.id){_dp3.add(d.position||'Front Center');if(d.color_way_id&&artFile3.color_ways){const cw=artFile3.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim()&&!cwCols.includes(c.trim()))cwCols.push(c.trim())})}}if(d.kind==='numbers')_numDecos3.push(d)});
-                  const colors=gcCols.length>0?gcCols:cwCols.length>0?cwCols:_fallback3;
-                  const colorKey=colors.slice().sort().join('|');
-                  // Search every relevant art file for mockups under this item's SKU, not just artFile3.
-                  const mockups=_filterDisplayable(_allJobArtFiles.flatMap(_af=>_af?.item_mockups?.[gi.sku]||[]));
-                  return{...gi,colors,colorKey,mockups,it};
-                });
-                // Group items by color way
-                const _cwGroups=[];const _cwSeen={};
-                _itemColorData.forEach(gi=>{if(!_cwSeen[gi.colorKey]){_cwSeen[gi.colorKey]={items:[],colors:gi.colors};_cwGroups.push(_cwSeen[gi.colorKey])}_cwSeen[gi.colorKey].items.push(gi)});
-                // Fallback general mockups if no per-item mockups
-                const _generalMocks=_filterDisplayable(artFile3.mockup_files||artFile3.files||[]);
-                const _hasItemMocks=_itemColorData.some(gi=>gi.mockups.length>0);
-                const _pl3=_dp3.size>0?[..._dp3]:[];const _as3=artFile3.art_sizes||{};const _nd3=_numDecos3[0];
+                if(itemDetails.length===0)return null;
                 return<div style={{margin:'8px 20px'}}>
-                  {/* Art info header */}
-                  <div style={{padding:'10px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8}}>
-                    <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6,letterSpacing:0.5}}>{artFile3.name||'Art'}</div>
-                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10}}>
-                      <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Method</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{artFile3.deco_type?.replace(/_/g,' ')||'—'}</div></div>
-                      <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Location{_pl3.length>1?'s':''}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_pl3.join(', ')||'—'}</div></div>
-                      {_pl3.length<=1?<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Art Size</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{artFile3.art_size||'—'}</div></div>
-                      :_pl3.map((pos,pi)=><div key={pi}><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Size — {pos}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_as3[pos]||(pi===0?artFile3.art_size:'')||'—'}</div></div>)}
-                    </div>
-                  </div>
-                  {/* Per-CW groups: mockups + items + colors */}
-                  {_cwGroups.map((grp,gi2)=>{const allMocks=grp.items.flatMap(gi=>gi.mockups);const _seen3=new Set();const uniqueMocks=allMocks.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen3.has(u))return false;_seen3.add(u);return true});
-                    return<div key={gi2} style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:8,background:'white'}}>
-                      {/* Mockup images for this CW group */}
-                      {uniqueMocks.length>0&&<div style={{display:'grid',gridTemplateColumns:uniqueMocks.length>1?'repeat('+Math.min(uniqueMocks.length,3)+',1fr)':'1fr',gap:2,background:'#f1f5f9'}}>
-                        {uniqueMocks.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                          return<div key={fi} style={{background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                            {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:uniqueMocks.length>1?180:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                            :_isPdfUrl(url,f)?<div style={{height:uniqueMocks.length>1?180:280,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
-                              {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:'100%',objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
-                              <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
-                                <span style={{fontSize:28}}>PDF</span><span style={{fontSize:11,color:'#1e40af'}}>{name}</span></div></div>
-                            :<div style={{height:uniqueMocks.length>1?180:280,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
-                              <span style={{fontSize:20}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                          </div>})}
-                      </div>}
-                      {/* Item names in this CW group */}
-                      <div style={{padding:'10px 14px'}}>
-                        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:grp.colors.length>0?8:0}}>
-                          {grp.items.map((it2,ii)=><div key={ii} style={{display:'flex',alignItems:'center',gap:6}}>
-                            {it2.image_url&&<img src={it2.image_url} alt="" style={{width:28,height:28,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
-                            <div>
-                              <div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{it2.name||it2.fullName||it2.sku}</div>
-                              <div style={{fontSize:10,color:'#64748b'}}>{it2.sku} · {it2.color||'—'} · {it2.units} units</div>
-                            </div>
-                          </div>)}
+                  {itemDetails.map((gi,gii)=>{
+                    const it=safeItems(o)[gi.item_idx];
+                    const itemArtIds=it?[...new Set(safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&_jArtIds.has(d.art_file_id)).map(d=>d.art_file_id))]:[];
+                    const _useIds=itemArtIds.length>0?itemArtIds:(j.art_file_id&&_jArtIds.has(j.art_file_id)?[j.art_file_id]:[]);
+                    const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+                    const _seen=new Set();
+                    const perSkuMocks=_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.item_mockups?.[gi.sku]||[]));
+                    const generalMocks=perSkuMocks.length===0?_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[])):[];
+                    const itemMockups=[...perSkuMocks,...generalMocks].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
+                    const artDecos=it?safeDecos(it).filter(d=>d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||_jArtIds.has(d.art_file_id))):[];
+                    const numDecos=it?safeDecos(it).filter(d=>d.kind==='numbers'):[];
+                    const nameDecos=it?safeDecos(it).filter(d=>d.kind==='names'):[];
+                    const totalUnits=Object.values(gi.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
+                    const _itemPFs=itemArtFiles.flatMap(_af=>(_af?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_afName:itemArtFiles.length>1?(_af?.name||''):''})));
+                    return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #86efac',borderRadius:10,overflow:'hidden',background:'white'}}>
+                      {/* Item header */}
+                      <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'#f0fdf4',borderBottom:'1px solid #bbf7d0'}}>
+                        <div style={{display:'flex',gap:4,flexShrink:0}}>
+                          {gi.image_url&&<img src={gi.image_url} alt="Front" style={{width:44,height:44,objectFit:'contain',borderRadius:6,border:'1px solid #bbf7d0',background:'white'}}/>}
+                          {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:44,height:44,objectFit:'contain',borderRadius:6,border:'1px solid #bbf7d0',background:'white'}}/>}
                         </div>
-                        {/* Colors for this CW */}
-                        {grp.colors.length>0&&<div>
-                          <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>{_isE3?'Thread Colors':'Ink Colors / Pantones'} ({grp.colors.length})</div>
-                          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                            {grp.colors.map((cl,i)=>{const clL=cl.toLowerCase();const sw=_colorMap3[cl]||Object.entries(_colorMap3).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
-                              return<div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 10px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6}}>
-                                <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
-                                <span style={{fontSize:11,fontWeight:600}}>{cl}</span></div>})}
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                            <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:4,fontSize:11}}>{gi.sku}</span>
+                            <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{gi.name}</span>
+                            {gi.color&&<span style={{color:'#6d28d9',fontWeight:700,fontSize:12}}>— {gi.color}</span>}
+                            {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
                           </div>
-                        </div>}
+                        </div>
+                        <div style={{textAlign:'right',flexShrink:0}}>
+                          <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{totalUnits}</div>
+                          <div style={{fontSize:9,color:'#15803d',fontWeight:600,textTransform:'uppercase'}}>units</div>
+                        </div>
                       </div>
-                    </div>})}
-                  {/* General mockups fallback if no per-item mockups */}
-                  {!_hasItemMocks&&_generalMocks.length>0&&<div style={{border:'1px solid #86efac',borderRadius:10,overflow:'hidden',marginBottom:8}}>
-                    <div style={{display:'grid',gridTemplateColumns:_generalMocks.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
-                      {_generalMocks.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                        return<div key={fi} style={{background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                          {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:_generalMocks.length>1?200:300,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                          :<div style={{height:200,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
-                            <span style={{fontSize:20}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                        </div>})}
-                    </div>
-                  </div>}
-                  {_nd3&&<div style={{padding:'12px 14px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,marginTop:4}}>
-                    <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>Numbers</div>
-                    <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:12}}>
-                      <span><strong>{(_nd3.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
-                      <span>Size: <strong>{_nd3.num_size||'—'}</strong></span>
-                      {_nd3.front_and_back&&<span>Back: <strong>{_nd3.num_size_back||_nd3.num_size||'—'}</strong></span>}
-                      {_nd3.print_color&&<span>Color: <strong>{_nd3.print_color}</strong></span>}
-                      {_nd3.front_and_back&&<span style={{padding:'1px 6px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span>}
-                    </div>
-                    {(()=>{const _job3Items=(j.items||[]);
-                      const _rosters=_job3Items.map(_gi=>{const _it=safeItems(o)[_gi.item_idx];const _nd=_it?safeDecos(_it).find(d=>d.kind==='numbers'):null;return _gi.roster||_nd?.roster||null}).filter(r=>r&&Object.keys(r).length>0);
-                      if(_rosters.length===0)return null;
-                      const _agg={};_rosters.forEach(r=>{Object.entries(r).forEach(([sz,arr])=>{(arr||[]).forEach(v=>{if(v&&String(v).trim()){if(!_agg[sz])_agg[sz]=[];_agg[sz].push(String(v))}})})});
-                      const _szOrd=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];
-                      const _szRows=Object.entries(_agg).sort((a,b)=>(_szOrd.indexOf(a[0])<0?99:_szOrd.indexOf(a[0]))-(_szOrd.indexOf(b[0])<0?99:_szOrd.indexOf(b[0])));
-                      if(_szRows.length===0)return null;
-                      return<div style={{marginTop:8,paddingTop:8,borderTop:'1px solid #bbf7d0'}}>
-                        {_szRows.map(([sz,nums])=><div key={sz} style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                          <div style={{fontSize:10,fontWeight:700,color:'#64748b',minWidth:56,flexShrink:0}}>{sz} ({nums.length})</div>
-                          <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
-                            {nums.slice().sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>
-                              <span key={ni} style={{display:'inline-block',minWidth:30,textAlign:'center',padding:'2px 6px',background:'white',border:'1px solid #bbf7d0',borderRadius:4,fontSize:11,fontWeight:700,color:'#166534'}}>{n}</span>)}
-                          </div>
+                      {/* Mockup */}
+                      {itemMockups.length>0?<div style={{padding:10}}>
+                        <div style={{display:'grid',gridTemplateColumns:itemMockups.length>1?'1fr 1fr':'1fr',gap:8}}>
+                          {itemMockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
+                            return<div key={fi} style={{borderRadius:8,border:'2px solid #86efac',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
+                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                              :_isPdfUrl(url,f)?<div style={{position:'relative',height:280,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
+                                {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
+                                <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
+                                  <span style={{fontSize:32}}>PDF</span><span style={{fontSize:12,color:'#1e40af'}}>{name}</span></div></div>
+                              :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:280,background:'#fafafa'}}>
+                                <span style={{fontSize:20}}>📄</span><span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
+                              <div style={{padding:'4px 10px',borderTop:'1px solid #bbf7d0',fontSize:11,color:'#166534',fontWeight:600,display:'flex',justifyContent:'space-between'}}><span>{name}</span><span style={{color:'#2563eb'}}>Click to enlarge</span></div>
+                            </div>})}
+                        </div>
+                      </div>:<div style={{padding:14,margin:10,textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>}
+                      {/* Decoration spec */}
+                      {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #bbf7d0',background:'#f8fafc'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Decoration Spec</div>
+                        {artDecos.map((d,di)=>{
+                          const dAf=d.art_file_id?safeArt(o).find(a=>a.id===d.art_file_id):null;
+                          const cwObj=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;
+                          const _gk2=gi.sku+'|'+(gi.color||'');
+                          const _gc2=dAf?.garment_colors?.[_gk2]||{};
+                          const _gcCols=Object.values(_gc2).flat().filter(c=>c&&c.trim());
+                          const _cwCols=cwObj?cwObj.inks.filter(c=>c&&c.trim()):[];
+                          const _fbCols=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+                          const _allCwInks=[...new Set((dAf?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
+                          const dColors=_gcCols.length>0?_gcCols:_cwCols.length>0?_cwCols:_fbCols.length>0?_fbCols:_allCwInks;
+                          const cwLabel=cwObj?.garment_color||'';
+                          const method=(d.type||dAf?.deco_type||j.deco_type||'screen_print').replace(/_/g,' ');
+                          const size=(dAf?.art_sizes?.[d.position])||dAf?.art_size||'';
+                          return<div key={di} style={{display:'flex',alignItems:'flex-start',gap:8,flexWrap:'wrap',padding:'5px 0',borderTop:di>0?'1px solid #e2e8f0':'none'}}>
+                            <div style={{minWidth:120}}>
+                              <div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{d.position||'—'}</div>
+                              {dAf&&<div style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>{dAf.title||dAf.name||'—'}</div>}
+                              {cwLabel&&<div style={{fontSize:10,fontWeight:600,color:'#0369a1',background:'#e0f2fe',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>CW: {cwLabel}</div>}
+                            </div>
+                            <div style={{flex:1,display:'flex',flexWrap:'wrap',gap:4,alignItems:'center'}}>
+                              <span style={{fontSize:11,color:'#475569',fontWeight:600}}>{method}</span>
+                              {d.underbase&&<span style={{fontSize:10,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 6px',borderRadius:3,border:'1px solid #fbbf24'}}>Underbase</span>}
+                              {d.reversible&&<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 6px',borderRadius:3,border:'1px solid #86efac'}}>Reversible</span>}
+                              <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>{size||'—'}</span>
+                              {dColors.length>0&&<><span style={{fontSize:11,color:'#94a3b8'}}>—</span>
+                                <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+                                  {dColors.map((cl,ci)=>{const sw=_colorMap3[cl]||Object.entries(_colorMap3).find(([k])=>cl.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
+                                    return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}>
+                                      <span style={{width:11,height:11,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{cl}</span>})}
+                                </div></>}
+                            </div>
+                          </div>})}
+                        {numDecos.map((nd,ni)=>{
+                          // Prefer this job item's roster slice (set by splitCustom) so split jobs only show their own numbers.
+                          const _itRoster=gi.roster||nd.roster||null;
+                          const _szOrd=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];
+                          const _rosterRows=_itRoster?Object.entries(_itRoster).map(([sz,arr])=>[sz,(arr||[]).filter(v=>v&&String(v).trim())]).filter(([,nums])=>nums.length>0).sort((a,b)=>(_szOrd.indexOf(a[0])<0?99:_szOrd.indexOf(a[0]))-(_szOrd.indexOf(b[0])<0?99:_szOrd.indexOf(b[0]))):[];
+                          return<div key={'n'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0'}}>
+                            <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                              <span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 7px',borderRadius:3}}>Numbers{nd.front_and_back?' — Front + Back':''}</span>
+                              <span style={{fontSize:11,color:'#1e293b'}}>{(nd.num_method||'heat_transfer').replace(/_/g,' ')} · Size {nd.num_size||'—'}{nd.num_font?' · '+nd.num_font:''}{nd.print_color?' · '+nd.print_color:''}</span>
+                            </div>
+                            {_rosterRows.length>0&&<div style={{marginTop:6,paddingTop:6,borderTop:'1px dashed #bbf7d0'}}>
+                              {_rosterRows.map(([sz,nums])=><div key={sz} style={{display:'flex',alignItems:'center',gap:8,marginBottom:3}}>
+                                <div style={{fontSize:10,fontWeight:700,color:'#64748b',minWidth:56,flexShrink:0}}>{sz} ({nums.length})</div>
+                                <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
+                                  {nums.slice().sort((a,b)=>Number(a)-Number(b)).map((n,nii)=>
+                                    <span key={nii} style={{display:'inline-block',minWidth:28,textAlign:'center',padding:'1px 6px',background:'white',border:'1px solid #bbf7d0',borderRadius:4,fontSize:11,fontWeight:700,color:'#166534'}}>{n}</span>)}
+                                </div>
+                              </div>)}
+                            </div>}
+                          </div>})}
+                        {nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                          <span style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 7px',borderRadius:3}}>Names{nd.front_and_back?' — Front + Back':''}</span>
                         </div>)}
-                      </div>})()}
-                  </div>}
-                </div>})()}
+                      </div>}
+                      {/* Size grid */}
+                      {totalUnits>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #bbf7d0'}}>
+                        <div style={{overflowX:'auto'}}><table style={{fontSize:11,minWidth:240,width:'100%'}}><thead><tr style={{background:'#f0f2f5'}}>
+                          <th style={{textAlign:'left',padding:'3px 6px',fontSize:9,fontWeight:700}}>SIZE</th>
+                          {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'3px 6px',fontSize:9,fontWeight:700,minWidth:28}}>{sz}</th>)}
+                          <th style={{textAlign:'center',padding:'3px 6px',fontSize:9,fontWeight:800}}>TOTAL</th>
+                        </tr></thead><tbody>
+                          <tr>
+                            <td style={{textAlign:'left',padding:'3px 6px',fontWeight:700,color:'#475569'}}>QTY</td>
+                            {allSizes.map(sz=>{const v=safeNum(gi.sizes?.[sz]);return<td key={sz} style={{textAlign:'center',padding:'3px 6px',fontWeight:v>0?800:400,color:v>0?'#1e40af':'#cbd5e1',background:v>0?'#eef2ff':''}}>{v>0?v:'—'}</td>})}
+                            <td style={{textAlign:'center',padding:'3px 6px',fontWeight:800,color:'#1e40af',background:'#f0f2f5'}}>{totalUnits}</td>
+                          </tr>
+                        </tbody></table></div>
+                      </div>}
+                      {/* Production files */}
+                      {_itemPFs.length>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #bbf7d0'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:'#92400e',marginBottom:4}}>Production Files ({_itemPFs.length})</div>
+                        <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{_itemPFs.map((f,fi)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);return<div key={fi} style={{padding:'4px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:3}} onClick={()=>openFile(url)}>📁 {name}{f._afName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({f._afName})</span>}</div>;})}
+                        </div>
+                      </div>}
+                    </div>;
+                  })}
+                </div>;
+              })()}
             {/* Status controls */}
             <div style={{padding:'10px 20px',borderTop:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
@@ -5924,8 +6039,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const activeJobs=jobs.filter(j=>j.prod_status!=='draft'&&!j._draft);
       const DECO_LABELS_W={screen_print:'Screen Print',embroidery:'Embroidery',heat_transfer:'Heat Transfer',dtg:'DTG',sublimation:'Sublimation',vinyl:'Vinyl',patch:'Patch'};
       const openJobWizard=()=>{
-        const existingJobs=safeJobs(o);
-        // If jobs already exist, rebuild wizard groups from existing job structure (respecting splits)
+        // Only wizard-load jobs that still need art submission. Already-submitted
+        // jobs (art_requested / waiting_approval / art_complete / etc.) are
+        // preserved untouched and stay visible in the Jobs list.
+        const existingJobs=safeJobs(o).filter(j=>j.art_status==='needs_art');
+        // If needs_art jobs exist, rebuild wizard groups from them (respecting splits)
         if(existingJobs.length>0){
           const groups=existingJobs.map(j=>{
             const items=(j.items||[]).map(ji=>{
@@ -5959,22 +6077,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         setJobWizard({groups:Object.values(dtMap)});
       };
       const wizActivate=(groups,activateAll)=>{
-        // Guard against accidental destruction. wizActivate replaces the entire
-        // jobs array with freshly-built jobs whose prod_status, item_status,
-        // fulfilled_units, art_requests history, etc. all reset. Confirm before
-        // doing this when any existing job has already advanced past hold.
-        const _activeJobs=safeJobs(o).filter(jj=>{const ps=jj.prod_status;return ps&&ps!=='draft'&&ps!=='hold'});
-        if(_activeJobs.length>0){
-          const _names=_activeJobs.map(jj=>(jj.id||'(unnamed)')+(jj.prod_status?' ['+jj.prod_status+']':'')).join('\n  ');
-          if(!window.confirm('This will replace '+_activeJobs.length+' job'+(_activeJobs.length===1?'':'s')+' that '+(_activeJobs.length===1?'is':'are')+' already in production:\n\n  '+_names+'\n\nTheir production status, fulfillment counts, and art request history will be lost. The new jobs will start fresh.\n\nContinue?')){
-            return;
-          }
-        }
+        // Preserve already-submitted jobs (anything past needs_art) so re-running
+        // the wizard doesn't wipe their art_requests, prod state, etc.
+        const preservedJobs=safeJobs(o).filter(jj=>jj.art_status!=='needs_art');
         const wizArtistsAll=REPS.filter(r=>r.role==='art'||r.role==='artist').filter(r=>r.is_active!==false);
         const newJobs=[];
+        let releasedItemCount=0,heldItemCount=0;
         groups.forEach((g,gi)=>{
-          if(g.items.length===0)return;
-          const artIds=[...new Set(g.items.map(it=>it.art_file_id).filter(Boolean))];
+          // Only items the user actually wants to submit are included in the new
+          // job. Excluded items stay behind — syncJobs will regenerate a
+          // needs_art auto-job for them on the next render.
+          const releaseItems=g.items.filter(it=>!it._excluded);
+          heldItemCount+=g.items.length-releaseItems.length;
+          if(releaseItems.length===0)return;
+          releasedItemCount+=releaseItems.length;
+          const artIds=[...new Set(releaseItems.map(it=>it.art_file_id).filter(Boolean))];
           const allApproved=artIds.every(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&af2.status==='approved'});
           const allProdFiles=artIds.every(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&(af2.prod_files||[]).length>0});
           const anyUploaded=artIds.some(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&(af2.status==='uploaded'||af2.status==='needs_approval')});
@@ -5986,31 +6103,42 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const allArtTbd=artIds.length===0||artIds.every(aid=>aid==='__tbd');
           const autoArtRequest=activateAll&&!g.skipArtist&&artStatus==='needs_art'&&!allArtTbd;
           if(autoArtRequest)artStatus='art_requested';
-          const totalUnits=g.items.reduce((a,it)=>a+it.units,0);
-          const positions=[...new Set(g.items.map(it=>it.position))].join(', ');
+          const totalUnits=releaseItems.reduce((a,it)=>a+it.units,0);
+          const positions=[...new Set(releaseItems.map(it=>it.position))].join(', ');
           const artistObj=hasArtist?wizArtistsAll.find(a=>a.id===g.artist):null;
+          // Reuse existing job id when re-releasing a previously-loaded needs_art job
+          const baseIdNum=gi+1+preservedJobs.length;
+          const jobId=g._existingJobId||(o.id.replace('SO-','JOB-')+'-'+(baseIdNum<10?'0':'')+baseIdNum);
+          // Suffix the job key so syncJobs doesn't merge unsubmitted items with
+          // the released signature (which would otherwise re-pollute this job).
+          const jobKey='released_'+g.deco_type+'_'+jobId;
           newJobs.push({
-            id:o.id.replace('SO-','JOB-')+'-'+(gi+1<10?'0':'')+(gi+1),
-            key:'deco_'+g.deco_type+'_'+(gi+1),
+            id:jobId,
+            key:jobKey,
             art_file_id:artIds[0]||null,_art_ids:artIds,
             art_name:g.name,deco_type:g.deco_type,positions,
             art_status:artStatus,item_status:'need_to_order',
             prod_status:activateAll?'hold':'draft',
             ship_method:o.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer',
-            total_units:totalUnits,fulfilled_units:0,split_from:null,...(g._merged?{_merged:true}:{}),
+            total_units:totalUnits,fulfilled_units:0,split_from:null,
+            // Mark as released so syncJobs preserves it and skips its items
+            _released:activateAll?true:false,
+            ...(g._merged?{_merged:true}:{}),
             created_at:new Date().toLocaleDateString(),
             assigned_artist:g.artist||'',
             rep_notes:g.notes||'',
             ...(autoArtRequest?{art_requests:[{id:'AR-'+Date.now()+'-'+gi,artist:g.artist||'',artist_name:artistObj?.name||'',instructions:g.notes||'Requested on release',files:g.files||[],status:'requested',created_at:new Date().toISOString(),created_by:cu?.name||'System',auto:false}]}:{}),
-            items:g.items.map(({item_idx,deco_idx,sku,name,color,units,fulfilled})=>({item_idx,deco_idx,sku,name,color,units,fulfilled:fulfilled||0}))
+            items:releaseItems.map(({item_idx,deco_idx,sku,name,color,units,fulfilled})=>({item_idx,deco_idx,sku,name,color,units,fulfilled:fulfilled||0}))
           });
         });
         // Store rep's sample art files on the art file records (separate from artist mockups)
         // For skip-artist jobs, also promote sample art to mockup_files and mark art as approved
         let updArtFiles=[...safeArt(o)];
-        groups.forEach((g,gi2)=>{
-          if(g.items.length===0)return;
-          const nj=newJobs.find(j2=>j2.key==='deco_'+g.deco_type+'_'+(gi2+1));
+        let njCursor=0;
+        groups.forEach(g=>{
+          const releaseItems=g.items.filter(it=>!it._excluded);
+          if(releaseItems.length===0)return;
+          const nj=newJobs[njCursor++];
           if(!nj)return;
           const repFiles=g.files||[];
           const artIds=nj._art_ids||[nj.art_file_id].filter(Boolean);
@@ -6031,11 +6159,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             });
           }
         });
-        const updated={...o,jobs:newJobs,art_files:updArtFiles,updated_at:new Date().toLocaleString()};
+        const updated={...o,jobs:[...preservedJobs,...newJobs],art_files:updArtFiles,updated_at:new Date().toLocaleString()};
         setO(updated);onSave(updated);setDirty(false);setJobWizard(null);
         const artSent=activateAll?newJobs.filter(j=>j.art_status==='art_requested'&&(j.art_requests||[]).length>0).length:0;
         const artSkipped=activateAll?newJobs.filter(j=>j.art_status==='art_complete').length:0;
         const msgs=[];if(artSent>0)msgs.push(artSent+' art job'+(artSent!==1?'s':'')+' sent to Art Dashboard');if(artSkipped>0)msgs.push(artSkipped+' job'+(artSkipped!==1?'s':'')+' marked art complete');
+        if(heldItemCount>0)msgs.push(heldItemCount+' item'+(heldItemCount!==1?'s':'')+' kept on hold');
         nf(activateAll?(msgs.length>0?'Jobs released! '+msgs.join(', '):'Jobs released for art!'):'Draft jobs saved — activate when ready');
       };
 
@@ -6044,19 +6173,39 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(jobWizard)return<div className="card"><div className="card-header" style={{background:'linear-gradient(135deg,#7c3aed,#a78bfa)',color:'white'}}>
         <h2 style={{color:'white',margin:0}}>Job Setup Wizard</h2>
       </div><div className="card-body" style={{padding:16}}>
-        <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Organize items into production jobs. Items are grouped by decoration type. Confirm grouping, split if needed, and assign an artist with notes for each job before releasing.</div>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>Organize items into production jobs. Items are grouped by decoration type. Confirm grouping, split if needed, and assign an artist with notes for each job before releasing. Uncheck any items you want to keep on hold — they'll stay in the Jobs list as "Needs Art" and can be submitted later.</div>
+        {(()=>{const totItems=jobWizard.groups.reduce((a,g)=>a+g.items.length,0);const incItems=jobWizard.groups.reduce((a,g)=>a+g.items.filter(it=>!it._excluded).length,0);const setAll=on=>setJobWizard(w=>({...w,groups:w.groups.map(g=>({...g,items:g.items.map(it=>({...it,_excluded:!on}))}))}));return<div style={{display:'flex',alignItems:'center',gap:8,marginBottom:14,fontSize:11,color:'#475569'}}>
+          <span style={{fontWeight:600}}>{incItems} of {totItems} items selected</span>
+          <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#f1f5f9',border:'1px solid #cbd5e1',borderRadius:4,color:'#1e40af',fontWeight:600,cursor:'pointer'}} onClick={()=>setAll(true)}>Select All</button>
+          <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#f1f5f9',border:'1px solid #cbd5e1',borderRadius:4,color:'#475569',fontWeight:600,cursor:'pointer'}} onClick={()=>setAll(false)}>Deselect All</button>
+        </div>})()}
+        {/* Single artist selector — applies to all non-skip groups in this submission */}
+        {(()=>{const nonSkip=jobWizard.groups.filter(g=>!g.skipArtist&&g.items.some(it=>!it._excluded));if(nonSkip.length===0)return null;const distinct=[...new Set(nonSkip.map(g=>g.artist||''))];const cur=distinct.length===1?distinct[0]:'';return<div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14,padding:10,background:'#faf5ff',borderRadius:6,border:'1px solid #e9d5ff'}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#6d28d9',whiteSpace:'nowrap'}}>Artist *</div>
+          <select className="form-select" style={{fontSize:12,minWidth:220,flex:1,maxWidth:320}} value={cur} onChange={e=>{const v=e.target.value;setJobWizard(w=>({...w,groups:w.groups.map(g=>g.skipArtist?g:({...g,artist:v}))}))}}>
+            <option value="">Select artist...</option>
+            {wizArtists.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+          <span style={{fontSize:10,color:'#6d28d9'}}>Applied to all jobs in this submission. Per-job notes and reference files are below.</span>
+        </div>})()}
         {jobWizard.groups.map((g,gi)=><div key={gi} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',marginBottom:12}}>
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
             <span style={{fontSize:10,fontWeight:700,color:'white',background:'#7c3aed',padding:'2px 8px',borderRadius:4,textTransform:'uppercase'}}>{g.deco_type.replace(/_/g,' ')}</span>
             <input className="form-input" value={g.name} style={{fontSize:13,fontWeight:700,padding:'4px 8px',flex:1}}
               onChange={e=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],name:e.target.value};setJobWizard({...jobWizard,groups:gs})}}/>
-            <span style={{fontSize:11,fontWeight:700,color:'#475569'}}>{g.items.reduce((a,it)=>a+it.units,0)} units</span>
+            {(()=>{const incU=g.items.filter(it=>!it._excluded).reduce((a,it)=>a+it.units,0);const totU=g.items.reduce((a,it)=>a+it.units,0);return<span style={{fontSize:11,fontWeight:700,color:'#475569'}}>{incU===totU?totU+' units':incU+' / '+totU+' units'}</span>})()}
             {jobWizard.groups.length>1&&g.items.length===0&&<button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:14,fontWeight:700}}
               onClick={()=>{const gs=[...jobWizard.groups];gs.splice(gi,1);setJobWizard({...jobWizard,groups:gs})}}>×</button>}
           </div>
           {g.items.length===0?<div style={{padding:12,textAlign:'center',color:'#94a3b8',fontSize:11}}>No items — drag items here or remove this group</div>:
           <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
             <thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+              <th style={{padding:'3px 6px',textAlign:'center',fontSize:10,color:'#64748b',width:24}} title="Include in this submission">
+                <input type="checkbox" style={{width:13,height:13,cursor:'pointer'}}
+                  checked={g.items.length>0&&g.items.every(it=>!it._excluded)}
+                  ref={el=>{if(el)el.indeterminate=g.items.some(it=>!it._excluded)&&g.items.some(it=>it._excluded)}}
+                  onChange={e=>{const on=e.target.checked;const gs=[...jobWizard.groups];gs[gi]={...gs[gi],items:gs[gi].items.map(it=>({...it,_excluded:!on}))};setJobWizard({...jobWizard,groups:gs})}}/>
+              </th>
               <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>SKU</th>
               <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Item</th>
               <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Art</th>
@@ -6064,7 +6213,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <th style={{padding:'3px 6px',textAlign:'center',fontSize:10,color:'#64748b'}}>Units</th>
               <th style={{padding:'3px 6px',textAlign:'right',fontSize:10,color:'#64748b'}}></th>
             </tr></thead>
-            <tbody>{g.items.map((it,ii)=><tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
+            <tbody>{g.items.map((it,ii)=><tr key={ii} style={{borderBottom:'1px solid #f1f5f9',opacity:it._excluded?0.4:1}}>
+              <td style={{padding:'3px 6px',textAlign:'center'}}>
+                <input type="checkbox" style={{width:13,height:13,cursor:'pointer'}} checked={!it._excluded}
+                  onChange={e=>{const gs=[...jobWizard.groups];const items=[...gs[gi].items];items[ii]={...items[ii],_excluded:!e.target.checked};gs[gi]={...gs[gi],items};setJobWizard({...jobWizard,groups:gs})}}/>
+              </td>
               <td style={{padding:'3px 6px',fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
               <td style={{padding:'3px 6px'}}>{it.name} <span style={{color:'#94a3b8'}}>{it.color}</span></td>
               <td style={{padding:'3px 6px',fontSize:10,color:it.art_name?'#1e40af':'#94a3b8',fontWeight:it.art_name?600:400}}>{it.art_name||'—'}</td>
@@ -6094,18 +6247,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </label>
               {g.skipArtist&&<div style={{fontSize:10,color:'#166534',marginTop:3,marginLeft:20}}>Art status will be set to complete. Upload sample art below if you have files to attach.</div>}
             </div>
-            {!g.skipArtist&&<div style={{display:'flex',gap:10,alignItems:'flex-start',flexWrap:'wrap'}}>
-              <div style={{minWidth:180}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>Artist *</div>
-                <select className="form-select" style={{fontSize:11,width:'100%'}} value={g.artist||''} onChange={e=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],artist:e.target.value};setJobWizard({...jobWizard,groups:gs})}}>
-                  <option value="">Select artist...</option>
-                  {wizArtists.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
-              </div>
-              <div style={{flex:1,minWidth:200}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>Notes for Artist</div>
-                <textarea className="form-input" rows={2} style={{fontSize:11,width:'100%',resize:'vertical'}} placeholder="Mockup details, color notes, placement instructions..." value={g.notes||''} onChange={e=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],notes:e.target.value};setJobWizard({...jobWizard,groups:gs})}}/>
-              </div>
+            {!g.skipArtist&&<div>
+              <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>Notes for Artist</div>
+              <textarea className="form-input" rows={2} style={{fontSize:11,width:'100%',resize:'vertical'}} placeholder="Mockup details, color notes, placement instructions..." value={g.notes||''} onChange={e=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],notes:e.target.value};setJobWizard({...jobWizard,groups:gs})}}/>
             </div>}
             <div style={{marginTop:6}}>
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>Sample Art / Reference Files</div>
@@ -6122,7 +6266,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setJobWizard({...jobWizard,groups:gs});
           }}>+ Add Group</button>
         </div>
-        {(()=>{const allReady=jobWizard.groups.filter(g=>g.items.length>0).every(g=>g.skipArtist||g.artist);const notReady=!allReady;
+        {(()=>{const activeGroups=jobWizard.groups.filter(g=>g.items.some(it=>!it._excluded));const allReady=activeGroups.length>0&&activeGroups.every(g=>g.skipArtist||g.artist);const notReady=!allReady;
           return<div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12,alignItems:'center'}}>
           <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534',fontWeight:800,opacity:notReady?0.5:1}} disabled={notReady}
             onClick={()=>wizActivate(jobWizard.groups,true)}>Release Jobs for Art</button>
@@ -6139,7 +6283,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>Production Jobs ({activeJobs.length}{hasDrafts?' + '+draftJobs.length+' drafts':''})</h2>
         <div style={{display:'flex',gap:6}}>
-          {jobs.length===0&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={openJobWizard}>Set Up Jobs</button>}
+          {jobs.some(j=>j.art_status==='needs_art')&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={openJobWizard}>Submit to Art</button>}
           {jobs.length>1&&!mergeMode&&<button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={()=>setMergeMode({selected:[]})}>Merge Jobs</button>}
           {mergeMode&&<><button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} disabled={mergeMode.selected.length<2} onClick={()=>{
             const sel=mergeMode.selected.sort((a,b)=>a-b);const target=jobs[sel[0]];const allItems=[...(target.items||[])];
@@ -6165,7 +6309,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('All draft jobs activated! Use the wizard to release jobs for art with artist assignments.')}}>Activate All</button>
           <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}} onClick={openJobWizard}>Edit Jobs</button>
         </div>}
-        {jobs.length===0&&<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork to items, then click "Set Up Jobs" to create production jobs.</div>}
+        {jobs.length===0&&<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork to items — jobs will populate automatically, then click "Submit to Art" when ready.</div>}
         {jobs.length>0&&<table style={{fontSize:12}}><thead><tr>{mergeMode&&<th style={{width:30}}></th>}<th>Job ID</th><th>Artwork / Decoration</th><th>Items</th><th>Units</th><th>Items Status</th><th>Art</th><th>Production</th><th></th></tr></thead><tbody>
           {jobs.map((j,ji)=>{
             const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='super_admin'||cu.role==='production'||cu.role==='prod_manager'||cu.role==='gm';
@@ -6194,19 +6338,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <td style={{whiteSpace:'nowrap'}}>
                 {(()=>{const _artIds4=j._art_ids||[j.art_file_id].filter(Boolean);if(_artIds4.length===0||(_artIds4.length===1&&_artIds4[0]==='__tbd'))return null;const hasActiveReqs=(j.art_requests||[]).some(r=>r.status!=='recalled');const hasAnyReqs=(j.art_requests||[]).length>0;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
                   return<>{hasActiveReqs&&activeReq&&<span style={{fontSize:8,padding:'1px 5px',borderRadius:8,fontWeight:700,background:'#fef3c7',color:'#92400e',marginRight:3}}>{activeReq.status==='in_progress'?'In Progress':'Requested'}</span>}
-                  {hasActiveReqs&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();const artIds=j._art_ids||[j.art_file_id].filter(Boolean);const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;return{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:''}});const updArt=af.map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art'}:a);const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Art recalled — you can re-request with new instructions')}} title="Recall art request and reset status">Recall Art</button>}
+                  {hasActiveReqs&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();const artIds=j._art_ids||[j.art_file_id].filter(Boolean);const wasReleased=!!j._released;
+                  // For wizard-released jobs, drop them entirely so syncJobs
+                  // regenerates a fresh needs_art auto-job covering their items
+                  // (which can then be re-submitted via the wizard).
+                  const updJobs=wasReleased?safeJobs(o).filter((_,i2)=>i2!==ji):safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;return{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:''}});
+                  const updArt=af.map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art'}:a);const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Art recalled — you can re-submit with new instructions')}} title="Recall art request and reset status">Recall Art</button>}
                   {hasAnyReqs&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#6d28d9',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'',files:[]})}} title="Send updated instructions to artist">Update Art</button>}</>})()}
                 {canSplit&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setSplitModal({jIdx:ji,mode:null,selectedSkus:[]})}} title="Split job">✂️ Split</button>}
                 {j.split_from&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();const parentIdx=jobs.findIndex(pj=>pj.id===j.split_from);if(parentIdx<0){nf('Parent job '+j.split_from+' not found','error');return}const parent=jobs[parentIdx];const mergedItems=_mergeJobItems([...(parent.items||[]),...(j.items||[])]);const mergedUnits=mergedItems.reduce((a,gi)=>a+safeNum(gi.units),0);const mergedFulfilled=mergedItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);const updJobs=jobs.map((jj,i2)=>i2===parentIdx?{...jj,items:mergedItems,total_units:mergedUnits,fulfilled_units:mergedFulfilled}:jj).filter((_,i2)=>i2!==ji);const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Merged back into '+j.split_from)}} title="Merge back into parent job">Merge Back</button>}
               </td>
             </tr>
             {/* Grouped items under this job */}
-            {(j.items||[]).map((gi,gii)=><tr key={gii} style={{background:'#fafbfc',cursor:'pointer'}} onClick={()=>setSelJob(ji)}>
+            {(j.items||[]).map((gi,gii)=>{
+              const giSizes=_giSizes(gi);const giFul=_giFulSizes(gi,giSizes);
+              const _giSzOrd=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
+              const giSzEntries=Object.entries(giSizes).filter(([,v])=>safeNum(v)>0).sort(([a],[b])=>{const ai=_giSzOrd.indexOf(a),bi=_giSzOrd.indexOf(b);return(ai===-1?99:ai)-(bi===-1?99:bi)});
+              return<tr key={gii} style={{background:'#fafbfc',cursor:'pointer'}} onClick={()=>setSelJob(ji)}>
               <td style={{paddingLeft:24,color:'#94a3b8',fontSize:10}}>↳</td>
               <td colSpan={2} style={{fontSize:11,color:'#475569'}}><span style={{fontWeight:600}}>{gi.sku}</span> {gi.name} <span style={{color:'#94a3b8'}}>({gi.color||'—'})</span></td>
               <td style={{fontSize:11}}>{gi.fulfilled}/{gi.units}</td>
-              <td colSpan={4}/>
-            </tr>)}
+              <td colSpan={4} style={{fontSize:11}}>
+                {giSzEntries.length>0&&<div style={{display:'flex',gap:10,flexWrap:'wrap'}}>{giSzEntries.map(([sz,qty])=>{const f=safeNum(giFul[sz]);const done=f>=qty&&qty>0;return<span key={sz} style={{display:'inline-flex',gap:3,alignItems:'baseline'}}><span style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase'}}>{sz}</span><span style={{fontWeight:700,color:done?'#166534':f>0?'#d97706':'#475569'}}>{f}/{qty}</span></span>})}</div>}
+              </td>
+            </tr>})}
             </React.Fragment>})}
         </tbody></table>}
 

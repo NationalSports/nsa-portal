@@ -14420,7 +14420,8 @@ export default function App(){
       if(artDashView==='rep'&&artFilter!=='all'&&j.repId!==artFilter)return false;
       if(artSearch){const s=artSearch.toLowerCase();
         if(!(j.customer||'').toLowerCase().includes(s)&&!(j.art_name||'').toLowerCase().includes(s)&&
-          !(j.soId||'').toLowerCase().includes(s)&&!(j.id||'').toLowerCase().includes(s))return false}
+          !(j.soId||'').toLowerCase().includes(s)&&!(j.id||'').toLowerCase().includes(s)&&
+          !(j.alpha||'').toLowerCase().includes(s)&&!(j.soMemo||'').toLowerCase().includes(s))return false}
       return true;
     });
 
@@ -14538,7 +14539,7 @@ export default function App(){
             {af&&(()=>{const fSt=af.status==='uploaded'?'needs_approval':af.status||'waiting_for_art';return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
           </div>
           <div style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
-            <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.soId} · {j.total_units}u · {j.rep}</span>
+            <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.id} · {j.soId} · {j.total_units}u · {j.rep}</span>
             <span style={{fontSize:10,color:'#94a3b8',transition:'transform 0.15s',transform:isExp?'rotate(180deg)':'rotate(0deg)',flexShrink:0}}>▾</span>
           </div>
         </div>
@@ -14575,10 +14576,9 @@ export default function App(){
               :<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No artist assigned</span>}
             </div>
             <div style={{fontSize:9,color:'#94a3b8'}}>{j.rep} · {j.alpha||j.soMemo}</div>
-            {/* Art Time Clock In/Out */}
+            {/* Art Time Clock In/Out + Open SO — split 50/50 to keep card compact */}
             {(()=>{const artTimerKey=j.soId+'|'+j.id;const artActive=activeArtTimers[artTimerKey];
               return<div style={{display:'flex',gap:4,marginTop:4}}>
-                <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ Mockup</button>
                 {artActive?<button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'#dc2626',color:'white',border:'none',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();
                   const mins=Math.round((Date.now()-artActive.clockIn)/60000);
                   const idleMins=Math.round((_idleAccum.current[artTimerKey]||0)/60000);
@@ -14592,8 +14592,9 @@ export default function App(){
                   setActiveArtTimers(prev=>({...prev,[artTimerKey]:{person,clockIn:Date.now(),soId:j.soId,artName:j.art_name||'',customer:j.customer||''}}));
                   nf('Art clock in: '+person+' on '+j.art_name);
                 }}>⏱️ Clock In</button>}
+                <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'4px 10px',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();window.open(window.location.origin+window.location.pathname+'?so='+j.soId,'_blank')}}>Open SO ↗</button>
               </div>})()}
-            <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
+            {(()=>{const showActions=col?.id==='waiting_for_art'||col?.id==='approved';if(!showActions)return null;return<div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
               {col?.id==='waiting_for_art'&&j.art_status==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveArtStatus(j,'art_in_progress')}}>Start Working</button>}
               {col?.id==='waiting_for_art'&&j.art_status==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();
                 const so2=sos.find(s=>s.id===j.soId);if(!so2)return;
@@ -14617,8 +14618,7 @@ export default function App(){
                   nf('Prod files uploaded — Art Complete!');
                 }else{moveArtStatus(j,'art_complete')}
               }}>Upload & Complete</button>}
-              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();window.open(window.location.origin+window.location.pathname+'?so='+j.soId,'_blank')}}>Open SO ↗</button>
-            </div>
+            </div>})()}
           </>}
 
           {/* ─── REP VIEW: rep-facing actions ─── */}
@@ -14631,7 +14631,7 @@ export default function App(){
             {/* Mockup button — primary action, opens popup with approve/reject */}
             <button className="btn btn-sm" style={{fontSize:11,padding:'6px 12px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:700,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:6}} onClick={e=>{e.stopPropagation();setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ View Mockup{j.art_status==='waiting_approval'&&<span style={{background:'#f59e0b',padding:'1px 6px',borderRadius:4,fontSize:9,marginLeft:4}}>Needs Approval</span>}</button>
             <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
-              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();window.open(window.location.origin+window.location.pathname+'?so='+j.soId,'_blank')}}>Open SO ↗</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'4px 8px',width:'100%',fontWeight:600}} onClick={e=>{e.stopPropagation();window.open(window.location.origin+window.location.pathname+'?so='+j.soId,'_blank')}}>Open SO ↗</button>
             </div>
           </>}
           <button className="btn btn-sm" style={{fontSize:10,padding:'4px 8px',marginTop:6,width:'100%',background:'#f1f5f9',color:'#1e293b',border:'1px solid #cbd5e1',fontWeight:600}} onClick={e=>{e.stopPropagation();openDetails()}}>🔍 Open Details</button>
