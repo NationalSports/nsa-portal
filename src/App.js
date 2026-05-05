@@ -14537,7 +14537,7 @@ export default function App(){
             {af&&(()=>{const fSt=af.status==='uploaded'?'needs_approval':af.status||'waiting_for_art';return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
           </div>
           <div style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
-            <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.soId} · {j.total_units}u · {j.rep}</span>
+            <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.id} · {j.soId} · {j.total_units}u · {j.rep}</span>
             <span style={{fontSize:10,color:'#94a3b8',transition:'transform 0.15s',transform:isExp?'rotate(180deg)':'rotate(0deg)',flexShrink:0}}>▾</span>
           </div>
         </div>
@@ -14577,7 +14577,6 @@ export default function App(){
             {/* Art Time Clock In/Out */}
             {(()=>{const artTimerKey=j.soId+'|'+j.id;const artActive=activeArtTimers[artTimerKey];
               return<div style={{display:'flex',gap:4,marginTop:4}}>
-                <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ Mockup</button>
                 {artActive?<button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'#dc2626',color:'white',border:'none',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();
                   const mins=Math.round((Date.now()-artActive.clockIn)/60000);
                   const idleMins=Math.round((_idleAccum.current[artTimerKey]||0)/60000);
