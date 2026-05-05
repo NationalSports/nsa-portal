@@ -1324,6 +1324,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Items that share the exact same set of decorations AND deco type are grouped into one job
   // Different deco types (e.g. screen_print vs embroidery) always create separate jobs
   const syncJobs=useCallback(()=>{
+    // Released jobs (submitted via the wizard) are frozen — their items are
+    // committed to art and shouldn't be re-merged into auto-generated groups.
+    // Build a set of (item_idx, deco_idx) pairs already covered by a released
+    // job so we can skip them when assembling itemSigs below.
+    const releasedJobs=safeJobs(o).filter(j=>j._released);
+    const releasedItemDecos=new Set();
+    releasedJobs.forEach(j=>(j.items||[]).forEach(gi=>{
+      const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx];
+      dis.forEach(di=>releasedItemDecos.add(gi.item_idx+'::'+di));
+    }));
     // Step 1: Build decoration entries per item, grouped by deco type
     // Each item may produce multiple entries if it has decorations with different deco types
     const itemSigs=[];
@@ -1331,6 +1341,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // First, classify each decoration by its resolved deco type
       const decosByType={};
       safeDecos(it).forEach((d,di)=>{
+        if(releasedItemDecos.has(ii+'::'+di))return;
         if(d.kind==='art'){
           const artF=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
           const dt=artF?.deco_type||d.deco_type||'screen_print';
@@ -1479,7 +1490,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       }
       delete nj._hasSplitOverrides;
     });
-    return[...newJobs,...splitJobs];
+    // Released jobs aren't in newJobs (their items were skipped); preserve them as-is.
+    return[...newJobs,...splitJobs,...releasedJobs];
   },[o,af]);// eslint-disable-line
 
   // Auto-sync jobs whenever decorations or items change (does NOT mark dirty — auto-sync is not a user edit)
@@ -5866,8 +5878,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const activeJobs=jobs.filter(j=>j.prod_status!=='draft'&&!j._draft);
       const DECO_LABELS_W={screen_print:'Screen Print',embroidery:'Embroidery',heat_transfer:'Heat Transfer',dtg:'DTG',sublimation:'Sublimation',vinyl:'Vinyl',patch:'Patch'};
       const openJobWizard=()=>{
-        const existingJobs=safeJobs(o);
-        // If jobs already exist, rebuild wizard groups from existing job structure (respecting splits)
+        // Only wizard-load jobs that still need art submission. Already-submitted
+        // jobs (art_requested / waiting_approval / art_complete / etc.) are
+        // preserved untouched and stay visible in the Jobs list.
+        const existingJobs=safeJobs(o).filter(j=>j.art_status==='needs_art');
+        // If needs_art jobs exist, rebuild wizard groups from them (respecting splits)
         if(existingJobs.length>0){
           const groups=existingJobs.map(j=>{
             const items=(j.items||[]).map(ji=>{
@@ -5901,22 +5916,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         setJobWizard({groups:Object.values(dtMap)});
       };
       const wizActivate=(groups,activateAll)=>{
-        // Guard against accidental destruction. wizActivate replaces the entire
-        // jobs array with freshly-built jobs whose prod_status, item_status,
-        // fulfilled_units, art_requests history, etc. all reset. Confirm before
-        // doing this when any existing job has already advanced past hold.
-        const _activeJobs=safeJobs(o).filter(jj=>{const ps=jj.prod_status;return ps&&ps!=='draft'&&ps!=='hold'});
-        if(_activeJobs.length>0){
-          const _names=_activeJobs.map(jj=>(jj.id||'(unnamed)')+(jj.prod_status?' ['+jj.prod_status+']':'')).join('\n  ');
-          if(!window.confirm('This will replace '+_activeJobs.length+' job'+(_activeJobs.length===1?'':'s')+' that '+(_activeJobs.length===1?'is':'are')+' already in production:\n\n  '+_names+'\n\nTheir production status, fulfillment counts, and art request history will be lost. The new jobs will start fresh.\n\nContinue?')){
-            return;
-          }
-        }
+        // Preserve already-submitted jobs (anything past needs_art) so re-running
+        // the wizard doesn't wipe their art_requests, prod state, etc.
+        const preservedJobs=safeJobs(o).filter(jj=>jj.art_status!=='needs_art');
         const wizArtistsAll=REPS.filter(r=>r.role==='art'||r.role==='artist').filter(r=>r.is_active!==false);
         const newJobs=[];
+        let releasedItemCount=0,heldItemCount=0;
         groups.forEach((g,gi)=>{
-          if(g.items.length===0)return;
-          const artIds=[...new Set(g.items.map(it=>it.art_file_id).filter(Boolean))];
+          // Only items the user actually wants to submit are included in the new
+          // job. Excluded items stay behind — syncJobs will regenerate a
+          // needs_art auto-job for them on the next render.
+          const releaseItems=g.items.filter(it=>!it._excluded);
+          heldItemCount+=g.items.length-releaseItems.length;
+          if(releaseItems.length===0)return;
+          releasedItemCount+=releaseItems.length;
+          const artIds=[...new Set(releaseItems.map(it=>it.art_file_id).filter(Boolean))];
           const allApproved=artIds.every(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&af2.status==='approved'});
           const allProdFiles=artIds.every(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&(af2.prod_files||[]).length>0});
           const anyUploaded=artIds.some(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&(af2.status==='uploaded'||af2.status==='needs_approval')});
@@ -5928,31 +5942,42 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const allArtTbd=artIds.length===0||artIds.every(aid=>aid==='__tbd');
           const autoArtRequest=activateAll&&!g.skipArtist&&artStatus==='needs_art'&&!allArtTbd;
           if(autoArtRequest)artStatus='art_requested';
-          const totalUnits=g.items.reduce((a,it)=>a+it.units,0);
-          const positions=[...new Set(g.items.map(it=>it.position))].join(', ');
+          const totalUnits=releaseItems.reduce((a,it)=>a+it.units,0);
+          const positions=[...new Set(releaseItems.map(it=>it.position))].join(', ');
           const artistObj=hasArtist?wizArtistsAll.find(a=>a.id===g.artist):null;
+          // Reuse existing job id when re-releasing a previously-loaded needs_art job
+          const baseIdNum=gi+1+preservedJobs.length;
+          const jobId=g._existingJobId||(o.id.replace('SO-','JOB-')+'-'+(baseIdNum<10?'0':'')+baseIdNum);
+          // Suffix the job key so syncJobs doesn't merge unsubmitted items with
+          // the released signature (which would otherwise re-pollute this job).
+          const jobKey='released_'+g.deco_type+'_'+jobId;
           newJobs.push({
-            id:o.id.replace('SO-','JOB-')+'-'+(gi+1<10?'0':'')+(gi+1),
-            key:'deco_'+g.deco_type+'_'+(gi+1),
+            id:jobId,
+            key:jobKey,
             art_file_id:artIds[0]||null,_art_ids:artIds,
             art_name:g.name,deco_type:g.deco_type,positions,
             art_status:artStatus,item_status:'need_to_order',
             prod_status:activateAll?'hold':'draft',
             ship_method:o.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer',
-            total_units:totalUnits,fulfilled_units:0,split_from:null,...(g._merged?{_merged:true}:{}),
+            total_units:totalUnits,fulfilled_units:0,split_from:null,
+            // Mark as released so syncJobs preserves it and skips its items
+            _released:activateAll?true:false,
+            ...(g._merged?{_merged:true}:{}),
             created_at:new Date().toLocaleDateString(),
             assigned_artist:g.artist||'',
             rep_notes:g.notes||'',
             ...(autoArtRequest?{art_requests:[{id:'AR-'+Date.now()+'-'+gi,artist:g.artist||'',artist_name:artistObj?.name||'',instructions:g.notes||'Requested on release',files:g.files||[],status:'requested',created_at:new Date().toISOString(),created_by:cu?.name||'System',auto:false}]}:{}),
-            items:g.items.map(({item_idx,deco_idx,sku,name,color,units,fulfilled})=>({item_idx,deco_idx,sku,name,color,units,fulfilled:fulfilled||0}))
+            items:releaseItems.map(({item_idx,deco_idx,sku,name,color,units,fulfilled})=>({item_idx,deco_idx,sku,name,color,units,fulfilled:fulfilled||0}))
           });
         });
         // Store rep's sample art files on the art file records (separate from artist mockups)
         // For skip-artist jobs, also promote sample art to mockup_files and mark art as approved
         let updArtFiles=[...safeArt(o)];
-        groups.forEach((g,gi2)=>{
-          if(g.items.length===0)return;
-          const nj=newJobs.find(j2=>j2.key==='deco_'+g.deco_type+'_'+(gi2+1));
+        let njCursor=0;
+        groups.forEach(g=>{
+          const releaseItems=g.items.filter(it=>!it._excluded);
+          if(releaseItems.length===0)return;
+          const nj=newJobs[njCursor++];
           if(!nj)return;
           const repFiles=g.files||[];
           const artIds=nj._art_ids||[nj.art_file_id].filter(Boolean);
@@ -5973,11 +5998,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             });
           }
         });
-        const updated={...o,jobs:newJobs,art_files:updArtFiles,updated_at:new Date().toLocaleString()};
+        const updated={...o,jobs:[...preservedJobs,...newJobs],art_files:updArtFiles,updated_at:new Date().toLocaleString()};
         setO(updated);onSave(updated);setDirty(false);setJobWizard(null);
         const artSent=activateAll?newJobs.filter(j=>j.art_status==='art_requested'&&(j.art_requests||[]).length>0).length:0;
         const artSkipped=activateAll?newJobs.filter(j=>j.art_status==='art_complete').length:0;
         const msgs=[];if(artSent>0)msgs.push(artSent+' art job'+(artSent!==1?'s':'')+' sent to Art Dashboard');if(artSkipped>0)msgs.push(artSkipped+' job'+(artSkipped!==1?'s':'')+' marked art complete');
+        if(heldItemCount>0)msgs.push(heldItemCount+' item'+(heldItemCount!==1?'s':'')+' kept on hold');
         nf(activateAll?(msgs.length>0?'Jobs released! '+msgs.join(', '):'Jobs released for art!'):'Draft jobs saved — activate when ready');
       };
 
@@ -5986,19 +6012,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(jobWizard)return<div className="card"><div className="card-header" style={{background:'linear-gradient(135deg,#7c3aed,#a78bfa)',color:'white'}}>
         <h2 style={{color:'white',margin:0}}>Job Setup Wizard</h2>
       </div><div className="card-body" style={{padding:16}}>
-        <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Organize items into production jobs. Items are grouped by decoration type. Confirm grouping, split if needed, and assign an artist with notes for each job before releasing.</div>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Organize items into production jobs. Items are grouped by decoration type. Confirm grouping, split if needed, and assign an artist with notes for each job before releasing. Uncheck any items you want to keep on hold — they'll stay in the Jobs list as "Needs Art" and can be submitted later.</div>
         {jobWizard.groups.map((g,gi)=><div key={gi} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',marginBottom:12}}>
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
             <span style={{fontSize:10,fontWeight:700,color:'white',background:'#7c3aed',padding:'2px 8px',borderRadius:4,textTransform:'uppercase'}}>{g.deco_type.replace(/_/g,' ')}</span>
             <input className="form-input" value={g.name} style={{fontSize:13,fontWeight:700,padding:'4px 8px',flex:1}}
               onChange={e=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],name:e.target.value};setJobWizard({...jobWizard,groups:gs})}}/>
-            <span style={{fontSize:11,fontWeight:700,color:'#475569'}}>{g.items.reduce((a,it)=>a+it.units,0)} units</span>
+            {(()=>{const incU=g.items.filter(it=>!it._excluded).reduce((a,it)=>a+it.units,0);const totU=g.items.reduce((a,it)=>a+it.units,0);return<span style={{fontSize:11,fontWeight:700,color:'#475569'}}>{incU===totU?totU+' units':incU+' / '+totU+' units'}</span>})()}
             {jobWizard.groups.length>1&&g.items.length===0&&<button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:14,fontWeight:700}}
               onClick={()=>{const gs=[...jobWizard.groups];gs.splice(gi,1);setJobWizard({...jobWizard,groups:gs})}}>×</button>}
           </div>
           {g.items.length===0?<div style={{padding:12,textAlign:'center',color:'#94a3b8',fontSize:11}}>No items — drag items here or remove this group</div>:
           <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
             <thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+              <th style={{padding:'3px 6px',textAlign:'center',fontSize:10,color:'#64748b',width:24}} title="Include in this submission">
+                <input type="checkbox" style={{width:13,height:13,cursor:'pointer'}}
+                  checked={g.items.length>0&&g.items.every(it=>!it._excluded)}
+                  ref={el=>{if(el)el.indeterminate=g.items.some(it=>!it._excluded)&&g.items.some(it=>it._excluded)}}
+                  onChange={e=>{const on=e.target.checked;const gs=[...jobWizard.groups];gs[gi]={...gs[gi],items:gs[gi].items.map(it=>({...it,_excluded:!on}))};setJobWizard({...jobWizard,groups:gs})}}/>
+              </th>
               <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>SKU</th>
               <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Item</th>
               <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Art</th>
@@ -6006,7 +6038,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <th style={{padding:'3px 6px',textAlign:'center',fontSize:10,color:'#64748b'}}>Units</th>
               <th style={{padding:'3px 6px',textAlign:'right',fontSize:10,color:'#64748b'}}></th>
             </tr></thead>
-            <tbody>{g.items.map((it,ii)=><tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
+            <tbody>{g.items.map((it,ii)=><tr key={ii} style={{borderBottom:'1px solid #f1f5f9',opacity:it._excluded?0.4:1}}>
+              <td style={{padding:'3px 6px',textAlign:'center'}}>
+                <input type="checkbox" style={{width:13,height:13,cursor:'pointer'}} checked={!it._excluded}
+                  onChange={e=>{const gs=[...jobWizard.groups];const items=[...gs[gi].items];items[ii]={...items[ii],_excluded:!e.target.checked};gs[gi]={...gs[gi],items};setJobWizard({...jobWizard,groups:gs})}}/>
+              </td>
               <td style={{padding:'3px 6px',fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
               <td style={{padding:'3px 6px'}}>{it.name} <span style={{color:'#94a3b8'}}>{it.color}</span></td>
               <td style={{padding:'3px 6px',fontSize:10,color:it.art_name?'#1e40af':'#94a3b8',fontWeight:it.art_name?600:400}}>{it.art_name||'—'}</td>
@@ -6064,7 +6100,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setJobWizard({...jobWizard,groups:gs});
           }}>+ Add Group</button>
         </div>
-        {(()=>{const allReady=jobWizard.groups.filter(g=>g.items.length>0).every(g=>g.skipArtist||g.artist);const notReady=!allReady;
+        {(()=>{const activeGroups=jobWizard.groups.filter(g=>g.items.some(it=>!it._excluded));const allReady=activeGroups.length>0&&activeGroups.every(g=>g.skipArtist||g.artist);const notReady=!allReady;
           return<div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12,alignItems:'center'}}>
           <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534',fontWeight:800,opacity:notReady?0.5:1}} disabled={notReady}
             onClick={()=>wizActivate(jobWizard.groups,true)}>Release Jobs for Art</button>
@@ -6081,7 +6117,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>Production Jobs ({activeJobs.length}{hasDrafts?' + '+draftJobs.length+' drafts':''})</h2>
         <div style={{display:'flex',gap:6}}>
-          {jobs.length===0&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={openJobWizard}>Set Up Jobs</button>}
+          {jobs.some(j=>j.art_status==='needs_art')&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={openJobWizard}>Submit to Art</button>}
           {jobs.length>1&&!mergeMode&&<button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={()=>setMergeMode({selected:[]})}>Merge Jobs</button>}
           {mergeMode&&<><button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} disabled={mergeMode.selected.length<2} onClick={()=>{
             const sel=mergeMode.selected.sort((a,b)=>a-b);const target=jobs[sel[0]];const allItems=[...(target.items||[])];
@@ -6107,7 +6143,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('All draft jobs activated! Use the wizard to release jobs for art with artist assignments.')}}>Activate All</button>
           <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}} onClick={openJobWizard}>Edit Jobs</button>
         </div>}
-        {jobs.length===0&&<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork to items, then click "Set Up Jobs" to create production jobs.</div>}
+        {jobs.length===0&&<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork to items — jobs will populate automatically, then click "Submit to Art" when ready.</div>}
         {jobs.length>0&&<table style={{fontSize:12}}><thead><tr>{mergeMode&&<th style={{width:30}}></th>}<th>Job ID</th><th>Artwork / Decoration</th><th>Items</th><th>Units</th><th>Items Status</th><th>Art</th><th>Production</th><th></th></tr></thead><tbody>
           {jobs.map((j,ji)=>{
             const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='super_admin'||cu.role==='production'||cu.role==='prod_manager'||cu.role==='gm';
@@ -6136,7 +6172,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <td style={{whiteSpace:'nowrap'}}>
                 {(()=>{const _artIds4=j._art_ids||[j.art_file_id].filter(Boolean);if(_artIds4.length===0||(_artIds4.length===1&&_artIds4[0]==='__tbd'))return null;const hasActiveReqs=(j.art_requests||[]).some(r=>r.status!=='recalled');const hasAnyReqs=(j.art_requests||[]).length>0;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
                   return<>{hasActiveReqs&&activeReq&&<span style={{fontSize:8,padding:'1px 5px',borderRadius:8,fontWeight:700,background:'#fef3c7',color:'#92400e',marginRight:3}}>{activeReq.status==='in_progress'?'In Progress':'Requested'}</span>}
-                  {hasActiveReqs&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();const artIds=j._art_ids||[j.art_file_id].filter(Boolean);const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;return{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:''}});const updArt=af.map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art'}:a);const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Art recalled — you can re-request with new instructions')}} title="Recall art request and reset status">Recall Art</button>}
+                  {hasActiveReqs&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();const artIds=j._art_ids||[j.art_file_id].filter(Boolean);const wasReleased=!!j._released;
+                  // For wizard-released jobs, drop them entirely so syncJobs
+                  // regenerates a fresh needs_art auto-job covering their items
+                  // (which can then be re-submitted via the wizard).
+                  const updJobs=wasReleased?safeJobs(o).filter((_,i2)=>i2!==ji):safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;return{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:''}});
+                  const updArt=af.map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art'}:a);const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Art recalled — you can re-submit with new instructions')}} title="Recall art request and reset status">Recall Art</button>}
                   {hasAnyReqs&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#6d28d9',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'',files:[]})}} title="Send updated instructions to artist">Update Art</button>}</>})()}
                 {canSplit&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setSplitModal({jIdx:ji,mode:null,selectedSkus:[]})}} title="Split job">✂️ Split</button>}
                 {j.split_from&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();const parentIdx=jobs.findIndex(pj=>pj.id===j.split_from);if(parentIdx<0){nf('Parent job '+j.split_from+' not found','error');return}const parent=jobs[parentIdx];const mergedItems=_mergeJobItems([...(parent.items||[]),...(j.items||[])]);const mergedUnits=mergedItems.reduce((a,gi)=>a+safeNum(gi.units),0);const mergedFulfilled=mergedItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);const updJobs=jobs.map((jj,i2)=>i2===parentIdx?{...jj,items:mergedItems,total_units:mergedUnits,fulfilled_units:mergedFulfilled}:jj).filter((_,i2)=>i2!==ji);const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Merged back into '+j.split_from)}} title="Merge back into parent job">Merge Back</button>}
