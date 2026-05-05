@@ -4974,6 +4974,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const copy={...gi};
             if(gi.sizes)copy.sizes={...gi.sizes};
             if(gi.fulSizes)copy.fulSizes={...gi.fulSizes};
+            if(gi.roster)copy.roster=JSON.parse(JSON.stringify(gi.roster));
             map.set(key,copy);order.push(key);return;
           }
           existing.units=safeNum(existing.units)+safeNum(gi.units);
@@ -4987,6 +4988,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const merged={...(existing.fulSizes||{})};
             Object.entries(gi.fulSizes||{}).forEach(([sz,v])=>{merged[sz]=safeNum(merged[sz])+safeNum(v)});
             existing.fulSizes=merged;
+          }
+          if(gi.roster||existing.roster){
+            const merged={...(existing.roster||{})};
+            Object.entries(gi.roster||{}).forEach(([sz,arr])=>{merged[sz]=[...(merged[sz]||[]),...(arr||[])]});
+            existing.roster=merged;
           }
         });
         return order.map(k=>map.get(k));
@@ -5021,12 +5027,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(sF>0){splitFulSizes[sz]=sF;sFul+=sF}
             if(rF>0){remainFulSizes[sz]=rF;rFul+=rF}
           });
+          // Partition the roster: first N per size go to the split, the remainder stays on the parent.
+          // Reads gi.roster if this item is itself a split slice; falls back to the source decoration's roster.
+          const _srcIt=safeItems(o)[gi.item_idx];
+          const _srcDeco=_srcIt?safeDecos(_srcIt).find(d=>d.kind==='numbers'):null;
+          const baseRoster=gi.roster||_srcDeco?.roster||null;
+          let splitRoster=null,remainRoster=null;
+          if(baseRoster){
+            splitRoster={};remainRoster={};
+            Object.keys(curSizes).forEach(sz=>{
+              const arr=Array.isArray(baseRoster[sz])?baseRoster[sz].slice():[];
+              const sCap=safeNum(splitSizes[sz]);
+              const rCap=safeNum(remainSizes[sz]);
+              if(sCap>0){const head=arr.slice(0,sCap);splitRoster[sz]=head.concat(Array(Math.max(0,sCap-head.length)).fill(''))}
+              if(rCap>0){const tail=arr.slice(sCap);remainRoster[sz]=tail.concat(Array(Math.max(0,rCap-tail.length)).fill(''))}
+            });
+          }
           if(sUnits>0){
-            splitItems.push({...gi,sizes:splitSizes,fulSizes:splitFulSizes,units:sUnits,fulfilled:sFul});
+            const item={...gi,sizes:splitSizes,fulSizes:splitFulSizes,units:sUnits,fulfilled:sFul};
+            if(splitRoster)item.roster=splitRoster;
+            splitItems.push(item);
             splitTotal+=sUnits;splitFul+=sFul;
           }
           if(rUnits>0){
-            keepItems.push({...gi,sizes:remainSizes,fulSizes:remainFulSizes,units:rUnits,fulfilled:rFul});
+            const item={...gi,sizes:remainSizes,fulSizes:remainFulSizes,units:rUnits,fulfilled:rFul};
+            if(remainRoster)item.roster=remainRoster;
+            keepItems.push(item);
             keepTotal+=rUnits;keepFul+=rFul;
           }
         });
