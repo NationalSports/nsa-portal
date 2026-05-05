@@ -20,7 +20,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const cuEmail=(cu?.email)||(REPS||[]).find(r=>r.id===cu?.id)?.email||'';
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
-  const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);
+  const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);const[editingJobName,setEditingJobName]=useState(null);
   // selJob is stored as a numeric index into the jobs array. The array can re-order
   // when external updates merge in (coach approval, warehouse picks), making the
   // index point at the wrong job or nothing. We capture the selected job's stable
@@ -1464,7 +1464,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const id=existing?.id||('JOB-'+soNum+'-'+String(jIdx).padStart(2,'0'));
       jIdx++;
       return{
-        id,key:j.key,art_file_id:j.art_file_id,art_name:j.art_name,deco_type:j.deco_type,
+        id,key:j.key,art_file_id:j.art_file_id,art_name:existing?._name_locked?(existing.art_name||j.art_name):j.art_name,deco_type:j.deco_type,
         positions:[...j.positions].filter(Boolean).join(', '),items:j.items,
         art_status:existing?.art_status||j.art_status,item_status:itemSt,prod_status:prodSt,
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
@@ -1474,6 +1474,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         counted_at:existing?.counted_at||null,counted_by:existing?.counted_by||null,
         count_discrepancy:existing?.count_discrepancy||null,notes:existing?.notes||null,
         _auto:existing?._auto!=null?existing._auto:true,
+        _name_locked:existing?._name_locked||false,
         // Preserve art workflow fields from existing job
         art_requests:existing?.art_requests||[],art_messages:existing?.art_messages||[],
         assigned_artist:existing?.assigned_artist||null,rep_notes:existing?.rep_notes||null,
@@ -5142,7 +5143,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.item_status]?.bg,color:SC[j.item_status]?.c}}>{itemLabels[j.item_status]}</span>
                   <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}}>{prodLabels[j.prod_status]}</span>
                 </div>
-                <div style={{fontSize:15,fontWeight:700,marginTop:4}}>{j.art_name}</div>
+                <div style={{display:'flex',alignItems:'center',gap:6,marginTop:4,flexWrap:'wrap'}}>
+                  {editingJobName===j.id?<input type="text" autoFocus className="form-input" defaultValue={j.art_name||''}
+                    style={{fontSize:15,fontWeight:700,padding:'2px 8px',minWidth:240}}
+                    onKeyDown={e=>{if(e.key==='Enter')e.target.blur();else if(e.key==='Escape'){setEditingJobName(null)}}}
+                    onBlur={e=>{const v=e.target.value.trim();const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,art_name:v||jj.art_name,_name_locked:true}:jj);setO(e2=>({...e2,jobs:updJobs,updated_at:new Date().toLocaleString()}));setDirty(true);setEditingJobName(null)}}/>
+                  :<><span style={{fontSize:15,fontWeight:700}}>{j.art_name}</span>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>setEditingJobName(j.id)} title="Rename this job">✏️ Rename</button>
+                    {j._name_locked&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,_name_locked:false}:jj);setO(e2=>({...e2,jobs:updJobs,updated_at:new Date().toLocaleString()}));setDirty(true);nf('Job name will sync from artwork on next change')}} title="Stop overriding — name will follow the artwork again">🔓 Unlock</button>}
+                    {j._name_locked&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:700}}>Custom name</span>}
+                  </>}
+                </div>
                 <div style={{fontSize:12,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
                 {(()=>{const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
                   const siblings=safeJobs(o).filter(j2=>j2.id!==j.id&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
