@@ -5173,93 +5173,130 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div>)}
               </div>}
               {mockups.length===0&&_jobArtFiles.length===0&&<div style={{padding:12,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,marginBottom:12,fontSize:12,color:'#9a3412'}}>No mockup files attached yet — check the Art Library tab for files.</div>}
-              {/* Per-art-file: mockup followed by its decoration info, mirroring the Art Dashboard layout */}
-              {(()=>{const _allArt2=_jobArtFiles;
+              {/* Per-item: mockup + decoration spec + size grid + production files (mirrors Art Dashboard) */}
+              {(()=>{
                 const _colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
-                if(_allArt2.length===0)return null;
+                if(itemDetails.length===0)return null;
                 return<div style={{marginBottom:12}}>
-                  {_allArt2.map((af3,afi)=>{
-                    // Mockups for this specific art file (general + per-item)
-                    const _afMf=_filterDisplayable(af3?.mockup_files||af3?.files||[]);
-                    const _afIm=_filterDisplayable(Object.values(af3?.item_mockups||{}).flat());
-                    const _afSeen=new Set();
-                    const afMockups=[..._afMf,..._afIm].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_afSeen.has(u))return false;_afSeen.add(u);return true});
-                    const _dp3=new Set();const _numDecos2=[];const _isE3=af3.deco_type==='embroidery';
-                    const _fallback3=(af3.ink_colors||af3.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);
-                    // Final fallback: if CWs are defined on the art file but decorations don't carry color_way_id,
-                    // surface the union of all CW inks so the colors aren't silently hidden on the approval surface.
-                    const _allCwInks3=[...new Set((af3.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
-                    const _as3=af3.art_sizes||{};
-                    // Build per-item color data — only items whose decorations reference this art file
-                    const _afItems=itemDetails.filter(gi=>{const it=safeItems(o)[gi.item_idx];return it&&safeDecos(it).some(d=>d.kind==='art'&&d.art_file_id===af3.id)});
-                    const _itemColorData2=(_afItems.length>0?_afItems:itemDetails).map(gi=>{
-                      const it=safeItems(o)[gi.item_idx];const gk2=gi.sku+'|'+(gi.color||'');
-                      const gc2=af3.garment_colors?.[gk2]||{};const gcCols=Object.values(gc2).flat().filter(c=>c&&c.trim());
-                      const cwCols=[];
-                      if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===af3.id){_dp3.add(d.position||'Front Center');if(d.color_way_id&&af3.color_ways){const cw=af3.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim()&&!cwCols.includes(c.trim()))cwCols.push(c.trim())})}}if(d.kind==='numbers')_numDecos2.push(d)});
-                      const colors=gcCols.length>0?gcCols:cwCols.length>0?cwCols:_fallback3.length>0?_fallback3:_allCwInks3;
-                      return{...gi,colors,colorKey:colors.slice().sort().join('|')};
-                    });
-                    const _pl3=_dp3.size>0?[..._dp3]:[];const _nd2=_numDecos2[0];
-                    // Group by CW
-                    const _cwGrps=[];const _cwS={};
-                    _itemColorData2.forEach(gi=>{if(!_cwS[gi.colorKey]){_cwS[gi.colorKey]={items:[],colors:gi.colors};_cwGrps.push(_cwS[gi.colorKey])}_cwS[gi.colorKey].items.push(gi)});
-                    return<div key={afi} style={{marginBottom:afi<_allArt2.length-1?16:0,paddingBottom:afi<_allArt2.length-1?16:0,borderBottom:afi<_allArt2.length-1?'1px dashed #fcd34d':'none'}}>
-                      {/* Mockup(s) for this art file */}
-                      {afMockups.length>0?<div style={{marginBottom:10}}>
-                        <div style={{fontSize:11,fontWeight:700,color:'#78350f',marginBottom:6}}>Review the mockup{afMockups.length>1?'s':''}:</div>
-                        <div style={{display:'grid',gridTemplateColumns:afMockups.length>1?'1fr 1fr':'1fr',gap:8}}>
-                          {afMockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                            return<div key={fi} style={{borderRadius:10,border:'2px solid #f59e0b',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:300,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                              :_isPdfUrl(url,f)?<div style={{position:'relative',height:300,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
-                                {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:300,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
+                  {itemDetails.map((gi,gii)=>{
+                    const it=safeItems(o)[gi.item_idx];
+                    // Art files referenced by THIS item's decorations, intersected with this job's art set.
+                    const itemArtIds=it?[...new Set(safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&_jobArtIds.has(d.art_file_id)).map(d=>d.art_file_id))]:[];
+                    const _useIds=itemArtIds.length>0?itemArtIds:(j.art_file_id&&_jobArtIds.has(j.art_file_id)?[j.art_file_id]:[]);
+                    const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+                    // Mockups: per-item (scoped to this SKU), then general (only if no per-item mockups exist for this SKU)
+                    const _seen=new Set();
+                    const perSkuMocks=_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.item_mockups?.[gi.sku]||[]));
+                    const generalMocks=perSkuMocks.length===0?_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[])):[];
+                    const itemMockups=[...perSkuMocks,...generalMocks].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
+                    const artDecos=it?safeDecos(it).filter(d=>d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||_jobArtIds.has(d.art_file_id))):[];
+                    const numDecos=it?safeDecos(it).filter(d=>d.kind==='numbers'):[];
+                    const nameDecos=it?safeDecos(it).filter(d=>d.kind==='names'):[];
+                    const totalUnits=Object.values(gi.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
+                    const _itemPFs=itemArtFiles.flatMap(_af=>(_af?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_afName:itemArtFiles.length>1?(_af?.name||''):''})));
+                    return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #fcd34d',borderRadius:10,overflow:'hidden',background:'white'}}>
+                      {/* Item header */}
+                      <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
+                        <div style={{display:'flex',gap:4,flexShrink:0}}>
+                          {gi.image_url&&<img src={gi.image_url} alt="Front" style={{width:44,height:44,objectFit:'contain',borderRadius:6,border:'1px solid #fde68a',background:'white'}}/>}
+                          {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:44,height:44,objectFit:'contain',borderRadius:6,border:'1px solid #fde68a',background:'white'}}/>}
+                        </div>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                            <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:4,fontSize:11}}>{gi.sku}</span>
+                            <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{gi.name}</span>
+                            {gi.color&&<span style={{color:'#6d28d9',fontWeight:700,fontSize:12}}>— {gi.color}</span>}
+                            {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
+                          </div>
+                        </div>
+                        <div style={{textAlign:'right',flexShrink:0}}>
+                          <div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>{totalUnits}</div>
+                          <div style={{fontSize:9,color:'#78350f',fontWeight:600,textTransform:'uppercase'}}>units</div>
+                        </div>
+                      </div>
+                      {/* Mockup */}
+                      {itemMockups.length>0?<div style={{padding:10}}>
+                        <div style={{display:'grid',gridTemplateColumns:itemMockups.length>1?'1fr 1fr':'1fr',gap:8}}>
+                          {itemMockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
+                            return<div key={fi} style={{borderRadius:8,border:'2px solid #f59e0b',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
+                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                              :_isPdfUrl(url,f)?<div style={{position:'relative',height:280,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
+                                {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
                                 <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
-                                  <span style={{fontSize:36}}>PDF</span><span style={{fontSize:13,color:'#1e40af'}}>{name}</span></div></div>
-                              :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:300,background:'#fafafa'}}>
-                                <span style={{fontSize:20}}>📄</span><span style={{fontSize:14,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
+                                  <span style={{fontSize:32}}>PDF</span><span style={{fontSize:12,color:'#1e40af'}}>{name}</span></div></div>
+                              :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:280,background:'#fafafa'}}>
+                                <span style={{fontSize:20}}>📄</span><span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
                               <div style={{padding:'4px 10px',borderTop:'1px solid #fde68a',fontSize:11,color:'#92400e',fontWeight:600,display:'flex',justifyContent:'space-between'}}><span>{name}</span><span style={{color:'#2563eb'}}>Click to enlarge</span></div>
                             </div>})}
                         </div>
-                      </div>:<div style={{padding:10,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,marginBottom:10,fontSize:12,color:'#9a3412'}}>No mockup uploaded yet for {af3.name||'this art'}.</div>}
-                      {/* Art info header */}
-                      <div style={{padding:'12px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8}}>
-                        <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6,letterSpacing:0.5}}>{af3.name||'Art '+(afi+1)}</div>
-                        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10}}>
-                          <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Method</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{af3.deco_type?.replace(/_/g,' ')||'—'}</div></div>
-                          <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Location{_pl3.length>1?'s':''}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_pl3.join(', ')||'—'}</div></div>
-                          {_pl3.length<=1?<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Art Size</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{af3.art_size||'—'}</div></div>
-                          :_pl3.map((pos,pi)=><div key={pi}><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Size — {pos}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_as3[pos]||(pi===0?af3.art_size:'')||'—'}</div></div>)}
-                        </div>
-                      </div>
-                      {/* Per-CW color groups */}
-                      {_cwGrps.map((grp,gi2)=><div key={gi2} style={{padding:'8px 14px',background:'white',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:6}}>
-                        <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:grp.colors.length>0?6:0}}>
-                          {grp.items.map((it2,ii)=><div key={ii} style={{display:'flex',alignItems:'center',gap:4}}>
-                            {it2.image_url&&<img src={it2.image_url} alt="" style={{width:22,height:22,objectFit:'cover',borderRadius:3,border:'1px solid #e2e8f0'}}/>}
-                            <span style={{fontSize:11,fontWeight:700,color:'#0f172a'}}>{it2.color||it2.sku}</span>
-                            <span style={{fontSize:10,color:'#94a3b8'}}>({it2.units})</span>
-                          </div>)}
-                        </div>
-                        {grp.colors.length>0&&<div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
-                          {grp.colors.map((cl,i)=>{const clL=cl.toLowerCase();const sw=_colorMap2[cl]||Object.entries(_colorMap2).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
-                            return<div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 10px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6}}>
-                              <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
-                              <span style={{fontSize:11,fontWeight:600}}>{cl}</span></div>})}
-                        </div>}
-                      </div>)}
-                      {_nd2&&<div style={{padding:'12px 14px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,marginTop:4}}>
-                        <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>Numbers</div>
-                        <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:12}}>
-                          <span><strong>{(_nd2.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
-                          <span>Size: <strong>{_nd2.num_size||'—'}</strong></span>
-                          {_nd2.front_and_back&&<span>Back: <strong>{_nd2.num_size_back||_nd2.num_size||'—'}</strong></span>}
-                          {_nd2.print_color&&<span>Color: <strong>{_nd2.print_color}</strong></span>}
-                          {_nd2.front_and_back&&<span style={{padding:'1px 6px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span>}
+                      </div>:<div style={{padding:14,margin:10,textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>}
+                      {/* Decoration spec */}
+                      {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #fde68a',background:'#f8fafc'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Decoration Spec</div>
+                        {artDecos.map((d,di)=>{
+                          const dAf=d.art_file_id?safeArt(o).find(a=>a.id===d.art_file_id):null;
+                          const cwObj=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;
+                          const _gk2=gi.sku+'|'+(gi.color||'');
+                          const _gc2=dAf?.garment_colors?.[_gk2]||{};
+                          const _gcCols=Object.values(_gc2).flat().filter(c=>c&&c.trim());
+                          const _cwCols=cwObj?cwObj.inks.filter(c=>c&&c.trim()):[];
+                          const _fbCols=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+                          const _allCwInks=[...new Set((dAf?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
+                          const dColors=_gcCols.length>0?_gcCols:_cwCols.length>0?_cwCols:_fbCols.length>0?_fbCols:_allCwInks;
+                          const cwLabel=cwObj?.garment_color||'';
+                          const method=(d.type||dAf?.deco_type||j.deco_type||'screen_print').replace(/_/g,' ');
+                          const size=(dAf?.art_sizes?.[d.position])||dAf?.art_size||'';
+                          return<div key={di} style={{display:'flex',alignItems:'flex-start',gap:8,flexWrap:'wrap',padding:'5px 0',borderTop:di>0?'1px solid #e2e8f0':'none'}}>
+                            <div style={{minWidth:120}}>
+                              <div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{d.position||'—'}</div>
+                              {dAf&&<div style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>{dAf.title||dAf.name||'—'}</div>}
+                              {cwLabel&&<div style={{fontSize:10,fontWeight:600,color:'#0369a1',background:'#e0f2fe',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>CW: {cwLabel}</div>}
+                            </div>
+                            <div style={{flex:1,display:'flex',flexWrap:'wrap',gap:4,alignItems:'center'}}>
+                              <span style={{fontSize:11,color:'#475569',fontWeight:600}}>{method}</span>
+                              {d.underbase&&<span style={{fontSize:10,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 6px',borderRadius:3,border:'1px solid #fbbf24'}}>Underbase</span>}
+                              {d.reversible&&<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 6px',borderRadius:3,border:'1px solid #86efac'}}>Reversible</span>}
+                              <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>{size||'—'}</span>
+                              {dColors.length>0&&<><span style={{fontSize:11,color:'#94a3b8'}}>—</span>
+                                <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+                                  {dColors.map((cl,ci)=>{const sw=_colorMap2[cl]||Object.entries(_colorMap2).find(([k])=>cl.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
+                                    return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}>
+                                      <span style={{width:11,height:11,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{cl}</span>})}
+                                </div></>}
+                            </div>
+                          </div>})}
+                        {numDecos.map((nd,ni)=><div key={'n'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                          <span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 7px',borderRadius:3}}>Numbers{nd.front_and_back?' — Front + Back':''}</span>
+                          <span style={{fontSize:11,color:'#1e293b'}}>{(nd.num_method||'heat_transfer').replace(/_/g,' ')} · Size {nd.num_size||'—'}{nd.num_font?' · '+nd.num_font:''}{nd.print_color?' · '+nd.print_color:''}</span>
+                        </div>)}
+                        {nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                          <span style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 7px',borderRadius:3}}>Names{nd.front_and_back?' — Front + Back':''}</span>
+                        </div>)}
+                      </div>}
+                      {/* Size grid */}
+                      {totalUnits>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #fde68a'}}>
+                        <div style={{overflowX:'auto'}}><table style={{fontSize:11,minWidth:240,width:'100%'}}><thead><tr style={{background:'#f0f2f5'}}>
+                          <th style={{textAlign:'left',padding:'3px 6px',fontSize:9,fontWeight:700}}>SIZE</th>
+                          {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'3px 6px',fontSize:9,fontWeight:700,minWidth:28}}>{sz}</th>)}
+                          <th style={{textAlign:'center',padding:'3px 6px',fontSize:9,fontWeight:800}}>TOTAL</th>
+                        </tr></thead><tbody>
+                          <tr>
+                            <td style={{textAlign:'left',padding:'3px 6px',fontWeight:700,color:'#475569'}}>QTY</td>
+                            {allSizes.map(sz=>{const v=safeNum(gi.sizes?.[sz]);return<td key={sz} style={{textAlign:'center',padding:'3px 6px',fontWeight:v>0?800:400,color:v>0?'#1e40af':'#cbd5e1',background:v>0?'#eef2ff':''}}>{v>0?v:'—'}</td>})}
+                            <td style={{textAlign:'center',padding:'3px 6px',fontWeight:800,color:'#1e40af',background:'#f0f2f5'}}>{totalUnits}</td>
+                          </tr>
+                        </tbody></table></div>
+                      </div>}
+                      {/* Production files (when present) */}
+                      {_itemPFs.length>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #fde68a'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:'#92400e',marginBottom:4}}>Production Files ({_itemPFs.length})</div>
+                        <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{_itemPFs.map((f,fi)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);return<div key={fi} style={{padding:'4px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:3}} onClick={()=>openFile(url)}>📁 {name}{f._afName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({f._afName})</span>}</div>;})}
                         </div>
                       </div>}
-                    </div>})}
-                </div>})()}
+                    </div>;
+                  })}
+                </div>;
+              })()}
               {/* Artist notes / messages */}
               {(()=>{const artMsgs=(j.art_messages||[]).filter(m=>!m.is_system);const artFileNotes=artFile2?.notes;
                 return(artMsgs.length>0||artFileNotes)?<div style={{marginBottom:12,padding:'10px 14px',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:8}}>
@@ -5301,108 +5338,129 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
             </div>}
             {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&(()=>{
-                const artFile3=safeArt(o).find(a=>a.id===j.art_file_id);if(!artFile3)return null;
-                // Pull per-item mockups from every art file referenced by job items, not just the
-                // primary. Mirrors the waiting_approval branch above. Multi-item jobs whose secondary
-                // item carries its own logo art on a separate art file would otherwise show no mockup.
-                const _allJobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
-                (j.items||[]).forEach(_gi=>{const _it=safeItems(o)[_gi.item_idx];if(!_it)return;safeDecos(_it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_allJobArtIds.add(d.art_file_id)})});
-                const _allJobArtFiles=[..._allJobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
-                const _isE3=artFile3.deco_type==='embroidery';
+                // Per-item layout: mockup + decoration spec + size grid + production files (mirrors Art Dashboard).
+                const _jArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
+                (j.items||[]).forEach(_gi=>{const _it=safeItems(o)[_gi.item_idx];if(!_it)return;safeDecos(_it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jArtIds.add(d.art_file_id)})});
                 const _colorMap3={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
-                const _fallback3=(artFile3.ink_colors||artFile3.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);
-                const _dp3=new Set();const _numDecos3=[];
-                // Build per-item color data
-                const _itemColorData=itemDetails.map(gi=>{
-                  const it=safeItems(o)[gi.item_idx];const gk2=gi.sku+'|'+(gi.color||'');
-                  const gc2=artFile3.garment_colors?.[gk2]||{};const gcCols=Object.values(gc2).flat().filter(c=>c&&c.trim());
-                  const cwCols=[];
-                  if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===artFile3.id){_dp3.add(d.position||'Front Center');if(d.color_way_id&&artFile3.color_ways){const cw=artFile3.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim()&&!cwCols.includes(c.trim()))cwCols.push(c.trim())})}}if(d.kind==='numbers')_numDecos3.push(d)});
-                  const colors=gcCols.length>0?gcCols:cwCols.length>0?cwCols:_fallback3;
-                  const colorKey=colors.slice().sort().join('|');
-                  // Search every relevant art file for mockups under this item's SKU, not just artFile3.
-                  const mockups=_filterDisplayable(_allJobArtFiles.flatMap(_af=>_af?.item_mockups?.[gi.sku]||[]));
-                  return{...gi,colors,colorKey,mockups,it};
-                });
-                // Group items by color way
-                const _cwGroups=[];const _cwSeen={};
-                _itemColorData.forEach(gi=>{if(!_cwSeen[gi.colorKey]){_cwSeen[gi.colorKey]={items:[],colors:gi.colors};_cwGroups.push(_cwSeen[gi.colorKey])}_cwSeen[gi.colorKey].items.push(gi)});
-                // Fallback general mockups if no per-item mockups
-                const _generalMocks=_filterDisplayable(artFile3.mockup_files||artFile3.files||[]);
-                const _hasItemMocks=_itemColorData.some(gi=>gi.mockups.length>0);
-                const _pl3=_dp3.size>0?[..._dp3]:[];const _as3=artFile3.art_sizes||{};const _nd3=_numDecos3[0];
+                if(itemDetails.length===0)return null;
                 return<div style={{margin:'8px 20px'}}>
-                  {/* Art info header */}
-                  <div style={{padding:'10px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8}}>
-                    <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6,letterSpacing:0.5}}>{artFile3.name||'Art'}</div>
-                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10}}>
-                      <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Method</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{artFile3.deco_type?.replace(/_/g,' ')||'—'}</div></div>
-                      <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Location{_pl3.length>1?'s':''}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_pl3.join(', ')||'—'}</div></div>
-                      {_pl3.length<=1?<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Art Size</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{artFile3.art_size||'—'}</div></div>
-                      :_pl3.map((pos,pi)=><div key={pi}><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Size — {pos}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_as3[pos]||(pi===0?artFile3.art_size:'')||'—'}</div></div>)}
-                    </div>
-                  </div>
-                  {/* Per-CW groups: mockups + items + colors */}
-                  {_cwGroups.map((grp,gi2)=>{const allMocks=grp.items.flatMap(gi=>gi.mockups);const _seen3=new Set();const uniqueMocks=allMocks.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen3.has(u))return false;_seen3.add(u);return true});
-                    return<div key={gi2} style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:8,background:'white'}}>
-                      {/* Mockup images for this CW group */}
-                      {uniqueMocks.length>0&&<div style={{display:'grid',gridTemplateColumns:uniqueMocks.length>1?'repeat('+Math.min(uniqueMocks.length,3)+',1fr)':'1fr',gap:2,background:'#f1f5f9'}}>
-                        {uniqueMocks.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                          return<div key={fi} style={{background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                            {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:uniqueMocks.length>1?180:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                            :_isPdfUrl(url,f)?<div style={{height:uniqueMocks.length>1?180:280,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
-                              {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:'100%',objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
-                              <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
-                                <span style={{fontSize:28}}>PDF</span><span style={{fontSize:11,color:'#1e40af'}}>{name}</span></div></div>
-                            :<div style={{height:uniqueMocks.length>1?180:280,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
-                              <span style={{fontSize:20}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                          </div>})}
-                      </div>}
-                      {/* Item names in this CW group */}
-                      <div style={{padding:'10px 14px'}}>
-                        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:grp.colors.length>0?8:0}}>
-                          {grp.items.map((it2,ii)=><div key={ii} style={{display:'flex',alignItems:'center',gap:6}}>
-                            {it2.image_url&&<img src={it2.image_url} alt="" style={{width:28,height:28,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
-                            <div>
-                              <div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{it2.name||it2.fullName||it2.sku}</div>
-                              <div style={{fontSize:10,color:'#64748b'}}>{it2.sku} · {it2.color||'—'} · {it2.units} units</div>
-                            </div>
-                          </div>)}
+                  {itemDetails.map((gi,gii)=>{
+                    const it=safeItems(o)[gi.item_idx];
+                    const itemArtIds=it?[...new Set(safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&_jArtIds.has(d.art_file_id)).map(d=>d.art_file_id))]:[];
+                    const _useIds=itemArtIds.length>0?itemArtIds:(j.art_file_id&&_jArtIds.has(j.art_file_id)?[j.art_file_id]:[]);
+                    const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+                    const _seen=new Set();
+                    const perSkuMocks=_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.item_mockups?.[gi.sku]||[]));
+                    const generalMocks=perSkuMocks.length===0?_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[])):[];
+                    const itemMockups=[...perSkuMocks,...generalMocks].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
+                    const artDecos=it?safeDecos(it).filter(d=>d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||_jArtIds.has(d.art_file_id))):[];
+                    const numDecos=it?safeDecos(it).filter(d=>d.kind==='numbers'):[];
+                    const nameDecos=it?safeDecos(it).filter(d=>d.kind==='names'):[];
+                    const totalUnits=Object.values(gi.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
+                    const _itemPFs=itemArtFiles.flatMap(_af=>(_af?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_afName:itemArtFiles.length>1?(_af?.name||''):''})));
+                    return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #86efac',borderRadius:10,overflow:'hidden',background:'white'}}>
+                      {/* Item header */}
+                      <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'#f0fdf4',borderBottom:'1px solid #bbf7d0'}}>
+                        <div style={{display:'flex',gap:4,flexShrink:0}}>
+                          {gi.image_url&&<img src={gi.image_url} alt="Front" style={{width:44,height:44,objectFit:'contain',borderRadius:6,border:'1px solid #bbf7d0',background:'white'}}/>}
+                          {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:44,height:44,objectFit:'contain',borderRadius:6,border:'1px solid #bbf7d0',background:'white'}}/>}
                         </div>
-                        {/* Colors for this CW */}
-                        {grp.colors.length>0&&<div>
-                          <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>{_isE3?'Thread Colors':'Ink Colors / Pantones'} ({grp.colors.length})</div>
-                          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                            {grp.colors.map((cl,i)=>{const clL=cl.toLowerCase();const sw=_colorMap3[cl]||Object.entries(_colorMap3).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
-                              return<div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 10px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6}}>
-                                <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
-                                <span style={{fontSize:11,fontWeight:600}}>{cl}</span></div>})}
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                            <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:4,fontSize:11}}>{gi.sku}</span>
+                            <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{gi.name}</span>
+                            {gi.color&&<span style={{color:'#6d28d9',fontWeight:700,fontSize:12}}>— {gi.color}</span>}
+                            {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
                           </div>
-                        </div>}
+                        </div>
+                        <div style={{textAlign:'right',flexShrink:0}}>
+                          <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{totalUnits}</div>
+                          <div style={{fontSize:9,color:'#15803d',fontWeight:600,textTransform:'uppercase'}}>units</div>
+                        </div>
                       </div>
-                    </div>})}
-                  {/* General mockups fallback if no per-item mockups */}
-                  {!_hasItemMocks&&_generalMocks.length>0&&<div style={{border:'1px solid #86efac',borderRadius:10,overflow:'hidden',marginBottom:8}}>
-                    <div style={{display:'grid',gridTemplateColumns:_generalMocks.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
-                      {_generalMocks.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                        return<div key={fi} style={{background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                          {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:_generalMocks.length>1?200:300,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                          :<div style={{height:200,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
-                            <span style={{fontSize:20}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                        </div>})}
-                    </div>
-                  </div>}
-                  {_nd3&&<div style={{padding:'12px 14px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,marginTop:4}}>
-                    <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>Numbers</div>
-                    <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:12}}>
-                      <span><strong>{(_nd3.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
-                      <span>Size: <strong>{_nd3.num_size||'—'}</strong></span>
-                      {_nd3.front_and_back&&<span>Back: <strong>{_nd3.num_size_back||_nd3.num_size||'—'}</strong></span>}
-                      {_nd3.print_color&&<span>Color: <strong>{_nd3.print_color}</strong></span>}
-                      {_nd3.front_and_back&&<span style={{padding:'1px 6px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span>}
-                    </div>
-                  </div>}
-                </div>})()}
+                      {/* Mockup */}
+                      {itemMockups.length>0?<div style={{padding:10}}>
+                        <div style={{display:'grid',gridTemplateColumns:itemMockups.length>1?'1fr 1fr':'1fr',gap:8}}>
+                          {itemMockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
+                            return<div key={fi} style={{borderRadius:8,border:'2px solid #86efac',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
+                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                              :_isPdfUrl(url,f)?<div style={{position:'relative',height:280,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
+                                {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
+                                <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
+                                  <span style={{fontSize:32}}>PDF</span><span style={{fontSize:12,color:'#1e40af'}}>{name}</span></div></div>
+                              :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:280,background:'#fafafa'}}>
+                                <span style={{fontSize:20}}>📄</span><span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
+                              <div style={{padding:'4px 10px',borderTop:'1px solid #bbf7d0',fontSize:11,color:'#166534',fontWeight:600,display:'flex',justifyContent:'space-between'}}><span>{name}</span><span style={{color:'#2563eb'}}>Click to enlarge</span></div>
+                            </div>})}
+                        </div>
+                      </div>:<div style={{padding:14,margin:10,textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>}
+                      {/* Decoration spec */}
+                      {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #bbf7d0',background:'#f8fafc'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Decoration Spec</div>
+                        {artDecos.map((d,di)=>{
+                          const dAf=d.art_file_id?safeArt(o).find(a=>a.id===d.art_file_id):null;
+                          const cwObj=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;
+                          const _gk2=gi.sku+'|'+(gi.color||'');
+                          const _gc2=dAf?.garment_colors?.[_gk2]||{};
+                          const _gcCols=Object.values(_gc2).flat().filter(c=>c&&c.trim());
+                          const _cwCols=cwObj?cwObj.inks.filter(c=>c&&c.trim()):[];
+                          const _fbCols=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+                          const _allCwInks=[...new Set((dAf?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
+                          const dColors=_gcCols.length>0?_gcCols:_cwCols.length>0?_cwCols:_fbCols.length>0?_fbCols:_allCwInks;
+                          const cwLabel=cwObj?.garment_color||'';
+                          const method=(d.type||dAf?.deco_type||j.deco_type||'screen_print').replace(/_/g,' ');
+                          const size=(dAf?.art_sizes?.[d.position])||dAf?.art_size||'';
+                          return<div key={di} style={{display:'flex',alignItems:'flex-start',gap:8,flexWrap:'wrap',padding:'5px 0',borderTop:di>0?'1px solid #e2e8f0':'none'}}>
+                            <div style={{minWidth:120}}>
+                              <div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{d.position||'—'}</div>
+                              {dAf&&<div style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>{dAf.title||dAf.name||'—'}</div>}
+                              {cwLabel&&<div style={{fontSize:10,fontWeight:600,color:'#0369a1',background:'#e0f2fe',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>CW: {cwLabel}</div>}
+                            </div>
+                            <div style={{flex:1,display:'flex',flexWrap:'wrap',gap:4,alignItems:'center'}}>
+                              <span style={{fontSize:11,color:'#475569',fontWeight:600}}>{method}</span>
+                              {d.underbase&&<span style={{fontSize:10,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 6px',borderRadius:3,border:'1px solid #fbbf24'}}>Underbase</span>}
+                              {d.reversible&&<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 6px',borderRadius:3,border:'1px solid #86efac'}}>Reversible</span>}
+                              <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>{size||'—'}</span>
+                              {dColors.length>0&&<><span style={{fontSize:11,color:'#94a3b8'}}>—</span>
+                                <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+                                  {dColors.map((cl,ci)=>{const sw=_colorMap3[cl]||Object.entries(_colorMap3).find(([k])=>cl.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
+                                    return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}>
+                                      <span style={{width:11,height:11,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{cl}</span>})}
+                                </div></>}
+                            </div>
+                          </div>})}
+                        {numDecos.map((nd,ni)=><div key={'n'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                          <span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 7px',borderRadius:3}}>Numbers{nd.front_and_back?' — Front + Back':''}</span>
+                          <span style={{fontSize:11,color:'#1e293b'}}>{(nd.num_method||'heat_transfer').replace(/_/g,' ')} · Size {nd.num_size||'—'}{nd.num_font?' · '+nd.num_font:''}{nd.print_color?' · '+nd.print_color:''}</span>
+                        </div>)}
+                        {nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                          <span style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 7px',borderRadius:3}}>Names{nd.front_and_back?' — Front + Back':''}</span>
+                        </div>)}
+                      </div>}
+                      {/* Size grid */}
+                      {totalUnits>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #bbf7d0'}}>
+                        <div style={{overflowX:'auto'}}><table style={{fontSize:11,minWidth:240,width:'100%'}}><thead><tr style={{background:'#f0f2f5'}}>
+                          <th style={{textAlign:'left',padding:'3px 6px',fontSize:9,fontWeight:700}}>SIZE</th>
+                          {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'3px 6px',fontSize:9,fontWeight:700,minWidth:28}}>{sz}</th>)}
+                          <th style={{textAlign:'center',padding:'3px 6px',fontSize:9,fontWeight:800}}>TOTAL</th>
+                        </tr></thead><tbody>
+                          <tr>
+                            <td style={{textAlign:'left',padding:'3px 6px',fontWeight:700,color:'#475569'}}>QTY</td>
+                            {allSizes.map(sz=>{const v=safeNum(gi.sizes?.[sz]);return<td key={sz} style={{textAlign:'center',padding:'3px 6px',fontWeight:v>0?800:400,color:v>0?'#1e40af':'#cbd5e1',background:v>0?'#eef2ff':''}}>{v>0?v:'—'}</td>})}
+                            <td style={{textAlign:'center',padding:'3px 6px',fontWeight:800,color:'#1e40af',background:'#f0f2f5'}}>{totalUnits}</td>
+                          </tr>
+                        </tbody></table></div>
+                      </div>}
+                      {/* Production files */}
+                      {_itemPFs.length>0&&<div style={{padding:'8px 14px',borderTop:'1px solid #bbf7d0'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:'#92400e',marginBottom:4}}>Production Files ({_itemPFs.length})</div>
+                        <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{_itemPFs.map((f,fi)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);return<div key={fi} style={{padding:'4px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:3}} onClick={()=>openFile(url)}>📁 {name}{f._afName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({f._afName})</span>}</div>;})}
+                        </div>
+                      </div>}
+                    </div>;
+                  })}
+                </div>;
+              })()}
             {/* Status controls */}
             <div style={{padding:'10px 20px',borderTop:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
