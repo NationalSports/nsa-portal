@@ -6018,6 +6018,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#f1f5f9',border:'1px solid #cbd5e1',borderRadius:4,color:'#1e40af',fontWeight:600,cursor:'pointer'}} onClick={()=>setAll(true)}>Select All</button>
           <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#f1f5f9',border:'1px solid #cbd5e1',borderRadius:4,color:'#475569',fontWeight:600,cursor:'pointer'}} onClick={()=>setAll(false)}>Deselect All</button>
         </div>})()}
+        {/* Single artist selector — applies to all non-skip groups in this submission */}
+        {(()=>{const nonSkip=jobWizard.groups.filter(g=>!g.skipArtist&&g.items.some(it=>!it._excluded));if(nonSkip.length===0)return null;const distinct=[...new Set(nonSkip.map(g=>g.artist||''))];const cur=distinct.length===1?distinct[0]:'';return<div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14,padding:10,background:'#faf5ff',borderRadius:6,border:'1px solid #e9d5ff'}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#6d28d9',whiteSpace:'nowrap'}}>Artist *</div>
+          <select className="form-select" style={{fontSize:12,minWidth:220,flex:1,maxWidth:320}} value={cur} onChange={e=>{const v=e.target.value;setJobWizard(w=>({...w,groups:w.groups.map(g=>g.skipArtist?g:({...g,artist:v}))}))}}>
+            <option value="">Select artist...</option>
+            {wizArtists.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+          <span style={{fontSize:10,color:'#6d28d9'}}>Applied to all jobs in this submission. Per-job notes and reference files are below.</span>
+        </div>})()}
         {jobWizard.groups.map((g,gi)=><div key={gi} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',marginBottom:12}}>
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
             <span style={{fontSize:10,fontWeight:700,color:'white',background:'#7c3aed',padding:'2px 8px',borderRadius:4,textTransform:'uppercase'}}>{g.deco_type.replace(/_/g,' ')}</span>
@@ -6077,18 +6086,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </label>
               {g.skipArtist&&<div style={{fontSize:10,color:'#166534',marginTop:3,marginLeft:20}}>Art status will be set to complete. Upload sample art below if you have files to attach.</div>}
             </div>
-            {!g.skipArtist&&<div style={{display:'flex',gap:10,alignItems:'flex-start',flexWrap:'wrap'}}>
-              <div style={{minWidth:180}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>Artist *</div>
-                <select className="form-select" style={{fontSize:11,width:'100%'}} value={g.artist||''} onChange={e=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],artist:e.target.value};setJobWizard({...jobWizard,groups:gs})}}>
-                  <option value="">Select artist...</option>
-                  {wizArtists.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
-              </div>
-              <div style={{flex:1,minWidth:200}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>Notes for Artist</div>
-                <textarea className="form-input" rows={2} style={{fontSize:11,width:'100%',resize:'vertical'}} placeholder="Mockup details, color notes, placement instructions..." value={g.notes||''} onChange={e=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],notes:e.target.value};setJobWizard({...jobWizard,groups:gs})}}/>
-              </div>
+            {!g.skipArtist&&<div>
+              <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>Notes for Artist</div>
+              <textarea className="form-input" rows={2} style={{fontSize:11,width:'100%',resize:'vertical'}} placeholder="Mockup details, color notes, placement instructions..." value={g.notes||''} onChange={e=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],notes:e.target.value};setJobWizard({...jobWizard,groups:gs})}}/>
             </div>}
             <div style={{marginTop:6}}>
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>Sample Art / Reference Files</div>
