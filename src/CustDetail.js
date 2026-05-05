@@ -308,6 +308,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     </div></div>})()}
   {/* PROMO DOLLARS TAB */}
   {tab==='promo'&&(()=>{
+    // Promo $ is owned by the parent customer; subs inherit (data is loaded with parent's id at the App level).
+    const parentId=customer.parent_id||customer.id;
+    const parentCust=customer.parent_id?(allCustomers.find(c=>c.id===customer.parent_id)||customer):customer;
     const programs=customer.promo_programs||[];let periods=customer.promo_periods||[];const usage=customer.promo_usage||[];
     const now=new Date();const y=now.getFullYear();const m=now.getMonth();
     const curPeriod=m<6?{start:y+'-01-01',end:y+'-06-30',label:'H1 '+y}:{start:y+'-07-01',end:y+'-12-31',label:'H2 '+y};
@@ -317,7 +320,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const fixedProgs=programs.filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
       const totalFixed=fixedProgs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
       if(totalFixed>0){
-        const newPd={id:'pp_'+Date.now(),customer_id:customer.id,period_start:curPeriod.start,period_end:curPeriod.end,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+        const newPd={id:'pp_'+Date.now(),customer_id:parentId,period_start:curPeriod.start,period_end:curPeriod.end,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
         onSavePromoPeriod(newPd);curPeriods=[newPd];periods=[...periods,newPd];
       }
     }
@@ -325,10 +328,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const curAllocated=curPeriods.reduce((a,p)=>a+(p.allocated||0),0);
     const curUsed=curPeriods.reduce((a,p)=>a+(p.used||0),0);
     const pastPeriods=periods.filter(p=>p.period_start!==curPeriod.start).sort((a,b)=>b.period_start.localeCompare(a.period_start));
-    // Get parent customer for promo (promo belongs to parent, applies to subs)
-    const parentId=customer.parent_id||customer.id;
-    const parentCust=customer.parent_id?allCustomers.find(c=>c.id===customer.parent_id):customer;
     return<div style={{display:'flex',flexDirection:'column',gap:12}}>
+      {customer.parent_id&&parentCust&&parentCust.id!==customer.id&&<div style={{padding:'8px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e40af'}}>Promo $ is shared with parent account <strong style={{cursor:'pointer',textDecoration:'underline'}} onClick={()=>onSelCust&&onSelCust(parentCust)}>{parentCust.name}</strong> — changes here apply to all sub-accounts.</div>}
       {/* Current Balance */}
       <div className="card"><div className="card-header"><h2>Promo Balance — {curPeriod.label}</h2></div>
         <div className="card-body">

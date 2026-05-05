@@ -1843,7 +1843,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
                 const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
                 if(totalFixed>0){
-                  const newPeriod={id:'pp_'+Date.now(),customer_id:cust.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+                  const newPeriod={id:'pp_'+Date.now(),customer_id:cust.parent_id||cust.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
                   await _dbSavePromoPeriod(newPeriod);
                   const updatedCust={...cust,promo_periods:[...(cust.promo_periods||[]),newPeriod]};
                   setCust(updatedCust);

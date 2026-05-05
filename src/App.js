@@ -510,12 +510,13 @@ const _dbLoad = async (opts={}) => {
     // Product image backups from app_state (reliable fallback when image columns are missing)
     const _pimgMap={};appStateRaw.filter(r=>r.id.startsWith('_pimg_')).forEach(r=>{try{_pimgMap[r.id.slice(6)]=JSON.parse(r.value)}catch{}});
     // Customers: attach contacts array
-    const customers=custRaw.map(c=>({...c,contacts:contacts.filter(ct=>ct.customer_id===c.id).sort((a,b)=>a.sort_order-b.sort_order).map(ct=>({name:ct.name,email:ct.email,phone:ct.phone,role:ct.role})),
-      promo_programs:promoPrograms.filter(pp=>pp.customer_id===c.id),
-      promo_periods:promoPeriods.filter(pp=>pp.customer_id===c.id),
-      promo_usage:promoUsage.filter(pu=>promoPeriods.filter(pp=>pp.customer_id===c.id).some(pp=>pp.id===pu.period_id)),
+    // Promo $ is stored on the parent customer; subs inherit so promos can be viewed/applied from any account in the family.
+    const customers=custRaw.map(c=>{const promoOwnerId=c.parent_id||c.id;const ownerPeriods=promoPeriods.filter(pp=>pp.customer_id===promoOwnerId);return{...c,contacts:contacts.filter(ct=>ct.customer_id===c.id).sort((a,b)=>a.sort_order-b.sort_order).map(ct=>({name:ct.name,email:ct.email,phone:ct.phone,role:ct.role})),
+      promo_programs:promoPrograms.filter(pp=>pp.customer_id===promoOwnerId),
+      promo_periods:ownerPeriods,
+      promo_usage:promoUsage.filter(pu=>ownerPeriods.some(pp=>pp.id===pu.period_id)),
       credits:creditRecords.filter(cr=>cr.customer_id===c.id),
-      credit_usage:creditUsageRecords.filter(cu2=>creditRecords.filter(cr=>cr.customer_id===c.id).some(cr=>cr.id===cu2.credit_id))}));
+      credit_usage:creditUsageRecords.filter(cu2=>creditRecords.filter(cr=>cr.customer_id===c.id).some(cr=>cr.id===cu2.credit_id))}});
     // Products: attach _inv and _alerts from product_inventory
     const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});const _pimg=_pimgMap[p.id];return{...p,image_url:p.image_url||p.image_front_url||(_pimg&&_pimg.front)||'',back_image_url:p.back_image_url||p.image_back_url||(_pimg&&_pimg.back)||'',images:p.images||(_pimg&&_pimg.gallery)||[],_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
@@ -3689,8 +3690,10 @@ export default function App(){
     // Explicitly save to DB immediately — don't rely solely on useEffect chain
     _dbSaveSO(so);_dbSaveEstimate(convertedEst);
     const c=cust.find(x=>x.id===so.customer_id);
-    // Deduct promo funds from customer's current period
+    // Deduct promo funds from customer's current period (promo lives on parent — apply to parent + all subs in state)
     if(est.promo_applied&&promoAmount>0&&c){
+      const promoOwnerId=c.parent_id||c.id;
+      const isFamily=cc=>cc.id===promoOwnerId||cc.parent_id===promoOwnerId;
       const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
       const _pStart=_m<6?_y+'-01-01':_y+'-07-01';
       let periods=(c.promo_periods||[]).filter(p=>p.period_start===_pStart);
@@ -3700,9 +3703,9 @@ export default function App(){
         const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
         if(totalFixed>0){
           const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
-          const newPd={id:'pp_'+Date.now(),customer_id:c.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+          const newPd={id:'pp_'+Date.now(),customer_id:promoOwnerId,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
           periods=[newPd];
-          setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,promo_periods:[...(cc.promo_periods||[]),newPd]}:cc));
+          setCust(prev=>prev.map(cc=>isFamily(cc)?{...cc,promo_periods:[...(cc.promo_periods||[]),newPd]}:cc));
         }
       }
       if(periods.length>0){
@@ -3711,10 +3714,8 @@ export default function App(){
         const usageRec={period_id:pd.id,amount:promoAmount,description:est.memo||so.memo||'Promo order '+so.id,created_by:cu?.name||'System',so_id:so.id,estimate_id:est.id,created_at:new Date().toISOString()};
         // Chain: save period first, THEN insert usage (FK constraint requires period to exist)
         _dbSavePromoPeriod(updatedPeriod).then(ok=>{if(ok)_dbSavePromoUsage(usageRec);else console.error('[Promo] period save failed, skipping usage insert')});
-        // Update customer in state
-        const updatedPeriods=(c.promo_periods||[]).map(p=>p.id===pd.id?updatedPeriod:p).concat(periods.length===1&&!(c.promo_periods||[]).some(p=>p.id===pd.id)?[updatedPeriod]:[]);
-        const finalPeriods=updatedPeriods.filter((p,i,arr)=>arr.findIndex(x=>x.id===p.id)===i);
-        setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,promo_periods:finalPeriods,promo_usage:[...(cc.promo_usage||[]),usageRec]}:cc));
+        // Update parent + all subs in state so balance is consistent everywhere in the family
+        setCust(prev=>prev.map(cc=>{if(!isFamily(cc))return cc;const updatedPeriods=(cc.promo_periods||[]).some(p=>p.id===pd.id)?(cc.promo_periods||[]).map(p=>p.id===pd.id?updatedPeriod:p):[...(cc.promo_periods||[]),updatedPeriod];return{...cc,promo_periods:updatedPeriods,promo_usage:[...(cc.promo_usage||[]),usageRec]}}));
       }
     }
     // Deduct credit funds from customer's credits
@@ -5184,11 +5185,11 @@ export default function App(){
   // CUSTOMERS
   function rCust(){
     if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} ests={ests} onSaveSO={savSO} REPS={REPS} prod={prod}
-      onSavePromoProgram={async(prog)=>{await _dbSavePromoProgram(prog);const updated={...selC,promo_programs:[...(selC.promo_programs||[]).filter(p=>p.id!==prog.id),prog]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Promo program saved')}}
-      onDeletePromoProgram={async(id)=>{await _dbDeletePromoProgram(id);const updated={...selC,promo_programs:(selC.promo_programs||[]).filter(p=>p.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Promo program removed')}}
-      onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const updated={...selC,promo_periods:[...(selC.promo_periods||[]).filter(p=>p.id!==period.id),period]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Promo period saved')}}
-      onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const updated={...selC,promo_usage:[...(selC.promo_usage||[]),usage]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c))}}
-      onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const updated={...selC,promo_usage:(selC.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c))}}
+      onSavePromoProgram={async(prog)=>{await _dbSavePromoProgram(prog);const isFamily=c=>c.id===prog.customer_id||c.parent_id===prog.customer_id;const upd=c=>({...c,promo_programs:[...(c.promo_programs||[]).filter(p=>p.id!==prog.id),prog]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s);nf('Promo program saved')}}
+      onDeletePromoProgram={async(id)=>{await _dbDeletePromoProgram(id);const upd=c=>({...c,promo_programs:(c.promo_programs||[]).filter(p=>p.id!==id)});setCust(prev=>prev.map(c=>(c.promo_programs||[]).some(p=>p.id===id)?upd(c):c));setSelC(s=>s&&(s.promo_programs||[]).some(p=>p.id===id)?upd(s):s);nf('Promo program removed')}}
+      onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s);nf('Promo period saved')}}
+      onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
+      onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onSaveCredit={async(credit)=>{await _dbSaveCredit(credit);const updated={...selC,credits:[...(selC.credits||[]).filter(c=>c.id!==credit.id),credit]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit saved')}}
       onDeleteCredit={async(id)=>{await _dbDeleteCredit(id);const updated={...selC,credits:(selC.credits||[]).filter(c=>c.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit removed')}}
       onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}}
