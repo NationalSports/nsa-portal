@@ -14418,7 +14418,8 @@ export default function App(){
       if(artDashView==='rep'&&artFilter!=='all'&&j.repId!==artFilter)return false;
       if(artSearch){const s=artSearch.toLowerCase();
         if(!(j.customer||'').toLowerCase().includes(s)&&!(j.art_name||'').toLowerCase().includes(s)&&
-          !(j.soId||'').toLowerCase().includes(s)&&!(j.id||'').toLowerCase().includes(s))return false}
+          !(j.soId||'').toLowerCase().includes(s)&&!(j.id||'').toLowerCase().includes(s)&&
+          !(j.alpha||'').toLowerCase().includes(s)&&!(j.soMemo||'').toLowerCase().includes(s))return false}
       return true;
     });
 
