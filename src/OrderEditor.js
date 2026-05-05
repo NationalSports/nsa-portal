@@ -20,7 +20,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const cuEmail=(cu?.email)||(REPS||[]).find(r=>r.id===cu?.id)?.email||'';
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
-  const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);
+  const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);const[editingJobName,setEditingJobName]=useState(null);
   // selJob is stored as a numeric index into the jobs array. The array can re-order
   // when external updates merge in (coach approval, warehouse picks), making the
   // index point at the wrong job or nothing. We capture the selected job's stable
@@ -1265,6 +1265,36 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const addOutsideDeco=i=>{const it=o.items[i];sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'outside_deco',position:'Front Center',vendor:'',deco_type:'embroidery',cost_each:0,sell_each:0,notes:'',sell_override:null}]}:x))};
   const uD=(ii,di,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,[k]:v}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   const uDM=(ii,di,updates)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,...updates}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
+  // Swap art on a decoration. If it's part of a released or in-progress art job, recall the
+  // existing request and drop the released flag so syncJobs regenerates the job under the new art name.
+  const changeArtFileId=(ii,di,newId)=>{
+    setO(e=>{
+      const newItems=safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,art_file_id:newId}:d)}:it);
+      const oldArtIds=new Set();let touched=false;
+      const updJobs=safeArr(e.jobs).flatMap(j=>{
+        const inJob=(j.items||[]).some(gi=>{
+          if(gi.item_idx!==ii)return false;
+          const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx];
+          return dis.includes(di);
+        });
+        if(!inJob)return[j];
+        const hasActiveReq=(j.art_requests||[]).some(r=>r.status!=='recalled');
+        if(!j._released&&!hasActiveReq)return[j];
+        (j._art_ids||[j.art_file_id].filter(Boolean)).forEach(aid=>{if(aid&&aid!=='__tbd')oldArtIds.add(aid)});
+        touched=true;
+        // Released jobs are dropped so syncJobs regenerates fresh under the new art (and new name).
+        if(j._released)return[];
+        // Non-released jobs with active requests: reset status and mark requests as recalled.
+        return[{...j,art_status:'needs_art',
+          art_requests:(j.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),
+          assigned_artist:''}];
+      });
+      const updArt=touched?safeArr(e.art_files).map(a=>oldArtIds.has(a.id)?{...a,status:'waiting_for_art'}:a):e.art_files;
+      if(touched)setTimeout(()=>nf('Art changed — previous request recalled, job will refresh'),0);
+      return{...e,items:newItems,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
+    });
+    setDirty(true);
+  };
   // Item-level reversible: a single toggle that syncs `reversible` across every decoration on the item.
   // Reversible is a property of the GARMENT (both sides need decoration), not of an individual deco — but the
   // existing data model stores it per-deco and pricing logic reads it per-deco. To keep the data model stable
@@ -1434,7 +1464,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const id=existing?.id||('JOB-'+soNum+'-'+String(jIdx).padStart(2,'0'));
       jIdx++;
       return{
-        id,key:j.key,art_file_id:j.art_file_id,art_name:j.art_name,deco_type:j.deco_type,
+        id,key:j.key,art_file_id:j.art_file_id,art_name:existing?._name_locked?(existing.art_name||j.art_name):j.art_name,deco_type:j.deco_type,
         positions:[...j.positions].filter(Boolean).join(', '),items:j.items,
         art_status:existing?.art_status||j.art_status,item_status:itemSt,prod_status:prodSt,
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
@@ -1444,6 +1474,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         counted_at:existing?.counted_at||null,counted_by:existing?.counted_by||null,
         count_discrepancy:existing?.count_discrepancy||null,notes:existing?.notes||null,
         _auto:existing?._auto!=null?existing._auto:true,
+        _name_locked:existing?._name_locked||false,
         // Preserve art workflow fields from existing job
         art_requests:existing?.art_requests||[],art_messages:existing?.art_messages||[],
         assigned_artist:existing?.assigned_artist||null,rep_notes:existing?.rep_notes||null,
@@ -2155,7 +2186,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {artF.notes&&<div style={{fontSize:10,color:'#7c3aed'}}>{artF.notes}</div>}
                     <div style={{fontSize:10,marginTop:4,padding:'2px 6px',display:'inline-block',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>{artF.status}</div>
                   </div></div>}
-                  <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else if(v==='__new_tbd'){const tbdCount=af.filter(f=>f.name&&f.name.startsWith('ART TBD')).length;const newName='ART TBD '+(tbdCount+1);const newTbd={id:'af'+Date.now(),name:newName,deco_type:'screen_print',status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};setO(e=>({...e,art_files:[...(e.art_files||[]),newTbd],items:safeItems(e).map((it,x)=>x===idx?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,art_file_id:newTbd.id}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Created '+newName)}else{uD(idx,di,'art_file_id',v||null)}}}>
+                  <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else if(v==='__new_tbd'){const tbdCount=af.filter(f=>f.name&&f.name.startsWith('ART TBD')).length;const newName='ART TBD '+(tbdCount+1);const newTbd={id:'af'+Date.now(),name:newName,deco_type:'screen_print',status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};setO(e=>({...e,art_files:[...(e.art_files||[]),newTbd],items:safeItems(e).map((it,x)=>x===idx?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,art_file_id:newTbd.id}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Created '+newName)}else{changeArtFileId(idx,di,v||null)}}}>
                     <option value="">⚠️ Select artwork...</option>
                     <option value="__tbd">🎨 Art TBD (pricing only)</option>
                     <option value="__new_tbd">➕ New Art TBD...</option>{af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}</select>
@@ -5112,7 +5143,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.item_status]?.bg,color:SC[j.item_status]?.c}}>{itemLabels[j.item_status]}</span>
                   <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}}>{prodLabels[j.prod_status]}</span>
                 </div>
-                <div style={{fontSize:15,fontWeight:700,marginTop:4}}>{j.art_name}</div>
+                <div style={{display:'flex',alignItems:'center',gap:6,marginTop:4,flexWrap:'wrap'}}>
+                  {editingJobName===j.id?<input type="text" autoFocus className="form-input" defaultValue={j.art_name||''}
+                    style={{fontSize:15,fontWeight:700,padding:'2px 8px',minWidth:240}}
+                    onKeyDown={e=>{if(e.key==='Enter')e.target.blur();else if(e.key==='Escape'){setEditingJobName(null)}}}
+                    onBlur={e=>{const v=e.target.value.trim();const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,art_name:v||jj.art_name,_name_locked:true}:jj);setO(e2=>({...e2,jobs:updJobs,updated_at:new Date().toLocaleString()}));setDirty(true);setEditingJobName(null)}}/>
+                  :<><span style={{fontSize:15,fontWeight:700}}>{j.art_name}</span>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>setEditingJobName(j.id)} title="Rename this job">✏️ Rename</button>
+                    {j._name_locked&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,_name_locked:false}:jj);setO(e2=>({...e2,jobs:updJobs,updated_at:new Date().toLocaleString()}));setDirty(true);nf('Job name will sync from artwork on next change')}} title="Stop overriding — name will follow the artwork again">🔓 Unlock</button>}
+                    {j._name_locked&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:700}}>Custom name</span>}
+                  </>}
+                </div>
                 <div style={{fontSize:12,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
                 {(()=>{const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
                   const siblings=safeJobs(o).filter(j2=>j2.id!==j.id&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
@@ -6193,12 +6234,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </td>
             </tr>
             {/* Grouped items under this job */}
-            {(j.items||[]).map((gi,gii)=><tr key={gii} style={{background:'#fafbfc',cursor:'pointer'}} onClick={()=>setSelJob(ji)}>
+            {(j.items||[]).map((gi,gii)=>{
+              const giSizes=_giSizes(gi);const giFul=_giFulSizes(gi,giSizes);
+              const _giSzOrd=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
+              const giSzEntries=Object.entries(giSizes).filter(([,v])=>safeNum(v)>0).sort(([a],[b])=>{const ai=_giSzOrd.indexOf(a),bi=_giSzOrd.indexOf(b);return(ai===-1?99:ai)-(bi===-1?99:bi)});
+              return<tr key={gii} style={{background:'#fafbfc',cursor:'pointer'}} onClick={()=>setSelJob(ji)}>
               <td style={{paddingLeft:24,color:'#94a3b8',fontSize:10}}>↳</td>
               <td colSpan={2} style={{fontSize:11,color:'#475569'}}><span style={{fontWeight:600}}>{gi.sku}</span> {gi.name} <span style={{color:'#94a3b8'}}>({gi.color||'—'})</span></td>
               <td style={{fontSize:11}}>{gi.fulfilled}/{gi.units}</td>
-              <td colSpan={4}/>
-            </tr>)}
+              <td colSpan={4} style={{fontSize:11}}>
+                {giSzEntries.length>0&&<div style={{display:'flex',gap:10,flexWrap:'wrap'}}>{giSzEntries.map(([sz,qty])=>{const f=safeNum(giFul[sz]);const done=f>=qty&&qty>0;return<span key={sz} style={{display:'inline-flex',gap:3,alignItems:'baseline'}}><span style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase'}}>{sz}</span><span style={{fontWeight:700,color:done?'#166534':f>0?'#d97706':'#475569'}}>{f}/{qty}</span></span>})}</div>}
+              </td>
+            </tr>})}
             </React.Fragment>})}
         </tbody></table>}
 
