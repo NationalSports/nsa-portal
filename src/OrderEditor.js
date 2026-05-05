@@ -89,7 +89,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[artRevisionNote,setArtRevisionNote]=useState('');
   const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
-  const[collapsedArt,setCollapsedArt]=useState({});// Track collapsed art groups by id
+  const[expandedArt,setExpandedArt]=useState({});// Track expanded art groups by id (default collapsed)
   const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
   const[mockupLightbox,setMockupLightbox]=useState(null);// url string for image lightbox overlay
   const[copySkuModal,setCopySkuModal]=useState(null);// {itemIdx, search:''}
@@ -2798,10 +2798,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {af.map((art,i)=>{const usedIn=safeItems(o).reduce((a,it)=>a+safeDecos(it).filter(d=>d.art_file_id===art.id).length,0);
             const afSt=art.status==='uploaded'?'needs_approval':art.status||'waiting_for_art';
-            const isCollapsed=collapsedArt[art.id];
+            const isCollapsed=!expandedArt[art.id];
             return(<div key={art.id} style={{padding:0,background:'#f8fafc',borderRadius:8,border:afSt==='approved'?'2px solid #22c55e':afSt==='needs_approval'?'2px solid #f59e0b':'1px solid #e2e8f0'}}>
               {/* Collapsible header */}
-              <div style={{display:'flex',gap:12,alignItems:'center',padding:'10px 14px',cursor:'pointer',userSelect:'none'}} onClick={()=>setCollapsedArt(prev=>({...prev,[art.id]:!prev[art.id]}))}>
+              <div style={{display:'flex',gap:12,alignItems:'center',padding:'10px 14px',cursor:'pointer',userSelect:'none'}} onClick={()=>setExpandedArt(prev=>({...prev,[art.id]:!prev[art.id]}))}>
                 <span style={{fontSize:12,color:'#64748b',transition:'transform 0.2s',transform:isCollapsed?'rotate(-90deg)':'rotate(0deg)',flexShrink:0}}>▼</span>
                 <div style={{width:36,height:36,borderRadius:6,flexShrink:0,overflow:'hidden',border:'1px solid #e2e8f0',background:art.preview_url?'white':art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':art.deco_type==='dtf'?'#fef3c7':'#f0fdf4',display:'flex',alignItems:'center',justifyContent:'center'}}>
                   {art.preview_url?<img src={art.preview_url} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>
@@ -2907,8 +2907,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>}
             </div>)})}
           {af.length>1&&<div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
-            <button style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#2563eb',fontWeight:600,padding:'4px 8px'}} onClick={()=>{const all={};af.forEach(a=>all[a.id]=true);setCollapsedArt(all)}}>Collapse All</button>
-            <button style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#2563eb',fontWeight:600,padding:'4px 8px'}} onClick={()=>setCollapsedArt({})}>Expand All</button>
+            <button style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#2563eb',fontWeight:600,padding:'4px 8px'}} onClick={()=>setExpandedArt({})}>Collapse All</button>
+            <button style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#2563eb',fontWeight:600,padding:'4px 8px'}} onClick={()=>{const all={};af.forEach(a=>all[a.id]=true);setExpandedArt(all)}}>Expand All</button>
           </div>}
         </div>}
       </div></div>}
