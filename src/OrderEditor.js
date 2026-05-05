@@ -6012,7 +6012,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(jobWizard)return<div className="card"><div className="card-header" style={{background:'linear-gradient(135deg,#7c3aed,#a78bfa)',color:'white'}}>
         <h2 style={{color:'white',margin:0}}>Job Setup Wizard</h2>
       </div><div className="card-body" style={{padding:16}}>
-        <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Organize items into production jobs. Items are grouped by decoration type. Confirm grouping, split if needed, and assign an artist with notes for each job before releasing. Uncheck any items you want to keep on hold — they'll stay in the Jobs list as "Needs Art" and can be submitted later.</div>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>Organize items into production jobs. Items are grouped by decoration type. Confirm grouping, split if needed, and assign an artist with notes for each job before releasing. Uncheck any items you want to keep on hold — they'll stay in the Jobs list as "Needs Art" and can be submitted later.</div>
+        {(()=>{const totItems=jobWizard.groups.reduce((a,g)=>a+g.items.length,0);const incItems=jobWizard.groups.reduce((a,g)=>a+g.items.filter(it=>!it._excluded).length,0);const setAll=on=>setJobWizard(w=>({...w,groups:w.groups.map(g=>({...g,items:g.items.map(it=>({...it,_excluded:!on}))}))}));return<div style={{display:'flex',alignItems:'center',gap:8,marginBottom:14,fontSize:11,color:'#475569'}}>
+          <span style={{fontWeight:600}}>{incItems} of {totItems} items selected</span>
+          <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#f1f5f9',border:'1px solid #cbd5e1',borderRadius:4,color:'#1e40af',fontWeight:600,cursor:'pointer'}} onClick={()=>setAll(true)}>Select All</button>
+          <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#f1f5f9',border:'1px solid #cbd5e1',borderRadius:4,color:'#475569',fontWeight:600,cursor:'pointer'}} onClick={()=>setAll(false)}>Deselect All</button>
+        </div>})()}
         {jobWizard.groups.map((g,gi)=><div key={gi} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',marginBottom:12}}>
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
             <span style={{fontSize:10,fontWeight:700,color:'white',background:'#7c3aed',padding:'2px 8px',borderRadius:4,textTransform:'uppercase'}}>{g.deco_type.replace(/_/g,' ')}</span>
