@@ -301,6 +301,14 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   <div style={{height:4,borderRadius:6,background:recvQ>=qty?'#22c55e':recvQ>0?'#3b82f6':'#e2e8f0',width:(qty>0?Math.round(recvQ/qty*100):0)+'%'}}/></div>
                 <span style={{fontSize:11,fontWeight:600,color:recvQ>=qty?'#166534':'#64748b',whiteSpace:'nowrap'}}>{recvQ} of {qty} received</span>
               </div>
+              {(()=>{const _szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])<0?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])<0?99:SZ_ORD.indexOf(b[0])));
+                if(_szList.length===0)return null;
+                return<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:8}}>
+                  {_szList.map(([sz,sq])=><div key={sz} style={{textAlign:'center',padding:'3px 8px',background:'#f8fafc',borderRadius:6,minWidth:34}}>
+                    <div style={{fontSize:9,fontWeight:700,color:'#64748b'}}>{sz}</div>
+                    <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f'}}>{sq}</div>
+                  </div>)}
+                </div>})()}
             </div>})}
           {/* Order totals */}
           <div style={{borderTop:'2px solid #e2e8f0',paddingTop:12,marginBottom:16}}>

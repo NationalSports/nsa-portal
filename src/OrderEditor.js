@@ -5267,6 +5267,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                           {_nd2.print_color&&<span>Color: <strong>{_nd2.print_color}</strong></span>}
                           {_nd2.front_and_back&&<span style={{padding:'1px 6px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span>}
                         </div>
+                        {(()=>{const _job2Items=(j.items||[]);
+                          const _rosters=_job2Items.map(_gi=>{const _it=safeItems(o)[_gi.item_idx];const _nd=_it?safeDecos(_it).find(d=>d.kind==='numbers'):null;return _gi.roster||_nd?.roster||null}).filter(r=>r&&Object.keys(r).length>0);
+                          if(_rosters.length===0)return null;
+                          const _agg={};_rosters.forEach(r=>{Object.entries(r).forEach(([sz,arr])=>{(arr||[]).forEach(v=>{if(v&&String(v).trim()){if(!_agg[sz])_agg[sz]=[];_agg[sz].push(String(v))}})})});
+                          const _szOrd=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];
+                          const _szRows=Object.entries(_agg).sort((a,b)=>(_szOrd.indexOf(a[0])<0?99:_szOrd.indexOf(a[0]))-(_szOrd.indexOf(b[0])<0?99:_szOrd.indexOf(b[0])));
+                          if(_szRows.length===0)return null;
+                          return<div style={{marginTop:8,paddingTop:8,borderTop:'1px solid #bbf7d0'}}>
+                            {_szRows.map(([sz,nums])=><div key={sz} style={{marginBottom:4}}>
+                              <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:2}}>{sz} ({nums.length})</div>
+                              <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
+                                {nums.slice().sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>
+                                  <span key={ni} style={{display:'inline-block',minWidth:30,textAlign:'center',padding:'2px 6px',background:'white',border:'1px solid #bbf7d0',borderRadius:4,fontSize:11,fontWeight:700,color:'#166534'}}>{n}</span>)}
+                              </div>
+                            </div>)}
+                          </div>})()}
                       </div>}
                     </div>})}
                 </div>})()}
@@ -5411,6 +5427,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       {_nd3.print_color&&<span>Color: <strong>{_nd3.print_color}</strong></span>}
                       {_nd3.front_and_back&&<span style={{padding:'1px 6px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span>}
                     </div>
+                    {(()=>{const _job3Items=(j.items||[]);
+                      const _rosters=_job3Items.map(_gi=>{const _it=safeItems(o)[_gi.item_idx];const _nd=_it?safeDecos(_it).find(d=>d.kind==='numbers'):null;return _gi.roster||_nd?.roster||null}).filter(r=>r&&Object.keys(r).length>0);
+                      if(_rosters.length===0)return null;
+                      const _agg={};_rosters.forEach(r=>{Object.entries(r).forEach(([sz,arr])=>{(arr||[]).forEach(v=>{if(v&&String(v).trim()){if(!_agg[sz])_agg[sz]=[];_agg[sz].push(String(v))}})})});
+                      const _szOrd=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];
+                      const _szRows=Object.entries(_agg).sort((a,b)=>(_szOrd.indexOf(a[0])<0?99:_szOrd.indexOf(a[0]))-(_szOrd.indexOf(b[0])<0?99:_szOrd.indexOf(b[0])));
+                      if(_szRows.length===0)return null;
+                      return<div style={{marginTop:8,paddingTop:8,borderTop:'1px solid #bbf7d0'}}>
+                        {_szRows.map(([sz,nums])=><div key={sz} style={{marginBottom:4}}>
+                          <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:2}}>{sz} ({nums.length})</div>
+                          <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
+                            {nums.slice().sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>
+                              <span key={ni} style={{display:'inline-block',minWidth:30,textAlign:'center',padding:'2px 6px',background:'white',border:'1px solid #bbf7d0',borderRadius:4,fontSize:11,fontWeight:700,color:'#166534'}}>{n}</span>)}
+                          </div>
+                        </div>)}
+                      </div>})()}
                   </div>}
                 </div>})()}
             {/* Status controls */}
