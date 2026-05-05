@@ -1161,6 +1161,74 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setCopySkuModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
     nf('📋 Copied decorations from '+it.sku+' → '+style.sku);
   };
+  // Change the SKU/product on an existing item in place (keeps decorations + sizes).
+  // Only allowed when no PO/IF has been created on the item.
+  const changeItemSku=(i,p)=>{
+    const it=o.items[i];if(!it)return;
+    if(safePicks(it).length>0||safePOs(it).length>0){nf('Cannot change SKU — item has PO or IF. Remove them first.','error');return}
+    const au=isAU(p.brand);
+    const sell=au?rQ(p.retail_price*(1-(tD[cust?.adidas_ua_tier||'B']||0.35))):rQ(p.nsa_cost*(o.default_markup||1.65));
+    setO(e=>({...e,items:safeItems(e).map((x,xi)=>{
+      if(xi!==i)return x;
+      const next={...x};
+      delete next._ss_live;delete next._sm_live;delete next._mt_live;delete next._rs_live;delete next._mtId;
+      delete next._sizeCosts;delete next._sizeSells;delete next._colorImage;delete next._colorBackImage;
+      next.product_id=p.id;next.sku=p.sku;next.name=p.name;next.brand=p.brand;
+      next.vendor_id=p.vendor_id||null;next.color=p.color;
+      next.nsa_cost=p.nsa_cost;next.retail_price=p.retail_price;next.unit_sell=sell;
+      next.available_sizes=[...(p.available_sizes||['S','M','L','XL','2XL'])];
+      next._colors=au?null:(p._colors||null);
+      next.is_custom=false;
+      return next;
+    }),updated_at:new Date().toLocaleString()}));
+    setDirty(true);
+    setCopySkuModal(null);
+    nf('🔄 Changed SKU → '+p.sku+' (decorations kept)');
+  };
+  // Change SKU in place to a vendor-search result (S&S/SanMar/Momentec/Richardson). Mirrors
+  // copyIWithVendorResult but updates the existing item rather than appending a clone.
+  const changeItemWithVendorResult=(i,style,color,source)=>{
+    const it=o.items[i];if(!it)return;
+    if(safePicks(it).length>0||safePOs(it).length>0){nf('Cannot change SKU — item has PO or IF. Remove them first.','error');return}
+    const isSM=source==='sm';const isMT=source==='mt';const isRS=source==='rs';
+    const vendor=vendorList.find(v=>isRS?(v.api_provider==='richardson'||v.name==='Richardson'):isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
+    const vId=vendor?.id||(isRS?'v5':isMT?'v8':isSM?'v3':'v4');
+    const cost=color.customerPrice||color.piecePrice||0;
+    const sell=rQ(cost*(o.default_markup||1.65));
+    const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);
+    const apiSizes=isRS?color.sizes.map(s=>s.sizeName).filter(Boolean):color.sizes.map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s));
+    const catSizes=isRS?(catMatch?.available_sizes||[]):(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
+    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(s=>s&&SZ_ORD.includes(s)):[];
+    const STD_SIZES=isRS?[]:['S','M','L','XL','2XL'];
+    let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
+    availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+    const vInv={};const vNextBySize={};
+    color.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
+    const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
+    const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
+    const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
+    const mk=o.default_markup||1.65;
+    const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
+    setO(e=>({...e,items:safeItems(e).map((x,xi)=>{
+      if(xi!==i)return x;
+      const next={...x};
+      delete next._ss_live;delete next._sm_live;delete next._mt_live;delete next._rs_live;delete next._mtId;delete next._colors;
+      next.product_id=catMatch?.id||null;next.sku=style.sku;next.name=style.styleName;next.brand=style.brandName;
+      next.vendor_id=vId;next.color=color.colorName;next.nsa_cost=cost;next.retail_price=catMatch?.retail_price||0;
+      next.unit_sell=sell;next.available_sizes=availSizes.length?availSizes:fallbackSizes;
+      next.is_custom=false;next[liveFlag]=true;
+      next._colorImage=color.colorFrontImage||style.styleImage||'';
+      next._colorBackImage=color.colorBackImage||'';
+      if(isMT&&style._mtId)next._mtId=style._mtId;
+      next._sizeCosts=sizePrice;next._sizeSells=sizeSell;
+      return next;
+    }),updated_at:new Date().toLocaleString()}));
+    setDirty(true);
+    vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
+    setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
+    setCopySkuModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
+    nf('🔄 Changed SKU → '+style.sku+' (decorations kept)');
+  };
   // Change the color on an existing vendor-live item without losing decorations/sizes.
   const changeItemVendorColor=(itemIdx,style,color)=>{
     setO(e=>({...e,items:safeItems(e).map((it,x)=>x===itemIdx?{
@@ -1925,7 +1993,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div></div>
             <div style={{display:'flex',flexDirection:'column',gap:4}}>
               <button title="Copy item (same SKU)" onClick={()=>copyI(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#2563eb',padding:4}}><Icon name="file" size={14}/></button>
-              <button title="Copy item → new SKU" onClick={()=>setCopySkuModal({itemIdx:idx,search:''})} style={{background:'none',border:'none',cursor:'pointer',color:'#7c3aed',padding:4,fontSize:9,fontWeight:700}}>SKU</button>
+              <button title="Change SKU (in place) or copy → new SKU" onClick={()=>{const canReplace=safePicks(item).length===0&&safePOs(item).length===0;setCopySkuModal({itemIdx:idx,search:'',mode:canReplace?'replace':'copy'})}} style={{background:'none',border:'none',cursor:'pointer',color:'#7c3aed',padding:4,fontSize:9,fontWeight:700}}>SKU</button>
               <button title="Delete item" onClick={()=>rmI(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:4}}><Icon name="trash" size={14}/></button>
             </div>
           </div></div>
@@ -7220,6 +7288,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
       {/* Copy Item → New SKU Modal */}
       {copySkuModal&&(()=>{const srcIt=o.items[copySkuModal.itemIdx];if(!srcIt)return null;const sq=copySkuModal.search?.toLowerCase()||'';
+        const canReplace=safePicks(srcIt).length===0&&safePOs(srcIt).length===0;
+        const mode=canReplace?(copySkuModal.mode||'replace'):'copy';
+        const isReplace=mode==='replace';
+        const onPickCatalog=p=>isReplace?changeItemSku(copySkuModal.itemIdx,p):copyIWithSku(copySkuModal.itemIdx,p);
+        const onPickVendor=(st,c,src)=>isReplace?changeItemWithVendorResult(copySkuModal.itemIdx,st,c,src):copyIWithVendorResult(copySkuModal.itemIdx,st,c,src);
         const matches=sq.length>=2?products.filter(p=>p.sku.toLowerCase().includes(sq)||p.name.toLowerCase().includes(sq)||p.brand?.toLowerCase().includes(sq)||p.color?.toLowerCase().includes(sq)).slice(0,8):[];
         const anyVendor=ssResults.length>0||smResults.length>0||mtResults.length>0||rsResults.length>0;
         const anySearching=ssSearching||smSearching||mtSearching||rsSearching;
@@ -7237,7 +7310,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontSize:10,color}}>{isExp?'▲':'▼'}</span>
               </div>
               {isExp&&<div style={{background:'#fafafa',padding:'6px 10px',display:'flex',flexWrap:'wrap',gap:4}}>
-                {st.colors.map((c,ci)=><div key={ci} style={{padding:'3px 7px',borderRadius:4,border:'1px solid '+bg,background:'white',cursor:'pointer',fontSize:10,display:'flex',alignItems:'center',gap:4}} onClick={()=>copyIWithVendorResult(copySkuModal.itemIdx,st,c,source)} title={c.colorName+(c.customerPrice?' — $'+c.customerPrice.toFixed(2):'')}>
+                {st.colors.map((c,ci)=><div key={ci} style={{padding:'3px 7px',borderRadius:4,border:'1px solid '+bg,background:'white',cursor:'pointer',fontSize:10,display:'flex',alignItems:'center',gap:4}} onClick={()=>onPickVendor(st,c,source)} title={c.colorName+(c.customerPrice?' — $'+c.customerPrice.toFixed(2):'')}>
                   {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:16,height:16,objectFit:'contain',borderRadius:2}} onError={e=>{e.target.style.display='none'}}/>}
                   <span style={{fontWeight:600,maxWidth:110,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.colorName||'Default'}</span>
                   {c.customerPrice>0&&<span style={{fontSize:9,color}}>${c.customerPrice.toFixed(2)}</span>}
@@ -7247,17 +7320,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
         </div>;
         return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setCopySkuModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
-          <div className="modal-header"><h2>Copy Item → New SKU</h2><button className="modal-close" onClick={()=>setCopySkuModal(null)}>×</button></div>
+          <div className="modal-header"><h2>{isReplace?'Change SKU':'Copy Item → New SKU'}</h2><button className="modal-close" onClick={()=>setCopySkuModal(null)}>×</button></div>
           <div className="modal-body">
             <div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:12,fontSize:12}}>
-              <div style={{fontWeight:700}}>Copying from: {srcIt.sku} — {srcIt.name}</div>
-              <div style={{color:'#64748b'}}>{safeDecos(srcIt).length} decoration(s) + sizes will carry over</div>
+              <div style={{fontWeight:700}}>{isReplace?'Changing':'Copying from'}: {srcIt.sku} — {srcIt.name}</div>
+              <div style={{color:'#64748b'}}>{safeDecos(srcIt).length} decoration(s) + sizes will {isReplace?'be kept on this line':'carry over'}</div>
             </div>
-            <label className="form-label">Search for new product/SKU (catalog + S&S, SanMar, Momentec, Richardson live)</label>
+            <div style={{display:'flex',gap:6,marginBottom:10,padding:4,background:'#f1f5f9',borderRadius:8}}>
+              <button onClick={()=>canReplace&&setCopySkuModal(m=>({...m,mode:'replace'}))} disabled={!canReplace} title={canReplace?'Update this line in place — keep decorations, sizes, qty':'Disabled — item has PO or IF. Remove them first to edit in place.'} style={{flex:1,padding:'6px 10px',borderRadius:6,border:'none',cursor:canReplace?'pointer':'not-allowed',fontSize:11,fontWeight:700,background:isReplace?'#7c3aed':'transparent',color:isReplace?'white':canReplace?'#475569':'#cbd5e1'}}>🔄 Change SKU on this line{!canReplace&&' (locked)'}</button>
+              <button onClick={()=>setCopySkuModal(m=>({...m,mode:'copy'}))} style={{flex:1,padding:'6px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,background:!isReplace?'#7c3aed':'transparent',color:!isReplace?'white':'#475569'}}>📋 Copy as new line</button>
+            </div>
+            <label className="form-label">Search for {isReplace?'replacement':'new'} product/SKU (catalog + S&S, SanMar, Momentec, Richardson live)</label>
             <input className="form-input" placeholder="Type SKU, name, or brand..." value={copySkuModal.search||''} onChange={e=>setCopySkuModal(m=>({...m,search:e.target.value}))} autoFocus/>
             {matches.length>0&&<div style={{maxHeight:200,overflowY:'auto',marginTop:8,border:'1px solid #e2e8f0',borderRadius:6}}>
               <div style={{padding:'4px 10px',background:'#eff6ff',fontSize:10,fontWeight:800,color:'#1e40af',textTransform:'uppercase',letterSpacing:1}}>NSA Catalog · {matches.length}</div>
-              {matches.map(p=><div key={p.id} style={{padding:'6px 10px',cursor:'pointer',borderBottom:'1px solid #f1f5f9',display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:12}} onClick={()=>copyIWithSku(copySkuModal.itemIdx,p)} onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='white'}>
+              {matches.map(p=><div key={p.id} style={{padding:'6px 10px',cursor:'pointer',borderBottom:'1px solid #f1f5f9',display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:12}} onClick={()=>onPickCatalog(p)} onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='white'}>
                 <div><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span> <span style={{fontWeight:600}}>{p.name}</span>{p.color&&<span style={{color:'#64748b',fontSize:11}}> — {p.color}</span>}</div>
                 <span className="badge badge-blue" style={{fontSize:9}}>{p.brand}</span>
               </div>)}
