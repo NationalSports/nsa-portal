@@ -6806,15 +6806,17 @@ export default function App(){
         // Mockup files — aggregate from all art files in this job (general bucket + per-item mockups)
         const mockupFiles=allArtFiles.flatMap(a=>[...(a?.mockup_files||a?.files||[]),...Object.values(a?.item_mockups||{}).flat()]).filter(f=>f);
         const prodFiles=allArtFiles.flatMap(a=>a?.prod_files||[]);
-        // Numbers & Names roster data — extract from item decorations
+        // Numbers & Names roster data — extract from item decorations.
+        // Split jobs carry per-item roster/sizes overrides on gi; prefer those over the source decoration's full roster.
         const numbersData=(()=>{const results=[];(j.items||[]).forEach(gi=>{
           const it=safeItems(so)[gi.item_idx];if(!it)return;
           const numDecos=safeDecos(it).filter(d=>d.kind==='numbers');
           const nameDecos=safeDecos(it).filter(d=>d.kind==='names');
           const nd=numDecos[0];const nameD=nameDecos[0];
           if(!nd&&!nameD)return;
-          const sizes=Object.entries(safeSizes(it)).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])<0?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])<0?99:SZ_ORD.indexOf(b[0])));
-          const roster=nd?.roster||null;const names=nameD?.names||null;
+          const sizeSrc=gi.sizes?Object.entries(gi.sizes).filter(([,v])=>safeNum(v)>0):Object.entries(safeSizes(it)).filter(([,v])=>v>0);
+          const sizes=sizeSrc.sort((a,b)=>(SZ_ORD.indexOf(a[0])<0?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])<0?99:SZ_ORD.indexOf(b[0])));
+          const roster=gi.roster||nd?.roster||null;const names=nameD?.names||null;
           results.push({sku:it.sku||gi.sku,color:it.color||gi.color||'',nd,nameD,roster,names,sizes:sizes.map(([sz])=>sz),sizeQtys:Object.fromEntries(sizes)});
         });return results})();
 

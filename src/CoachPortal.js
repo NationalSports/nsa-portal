@@ -301,6 +301,14 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   <div style={{height:4,borderRadius:6,background:recvQ>=qty?'#22c55e':recvQ>0?'#3b82f6':'#e2e8f0',width:(qty>0?Math.round(recvQ/qty*100):0)+'%'}}/></div>
                 <span style={{fontSize:11,fontWeight:600,color:recvQ>=qty?'#166534':'#64748b',whiteSpace:'nowrap'}}>{recvQ} of {qty} received</span>
               </div>
+              {(()=>{const _szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])<0?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])<0?99:SZ_ORD.indexOf(b[0])));
+                if(_szList.length===0)return null;
+                return<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:8}}>
+                  {_szList.map(([sz,sq])=><div key={sz} style={{textAlign:'center',padding:'3px 8px',background:'#f8fafc',borderRadius:6,minWidth:34}}>
+                    <div style={{fontSize:9,fontWeight:700,color:'#64748b'}}>{sz}</div>
+                    <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f'}}>{sq}</div>
+                  </div>)}
+                </div>})()}
             </div>})}
           {/* Order totals */}
           <div style={{borderTop:'2px solid #e2e8f0',paddingTop:12,marginBottom:16}}>
@@ -413,8 +421,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             const allCwInks=[...new Set((artFile?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
             const itemColors=gcColors.length>0?gcColors:cwColors2.length>0?cwColors2:fallbackColors.length>0?fallbackColors:allCwInks;
             const _cm3={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
-            const sizes=srcItem?Object.entries(safeSizes(srcItem)).filter(([,v])=>v>0).sort((a,b)=>{const o2=SZ_ORD;return(o2.indexOf(a[0])<0?99:o2.indexOf(a[0]))-(o2.indexOf(b[0])<0?99:o2.indexOf(b[0]))}):[];
-            const roster=numDecos.length>0?numDecos[0].roster:null;
+            const sizesSrc=gi.sizes?Object.entries(gi.sizes).filter(([,v])=>v>0):(srcItem?Object.entries(safeSizes(srcItem)).filter(([,v])=>v>0):[]);
+            const sizes=sizesSrc.sort((a,b)=>{const o2=SZ_ORD;return(o2.indexOf(a[0])<0?99:o2.indexOf(a[0]))-(o2.indexOf(b[0])<0?99:o2.indexOf(b[0]))});
+            const roster=gi.roster||(numDecos.length>0?numDecos[0].roster:null);
             const names=nameDecos.length>0?nameDecos[0].names:null;
             const sortedSizes=sizes.map(([sz])=>sz);
             return<div key={i} style={{border:'1px solid #e2e8f0',borderRadius:12,marginBottom:14,overflow:'hidden'}}>
@@ -476,8 +485,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 <div style={{fontSize:11,fontWeight:700,color:'#6d28d9',marginBottom:6}}>#️⃣ Numbers</div>
                 {sortedSizes.map(sz=>{const nums=(roster[sz]||[]).filter(n=>n!=='');
                   if(nums.length===0)return null;
-                  return<div key={sz} style={{marginBottom:6}}>
-                    <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>{sz}</div>
+                  return<div key={sz} style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                    <div style={{fontSize:10,fontWeight:700,color:'#64748b',minWidth:56,flexShrink:0}}>{sz} ({nums.length})</div>
                     <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
                       {nums.sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>
                         <span key={ni} style={{display:'inline-block',minWidth:32,textAlign:'center',padding:'3px 6px',background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:4,fontSize:12,fontWeight:700,color:'#6d28d9'}}>{n}</span>)}

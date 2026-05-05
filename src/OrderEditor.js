@@ -5021,6 +5021,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const copy={...gi};
             if(gi.sizes)copy.sizes={...gi.sizes};
             if(gi.fulSizes)copy.fulSizes={...gi.fulSizes};
+            if(gi.roster)copy.roster=JSON.parse(JSON.stringify(gi.roster));
             map.set(key,copy);order.push(key);return;
           }
           existing.units=safeNum(existing.units)+safeNum(gi.units);
@@ -5034,6 +5035,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const merged={...(existing.fulSizes||{})};
             Object.entries(gi.fulSizes||{}).forEach(([sz,v])=>{merged[sz]=safeNum(merged[sz])+safeNum(v)});
             existing.fulSizes=merged;
+          }
+          if(gi.roster||existing.roster){
+            const merged={...(existing.roster||{})};
+            Object.entries(gi.roster||{}).forEach(([sz,arr])=>{merged[sz]=[...(merged[sz]||[]),...(arr||[])]});
+            existing.roster=merged;
           }
         });
         return order.map(k=>map.get(k));
@@ -5068,12 +5074,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(sF>0){splitFulSizes[sz]=sF;sFul+=sF}
             if(rF>0){remainFulSizes[sz]=rF;rFul+=rF}
           });
+          // Partition the roster: first N per size go to the split, the remainder stays on the parent.
+          // Reads gi.roster if this item is itself a split slice; falls back to the source decoration's roster.
+          const _srcIt=safeItems(o)[gi.item_idx];
+          const _srcDeco=_srcIt?safeDecos(_srcIt).find(d=>d.kind==='numbers'):null;
+          const baseRoster=gi.roster||_srcDeco?.roster||null;
+          let splitRoster=null,remainRoster=null;
+          if(baseRoster){
+            splitRoster={};remainRoster={};
+            Object.keys(curSizes).forEach(sz=>{
+              const arr=Array.isArray(baseRoster[sz])?baseRoster[sz].slice():[];
+              const sCap=safeNum(splitSizes[sz]);
+              const rCap=safeNum(remainSizes[sz]);
+              if(sCap>0){const head=arr.slice(0,sCap);splitRoster[sz]=head.concat(Array(Math.max(0,sCap-head.length)).fill(''))}
+              if(rCap>0){const tail=arr.slice(sCap);remainRoster[sz]=tail.concat(Array(Math.max(0,rCap-tail.length)).fill(''))}
+            });
+          }
           if(sUnits>0){
-            splitItems.push({...gi,sizes:splitSizes,fulSizes:splitFulSizes,units:sUnits,fulfilled:sFul});
+            const item={...gi,sizes:splitSizes,fulSizes:splitFulSizes,units:sUnits,fulfilled:sFul};
+            if(splitRoster)item.roster=splitRoster;
+            splitItems.push(item);
             splitTotal+=sUnits;splitFul+=sFul;
           }
           if(rUnits>0){
-            keepItems.push({...gi,sizes:remainSizes,fulSizes:remainFulSizes,units:rUnits,fulfilled:rFul});
+            const item={...gi,sizes:remainSizes,fulSizes:remainFulSizes,units:rUnits,fulfilled:rFul};
+            if(remainRoster)item.roster=remainRoster;
+            keepItems.push(item);
             keepTotal+=rUnits;keepFul+=rFul;
           }
         });
@@ -5333,6 +5359,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         <div style={{fontSize:10,fontWeight:700,color:'#92400e',marginBottom:4}}>Production Files ({_itemPFs.length})</div>
                         <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{_itemPFs.map((f,fi)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);return<div key={fi} style={{padding:'4px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:3}} onClick={()=>openFile(url)}>📁 {name}{f._afName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({f._afName})</span>}</div>;})}
                         </div>
+                        {(()=>{const _job2Items=(j.items||[]);
+                          const _rosters=_job2Items.map(_gi=>{const _it=safeItems(o)[_gi.item_idx];const _nd=_it?safeDecos(_it).find(d=>d.kind==='numbers'):null;return _gi.roster||_nd?.roster||null}).filter(r=>r&&Object.keys(r).length>0);
+                          if(_rosters.length===0)return null;
+                          const _agg={};_rosters.forEach(r=>{Object.entries(r).forEach(([sz,arr])=>{(arr||[]).forEach(v=>{if(v&&String(v).trim()){if(!_agg[sz])_agg[sz]=[];_agg[sz].push(String(v))}})})});
+                          const _szOrd=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];
+                          const _szRows=Object.entries(_agg).sort((a,b)=>(_szOrd.indexOf(a[0])<0?99:_szOrd.indexOf(a[0]))-(_szOrd.indexOf(b[0])<0?99:_szOrd.indexOf(b[0])));
+                          if(_szRows.length===0)return null;
+                          return<div style={{marginTop:8,paddingTop:8,borderTop:'1px solid #bbf7d0'}}>
+                            {_szRows.map(([sz,nums])=><div key={sz} style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                              <div style={{fontSize:10,fontWeight:700,color:'#64748b',minWidth:56,flexShrink:0}}>{sz} ({nums.length})</div>
+                              <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
+                                {nums.slice().sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>
+                                  <span key={ni} style={{display:'inline-block',minWidth:30,textAlign:'center',padding:'2px 6px',background:'white',border:'1px solid #bbf7d0',borderRadius:4,fontSize:11,fontWeight:700,color:'#166534'}}>{n}</span>)}
+                              </div>
+                            </div>)}
+                          </div>})()}
                       </div>}
                     </div>;
                   })}
@@ -5470,10 +5512,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                                 </div></>}
                             </div>
                           </div>})}
-                        {numDecos.map((nd,ni)=><div key={'n'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
-                          <span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 7px',borderRadius:3}}>Numbers{nd.front_and_back?' — Front + Back':''}</span>
-                          <span style={{fontSize:11,color:'#1e293b'}}>{(nd.num_method||'heat_transfer').replace(/_/g,' ')} · Size {nd.num_size||'—'}{nd.num_font?' · '+nd.num_font:''}{nd.print_color?' · '+nd.print_color:''}</span>
-                        </div>)}
+                        {numDecos.map((nd,ni)=>{
+                          // Prefer this job item's roster slice (set by splitCustom) so split jobs only show their own numbers.
+                          const _itRoster=gi.roster||nd.roster||null;
+                          const _szOrd=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];
+                          const _rosterRows=_itRoster?Object.entries(_itRoster).map(([sz,arr])=>[sz,(arr||[]).filter(v=>v&&String(v).trim())]).filter(([,nums])=>nums.length>0).sort((a,b)=>(_szOrd.indexOf(a[0])<0?99:_szOrd.indexOf(a[0]))-(_szOrd.indexOf(b[0])<0?99:_szOrd.indexOf(b[0]))):[];
+                          return<div key={'n'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0'}}>
+                            <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                              <span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 7px',borderRadius:3}}>Numbers{nd.front_and_back?' — Front + Back':''}</span>
+                              <span style={{fontSize:11,color:'#1e293b'}}>{(nd.num_method||'heat_transfer').replace(/_/g,' ')} · Size {nd.num_size||'—'}{nd.num_font?' · '+nd.num_font:''}{nd.print_color?' · '+nd.print_color:''}</span>
+                            </div>
+                            {_rosterRows.length>0&&<div style={{marginTop:6,paddingTop:6,borderTop:'1px dashed #bbf7d0'}}>
+                              {_rosterRows.map(([sz,nums])=><div key={sz} style={{display:'flex',alignItems:'center',gap:8,marginBottom:3}}>
+                                <div style={{fontSize:10,fontWeight:700,color:'#64748b',minWidth:56,flexShrink:0}}>{sz} ({nums.length})</div>
+                                <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
+                                  {nums.slice().sort((a,b)=>Number(a)-Number(b)).map((n,nii)=>
+                                    <span key={nii} style={{display:'inline-block',minWidth:28,textAlign:'center',padding:'1px 6px',background:'white',border:'1px solid #bbf7d0',borderRadius:4,fontSize:11,fontWeight:700,color:'#166534'}}>{n}</span>)}
+                                </div>
+                              </div>)}
+                            </div>}
+                          </div>})}
                         {nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
                           <span style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 7px',borderRadius:3}}>Names{nd.front_and_back?' — Front + Back':''}</span>
                         </div>)}
