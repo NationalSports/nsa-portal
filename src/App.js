@@ -1807,6 +1807,127 @@ function LostArtJobsCard(){
   );
 }
 
+// System Health card — backed by public.get_health_report() RPC.
+// Renders orphans / missing-deco SOs grouped by audit-log verdict
+// (system_loss / user_removed / no_audit) so reviewers can tell a real
+// persistence regression apart from a benign empty SO. Each row has a
+// clickable SO link (opens the SO editor — that's the "fix" path) and a
+// Dismiss action that writes a row into public.health_dismissals so it
+// disappears from this card and from the scheduled email going forward.
+function SystemHealthCard({sos,cust,setESO,setESOC,setPg,nf}){
+  const[report,setReport]=React.useState(null);
+  const[loading,setLoading]=React.useState(false);
+  const[err,setErr]=React.useState('');
+  const load=React.useCallback(async()=>{
+    if(!supabase){setErr('No DB connection');return}
+    setLoading(true);setErr('');
+    try{
+      const{data,error}=await supabase.rpc('get_health_report');
+      if(error)throw error;
+      setReport(data||null);
+    }catch(e){setErr(e.message||String(e));setReport(null)}
+    finally{setLoading(false)}
+  },[]);
+  React.useEffect(()=>{load()},[load]);
+  const openSO=React.useCallback(soId=>{
+    const so=sos.find(s=>s.id===soId);
+    if(!so){nf(soId+' not found in current data','error');return}
+    const c=cust.find(cc=>cc.id===so.customer_id);
+    setESO(so);setESOC(c);setPg('orders');
+  },[sos,cust,setESO,setESOC,setPg]);
+  const dismiss=React.useCallback(async(kind,so_id,job_id,label)=>{
+    if(!supabase)return;
+    const reason=window.prompt(`Mark ${label} as "not a problem"? Optional note:`,'');
+    if(reason===null)return;
+    let dismissed_by=null;
+    try{const{data}=await supabase.auth.getUser();dismissed_by=data?.user?.id||null}catch{}
+    const{error}=await supabase.from('health_dismissals').insert({kind,so_id,job_id:job_id||null,reason:reason||null,dismissed_by});
+    if(error){nf('Dismiss failed: '+error.message,'error');return}
+    nf('Dismissed — '+label);
+    load();
+  },[load,nf]);
+  const Verdict=({v})=>{
+    const map={system_loss:{bg:'#fee2e2',fg:'#991b1b',label:'CONFIRMED DATA LOSS'},user_removed:{bg:'#fef3c7',fg:'#92400e',label:'PERSON-REMOVED'},no_audit:{bg:'#e2e8f0',fg:'#475569',label:'NO AUDIT TRAIL'}};
+    const m=map[v]||map.no_audit;
+    return<span style={{display:'inline-block',padding:'1px 7px',borderRadius:10,background:m.bg,color:m.fg,fontSize:10,fontWeight:600,whiteSpace:'nowrap'}}>{m.label}</span>;
+  };
+  const orphanCount=report?.orphan_count||0;
+  const orphanSysLoss=report?.orphan_system_loss_count||0;
+  const orphanUserRemoved=report?.orphan_user_removed_count||0;
+  const orphanNoAudit=report?.orphan_no_audit_count||0;
+  const missingCount=report?.missing_deco_count||0;
+  const missingSysLoss=report?.missing_deco_system_loss_count||0;
+  const lost24hSys=report?.lost_art_jobs_24h_system||0;
+  const lost24hUser=report?.lost_art_jobs_24h_user||0;
+  const actionable=orphanSysLoss+missingSysLoss;
+  const headlineColor=actionable>0?'#dc2626':orphanCount+missingCount>0?'#d97706':'#16a34a';
+  const headline=actionable>0
+    ?`${actionable} confirmed data-loss issue${actionable===1?'':'s'}`
+    :orphanCount+missingCount>0
+      ?`${orphanCount+missingCount} flagged (no confirmed loss)`
+      :'All checks passing';
+  const orphans=report?.orphan_jobs||[];
+  const missing=report?.missing_deco_sos||[];
+  const renderOrphan=(o,i)=>(
+    <div key={i} style={{padding:'8px 10px',borderBottom:'1px solid #fee2e2',display:'flex',gap:8,alignItems:'flex-start',flexWrap:'wrap'}}>
+      <Verdict v={o.verdict}/>
+      <div style={{flex:1,minWidth:240,fontSize:12}}>
+        <div><a href={`?so=${encodeURIComponent(o.so_id)}`} onClick={e=>{e.preventDefault();openSO(o.so_id)}} style={{color:'#1d4ed8',fontWeight:700,textDecoration:'none'}}>{o.so_id}</a> — {o.job_id} ({o.art_name||'unknown art'}) <span style={{color:'#64748b'}}>· {o.so_status}</span></div>
+        {o.memo&&<div style={{color:'#475569',marginTop:2}}>{o.memo}</div>}
+        {o.deco_deleted_at&&<div style={{color:'#64748b',fontSize:11,marginTop:2}}>Deco deleted {new Date(o.deco_deleted_at).toLocaleString()}{o.deleted_by_name?` by ${o.deleted_by_name}`:''}</div>}
+      </div>
+      <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>dismiss('orphan',o.so_id,o.job_id,`${o.so_id}/${o.job_id}`)}>Not a problem</button>
+    </div>
+  );
+  const renderMissing=(m,i)=>(
+    <div key={i} style={{padding:'8px 10px',borderBottom:'1px solid #fee2e2',display:'flex',gap:8,alignItems:'flex-start',flexWrap:'wrap'}}>
+      <Verdict v={m.verdict}/>
+      <div style={{flex:1,minWidth:240,fontSize:12}}>
+        <div><a href={`?so=${encodeURIComponent(m.so_id)}`} onClick={e=>{e.preventDefault();openSO(m.so_id)}} style={{color:'#1d4ed8',fontWeight:700,textDecoration:'none'}}>{m.so_id}</a> ({m.status}) — {m.missing_items}/{m.total_items} items missing decoration</div>
+        {m.memo&&<div style={{color:'#475569',marginTop:2}}>{m.memo}</div>}
+        {m.deco_deleted_at&&<div style={{color:'#64748b',fontSize:11,marginTop:2}}>Last deco delete {new Date(m.deco_deleted_at).toLocaleString()}{m.deleted_by_name?` by ${m.deleted_by_name}`:''}</div>}
+      </div>
+      <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>dismiss('missing_deco',m.so_id,null,m.so_id)}>Not a problem</button>
+    </div>
+  );
+  return(
+    <div id="system-health" className="card" style={{marginBottom:16,borderLeft:`4px solid ${headlineColor}`,scrollMarginTop:80}}>
+      <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+        <h2>🩺 System Health</h2>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <span style={{fontSize:12,color:headlineColor,fontWeight:600}}>{loading?'Loading…':headline}</span>
+          <button className="btn btn-sm btn-secondary" onClick={load} disabled={loading} style={{fontSize:11}}>{loading?'…':'Refresh'}</button>
+        </div>
+      </div>
+      <div className="card-body">
+        {err&&<div style={{padding:8,background:'#fef2f2',color:'#dc2626',fontSize:12,borderRadius:6,marginBottom:8}}>Error: {err}</div>}
+        <div style={{display:'flex',gap:10,marginBottom:12,flexWrap:'wrap',fontSize:12}}>
+          <div style={{padding:'6px 10px',background:'#fef2f2',borderRadius:6,borderLeft:'3px solid #dc2626'}}><strong>{orphanSysLoss}</strong> confirmed data loss</div>
+          <div style={{padding:'6px 10px',background:'#fffbeb',borderRadius:6,borderLeft:'3px solid #d97706'}}><strong>{orphanUserRemoved}</strong> person-removed</div>
+          <div style={{padding:'6px 10px',background:'#f1f5f9',borderRadius:6,borderLeft:'3px solid #64748b'}}><strong>{orphanNoAudit}</strong> no audit trail</div>
+          <div style={{padding:'6px 10px',background:'#f8fafc',borderRadius:6}}>Missing-deco SOs: <strong>{missingCount}</strong> ({missingSysLoss} w/ confirmed delete)</div>
+          <div style={{padding:'6px 10px',background:'#f8fafc',borderRadius:6}}>Last 24h: <strong style={{color:lost24hSys>0?'#dc2626':'#16a34a'}}>{lost24hSys}</strong> system / <strong style={{color:'#92400e'}}>{lost24hUser}</strong> person</div>
+        </div>
+        <div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:11,color:'#475569',marginBottom:12}}>
+          <strong>How to read this:</strong> a row is a <em>real persistence regression</em> only when verdict is <strong>CONFIRMED DATA LOSS</strong> — that means <code>audit_log</code> shows a decoration was DELETEd with no authenticated user. Person-removed = a teammate did it on purpose but a job/item was orphaned. No audit trail = likely never had decoration data (blanks SO, in-progress entry). Click an SO to fix it; click "Not a problem" to dismiss the row from this card and the scheduled email.
+        </div>
+        <div style={{marginBottom:14}}>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:6}}>Orphan Jobs ({orphanCount})</div>
+          {orphans.length===0
+            ?<div style={{padding:10,background:'#f0fdf4',color:'#15803d',fontSize:12,borderRadius:6}}>✅ None</div>
+            :<div style={{border:'1px solid #fecaca',borderRadius:6,maxHeight:280,overflowY:'auto'}}>{orphans.map(renderOrphan)}</div>}
+        </div>
+        <div>
+          <div style={{fontWeight:600,fontSize:13,marginBottom:6}}>Active SOs Missing Most Decorations ({missingCount})</div>
+          {missing.length===0
+            ?<div style={{padding:10,background:'#f0fdf4',color:'#15803d',fontSize:12,borderRadius:6}}>✅ None</div>
+            :<div style={{border:'1px solid #fecaca',borderRadius:6,maxHeight:280,overflowY:'auto'}}>{missing.map(renderMissing)}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AuthSetupPage({mode}){
   const isReset=mode==='reset';
   const[pw,setPw]=React.useState('');
@@ -3156,6 +3277,26 @@ export default function App(){
       }
     }catch{}
   },[sos,dbLoading]); // eslint-disable-line
+  // Handle ?pg=<id>[#anchor] deep link — used by the so-health-alert email to
+  // land users on the System Health card (?pg=backup#system-health). Skipped
+  // if ?so= is also set, since that handler takes precedence.
+  React.useEffect(()=>{
+    if(dbLoading)return;
+    try{
+      const p=new URLSearchParams(window.location.search);
+      const pgId=p.get('pg');
+      if(!pgId||p.get('so'))return;
+      const allowed=new Set(['dashboard','estimates','orders','jobs','art','production','warehouse','purchase_orders','batch_pos','customers','vendors','team','products','inventory','messages','invoices','commissions','omg','reports','issues','import','qb','backup','settings','sales_tools']);
+      if(allowed.has(pgId))setPg(pgId);
+      const anchor=window.location.hash;
+      const u=new URL(window.location);u.searchParams.delete('pg');window.history.replaceState({},'',u.pathname+u.search+anchor);
+      if(anchor){
+        // Wait for the page to render before scrolling.
+        const id=anchor.replace(/^#/,'');
+        setTimeout(()=>{const el=document.getElementById(id);if(el)el.scrollIntoView({behavior:'smooth',block:'start'})},400);
+      }
+    }catch{}
+  },[dbLoading]); // eslint-disable-line
   React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
   React.useEffect(()=>{_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
@@ -19241,71 +19382,7 @@ export default function App(){
       </div>
 
       {/* System Health */}
-      {(()=>{
-        const orphans=[];const missingDeco=[];
-        const ACTIVE=new Set(['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice']);
-        sos.forEach(so=>{
-          if(so.deleted_at)return;
-          const items=safeItems(so);
-          const decoArtIds=new Set();
-          items.forEach(it=>safeDecos(it).forEach(d=>{if(d.art_file_id)decoArtIds.add(d.art_file_id)}));
-          safeJobs(so).forEach(j=>{
-            const m=j.key&&j.key.match(/::([^@|]+)@/);
-            const artId=j.art_file_id||(m?m[1]:null);
-            if(artId&&!decoArtIds.has(artId))orphans.push({so:so.id,memo:so.memo||'',job:j.id,art:j.art_name||''});
-          });
-          if(!ACTIVE.has(so.status))return;
-          if(items.length===0)return;
-          const missing=items.filter(it=>!it.no_deco&&safeDecos(it).length===0);
-          if(missing.length/items.length>0.5){
-            missingDeco.push({so:so.id,memo:so.memo||'',status:so.status,missing:missing.length,total:items.length});
-          }
-        });
-        const totalIssues=orphans.length+missingDeco.length;
-        const Row=({label,desc,count,ok,rows})=>(
-          <div style={{padding:12,marginBottom:8,background:ok?'#f0fdf4':'#fef2f2',borderRadius:8,borderLeft:`4px solid ${ok?'#16a34a':'#dc2626'}`}}>
-            <div style={{fontWeight:600,fontSize:13}}>{ok?'✅':'⚠️'} {label}</div>
-            <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{desc}</div>
-            <div style={{fontSize:12,marginTop:4}}><strong>{count}</strong> {ok?'OK':(count===1?'issue':'issues')+' detected'}</div>
-            {!ok&&rows.length>0&&(
-              <details style={{marginTop:6}}>
-                <summary style={{cursor:'pointer',fontSize:12,color:'#dc2626'}}>Show details</summary>
-                <div style={{marginTop:6,fontSize:11,maxHeight:200,overflowY:'auto'}}>
-                  {rows.map((r,i)=><div key={i} style={{padding:'4px 0',borderBottom:'1px solid #fecaca'}}><strong>{r.so}</strong> {r.memo&&`— ${r.memo}`} <span style={{color:'#64748b'}}>· {r.detail}</span></div>)}
-                </div>
-              </details>
-            )}
-          </div>
-        );
-        const buildEmailHtml=()=>`<div style="font-family:sans-serif;max-width:640px"><h2>🩺 NSA Portal — System Health Report</h2><p style="color:#64748b">Generated: ${new Date().toLocaleString()}</p><h3 style="margin-top:24px">Orphan Jobs: ${orphans.length}</h3><p style="font-size:13px;color:#64748b">Jobs whose decoration was removed (still on the Art Dashboard but not on the SO).</p>${orphans.length?'<ul>'+orphans.map(o=>`<li><strong>${o.so}</strong> — ${o.job} (${o.art})${o.memo?` — ${o.memo}`:''}</li>`).join('')+'</ul>':'<p>None ✅</p>'}<h3 style="margin-top:24px">Active SOs Missing Most Decorations: ${missingDeco.length}</h3><p style="font-size:13px;color:#64748b">SOs in active status with &gt;50% of items missing decorations (and not flagged as no_deco).</p>${missingDeco.length?'<ul>'+missingDeco.map(m=>`<li><strong>${m.so}</strong> (${m.status}) — ${m.missing}/${m.total} items missing deco${m.memo?` — ${m.memo}`:''}</li>`).join('')+'</ul>':'<p>None ✅</p>'}</div>`;
-        const sendReport=async()=>{
-          const email=(document.getElementById('health-email-input')||{}).value;
-          if(!email||!email.includes('@')){nf('Enter a valid email address','warn');return}
-          const r=await sendBrevoEmail({to:[{email}],subject:`NSA System Health — ${totalIssues} issue${totalIssues===1?'':'s'}`,htmlContent:buildEmailHtml(),senderName:'NSA Portal Health Check'});
-          if(r.ok)nf('📧 Health report emailed to '+email);
-          else nf('Email failed: '+r.error,'error');
-        };
-        return(
-          <div className="card" style={{marginBottom:16,borderLeft:`4px solid ${totalIssues===0?'#16a34a':'#dc2626'}`}}>
-            <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <h2>🩺 System Health</h2>
-              <span style={{fontSize:12,color:totalIssues===0?'#16a34a':'#dc2626',fontWeight:600}}>{totalIssues===0?'All checks passing':`${totalIssues} issue${totalIssues===1?'':'s'}`}</span>
-            </div>
-            <div className="card-body">
-              <Row label="Orphan Jobs" desc="Jobs whose decoration was removed — show on Art Dashboard but not on the SO." count={orphans.length} ok={orphans.length===0} rows={orphans.map(o=>({so:o.so,memo:o.memo,detail:`${o.job}: ${o.art}`}))}/>
-              <Row label="Active SOs Missing Most Decorations" desc="Active SOs where >50% of items have no decoration and are not marked as no_deco. Some legitimate (blanks), but a sudden spike means the save-guard regressed." count={missingDeco.length} ok={missingDeco.length===0} rows={missingDeco.map(m=>({so:m.so,memo:m.memo,detail:`${m.status} · ${m.missing}/${m.total} items missing deco`}))}/>
-              <div style={{marginTop:12,padding:12,background:'#f8fafc',borderRadius:8}}>
-                <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>📧 Email this report</div>
-                <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Send a snapshot of these checks to yourself or a teammate.</div>
-                <div style={{display:'flex',gap:8}}>
-                  <input id="health-email-input" type="email" placeholder="email address" defaultValue={cu&&cu.email||''} style={{flex:1,padding:'6px 10px',border:'1px solid #cbd5e1',borderRadius:6,fontSize:13}}/>
-                  <button className="btn btn-sm btn-secondary" onClick={sendReport}>📧 Send Report</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      <SystemHealthCard sos={sos} cust={cust} setESO={setESO} setESOC={setESOC} setPg={setPg} nf={nf}/>
 
       {/* Lost Art / Jobs (audit-log backed) */}
       <LostArtJobsCard/>
