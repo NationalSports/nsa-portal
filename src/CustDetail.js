@@ -716,6 +716,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const fmt=n=>'$'+Math.round(n).toLocaleString();
     const fmtD=d=>d?d.toISOString().slice(0,10):'—';
     const histCount=filt.filter(i=>i._hist).length;
+    const sortedInvs=[...filt].sort((a,b)=>{const da=pd(a.date),db=pd(b.date);return(db?db.getTime():0)-(da?da.getTime():0)});
     return<div className="card"><div className="card-header"><h2>Reporting</h2><div style={{display:'flex',gap:4}}>{[['thisyear','This Year'],['lastyear','Last Year'],['rolling','Rolling 12'],['alltime','All']].map(([v,l])=><button key={v} className={`btn btn-sm ${rR===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRR(v)}>{l}</button>)}</div></div>
       <div className="card-body">
         <div className="stats-row">
@@ -725,6 +726,19 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <div className="stat-card"><div className="stat-label">First → Last</div><div className="stat-value" style={{fontSize:13}}>{fmtD(first)} → {fmtD(last)}</div></div>
         </div>
         {histCount>0&&<div style={{fontSize:10,color:'#94a3b8',marginTop:8}}>Includes {histCount} NetSuite historical invoice{histCount===1?'':'s'} (revenue and dates only — no line items).</div>}
+        {sortedInvs.length>0&&<div style={{marginTop:12}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6,textTransform:'uppercase'}}>Invoices</div>
+          <table style={{fontSize:12,width:'100%'}}><thead><tr><th style={{textAlign:'left'}}>Date</th><th style={{textAlign:'left'}}>Invoice #</th>{isP&&<th style={{textAlign:'left'}}>Sub</th>}<th style={{textAlign:'left'}}>Memo</th><th style={{textAlign:'right'}}>Total</th><th>Source</th></tr></thead><tbody>
+            {sortedInvs.map((i,idx)=>{const d=pd(i.date);return<tr key={i.id+'-'+idx}>
+              <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtD(d)}</td>
+              <td style={{fontWeight:700,color:'#1e40af'}}>{i.document_number||i.id}</td>
+              {isP&&<td><span className="badge badge-gray">{gn(i.customer_id)}</span></td>}
+              <td style={{color:'#475569'}}>{i.memo||'—'}</td>
+              <td style={{textAlign:'right',fontWeight:700}}>{fmt(Number(i.total)||0)}</td>
+              <td><span className="badge" style={{background:i._hist?'#f1f5f9':'#dbeafe',color:i._hist?'#475569':'#1e40af',fontSize:9,fontWeight:600}}>{i._hist?'NetSuite':'Portal'}</span></td>
+            </tr>})}
+          </tbody></table>
+        </div>}
       </div>
     </div>;
   })()}
