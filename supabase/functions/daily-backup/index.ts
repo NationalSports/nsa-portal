@@ -22,46 +22,46 @@ const PAGE_SIZE = 1000;
 const BUCKET = "backups";
 
 // Every app table whose contents we want in the nightly snapshot.
-// Keep alphabetized; add new tables as the schema grows.
+// Keep alphabetized; add new tables as the schema grows. dumpTable
+// skips tables that don't exist on the project (e.g. an outdated entry
+// here, or a table dropped after a refactor) instead of failing the
+// whole snapshot.
 const TABLES = [
   "adidas_inventory",
-  "app_settings",
   "app_state",
   "assigned_todos",
   "customer_contacts",
   "customer_credit_usage",
   "customer_credits",
+  "customer_invoices",
   "customer_promo_periods",
   "customer_promo_programs",
   "customer_promo_usage",
   "customers",
   "deco_vendor_pricing",
   "deco_vendors",
-  "decoration_types",
   "dismissed_notifs",
   "dismissed_todos",
   "estimate_art_files",
   "estimate_item_decorations",
   "estimate_items",
   "estimates",
-  "id_sequences",
-  "inventory",
-  "inventory_adjustments",
   "invoice_items",
   "invoice_payments",
   "invoices",
   "issues",
-  "labor_rates",
   "message_reads",
   "messages",
   "omg_store_products",
   "omg_stores",
-  "price_matrix",
   "product_inventory",
   "product_variants",
   "products",
+  "quote_request_items",
+  "quote_requests",
   "rep_csr_assignments",
   "sales_orders",
+  "slack_notifications",
   "so_art_files",
   "so_firm_dates",
   "so_item_decorations",
@@ -70,25 +70,33 @@ const TABLES = [
   "so_items",
   "so_jobs",
   "team_members",
-  "time_entries",
   "todo_comments",
   "user_profiles",
   "vendors",
 ];
 
-async function dumpTable(name: string): Promise<unknown[]> {
+// Tables intentionally excluded from the snapshot:
+//   scheduled_emails — transient outbound email queue, rebuilds itself
+//   *_bak_*         — pre-cutover snapshots, separate retention story
+//   storage.objects, auth.* — managed by Supabase, backed up upstream
+
+async function dumpTable(name: string): Promise<{ rows: unknown[]; error?: string }> {
   const rows: unknown[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
     const { data, error } = await supabase
       .from(name)
       .select("*")
       .range(from, from + PAGE_SIZE - 1);
-    if (error) throw new Error(`${name}: ${error.message}`);
+    if (error) {
+      // Skip the table on error (missing table, RLS, transient) so one bad
+      // table doesn't lose the entire snapshot. Caller records the reason.
+      return { rows, error: error.message };
+    }
     if (!data || data.length === 0) break;
     rows.push(...data);
     if (data.length < PAGE_SIZE) break;
   }
-  return rows;
+  return { rows };
 }
 
 async function gzip(input: string): Promise<Uint8Array> {
@@ -124,9 +132,14 @@ serve(async (_req: Request) => {
   try {
     const snapshot: Record<string, unknown[]> = {};
     const rowCounts: Record<string, number> = {};
+    const skipped: Record<string, string> = {};
 
     for (const table of TABLES) {
-      const rows = await dumpTable(table);
+      const { rows, error } = await dumpTable(table);
+      if (error) {
+        skipped[table] = error;
+        continue;
+      }
       snapshot[table] = rows;
       rowCounts[table] = rows.length;
     }
@@ -138,6 +151,7 @@ serve(async (_req: Request) => {
         created_at: new Date().toISOString(),
         retention_days: RETENTION_DAYS,
         row_counts: rowCounts,
+        skipped,
         total_rows: Object.values(rowCounts).reduce((a, b) => a + b, 0),
       },
       data: snapshot,
@@ -164,6 +178,9 @@ serve(async (_req: Request) => {
         bytes_uncompressed: json.length,
         bytes_compressed: gz.byteLength,
         total_rows: payload._meta.total_rows,
+        tables_backed_up: Object.keys(rowCounts).length,
+        tables_skipped: Object.keys(skipped).length,
+        skipped,
         pruned,
         duration_ms: Date.now() - started,
       }),
