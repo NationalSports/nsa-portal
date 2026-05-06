@@ -4082,7 +4082,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{marginBottom:12}}>
             <label className="form-label">Invoice Type</label>
             <div style={{display:'flex',gap:6}}>
-              {[['deposit','Deposit','Percentage of full order total'],['partial','Partial','Invoice selected items only'],['final','Final','Full order — closes SO']].map(([v,l,desc])=>
+              {[['deposit','Deposit','Percentage of full order total'],['partial','Partial','Invoice selected items only'],['full','Invoice','Full order — SO stays open'],['final','Final','Full order — closes SO']].map(([v,l,desc])=>
                 <button key={v} className={`btn btn-sm ${invType===v?'btn-primary':'btn-secondary'}`} style={{flex:1,flexDirection:'column',padding:'8px 10px'}} onClick={()=>{setInvType(v);if(v!=='partial')setInvSelItems(items.map((_,i)=>i))}}>
                   <div style={{fontWeight:700}}>{l}</div>
                   <div style={{fontSize:9,opacity:0.8,fontWeight:400,marginTop:2}}>{desc}</div>
@@ -4127,6 +4127,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
           </div>}
 
+          {/* Full Invoice: SO stays open */}
+          {invType==='full'&&<div style={{marginBottom:12,padding:12,background:'#ecfdf5',border:'1px solid #a7f3d0',borderRadius:8}}>
+            <div style={{fontWeight:700,color:'#047857',fontSize:13,marginBottom:4}}>Invoice (Full Order)</div>
+            <div style={{fontSize:12,color:'#065f46'}}>This will invoice the full order amount. <strong>{o.id}</strong> will stay open so you can continue working on it.</div>
+            {soInvTotal>0&&<div style={{fontSize:11,color:'#047857',marginTop:4,padding:'4px 8px',background:'#d1fae5',borderRadius:4}}>Note: ${soInvTotal.toLocaleString()} already invoiced on this SO.</div>}
+          </div>}
+
           {/* Final: warning about closing SO */}
           {invType==='final'&&<div style={{marginBottom:12,padding:12,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8}}>
             <div style={{fontWeight:700,color:'#dc2626',fontSize:13,marginBottom:4}}>Final Invoice</div>
@@ -4138,7 +4145,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{display:'grid',gridTemplateColumns:'1fr 160px',gap:12,marginBottom:12}}>
             <div>
               <label className="form-label">Invoice Memo</label>
-              <input className="form-input" value={invMemo} onChange={e=>setInvMemo(e.target.value)} placeholder={invType==='deposit'?'e.g., '+invDepositPct+'% Deposit — '+o.memo:invType==='partial'?'e.g., Partial — Hats only':'e.g., Final Invoice — '+o.memo}/>
+              <input className="form-input" value={invMemo} onChange={e=>setInvMemo(e.target.value)} placeholder={invType==='deposit'?'e.g., '+invDepositPct+'% Deposit — '+o.memo:invType==='partial'?'e.g., Partial — Hats only':invType==='full'?'e.g., Invoice — '+o.memo:'e.g., Final Invoice — '+o.memo}/>
             </div>
             <div>
               <label className="form-label">Invoice Date</label>
@@ -4167,7 +4174,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {/* Summary */}
           <div style={{background:'#f8fafc',borderRadius:8,padding:14}}>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
-              <span style={{fontSize:12,color:'#64748b'}}>{invType==='deposit'?'Full order':'Selected items'}</span>
+              <span style={{fontSize:12,color:'#64748b'}}>{invType==='deposit'||invType==='full'||invType==='final'?'Full order':'Selected items'}</span>
               <span style={{fontSize:12,fontWeight:600}}>{selTotals.items} items · {selTotals.units} units</span>
             </div>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
@@ -4198,7 +4205,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setShowInvCreate(false)}>Cancel</button>
-          <button className="btn btn-primary" style={{background:'#dc2626',borderColor:'#dc2626'}} disabled={invType==='partial'&&invSelItems.length===0} onClick={()=>{
+          <button className="btn btn-primary" style={invType==='final'?{background:'#dc2626',borderColor:'#dc2626'}:{}} disabled={invType==='partial'&&invSelItems.length===0} onClick={()=>{
             const invId=nextInvId(allInvoices);
             const _invDateStr=invDate||new Date().toLocaleDateString('en-CA');
             const termDays=parseInt((cust?.payment_terms||'net30').replace(/\D/g,''))||30;
@@ -4209,7 +4216,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:invType==='deposit'?Math.round(lineAmt*invDepositPct/100*100)/100:lineAmt}}).filter(Boolean);
             const invShipAmt=invType==='deposit'?Math.round(invShip*invDepositPct/100*100)/100:invShip;
             const invTaxAmt=invType==='deposit'?Math.round(invTax*invDepositPct/100*100)/100:invTax;
-            const defaultMemo=invType==='deposit'?invDepositPct+'% Deposit — '+o.memo:invType==='partial'?'Partial — '+o.memo:'Final Invoice — '+o.memo;
+            const defaultMemo=invType==='deposit'?invDepositPct+'% Deposit — '+o.memo:invType==='partial'?'Partial — '+o.memo:invType==='full'?'Invoice — '+o.memo:'Final Invoice — '+o.memo;
             const billingOverride=invBilling?JSON.parse(invBilling):null;
             const inv={id:invId,type:'invoice',inv_type:invType,customer_id:o.customer_id,so_id:o.id,
               date:_invDateStr,due_date:dueDate,total:Math.round(invTotal*100)/100,paid:0,
@@ -4233,7 +4240,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setInvSendMsg('Hi '+(contact?.name||'Coach')+',\n\nPlease find the attached invoice '+inv.id+' for $'+invTotal.toFixed(2)+'. Payment is due by '+dueDate+'.'+(invPortalUrl?'\n\nYou can also view your invoice through your portal:\n'+invPortalUrl:'')+'\n\nThank you,\nNSA Team');
             setInvSmsPhone(contact?.phone||'');setInvSmsEnabled(_smsUiEnabled&&!!contact?.phone);setInvFollowUpDays(portalSettings?.invFollowUpDays||7);setInvSendAt(_invDateStr);
             setInvSmsMsg('Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+invTotal.toFixed(2)+' is ready. Due by '+dueDate+'. View: https://nsa-portal.netlify.app/?portal='+(cust?.alpha_tag||''));
-          }}>{isPromoOrder&&invTotal===0?(invType==='final'?'Close Promo Order — $0 Invoice':'Create $0 Promo Invoice'):(invType==='final'?'Create Final Invoice — Close SO':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice')} — ${invTotal.toFixed(2)}</button>
+          }}>{isPromoOrder&&invTotal===0?(invType==='final'?'Close Promo Order — $0 Invoice':'Create $0 Promo Invoice'):(invType==='final'?'Create Final Invoice — Close SO':invType==='full'?'Create Invoice — SO Stays Open':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice')} — ${invTotal.toFixed(2)}</button>
         </div>
       </div></div>})()}
 
@@ -4284,7 +4291,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             ...(rShipAddr?[{label:'Ship To',value:ic?.name||'—',sub:rShipAddr}]:[]),
             {label:'Invoice Date',value:ir.date||new Date().toLocaleDateString(),sub:ir.due_date?'Due: '+ir.due_date:''},
             {label:'Sales Order',value:ir.so_id||'—',sub:ir.memo||''+(rPoNum?'<br/><strong>PO# '+rPoNum+'</strong>':'')},
-            {label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':ir.inv_type==='partial'?'Partial Invoice':'Final Invoice',sub:''}
+            {label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':ir.inv_type==='partial'?'Partial Invoice':ir.inv_type==='full'?'Invoice':'Final Invoice',sub:''}
           ],
           tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
             rows:[...rows,
@@ -4491,7 +4498,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   ...(eShipAddr?[{label:'Ship To',value:ic?.name||'—',sub:eShipAddr}]:[]),
                   {label:'Invoice Date',value:ir.date||'—',sub:ir.due_date?'Due: '+ir.due_date:''},
                   {label:'Sales Order',value:ir.so_id||'—',sub:ir.memo||''+(irPoNum?'<br/><strong>PO# '+irPoNum+'</strong>':'')},
-                  {label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':ir.inv_type==='partial'?'Partial Invoice':'Final Invoice',sub:''}
+                  {label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':ir.inv_type==='partial'?'Partial Invoice':ir.inv_type==='full'?'Invoice':'Final Invoice',sub:''}
                 ],
                 tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
                   rows:[...eRows,
