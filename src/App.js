@@ -8046,7 +8046,7 @@ export default function App(){
                     ...(shipAddr?[{label:'Ship To',value:ic?.name||'—',sub:shipAddr}]:[]),
                     {label:'Invoice Date',value:inv.date||'—',sub:inv.due_date?'Due: '+inv.due_date:''},
                     {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||''+(poNum?'<br/><strong>PO# '+poNum+'</strong>':'')},
-                    {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':'Final Invoice',sub:'Rep: '+(repObj?.name||'—')}
+                    {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':inv.inv_type==='full'?'Invoice':'Final Invoice',sub:'Rep: '+(repObj?.name||'—')}
                   ],
                   tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
                     rows:[...pRows,
@@ -8095,7 +8095,7 @@ export default function App(){
                 <div style={{fontSize:11,color:'#64748b'}}>{inv.memo||''}</div>
               </div>
               <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Type / Rep</div>
-                <div style={{fontSize:14,fontWeight:600}}>{inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial':'Final'}</div>
+                <div style={{fontSize:14,fontWeight:600}}>{inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial':inv.inv_type==='full'?'Invoice':'Final'}</div>
                 <div style={{fontSize:11,color:'#64748b'}}>Rep: {repObj?.name||'—'}</div>
               </div>
             </div>
@@ -8584,7 +8584,7 @@ export default function App(){
                       ...(siShipAddr?[{label:'Ship To',value:siCust?.name||'—',sub:siShipAddr}]:[]),
                       {label:'Invoice Date',value:siInv.date||'—',sub:siInv.due_date?'Due: '+siInv.due_date:''},
                       {label:'Sales Order',value:siInv.so_id||'—',sub:siInv.memo||''+(siPoNum?'<br/><strong>PO# '+siPoNum+'</strong>':'')},
-                      {label:'Payment Terms',value:siInv.inv_type==='deposit'?(siInv.deposit_pct||50)+'% Deposit':siInv.inv_type==='partial'?'Partial Invoice':'Final Invoice',sub:'Rep: '+(siRepObj?.name||'—')}
+                      {label:'Payment Terms',value:siInv.inv_type==='deposit'?(siInv.deposit_pct||50)+'% Deposit':siInv.inv_type==='partial'?'Partial Invoice':siInv.inv_type==='full'?'Invoice':'Final Invoice',sub:'Rep: '+(siRepObj?.name||'—')}
                     ],
                     tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
                       rows:[...siRows,
@@ -8879,7 +8879,7 @@ export default function App(){
                     ...(fShipAddr?[{label:'Ship To',value:ic?.name||'—',sub:fShipAddr}]:[]),
                     {label:'Invoice Date',value:inv.date||new Date().toLocaleDateString(),sub:inv.due_date?'Due: '+inv.due_date:''},
                     {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||so?.memo||''+(fPoNum?'<br/><strong>PO# '+fPoNum+'</strong>':'')},
-                    {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':'Final Invoice',sub:'Rep: '+(REPS.find(r=>r.id===inv._rep)?.name||'—')},
+                    {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':inv.inv_type==='full'?'Invoice':'Final Invoice',sub:'Rep: '+(REPS.find(r=>r.id===inv._rep)?.name||'—')},
                   ],
                   tables:[{
                     headers:['Quantity','SKU','Item','Rate','Amount'],
