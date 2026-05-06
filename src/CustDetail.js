@@ -308,6 +308,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     </div></div>})()}
   {/* PROMO DOLLARS TAB */}
   {tab==='promo'&&(()=>{
+    // Promo $ is owned by the parent customer; subs inherit (data is loaded with parent's id at the App level).
+    const parentId=customer.parent_id||customer.id;
+    const parentCust=customer.parent_id?(allCustomers.find(c=>c.id===customer.parent_id)||customer):customer;
     const programs=customer.promo_programs||[];let periods=customer.promo_periods||[];const usage=customer.promo_usage||[];
     const now=new Date();const y=now.getFullYear();const m=now.getMonth();
     const curPeriod=m<6?{start:y+'-01-01',end:y+'-06-30',label:'H1 '+y}:{start:y+'-07-01',end:y+'-12-31',label:'H2 '+y};
@@ -317,7 +320,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const fixedProgs=programs.filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
       const totalFixed=fixedProgs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
       if(totalFixed>0){
-        const newPd={id:'pp_'+Date.now(),customer_id:customer.id,period_start:curPeriod.start,period_end:curPeriod.end,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+        const newPd={id:'pp_'+Date.now(),customer_id:parentId,period_start:curPeriod.start,period_end:curPeriod.end,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
         onSavePromoPeriod(newPd);curPeriods=[newPd];periods=[...periods,newPd];
       }
     }
@@ -325,10 +328,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const curAllocated=curPeriods.reduce((a,p)=>a+(p.allocated||0),0);
     const curUsed=curPeriods.reduce((a,p)=>a+(p.used||0),0);
     const pastPeriods=periods.filter(p=>p.period_start!==curPeriod.start).sort((a,b)=>b.period_start.localeCompare(a.period_start));
-    // Get parent customer for promo (promo belongs to parent, applies to subs)
-    const parentId=customer.parent_id||customer.id;
-    const parentCust=customer.parent_id?allCustomers.find(c=>c.id===customer.parent_id):customer;
     return<div style={{display:'flex',flexDirection:'column',gap:12}}>
+      {customer.parent_id&&parentCust&&parentCust.id!==customer.id&&<div style={{padding:'8px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e40af'}}>Promo $ is shared with parent account <strong style={{cursor:'pointer',textDecoration:'underline'}} onClick={()=>onSelCust&&onSelCust(parentCust)}>{parentCust.name}</strong> — changes here apply to all sub-accounts.</div>}
       {/* Current Balance */}
       <div className="card"><div className="card-header"><h2>Promo Balance — {curPeriod.label}</h2></div>
         <div className="card-body">
@@ -342,7 +343,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             {usage.filter(u=>curPeriods.some(p=>p.id===u.period_id)).length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No promo used this period</div>:
             <table style={{fontSize:12}}><thead><tr><th>Date</th><th>Order</th><th>Description</th><th>Amount</th></tr></thead><tbody>
               {usage.filter(u=>curPeriods.some(p=>p.id===u.period_id)).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).map((u,i)=>
-                <tr key={i}><td style={{color:'#64748b'}}>{u.created_at?new Date(u.created_at).toLocaleDateString():'-'}</td><td style={{fontWeight:600,color:'#1e40af'}}>{u.so_id||'-'}{u.estimate_id&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>({u.estimate_id})</span>}</td><td>{u.description||'-'}</td><td style={{fontWeight:700,color:'#dc2626'}}>${(u.amount||0).toLocaleString()}</td></tr>)}
+                <tr key={i}><td style={{color:'#64748b'}}>{u.created_at?new Date(u.created_at).toLocaleDateString():'-'}</td><td style={{fontWeight:600,color:'#1e40af'}}>{u.so_id?<span style={{cursor:'pointer',textDecoration:'underline'}} onClick={()=>{const so=(sos||[]).find(s=>s.id===u.so_id);if(so&&onOpenSO)onOpenSO(so);else if(onOpenSO)onOpenSO(u.so_id)}}>{u.so_id}</span>:'-'}{u.estimate_id&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:4,cursor:onOpenEst?'pointer':'default',textDecoration:onOpenEst?'underline':'none'}} onClick={()=>{if(!onOpenEst)return;const est=(ests||[]).find(e=>e.id===u.estimate_id);if(est)onOpenEst(est)}}>({u.estimate_id})</span>}</td><td>{u.description||'-'}</td><td style={{fontWeight:700,color:'#dc2626'}}>${(u.amount||0).toLocaleString()}</td></tr>)}
             </tbody></table>}
           </div>}
           {/* Manual adjustment */}
@@ -715,6 +716,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const fmt=n=>'$'+Math.round(n).toLocaleString();
     const fmtD=d=>d?d.toISOString().slice(0,10):'—';
     const histCount=filt.filter(i=>i._hist).length;
+    const sortedInvs=[...filt].sort((a,b)=>{const da=pd(a.date),db=pd(b.date);return(db?db.getTime():0)-(da?da.getTime():0)});
     return<div className="card"><div className="card-header"><h2>Reporting</h2><div style={{display:'flex',gap:4}}>{[['thisyear','This Year'],['lastyear','Last Year'],['rolling','Rolling 12'],['alltime','All']].map(([v,l])=><button key={v} className={`btn btn-sm ${rR===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRR(v)}>{l}</button>)}</div></div>
       <div className="card-body">
         <div className="stats-row">
@@ -724,6 +726,19 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <div className="stat-card"><div className="stat-label">First → Last</div><div className="stat-value" style={{fontSize:13}}>{fmtD(first)} → {fmtD(last)}</div></div>
         </div>
         {histCount>0&&<div style={{fontSize:10,color:'#94a3b8',marginTop:8}}>Includes {histCount} NetSuite historical invoice{histCount===1?'':'s'} (revenue and dates only — no line items).</div>}
+        {sortedInvs.length>0&&<div style={{marginTop:12}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6,textTransform:'uppercase'}}>Invoices</div>
+          <table style={{fontSize:12,width:'100%'}}><thead><tr><th style={{textAlign:'left'}}>Date</th><th style={{textAlign:'left'}}>Invoice #</th>{isP&&<th style={{textAlign:'left'}}>Sub</th>}<th style={{textAlign:'left'}}>Memo</th><th style={{textAlign:'right'}}>Total</th><th>Source</th></tr></thead><tbody>
+            {sortedInvs.map((i,idx)=>{const d=pd(i.date);return<tr key={i.id+'-'+idx}>
+              <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtD(d)}</td>
+              <td style={{fontWeight:700,color:'#1e40af'}}>{i.document_number||i.id}</td>
+              {isP&&<td><span className="badge badge-gray">{gn(i.customer_id)}</span></td>}
+              <td style={{color:'#475569'}}>{i.memo||'—'}</td>
+              <td style={{textAlign:'right',fontWeight:700}}>{fmt(Number(i.total)||0)}</td>
+              <td><span className="badge" style={{background:i._hist?'#f1f5f9':'#dbeafe',color:i._hist?'#475569':'#1e40af',fontSize:9,fontWeight:600}}>{i._hist?'NetSuite':'Portal'}</span></td>
+            </tr>})}
+          </tbody></table>
+        </div>}
       </div>
     </div>;
   })()}

@@ -13,7 +13,7 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isIm
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -1843,7 +1843,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
                 const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
                 if(totalFixed>0){
-                  const newPeriod={id:'pp_'+Date.now(),customer_id:cust.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+                  const newPeriod={id:'pp_'+Date.now(),customer_id:cust.parent_id||cust.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
                   await _dbSavePromoPeriod(newPeriod);
                   const updatedCust={...cust,promo_periods:[...(cust.promo_periods||[]),newPeriod]};
                   setCust(updatedCust);
@@ -1878,12 +1878,40 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 }
               });
               sv('promo_applied',true);sv('items',newItems);
+              // On SOs (committed orders), deduct from balance + record usage immediately so the Promo $ tab and balance reflect the spend.
+              // Estimates skip this — their promo is provisional until conversion to SO (handled in App.convertSO).
+              if(isSO){
+                const promoUsed=promoBudget-remaining;
+                const targetPeriod=_ps[0];
+                if(promoUsed>0&&targetPeriod){
+                  const updatedPeriod={...targetPeriod,used:safeNum(targetPeriod.used)+promoUsed};
+                  const usageRec={period_id:targetPeriod.id,amount:promoUsed,description:o.memo||('Promo on '+o.id),created_by:cu?.name||'System',so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()};
+                  if(onSavePromoPeriod)await onSavePromoPeriod(updatedPeriod);else if(_dbSavePromoPeriod)await _dbSavePromoPeriod(updatedPeriod);
+                  if(onSavePromoUsage)await onSavePromoUsage(usageRec);
+                  setCust(c=>c?{...c,promo_periods:(c.promo_periods||[]).map(p=>p.id===targetPeriod.id?updatedPeriod:p),promo_usage:[...(c.promo_usage||[]),usageRec]}:c);
+                  sv('promo_amount',promoUsed);
+                }
+              }
               const totalItems=items.filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0).length;
               if(fullCount===totalItems){nf('Promo mode enabled — all items set to retail pricing')}
               else if(partialItem){nf(fullCount+' item(s) fully covered, 1 partially discounted — customer pays the rest')}
               else{nf('Promo applied to '+fullCount+' of '+totalItems+' items — customer pays for rest')}
             }} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Apply Promo Funds</button>}
-            {o.promo_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);sv('promo_applied',false);sv('promo_amount',0);sv('items',safeItems(o).map(it=>({...it,is_promo:false,unit_sell:it._pre_promo_sell!=null?it._pre_promo_sell:it.unit_sell,_pre_promo_sell:undefined,_promo_credit:undefined})));nf('Promo mode disabled')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Remove Promo</button>}
+            {o.promo_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
+              // On SOs, reverse the deduction by deleting any usage tied to this SO and restoring the period balance.
+              if(isSO&&cust){
+                const usages=(cust.promo_usage||[]).filter(u=>u.so_id===o.id);
+                for(const u of usages){
+                  const period=(cust.promo_periods||[]).find(p=>p.id===u.period_id);
+                  if(period){
+                    const restored={...period,used:Math.max(0,safeNum(period.used)-safeNum(u.amount))};
+                    if(onSavePromoPeriod)await onSavePromoPeriod(restored);else if(_dbSavePromoPeriod)await _dbSavePromoPeriod(restored);
+                  }
+                }
+                if(usages.length&&onDeletePromoUsage)await onDeletePromoUsage(usages[0].period_id,o.id);
+                if(usages.length){setCust(c=>c?{...c,promo_periods:(c.promo_periods||[]).map(p=>{const u=usages.find(x=>x.period_id===p.id);return u?{...p,used:Math.max(0,safeNum(p.used)-safeNum(u.amount))}:p}),promo_usage:(c.promo_usage||[]).filter(u=>u.so_id!==o.id)}:c)}
+              }
+              sv('promo_applied',false);sv('promo_amount',0);sv('items',safeItems(o).map(it=>({...it,is_promo:false,unit_sell:it._pre_promo_sell!=null?it._pre_promo_sell:it.unit_sell,_pre_promo_sell:undefined,_promo_credit:undefined})));nf('Promo mode disabled')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Remove Promo</button>}
             {/* Credit — show when customer has credits available */}
             {cust&&!o.credit_applied&&(()=>{const _credits=(cust.credits||[]);const _bal=_credits.reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0);return _bal>0})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#065f46',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
               const credits=(cust.credits||[]).filter(cr=>(cr.amount||0)-(cr.used||0)>0);
@@ -1905,10 +1933,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>
       {isSO&&<div style={{display:'flex',gap:6,marginTop:8,alignItems:'center'}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
-        {o.promo_applied?<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={()=>{
+        {o.promo_applied?(o.status==='complete'?<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Promo Order Closed</span>:<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={async()=>{
           if(!window.confirm('Mark promo order '+o.id+' as complete? No invoice needed — costs are tracked on the SO.'))return;
+          // Backfill: if this SO has promo applied but never recorded a usage row (e.g. converted before deduction was wired up), record it now.
+          if(isSO&&cust&&!(cust.promo_usage||[]).some(u=>u.so_id===o.id)){
+            const promoAmt=promoTotals?promoTotals.promoAmount:safeNum(o.promo_amount);
+            if(promoAmt>0){
+              const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';
+              const period=(cust.promo_periods||[]).find(p=>p.period_start===_pStart)||(cust.promo_periods||[])[0];
+              if(period){
+                const updatedPeriod={...period,used:safeNum(period.used)+promoAmt};
+                const usageRec={period_id:period.id,amount:promoAmt,description:o.memo||('Promo on '+o.id),created_by:cu?.name||'System',so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()};
+                if(onSavePromoPeriod)await onSavePromoPeriod(updatedPeriod);
+                if(onSavePromoUsage)await onSavePromoUsage(usageRec);
+                setCust(c=>c?{...c,promo_periods:(c.promo_periods||[]).map(p=>p.id===period.id?updatedPeriod:p),promo_usage:[...(c.promo_usage||[]),usageRec]}:c);
+              }
+            }
+          }
           const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' promo order closed');
-        }}><Icon name="check" size={14}/> Close Promo Order</button>
+        }}><Icon name="check" size={14}/> Close Promo Order</button>)
         :<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
           setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('final');setInvDepositPct(50);setInvDate(new Date().toLocaleDateString('en-CA'));setShowInvCreate(true);
         }}><Icon name="dollar" size={14}/> Create Invoice</button>}
@@ -1941,7 +1984,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <span style={{fontSize:12,fontWeight:700,color:'#92400e'}}>Promo Total: ${promoTotals.promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
         {promoTotals.normalRev>0&&<span style={{fontSize:12}}>Customer Pays: <strong style={{color:'#166534'}}>${promoTotals.customerPays.toFixed(2)}</strong></span>}
         {promoTotals.normalRev===0&&promoTotals.promoCredit===0&&<span style={{fontSize:12,fontWeight:700,color:'#166534'}}>$0.00 Order</span>}
-        {(()=>{if(!cust)return null;const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(promoTotals.promoAmount>_bal)return<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠️ Exceeds available funds — ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})} remaining</span>;return<span style={{fontSize:11,color:'#64748b'}}>Available: ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
+        {(()=>{if(!cust)return null;const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);const _ownDeducted=(cust.promo_usage||[]).filter(u=>u.so_id===o.id).reduce((a,u)=>a+safeNum(u.amount),0);const _availableForThis=_bal+_ownDeducted;if(promoTotals.promoAmount>_availableForThis)return<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠️ Exceeds available funds — ${_availableForThis.toLocaleString(undefined,{maximumFractionDigits:2})} available</span>;return<span style={{fontSize:11,color:'#64748b'}}>Remaining: ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
       </div>}
       {/* Credit Summary */}
       {o.credit_applied&&safeNum(o.credit_amount)>0&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>
