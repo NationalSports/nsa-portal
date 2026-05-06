@@ -208,6 +208,8 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
 
 
 function calcSOStatus(ord){
+  // Promo orders skip the invoicing/fulfillment funnel — once Close Promo Order sets status='complete', honor it.
+  if(ord?.promo_applied&&ord?.status==='complete')return'complete';
   // Booking orders stay in 'booking' status until confirmed or within alert threshold of ship date
   if(ord?.order_type==='booking'&&!ord.booking_confirmed){
     if(!ord.expected_ship_date)return'booking';
