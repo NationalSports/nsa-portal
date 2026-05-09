@@ -39,7 +39,7 @@ COLUMN_ALIASES = {
     "item":             ["item", "item name", "item: name"],
     "description":      ["description", "memo (main)", "item description"],
     "quantity":         ["quantity", "qty"],
-    "rate":             ["rate", "unit price", "price"],
+    "rate":             ["item rate", "unit price", "rate", "price"],
     "amount":           ["amount", "line amount", "total"],
     "status":           ["status", "transaction status"],
     "memo":             ["memo", "notes"],
@@ -64,22 +64,27 @@ def _row_cells(row):
 
 
 def _dedupe_headers(raw_headers):
-    """NetSuite often ships two columns named 'Internal ID' (transaction's and
-    customer's). Rename the second to 'Customer Internal ID' so auto-mapping
-    can tell them apart."""
-    seen = {}
+    """NetSuite saved-search exports often ship multiple 'Internal ID' columns:
+    the transaction's id (sometimes duplicated) and the customer's. The
+    customer one is always last — rename it to 'Customer Internal ID' so
+    auto-mapping can tell them apart, and disambiguate any other duplicates."""
+    cleaned = [h.strip() for h in raw_headers]
+    last_iid = max(
+        (i for i, h in enumerate(cleaned) if h.lower() == "internal id"),
+        default=-1,
+    )
+    seen: dict[str, int] = {}
     out = []
-    for h in raw_headers:
-        key = h.strip()
-        if key in seen:
-            seen[key] += 1
-            if key.lower() == "internal id":
-                out.append("Customer Internal ID")
-            else:
-                out.append(f"{key} ({seen[key]})")
+    for i, h in enumerate(cleaned):
+        if i == last_iid and sum(1 for x in cleaned if x.lower() == "internal id") > 1:
+            out.append("Customer Internal ID")
+            continue
+        if h in seen:
+            seen[h] += 1
+            out.append(f"{h} ({seen[h]})")
         else:
-            seen[key] = 1
-            out.append(key)
+            seen[h] = 1
+            out.append(h)
     return out
 
 
@@ -116,24 +121,33 @@ def load_csv(path: Path):
 
 
 def auto_map(headers):
+    """Pick the best header for each canonical field.
+
+    Three passes — exact match wins over word-boundary which wins over
+    substring. Without this, 'Item Rate' would steal the 'item' alias and
+    'Order Type' would steal the 'type' alias."""
     lowered = [(h, h.lower().strip()) for h in headers]
     claimed: set[str] = set()
     mapping: dict[str, str] = {}
-    candidates = []
-    for field, aliases in COLUMN_ALIASES.items():
-        for a in aliases:
-            candidates.append((field, a, len(a)))
-    candidates.sort(key=lambda x: -x[2])
-    for field, alias, _ in candidates:
-        if field in mapping:
-            continue
-        for orig, low in lowered:
-            if orig in claimed:
+
+    def try_match(predicate):
+        for field, aliases in COLUMN_ALIASES.items():
+            if field in mapping:
                 continue
-            if alias in low:
-                mapping[field] = orig
-                claimed.add(orig)
-                break
+            for alias in aliases:
+                for orig, low in lowered:
+                    if orig in claimed:
+                        continue
+                    if predicate(alias, low):
+                        mapping[field] = orig
+                        claimed.add(orig)
+                        break
+                if field in mapping:
+                    break
+
+    try_match(lambda a, h: h == a)
+    try_match(lambda a, h: f" {a} " in f" {h} " or h.startswith(a + " ") or h.endswith(" " + a))
+    try_match(lambda a, h: a in h)
     return mapping
 
 
@@ -175,6 +189,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("inputs", nargs="+", type=Path)
     ap.add_argument("--out", type=Path, default=Path("all_transactions.csv"))
+    ap.add_argument("--include-tax", action="store_true",
+                    help="Keep tax-detail lines (Name starts with 'Tax Agency'). "
+                         "Off by default — these rows show the tax agency as the "
+                         "entity, not the actual customer.")
     args = ap.parse_args()
 
     merged: list[dict] = []
@@ -185,7 +203,12 @@ def main():
         mapping = auto_map(headers)
         kept = 0
         skipped_no_date = 0
+        skipped_tax = 0
         for r in rows:
+            customer_name = r.get(mapping.get("customer_name", ""), "").strip()
+            if not args.include_tax and customer_name.lower().startswith("tax agency"):
+                skipped_tax += 1
+                continue
             d = parse_date(r.get(mapping.get("date", ""), ""))
             if not d:
                 skipped_no_date += 1
@@ -207,7 +230,7 @@ def main():
                 "source_file":     path.name,
             })
             kept += 1
-        per_file_stats.append((path.name, kept, skipped_no_date, mapping))
+        per_file_stats.append((path.name, kept, skipped_no_date, skipped_tax, mapping))
 
     merged.sort(key=lambda x: (x["customer_name"].lower(), x["date"], x["document_number"]))
 
@@ -218,8 +241,8 @@ def main():
         w.writerows(merged)
 
     print(f"wrote: {args.out} ({len(merged)} rows)")
-    for name, kept, skipped, mapping in per_file_stats:
-        print(f"  {name}: kept={kept}, skipped_no_date={skipped}")
+    for name, kept, skipped, skipped_tax, mapping in per_file_stats:
+        print(f"  {name}: kept={kept}, skipped_no_date={skipped}, skipped_tax={skipped_tax}")
         unmapped = [k for k in COLUMN_ALIASES if k not in mapping]
         if unmapped:
             print(f"    (no column matched for: {', '.join(unmapped)})")
