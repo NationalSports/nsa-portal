@@ -89,13 +89,13 @@ export default function SalesHistory() {
     } finally {
       setLoading(false);
     }
-  }, [search, type, status, from, to]);
+  }, [search, type, status, from, to, selectedCustomer]);
 
   // Initial load + re-run on filter changes (debounced for the text search).
   useEffect(() => {
     const t = setTimeout(runSearch, 250);
     return () => clearTimeout(t);
-  }, [runSearch, selectedCustomer]);
+  }, [runSearch]);
 
   // Group line rows into transactions so the table reads as one row per
   // SO/invoice with expandable line items.
