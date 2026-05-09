@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""
+Merge one or more NetSuite Saved Search exports (line-level, i.e. Main Line =
+False) into a single tidy CSV. Adds a `year` column and normalizes column names
+so the output is pivot-table-ready in Excel or Google Sheets.
+
+Expected input columns (any subset, any order — case-insensitive):
+  Date, Type, Document Number, Customer (Name), Customer: Internal ID,
+  Item, Description, Quantity, Rate, Amount, Status, Memo
+
+Inputs may be CSV or NetSuite SpreadsheetML (.xls / .xml).
+
+Usage:
+    python scripts/merge-netsuite-transactions.py \
+        exports/sales_orders_2023.xls \
+        exports/sales_orders_2024.xls \
+        exports/sales_orders_2025.xls \
+        exports/invoices_2023-2025.csv \
+        --out all_transactions.csv
+"""
+
+import argparse
+import csv
+from datetime import datetime
+from pathlib import Path
+import sys
+import xml.etree.ElementTree as ET
+
+NS = {"ss": "urn:schemas-microsoft-com:office:spreadsheet"}
+SS = "{urn:schemas-microsoft-com:office:spreadsheet}"
+
+COLUMN_ALIASES = {
+    "date":             ["date", "trandate"],
+    "type":             ["type", "transaction type"],
+    "document_number":  ["document number", "document #", "tranid", "number"],
+    "customer_nsid":    ["customer : internal id", "customer internal id",
+                         "customer:internal id"],
+    "customer_name":    ["customer", "customer name", "name"],
+    "item":             ["item", "item name", "item: name"],
+    "description":      ["description", "memo (main)", "item description"],
+    "quantity":         ["quantity", "qty"],
+    "rate":             ["rate", "unit price", "price"],
+    "amount":           ["amount", "line amount", "total"],
+    "status":           ["status", "transaction status"],
+    "memo":             ["memo", "notes"],
+}
+
+OUTPUT_COLUMNS = [
+    "year", "date", "type", "document_number",
+    "customer_name", "customer_nsid",
+    "item", "description", "quantity", "rate", "amount",
+    "status", "memo", "source_file",
+]
+
+
+def _row_cells(row):
+    out, idx = {}, 0
+    for c in row.findall("ss:Cell", NS):
+        ix = c.attrib.get(SS + "Index")
+        idx = int(ix) if ix else idx + 1
+        d = c.find("ss:Data", NS)
+        out[idx] = (d.text or "").strip() if d is not None else ""
+    return out
+
+
+def _dedupe_headers(raw_headers):
+    """NetSuite often ships two columns named 'Internal ID' (transaction's and
+    customer's). Rename the second to 'Customer Internal ID' so auto-mapping
+    can tell them apart."""
+    seen = {}
+    out = []
+    for h in raw_headers:
+        key = h.strip()
+        if key in seen:
+            seen[key] += 1
+            if key.lower() == "internal id":
+                out.append("Customer Internal ID")
+            else:
+                out.append(f"{key} ({seen[key]})")
+        else:
+            seen[key] = 1
+            out.append(key)
+    return out
+
+
+def load_spreadsheetml(path: Path):
+    tree = ET.parse(path)
+    ws = tree.getroot().find("ss:Worksheet", NS)
+    rows = ws.find("ss:Table", NS).findall("ss:Row", NS)
+    header = _row_cells(rows[0])
+    raw_headers = [header.get(i + 1, "") for i in range(max(header))]
+    headers = _dedupe_headers(raw_headers)
+    return headers, [
+        {h: _row_cells(r).get(i + 1, "") for i, h in enumerate(headers)}
+        for r in rows[1:]
+    ]
+
+
+def load_csv(path: Path):
+    with path.open(newline="", encoding="utf-8-sig") as f:
+        sniff = f.read(4096)
+        f.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sniff, delimiters=",\t;")
+        except csv.Error:
+            dialect = csv.excel
+        reader = csv.reader(f, dialect=dialect)
+        raw_headers = next(reader)
+        headers = _dedupe_headers(raw_headers)
+        out = []
+        for row in reader:
+            if not any(row):
+                continue
+            out.append({h: (row[i] if i < len(row) else "") for i, h in enumerate(headers)})
+        return headers, out
+
+
+def auto_map(headers):
+    lowered = [(h, h.lower().strip()) for h in headers]
+    claimed: set[str] = set()
+    mapping: dict[str, str] = {}
+    candidates = []
+    for field, aliases in COLUMN_ALIASES.items():
+        for a in aliases:
+            candidates.append((field, a, len(a)))
+    candidates.sort(key=lambda x: -x[2])
+    for field, alias, _ in candidates:
+        if field in mapping:
+            continue
+        for orig, low in lowered:
+            if orig in claimed:
+                continue
+            if alias in low:
+                mapping[field] = orig
+                claimed.add(orig)
+                break
+    return mapping
+
+
+def parse_date(s: str):
+    s = (s or "").strip()
+    if not s:
+        return None
+    if "T" in s:
+        s = s.split("T", 1)[0]
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y", "%d-%b-%Y", "%b %d, %Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            pass
+    return None
+
+
+def normalize_type(raw: str) -> str:
+    r = (raw or "").strip().lower()
+    if "credit" in r or r == "cm":
+        return "credit_memo"
+    if "sales order" in r or r == "so":
+        return "sales_order"
+    if "invoice" in r or r == "inv":
+        return "invoice"
+    return raw.strip().lower().replace(" ", "_")
+
+
+def load_any(path: Path):
+    suffix = path.suffix.lower()
+    if suffix in (".xls", ".xml"):
+        return load_spreadsheetml(path)
+    if suffix in (".csv", ".tsv", ".txt"):
+        return load_csv(path)
+    sys.exit(f"unsupported input type: {path.suffix} ({path})")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("inputs", nargs="+", type=Path)
+    ap.add_argument("--out", type=Path, default=Path("all_transactions.csv"))
+    args = ap.parse_args()
+
+    merged: list[dict] = []
+    per_file_stats = []
+
+    for path in args.inputs:
+        headers, rows = load_any(path)
+        mapping = auto_map(headers)
+        kept = 0
+        skipped_no_date = 0
+        for r in rows:
+            d = parse_date(r.get(mapping.get("date", ""), ""))
+            if not d:
+                skipped_no_date += 1
+                continue
+            merged.append({
+                "year": d.year,
+                "date": d.isoformat(),
+                "type": normalize_type(r.get(mapping.get("type", ""), "")),
+                "document_number": r.get(mapping.get("document_number", ""), "").strip(),
+                "customer_name":   r.get(mapping.get("customer_name", ""), "").strip(),
+                "customer_nsid":   r.get(mapping.get("customer_nsid", ""), "").strip(),
+                "item":            r.get(mapping.get("item", ""), "").strip(),
+                "description":     r.get(mapping.get("description", ""), "").strip(),
+                "quantity":        r.get(mapping.get("quantity", ""), "").strip(),
+                "rate":            r.get(mapping.get("rate", ""), "").strip(),
+                "amount":          r.get(mapping.get("amount", ""), "").strip(),
+                "status":          r.get(mapping.get("status", ""), "").strip(),
+                "memo":            r.get(mapping.get("memo", ""), "").strip(),
+                "source_file":     path.name,
+            })
+            kept += 1
+        per_file_stats.append((path.name, kept, skipped_no_date, mapping))
+
+    merged.sort(key=lambda x: (x["customer_name"].lower(), x["date"], x["document_number"]))
+
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    with args.out.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=OUTPUT_COLUMNS)
+        w.writeheader()
+        w.writerows(merged)
+
+    print(f"wrote: {args.out} ({len(merged)} rows)")
+    for name, kept, skipped, mapping in per_file_stats:
+        print(f"  {name}: kept={kept}, skipped_no_date={skipped}")
+        unmapped = [k for k in COLUMN_ALIASES if k not in mapping]
+        if unmapped:
+            print(f"    (no column matched for: {', '.join(unmapped)})")
+
+
+if __name__ == "__main__":
+    main()
