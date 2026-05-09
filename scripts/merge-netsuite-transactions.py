@@ -92,16 +92,23 @@ def _dedupe_headers(raw_headers):
 
 
 def load_spreadsheetml(path: Path):
-    tree = ET.parse(path)
-    ws = tree.getroot().find("ss:Worksheet", NS)
-    rows = ws.find("ss:Table", NS).findall("ss:Row", NS)
-    header = _row_cells(rows[0])
-    raw_headers = [header.get(i + 1, "") for i in range(max(header))]
-    headers = _dedupe_headers(raw_headers)
-    return headers, [
-        {h: _row_cells(r).get(i + 1, "") for i, h in enumerate(headers)}
-        for r in rows[1:]
-    ]
+    """Stream-parse SpreadsheetML so memory stays bounded on huge exports
+    (300MB+ files would otherwise inflate to several GB as a DOM)."""
+    headers: list[str] | None = None
+    out: list[dict] = []
+    row_tag = SS + "Row"
+    context = ET.iterparse(path, events=("end",))
+    for event, elem in context:
+        if elem.tag != row_tag:
+            continue
+        cells = _row_cells(elem)
+        if headers is None:
+            raw_headers = [cells.get(i + 1, "") for i in range(max(cells) if cells else 0)]
+            headers = _dedupe_headers(raw_headers)
+        else:
+            out.append({h: cells.get(i + 1, "") for i, h in enumerate(headers)})
+        elem.clear()
+    return headers or [], out
 
 
 def load_csv(path: Path):

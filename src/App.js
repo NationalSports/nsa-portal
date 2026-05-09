@@ -76,6 +76,7 @@ const lazyRetry = (importFn) => React.lazy(() =>
 const OrderEditor = lazyRetry(() => import('./OrderEditor'));
 const CustDetail = lazyRetry(() => import('./CustDetail'));
 const CoachPortal = lazyRetry(() => import('./CoachPortal'));
+const SalesHistory = lazyRetry(() => import('./SalesHistory'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
 import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection } from './vendorApis';
@@ -3286,7 +3287,7 @@ export default function App(){
       const p=new URLSearchParams(window.location.search);
       const pgId=p.get('pg');
       if(!pgId||p.get('so'))return;
-      const allowed=new Set(['dashboard','estimates','orders','jobs','art','production','warehouse','purchase_orders','batch_pos','customers','vendors','team','products','inventory','messages','invoices','commissions','omg','reports','issues','import','qb','backup','settings','sales_tools']);
+      const allowed=new Set(['dashboard','estimates','orders','jobs','art','production','warehouse','purchase_orders','batch_pos','customers','vendors','team','products','inventory','messages','invoices','commissions','omg','reports','issues','import','qb','backup','settings','sales_tools','sales_history']);
       if(allowed.has(pgId))setPg(pgId);
       const anchor=window.location.hash;
       const u=new URL(window.location);u.searchParams.delete('pg');window.history.replaceState({},'',u.pathname+u.search+anchor);
@@ -3654,13 +3655,13 @@ export default function App(){
   // ─── PAGE ACCESS CONTROL ───
   // Pages whose access is admin-controlled per-user (match the 22 checkboxes in the Team edit modal).
   // Pages NOT in this set (purchase_orders, issues, settings) fall through to role-level gates in `nav`.
-  const RESTRICTED_PAGES=useMemo(()=>new Set(['dashboard','estimates','orders','invoices','omg','jobs','art','production','warehouse','batch_pos','customers','vendors','products','inventory','messages','commissions','reports','team','import','qb','backup','sales_tools']),[]);
+  const RESTRICTED_PAGES=useMemo(()=>new Set(['dashboard','estimates','orders','invoices','omg','jobs','art','production','warehouse','batch_pos','customers','vendors','products','inventory','messages','commissions','reports','team','import','qb','backup','sales_tools','sales_history']),[]);
   // Role-based defaults used when a team member has no explicit access array.
   const DEFAULT_ACCESS_BY_ROLE=useMemo(()=>({
     super_admin:Array.from(RESTRICTED_PAGES),
     admin:Array.from(RESTRICTED_PAGES),
-    rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools'],
-    csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools'],
+    rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history'],
+    csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history'],
     accounting:['dashboard','invoices','customers','reports','qb'],
     warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
     prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
@@ -20926,8 +20927,8 @@ export default function App(){
     const DEFAULT_ACCESS={
       super_admin:ALL_PAGES.map(p=>p.id),
       admin:ALL_PAGES.map(p=>p.id),
-      rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools'],
-      csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools'],
+      rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history'],
+      csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history'],
       accounting:['dashboard','invoices','customers','reports','qb'],
       warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
       prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
@@ -22902,8 +22903,8 @@ export default function App(){
   }
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',search:'Search Results'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
   // ─── SCAN RESULT HANDLER ───
   function handleScanResult(val){
     if(!val)return;
@@ -23161,7 +23162,7 @@ export default function App(){
           })()}
         </div>}
       </div>}
-      <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='search'&&rSearch()}</>}</div></div>
+      <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
     {/* Assignment Modal — global, triggered from warehouse or production board */}
     {assignModal&&<div className="modal-overlay" onClick={()=>setAssignModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
         <div className="modal-header" style={{background:'#fffbeb'}}><h2>📋 Assign to Machine / Person</h2><button className="modal-close" onClick={()=>setAssignModal(null)}>×</button></div>
