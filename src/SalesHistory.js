@@ -18,6 +18,32 @@ export default function SalesHistory() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [expanded, setExpanded] = useState(new Set());
+  const [customers, setCustomers] = useState([]);
+  const [customerInput, setCustomerInput] = useState('');
+
+  // Load customers once for the picker. Includes netsuite_internal_id so we
+  // can filter lines by the indexed raw_customer_nsid for fast, exact match.
+  useEffect(() => {
+    if (!supabase) return;
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from('customers')
+        .select('id, name, netsuite_internal_id')
+        .order('name', { ascending: true });
+      if (!cancelled && !error) setCustomers(data || []);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // When the input matches a known customer name, treat it as a hard filter;
+  // otherwise leave the customer filter unset and let the search field do
+  // fuzzy matching.
+  const selectedCustomer = useMemo(() => {
+    const v = customerInput.trim().toLowerCase();
+    if (!v) return null;
+    return customers.find((c) => (c.name || '').toLowerCase() === v) || null;
+  }, [customerInput, customers]);
 
   const runSearch = useCallback(async () => {
     if (!supabase) { setErr('No DB connection'); return; }
@@ -36,6 +62,15 @@ export default function SalesHistory() {
       if (status !== 'all') q = q.ilike('status', status);
       if (from) q = q.gte('transaction_date', from);
       if (to) q = q.lte('transaction_date', to);
+      if (selectedCustomer) {
+        // Prefer the indexed netsuite id; fall back to name for customers
+        // we haven't matched yet via netsuite_internal_id.
+        if (selectedCustomer.netsuite_internal_id) {
+          q = q.eq('raw_customer_nsid', selectedCustomer.netsuite_internal_id);
+        } else {
+          q = q.ilike('raw_customer_name', selectedCustomer.name);
+        }
+      }
       const s = search.trim();
       if (s) {
         // Match across customer name, document number, or item SKU. Trigram
@@ -60,7 +95,7 @@ export default function SalesHistory() {
   useEffect(() => {
     const t = setTimeout(runSearch, 250);
     return () => clearTimeout(t);
-  }, [runSearch]);
+  }, [runSearch, selectedCustomer]);
 
   // Group line rows into transactions so the table reads as one row per
   // SO/invoice with expandable line items.
@@ -110,14 +145,41 @@ export default function SalesHistory() {
     <div>
       <div className="card" style={{ marginBottom: 12 }}>
         <div className="card-body" style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end' }}>
-          <div style={{ flex: '1 1 280px', minWidth: 220 }}>
+          <div style={{ flex: '1 1 240px', minWidth: 200, position: 'relative' }}>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#475569' }}>Customer</label>
+            <input
+              className="form-input"
+              list="sales-history-customers"
+              placeholder={`Pick from ${customers.length} customers…`}
+              value={customerInput}
+              onChange={(e) => setCustomerInput(e.target.value)}
+              autoFocus
+            />
+            <datalist id="sales-history-customers">
+              {customers.map((c) => (
+                <option key={c.id} value={c.name} />
+              ))}
+            </datalist>
+            {customerInput && !selectedCustomer && (
+              <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
+                Type to filter — pick a name from the list to lock the filter.
+              </div>
+            )}
+            {selectedCustomer && (
+              <div style={{ fontSize: 10, color: '#166534', marginTop: 2 }}>
+                Filtering by <strong>{selectedCustomer.name}</strong>
+                {' '}<button type="button" onClick={() => setCustomerInput('')}
+                  style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: 0, fontSize: 10 }}>clear</button>
+              </div>
+            )}
+          </div>
+          <div style={{ flex: '1 1 220px', minWidth: 180 }}>
             <label style={{ fontSize: 11, fontWeight: 600, color: '#475569' }}>Search</label>
             <input
               className="form-input"
-              placeholder="Customer name, document #, SKU, or memo"
+              placeholder="Document #, SKU, or memo"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              autoFocus
             />
           </div>
           <div>
