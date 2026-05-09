@@ -43,13 +43,15 @@ COLUMN_ALIASES = {
     "amount":           ["amount", "line amount", "total"],
     "status":           ["status", "transaction status"],
     "memo":             ["memo", "notes"],
+    "header_memo":      ["header memo", "document memo", "memo (main)",
+                         "transaction memo", "main memo"],
 }
 
 OUTPUT_COLUMNS = [
     "year", "date", "type", "document_number",
     "customer_name", "customer_nsid",
     "item", "description", "quantity", "rate", "amount",
-    "status", "memo", "source_file",
+    "status", "header_memo", "memo", "source_file",
 ]
 
 
@@ -226,6 +228,7 @@ def main():
                 "rate":            r.get(mapping.get("rate", ""), "").strip(),
                 "amount":          r.get(mapping.get("amount", ""), "").strip(),
                 "status":          r.get(mapping.get("status", ""), "").strip(),
+                "header_memo":     r.get(mapping.get("header_memo", ""), "").strip(),
                 "memo":            r.get(mapping.get("memo", ""), "").strip(),
                 "source_file":     path.name,
             })
