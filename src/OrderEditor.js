@@ -9,11 +9,11 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks, ImgGallery } from './components';
 import { CustModal } from './modals';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, openDocPDF, downloadDoc, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, openDocPDF, downloadDoc, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -628,7 +628,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Helper: effective PO committed qty for a size (ordered minus cancelled)
   const poCommitted=(poLines,sz)=>(poLines||[]).reduce((a,pk)=>{const ordered=pk[sz]||0;const cancelled=(pk.cancelled||{})[sz]||0;return a+(ordered-cancelled)},0);
   const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[]});
-  const[nsImport,setNsImport]=useState(null);// {step:'paste'|'review'|'confirm', raw:'', parsed:[], decoMap:[], issues:[]}
+  const[aiBuild,setAiBuild]=useState(null);// {step:'input'|'review', inputMode:'text'|'image'|'url', text:'', images:[], url:'', loading:false, error:null, parsed:[], warnings:[], build_id:null}
 
   // ─── Live S&S Product Search ───
   const[ssResults,setSsResults]=useState([]);// grouped: [{style,styleName,brand,colors:[{colorName,sku,piecePrice,customerPrice,sizes:[{sizeName,qty}]}]}]
@@ -2556,7 +2556,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     <div className="card"><div style={{padding:'14px 18px'}}>
       {!showAdd?<div style={{display:'flex',gap:6}}><button className="btn btn-primary" onClick={()=>setShowAdd(true)} disabled={!cust}><Icon name="plus" size={14}/> Add Product</button>
       <button className="btn btn-secondary" onClick={()=>setShowCustom(!showCustom)} disabled={!cust}><Icon name="plus" size={14}/> Custom Item</button>
-      <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setNsImport({step:'paste',raw:'',parsed:[],decoLines:[],issues:[]})} disabled={!cust}>📥 Import from NetSuite</button></div>
+      <button className="btn btn-secondary" style={{marginLeft:'auto',background:'#7c3aed',color:'white',borderColor:'#6d28d9'}} onClick={()=>setAiBuild({step:'input',inputMode:'text',text:'',images:[],url:'',loading:false,error:null,parsed:[],warnings:[],build_id:null})} disabled={!cust} title="Use AI to parse a coach's order (text, image, or Google Sheets link) into line items">✨ Build with AI</button></div>
       :<div><div className="search-bar" style={{marginBottom:8}}><Icon name="search"/><input placeholder="Search SKU, name, brand... (searches S&S + SanMar live)" value={pS} onChange={e=>setPS(e.target.value)} autoFocus/></div>
         <div style={{maxHeight:350,overflow:'auto'}}>
           {allFp.slice(0,12).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
@@ -2742,163 +2742,211 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </label>}</div>
     </div></div>}
 
-    {/* NETSUITE IMPORT WIZARD */}
-    {nsImport&&<div className="modal-overlay" onClick={()=>setNsImport(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:900,maxHeight:'90vh',overflow:'auto'}}>
-      <div className="modal-header" style={{background:'#eff6ff'}}><h2>📥 Import from NetSuite</h2><button className="modal-close" onClick={()=>setNsImport(null)}>×</button></div>
+    {/* BUILD WITH AI WIZARD */}
+    {aiBuild&&<div className="modal-overlay" onClick={()=>!aiBuild.loading&&setAiBuild(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:900,maxHeight:'90vh',overflow:'auto'}}>
+      <div className="modal-header" style={{background:'linear-gradient(135deg,#ede9fe,#dbeafe)'}}><h2>✨ Build with AI</h2><button className="modal-close" onClick={()=>!aiBuild.loading&&setAiBuild(null)}>×</button></div>
       <div className="modal-body">
 
-      {/* STEP 1: Paste data */}
-      {nsImport.step==='paste'&&<>
-        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>
-          Copy the line items from your NetSuite Sales Order (ITEM through INVOICED columns) and paste below. The parser handles:
+      {/* STEP 1: Choose input + submit */}
+      {aiBuild.step==='input'&&<>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>
+          Paste the coach's order, upload screenshot(s), or paste a Google Sheets link. Claude will read it and pull out the line items — you'll review before anything is added.
         </div>
-        <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
-          {['Size-split lines (JJ0605-M, JJ0605-L → one item)','Custom/misc lines with sizes in description','Decoration lines (Screen Print, Embroidery)','PO references and fulfillment data','Shipping lines'].map(t=>
-            <span key={t} style={{fontSize:10,padding:'2px 8px',background:'#f0fdf4',borderRadius:8,color:'#166534'}}>✓ {t}</span>)}
+        <div style={{display:'flex',gap:4,marginBottom:10,borderBottom:'1px solid #e2e8f0'}}>
+          {[['text','📝 Paste Text'],['image','📷 Upload Image'],['url','🔗 Sheets / URL']].map(([k,label])=>
+            <button key={k} onClick={()=>setAiBuild(x=>({...x,inputMode:k,error:null}))}
+              style={{padding:'8px 14px',fontSize:12,fontWeight:600,border:'none',background:'none',cursor:'pointer',
+                borderBottom:aiBuild.inputMode===k?'2px solid #7c3aed':'2px solid transparent',
+                color:aiBuild.inputMode===k?'#7c3aed':'#64748b'}}>{label}</button>)}
         </div>
-        <textarea className="form-input" rows={14} value={nsImport.raw} onChange={e=>setNsImport(x=>({...x,raw:e.target.value}))}
-          placeholder={"Paste NetSuite lines here...\n\nExample:\nJJ0605 : JJ0605-M\tAdidas PRACTICE 2.0J - Power Red - M\t30\tAdidas Contract\t21.00\t630.00\tPO4133 OLuF\n..."} style={{fontFamily:'monospace',fontSize:11,whiteSpace:'pre'}}/>
-        <div style={{marginTop:8,display:'flex',gap:8}}>
-          <button className="btn btn-primary" disabled={!nsImport.raw.trim()} onClick={()=>{
-            // PARSE NETSUITE DATA
-            const lines=nsImport.raw.trim().split('\n').filter(l=>l.trim());
-            const items={};const decoLines=[];const issues=[];const shipping=[];
-            const SZ_RE=/[-\s](XXS|XS|S|M|L|XL|2XL|3XL|4XL|5XL|YXS|YS|YM|YL|YXL|OSFA)$/i;
-            const SZ_DESC=/\b(\d+)\s*\/\s*(S|M|L|XL|2XL|3XL|4XL|XXS|XS|YS|YM|YL|YXL)\b/gi;
-            const DECO_RE=/^(screen\s*print|embroidery|dtf|heat\s*transfer|vinyl|sublimation)/i;
 
-            lines.forEach((line,li)=>{
-              const cols=line.split('\t').map(c=>c.trim());
-              if(cols.length<4){issues.push({line:li+1,msg:'Too few columns: "'+line.slice(0,60)+'"'});return}
-              const rawItem=cols[0]||'';const desc=cols[1]||'';const qty=parseInt(cols[2])||0;
-              const priceLevel=cols[3]||'';const rate=parseFloat(cols[4])||0;const amount=parseFloat(cols[5])||0;
-              const poRef=cols[6]||'';
+        {aiBuild.inputMode==='text'&&<textarea className="form-input" rows={14} value={aiBuild.text}
+          onChange={e=>setAiBuild(x=>({...x,text:e.target.value}))}
+          placeholder={"Paste whatever the coach sent. Examples:\n\nTechfit Sleeveless Tee (Black) JY6033\nS/40  M/60  L/60  XL/60  2XL/15  3XL/15\n\nM Everyday Pro Reversible (Black) JM5094\nSizing S/50  M/50  L/50  XL/30  2XL/15"}
+          style={{fontFamily:'monospace',fontSize:12}}/>}
 
-              // Skip header rows
-              if(rawItem.toUpperCase()==='ITEM'||desc.toUpperCase()==='DESCRIPTION')return;
+        {aiBuild.inputMode==='image'&&<div>
+          <input type="file" accept="image/*" multiple onChange={async e=>{
+            const files=Array.from(e.target.files||[]);
+            const imgs=await Promise.all(files.map(f=>new Promise(res=>{const r=new FileReader();r.onload=()=>res({name:f.name,dataUrl:r.result});r.readAsDataURL(f)})));
+            setAiBuild(x=>({...x,images:[...(x.images||[]),...imgs]}));
+          }} style={{marginBottom:8}}/>
+          <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Tip: you can also drop an image directly here, or paste from clipboard.</div>
+          <div onDragOver={e=>{e.preventDefault();e.stopPropagation()}} onDrop={async e=>{
+              e.preventDefault();e.stopPropagation();
+              const files=Array.from(e.dataTransfer.files||[]).filter(f=>f.type.startsWith('image/'));
+              if(files.length===0)return;
+              const imgs=await Promise.all(files.map(f=>new Promise(res=>{const r=new FileReader();r.onload=()=>res({name:f.name,dataUrl:r.result});r.readAsDataURL(f)})));
+              setAiBuild(x=>({...x,images:[...(x.images||[]),...imgs]}));
+            }} onPaste={async e=>{
+              const items=Array.from(e.clipboardData?.items||[]).filter(it=>it.type.startsWith('image/'));
+              if(items.length===0)return;
+              const imgs=await Promise.all(items.map(it=>new Promise(res=>{const f=it.getAsFile();const r=new FileReader();r.onload=()=>res({name:f.name||'pasted.png',dataUrl:r.result});r.readAsDataURL(f)})));
+              setAiBuild(x=>({...x,images:[...(x.images||[]),...imgs]}));
+            }} tabIndex={0}
+            style={{border:'2px dashed #c4b5fd',borderRadius:8,padding:20,minHeight:120,background:'#faf5ff',textAlign:'center',color:'#7c3aed',fontSize:12,fontWeight:600,outline:'none',cursor:'text'}}>
+            {(aiBuild.images||[]).length===0?'Drop or paste images here':`${aiBuild.images.length} image(s) attached`}
+          </div>
+          {(aiBuild.images||[]).length>0&&<div style={{marginTop:10,display:'flex',flexWrap:'wrap',gap:6}}>
+            {aiBuild.images.map((im,i)=><div key={i} style={{position:'relative',border:'1px solid #e2e8f0',borderRadius:6,padding:4}}>
+              <img src={im.dataUrl} alt={im.name} style={{maxWidth:120,maxHeight:120,display:'block'}}/>
+              <button onClick={()=>setAiBuild(x=>({...x,images:x.images.filter((_,ii)=>ii!==i)}))}
+                style={{position:'absolute',top:2,right:2,background:'#fee2e2',border:'none',borderRadius:'50%',width:18,height:18,cursor:'pointer',fontSize:11,color:'#991b1b'}}>×</button>
+            </div>)}
+          </div>}
+          <textarea className="form-input" rows={3} value={aiBuild.text} placeholder="Optional: additional notes for Claude (e.g. 'youth sizes', 'add 2 of each for staff')"
+            onChange={e=>setAiBuild(x=>({...x,text:e.target.value}))} style={{marginTop:8,fontSize:12}}/>
+        </div>}
 
-              // Shipping line
-              if(rawItem.toLowerCase().includes('shipping')||desc.toLowerCase().includes('shipping')){
-                shipping.push({desc,amount});return}
+        {aiBuild.inputMode==='url'&&<div>
+          <input className="form-input" type="url" value={aiBuild.url} onChange={e=>setAiBuild(x=>({...x,url:e.target.value}))}
+            placeholder="https://docs.google.com/spreadsheets/d/.../edit?gid=..." style={{fontSize:12}}/>
+          <div style={{fontSize:11,color:'#64748b',marginTop:6}}>
+            Google Sheets must be shared as "Anyone with the link can view" so the server can read it. For private sheets, switch to "Paste Text" and copy the rows in.
+          </div>
+        </div>}
 
-              // Decoration line
-              if(DECO_RE.test(desc)||rawItem.toLowerCase().includes('screen')||rawItem.toLowerCase().includes('embroid')){
-                decoLines.push({rawItem,desc,qty,rate,amount,poRef});return}
+        {aiBuild.error&&<div style={{marginTop:10,padding:8,background:'#fef2f2',borderRadius:6,fontSize:11,color:'#991b1b'}}>⚠ {aiBuild.error}</div>}
 
-              // Check if this is a size-suffixed SKU (JJ0605-M, IT0266-XL, JX4452-2XL)
-              const skuParts=rawItem.split(/\s*:\s*/);const itemCode=skuParts[0]||rawItem;
-              const sizeMatch=(skuParts[1]||itemCode).match(SZ_RE);
-              let baseSku,size;
-              if(sizeMatch){
-                size=sizeMatch[1].toUpperCase();
-                baseSku=(skuParts[1]||itemCode).replace(SZ_RE,'').replace(/-$/,'').trim();
-                if(!baseSku)baseSku=itemCode.replace(SZ_RE,'').replace(/-$/,'').trim();
-              } else {
-                // Try extracting from description (Misc Adi lines with sizes in desc)
-                baseSku=itemCode;size=null;
+        <div style={{marginTop:14,display:'flex',gap:8,alignItems:'center'}}>
+          <button className="btn btn-primary" disabled={aiBuild.loading||(
+              (aiBuild.inputMode==='text'&&!aiBuild.text.trim())||
+              (aiBuild.inputMode==='image'&&(aiBuild.images||[]).length===0)||
+              (aiBuild.inputMode==='url'&&!aiBuild.url.trim()))}
+            style={{background:'#7c3aed',borderColor:'#6d28d9'}}
+            onClick={async()=>{
+              if(!supabase){setAiBuild(x=>({...x,error:'Supabase not configured'}));return}
+              setAiBuild(x=>({...x,loading:true,error:null,statusMsg:'Sending to Claude…'}));
+              try{
+                const catalog=(products||[]).map(p=>({id:p.id,sku:p.sku,name:p.name,brand:p.brand,color:p.color,available_sizes:p.available_sizes}));
+                const payload={
+                  input_type:aiBuild.inputMode,
+                  text:aiBuild.text||'',
+                  image_data_urls:(aiBuild.images||[]).map(i=>i.dataUrl),
+                  url:aiBuild.url||'',
+                  catalog,
+                  estimate_id:isE?o.id:null,
+                  so_id:isSO?o.id:null,
+                };
+                // Rotating status messages while we wait — gives the user
+                // a "still working" signal even though we don't yet stream
+                // real progress from the edge function.
+                const statuses=aiBuild.inputMode==='image'
+                  ?['Reading the image…','Identifying products…','Matching SKUs to catalog…','Almost done…']
+                  :aiBuild.inputMode==='url'
+                  ?['Fetching the sheet…','Reading the order…','Matching SKUs to catalog…','Almost done…']
+                  :['Reading the order…','Pulling out line items…','Matching SKUs to catalog…','Almost done…'];
+                let si=0;
+                const ticker=setInterval(()=>{si=(si+1)%statuses.length;setAiBuild(x=>x&&x.loading?{...x,statusMsg:statuses[si]}:x)},3500);
+                let d;
+                try{d=await invokeEdgeFn(supabase,'ai-order-builder',payload)}
+                finally{clearInterval(ticker)}
+                if(!d?.ok){setAiBuild(x=>({...x,loading:false,statusMsg:null,error:d?.error||'AI parse failed'}));return}
+                setAiBuild(x=>({...x,loading:false,statusMsg:null,step:'review',parsed:(d.lines||[]).map(l=>({...l,_skip:false})),warnings:d.warnings||[],build_id:d.build_id||null}));
+              }catch(err){
+                console.error('[aiBuild] parse error:',err);
+                setAiBuild(x=>({...x,loading:false,statusMsg:null,error:'Unexpected error: '+(err?.message||String(err))}));
               }
-
-              // Extract color from description
-              let color='';const colorMatch=desc.match(/[-–]\s*([A-Za-z\s\/]+?)(?:\s*[-–]\s*(?:XXS|XS|S|M|L|XL|2XL|3XL|4XL))?$/);
-              if(colorMatch&&size)color=desc.replace(colorMatch[0],'').replace(/^.*?[-–]\s*/,'').replace(/^.*?[-–]\s*/,'').trim();
-              if(!color){const cM=desc.match(/[-–]\s*([A-Za-z\s\/]+?)(?:\s*[-–]|$)/);if(cM)color=cM[1].trim()}
-
-              // Determine brand from price level or description
-              let brand='';
-              if(priceLevel.toLowerCase().includes('adidas'))brand='Adidas';
-              else if(priceLevel.toLowerCase().includes('under armour')||priceLevel.toLowerCase().includes('ua'))brand='Under Armour';
-              else if(priceLevel.toLowerCase().includes('nike'))brand='Nike';
-              else if(desc.toLowerCase().includes('adidas'))brand='Adidas';
-              else if(desc.toLowerCase().includes('under armour'))brand='Under Armour';
-
-              if(size&&baseSku){
-                // Size-split line — collapse into parent item
-                if(!items[baseSku])items[baseSku]={sku:baseSku,name:desc.replace(/\s*[-–]\s*(XXS|XS|S|M|L|XL|2XL|3XL|4XL|5XL)$/i,'').replace(/\s*[-–]\s*[A-Za-z\s\/]+?\s*[-–]\s*(XXS|XS|S|M|L|XL|2XL|3XL|4XL|5XL)$/i,'').trim(),brand,color,rate,sizes:{},totalQty:0,totalAmt:0,poRef,priceLevel,issues:[]};
-                items[baseSku].sizes[size]=(items[baseSku].sizes[size]||0)+qty;
-                items[baseSku].totalQty+=qty;items[baseSku].totalAmt+=amount;
-                if(color&&!items[baseSku].color)items[baseSku].color=color;
-              } else {
-                // Single-line item — try to parse sizes from description
-                const embeddedSizes={};let match;const sizeRe2=/(\d+)\s*\/\s*(S|M|L|XL|2XL|3XL|4XL|XXS|XS|YS|YM|YL|YXL)/gi;
-                while((match=sizeRe2.exec(desc))!==null){embeddedSizes[match[2].toUpperCase()]=parseInt(match[1])}
-                const hasSizes=Object.keys(embeddedSizes).length>0;
-                const key=baseSku+'_'+li;
-                items[key]={sku:baseSku==='Misc Adi'?'CUSTOM':baseSku,name:desc,brand,color,rate,
-                  sizes:hasSizes?embeddedSizes:{OSFA:qty},totalQty:qty,totalAmt:amount,poRef,priceLevel,
-                  is_custom:baseSku.toLowerCase().includes('misc')||priceLevel.toLowerCase()==='custom',
-                  issues:hasSizes?[]:['Sizes parsed from description — verify']};
-                if(!hasSizes&&qty>1)items[key].issues.push('Single quantity line — may need size breakdown');
-              }
-            });
-
-            const parsed=Object.values(items);
-            setNsImport(x=>({...x,step:'review',parsed,decoLines,issues,shipping}));
-          }}>🔍 Parse Data</button>
-          <button className="btn btn-secondary" onClick={()=>setNsImport(null)}>Cancel</button>
+            }}>{aiBuild.loading?'🤖 Working…':'✨ Parse with AI'}</button>
+          <button className="btn btn-secondary" disabled={aiBuild.loading} onClick={()=>setAiBuild(null)}>Cancel</button>
         </div>
+        {aiBuild.loading&&<div style={{marginTop:10}}>
+          <div style={{height:6,background:'#ede9fe',borderRadius:3,overflow:'hidden',position:'relative'}}>
+            <div style={{position:'absolute',top:0,bottom:0,width:'30%',background:'linear-gradient(90deg,#a78bfa,#7c3aed,#a78bfa)',borderRadius:3,animation:'aiBuildSlide 1.4s infinite ease-in-out'}}/>
+          </div>
+          <div style={{marginTop:6,fontSize:11,color:'#7c3aed',fontWeight:600}}>{aiBuild.statusMsg||'Working…'} <span style={{color:'#94a3b8',fontWeight:400}}>(typically 5–20s)</span></div>
+          <style>{`@keyframes aiBuildSlide{0%{left:-30%}50%{left:50%}100%{left:100%}}`}</style>
+        </div>}
       </>}
 
       {/* STEP 2: Review parsed items */}
-      {nsImport.step==='review'&&<>
+      {aiBuild.step==='review'&&<>
         <div style={{display:'flex',gap:8,marginBottom:12}}>
           <div style={{padding:8,background:'#f0fdf4',borderRadius:6,flex:1,textAlign:'center'}}>
-            <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{nsImport.parsed.length}</div><div style={{fontSize:10,color:'#64748b'}}>Items Found</div></div>
-          <div style={{padding:8,background:nsImport.issues.length?'#fef2f2':'#f8fafc',borderRadius:6,flex:1,textAlign:'center'}}>
-            <div style={{fontSize:18,fontWeight:800,color:nsImport.issues.length?'#dc2626':'#94a3b8'}}>{nsImport.issues.length}</div><div style={{fontSize:10,color:'#64748b'}}>Issues</div></div>
+            <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{aiBuild.parsed.length}</div><div style={{fontSize:10,color:'#64748b'}}>Items Parsed</div></div>
+          <div style={{padding:8,background:'#ede9fe',borderRadius:6,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:18,fontWeight:800,color:'#7c3aed'}}>{aiBuild.parsed.filter(p=>p.product_id).length}</div><div style={{fontSize:10,color:'#64748b'}}>Catalog Matches</div></div>
+          <div style={{padding:8,background:aiBuild.parsed.some(p=>!p.product_id)?'#fffbeb':'#f8fafc',borderRadius:6,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:18,fontWeight:800,color:aiBuild.parsed.some(p=>!p.product_id)?'#d97706':'#94a3b8'}}>{aiBuild.parsed.filter(p=>!p.product_id).length}</div><div style={{fontSize:10,color:'#64748b'}}>Unmatched</div></div>
         </div>
 
-        {nsImport.issues.length>0&&<div style={{marginBottom:8,padding:8,background:'#fef2f2',borderRadius:6}}>
-          <div style={{fontSize:11,fontWeight:700,color:'#dc2626',marginBottom:4}}>⚠️ Parser Issues</div>
-          {nsImport.issues.map((is,i)=><div key={i} style={{fontSize:10,color:'#991b1b'}}>Line {is.line}: {is.msg}</div>)}
+        {(aiBuild.warnings||[]).length>0&&<div style={{marginBottom:8,padding:8,background:'#fef3c7',borderRadius:6}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>⚠️ Warnings from Claude</div>
+          {aiBuild.warnings.map((w,i)=><div key={i} style={{fontSize:10,color:'#92400e'}}>{w}</div>)}
         </div>}
 
         <div style={{fontSize:12,fontWeight:700,color:'#1e40af',marginBottom:6}}>📦 Parsed Items — Review & Edit</div>
-        <div style={{maxHeight:350,overflow:'auto',border:'1px solid #e2e8f0',borderRadius:6}}>
-          <table style={{fontSize:11}}><thead><tr><th style={{width:30}}>✓</th><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th><th>Rate</th><th>Sizes</th><th>Qty</th><th>Amount</th><th>Notes</th></tr></thead>
-          <tbody>{nsImport.parsed.map((it,i)=>{
-            const toggle=()=>setNsImport(x=>({...x,parsed:x.parsed.map((p,pi)=>pi===i?{...p,_skip:!p._skip}:p)}));
-            const upd=(k,v)=>setNsImport(x=>({...x,parsed:x.parsed.map((p,pi)=>pi===i?{...p,[k]:v}:p)}));
-            return<tr key={i} style={{opacity:it._skip?0.4:1,background:it.issues?.length?'#fffbeb':'white'}}>
+        <div style={{maxHeight:380,overflow:'auto',border:'1px solid #e2e8f0',borderRadius:6}}>
+          <table style={{fontSize:11}}><thead><tr><th style={{width:30}}>✓</th><th>SKU</th><th>Match</th><th>Name</th><th>Brand</th><th>Color</th><th>Sizes</th><th>Qty</th><th>Notes</th></tr></thead>
+          <tbody>{aiBuild.parsed.map((it,i)=>{
+            const toggle=()=>setAiBuild(x=>({...x,parsed:x.parsed.map((p,pi)=>pi===i?{...p,_skip:!p._skip}:p)}));
+            const upd=(k,v)=>setAiBuild(x=>({...x,parsed:x.parsed.map((p,pi)=>pi===i?{...p,[k]:v}:p)}));
+            const mq=it.match_quality;
+            const mqLabel=mq==='exact'?'✓ Exact':mq==='stripped'?'✓ Trimmed':mq==='fuzzy_name'?'~ Fuzzy':mq==='no_sku'?'? No SKU':'✗ Unmatched';
+            const mqColor=mq==='exact'?'#166534':mq==='stripped'?'#166534':mq==='fuzzy_name'?'#d97706':'#dc2626';
+            const mqBg=mq==='exact'||mq==='stripped'?'#dcfce7':mq==='fuzzy_name'?'#fef3c7':'#fee2e2';
+            return<tr key={i} style={{opacity:it._skip?0.4:1,background:!it.product_id?'#fffbeb':'white'}}>
               <td><input type="checkbox" checked={!it._skip} onChange={toggle}/></td>
-              <td><input className="form-input" value={it.sku} onChange={e=>upd('sku',e.target.value)} style={{width:80,fontSize:10,fontFamily:'monospace'}}/></td>
-              <td style={{maxWidth:180}}><input className="form-input" value={it.name} onChange={e=>upd('name',e.target.value)} style={{width:'100%',fontSize:10}}/></td>
-              <td><input className="form-input" value={it.brand} onChange={e=>upd('brand',e.target.value)} style={{width:70,fontSize:10}}/></td>
-              <td><input className="form-input" value={it.color} onChange={e=>upd('color',e.target.value)} style={{width:70,fontSize:10}}/></td>
-              <td style={{textAlign:'right',fontWeight:600}}>${it.rate?.toFixed(2)}</td>
+              <td><input className="form-input" value={it.sku_guess||''} onChange={e=>upd('sku_guess',e.target.value)} style={{width:90,fontSize:10,fontFamily:'monospace'}}/></td>
+              <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:mqBg,color:mqColor,fontWeight:700,whiteSpace:'nowrap'}}>{mqLabel}</span>
+                {it.confidence&&<div style={{fontSize:8,color:'#64748b',marginTop:2}}>conf: {it.confidence}</div>}</td>
+              <td style={{maxWidth:180}}><input className="form-input" value={it.name||''} onChange={e=>upd('name',e.target.value)} style={{width:'100%',fontSize:10}}/></td>
+              <td><input className="form-input" value={it.brand||''} onChange={e=>upd('brand',e.target.value)} style={{width:70,fontSize:10}}/></td>
+              <td><input className="form-input" value={it.color||''} onChange={e=>upd('color',e.target.value)} style={{width:80,fontSize:10}}/></td>
               <td style={{fontSize:9}}>{Object.entries(it.sizes||{}).map(([s,q])=>s+':'+q).join(', ')}</td>
-              <td style={{textAlign:'center',fontWeight:700}}>{it.totalQty}</td>
-              <td style={{textAlign:'right'}}>${it.totalAmt?.toFixed(2)}</td>
-              <td>{it.is_custom&&<span style={{fontSize:8,background:'#fef3c7',padding:'1px 4px',borderRadius:3,color:'#92400e'}}>Custom</span>}
-                {(it.issues||[]).map((iss,ii)=><div key={ii} style={{fontSize:8,color:'#d97706'}}>⚠ {iss}</div>)}</td>
+              <td style={{textAlign:'center',fontWeight:700}}>{it.total_qty||Object.values(it.sizes||{}).reduce((a,b)=>a+(+b||0),0)}</td>
+              <td style={{maxWidth:160}}>
+                {it.notes&&<div style={{fontSize:9,color:'#64748b'}}>{it.notes}</div>}
+                {it.raw_line&&<div style={{fontSize:8,color:'#94a3b8',fontStyle:'italic',marginTop:2,maxHeight:30,overflow:'hidden'}}>"{it.raw_line.slice(0,80)}"</div>}
+              </td>
             </tr>})}</tbody></table>
         </div>
 
-        {nsImport.decoLines.length>0&&<div style={{padding:8,background:'#f0f9ff',borderRadius:6,marginTop:12,fontSize:11,color:'#1e40af'}}>
-          ℹ️ {nsImport.decoLines.length} decoration line(s) detected but skipped — add decorations manually after import.
-        </div>}
-
-        {(nsImport.shipping||[]).length>0&&<div style={{marginTop:8,fontSize:11,color:'#64748b'}}>📦 Shipping: {nsImport.shipping.map(s=>s.desc+' $'+s.amount?.toFixed(2)).join(', ')}</div>}
+        <div style={{marginTop:8,padding:8,background:'#f8fafc',borderRadius:6,fontSize:11,color:'#64748b'}}>
+          💡 Unmatched items will be added as custom items — you can fix the SKU here or in the order, and pricing will pull from the catalog when matched.
+        </div>
 
         <div style={{marginTop:12,display:'flex',gap:8}}>
-          <button className="btn btn-secondary" onClick={()=>setNsImport(x=>({...x,step:'paste'}))}>← Back</button>
-          <button className="btn btn-primary" onClick={()=>{
-            // Convert parsed items to SO line items
-            const keeping=nsImport.parsed.filter(p=>!p._skip);
+          <button className="btn btn-secondary" onClick={()=>setAiBuild(x=>({...x,step:'input'}))}>← Back</button>
+          <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#6d28d9'}} onClick={()=>{
+            const keeping=aiBuild.parsed.filter(p=>!p._skip);
             const newItems=keeping.map(p=>{
-              const catMatch=prod.find(pr=>pr.sku===p.sku)||(p.sku.length>3?prod.find(pr=>pr.sku.toLowerCase()===p.sku.toLowerCase()):null);
-              const au=isAU(p.brand||(catMatch?.brand||''));
-              const sell=p.rate||0;const cost=au?rQ(sell):rQ(sell/(o.default_markup||1.65));
-              const retail=au?rQ(sell/(1-(tD[cust?.adidas_ua_tier||'B']||0.35))):0;
+              const sku=(p.sku_guess||'').trim();
+              const catMatch=p.product_id?products.find(pr=>pr.id===p.product_id):
+                (sku?(products.find(pr=>pr.sku===sku)||products.find(pr=>pr.sku.toLowerCase()===sku.toLowerCase())):null);
+              const brand=catMatch?.brand||p.brand||'';
+              const au=isAU(brand);
+              const cost=catMatch?.nsa_cost||0;
+              const retail=catMatch?.retail_price||0;
+              const sell=au
+                ?rQ(retail*(1-(tD[cust?.adidas_ua_tier||'B']||0.35)))
+                :rQ(cost*(o.default_markup||1.65));
               const szKeys=Object.keys(p.sizes||{});
-              return{product_id:catMatch?.id||null,sku:p.sku,name:catMatch?.name||p.name,brand:catMatch?.brand||p.brand,color:p.color||catMatch?.color||'',nsa_cost:catMatch?.nsa_cost||cost,retail_price:catMatch?.retail_price||retail,unit_sell:sell,
-                available_sizes:szKeys.length>0?szKeys:(catMatch?.available_sizes||['S','M','L','XL','2XL']),sizes:p.sizes||{},decorations:[],
-                is_custom:!catMatch&&(p.is_custom||false),pick_lines:[],po_lines:[]};
+              return{
+                product_id:catMatch?.id||null,
+                sku:sku||'CUSTOM',
+                name:catMatch?.name||p.name||'',
+                brand,
+                color:p.color||catMatch?.color||'',
+                nsa_cost:cost,
+                retail_price:retail,
+                unit_sell:sell,
+                available_sizes:szKeys.length>0?szKeys:(catMatch?.available_sizes||['S','M','L','XL','2XL']),
+                sizes:p.sizes||{},
+                decorations:[],
+                is_custom:!catMatch,
+                pick_lines:[],
+                po_lines:[],
+              };
             });
             sv('items',[...o.items,...newItems]);
-            if(nsImport.shipping?.length){const shipAmt=nsImport.shipping.reduce((a,s)=>a+s.amount,0);if(shipAmt>0){sv('shipping_type','flat');sv('shipping_value',shipAmt)}}
-            setNsImport(null);
-            nf('📥 Imported '+newItems.length+' items from NetSuite');
-          }}>✅ Import {nsImport.parsed.filter(p=>!p._skip).length} Items</button>
+            // Best-effort: record accepted lines on the audit row
+            if(supabase&&aiBuild.build_id){
+              try{supabase.from('ai_order_builds').update({accepted_lines:keeping,accepted_count:keeping.length}).eq('id',aiBuild.build_id)}catch(_){}
+            }
+            setAiBuild(null);
+            nf('✨ Imported '+newItems.length+' items from AI');
+          }}>✅ Import {aiBuild.parsed.filter(p=>!p._skip).length} Items</button>
         </div>
       </>}
       </div>
