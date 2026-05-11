@@ -2816,25 +2816,47 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             style={{background:'#7c3aed',borderColor:'#6d28d9'}}
             onClick={async()=>{
               if(!supabase){setAiBuild(x=>({...x,error:'Supabase not configured'}));return}
-              setAiBuild(x=>({...x,loading:true,error:null}));
-              // Build a compact catalog snapshot (SKU + name + brand + color) for prompt caching
-              const catalog=(prod||[]).map(p=>({id:p.id,sku:p.sku,name:p.name,brand:p.brand,color:p.color,available_sizes:p.available_sizes}));
-              const payload={
-                input_type:aiBuild.inputMode,
-                text:aiBuild.text||'',
-                image_data_urls:(aiBuild.images||[]).map(i=>i.dataUrl),
-                url:aiBuild.url||'',
-                catalog,
-                estimate_id:isE?o.id:null,
-                so_id:isSO?o.id:null,
-              };
-              const d=await invokeEdgeFn(supabase,'ai-order-builder',payload);
-              if(!d?.ok){setAiBuild(x=>({...x,loading:false,error:d?.error||'AI parse failed'}));return}
-              setAiBuild(x=>({...x,loading:false,step:'review',parsed:(d.lines||[]).map(l=>({...l,_skip:false})),warnings:d.warnings||[],build_id:d.build_id||null}));
-            }}>{aiBuild.loading?'🤖 Asking Claude…':'✨ Parse with AI'}</button>
+              setAiBuild(x=>({...x,loading:true,error:null,statusMsg:'Sending to Claude…'}));
+              try{
+                const catalog=(products||[]).map(p=>({id:p.id,sku:p.sku,name:p.name,brand:p.brand,color:p.color,available_sizes:p.available_sizes}));
+                const payload={
+                  input_type:aiBuild.inputMode,
+                  text:aiBuild.text||'',
+                  image_data_urls:(aiBuild.images||[]).map(i=>i.dataUrl),
+                  url:aiBuild.url||'',
+                  catalog,
+                  estimate_id:isE?o.id:null,
+                  so_id:isSO?o.id:null,
+                };
+                // Rotating status messages while we wait — gives the user
+                // a "still working" signal even though we don't yet stream
+                // real progress from the edge function.
+                const statuses=aiBuild.inputMode==='image'
+                  ?['Reading the image…','Identifying products…','Matching SKUs to catalog…','Almost done…']
+                  :aiBuild.inputMode==='url'
+                  ?['Fetching the sheet…','Reading the order…','Matching SKUs to catalog…','Almost done…']
+                  :['Reading the order…','Pulling out line items…','Matching SKUs to catalog…','Almost done…'];
+                let si=0;
+                const ticker=setInterval(()=>{si=(si+1)%statuses.length;setAiBuild(x=>x&&x.loading?{...x,statusMsg:statuses[si]}:x)},3500);
+                let d;
+                try{d=await invokeEdgeFn(supabase,'ai-order-builder',payload)}
+                finally{clearInterval(ticker)}
+                if(!d?.ok){setAiBuild(x=>({...x,loading:false,statusMsg:null,error:d?.error||'AI parse failed'}));return}
+                setAiBuild(x=>({...x,loading:false,statusMsg:null,step:'review',parsed:(d.lines||[]).map(l=>({...l,_skip:false})),warnings:d.warnings||[],build_id:d.build_id||null}));
+              }catch(err){
+                console.error('[aiBuild] parse error:',err);
+                setAiBuild(x=>({...x,loading:false,statusMsg:null,error:'Unexpected error: '+(err?.message||String(err))}));
+              }
+            }}>{aiBuild.loading?'🤖 Working…':'✨ Parse with AI'}</button>
           <button className="btn btn-secondary" disabled={aiBuild.loading} onClick={()=>setAiBuild(null)}>Cancel</button>
-          {aiBuild.loading&&<span style={{fontSize:11,color:'#7c3aed'}}>This usually takes 5–15 seconds…</span>}
         </div>
+        {aiBuild.loading&&<div style={{marginTop:10}}>
+          <div style={{height:6,background:'#ede9fe',borderRadius:3,overflow:'hidden',position:'relative'}}>
+            <div style={{position:'absolute',top:0,bottom:0,width:'30%',background:'linear-gradient(90deg,#a78bfa,#7c3aed,#a78bfa)',borderRadius:3,animation:'aiBuildSlide 1.4s infinite ease-in-out'}}/>
+          </div>
+          <div style={{marginTop:6,fontSize:11,color:'#7c3aed',fontWeight:600}}>{aiBuild.statusMsg||'Working…'} <span style={{color:'#94a3b8',fontWeight:400}}>(typically 5–20s)</span></div>
+          <style>{`@keyframes aiBuildSlide{0%{left:-30%}50%{left:50%}100%{left:100%}}`}</style>
+        </div>}
       </>}
 
       {/* STEP 2: Review parsed items */}
@@ -2890,8 +2912,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const keeping=aiBuild.parsed.filter(p=>!p._skip);
             const newItems=keeping.map(p=>{
               const sku=(p.sku_guess||'').trim();
-              const catMatch=p.product_id?prod.find(pr=>pr.id===p.product_id):
-                (sku?(prod.find(pr=>pr.sku===sku)||prod.find(pr=>pr.sku.toLowerCase()===sku.toLowerCase())):null);
+              const catMatch=p.product_id?products.find(pr=>pr.id===p.product_id):
+                (sku?(products.find(pr=>pr.sku===sku)||products.find(pr=>pr.sku.toLowerCase()===sku.toLowerCase())):null);
               const brand=catMatch?.brand||p.brand||'';
               const au=isAU(brand);
               const cost=catMatch?.nsa_cost||0;
