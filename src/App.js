@@ -10789,6 +10789,21 @@ export default function App(){
         const isDecoratorRpt=cu?.role==='production'||cu?.role==='prod_assistant';
         const allDecorators=REPS.filter(r=>r.role==='production').filter(r=>r.is_active!==false);
         const{decoTasks}=buildWarehouseData();
+        const decoInRange=(ts)=>{
+          if(decoTimeF==='all')return true;
+          if(!ts)return false;
+          const d=new Date(ts);if(isNaN(d))return false;
+          const now=new Date();
+          const startToday=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+          if(decoTimeF==='today')return d>=startToday;
+          if(decoTimeF==='yesterday'){const y=new Date(startToday);y.setDate(y.getDate()-1);return d>=y&&d<startToday}
+          if(decoTimeF==='week'){const w=new Date(startToday);w.setDate(w.getDate()-7);return d>=w}
+          if(decoTimeF==='month'){const m=new Date(startToday);m.setDate(m.getDate()-30);return d>=m}
+          if(decoTimeF==='this_month')return d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth();
+          if(decoTimeF==='last_month'){const lm=new Date(now.getFullYear(),now.getMonth()-1,1);const lmEnd=new Date(now.getFullYear(),now.getMonth(),1);return d>=lm&&d<lmEnd}
+          if(decoTimeF==='ytd')return d.getFullYear()===now.getFullYear();
+          return true;
+        };
         // Completed jobs
         const completedDecoJobs=[];
         sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
@@ -10796,14 +10811,17 @@ export default function App(){
           const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
           const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
           safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
+            if(!decoInRange(j.completed_at||j.updated_at||so.updated_at))return;
             completedDecoJobs.push({so,soId:so.id,job:j,cName,rep,daysOut,
               artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
-              prodStatus:j.prod_status,machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to});
+              prodStatus:j.prod_status,machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to,
+              completedAt:j.completed_at||j.updated_at||so.updated_at});
           });
         });
         const personFilter=isDecoratorRpt?cu?.name:(decoPersonF!=='all'?decoPersonF:'all');
         const myCompleted=personFilter==='all'?completedDecoJobs:completedDecoJobs.filter(t=>t.assignedTo===personFilter);
-        const myLogs=personFilter==='all'?jobTimeLogs:jobTimeLogs.filter(l=>l.person===personFilter);
+        const filteredLogs=jobTimeLogs.filter(l=>decoInRange(l.clockOut));
+        const myLogs=personFilter==='all'?filteredLogs:filteredLogs.filter(l=>l.person===personFilter);
         const totalMins=myLogs.reduce((a,l)=>a+(l.minutes||0),0);
         const totalUnitsCompleted=myCompleted.reduce((a,t)=>a+t.totalUnits,0);
         // Items per day — group logs by date
@@ -10815,18 +10833,29 @@ export default function App(){
           const readyN=dJobs.filter(t=>t.isReady).length;
           const inProcN=dJobs.filter(t=>t.prodStatus==='in_process').length;
           const dCompleted=completedDecoJobs.filter(t=>t.assignedTo===d.name);
-          const dLogs=jobTimeLogs.filter(l=>l.person===d.name);
+          const dLogs=filteredLogs.filter(l=>l.person===d.name);
           const dMins=dLogs.reduce((a,l)=>a+(l.minutes||0),0);
           return{name:d.name,id:d.id,jobs:dJobs.length,units:dUnits,ready:readyN,inProcess:inProcN,completed:dCompleted.length,completedUnits:dCompleted.reduce((a,t)=>a+t.totalUnits,0),totalMins:dMins};
         }):[];
         const unassigned=isAdminRpt?decoTasks.filter(t=>!t.assignedTo&&t.prodStatus!=='completed'&&t.prodStatus!=='shipped'):[];
         return<>
-          {/* Admin: decorator filter */}
-          {isAdminRpt&&<div style={{marginBottom:12}}>
-            <select className="form-select" style={{width:180,fontSize:11}} value={decoPersonF} onChange={e=>setDecoPersonF(e.target.value)}>
+          {/* Filters: decorator (admin) + time range */}
+          <div style={{marginBottom:12,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+            {isAdminRpt&&<select className="form-select" style={{width:180,fontSize:11}} value={decoPersonF} onChange={e=>setDecoPersonF(e.target.value)}>
               <option value="all">All Decorators</option>{allDecorators.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
+            </select>}
+            <select className="form-select" style={{width:160,fontSize:11}} value={decoTimeF} onChange={e=>setDecoTimeF(e.target.value)}>
+              <option value="all">All Time</option>
+              <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="week">Last 7 Days</option>
+              <option value="month">Last 30 Days</option>
+              <option value="this_month">This Month</option>
+              <option value="last_month">Last Month</option>
+              <option value="ytd">Year to Date</option>
             </select>
-          </div>}
+            {decoTimeF!=='all'&&<span style={{fontSize:10,color:'#64748b'}}>Filtering completed jobs & time logs by {decoTimeF.replace(/_/g,' ')}</span>}
+          </div>
           {/* KPI */}
           <div className="stats-row" style={{marginBottom:16}}>
             <div className="stat-card"><div className="stat-label">Completed Jobs</div><div className="stat-value" style={{color:'#166534'}}>{myCompleted.length}</div></div>
@@ -12487,6 +12516,7 @@ export default function App(){
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
   const[decoCardFilter,setDecoCardFilter]=useState(null);// null|'ready'|'in_process'|'waiting'
   const[decoPersonF,setDecoPersonF]=useState('all');// filter by assigned decorator name
+  const[decoTimeF,setDecoTimeF]=useState('all');// filter by completion/clock-out date
 
   function handleReceiveScan(val){
     if(!val)return;
