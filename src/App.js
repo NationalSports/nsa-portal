@@ -23484,21 +23484,39 @@ export default function App(){
         {invPOModal.items.length===0?<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:13}}>No items added yet. Select a vendor and add products above.</div>:
         invPOModal.items.map((it,idx)=>{
           const itTotal=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+          const baseSizes=it.available_sizes||['S','M','L','XL','2XL'];
+          const extras=Object.keys(it.sizes||{}).filter(sz=>!baseSizes.includes(sz));
+          const allSizes=[...baseSizes,...extras].sort((a,b)=>{const ai=SZ_ORD.indexOf(a),bi=SZ_ORD.indexOf(b);return (ai<0?999:ai)-(bi<0?999:bi)});
+          const addableSizes=[...SZ_ORD,...EXTRA_SIZES].filter((sz,i,a)=>a.indexOf(sz)===i&&!allSizes.includes(sz));
           return<div key={idx} style={{padding:12,background:'#f8fafc',borderRadius:6,marginBottom:8,border:'1px solid #e2e8f0'}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-              <div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</span> <span style={{fontWeight:600}}>{it.name}</span>{it.color&&<span style={{color:'#94a3b8'}}> — {it.color}</span>}
-                <span style={{fontSize:11,color:'#64748b',marginLeft:8}}>@ ${it.nsa_cost?.toFixed(2)}/ea</span></div>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,flexWrap:'wrap',gap:8}}>
+              <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</span> <span style={{fontWeight:600}}>{it.name}</span>{it.color&&<span style={{color:'#94a3b8'}}> — {it.color}</span>}
+                <span style={{fontSize:11,color:'#64748b',marginLeft:8}}>@ $</span>
+                <input type="number" step="0.01" min="0" style={{width:70,textAlign:'right',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 4px',fontSize:12,fontWeight:600}} value={it.nsa_cost??''} placeholder="0.00"
+                  onChange={e=>{const val=Math.max(0,parseFloat(e.target.value)||0);setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>i2!==idx?ii:{...ii,nsa_cost:val})}))}}/>
+                <span style={{fontSize:11,color:'#64748b'}}>/ea</span>
+              </div>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <span style={{fontWeight:700,fontSize:13}}>{itTotal} units = ${(itTotal*(it.nsa_cost||0)).toFixed(2)}</span>
                 <button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:16,padding:'0 4px'}} onClick={()=>setInvPOModal(x=>({...x,items:x.items.filter((_,i2)=>i2!==idx)}))}>x</button>
               </div>
             </div>
-            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-              {(it.available_sizes||['S','M','L','XL','2XL']).map(sz=><div key={sz} style={{textAlign:'center'}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#475569',marginBottom:2}}>{sz}</div>
-                <input style={{width:48,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} value={it.sizes[sz]||''} placeholder="0"
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end'}}>
+              {allSizes.map(sz=>{const isExtra=!baseSizes.includes(sz);return<div key={sz} style={{textAlign:'center',position:'relative'}}>
+                <div style={{fontSize:10,fontWeight:700,color:isExtra?'#7c3aed':'#475569',marginBottom:2}}>{sz}</div>
+                <input style={{width:48,textAlign:'center',border:'1px solid '+(isExtra?'#c4b5fd':'#d1d5db'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} value={it.sizes[sz]||''} placeholder="0"
                   onChange={e=>{const val=Math.max(0,parseInt(e.target.value)||0);setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>i2!==idx?ii:{...ii,sizes:{...ii.sizes,[sz]:val}})}))}}/>
-              </div>)}
+                {isExtra&&<button title="Remove this size" style={{position:'absolute',top:-4,right:-4,width:14,height:14,padding:0,fontSize:10,lineHeight:'12px',background:'#fff',border:'1px solid #c4b5fd',borderRadius:'50%',color:'#7c3aed',cursor:'pointer'}} onClick={()=>setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>{if(i2!==idx)return ii;const {[sz]:_drop,...rest}=ii.sizes||{};return{...ii,sizes:rest}})}))}>×</button>}
+              </div>})}
+              <div style={{textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',marginBottom:2}}>+ Size</div>
+                <select value="" style={{width:62,fontSize:11,padding:'4px 2px',border:'1px dashed #c4b5fd',borderRadius:4,background:'#faf5ff',color:'#7c3aed',cursor:'pointer'}}
+                  onChange={e=>{const sz=e.target.value;if(!sz)return;setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>i2!==idx?ii:{...ii,sizes:{...ii.sizes,[sz]:ii.sizes?.[sz]||0}})}))}}>
+                  <option value="">add…</option>
+                  {addableSizes.map(sz=><option key={sz} value={sz}>{sz}</option>)}
+                </select>
+              </div>
             </div>
           </div>})}
         {invPOModal.items.length>0&&<div style={{padding:10,background:'#eff6ff',borderRadius:6,marginTop:8,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
