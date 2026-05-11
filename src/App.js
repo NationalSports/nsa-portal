@@ -6044,7 +6044,7 @@ export default function App(){
     nf('📦 Packing list printed for PO '+po.po_number);
   };
 
-  const printSOPackingList=(so,shipment)=>{
+  const printSOPackingList=(so,shipment,task)=>{
     if(!so)return;
     const c=cust.find(x=>x.id===so.customer_id);
     const shipAddrSub=(()=>{
@@ -6053,15 +6053,28 @@ export default function App(){
       if(c?.billing_address_line1){let a=c.billing_address_line1;if(c.billing_address_line2)a+='<br/>'+c.billing_address_line2;a+='<br/>'+(c.billing_city||'')+', '+(c.billing_state||'')+' '+(c.billing_zip||'');return a}
       return '';
     })();
-    const sourceItems=shipment?(shipment.items||[]):safeItems(so).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+    // Scope items: shipment.items if shipping a box, else job's items if task carries a job, else all SO items
+    let sourceItems;
+    if(shipment){sourceItems=shipment.items||[]}
+    else if(task?.job?.items?.length){
+      const soItems=safeItems(so);
+      sourceItems=task.job.items.map(gi=>{
+        const it=soItems[gi.item_idx];
+        return it?{...it,_jobItem:gi}:{sku:gi.sku||'',name:gi.name||'',color:gi.color||'',sizes:gi.sizes||{},_jobItem:gi};
+      });
+    }
+    else sourceItems=safeItems(so);
     const rows=sourceItems.map(it=>{
       const szObj=shipment?(it.sizes||{}):safeSizes(it);
-      const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
-      if(totalQty<=0)return null;
-      const szStr=Object.entries(szObj).filter(([,v])=>safeNum(v)>0).map(([sz,v])=>sz+': '+v).join('  ');
-      return{cells:[{value:it.sku||'',style:'font-family:monospace;font-weight:700'},{value:it.name||''},{value:it.color||'—'},{value:szStr,style:'font-size:11px'},{value:totalQty,style:'text-align:center;font-weight:700'}]};
+      const sizeEntries=Object.entries(szObj).filter(([,v])=>safeNum(v)>0);
+      const totalFromSizes=sizeEntries.reduce((a,[,v])=>a+safeNum(v),0);
+      const szStr=sizeEntries.map(([sz,v])=>sz+': '+v).join('  ');
+      const fallbackQty=safeNum(it._jobItem?.total)||safeNum(it.est_qty);
+      const qty=totalFromSizes>0?totalFromSizes:fallbackQty;
+      if(!it.sku&&!it.name&&qty<=0)return null;
+      return{cells:[{value:it.sku||'',style:'font-family:monospace;font-weight:700'},{value:it.name||''},{value:it.color||'—'},{value:szStr||'—',style:'font-size:11px'},{value:qty||'—',style:'text-align:center;font-weight:700'}]};
     }).filter(Boolean);
-    const totalUnits=rows.reduce((a,r)=>a+safeNum(r.cells[4].value),0);
+    const totalUnits=rows.reduce((a,r)=>{const v=r.cells[4].value;return a+(typeof v==='number'?v:0)},0)||safeNum(task?.units)||safeNum(task?.job?.total_units)||0;
     const carrier=shipment?.carrier?shipment.carrier.toUpperCase():(so.ship_preference==='warehouse_delivery'?'Warehouse Delivery':'');
     printDoc({
       title:c?.name||'Customer',docNum:so.id+(shipment?' — '+(shipment.tracking_number||shipment.id||'Shipment'):''),docType:'PACKING LIST',showPricing:false,
@@ -6073,7 +6086,7 @@ export default function App(){
         ...(shipment?.tracking_number?[{label:'Tracking',value:shipment.tracking_number}]:[]),
         ...(so.memo?[{label:'Memo',value:so.memo}]:[]),
       ],
-      tables:[{title:shipment?'Items in this Shipment':'Items on this Order',headers:['SKU','Item','Color','Sizes','Qty'],aligns:['left','left','left','left','center'],rows}],
+      tables:[{title:shipment?'Items in this Shipment':task?.job?'Items in this Job':'Items on this Order',headers:['SKU','Item','Color','Sizes','Qty'],aligns:['left','left','left','left','center'],rows}],
       notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
       footer:'NO PRICING — Packing List'
     });
@@ -14233,7 +14246,7 @@ export default function App(){
                   {t.daysOut!=null&&<div>{t.daysOut>=0?'Due in '+t.daysOut+'d':Math.abs(t.daysOut)+'d overdue'}</div>}
                 </div>
                 <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
-                  onClick={e=>{e.stopPropagation();printSOPackingList(t.so)}}>📦 Packing List</button>
+                  onClick={e=>{e.stopPropagation();printSOPackingList(t.so,null,t)}}>📦 Packing List</button>
               </div>
             </div>})}
         </div>}
