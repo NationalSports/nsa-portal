@@ -4388,10 +4388,14 @@ export default function App(){
           const pref=so.ship_preference||'ship_as_ready';
           const shipDateOk=pref!=='ship_on_date'||!so.ship_on_date||(new Date(so.ship_on_date)<=new Date());
           const deliverDateOk=pref!=='deliver_on_date'||!so.deliver_on_date||(new Date(so.deliver_on_date)<=new Date());
-          if(pref==='warehouse_delivery'||(pref==='deliver_on_date'&&deliverDateOk)){
+          if(pref==='warehouse_delivery'||pref==='deliver_on_date'){
+            const deliverDate=pref==='deliver_on_date'?so.deliver_on_date:null;
+            const deliverDaysOut=deliverDate?Math.ceil((new Date(deliverDate)-new Date())/(1000*60*60*24)):null;
+            const holdUntil=!deliverDateOk;
             deliverTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
+              deliverDate,deliverDaysOut,holdUntil,
               desc:item.sku+' · '+item.name,units:totalOrdered,shipPref:pref});
-          } else if(pref!=='rep_delivery'&&pref!=='wait_complete'&&pref!=='deliver_on_date'&&shipDateOk){
+          } else if(pref!=='rep_delivery'&&pref!=='wait_complete'&&shipDateOk){
             shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
               desc:item.sku+' · '+item.name,units:totalOrdered,shipMethod:dest,shipPref:pref});
           }
@@ -4421,10 +4425,14 @@ export default function App(){
             const allSiblingsDone=siblingJobs.every(j2=>j2.prod_status==='completed'||j2.prod_status==='shipped');
             if(!allSiblingsDone){
               // Sibling jobs still in progress — this item stays in production queue, not ready to ship
-            } else if(shipPref==='warehouse_delivery'||(shipPref==='deliver_on_date'&&deliverDateReady)){
+            } else if(shipPref==='warehouse_delivery'||shipPref==='deliver_on_date'){
+              const deliverDate=shipPref==='deliver_on_date'?so.deliver_on_date:null;
+              const deliverDaysOut=deliverDate?Math.ceil((new Date(deliverDate)-new Date())/(1000*60*60*24)):null;
+              const holdUntil=!deliverDateReady;
               deliverTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
+                deliverDate,deliverDaysOut,holdUntil,
                 desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,shipPref});
-            } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipPref!=='deliver_on_date'&&shipDateReady){
+            } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
               shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
                 desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,
                 shipMethod:j.ship_method||'pending',shipPref});
@@ -6955,8 +6963,8 @@ export default function App(){
                   {j.expected&&<div style={{fontSize:10,color:urgent?'#dc2626':'#64748b',marginBottom:6}}>📅 Due: {j.expected}{urgent?' — RUSH':''}  </div>}
 
                   {/* Open SO / Job links */}
+                  <button className="btn btn-sm" style={{fontSize:11,padding:'6px 12px',width:'100%',marginBottom:6,background:'#d97706',color:'white',border:'none',fontWeight:700,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:6,cursor:'pointer'}} onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋 Production Sheet</button>
                   <div style={{display:'flex',gap:8,marginBottom:6}}>
-                    <div style={{fontSize:10,color:'#d97706',cursor:'pointer',textDecoration:'underline',fontWeight:800}} onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋 Production Sheet</div>
                     <div style={{fontSize:10,color:'#7c3aed',cursor:'pointer',textDecoration:'underline',fontWeight:800}} onClick={e=>{e.stopPropagation();
                       const jso=j.so;const jc=cust.find(c2=>c2.id===jso.customer_id);
                       const ji=safeJobs(jso).findIndex(jj=>jj.id===j.id);
@@ -7106,19 +7114,14 @@ export default function App(){
         if(!so)return null;
         const c=cust.find(x=>x.id===so.customer_id);
         const af=safeArt(so).find(f=>f.id===j.art_file_id);
-        const allArtFiles=(j._art_ids||[j.art_file_id].filter(Boolean)).map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
+        const allArtFiles=(()=>{const ids=new Set();
+          (j._art_ids||[j.art_file_id].filter(Boolean)).forEach(id=>ids.add(id));
+          (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;
+            safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)});
+          });
+          return[...ids].map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
+        })();
         // Build per-location decoration details — only decorations belonging to THIS job's deco_type
-        const decoLocations=(()=>{const firstGi=(j.items||[])[0];const it=firstGi?safeItems(so)[firstGi.item_idx]:null;if(!it)return[];
-          const jobDecoIdxs=firstGi.deco_idxs||[firstGi.deco_idx];
-          return safeDecos(it).filter((d,di)=>(d.kind==='art'||d.kind==='numbers')&&jobDecoIdxs.includes(di)).map(d=>{
-            const artF=d.art_file_id?safeArt(so).find(f=>f.id===d.art_file_id):null;
-            const dt=artF?.deco_type||d.deco_type||'screen_print';
-            const cwObj=d.color_way_id&&artF?.color_ways?artF.color_ways.find(c2=>c2.id===d.color_way_id):null;
-            const _direct=(artF?(artF.ink_colors||artF.thread_colors||''):'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean);
-            const _cwAll=artF?.color_ways?.length?[...new Set(artF.color_ways.flatMap(cw=>(cw.inks||[]).filter(c2=>c2&&c2.trim())))]:[];
-            const colors=cwObj?(cwObj.inks||[]).filter(c2=>c2&&c2.trim()):_direct.length>0?_direct:_cwAll;
-            return{position:d.position||'—',deco_type:dt,art_name:artF?.name||d.art_name||'Unnamed',art_size:artF?.art_size||'—',colors,isEmb:dt==='embroidery'};
-          })})();
         const machine=MACHINES.find(m=>m.id===j.assigned_machine);
         const itemDetails=(j.items||[]).map(gi=>{
           const it=safeItems(so)[gi.item_idx];if(!it)return null;
@@ -7130,7 +7133,7 @@ export default function App(){
             fulSizes[sz]=Math.min(v,picked+rcvd);
           });
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
+          return{item_idx:gi.item_idx,sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
         // Parse colors for display — use job's deco_type for labels
@@ -7138,7 +7141,9 @@ export default function App(){
         const isEmb=j.deco_type==='embroidery';
         const isSP=j.deco_type==='screen_print';
         // Mockup files — aggregate from all art files in this job (general bucket + per-item mockups)
-        const mockupFiles=allArtFiles.flatMap(a=>[...(a?.mockup_files||a?.files||[]),...Object.values(a?.item_mockups||{}).flat()]).filter(f=>f);
+        const genericMockupFiles=allArtFiles.flatMap(a=>(a?.mockup_files||a?.files||[])).filter(f=>f);
+        const itemMockupFiles=allArtFiles.flatMap(a=>Object.values(a?.item_mockups||{}).flat()).filter(f=>f);
+        const mockupFiles=[...genericMockupFiles,...itemMockupFiles];
         const prodFiles=allArtFiles.flatMap(a=>a?.prod_files||[]);
         // Numbers & Names roster data — extract from item decorations.
         // Split jobs carry per-item roster/sizes overrides on gi; prefer those over the source decoration's full roster.
@@ -7162,77 +7167,79 @@ export default function App(){
             {label:'Expected Date',value:so.expected_date||'TBD',sub:j.daysOut!=null?(j.daysOut<=0?'PAST DUE':j.daysOut+' days out'):''},
             {label:'Rep',value:j.rep||REPS.find(r=>r.id===(cust.find(x=>x.id===so.customer_id)?.primary_rep_id||so.created_by))?.name||'—'},
           ];
-          const decoInfo=[
-            {label:'Decoration',value:j.deco_type?.replace(/_/g,' ')||'—'},
-            {label:'Position(s)',value:(j.positions||'').replace(/^,\s*/,'')||'—'},
-            {label:'Art Size',value:af?.art_size||'—'},
-            {label:isEmb?'Thread Colors':'Ink Colors',value:colorList.join(', ')||'—'},
-          ];
-          if(machine)decoInfo.push({label:'Machine',value:machine.name});
-          if(j.assigned_to)decoInfo.push({label:'Assigned To',value:j.assigned_to});
-
-          const sizeHeaders=['','...sizes...','Total'];
           const tables=[];
-          // Decoration details table
-          tables.push({title:'Decoration Details',headers:['Property','Value'],aligns:['left','left'],
-            rows:decoInfo.map(d=>({cells:[d.label,{value:'<strong>'+d.value+'</strong>'}]}))});
-          // Color table with swatches
-          if(colorList.length>0){
-            tables.push({title:(isEmb?'Thread':'Ink')+' Colors — '+colorList.length+' color(s)',
-              headers:['#','Color / Pantone'],aligns:['center','left'],
-              rows:colorList.map((cl,i)=>({cells:[(i+1)+'',cl]}))});
-          }
-          // Size/SKU tables per item
+          // Per-item PDF sections: mockup (in notes), size table, decoration spec, numbers/names
           itemDetails.forEach(gi=>{
-            const hdrs=['',  ...allSizes,'Total'];
-            const ordRow={cells:['Ordered']};allSizes.forEach(sz=>{ordRow.cells.push(gi.sizes[sz]||'')});
-            ordRow.cells.push({value:'<strong>'+Object.values(gi.sizes).reduce((a,v)=>a+v,0)+'</strong>'});
-            const rows=[ordRow];
-            tables.push({title:gi.sku+' — '+gi.name+' ('+gi.color+')',className:'sz-table',
-              headers:hdrs,aligns:hdrs.map((_,i)=>i===0?'left':'center'),rows});
+            const it=safeItems(so)[gi.item_idx];
+            if(!it)return;
+            const itemArtDecos=safeDecos(it).filter(d=>d.kind==='art');
+            const itemNumDecos=safeDecos(it).filter(d=>d.kind==='numbers');
+            const itemNameDecos=safeDecos(it).filter(d=>d.kind==='names');
+            const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
+            const ndData=numbersData.find(n=>n.sku===gi.sku);
+            const itemSizes=allSizes.filter(sz=>gi.sizes[sz]>0);
+            // Size table
+            const hdrs=['',...itemSizes,'Total'];
+            const ordRow={cells:['Ordered']};itemSizes.forEach(sz=>{ordRow.cells.push(gi.sizes[sz]||'')});
+            ordRow.cells.push({value:'<strong>'+rowTotal+'</strong>'});
+            tables.push({title:gi.sku+' — '+gi.name+(gi.color?' ('+gi.color+')':'')+' · '+rowTotal+' units',className:'sz-table',
+              headers:hdrs,aligns:hdrs.map((_,i)=>i===0?'left':'center'),rows:[ordRow]});
+            // Decoration spec for this item
+            if(itemArtDecos.length>0||itemNumDecos.length>0||itemNameDecos.length>0){
+              const specRows=[];
+              itemArtDecos.forEach(d=>{
+                const artF=safeArt(so).find(f=>f.id===d.art_file_id);
+                const dt=artF?.deco_type||d.deco_type||'screen_print';
+                const cwObj=d.color_way_id&&artF?.color_ways?artF.color_ways.find(c2=>c2.id===d.color_way_id):null;
+                const _direct=(artF?(artF.ink_colors||artF.thread_colors||''):'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean);
+                const _cwAll=artF?.color_ways?.length?[...new Set(artF.color_ways.flatMap(cw=>(cw.inks||[]).filter(c2=>c2&&c2.trim())))]:[];
+                const cls=cwObj?(cwObj.inks||[]).filter(c2=>c2&&c2.trim()):_direct.length>0?_direct:_cwAll;
+                const sz2=artF?.art_sizes?.[d.position]||artF?.art_size||'—';
+                const flags=[];if(d.underbase)flags.push('Underbase');if(d.reversible)flags.push('Reversible');
+                specRows.push({cells:[d.position||'—',artF?.name||'—',dt.replace(/_/g,' ')+(flags.length?' ('+flags.join(', ')+')':''),sz2,cls.join(', ')||'—']});
+              });
+              itemNumDecos.forEach(nd=>{
+                specRows.push({cells:[nd.position||'—','Numbers'+(nd.front_and_back?' (Front + Back)':''),(nd.num_method||'heat_transfer').replace(/_/g,' '),nd.num_size||'—',nd.print_color||'—']});
+              });
+              itemNameDecos.forEach(nd=>{
+                specRows.push({cells:[nd.position||'—','Names'+(nd.front_and_back?' (Front + Back)':''),'—','—','—']});
+              });
+              tables.push({title:'Decoration Spec — '+gi.sku,headers:['Position','Art / Type','Method','Size','Colors'],aligns:['left','left','left','left','left'],rows:specRows});
+            }
+            // Numbers list
+            if(ndData?.roster&&Object.keys(ndData.roster).length>0){
+              const numRows=[];
+              ndData.sizes.forEach(sz=>{const nums=(ndData.roster[sz]||[]).filter(n=>n!=='');
+                if(nums.length>0)numRows.push({cells:[sz,nums.sort((a,b)=>Number(a)-Number(b)).join(', ')]});
+              });
+              if(numRows.length>0)tables.push({title:'Number List — '+gi.sku,headers:['Size','Numbers'],aligns:['left','left'],rows:numRows});
+            }
+            // Names list
+            if(ndData?.names&&Object.keys(ndData.names).length>0){
+              const nameRows=[];
+              ndData.sizes.forEach(sz=>{const nms=(ndData.names[sz]||[]).filter(n=>n!=='');
+                if(nms.length>0)nameRows.push({cells:[sz,nms.join(', ')]});
+              });
+              if(nameRows.length>0)tables.push({title:'Names List — '+gi.sku,headers:['Size','Names'],aligns:['left','left'],rows:nameRows});
+            }
           });
-          // Production files list
-          if(prodFiles.length>0||mockupFiles.length>0){
+          // Generic production files list (general, not tied to a specific SKU)
+          if(prodFiles.length>0){
             const fileRows=[];
             prodFiles.forEach(f=>fileRows.push({cells:['Production',fileDisplayName(f)]}));
-            mockupFiles.forEach(f=>fileRows.push({cells:['Mockup',fileDisplayName(f)]}));
             tables.push({title:'Production Files',headers:['Type','Filename'],aligns:['left','left'],rows:fileRows});
           }
-          // Numbers roster table for PDF
-          numbersData.forEach(nd2=>{
-            if(!nd2.roster||Object.keys(nd2.roster).length===0)return;
-            const numInfo=[];
-            if(nd2.nd){
-              numInfo.push({cells:['Method',{value:'<strong>'+(nd2.nd.num_method||'heat_transfer').replace(/_/g,' ')+'</strong>'}]});
-              numInfo.push({cells:['Number Size',{value:'<strong>'+(nd2.nd.num_size||'—')+'</strong>'}]});
-              if(nd2.nd.front_and_back)numInfo.push({cells:['Back Size',{value:'<strong>'+(nd2.nd.num_size_back||nd2.nd.num_size||'—')+'</strong>'}]});
-              if(nd2.nd.print_color)numInfo.push({cells:['Color',{value:'<strong>'+nd2.nd.print_color+'</strong>'}]});
-              if(nd2.nd.num_font)numInfo.push({cells:['Font',{value:'<strong>'+nd2.nd.num_font+'</strong>'}]});
-              if(nd2.nd.front_and_back)numInfo.push({cells:['Placement',{value:'<strong>Front + Back</strong>'}]});
-            }
-            if(numInfo.length>0)tables.push({title:'Number Details'+(nd2.sku?' — '+nd2.sku:''),headers:['Property','Value'],aligns:['left','left'],rows:numInfo});
-            // Number list by size
-            const numRows=[];
-            nd2.sizes.forEach(sz=>{const nums=(nd2.roster[sz]||[]).filter(n=>n!=='');
-              if(nums.length>0)numRows.push({cells:[sz,nums.sort((a,b)=>Number(a)-Number(b)).join(', ')]});
-            });
-            if(numRows.length>0)tables.push({title:'Number List'+(nd2.sku?' — '+nd2.sku:''),headers:['Size','Numbers'],aligns:['left','left'],rows:numRows});
-          });
-          // Names roster table for PDF
-          numbersData.forEach(nd2=>{
-            if(!nd2.names||Object.keys(nd2.names).length===0)return;
-            const nameRows=[];
-            nd2.sizes.forEach(sz=>{const nms=(nd2.names[sz]||[]).filter(n=>n!=='');
-              if(nms.length>0)nameRows.push({cells:[sz,nms.join(', ')]});
-            });
-            if(nameRows.length>0)tables.push({title:'Names List'+(nd2.sku?' — '+nd2.sku:''),headers:['Size','Names'],aligns:['left','left'],rows:nameRows});
-          });
-          // Find displayable mockup image URLs for the PDF — show all mockups
-          const _pdfMockUrls=(()=>{const urls=[];const mf=mockupFiles.filter(f=>f);
-            for(const f of mf){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f)){urls.push(u)}else{const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)urls.push(pt)}}
-            if(urls.length===0){const fallback=itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url;if(fallback)urls.push(fallback)}
-            return urls})();
-          const _pdfMockHtml=_pdfMockUrls.length>0?'<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:8px 0 12px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">'+_pdfMockUrls.map(u=>'<img src="'+u+'" style="max-width:'+(_pdfMockUrls.length>1?'48%':'100%')+';max-height:300px;object-fit:contain;border-radius:6px"/>').join('')+'<div style="font-size:9px;color:#666;margin-top:4px;width:100%;text-align:center">Mockup Preview</div></div>':'';
+          // Per-item mockup URLs for the PDF — each SKU shows its own labeled mockup
+          const _urlsFor=arr=>{const urls=[];for(const f of (arr||[])){if(!f)continue;const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f)){urls.push(u)}else if(_isPdfUrl(u,f)){const pt=_cloudinaryPdfThumb(u);if(pt)urls.push(pt)}}return urls};
+          const _pdfPerItem=itemDetails.map(gi=>({sku:gi.sku,name:gi.name,color:gi.color,urls:_urlsFor(allArtFiles.flatMap(a=>(a?.item_mockups?.[gi.sku]||[])))})).filter(x=>x.urls.length>0);
+          const _pdfGenericUrls=_urlsFor(allArtFiles.flatMap(a=>(a?.mockup_files||a?.files||[])));
+          const _pdfHasAny=_pdfPerItem.length>0||_pdfGenericUrls.length>0;
+          const _pdfFallback=!_pdfHasAny&&itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url;
+          const _pdfMockHtml=_pdfHasAny||_pdfFallback?'<div style="margin:8px 0 12px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">'
+            +_pdfPerItem.map(x=>'<div style="margin-bottom:14px;page-break-inside:avoid"><div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px">'+x.sku+' — '+x.name+(x.color?' ('+x.color+')':'')+'</div><div style="display:flex;gap:10px;flex-wrap:wrap">'+x.urls.map(u=>'<img src="'+u+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')+'</div></div>').join('')
+            +(_pdfGenericUrls.length>0?'<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">'+_pdfGenericUrls.map(u=>'<img src="'+u+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')+'</div>':'')
+            +(_pdfFallback?'<div style="display:flex;justify-content:center"><img src="'+_pdfFallback+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/></div>':'')
+            +'<div style="font-size:9px;color:#666;margin-top:4px;width:100%;text-align:center">Mockup Preview</div></div>':'';
           printDoc({title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
             headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
             infoBoxes,tables,
@@ -7252,95 +7259,38 @@ export default function App(){
             </div>
           </div>
           <div className="modal-body" style={{padding:0}}>
-            {/* Mockup Preview — only show actual images (no .ai files), equal-size grid */}
-            {(()=>{const dispMocks=mockupFiles.map((f,i)=>({f,i,u:typeof f==='string'?f:(f?.url||'')})).filter(({u,f})=>_isImgUrl(u,f)||_isPdfUrl(u,f));
-              return<div style={{background:'#0f172a',padding:24,borderBottom:'2px solid #334155',position:'relative'}}>
-              {dispMocks.length===0?<div style={{textAlign:'center',padding:40,minHeight:200}}><div style={{fontSize:64,marginBottom:8}}>🎨</div><div style={{fontSize:14,color:'#94a3b8'}}>No mockup images</div></div>
-              :<div style={{display:'grid',gridTemplateColumns:dispMocks.length===1?'1fr':dispMocks.length===2?'1fr 1fr':dispMocks.length===3?'1fr 1fr 1fr':'1fr 1fr',gap:12}}>
-                {dispMocks.map(({f,i,u})=>{const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const pdfThumb=isPdf?_cloudinaryPdfThumb(u):null;const imgSrc=isImg?u:pdfThumb;
-                  return<div key={i} style={{borderRadius:12,background:'#1e293b',border:'2px solid #334155',overflow:'hidden',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',minHeight:dispMocks.length===1?400:260}}
-                    onClick={()=>{setProdLightboxIdx(i);setProdLightboxZoom(1);setProdJobLightbox(true)}}>
-                    <img src={imgSrc} alt={'Mockup '+(i+1)} style={{width:'100%',height:'100%',objectFit:'contain',display:'block',padding:8}}/>
-                  </div>})}
-              </div>}
-              {dispMocks.length>0&&<div style={{textAlign:'right',marginTop:8}}>
-                <span style={{background:'rgba(59,130,246,0.9)',color:'white',padding:'6px 14px',borderRadius:8,fontSize:12,fontWeight:700,cursor:'pointer'}}
-                  onClick={()=>{setProdLightboxIdx(0);setProdLightboxZoom(1);setProdJobLightbox(true)}}>Click to Zoom</span>
-              </div>}
-            </div>})()}
+            {/* Generic mockup hero — only when generic (non-SKU-specific) mockups exist */}
+            {(()=>{const dispMocks=genericMockupFiles.map((f,i)=>({f,i,u:typeof f==='string'?f:(f?.url||'')})).filter(({u,f})=>_isImgUrl(u,f)||_isPdfUrl(u,f));
+              if(dispMocks.length===0)return null;
+              return<div style={{background:'#0f172a',padding:20,borderBottom:'2px solid #334155',position:'relative'}}>
+                <div style={{display:'grid',gridTemplateColumns:dispMocks.length===1?'1fr':dispMocks.length===2?'1fr 1fr':dispMocks.length===3?'1fr 1fr 1fr':'1fr 1fr',gap:12}}>
+                  {dispMocks.map(({f,i,u})=>{const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const pdfThumb=isPdf?_cloudinaryPdfThumb(u):null;const imgSrc=isImg?u:pdfThumb;
+                    return<div key={i} style={{borderRadius:12,background:'#1e293b',border:'2px solid #334155',overflow:'hidden',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',minHeight:dispMocks.length===1?340:220}}
+                      onClick={()=>{setProdLightboxIdx(i);setProdLightboxZoom(1);setProdJobLightbox(true)}}>
+                      <img src={imgSrc} alt={'Mockup '+(i+1)} style={{width:'100%',height:'100%',objectFit:'contain',display:'block',padding:8}}/>
+                    </div>})}
+                </div>
+                <div style={{textAlign:'right',marginTop:8}}>
+                  <span style={{background:'rgba(59,130,246,0.9)',color:'white',padding:'6px 14px',borderRadius:8,fontSize:12,fontWeight:700,cursor:'pointer'}}
+                    onClick={()=>{setProdLightboxIdx(0);setProdLightboxZoom(1);setProdJobLightbox(true)}}>Click to Zoom</span>
+                </div>
+              </div>})()}
 
-            {/* Production & Art Files — directly below mockups */}
-            {(prodFiles.length>0||mockupFiles.length>0)&&<div style={{padding:16,borderBottom:'2px solid #e2e8f0',background:'#1e293b'}}>
+            {/* Generic production/mockup file chips — only shows files not tied to a specific SKU */}
+            {(prodFiles.length>0||genericMockupFiles.length>0)&&<div style={{padding:14,borderBottom:'2px solid #e2e8f0',background:'#1e293b'}}>
               <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                {prodFiles.map((f,i)=><div key={'p'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,cursor:'pointer'}}
+                {prodFiles.map((f,i)=><div key={'p'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 12px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer'}}
                   onClick={()=>openFile(f)} title={'Production: '+fileDisplayName(f)}>
-                  <span style={{fontSize:16}}>📁</span>
-                  <div><div style={{fontSize:12,fontWeight:700,color:'#92400e'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#b45309'}}>Production File</div></div>
+                  <span style={{fontSize:14}}>📁</span>
+                  <div><div style={{fontSize:11,fontWeight:700,color:'#92400e'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#b45309'}}>Production File</div></div>
                 </div>)}
-                {mockupFiles.map((f,i)=><div key={'m'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:8,cursor:'pointer'}}
+                {genericMockupFiles.map((f,i)=><div key={'m'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 12px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:6,cursor:'pointer'}}
                   onClick={()=>openFile(f)} title={'Mockup: '+fileDisplayName(f)}>
-                  <span style={{fontSize:16}}>🖼️</span>
-                  <div><div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#3b82f6'}}>Mockup File</div></div>
+                  <span style={{fontSize:14}}>🖼️</span>
+                  <div><div style={{fontSize:11,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#3b82f6'}}>Mockup File</div></div>
                 </div>)}
               </div>
             </div>}
-
-            {/* Decoration Details — per-location breakdown, BIG and clear */}
-            <div style={{padding:24,borderBottom:'2px solid #e2e8f0',background:'#f8fafc'}}>
-              <div style={{fontSize:18,fontWeight:800,color:'#0f172a',marginBottom:16,borderBottom:'2px solid #3b82f6',paddingBottom:8}}>Decoration Details</div>
-              {decoLocations.length>0?decoLocations.map((loc,li)=>{
-                const colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
-                  'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
-                  'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000',
-                  'Kelly Green':'#4CBB17','Forest Green':'#228B22','Charcoal':'#36454F','Vegas Gold':'#C5B358','Columbia Blue':'#9BDDFF',
-                  'Scarlet':'#FF2400','Purple':'#6B21A8','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Cream':'#FFFDD0','Tan':'#D2B48C',
-                  'Athletic Gold':'#FFB81C','Texas Orange':'#BF5700','Burnt Orange':'#CC5500','Teal':'#008080','Cyan':'#00FFFF','Lime':'#32CD32'};
-                return<div key={li} style={{marginBottom:li<decoLocations.length-1?20:0,padding:16,background:'white',borderRadius:10,border:'1px solid #e2e8f0',boxShadow:'0 1px 3px rgba(0,0,0,0.06)'}}>
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:16,marginBottom:12}}>
-                    <div style={{background:'#eff6ff',borderRadius:8,padding:12}}>
-                      <div style={{fontSize:11,fontWeight:700,color:'#3b82f6',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Location</div>
-                      <div style={{fontSize:20,fontWeight:800,color:'#0f172a'}}>{loc.position}</div></div>
-                    <div style={{background:loc.isEmb?'#f5f3ff':'#dbeafe',borderRadius:8,padding:12}}>
-                      <div style={{fontSize:11,fontWeight:700,color:loc.isEmb?'#7c3aed':'#2563eb',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Deco Type</div>
-                      <div style={{fontSize:20,fontWeight:800,color:'#0f172a'}}>{loc.deco_type?.replace(/_/g,' ')||'—'}</div></div>
-                    <div style={{background:'#f0fdf4',borderRadius:8,padding:12}}>
-                      <div style={{fontSize:11,fontWeight:700,color:'#166534',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Art Size</div>
-                      <div style={{fontSize:20,fontWeight:800,color:'#0f172a'}}>{loc.art_size}</div></div>
-                  </div>
-                  {li===0&&<div style={{background:'#fef3c7',borderRadius:8,padding:12,marginBottom:12}}>
-                    <div style={{fontSize:11,fontWeight:700,color:'#92400e',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Total Units</div>
-                    <div style={{fontSize:24,fontWeight:800,color:'#92400e'}}>{j.total_units}</div></div>}
-                  {loc.colors.length>0&&<div>
-                    <div style={{fontSize:13,fontWeight:700,color:'#1e293b',marginBottom:8,textTransform:'uppercase',letterSpacing:0.5}}>{loc.isEmb?'Thread Colors':'Ink Colors'} — {loc.colors.length} color{loc.colors.length!==1?'s':''}</div>
-                    <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                      {loc.colors.map((cl,i)=>{
-                        const clLower=cl.toLowerCase();
-                        const swatchColor=colorMap2[cl]||Object.entries(colorMap2).find(([k])=>clLower.includes(k.toLowerCase()))?.[1]||null;
-                        return<div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 14px',background:'white',border:'2px solid #e2e8f0',borderRadius:8,boxShadow:'0 1px 2px rgba(0,0,0,0.05)'}}>
-                          <div style={{width:24,height:24,borderRadius:4,border:'2px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)',boxShadow:swatchColor?'inset 0 1px 2px rgba(255,255,255,0.3)':'none'}}/>
-                          <span style={{fontSize:14,fontWeight:700,color:'#1e293b'}}>{cl}</span>
-                        </div>})}
-                    </div>
-                  </div>}
-                </div>})
-              :<div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:16}}>
-                <div style={{background:'#eff6ff',borderRadius:8,padding:12}}>
-                  <div style={{fontSize:11,fontWeight:700,color:'#3b82f6',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Method</div>
-                  <div style={{fontSize:20,fontWeight:800,color:'#0f172a'}}>{j.deco_type?.replace(/_/g,' ')||'—'}</div></div>
-                <div style={{background:'#f0fdf4',borderRadius:8,padding:12}}>
-                  <div style={{fontSize:11,fontWeight:700,color:'#166534',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Position(s)</div>
-                  <div style={{fontSize:20,fontWeight:800,color:'#0f172a'}}>{(j.positions||'').replace(/^,\s*/,'')||'—'}</div></div>
-                <div style={{background:'#fef3c7',borderRadius:8,padding:12}}>
-                  <div style={{fontSize:11,fontWeight:700,color:'#92400e',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Total Units</div>
-                  <div style={{fontSize:24,fontWeight:800,color:'#92400e'}}>{j.total_units}</div></div>
-              </div>}
-              {machine&&<div style={{marginTop:12,background:'#fff7ed',borderRadius:8,padding:12,display:'inline-block'}}>
-                <div style={{fontSize:11,fontWeight:700,color:'#c2410c',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Machine</div>
-                <div style={{fontSize:18,fontWeight:800,color:'#9a3412'}}>{machine.name}</div></div>}
-              {j.assigned_to&&<div style={{marginTop:8,background:'#f5f3ff',borderRadius:8,padding:12,display:'inline-block',marginLeft:machine?12:0}}>
-                <div style={{fontSize:11,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Assigned To</div>
-                <div style={{fontSize:18,fontWeight:800,color:'#6d28d9'}}>{j.assigned_to}</div></div>}
-            </div>
 
             {/* Dual-Run Order — art + numbers */}
             {isDualRunJob(j,so)&&<div style={{padding:20,borderBottom:'2px solid #e2e8f0',background:'#faf5ff'}}>
@@ -7370,79 +7320,168 @@ export default function App(){
               </div>})()}
             </div>}
 
-            {/* SKUs & Quantities */}
-            <div style={{padding:20,borderBottom:'1px solid #e2e8f0'}}>
-              <div style={{fontSize:14,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>SKUs & Quantities</div>
-              {itemDetails.map((gi,gii)=>{
-                const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
-                return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?12:0}}>
-                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
-                    {gi.image_url?<img src={gi.image_url} alt="" style={{width:40,height:40,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>
-                    :<ImgUpload url="" onUpload={u=>{if(gi.product_id){const up=prod.find(p=>p.id===gi.product_id);if(up){const updated={...up,image_url:u};setProd(p=>p.map(x=>x.id===up.id?updated:x));_dbSaveProduct(updated);nf('Product image saved')}}}} onError={e=>nf(e,'error')} size={40}/>}
-                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
-                    <span style={{fontWeight:600,fontSize:13}}>{gi.name}</span>
-                    <span style={{color:'#64748b',fontSize:12}}>({gi.color})</span>
-                    {gi.brand&&<span className="badge badge-gray">{gi.brand}</span>}
-                    <span style={{marginLeft:'auto',fontWeight:800,fontSize:13,color:'#1e40af'}}>{rowTotal} units</span>
-                  </div>
-                  <div style={{overflowX:'auto'}}>
-                    <table style={{fontSize:12,minWidth:300}}><thead><tr style={{background:'#f0f2f5'}}>
-                      <th style={{textAlign:'left',padding:'6px 8px',fontSize:10,fontWeight:700,color:'#555'}}>SIZE</th>
-                      {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'6px 8px',fontSize:10,fontWeight:700,minWidth:40}}>{sz}</th>)}
-                      <th style={{textAlign:'center',padding:'6px 8px',fontSize:10,fontWeight:800}}>TOTAL</th>
-                    </tr></thead><tbody>
-                      <tr>{['QTY',...allSizes.map(sz=>gi.sizes[sz]||'—'),rowTotal].map((v,i)=>
-                        <td key={i} style={{textAlign:i===0?'left':'center',padding:'6px 8px',fontWeight:typeof v==='number'?800:i===0?700:400,
-                          color:typeof v==='number'?'#1e40af':i===0?'#475569':'#cbd5e1',
-                          background:typeof v==='number'&&i>0?'#eef2ff':i===allSizes.length+1?'#f0f2f5':''}}>{v}</td>)}
-                      </tr>
-                    </tbody></table>
-                  </div>
-                </div>})}
-            </div>
-
-            {/* Numbers & Names Roster */}
-            {numbersData.length>0&&numbersData.some(nd2=>nd2.nd||nd2.roster||nd2.names)&&<div style={{padding:20,borderBottom:'1px solid #e2e8f0'}}>
-              <div style={{fontSize:18,fontWeight:800,color:'#0f172a',marginBottom:16,borderBottom:'2px solid #7c3aed',paddingBottom:8}}>Numbers & Names</div>
-              {numbersData.map((nd2,ndi)=><div key={ndi} style={{marginBottom:ndi<numbersData.length-1?16:0}}>
-                {numbersData.length>1&&<div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>{nd2.sku} ({nd2.color})</div>}
-                {/* Number details info */}
-                {nd2.nd&&<div style={{display:'flex',gap:10,flexWrap:'wrap',fontSize:13,marginBottom:12,padding:12,background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff'}}>
-                  <span><strong style={{color:'#6d28d9'}}>{(nd2.nd.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
-                  <span>Size: <strong>{nd2.nd.num_size||'—'}</strong></span>
-                  {nd2.nd.front_and_back&&<span>Back: <strong>{nd2.nd.num_size_back||nd2.nd.num_size||'—'}</strong></span>}
-                  {nd2.nd.print_color&&<span>Color: <strong>{nd2.nd.print_color}</strong></span>}
-                  {nd2.nd.num_font&&<span>Font: <strong>{nd2.nd.num_font}</strong></span>}
-                  {nd2.nd.front_and_back&&<span style={{padding:'2px 8px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:11,fontWeight:700}}>Front + Back</span>}
-                </div>}
-                {/* Number list by size */}
-                {nd2.roster&&Object.keys(nd2.roster).length>0&&<div style={{marginBottom:nd2.names?12:0}}>
-                  <div style={{fontSize:13,fontWeight:700,color:'#6d28d9',marginBottom:8}}>Number List</div>
-                  {nd2.sizes.map(sz=>{const nums=(nd2.roster[sz]||[]).filter(n=>n!=='');
-                    if(nums.length===0)return null;
-                    return<div key={sz} style={{marginBottom:8}}>
-                      <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>{sz} ({nums.length})</div>
-                      <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
-                        {nums.sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>
-                          <span key={ni} style={{display:'inline-block',minWidth:36,textAlign:'center',padding:'4px 8px',background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:6,fontSize:14,fontWeight:700,color:'#6d28d9'}}>{n}</span>)}
-                      </div>
-                    </div>})}
-                </div>}
-                {/* Names list by size */}
-                {nd2.names&&Object.keys(nd2.names).length>0&&<div>
-                  <div style={{fontSize:13,fontWeight:700,color:'#0369a1',marginBottom:8}}>Names List</div>
-                  {nd2.sizes.map(sz=>{const nms=(nd2.names[sz]||[]).filter(n=>n!=='');
-                    if(nms.length===0)return null;
-                    return<div key={sz} style={{marginBottom:8}}>
-                      <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>{sz} ({nms.length})</div>
-                      <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
-                        {nms.map((n,ni)=>
-                          <span key={ni} style={{padding:'4px 10px',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:6,fontSize:13,fontWeight:600,color:'#0369a1'}}>{n}</span>)}
-                      </div>
-                    </div>})}
-                </div>}
-              </div>)}
+            {/* Compact job-level info: machine + assigned */}
+            {(machine||j.assigned_to)&&<div style={{padding:'12px 20px',display:'flex',gap:10,flexWrap:'wrap',borderBottom:'1px solid #e2e8f0',background:'white'}}>
+              {machine&&<div style={{background:'#fff7ed',borderRadius:6,padding:'6px 12px'}}>
+                <div style={{fontSize:9,fontWeight:700,color:'#c2410c',textTransform:'uppercase',letterSpacing:1}}>Machine</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#9a3412'}}>{machine.name}</div></div>}
+              {j.assigned_to&&<div style={{background:'#f5f3ff',borderRadius:6,padding:'6px 12px'}}>
+                <div style={{fontSize:9,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',letterSpacing:1}}>Assigned To</div>
+                <div style={{fontSize:14,fontWeight:800,color:'#6d28d9'}}>{j.assigned_to}</div></div>}
             </div>}
+
+            {/* Per-item production cards — mockup, sizes, numbers/names, decoration spec, files */}
+            {(()=>{const colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
+              'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
+              'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000',
+              'Kelly Green':'#4CBB17','Forest Green':'#228B22','Charcoal':'#36454F','Vegas Gold':'#C5B358','Columbia Blue':'#9BDDFF',
+              'Scarlet':'#FF2400','Purple':'#6B21A8','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Cream':'#FFFDD0','Tan':'#D2B48C',
+              'Athletic Gold':'#FFB81C','Texas Orange':'#BF5700','Burnt Orange':'#CC5500','Teal':'#008080','Cyan':'#00FFFF','Lime':'#32CD32'};
+              const _swatchFor=cl=>{const s=String(cl||'');return colorMap2[s]||Object.entries(colorMap2).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
+              return<div style={{padding:20,background:'#f8fafc'}}>
+                {itemDetails.map((gi,gii)=>{
+                  const it=safeItems(so)[gi.item_idx];
+                  if(!it)return null;
+                  const itemMocks=allArtFiles.flatMap(a=>(a?.item_mockups?.[gi.sku]||[])).filter(f=>f);
+                  const artDecos=safeDecos(it).filter(d=>d.kind==='art');
+                  const numDecos=safeDecos(it).filter(d=>d.kind==='numbers');
+                  const nameDecos=safeDecos(it).filter(d=>d.kind==='names');
+                  const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
+                  const itemSizes=SZ_ORD.filter(sz=>gi.sizes[sz]>0);
+                  const ndData=numbersData.find(n=>n.sku===gi.sku);
+                  const itemProdFiles=[];
+                  artDecos.forEach(d=>{const artF=safeArt(so).find(f=>f.id===d.art_file_id);(artF?.prod_files||[]).forEach(f=>{itemProdFiles.push({f,artName:artF?.name||''})})});
+                  return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?16:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'white'}}>
+                    {/* Item header */}
+                    <div style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
+                      {gi.image_url?<img src={gi.image_url} alt="" style={{width:52,height:52,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',flexShrink:0}}/>
+                      :<div style={{width:52,height:52,borderRadius:6,background:'#e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,color:'#94a3b8'}}>👕</div>}
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                          <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{gi.sku}</span>
+                          <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{gi.name}</span>
+                          {gi.color&&<span style={{color:'#6d28d9',fontWeight:700}}>— {gi.color}</span>}
+                          {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
+                        </div>
+                      </div>
+                      <div style={{textAlign:'right',flexShrink:0}}>
+                        <div style={{fontWeight:800,fontSize:20,color:'#1e40af'}}>{rowTotal}</div>
+                        <div style={{fontSize:9,color:'#64748b',fontWeight:600,textTransform:'uppercase',letterSpacing:1}}>units</div>
+                      </div>
+                    </div>
+                    {/* Mockup display */}
+                    {itemMocks.length>0&&<div style={{padding:12,display:'flex',gap:8,flexWrap:'wrap',justifyContent:'center',background:'#fafbfc',borderBottom:'1px solid #e2e8f0'}}>
+                      {itemMocks.map((f,fi)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const src=isImg?u:isPdf?_cloudinaryPdfThumb(u):null;
+                        return src?<img key={fi} src={src} alt="Mockup" style={{height:420,maxWidth:'100%',objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(f)}/>
+                        :<div key={fi} style={{padding:'10px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:6,fontSize:11,fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>openFile(f)}>📄 {fileDisplayName(f)}</div>;
+                      })}
+                    </div>}
+                    {/* Size grid */}
+                    {itemSizes.length>0&&<div style={{padding:'10px 14px',borderBottom:'1px solid #e2e8f0',overflowX:'auto'}}>
+                      <table style={{fontSize:12,minWidth:300,width:'100%'}}><thead><tr style={{background:'#f0f2f5'}}>
+                        <th style={{textAlign:'left',padding:'5px 8px',fontSize:10,fontWeight:700,color:'#555'}}>SIZE</th>
+                        {itemSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'5px 8px',fontSize:10,fontWeight:700,minWidth:40}}>{sz}</th>)}
+                        <th style={{textAlign:'center',padding:'5px 8px',fontSize:10,fontWeight:800}}>TOTAL</th>
+                      </tr></thead><tbody>
+                        <tr>{['QTY',...itemSizes.map(sz=>gi.sizes[sz]||'—'),rowTotal].map((v,i)=>
+                          <td key={i} style={{textAlign:i===0?'left':'center',padding:'5px 8px',fontWeight:typeof v==='number'?800:i===0?700:400,color:typeof v==='number'?'#1e40af':i===0?'#475569':'#cbd5e1',background:typeof v==='number'&&i>0?'#eef2ff':i===itemSizes.length+1?'#f0f2f5':''}}>{v}</td>)}
+                        </tr>
+                      </tbody></table>
+                    </div>}
+                    {/* Numbers & Names */}
+                    {ndData&&(ndData.nd||ndData.nameD||(ndData.roster&&Object.keys(ndData.roster).length>0)||(ndData.names&&Object.keys(ndData.names).length>0))&&<div style={{padding:'10px 14px',borderBottom:'1px solid #e2e8f0',background:'#fafbfc'}}>
+                      {ndData.nd&&<div style={{display:'flex',gap:8,flexWrap:'wrap',fontSize:12,marginBottom:ndData.roster||ndData.names?8:0,padding:8,background:'#faf5ff',borderRadius:6,border:'1px solid #e9d5ff'}}>
+                        <span style={{fontWeight:700,color:'#6d28d9'}}>Numbers</span>
+                        <span><strong>{(ndData.nd.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
+                        <span>Size: <strong>{ndData.nd.num_size||'—'}</strong></span>
+                        {ndData.nd.front_and_back&&<span>Back: <strong>{ndData.nd.num_size_back||ndData.nd.num_size||'—'}</strong></span>}
+                        {ndData.nd.print_color&&<span>Color: <strong>{ndData.nd.print_color}</strong></span>}
+                        {ndData.nd.num_font&&<span>Font: <strong>{ndData.nd.num_font}</strong></span>}
+                        {ndData.nd.front_and_back&&<span style={{padding:'1px 8px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span>}
+                      </div>}
+                      {ndData.roster&&Object.keys(ndData.roster).length>0&&<div style={{marginBottom:ndData.names?8:0}}>
+                        <div style={{fontSize:11,fontWeight:700,color:'#6d28d9',marginBottom:4}}>Number List</div>
+                        {ndData.sizes.map(sz=>{const nums=(ndData.roster[sz]||[]).filter(n=>n!=='');
+                          if(nums.length===0)return null;
+                          return<div key={sz} style={{display:'flex',gap:4,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
+                            <span style={{fontSize:10,fontWeight:700,color:'#64748b',minWidth:40}}>{sz} ({nums.length})</span>
+                            {nums.sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>
+                              <span key={ni} style={{display:'inline-block',minWidth:28,textAlign:'center',padding:'2px 6px',background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:4,fontSize:12,fontWeight:700,color:'#6d28d9'}}>{n}</span>)}
+                          </div>;
+                        })}
+                      </div>}
+                      {ndData.names&&Object.keys(ndData.names).length>0&&<div>
+                        <div style={{fontSize:11,fontWeight:700,color:'#0369a1',marginBottom:4}}>Names List</div>
+                        {ndData.sizes.map(sz=>{const nms=(ndData.names[sz]||[]).filter(n=>n!=='');
+                          if(nms.length===0)return null;
+                          return<div key={sz} style={{display:'flex',gap:4,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
+                            <span style={{fontSize:10,fontWeight:700,color:'#64748b',minWidth:40}}>{sz} ({nms.length})</span>
+                            {nms.map((n,ni)=>
+                              <span key={ni} style={{padding:'2px 8px',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:4,fontSize:11,fontWeight:600,color:'#0369a1'}}>{n}</span>)}
+                          </div>;
+                        })}
+                      </div>}
+                    </div>}
+                    {/* Decoration Spec */}
+                    {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',background:'#f8fafc',borderBottom:itemProdFiles.length>0?'1px solid #e2e8f0':'none'}}>
+                      <div style={{fontSize:10,fontWeight:800,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Decoration Spec</div>
+                      {artDecos.map((d,di)=>{
+                        const artF=safeArt(so).find(f=>f.id===d.art_file_id);
+                        const dt=artF?.deco_type||d.deco_type||'screen_print';
+                        const isEmb=dt==='embroidery';
+                        const cwObj=d.color_way_id&&artF?.color_ways?artF.color_ways.find(c2=>c2.id===d.color_way_id):null;
+                        const _direct=(artF?(artF.ink_colors||artF.thread_colors||''):'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean);
+                        const _cwAll=artF?.color_ways?.length?[...new Set(artF.color_ways.flatMap(cw=>(cw.inks||[]).filter(c2=>c2&&c2.trim())))]:[];
+                        const colors=cwObj?(cwObj.inks||[]).filter(c2=>c2&&c2.trim()):_direct.length>0?_direct:_cwAll;
+                        const size=artF?.art_sizes?.[d.position]||artF?.art_size||'—';
+                        return<div key={di} style={{display:'flex',alignItems:'flex-start',gap:8,flexWrap:'wrap',padding:'6px 0',borderTop:di>0?'1px solid #e9ecef':'none'}}>
+                          <div style={{minWidth:130,paddingTop:2}}>
+                            <div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{d.position||'—'}</div>
+                            {artF&&<div style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>{artF.name||'—'}</div>}
+                            {cwObj&&<div style={{fontSize:10,fontWeight:600,color:'#0369a1',background:'#e0f2fe',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>CW: {cwObj.name||cwObj.label||'—'}</div>}
+                          </div>
+                          <div style={{flex:1,display:'flex',flexWrap:'wrap',gap:6,alignItems:'center'}}>
+                            <span style={{fontSize:11,color:'#475569',fontWeight:700}}>{dt.replace(/_/g,' ')}</span>
+                            {d.underbase&&<span style={{fontSize:10,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 6px',borderRadius:3,border:'1px solid #fbbf24'}}>Underbase</span>}
+                            {d.reversible&&<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 6px',borderRadius:3,border:'1px solid #86efac'}}>Reversible</span>}
+                            <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>{size}</span>
+                            {colors.length>0&&<>
+                              <span style={{fontSize:11,color:'#94a3b8'}}>—</span>
+                              <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                                {colors.map((cl,ci)=>{const sw=_swatchFor(cl);
+                                  return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}>
+                                    <span style={{width:12,height:12,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>
+                                    {cl}
+                                  </span>;
+                                })}
+                              </div>
+                              <span style={{fontSize:10,color:'#94a3b8',fontWeight:600}}>{colors.length} {isEmb?'thread':'ink'} color{colors.length!==1?'s':''}</span>
+                            </>}
+                          </div>
+                        </div>;
+                      })}
+                      {numDecos.map((nd,ni)=><div key={'n'+ni} style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap',padding:'6px 0',borderTop:'1px solid #e9ecef'}}>
+                        <span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 8px',borderRadius:4}}>Numbers{nd.front_and_back?' — Front + Back':''}</span>
+                        <span style={{fontSize:11,color:'#1e293b'}}>{nd.position||'—'} — {nd.num_size||'—'}{nd.num_font?' — '+nd.num_font+' font':''} — {(nd.num_method||'heat_transfer').replace(/_/g,' ')}{nd.print_color?' — '+nd.print_color:''}</span>
+                      </div>)}
+                      {nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{display:'flex',alignItems:'baseline',gap:8,padding:'5px 0',borderTop:'1px solid #e9ecef'}}>
+                        <span style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 8px',borderRadius:4}}>Names</span>
+                        {nd.front_and_back&&<span style={{fontSize:10,color:'#6d28d9',fontWeight:600}}>Front + Back</span>}
+                      </div>)}
+                    </div>}
+                    {/* Production files for this item */}
+                    {itemProdFiles.length>0&&<div style={{padding:'8px 14px',background:'white'}}>
+                      <div style={{fontSize:10,fontWeight:700,color:'#92400e',marginBottom:4,textTransform:'uppercase',letterSpacing:0.5}}>Production Files ({itemProdFiles.length})</div>
+                      <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                        {itemProdFiles.map(({f,artName},fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
+                          return<div key={fi} style={{padding:'4px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:11,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:4}} onClick={()=>openFile(f)}>📁 {name}{artName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({artName})</span>}</div>;
+                        })}
+                      </div>
+                    </div>}
+                  </div>;
+                })}
+              </div>;
+            })()}
 
             {/* Notes */}
             {(j.notes||so.production_notes)&&<div style={{padding:20,background:'#fffbe6'}}>
@@ -7464,7 +7503,13 @@ export default function App(){
       {/* Lightbox — full-size zoomable mockup viewer with gallery */}
       {prodJobLightbox&&prodJobModal&&(()=>{
         const so=prodJobModal.so||sos.find(s=>s.id===prodJobModal.soId);
-        const allArtIds=prodJobModal._art_ids||[prodJobModal.art_file_id].filter(Boolean);
+        const allArtIds=(()=>{const ids=new Set();
+          (prodJobModal._art_ids||[prodJobModal.art_file_id].filter(Boolean)).forEach(id=>ids.add(id));
+          (prodJobModal.items||[]).forEach(gi=>{const it=so?safeItems(so)[gi.item_idx]:null;if(!it)return;
+            safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)});
+          });
+          return[...ids];
+        })();
         const allMockups=[];
         allArtIds.forEach(aid=>{const artF=so?safeArt(so).find(f=>f.id===aid):null;if(!artF)return;(artF?.mockup_files||artF?.files||[]).forEach(f=>allMockups.push(f));Object.values(artF?.item_mockups||{}).flat().forEach(f=>{if(f)allMockups.push(f)})});
         const idx=Math.min(prodLightboxIdx,allMockups.length-1);
@@ -14358,17 +14403,28 @@ export default function App(){
           <div style={{fontSize:12}}>Orders with Ship Preference set to <strong>🚚 Deliver</strong> will appear here once production is complete.</div>
         </div></div>
         :<div style={{display:'flex',flexDirection:'column',gap:8}}>
-          {fDeliver.map((t,ti)=>{
+          {[...fDeliver].sort((a,b)=>{
+            const aHold=a.holdUntil&&a.deliverDaysOut!=null&&a.deliverDaysOut>0?1:0;
+            const bHold=b.holdUntil&&b.deliverDaysOut!=null&&b.deliverDaysOut>0?1:0;
+            if(aHold!==bHold)return aHold-bHold;
+            return (a.deliverDaysOut??a.daysOut??0)-(b.deliverDaysOut??b.daysOut??0);
+          }).map((t,ti)=>{
             const c=cust.find(x=>x.id===t.so.customer_id);
             const addr=c?getAddrs(c,cust)?.[0]:null;
-            return<div key={ti} className="card" style={{borderLeft:'4px solid #d97706',cursor:'pointer'}}
+            const onHold=t.holdUntil&&t.deliverDaysOut!=null&&t.deliverDaysOut>0;
+            const deliverToday=t.deliverDaysOut===0;
+            const deliverPast=t.deliverDaysOut!=null&&t.deliverDaysOut<0;
+            const borderColor=deliverToday?'#16a34a':'#d97706';
+            return<div key={ti} className="card" style={{borderLeft:'6px solid '+borderColor,cursor:'pointer'}}
               onClick={()=>{setESO(t.so);setESOC(c);setPg('orders')}}>
               <div style={{padding:'12px 16px',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
                 <div style={{flex:1,minWidth:200}}>
-                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}>
                     <span style={{fontSize:14,fontWeight:800,color:'#1e40af'}}>{t.soId}</span>
                     <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{t.cName}</span>
-                    {t.urgent&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fee2e2',color:'#dc2626',fontWeight:700}}>🔥 Rush — {t.daysOut}d</span>}
+                    {deliverToday&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:700}}>✅ Deliver TODAY</span>}
+                    {deliverPast&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fee2e2',color:'#dc2626',fontWeight:700}}>⚠️ {Math.abs(t.deliverDaysOut)}d past deliver date</span>}
+                    {!onHold&&!deliverToday&&!deliverPast&&t.urgent&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fee2e2',color:'#dc2626',fontWeight:700}}>🔥 Rush — {t.daysOut}d</span>}
                     <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fef3c7',color:'#92400e',fontWeight:700}}>{t.units} units</span>
                   </div>
                   <div style={{fontSize:12,color:'#475569'}}>{t.desc}</div>
@@ -14376,7 +14432,8 @@ export default function App(){
                 </div>
                 <div style={{fontSize:11,color:'#64748b',textAlign:'right'}}>
                   <div>Rep: <strong>{t.rep}</strong></div>
-                  {t.daysOut!=null&&<div>{t.daysOut>=0?'Due in '+t.daysOut+'d':Math.abs(t.daysOut)+'d overdue'}</div>}
+                  {t.deliverDate?<div style={{fontWeight:700,color:onHold?'#dc2626':'#0f172a',marginTop:2}}>Deliver: {t.deliverDate}{onHold?' · hold '+t.deliverDaysOut+'d':''}</div>
+                  :t.daysOut!=null&&<div>{t.daysOut>=0?'Due in '+t.daysOut+'d':Math.abs(t.daysOut)+'d overdue'}</div>}
                 </div>
                 <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                   onClick={e=>{e.stopPropagation();printSOPackingList(t.so,null,t)}}>📦 Packing List</button>
@@ -14965,7 +15022,7 @@ export default function App(){
                 }}>⏱️ Clock In</button>}
                 <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'4px 10px',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();window.open(window.location.origin+window.location.pathname+'?so='+j.soId,'_blank')}}>Open SO ↗</button>
               </div>})()}
-            {(()=>{const showActions=col?.id==='waiting_for_art'||col?.id==='approved';if(!showActions)return null;return<div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
+            {(()=>{const showActions=col?.id==='waiting_for_art';if(!showActions)return null;return<div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
               {col?.id==='waiting_for_art'&&j.art_status==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveArtStatus(j,'art_in_progress')}}>Start Working</button>}
               {col?.id==='waiting_for_art'&&j.art_status==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();
                 const so2=sos.find(s=>s.id===j.soId);if(!so2)return;
@@ -14977,18 +15034,6 @@ export default function App(){
                 const updArt3=safeArt(so2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
                 savSO({...so2,art_files:updArt3,jobs:updJobs});
                 nf('Mockup sent to rep for approval')}}>Send to Rep</button>}
-              {col?.id==='approved'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();
-                const so=sos.find(s=>s.id===j.soId);if(!so){nf('SO not found','error');return}
-                const afIdx=safeArt(so).findIndex(f=>f.id===j.art_file_id);
-                if(afIdx>=0&&(safeArt(so)[afIdx].prod_files||[]).length===0){
-                  const ext=j.deco_type==='embroidery'?'.dst':j.deco_type==='screen_print'?'_seps.ai':'.pdf';
-                  const fn=(j.art_name||'art').replace(/\s+/g,'_')+'_FINAL'+ext;
-                  const updArt=[...safeArt(so)];updArt[afIdx]={...updArt[afIdx],prod_files:[...(updArt[afIdx].prod_files||[]),fn]};
-                  const updJobs=safeJobs(so).map(jj=>{if(jj.id!==j.id)return jj;return{...jj,art_status:'art_complete',art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}});
-                  savSO({...so,art_files:updArt,jobs:updJobs});
-                  nf('Prod files uploaded — Art Complete!');
-                }else{moveArtStatus(j,'art_complete')}
-              }}>Upload & Complete</button>}
             </div>})()}
           </>}
 
