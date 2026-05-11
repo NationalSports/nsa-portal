@@ -6950,7 +6950,7 @@ export default function App(){
             fulSizes[sz]=Math.min(v,picked+rcvd);
           });
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
+          return{item_idx:gi.item_idx,sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
         // Parse colors for display — use job's deco_type for labels
