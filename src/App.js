@@ -88,6 +88,7 @@ const lazyRetry = (importFn) => React.lazy(() =>
   })
 );
 const OrderEditor = lazyRetry(() => import('./OrderEditor'));
+const AiOrderWizard = lazyRetry(() => import('./AiOrderWizard').then(m => ({ default: m.AiOrderWizard })));
 const CustDetail = lazyRetry(() => import('./CustDetail'));
 const CoachPortal = lazyRetry(() => import('./CoachPortal'));
 const SalesHistory = lazyRetry(() => import('./SalesHistory'));
@@ -3535,6 +3536,7 @@ export default function App(){
   },[q,rF,custPage,pg]);// eslint-disable-line
   useEffect(()=>{setCustPage(0)},[q,rF]);
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
+  const[aiWizOpen,setAiWizOpen]=useState(false);
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);
@@ -3928,10 +3930,11 @@ export default function App(){
     }
     setProd(pp=>pp.map(x=>x.id===pid?{...x,_inv:inv}:x));nf('Inventory updated');
   };
-  const newE=(c,product)=>{const mk=c?.catalog_markup||1.65;const items=[];
+  const newE=(c,product,seedItems)=>{const mk=c?.catalog_markup||1.65;const items=[];
     if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-(({A:0.4,B:0.35,C:0.3})[c?.adidas_ua_tier||'B']||0.35))):rQ(repCost*mk);
       items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
-    const e={id:nextEstId(ests),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates')};
+    if(Array.isArray(seedItems)&&seedItems.length)items.push(...seedItems);
+    const e={id:nextEstId(ests),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
   const convertSO=est=>{const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);const defExp=fourWeeks.toISOString().split('T')[0];
     // Deep clone items+decorations so nested objects (roster, names, art refs) are fully independent
     const clonedItems=safeItems(est).map(it=>{const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];return clone});
@@ -23647,7 +23650,7 @@ export default function App(){
                 <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#f1f5f9',color:'#64748b',textTransform:'uppercase'}}>{r.kind}</span>
               </div>})}
           </div></>}
-          <button className="btn btn-sm" onClick={()=>setScanModalOpen(true)} style={{fontSize:11,background:'#0f172a',border:'1px solid #334155',color:'#22c55e',padding:'4px 8px'}} title="Scan barcode / QR code"><Icon name="scan" size={14}/></button><button className="btn btn-sm" onClick={()=>setIssueModal({open:true,desc:'',priority:'medium'})} style={{fontSize:11,background:'none',border:'1px solid #fca5a5',color:'#dc2626',position:'relative',padding:'4px 8px'}} title="Report an issue"><Icon name="alert" size={14}/>{openIssueCount>0&&<span style={{position:'absolute',top:-4,right:-4,background:'#dc2626',color:'white',borderRadius:10,padding:'0 5px',fontSize:9,minWidth:16,textAlign:'center',lineHeight:'16px'}}>{openIssueCount}</span>}</button><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
+          <button className="btn btn-sm" onClick={()=>setScanModalOpen(true)} style={{fontSize:11,background:'#0f172a',border:'1px solid #334155',color:'#22c55e',padding:'4px 8px'}} title="Scan barcode / QR code"><Icon name="scan" size={14}/></button><button className="btn btn-sm" onClick={()=>setIssueModal({open:true,desc:'',priority:'medium'})} style={{fontSize:11,background:'none',border:'1px solid #fca5a5',color:'#dc2626',position:'relative',padding:'4px 8px'}} title="Report an issue"><Icon name="alert" size={14}/>{openIssueCount>0&&<span style={{position:'absolute',top:-4,right:-4,background:'#dc2626',color:'white',borderRadius:10,padding:'0 5px',fontSize:9,minWidth:16,textAlign:'center',lineHeight:'16px'}}>{openIssueCount}</span>}</button><button className="btn btn-sm" onClick={()=>setAiWizOpen(true)} style={{fontSize:11,background:'linear-gradient(135deg,#7c3aed,#6d28d9)',color:'white',border:'none',padding:'4px 10px',fontWeight:700,boxShadow:'0 1px 3px rgba(124,58,237,0.3)'}} title="Build an order with AI from a coach's image, text, or sheet">✨ Build with AI</button><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
       {dbError&&<div style={{padding:'10px 16px',background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
         <span style={{fontSize:16}}>&#9888;</span><span style={{flex:1}}>{dbError}</span>
         <button onClick={()=>setDbError(null)} style={{background:'none',border:'none',color:'#991b1b',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
@@ -23765,6 +23768,18 @@ export default function App(){
       </div>
     </div></div>}
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars} reps={REPS} supabase={supabase} allCustomers={cust}/>
+    {aiWizOpen&&<React.Suspense fallback={<LazyFallback/>}><AiOrderWizard
+      open={aiWizOpen}
+      onClose={()=>setAiWizOpen(false)}
+      supabase={supabase}
+      products={prod}
+      customers={cust}
+      vendors={vend}
+      defaultMarkup={1.65}
+      cu={cu}
+      nf={nf}
+      onCreateEstimate={(c,items)=>{newE(c||null,null,items)}}
+    /></React.Suspense>}
     <VendorModal isOpen={vM.open} onClose={()=>setVM({open:false,v:null})} onSave={savV} vendor={vM.v} allVendors={vend}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 

@@ -9,7 +9,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks, ImgGallery } from './components';
 import { CustModal } from './modals';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, openDocPDF, downloadDoc, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, openDocPDF, downloadDoc, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 
@@ -2112,7 +2112,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     return liveSrc?<button onClick={()=>setColorPickerModal({itemIdx:idx,sku:item.sku,source:liveSrc})} className="badge badge-gray" style={{cursor:'pointer',border:'1px dashed #94a3b8',display:'inline-flex',alignItems:'center',gap:4}} title="Click to change color">{item.color||'(set color)'} ▾</button>
                       :<span className="badge badge-gray">{item.color}</span>;
                   })()}
-                {item.is_custom&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Custom</span>}
+                {item.is_custom&&!item.vendor_source&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Custom</span>}
+                {item.vendor_source&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{item.vendor_source==='sanmar'?'🟦 via SanMar':item.vendor_source==='ss'?'🟪 via S&S':item.vendor_source==='momentec'?'🟧 via Momentec':'via vendor'}</span>}
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={dp.vendor+' — '+dp.deco_type?.replace(/_/g,' ')} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>{dp.po_id} · {dp.vendor}</span>)}
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
                 {o.promo_applied&&<label style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',background:item.is_promo?'#fef3c7':'#f1f5f9',color:item.is_promo?'#92400e':'#94a3b8',border:item.is_promo?'1px solid #fde68a':'1px solid #e2e8f0'}}><input type="checkbox" checked={item.is_promo||false} onChange={e=>{const checked=e.target.checked;if(checked){uI(idx,'_pre_promo_sell',item.unit_sell);uI(idx,'unit_sell',safeNum(item.retail_price)||safeNum(item.nsa_cost)*2);uI(idx,'is_promo',true)}else{uI(idx,'unit_sell',item._pre_promo_sell!=null?item._pre_promo_sell:item.unit_sell);uI(idx,'_pre_promo_sell',undefined);uI(idx,'is_promo',false)}}} style={{width:12,height:12}}/> Promo{item.is_promo&&item.retail_price?' ($'+item.retail_price+')':''}</label>}</div>
@@ -2842,7 +2843,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 try{d=await invokeEdgeFn(supabase,'ai-order-builder',payload)}
                 finally{clearInterval(ticker)}
                 if(!d?.ok){setAiBuild(x=>({...x,loading:false,statusMsg:null,error:d?.error||'AI parse failed'}));return}
-                setAiBuild(x=>({...x,loading:false,statusMsg:null,step:'review',parsed:(d.lines||[]).map(l=>({...l,_skip:false})),warnings:d.warnings||[],build_id:d.build_id||null}));
+                let lines=(d.lines||[]).map(l=>({...l,_skip:false}));
+                // Vendor enrichment: for SKUs we couldn't match in our internal
+                // catalog, fan out to SanMar / S&S / Momentec in parallel for
+                // pricing + product names. Keeps the loading bar up.
+                const unmatchedCount=lines.filter(l=>!l.product_id&&(l.sku_guess||'').trim()).length;
+                if(unmatchedCount>0){
+                  setAiBuild(x=>({...x,statusMsg:'Looking up '+unmatchedCount+' SKU'+(unmatchedCount===1?'':'s')+' in vendor catalogs…'}));
+                  try{lines=await enrichAiLinesWithVendors(lines,(done,total)=>setAiBuild(x=>({...x,statusMsg:'Vendor lookup: '+done+'/'+total+'…'})))}
+                  catch(e){console.warn('[aiBuild] vendor enrichment failed:',e)}
+                }
+                setAiBuild(x=>({...x,loading:false,statusMsg:null,step:'review',parsed:lines,warnings:d.warnings||[],build_id:d.build_id||null}));
               }catch(err){
                 console.error('[aiBuild] parse error:',err);
                 setAiBuild(x=>({...x,loading:false,statusMsg:null,error:'Unexpected error: '+(err?.message||String(err))}));
@@ -2866,8 +2877,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{aiBuild.parsed.length}</div><div style={{fontSize:10,color:'#64748b'}}>Items Parsed</div></div>
           <div style={{padding:8,background:'#ede9fe',borderRadius:6,flex:1,textAlign:'center'}}>
             <div style={{fontSize:18,fontWeight:800,color:'#7c3aed'}}>{aiBuild.parsed.filter(p=>p.product_id).length}</div><div style={{fontSize:10,color:'#64748b'}}>Catalog Matches</div></div>
-          <div style={{padding:8,background:aiBuild.parsed.some(p=>!p.product_id)?'#fffbeb':'#f8fafc',borderRadius:6,flex:1,textAlign:'center'}}>
-            <div style={{fontSize:18,fontWeight:800,color:aiBuild.parsed.some(p=>!p.product_id)?'#d97706':'#94a3b8'}}>{aiBuild.parsed.filter(p=>!p.product_id).length}</div><div style={{fontSize:10,color:'#64748b'}}>Unmatched</div></div>
+          <div style={{padding:8,background:aiBuild.parsed.some(p=>p.vendor_source)?'#dbeafe':'#f8fafc',borderRadius:6,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:18,fontWeight:800,color:aiBuild.parsed.some(p=>p.vendor_source)?'#1e40af':'#94a3b8'}}>{aiBuild.parsed.filter(p=>p.vendor_source).length}</div><div style={{fontSize:10,color:'#64748b'}}>Vendor Matches</div></div>
+          <div style={{padding:8,background:aiBuild.parsed.some(p=>!p.product_id&&!p.vendor_source)?'#fffbeb':'#f8fafc',borderRadius:6,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:18,fontWeight:800,color:aiBuild.parsed.some(p=>!p.product_id&&!p.vendor_source)?'#d97706':'#94a3b8'}}>{aiBuild.parsed.filter(p=>!p.product_id&&!p.vendor_source).length}</div><div style={{fontSize:10,color:'#64748b'}}>Unmatched</div></div>
         </div>
 
         {(aiBuild.warnings||[]).length>0&&<div style={{marginBottom:8,padding:8,background:'#fef3c7',borderRadius:6}}>
@@ -2882,14 +2895,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const toggle=()=>setAiBuild(x=>({...x,parsed:x.parsed.map((p,pi)=>pi===i?{...p,_skip:!p._skip}:p)}));
             const upd=(k,v)=>setAiBuild(x=>({...x,parsed:x.parsed.map((p,pi)=>pi===i?{...p,[k]:v}:p)}));
             const mq=it.match_quality;
-            const mqLabel=mq==='exact'?'✓ Exact':mq==='stripped'?'✓ Trimmed':mq==='fuzzy_name'?'~ Fuzzy':mq==='no_sku'?'? No SKU':'✗ Unmatched';
-            const mqColor=mq==='exact'?'#166534':mq==='stripped'?'#166534':mq==='fuzzy_name'?'#d97706':'#dc2626';
-            const mqBg=mq==='exact'||mq==='stripped'?'#dcfce7':mq==='fuzzy_name'?'#fef3c7':'#fee2e2';
-            return<tr key={i} style={{opacity:it._skip?0.4:1,background:!it.product_id?'#fffbeb':'white'}}>
+            const isVendor=typeof mq==='string'&&mq.startsWith('vendor_');
+            const vendorName=isVendor?mq.slice('vendor_'.length):null;
+            const vendorLabel=vendorName==='sanmar'?'🟦 SanMar':vendorName==='ss'?'🟪 S&S':vendorName==='momentec'?'🟧 Momentec':null;
+            const mqLabel=vendorLabel||(mq==='exact'?'✓ Exact':mq==='stripped'?'✓ Trimmed':mq==='fuzzy_name'?'~ Fuzzy':mq==='no_sku'?'? No SKU':'✗ Unmatched');
+            const mqColor=isVendor?'#1e40af':(mq==='exact'||mq==='stripped'?'#166534':mq==='fuzzy_name'?'#d97706':'#dc2626');
+            const mqBg=isVendor?'#dbeafe':(mq==='exact'||mq==='stripped'?'#dcfce7':mq==='fuzzy_name'?'#fef3c7':'#fee2e2');
+            const hasResolved=!!it.product_id||isVendor;
+            return<tr key={i} style={{opacity:it._skip?0.4:1,background:!hasResolved?'#fffbeb':'white'}}>
               <td><input type="checkbox" checked={!it._skip} onChange={toggle}/></td>
               <td><input className="form-input" value={it.sku_guess||''} onChange={e=>upd('sku_guess',e.target.value)} style={{width:90,fontSize:10,fontFamily:'monospace'}}/></td>
               <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:mqBg,color:mqColor,fontWeight:700,whiteSpace:'nowrap'}}>{mqLabel}</span>
-                {it.confidence&&<div style={{fontSize:8,color:'#64748b',marginTop:2}}>conf: {it.confidence}</div>}</td>
+                {it.confidence&&!isVendor&&!it.product_id&&<div style={{fontSize:8,color:'#64748b',marginTop:2}}>conf: {it.confidence}</div>}</td>
               <td style={{maxWidth:180}}><input className="form-input" value={it.name||''} onChange={e=>upd('name',e.target.value)} style={{width:'100%',fontSize:10}}/></td>
               <td><input className="form-input" value={it.brand||''} onChange={e=>upd('brand',e.target.value)} style={{width:70,fontSize:10}}/></td>
               <td><input className="form-input" value={it.color||''} onChange={e=>upd('color',e.target.value)} style={{width:80,fontSize:10}}/></td>
@@ -2916,8 +2933,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 (sku?(products.find(pr=>pr.sku===sku)||products.find(pr=>pr.sku.toLowerCase()===sku.toLowerCase())):null);
               const brand=catMatch?.brand||p.brand||'';
               const au=isAU(brand);
-              const cost=catMatch?.nsa_cost||0;
-              const retail=catMatch?.retail_price||0;
+              const cost=catMatch?.nsa_cost||p.vendor_price||0;
+              const retail=catMatch?.retail_price||p.vendor_retail||0;
               const sell=au
                 ?rQ(retail*(1-(tD[cust?.adidas_ua_tier||'B']||0.35)))
                 :rQ(cost*(o.default_markup||1.65));
@@ -2934,7 +2951,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 available_sizes:szKeys.length>0?szKeys:(catMatch?.available_sizes||['S','M','L','XL','2XL']),
                 sizes:p.sizes||{},
                 decorations:[],
-                is_custom:!catMatch,
+                is_custom:!catMatch&&!p.vendor_source,
+                vendor_source:p.vendor_source||null,
                 pick_lines:[],
                 po_lines:[],
               };
