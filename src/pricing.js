@@ -44,7 +44,7 @@ export let NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};
 export let DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
 
 // ── Configurable lists ──
-export let POSITIONS=['Front','Back','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Collar','Hood','Left Leg','Right Leg','Other'];
+export let POSITIONS=['Front','Back','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Collar','Yoke','Left Leg','Right Leg','Other'];
 export let CONTACT_ROLES=['Primary','Billing','Shipping','Coach','Athletic Director','Equipment Manager','Booster Club','Other'];
 
 // ── Load settings overrides from localStorage ──
