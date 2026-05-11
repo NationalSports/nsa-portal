@@ -14188,20 +14188,20 @@ export default function App(){
           <div style={{fontSize:12}}>Orders with Ship Preference set to <strong>🚚 Deliver</strong> will appear here once production is complete.</div>
         </div></div>
         :<div style={{display:'flex',flexDirection:'column',gap:8}}>
-          {fDeliver.map((t,ti)=>{
+          {[...fDeliver].sort((a,b)=>{
+            const aHold=a.holdUntil&&a.deliverDaysOut!=null&&a.deliverDaysOut>0?1:0;
+            const bHold=b.holdUntil&&b.deliverDaysOut!=null&&b.deliverDaysOut>0?1:0;
+            if(aHold!==bHold)return aHold-bHold;
+            return (a.deliverDaysOut??a.daysOut??0)-(b.deliverDaysOut??b.daysOut??0);
+          }).map((t,ti)=>{
             const c=cust.find(x=>x.id===t.so.customer_id);
             const addr=c?getAddrs(c,cust)?.[0]:null;
             const onHold=t.holdUntil&&t.deliverDaysOut!=null&&t.deliverDaysOut>0;
             const deliverToday=t.deliverDaysOut===0;
             const deliverPast=t.deliverDaysOut!=null&&t.deliverDaysOut<0;
-            const borderColor=onHold?'#dc2626':deliverToday?'#16a34a':'#d97706';
-            return<div key={ti} className="card" style={{borderLeft:'6px solid '+borderColor,cursor:'pointer',background:onHold?'#fef2f2':undefined}}
+            const borderColor=deliverToday?'#16a34a':'#d97706';
+            return<div key={ti} className="card" style={{borderLeft:'6px solid '+borderColor,cursor:'pointer'}}
               onClick={()=>{setESO(t.so);setESOC(c);setPg('orders')}}>
-              {onHold&&<div style={{background:'#dc2626',color:'white',padding:'8px 16px',fontSize:13,fontWeight:800,display:'flex',alignItems:'center',gap:10}}>
-                <span style={{fontSize:18}}>🛑</span>
-                <span>DO NOT DELIVER — Hold until {t.deliverDate}</span>
-                <span style={{marginLeft:'auto',background:'rgba(255,255,255,0.2)',padding:'3px 10px',borderRadius:6,fontSize:14}}>{t.deliverDaysOut} day{t.deliverDaysOut!==1?'s':''} to go</span>
-              </div>}
               <div style={{padding:'12px 16px',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
                 <div style={{flex:1,minWidth:200}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}>
@@ -14217,7 +14217,7 @@ export default function App(){
                 </div>
                 <div style={{fontSize:11,color:'#64748b',textAlign:'right'}}>
                   <div>Rep: <strong>{t.rep}</strong></div>
-                  {t.deliverDate?<div style={{fontWeight:700,color:onHold?'#dc2626':'#0f172a',marginTop:2}}>Deliver: {t.deliverDate}</div>
+                  {t.deliverDate?<div style={{fontWeight:700,color:onHold?'#dc2626':'#0f172a',marginTop:2}}>Deliver: {t.deliverDate}{onHold?' · hold '+t.deliverDaysOut+'d':''}</div>
                   :t.daysOut!=null&&<div>{t.daysOut>=0?'Due in '+t.daysOut+'d':Math.abs(t.daysOut)+'d overdue'}</div>}
                 </div>
               </div>
