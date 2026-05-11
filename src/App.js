@@ -6013,6 +6013,38 @@ export default function App(){
     nf('PO '+po.po_number+' items received — inventory updated');
   };
 
+  const printInvPOPackingList=(po)=>{
+    if(!po)return;
+    const vendor=vend.find(v=>v.id===po.vendor_id);
+    const vendorSub=[vendor?.contact_email,vendor?.contact_phone].filter(Boolean).join('<br/>')||'';
+    const _ci=companyInfo||NSA;
+    const ourSub=[_ci.addr,((_ci.city||'')+', '+(_ci.state||'')+' '+(_ci.zip||'')).trim(),_ci.phone].filter(s=>s&&s.trim()&&s.trim()!==',').join('<br/>');
+    const rows=po.items.map(it=>{
+      const szObj=it.sizes||{};
+      const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
+      if(totalQty<=0)return null;
+      const szStr=Object.entries(szObj).filter(([,v])=>safeNum(v)>0).map(([sz,v])=>sz+': '+v).join('  ');
+      return{cells:[{value:it.sku||'',style:'font-family:monospace;font-weight:700'},{value:it.name||''},{value:it.color||'—'},{value:szStr,style:'font-size:11px'},{value:totalQty,style:'text-align:center;font-weight:700'}]};
+    }).filter(Boolean);
+    const totalUnits=po.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((b,v)=>b+safeNum(v),0),0);
+    printDoc({
+      title:po.vendor_name||'Vendor',docNum:po.po_number,docType:'PACKING LIST',showPricing:false,
+      headerRight:'<div class="ta" style="font-size:20px">'+totalUnits+' Total Units</div>',
+      infoBoxes:[
+        {label:'Ship From',value:po.vendor_name||'—',sub:vendorSub},
+        {label:'Ship To',value:_ci.name||'National Sports Apparel',sub:ourSub},
+        {label:'PO #',value:po.po_number},
+        ...(po.expected_date?[{label:'Expected',value:po.expected_date}]:[]),
+        ...(po.memo?[{label:'Memo',value:po.memo}]:[]),
+      ],
+      tables:[{title:'Items on this PO',headers:['SKU','Item','Color','Sizes','Qty'],aligns:['left','left','left','left','center'],rows}],
+      notes:'Verify quantities against this list when receiving. Note any discrepancies on the receiving record.',
+      footer:'NO PRICING — Receiving Packing List'
+    });
+    nf('📦 Packing list printed for PO '+po.po_number);
+  };
+
+
   function rInvPOs(){
     const q3=invPOSearch.trim().toLowerCase();
     const filtered=invPOs.filter(po=>{if(!q3)return true;return po.po_number.toLowerCase().includes(q3)||po.vendor_name.toLowerCase().includes(q3)||po.items.some(it=>it.sku.toLowerCase().includes(q3)||it.name.toLowerCase().includes(q3))});
@@ -6063,6 +6095,7 @@ export default function App(){
             </div>
             <div style={{padding:'10px 16px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',display:'flex',gap:8}}>
               {po.status!=='received'&&po.status!=='cancelled'&&<button className="btn btn-sm btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>setInvPOReceive(po)}>Receive Items</button>}
+              <button className="btn btn-sm btn-secondary" onClick={()=>printInvPOPackingList(po)}>📦 Packing List</button>
               {po.status==='ordered'&&<button className="btn btn-sm btn-secondary" onClick={()=>editInvPO(po)}>Edit</button>}
               <button className="btn btn-sm btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>deleteInvPO(po)}>Delete</button>
             </div>
@@ -13199,12 +13232,12 @@ export default function App(){
                           const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
                           if(totalQty<=0)return;
                           const szStr=Object.entries(szObj).filter(([,v])=>v>0).map(([sz,v])=>sz+': '+v).join('  ');
-                          packRows.push({cells:[soId,item.sku||'',item.name||'',szStr,totalQty]});
+                          packRows.push({cells:[soId,item.sku||'',item.name||'',item.color||'—',szStr,totalQty]});
                         });
                       });
                       printDoc({
                         title:grp.cName,docNum:[...grp.soIds].join(', '),
-                        docType:'PACKING SLIP',showPricing:false,
+                        docType:'PACKING LIST',showPricing:false,
                         headerRight:'<div class="ta" style="font-size:20px">'+grp.totalUnits+' Total Units</div><div class="ts">Ship: '+(grp.shipMethod||'TBD')+'</div>',
                         infoBoxes:[
                           {label:'Ship To',value:grp.cName,sub:shipAddrSub},
@@ -13212,8 +13245,8 @@ export default function App(){
                         ],
                         tables:[{
                           title:'Items in this Shipment',
-                          headers:['SO#','SKU','Item','Sizes','Qty'],
-                          aligns:['left','left','left','left','center'],
+                          headers:['SO#','SKU','Item','Color','Sizes','Qty'],
+                          aligns:['left','left','left','left','left','center'],
                           rows:packRows
                         }],
                         notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
@@ -23324,6 +23357,7 @@ export default function App(){
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setInvPOReceive(null)}>Cancel</button>
+        <button className="btn btn-secondary" onClick={()=>printInvPOPackingList(invPOReceive)}>📦 Print Packing List</button>
         <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>{
           const receivedMap={};
           invPOReceive.items.forEach((it,idx)=>{

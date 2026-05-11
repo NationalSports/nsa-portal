@@ -1823,6 +1823,36 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               printDoc(_makeDocOpts());
               const ph=[...(o.print_history||[]),{printed_at:new Date().toLocaleString(),printed_by:cu.name||cu.id}];sv('print_history',ph);onSave({...o,print_history:ph});
             }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🖨️ Print</button>
+            {isSO&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
+              const packItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0});
+              const packRows=packItems.map(it=>{
+                const szObj=safeSizes(it);
+                const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
+                const szStr=Object.entries(szObj).filter(([,v])=>safeNum(v)>0).map(([sz,v])=>sz+': '+v).join('  ');
+                return{cells:[{value:it.sku||'',style:'font-family:monospace;font-weight:700'},{value:it.name||''},{value:it.color||'—'},{value:szStr,style:'font-size:11px'},{value:totalQty,style:'text-align:center;font-weight:700'}]};
+              });
+              const totalUnits=packItems.reduce((a,it)=>a+Object.values(safeSizes(it)).reduce((b,v)=>b+safeNum(v),0),0);
+              const shipAddrSub=(()=>{
+                if(o.ship_to_id==='custom'&&o.ship_to_custom)return o.ship_to_custom;
+                if(cust?.shipping_address_line1){let a=cust.shipping_address_line1;if(cust.shipping_address_line2)a+='<br/>'+cust.shipping_address_line2;a+='<br/>'+(cust.shipping_city||'')+', '+(cust.shipping_state||'')+' '+(cust.shipping_zip||'');return a}
+                if(cust?.billing_address_line1){let a=cust.billing_address_line1;if(cust.billing_address_line2)a+='<br/>'+cust.billing_address_line2;a+='<br/>'+(cust.billing_city||'')+', '+(cust.billing_state||'')+' '+(cust.billing_zip||'');return a}
+                return '';
+              })();
+              printDoc({
+                title:cust?.name||'Customer',docNum:o.id,docType:'PACKING LIST',showPricing:false,
+                headerRight:'<div class="ta" style="font-size:20px">'+totalUnits+' Total Units</div>',
+                infoBoxes:[
+                  {label:'Ship To',value:cust?.name||'—',sub:shipAddrSub},
+                  {label:'Ship Date',value:new Date().toLocaleDateString()},
+                  {label:'Sales Order',value:o.id},
+                  ...(o.memo?[{label:'Memo',value:o.memo}]:[]),
+                ],
+                tables:[{title:'Items in this Shipment',headers:['SKU','Item','Color','Sizes','Qty'],aligns:['left','left','left','left','center'],rows:packRows}],
+                notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
+                footer:'NO PRICING — Packing List'
+              });
+              nf('📦 Packing list printed for '+(cust?.name||o.id));
+            }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>📦 Pack Slip</button>}
             <button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
               try{await downloadDoc(_makeDocOpts(),(isE?'Estimate-':'SO-')+o.id+(cust?.name?'-'+cust.name:''));nf('📥 Downloaded '+o.id+'.pdf');}
               catch(err){console.warn('PDF download failed:',err);nf('Download failed: '+(err?.message||'unknown error'),'error');}
