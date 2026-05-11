@@ -9483,7 +9483,7 @@ export default function App(){
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
   const[rptRep,setRptRep]=useState(()=>cu?.role==='rep'?cu.id:'all');// default to logged-in rep so they see their own numbers
-  const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true});
+  const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true,invByCategory:true,invByVendor:true,invTopValue:true,invLowStock:true,invOutOfStock:true,invRecentAdj:true});
   // Historical sales chart UI state — hover tooltip + rep-vs-team mode
   const[histHover,setHistHover]=useState(null);// null | {x,y,label,value,year,scope}
   const[histShowTeam,setHistShowTeam]=useState(true);// when a rep is selected, overlay team totals so reps see their share
@@ -9677,7 +9677,7 @@ export default function App(){
       {/* Report controls */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
         <div style={{display:'flex',gap:4}}>
-          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['decorator','👤 Decorator'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax'],['csr_tasks','📌 CSR Tasks']].map(([v,l])=>
+          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['inventory','🗃️ Inventory'],['reps','🏆 Reps'],['production','🏭 Production'],['decorator','👤 Decorator'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax'],['csr_tasks','📌 CSR Tasks']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${rptTab===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab(v)}>{l}</button>)}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={rptRep} onChange={e=>setRptRep(e.target.value)}>
@@ -10430,6 +10430,126 @@ export default function App(){
             </tr>})}</tbody></table>
         </div>}
       </div>}
+
+      {/* INVENTORY REPORTS — overview of stock health, value, and movement */}
+      {rptTab==='inventory'&&(()=>{
+        const inStock=prod.filter(p=>safeNum(p._tQ)>0);
+        const outOfStock=prod.filter(p=>!safeNum(p._tQ));
+        const lowStock=prod.filter(p=>{const q=safeNum(p._tQ);return q>0&&q<=10});
+        const totalUnits=prod.reduce((a,p)=>a+safeNum(p._tQ),0);
+        const totalValue=prod.reduce((a,p)=>a+safeNum(p._tV),0);
+        const vendName=id=>vend.find(v=>v.id===id)?.name||'—';
+        const byCategory=Object.values(prod.reduce((a,p)=>{const k=p.category||'Uncategorized';if(!a[k])a[k]={name:k,skus:0,units:0,value:0};a[k].skus++;a[k].units+=safeNum(p._tQ);a[k].value+=safeNum(p._tV);return a},{})).sort((a,b)=>b.value-a.value);
+        const byVendor=Object.values(prod.reduce((a,p)=>{const k=p.vendor_id||'_none';if(!a[k])a[k]={id:k,name:p.vendor_id?vendName(p.vendor_id):'No vendor',skus:0,units:0,value:0};a[k].skus++;a[k].units+=safeNum(p._tQ);a[k].value+=safeNum(p._tV);return a},{})).sort((a,b)=>b.value-a.value);
+        const topByValue=[...inStock].sort((a,b)=>safeNum(b._tV)-safeNum(a._tV)).slice(0,20);
+        const recentAdj=[...invAdjLog].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).slice(0,15);
+        const catMax=byCategory[0]?.value||1;
+        const vndMax=byVendor[0]?.value||1;
+        return<>
+        <div className="stats-row" style={{marginBottom:16}}>
+          <div className="stat-card"><div className="stat-label">SKUs In Stock</div><div className="stat-value">{inStock.length.toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value" style={{color:'#1e40af'}}>{totalUnits.toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Inventory Value</div><div className="stat-value" style={{color:'#166534'}}>${totalValue.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div>
+          <div className="stat-card"><div className="stat-label">Low Stock</div><div className="stat-value" style={{color:'#d97706'}}>{lowStock.length.toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Out of Stock</div><div className="stat-value" style={{color:'#dc2626'}}>{outOfStock.length.toLocaleString()}</div></div>
+        </div>
+
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="invByCategory" title="Inventory by Category" icon="🗂️"/>
+          {rptWidgets.invByCategory&&<div className="card-body" style={{padding:0}}>
+            {byCategory.length===0?<div className="empty" style={{padding:12}}>No inventory data.</div>:
+            <table><thead><tr><th>Category</th><th style={{textAlign:'center'}}>SKUs</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'right'}}>Value</th><th></th></tr></thead>
+            <tbody>{byCategory.map(c=><tr key={c.name}>
+              <td style={{fontWeight:600}}>{c.name}</td>
+              <td style={{textAlign:'center'}}>{c.skus.toLocaleString()}</td>
+              <td style={{textAlign:'center'}}>{c.units.toLocaleString()}</td>
+              <td style={{textAlign:'right',fontWeight:700}}>${c.value.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{width:120}}><Bar val={c.value} max={catMax} color="#2563eb"/></td>
+            </tr>)}</tbody></table>}
+          </div>}
+        </div>
+
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="invByVendor" title="Inventory by Vendor" icon="🏷️"/>
+          {rptWidgets.invByVendor&&<div className="card-body" style={{padding:0}}>
+            {byVendor.length===0?<div className="empty" style={{padding:12}}>No inventory data.</div>:
+            <table><thead><tr><th>Vendor</th><th style={{textAlign:'center'}}>SKUs</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'right'}}>Value</th><th></th></tr></thead>
+            <tbody>{byVendor.map(v=><tr key={v.id}>
+              <td style={{fontWeight:600}}>{v.name}</td>
+              <td style={{textAlign:'center'}}>{v.skus.toLocaleString()}</td>
+              <td style={{textAlign:'center'}}>{v.units.toLocaleString()}</td>
+              <td style={{textAlign:'right',fontWeight:700}}>${v.value.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{width:120}}><Bar val={v.value} max={vndMax} color="#7c3aed"/></td>
+            </tr>)}</tbody></table>}
+          </div>}
+        </div>
+
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="invTopValue" title="Top 20 SKUs by Inventory Value" icon="💎"/>
+          {rptWidgets.invTopValue&&<div className="card-body" style={{padding:0}}>
+            {topByValue.length===0?<div className="empty" style={{padding:12}}>No inventory in stock.</div>:
+            <table><thead><tr><th>SKU</th><th>Product</th><th>Category</th><th>Vendor</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'right'}}>Value</th></tr></thead>
+            <tbody>{topByValue.map(p=><tr key={p.id}>
+              <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{p.sku}</td>
+              <td style={{fontSize:12}}>{p.name}{p.color&&<span style={{color:'#94a3b8'}}> — {p.color}</span>}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{p.category||'—'}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{p.vendor_id?vendName(p.vendor_id):'—'}</td>
+              <td style={{textAlign:'center',fontWeight:600}}>{safeNum(p._tQ).toLocaleString()}</td>
+              <td style={{textAlign:'right',fontWeight:700}}>${safeNum(p._tV).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+            </tr>)}</tbody></table>}
+          </div>}
+        </div>
+
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="invLowStock" title={`Low Stock — ${lowStock.length} SKU${lowStock.length===1?'':'s'} ≤ 10 units`} icon="⚠️"/>
+          {rptWidgets.invLowStock&&<div className="card-body" style={{padding:0}}>
+            {lowStock.length===0?<div className="empty" style={{padding:12}}>No low stock SKUs.</div>:
+            <table><thead><tr><th>SKU</th><th>Product</th><th>Category</th><th>Vendor</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'right'}}>Value</th></tr></thead>
+            <tbody>{lowStock.sort((a,b)=>safeNum(a._tQ)-safeNum(b._tQ)).map(p=><tr key={p.id}>
+              <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{p.sku}</td>
+              <td style={{fontSize:12}}>{p.name}{p.color&&<span style={{color:'#94a3b8'}}> — {p.color}</span>}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{p.category||'—'}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{p.vendor_id?vendName(p.vendor_id):'—'}</td>
+              <td style={{textAlign:'center',fontWeight:700,color:'#d97706'}}>{safeNum(p._tQ)}</td>
+              <td style={{textAlign:'right'}}>${safeNum(p._tV).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+            </tr>)}</tbody></table>}
+          </div>}
+        </div>
+
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="invOutOfStock" title={`Out of Stock — ${outOfStock.length} SKU${outOfStock.length===1?'':'s'}`} icon="🚫"/>
+          {rptWidgets.invOutOfStock&&<div className="card-body" style={{padding:0}}>
+            {outOfStock.length===0?<div className="empty" style={{padding:12}}>Everything is in stock.</div>:
+            <table><thead><tr><th>SKU</th><th>Product</th><th>Category</th><th>Vendor</th></tr></thead>
+            <tbody>{outOfStock.slice(0,100).map(p=><tr key={p.id}>
+              <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{p.sku}</td>
+              <td style={{fontSize:12}}>{p.name}{p.color&&<span style={{color:'#94a3b8'}}> — {p.color}</span>}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{p.category||'—'}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{p.vendor_id?vendName(p.vendor_id):'—'}</td>
+            </tr>)}</tbody></table>}
+            {outOfStock.length>100&&<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:8}}>Showing first 100 of {outOfStock.length}</div>}
+          </div>}
+        </div>
+
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="invRecentAdj" title="Recent Inventory Adjustments" icon="📝"/>
+          {rptWidgets.invRecentAdj&&<div className="card-body" style={{padding:0}}>
+            {recentAdj.length===0?<div className="empty" style={{padding:12}}>No adjustments logged yet.</div>:
+            <table><thead><tr><th>When</th><th>SKU</th><th>Product</th><th>Size</th><th style={{textAlign:'center'}}>Change</th><th style={{textAlign:'center'}}>New Qty</th><th>Type</th><th>Reason</th><th>By</th></tr></thead>
+            <tbody>{recentAdj.map(a=><tr key={a.id}>
+              <td style={{fontSize:10,color:'#94a3b8'}}>{a.created_at}</td>
+              <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{a.sku}</td>
+              <td style={{fontSize:12}}>{a.product_name}{a.color&&<span style={{color:'#94a3b8'}}> — {a.color}</span>}</td>
+              <td style={{fontSize:11}}>{a.size}</td>
+              <td style={{textAlign:'center',fontWeight:700,color:a.qty_change>0?'#166534':'#dc2626'}}>{a.qty_change>0?'+':''}{a.qty_change}</td>
+              <td style={{textAlign:'center',fontWeight:600}}>{a.new_qty}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{a.adjustment_type||'—'}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{a.reason||'—'}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{a.performed_by||'—'}</td>
+            </tr>)}</tbody></table>}
+          </div>}
+        </div>
+        </>})()}
 
       {/* MARGIN ANALYSIS */}
       {(rptTab==='overview'||rptTab==='pipeline')&&<div className="card" style={{marginBottom:12}}>
@@ -11207,7 +11327,7 @@ export default function App(){
       <div className="card" style={{marginBottom:12}}>
         <div className="card-header" style={{padding:'8px 16px'}}><h2 style={{margin:0,fontSize:13}}>⚙️ Customize Dashboard</h2></div>
         <div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['winLoss','Quote Win/Loss'],['bookingOrders','Booking Orders'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['reorderForecast','Reorder Forecast'],['arAging','AR Aging'],['payDays','Avg Days to Pay'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers'],['prodThroughput','Prod Throughput'],['artTime','Art Time'],['decoTime','Deco Time'],['laborSummary','Labor Summary']].map(([k,label])=>
+          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['winLoss','Quote Win/Loss'],['bookingOrders','Booking Orders'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['reorderForecast','Reorder Forecast'],['arAging','AR Aging'],['payDays','Avg Days to Pay'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers'],['prodThroughput','Prod Throughput'],['artTime','Art Time'],['decoTime','Deco Time'],['laborSummary','Labor Summary'],['invByCategory','Inv by Category'],['invByVendor','Inv by Vendor'],['invTopValue','Top Inv Value'],['invLowStock','Low Stock'],['invOutOfStock','Out of Stock'],['invRecentAdj','Recent Adjustments']].map(([k,label])=>
             <label key={k} style={{fontSize:11,display:'flex',alignItems:'center',gap:4,padding:'4px 8px',background:rptWidgets[k]?'#dbeafe':'#f1f5f9',borderRadius:6,cursor:'pointer',border:'1px solid '+(rptWidgets[k]?'#93c5fd':'#e2e8f0')}}>
               <input type="checkbox" checked={rptWidgets[k]||false} onChange={()=>toggleWidget(k)}/> {label}
             </label>)}
