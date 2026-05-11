@@ -1825,9 +1825,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🖨️ Print</button>
             {isSO&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
               const packItems=safeItems(o);
+              const _szSort=(a,b)=>{const ai=SZ_ORD.indexOf(a),bi=SZ_ORD.indexOf(b);return (ai<0?999:ai)-(bi<0?999:bi)};
               const packRows=packItems.map(it=>{
                 const szObj=safeSizes(it);
-                const sizeEntries=Object.entries(szObj).filter(([,v])=>safeNum(v)>0);
+                const sizeEntries=Object.entries(szObj).filter(([,v])=>safeNum(v)>0).sort((a,b)=>_szSort(a[0],b[0]));
                 const totalFromSizes=sizeEntries.reduce((a,[,v])=>a+safeNum(v),0);
                 const szStr=sizeEntries.map(([sz,v])=>sz+': '+v).join('  ');
                 const qty=totalFromSizes>0?totalFromSizes:safeNum(it.est_qty);

@@ -776,6 +776,7 @@ const _dbSaveSOInner = async (so) => {
     if((!items||items.length===0)&&_oldItemsResp.error){
       console.error('[DB] SAFETY: Blocking SO save — failed to read existing items for',so.id,'and client has none:',_oldItemsResp.error.message);
       if(_dbNotify)_dbNotify('Save blocked — could not verify existing items. Please reload the page.','error');
+      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'so_items SELECT errored while client had 0 items: '+_oldItemsResp.error.message});
       return false;
     }
     const oldItemIds=_oldItemsResp.data?.map(i=>i.id)||[];
@@ -784,6 +785,7 @@ const _dbSaveSOInner = async (so) => {
     if((!items||items.length===0)&&oldItemIds.length>0){
       console.error('[DB] SAFETY: Blocking SO save — client has 0 items but DB has',oldItemIds.length,'for',so.id);
       if(_dbNotify)_dbNotify('Save blocked — '+oldItemIds.length+' item(s) would be lost. Please reload the page.','error');
+      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:oldItemIds.length,newCount:0,reason:'Client save had 0 items while DB had '+oldItemIds.length});
       return false;
     }
     // Extra guard: even if oldItemIds came back empty, refuse the wipe when the SO still has jobs in the DB.
@@ -794,6 +796,7 @@ const _dbSaveSOInner = async (so) => {
       if(dbJobCount&&dbJobCount>0){
         console.error('[DB] SAFETY: Blocking SO save — client has 0 items but DB has',dbJobCount,'job(s) for',so.id);
         if(_dbNotify)_dbNotify('Save blocked — items would be wiped while '+dbJobCount+' job(s) still exist. Please reload the page.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:null,newCount:0,reason:'Client save had 0 items but '+dbJobCount+' job(s) still exist in DB'});
         return false;
       }
     }
@@ -969,6 +972,7 @@ const _dbSaveInvoice = async (inv) => {
   }catch(e){console.error('[DB] save invoice:',e);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,e.message||String(e));_persistFailedIds();return false}});
 };
 let _dbNotify=null; // set by App component for visible error toasts
+let _dataLossAlert=null; // set by App component — logs + emails on item-wipe attempts/events
 const _dbSaveCustomer = async (c) => {
   if(!supabase){console.warn('[DB] save customer skipped — no supabase');return false}
   // Optimistic locking: check version before saving
@@ -2766,6 +2770,33 @@ export default function App(){
 
   // Notification helper — defined early so callbacks below can reference it
   const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_dbNotify=nf;
+  // Data-loss alert: logs to change_log + emails admin owner. Dedupes per SO+kind within 5 min.
+  const _alertDedupeRef=React.useRef({});
+  _dataLossAlert=({kind,soId,prevCount,newCount,reason})=>{
+    try{
+      const lostText=(prevCount!=null&&newCount!=null)?(prevCount-newCount)+' of '+prevCount+' item(s)':(prevCount!=null?prevCount+' item(s)':'item(s)');
+      const detail=(kind==='blocked'?'Save blocked: ':'Items removed: ')+lostText+(reason?' — '+reason:'');
+      logChange(kind==='blocked'?'save_blocked':'data_loss','SO',soId,detail);
+      const dedupeKey=kind+':'+soId;const last=_alertDedupeRef.current[dedupeKey]||0;const now=Date.now();
+      if(now-last<5*60*1000)return; // already emailed within 5 min
+      _alertDedupeRef.current[dedupeKey]=now;
+      const adminEmail='steve@nationalsportsapparel.com';
+      const ccEmail=companyInfo?.email&&companyInfo.email!==adminEmail?companyInfo.email:null;
+      const subject=(kind==='blocked'?'⚠️ NSA Portal — Save blocked on ':'🚨 NSA Portal — Items lost on ')+soId;
+      const html='<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#0f172a">'
+        +'<h2 style="color:'+(kind==='blocked'?'#d97706':'#dc2626')+';margin:0 0 8px">'+(kind==='blocked'?'Save blocked':'Items lost')+': '+soId+'</h2>'
+        +'<p><strong>SO:</strong> '+soId+'<br/>'
+        +'<strong>User:</strong> '+(cu?.name||cu?.id||'unknown')+'<br/>'
+        +'<strong>When:</strong> '+new Date().toLocaleString()+'<br/>'
+        +(prevCount!=null?'<strong>Items before:</strong> '+prevCount+'<br/>':'')
+        +(newCount!=null?'<strong>Items in attempted save:</strong> '+newCount+'<br/>':'')
+        +'<strong>Reason:</strong> '+(reason||'(none)')+'</p>'
+        +(kind==='blocked'?'<p>The save was refused before any data was deleted. The user was prompted to reload.</p>':'<p style="color:#dc2626"><strong>Action needed:</strong> verify the SO and restore from <code>app_state.so_history</code> if items are missing.</p>')
+        +'<p style="margin-top:16px;color:#64748b;font-size:12px">This alert is throttled to once per SO+type per 5 min. The full audit trail is in System Health → Change Log.</p>'
+        +'</div>';
+      sendBrevoEmail({to:[{email:adminEmail,name:'Steve Peterson'}],cc:ccEmail?[{email:ccEmail}]:undefined,subject,htmlContent:html,senderName:'NSA Portal',senderEmail:companyInfo?.email||'team@nsa-teamwear.com'}).catch(e=>console.warn('[alert] email failed:',e));
+    }catch(e){console.warn('[alert] _dataLossAlert failed:',e)}
+  };
 
   // Load full details (orders + products) for a single OMG store on-demand.
   // Per-sale fetch: hits /sales/{id}/orders (with fallbacks), then
@@ -3136,6 +3167,36 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('batch_counter',batchCounter)},[batchCounter]);
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
+  // Boot-time snapshot regression scan: walk each SO's snapshot history and flag any whose latest
+  // snapshot has fewer items than the one before it. One-shot per session — useful for catching anything
+  // that slipped through the live guards before they existed.
+  const _bootScanRanRef=React.useRef(false);
+  React.useEffect(()=>{
+    if(_bootScanRanRef.current)return;
+    if(!soHistory||Object.keys(soHistory).length===0)return;
+    if(!sos||sos.length===0)return;
+    _bootScanRanRef.current=true;
+    const flagged=[];
+    Object.entries(soHistory).forEach(([soId,snaps])=>{
+      if(!Array.isArray(snaps)||snaps.length<2)return;
+      // snaps[0] is the most-recent prev (just before the latest save). Compare it to the live SO state.
+      const liveSO=sos.find(s=>s.id===soId);if(!liveSO||liveSO.deleted_at)return;
+      const liveCount=(liveSO.items||[]).length;
+      // Find the most recent snapshot whose snapshot.items.length > 0
+      const lastGood=snaps.find(s=>(s?.snapshot?.items||[]).length>0);
+      if(!lastGood)return;
+      const lastGoodCount=lastGood.snapshot.items.length;
+      if(liveCount<lastGoodCount){flagged.push({soId,liveCount,lastGoodCount,lastGoodTs:lastGood.ts})}
+    });
+    if(flagged.length){
+      console.warn('[boot-scan] '+flagged.length+' SO(s) have fewer items than their last snapshot:',flagged);
+      const summary=flagged.slice(0,3).map(f=>f.soId+' ('+f.liveCount+'/'+f.lastGoodCount+')').join(', ');
+      nf('⚠️ '+flagged.length+' SO(s) appear to have lost items vs. snapshot history: '+summary+(flagged.length>3?'…':'')+' — see Change Log','error');
+      flagged.forEach(f=>{
+        logChange('snapshot_regression','SO',f.soId,'Live: '+f.liveCount+' items, last good snapshot ('+f.lastGoodTs+'): '+f.lastGoodCount+' items');
+      });
+    }
+  },[sos,soHistory]);
   React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
   // QB background auto-sync — runs even when not on QB page, using ref set by rQB()
   React.useEffect(()=>{
@@ -3774,7 +3835,14 @@ export default function App(){
     if(prev&&(prev.items?.length||0)>0&&(!sl.items||sl.items.length===0)){
       console.warn('[savSO] Refusing to save '+sl.id+' — would drop '+prev.items.length+' item(s) from current state.');
       nf('⚠️ Save blocked for '+sl.id+': '+prev.items.length+' line item(s) would be deleted. Reload the page if items look wrong.','error');
+      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:sl.id,prevCount:prev.items.length,newCount:0,reason:'Client savSO refused empty items (in-memory prev had items)'});
       return prev;
+    }
+    // Snapshot regression: same client save where items count dropped (but not necessarily to 0).
+    // Belt-and-suspenders — guards above catch the worst case; this catches any partial loss too.
+    if(prev&&(prev.items?.length||0)>(sl.items?.length||0)&&(sl.items?.length||0)>0){
+      const lost=prev.items.length-(sl.items?.length||0);
+      if(_dataLossAlert)_dataLossAlert({kind:'lost',soId:sl.id,prevCount:prev.items.length,newCount:sl.items.length,reason:lost+' line item(s) removed from save'});
     }
     if(prev){setSOHistory(h=>{const existing=h[sl.id]||[];return{...h,[sl.id]:[{ts:new Date().toLocaleString(),user:cu?.name||'Portal Coach',snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
     // Merge pick_line statuses — preserve 'pulled' status from current state so warehouse pulls aren't lost
@@ -6047,11 +6115,12 @@ export default function App(){
     const vendorSub=[vendor?.contact_email,vendor?.contact_phone].filter(Boolean).join('<br/>')||'';
     const _ci=companyInfo||NSA;
     const ourSub=[_ci.addr,((_ci.city||'')+', '+(_ci.state||'')+' '+(_ci.zip||'')).trim(),_ci.phone].filter(s=>s&&s.trim()&&s.trim()!==',').join('<br/>');
+    const _szSort=(a,b)=>{const ai=SZ_ORD.indexOf(a),bi=SZ_ORD.indexOf(b);return (ai<0?999:ai)-(bi<0?999:bi)};
     const rows=po.items.map(it=>{
       const szObj=it.sizes||{};
       const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
       if(totalQty<=0)return null;
-      const szStr=Object.entries(szObj).filter(([,v])=>safeNum(v)>0).map(([sz,v])=>sz+': '+v).join('  ');
+      const szStr=Object.entries(szObj).filter(([,v])=>safeNum(v)>0).sort((a,b)=>_szSort(a[0],b[0])).map(([sz,v])=>sz+': '+v).join('  ');
       return{cells:[{value:it.sku||'',style:'font-family:monospace;font-weight:700'},{value:it.name||''},{value:it.color||'—'},{value:szStr,style:'font-size:11px'},{value:totalQty,style:'text-align:center;font-weight:700'}]};
     }).filter(Boolean);
     const totalUnits=po.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((b,v)=>b+safeNum(v),0),0);
@@ -6094,9 +6163,10 @@ export default function App(){
       });
     }
     else sourceItems=safeItems(so);
+    const _szSort=(a,b)=>{const ai=SZ_ORD.indexOf(a),bi=SZ_ORD.indexOf(b);return (ai<0?999:ai)-(bi<0?999:bi)};
     const rows=sourceItems.map(it=>{
       const szObj=shipment?(it.sizes||{}):safeSizes(it);
-      const sizeEntries=Object.entries(szObj).filter(([,v])=>safeNum(v)>0);
+      const sizeEntries=Object.entries(szObj).filter(([,v])=>safeNum(v)>0).sort((a,b)=>_szSort(a[0],b[0]));
       const totalFromSizes=sizeEntries.reduce((a,[,v])=>a+safeNum(v),0);
       const szStr=sizeEntries.map(([sz,v])=>sz+': '+v).join('  ');
       const fallbackQty=safeNum(it._jobItem?.units)||safeNum(it._jobItem?.total)||safeNum(it.est_qty);
@@ -13311,7 +13381,7 @@ export default function App(){
                           const szObj=safeSizes(item);
                           const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
                           if(totalQty<=0)return;
-                          const szStr=Object.entries(szObj).filter(([,v])=>v>0).map(([sz,v])=>sz+': '+v).join('  ');
+                          const szStr=Object.entries(szObj).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0]),bi=SZ_ORD.indexOf(b[0]);return (ai<0?999:ai)-(bi<0?999:bi)}).map(([sz,v])=>sz+': '+v).join('  ');
                           packRows.push({cells:[soId,item.sku||'',item.name||'',item.color||'—',szStr,totalQty]});
                         });
                       });
@@ -13780,7 +13850,7 @@ export default function App(){
                         headers:['SKU','Item','Color','Sizes','Qty'],
                         aligns:['left','left','left','left','center'],
                         rows:boxItems.map(it=>{
-                          const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join('  ');
+                          const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0]),bi=SZ_ORD.indexOf(b[0]);return (ai<0?999:ai)-(bi<0?999:bi)}).map(([sz,v])=>sz+':'+v).join('  ');
                           return{cells:[it.sku,it.name,it.color||'—',szStr,Object.values(it.sizes||{}).reduce((a,v)=>a+v,0)]};
                         })
                       }],
