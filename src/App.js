@@ -6780,8 +6780,8 @@ export default function App(){
                   {j.expected&&<div style={{fontSize:10,color:urgent?'#dc2626':'#64748b',marginBottom:6}}>📅 Due: {j.expected}{urgent?' — RUSH':''}  </div>}
 
                   {/* Open SO / Job links */}
+                  <button className="btn btn-sm" style={{fontSize:11,padding:'6px 12px',width:'100%',marginBottom:6,background:'#d97706',color:'white',border:'none',fontWeight:700,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:6,cursor:'pointer'}} onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋 Production Sheet</button>
                   <div style={{display:'flex',gap:8,marginBottom:6}}>
-                    <div style={{fontSize:10,color:'#d97706',cursor:'pointer',textDecoration:'underline',fontWeight:800}} onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋 Production Sheet</div>
                     <div style={{fontSize:10,color:'#7c3aed',cursor:'pointer',textDecoration:'underline',fontWeight:800}} onClick={e=>{e.stopPropagation();
                       const jso=j.so;const jc=cust.find(c2=>c2.id===jso.customer_id);
                       const ji=safeJobs(jso).findIndex(jj=>jj.id===j.id);
