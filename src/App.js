@@ -2204,7 +2204,7 @@ export default function App(){
   // One-shot cleanup of legacy Stock PO localStorage keys. Runs after mount so StrictMode's double-invoke of useState initializers above is harmless.
   React.useEffect(()=>{try{if(localStorage.getItem('nsa_stock_pos')!==null)localStorage.removeItem('nsa_stock_pos');if(localStorage.getItem('nsa_stock_po_counter')!==null)localStorage.removeItem('nsa_stock_po_counter')}catch(e){}},[]);
   const[invTab,setInvTab]=useState('stock');// stock | log | pos
-  const[invPOModal,setInvPOModal]=useState({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null});// create/edit PO modal
+  const[invPOModal,setInvPOModal]=useState({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false});// create/edit PO modal
   const[invPOReceive,setInvPOReceive]=useState(null);// PO being received
   const[invPOSearch,setInvPOSearch]=useState('');
   // Changelog & backup system
@@ -6039,7 +6039,7 @@ export default function App(){
         if(po.id!==invPOModal.editId)return po;
         return{...po,vendor_id:vendorId,vendor_name:vendor.name,
           items:validItems.map(it=>({product_id:it.product_id,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||[],sizes:{...it.sizes},received:it.received||{},nsa_cost:it.nsa_cost||0})),
-          expected_date:invPOModal.expected_date||'',memo:invPOModal.memo||'',_qb_synced:false};
+          expected_date:invPOModal.expected_date||'',memo:invPOModal.memo||'',is_booking:!!invPOModal.is_booking,_qb_synced:false};
       }));
       const existingPO=invPOs.find(p=>p.id===invPOModal.editId);
       logChange('updated','Inventory PO',existingPO?.po_number||'',vendor.name+' — '+validItems.length+' items');
@@ -6050,15 +6050,15 @@ export default function App(){
       const po={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:vendorId,vendor_name:vendor.name,
         items:validItems.map(it=>({product_id:it.product_id,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||[],sizes:{...it.sizes},received:{},nsa_cost:it.nsa_cost||0})),
         status:'ordered',created_at:new Date().toLocaleString(),expected_date:invPOModal.expected_date||'',memo:invPOModal.memo||'',
-        created_by:cu?.name||'Unknown',received_at:null,received_by:null,_qb_synced:false};
+        created_by:cu?.name||'Unknown',created_by_id:cu?.id||null,is_booking:!!invPOModal.is_booking,received_at:null,received_by:null,_qb_synced:false};
       setInvPOs(prev=>[po,...prev]);setInvPOCounter(c2=>c2+1);
       logChange('created','Inventory PO',poNum,vendor.name+' — '+validItems.length+' items');
       nf('Inventory PO '+poNum+' created');
     }
-    setInvPOModal({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null});
+    setInvPOModal({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false});
   };
   const editInvPO=(po)=>{
-    setInvPOModal({open:true,vendor_id:po.vendor_id,items:po.items.map(it=>({...it})),memo:po.memo||'',expected_date:po.expected_date||'',productSearch:'',editId:po.id});
+    setInvPOModal({open:true,vendor_id:po.vendor_id,items:po.items.map(it=>({...it})),memo:po.memo||'',expected_date:po.expected_date||'',productSearch:'',editId:po.id,is_booking:!!po.is_booking});
   };
   const deleteInvPO=(po)=>{
     const isReceived=po.status==='received'||po.status==='partial';
@@ -6202,7 +6202,7 @@ export default function App(){
     return(<>
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={invPOSearch} onChange={e=>setInvPOSearch(e.target.value)}/></div>
-        <button className="btn btn-primary" onClick={()=>setInvPOModal({open:true,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null})}>+ New Inventory PO</button>
+        <button className="btn btn-primary" onClick={()=>setInvPOModal({open:true,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false})}>+ New Inventory PO</button>
       </div>
       {filtered.length===0?<div className="card"><div className="card-body"><div className="empty" style={{padding:30}}>No inventory POs yet. Click "+ New Inventory PO" to create one.</div></div></div>:
       <div style={{display:'flex',flexDirection:'column',gap:12}}>
@@ -9515,6 +9515,7 @@ export default function App(){
 
     const filtSOs=rptRep==='all'?sos:sos.filter(s=>s.created_by===rptRep);
     const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const so=sos.find(s=>s.id===i.so_id);return so?.created_by===rptRep});
+    const filtBookingInvPOs=(invPOs||[]).filter(p=>p.is_booking).filter(p=>rptRep==='all'?true:p.created_by_id===rptRep);
 
     // Pipeline data
     const pipeline=filtSOs.map(so=>{const m=soCalc(so);const c=cust.find(x=>x.id===so.customer_id);const st=calcSOStatus(so);
@@ -9981,16 +9982,24 @@ export default function App(){
               const rep=REPS.find(r=>r.id===so.created_by);
               const daysOut=bookingDaysUntilShip(so);
               const st=calcSOStatus(so);
-              return{...so,_rev:m.rev,_cost:m.cost,_margin:m.margin,_pct:m.pct,_units:m.units,_cname:c?.name||'Unknown',_alpha:c?.alpha_tag||'',_repName:rep?.name?.split(' ')[0]||'—',_daysOut:daysOut,_st:st};
-            }).sort((a,b)=>(a._daysOut??9999)-(b._daysOut??9999));
-            const confirmed=bookings.filter(b=>b.booking_confirmed);
-            const unconfirmed=bookings.filter(b=>!b.booking_confirmed);
-            const totalBookingRev=bookings.reduce((a,b)=>a+b._rev,0);
+              return{_kind:'so',...so,_rev:m.rev,_cost:m.cost,_margin:m.margin,_pct:m.pct,_units:m.units,_cname:c?.name||'Unknown',_alpha:c?.alpha_tag||'',_repName:rep?.name?.split(' ')[0]||'—',_daysOut:daysOut,_st:st};
+            });
+            const poBookings=filtBookingInvPOs.map(po=>{
+              const rep=REPS.find(r=>r.id===po.created_by_id);
+              const units=(po.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((b,v)=>b+(v||0),0),0);
+              const cost=(po.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((b,v)=>b+(v||0),0)*(it.nsa_cost||0),0);
+              const daysOut=po.expected_date?Math.ceil((new Date(po.expected_date)-new Date())/(1000*60*60*24)):null;
+              return{_kind:'po',id:po.po_number,_poId:po.id,_rev:cost,_cost:cost,_units:units,_cname:po.vendor_name||'—',_alpha:'',memo:po.memo||'',_repName:rep?.name?.split(' ')[0]||(po.created_by?po.created_by.split(' ')[0]:'—'),_daysOut:daysOut,expected_ship_date:po.expected_date||'',booking_confirmed:po.status==='received',booking_confirmed_at:po.received_at,booking_confirmed_by:null,_st:po.status==='received'?'complete':'booking',_poStatus:po.status};
+            });
+            const allBookings=[...bookings,...poBookings].sort((a,b)=>(a._daysOut??9999)-(b._daysOut??9999));
+            const confirmed=allBookings.filter(b=>b.booking_confirmed);
+            const unconfirmed=allBookings.filter(b=>!b.booking_confirmed);
+            const totalBookingRev=allBookings.reduce((a,b)=>a+b._rev,0);
             const urgent=unconfirmed.filter(b=>b._daysOut!==null&&b._daysOut<=100);
             return<div className="card-body">
               <div style={{display:'flex',gap:8,marginBottom:12}}>
                 <div style={{flex:1,padding:8,background:'#e0e7ff',borderRadius:6,textAlign:'center'}}>
-                  <div style={{fontSize:18,fontWeight:800,color:'#4338ca'}}>{bookings.length}</div>
+                  <div style={{fontSize:18,fontWeight:800,color:'#4338ca'}}>{allBookings.length}</div>
                   <div style={{fontSize:10,fontWeight:600,color:'#4338ca'}}>Total Bookings</div>
                 </div>
                 <div style={{flex:1,padding:8,background:'#dcfce7',borderRadius:6,textAlign:'center'}}>
@@ -10010,25 +10019,28 @@ export default function App(){
                   <div style={{fontSize:10,fontWeight:600,color:'#1e40af'}}>Booking Revenue</div>
                 </div>
               </div>
-              {bookings.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:16}}>No booking orders found</div>:
+              {allBookings.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:16}}>No booking orders found</div>:
               <table style={{fontSize:12}}><thead><tr>
-                <th>SO</th><th>Customer</th><th>Memo</th><th>Rep</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'center'}}>Ship Date</th><th style={{textAlign:'center'}}>Days Out</th><th style={{textAlign:'center'}}>Confirmed</th><th>Status</th>
+                <th>SO / PO</th><th>Customer / Vendor</th><th>Memo</th><th>Rep</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'center'}}>Ship Date</th><th style={{textAlign:'center'}}>Days Out</th><th style={{textAlign:'center'}}>Confirmed</th><th>Status</th>
               </tr></thead><tbody>
-                {bookings.map(b=>{
+                {allBookings.map(b=>{
+                  const isPO=b._kind==='po';
                   const isUrgent=!b.booking_confirmed&&b._daysOut!==null&&b._daysOut<=100;
                   const confirmedBy=b.booking_confirmed_by?REPS.find(r=>r.id===b.booking_confirmed_by)?.name?.split(' ')[0]:'';
                   const confirmedAt=b.booking_confirmed_at?new Date(b.booking_confirmed_at).toLocaleDateString():'';
-                  return<tr key={b.id} style={{cursor:'pointer',background:isUrgent?'#fef2f2':b.booking_confirmed?'#f0fdf4':''}} onClick={()=>{setESO(sos.find(x=>x.id===b.id));setESOC(cust.find(c=>c.id===b.customer_id));setPg('orders')}}>
-                    <td style={{fontWeight:700,color:'#4338ca',fontSize:12}}>{b.id}</td>
+                  return<tr key={(isPO?'po-':'so-')+b.id} style={{cursor:'pointer',background:isUrgent?'#fef2f2':b.booking_confirmed?'#f0fdf4':''}} onClick={()=>{if(isPO){setPg('inventory');setInvTab('pos')}else{setESO(sos.find(x=>x.id===b.id));setESOC(cust.find(c=>c.id===b.customer_id));setPg('orders')}}}>
+                    <td style={{fontWeight:700,color:isPO?'#7c3aed':'#4338ca',fontSize:12}}>{b.id}{isPO&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,verticalAlign:'middle'}}>INV PO</span>}</td>
                     <td style={{fontWeight:600}}>{b._cname} {b._alpha&&<span style={{fontSize:9,color:'#94a3b8'}}>{b._alpha}</span>}</td>
                     <td style={{fontSize:11,color:'#64748b',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.memo}</td>
                     <td style={{fontSize:11}}>{b._repName}</td>
-                    <td style={{textAlign:'right',fontWeight:600}}>${b._rev.toLocaleString()}</td>
+                    <td style={{textAlign:'right',fontWeight:600}}>${(b._rev||0).toLocaleString()}</td>
                     <td style={{textAlign:'center',fontWeight:600}}>{b.expected_ship_date||'—'}</td>
                     <td style={{textAlign:'center',fontWeight:800,color:b._daysOut===null?'#94a3b8':b._daysOut<=30?'#dc2626':b._daysOut<=100?'#d97706':'#166534'}}>{b._daysOut!==null?b._daysOut+'d':'—'}</td>
-                    <td style={{textAlign:'center'}}>{b.booking_confirmed
-                      ?<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:'#dcfce7',color:'#166534'}} title={confirmedBy&&confirmedAt?confirmedBy+' · '+confirmedAt:''}>Yes{confirmedBy?' · '+confirmedBy:''}</span>
-                      :<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:isUrgent?'#fecaca':'#fef3c7',color:isUrgent?'#dc2626':'#92400e'}}>{isUrgent?'Needs Confirm':'Pending'}</span>}</td>
+                    <td style={{textAlign:'center'}}>{isPO
+                      ?<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:b._poStatus==='received'?'#dcfce7':'#ede9fe',color:b._poStatus==='received'?'#166534':'#7c3aed'}}>{b._poStatus==='received'?'Received':b._poStatus==='partial'?'Partial':'Ordered'}</span>
+                      :(b.booking_confirmed
+                        ?<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:'#dcfce7',color:'#166534'}} title={confirmedBy&&confirmedAt?confirmedBy+' · '+confirmedAt:''}>Yes{confirmedBy?' · '+confirmedBy:''}</span>
+                        :<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:isUrgent?'#fecaca':'#fef3c7',color:isUrgent?'#dc2626':'#92400e'}}>{isUrgent?'Needs Confirm':'Pending'}</span>)}</td>
                     <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[b._st]?.bg,color:SC[b._st]?.c}}>{b._st==='booking'?'Booking':b._st==='need_order'?'Need Order':b._st==='waiting_receive'?'Waiting':b._st==='items_received'?'Items In':b._st==='in_production'?'In Prod':b._st==='ready_to_invoice'?'Ready Inv':b._st==='complete'?'Complete':b._st}</span></td>
                   </tr>})}
               </tbody></table>}
@@ -23437,7 +23449,13 @@ export default function App(){
           <div><label className="form-label">Memo</label>
             <input className="form-input" style={{width:'100%'}} value={invPOModal.memo} onChange={e=>setInvPOModal(x=>({...x,memo:e.target.value}))} placeholder="Notes..."/></div>
         </div>
-        <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4,textTransform:'uppercase'}}>PO Number: <span style={{color:'#7c3aed',fontSize:13,letterSpacing:1}}>{invPOModal.editId?(invPOs.find(p=>p.id===invPOModal.editId)?.po_number||''):'PO-'+invPOCounter+'-NSA'}</span></div>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,flexWrap:'wrap',gap:8}}>
+          <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>PO Number: <span style={{color:'#7c3aed',fontSize:13,letterSpacing:1}}>{invPOModal.editId?(invPOs.find(p=>p.id===invPOModal.editId)?.po_number||''):'PO-'+invPOCounter+'-NSA'}</span></div>
+          <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'#4338ca',padding:'4px 8px',background:invPOModal.is_booking?'#e0e7ff':'#f8fafc',border:'1px solid '+(invPOModal.is_booking?'#4338ca':'#e2e8f0'),borderRadius:6,cursor:'pointer'}} title="Mark this as a booking order inventory PO — appears in the Booking Orders report.">
+            <input type="checkbox" checked={!!invPOModal.is_booking} onChange={e=>setInvPOModal(x=>({...x,is_booking:e.target.checked}))}/>
+            Booking PO
+          </label>
+        </div>
 
         {/* Product search & add */}
         <div style={{marginBottom:12,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',position:'relative'}}>
