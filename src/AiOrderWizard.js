@@ -107,7 +107,11 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
         available_sizes: szKeys.length > 0 ? szKeys : (catMatch?.available_sizes || ['S', 'M', 'L', 'XL', '2XL']),
         sizes: p.sizes || {},
         decorations: [],
-        is_custom: !catMatch,
+        // Vendor-matched items aren't "custom" — they have a real SKU and
+        // pricing from SanMar/S&S/Momentec. Only flag is_custom when there's
+        // no internal catalog match AND no vendor source.
+        is_custom: !catMatch && !p.vendor_source,
+        vendor_source: p.vendor_source || null,
         pick_lines: [],
         po_lines: [],
       };
@@ -261,7 +265,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
                   <td><input type="checkbox" checked={!it._skip} onChange={toggle} /></td>
                   <td><input className="form-input" value={it.sku_guess || ''} onChange={e => upd('sku_guess', e.target.value)} style={{ width: 90, fontSize: 10, fontFamily: 'monospace' }} /></td>
                   <td><span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 4, background: mqBg, color: mqColor, fontWeight: 700, whiteSpace: 'nowrap' }}>{mqLabel}</span>
-                    {it.confidence && <div style={{ fontSize: 8, color: '#64748b', marginTop: 2 }}>conf: {it.confidence}</div>}</td>
+                    {it.confidence && !isVendor && !it.product_id && <div style={{ fontSize: 8, color: '#64748b', marginTop: 2 }}>conf: {it.confidence}</div>}</td>
                   <td style={{ maxWidth: 180 }}><input className="form-input" value={it.name || ''} onChange={e => upd('name', e.target.value)} style={{ width: '100%', fontSize: 10 }} /></td>
                   <td><input className="form-input" value={it.brand || ''} onChange={e => upd('brand', e.target.value)} style={{ width: 70, fontSize: 10 }} /></td>
                   <td><input className="form-input" value={it.color || ''} onChange={e => upd('color', e.target.value)} style={{ width: 80, fontSize: 10 }} /></td>

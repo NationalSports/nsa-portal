@@ -2112,7 +2112,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     return liveSrc?<button onClick={()=>setColorPickerModal({itemIdx:idx,sku:item.sku,source:liveSrc})} className="badge badge-gray" style={{cursor:'pointer',border:'1px dashed #94a3b8',display:'inline-flex',alignItems:'center',gap:4}} title="Click to change color">{item.color||'(set color)'} ▾</button>
                       :<span className="badge badge-gray">{item.color}</span>;
                   })()}
-                {item.is_custom&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Custom</span>}
+                {item.is_custom&&!item.vendor_source&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Custom</span>}
+                {item.vendor_source&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{item.vendor_source==='sanmar'?'🟦 via SanMar':item.vendor_source==='ss'?'🟪 via S&S':item.vendor_source==='momentec'?'🟧 via Momentec':'via vendor'}</span>}
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={dp.vendor+' — '+dp.deco_type?.replace(/_/g,' ')} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>{dp.po_id} · {dp.vendor}</span>)}
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
                 {o.promo_applied&&<label style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',background:item.is_promo?'#fef3c7':'#f1f5f9',color:item.is_promo?'#92400e':'#94a3b8',border:item.is_promo?'1px solid #fde68a':'1px solid #e2e8f0'}}><input type="checkbox" checked={item.is_promo||false} onChange={e=>{const checked=e.target.checked;if(checked){uI(idx,'_pre_promo_sell',item.unit_sell);uI(idx,'unit_sell',safeNum(item.retail_price)||safeNum(item.nsa_cost)*2);uI(idx,'is_promo',true)}else{uI(idx,'unit_sell',item._pre_promo_sell!=null?item._pre_promo_sell:item.unit_sell);uI(idx,'_pre_promo_sell',undefined);uI(idx,'is_promo',false)}}} style={{width:12,height:12}}/> Promo{item.is_promo&&item.retail_price?' ($'+item.retail_price+')':''}</label>}</div>
@@ -2905,7 +2906,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <td><input type="checkbox" checked={!it._skip} onChange={toggle}/></td>
               <td><input className="form-input" value={it.sku_guess||''} onChange={e=>upd('sku_guess',e.target.value)} style={{width:90,fontSize:10,fontFamily:'monospace'}}/></td>
               <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:mqBg,color:mqColor,fontWeight:700,whiteSpace:'nowrap'}}>{mqLabel}</span>
-                {it.confidence&&<div style={{fontSize:8,color:'#64748b',marginTop:2}}>conf: {it.confidence}</div>}</td>
+                {it.confidence&&!isVendor&&!it.product_id&&<div style={{fontSize:8,color:'#64748b',marginTop:2}}>conf: {it.confidence}</div>}</td>
               <td style={{maxWidth:180}}><input className="form-input" value={it.name||''} onChange={e=>upd('name',e.target.value)} style={{width:'100%',fontSize:10}}/></td>
               <td><input className="form-input" value={it.brand||''} onChange={e=>upd('brand',e.target.value)} style={{width:70,fontSize:10}}/></td>
               <td><input className="form-input" value={it.color||''} onChange={e=>upd('color',e.target.value)} style={{width:80,fontSize:10}}/></td>
@@ -2950,7 +2951,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 available_sizes:szKeys.length>0?szKeys:(catMatch?.available_sizes||['S','M','L','XL','2XL']),
                 sizes:p.sizes||{},
                 decorations:[],
-                is_custom:!catMatch,
+                is_custom:!catMatch&&!p.vendor_source,
+                vendor_source:p.vendor_source||null,
                 pick_lines:[],
                 po_lines:[],
               };
