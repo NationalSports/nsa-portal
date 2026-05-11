@@ -6044,6 +6044,42 @@ export default function App(){
     nf('📦 Packing list printed for PO '+po.po_number);
   };
 
+  const printSOPackingList=(so,shipment)=>{
+    if(!so)return;
+    const c=cust.find(x=>x.id===so.customer_id);
+    const shipAddrSub=(()=>{
+      if(so.ship_to_id==='custom'&&so.ship_to_custom)return so.ship_to_custom;
+      if(c?.shipping_address_line1){let a=c.shipping_address_line1;if(c.shipping_address_line2)a+='<br/>'+c.shipping_address_line2;a+='<br/>'+(c.shipping_city||'')+', '+(c.shipping_state||'')+' '+(c.shipping_zip||'');return a}
+      if(c?.billing_address_line1){let a=c.billing_address_line1;if(c.billing_address_line2)a+='<br/>'+c.billing_address_line2;a+='<br/>'+(c.billing_city||'')+', '+(c.billing_state||'')+' '+(c.billing_zip||'');return a}
+      return '';
+    })();
+    const sourceItems=shipment?(shipment.items||[]):safeItems(so).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+    const rows=sourceItems.map(it=>{
+      const szObj=shipment?(it.sizes||{}):safeSizes(it);
+      const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
+      if(totalQty<=0)return null;
+      const szStr=Object.entries(szObj).filter(([,v])=>safeNum(v)>0).map(([sz,v])=>sz+': '+v).join('  ');
+      return{cells:[{value:it.sku||'',style:'font-family:monospace;font-weight:700'},{value:it.name||''},{value:it.color||'—'},{value:szStr,style:'font-size:11px'},{value:totalQty,style:'text-align:center;font-weight:700'}]};
+    }).filter(Boolean);
+    const totalUnits=rows.reduce((a,r)=>a+safeNum(r.cells[4].value),0);
+    const carrier=shipment?.carrier?shipment.carrier.toUpperCase():(so.ship_preference==='warehouse_delivery'?'Warehouse Delivery':'');
+    printDoc({
+      title:c?.name||'Customer',docNum:so.id+(shipment?' — '+(shipment.tracking_number||shipment.id||'Shipment'):''),docType:'PACKING LIST',showPricing:false,
+      headerRight:'<div class="ta" style="font-size:20px">'+totalUnits+' Total Units</div>'+(shipment?.tracking_number?'<div class="ts" style="font-family:monospace">'+shipment.tracking_number+'</div>':''),
+      infoBoxes:[
+        {label:'Ship To',value:c?.name||'—',sub:shipAddrSub},
+        {label:'Ship Date',value:(shipment?.ship_date)||new Date().toLocaleDateString(),sub:carrier||undefined},
+        {label:'Sales Order',value:so.id},
+        ...(shipment?.tracking_number?[{label:'Tracking',value:shipment.tracking_number}]:[]),
+        ...(so.memo?[{label:'Memo',value:so.memo}]:[]),
+      ],
+      tables:[{title:shipment?'Items in this Shipment':'Items on this Order',headers:['SKU','Item','Color','Sizes','Qty'],aligns:['left','left','left','left','center'],rows}],
+      notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
+      footer:'NO PRICING — Packing List'
+    });
+    nf('📦 Packing list printed for '+(c?.name||so.id));
+  };
+
 
   function rInvPOs(){
     const q3=invPOSearch.trim().toLowerCase();
@@ -14196,6 +14232,8 @@ export default function App(){
                   <div>Rep: <strong>{t.rep}</strong></div>
                   {t.daysOut!=null&&<div>{t.daysOut>=0?'Due in '+t.daysOut+'d':Math.abs(t.daysOut)+'d overdue'}</div>}
                 </div>
+                <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                  onClick={e=>{e.stopPropagation();printSOPackingList(t.so)}}>📦 Packing List</button>
               </div>
             </div>})}
         </div>}
@@ -14236,6 +14274,8 @@ export default function App(){
                             setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
                         } else {const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
                       }}>Print Label</button>}
+                    <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                      onClick={()=>printSOPackingList(shp.so,shp)}>📦 Packing List</button>
                     <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                       onClick={()=>{
                         const tn=prompt('Tracking number:',shp.tracking_number||'');if(tn===null)return;
@@ -14354,6 +14394,7 @@ export default function App(){
                     w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Scan QR to open this PO</div>');
                     w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),400);
                   }}>🖨️ Print Label</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>printInvPOPackingList(po)}>📦 Packing List</button>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{setWhRecvPO(poRef);setWhTab('receive')}}>📱 Receive</button>
                 </div>
               </div>
