@@ -4292,10 +4292,14 @@ export default function App(){
           const pref=so.ship_preference||'ship_as_ready';
           const shipDateOk=pref!=='ship_on_date'||!so.ship_on_date||(new Date(so.ship_on_date)<=new Date());
           const deliverDateOk=pref!=='deliver_on_date'||!so.deliver_on_date||(new Date(so.deliver_on_date)<=new Date());
-          if(pref==='warehouse_delivery'||(pref==='deliver_on_date'&&deliverDateOk)){
+          if(pref==='warehouse_delivery'||pref==='deliver_on_date'){
+            const deliverDate=pref==='deliver_on_date'?so.deliver_on_date:null;
+            const deliverDaysOut=deliverDate?Math.ceil((new Date(deliverDate)-new Date())/(1000*60*60*24)):null;
+            const holdUntil=!deliverDateOk;
             deliverTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
+              deliverDate,deliverDaysOut,holdUntil,
               desc:item.sku+' · '+item.name,units:totalOrdered,shipPref:pref});
-          } else if(pref!=='rep_delivery'&&pref!=='wait_complete'&&pref!=='deliver_on_date'&&shipDateOk){
+          } else if(pref!=='rep_delivery'&&pref!=='wait_complete'&&shipDateOk){
             shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
               desc:item.sku+' · '+item.name,units:totalOrdered,shipMethod:dest,shipPref:pref});
           }
@@ -4325,10 +4329,14 @@ export default function App(){
             const allSiblingsDone=siblingJobs.every(j2=>j2.prod_status==='completed'||j2.prod_status==='shipped');
             if(!allSiblingsDone){
               // Sibling jobs still in progress — this item stays in production queue, not ready to ship
-            } else if(shipPref==='warehouse_delivery'||(shipPref==='deliver_on_date'&&deliverDateReady)){
+            } else if(shipPref==='warehouse_delivery'||shipPref==='deliver_on_date'){
+              const deliverDate=shipPref==='deliver_on_date'?so.deliver_on_date:null;
+              const deliverDaysOut=deliverDate?Math.ceil((new Date(deliverDate)-new Date())/(1000*60*60*24)):null;
+              const holdUntil=!deliverDateReady;
               deliverTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
+                deliverDate,deliverDaysOut,holdUntil,
                 desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,shipPref});
-            } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipPref!=='deliver_on_date'&&shipDateReady){
+            } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
               shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
                 desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,
                 shipMethod:j.ship_method||'pending',shipPref});
@@ -14157,14 +14165,25 @@ export default function App(){
           {fDeliver.map((t,ti)=>{
             const c=cust.find(x=>x.id===t.so.customer_id);
             const addr=c?getAddrs(c,cust)?.[0]:null;
-            return<div key={ti} className="card" style={{borderLeft:'4px solid #d97706',cursor:'pointer'}}
+            const onHold=t.holdUntil&&t.deliverDaysOut!=null&&t.deliverDaysOut>0;
+            const deliverToday=t.deliverDaysOut===0;
+            const deliverPast=t.deliverDaysOut!=null&&t.deliverDaysOut<0;
+            const borderColor=onHold?'#dc2626':deliverToday?'#16a34a':'#d97706';
+            return<div key={ti} className="card" style={{borderLeft:'6px solid '+borderColor,cursor:'pointer',background:onHold?'#fef2f2':undefined}}
               onClick={()=>{setESO(t.so);setESOC(c);setPg('orders')}}>
+              {onHold&&<div style={{background:'#dc2626',color:'white',padding:'8px 16px',fontSize:13,fontWeight:800,display:'flex',alignItems:'center',gap:10}}>
+                <span style={{fontSize:18}}>🛑</span>
+                <span>DO NOT DELIVER — Hold until {t.deliverDate}</span>
+                <span style={{marginLeft:'auto',background:'rgba(255,255,255,0.2)',padding:'3px 10px',borderRadius:6,fontSize:14}}>{t.deliverDaysOut} day{t.deliverDaysOut!==1?'s':''} to go</span>
+              </div>}
               <div style={{padding:'12px 16px',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
                 <div style={{flex:1,minWidth:200}}>
-                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}>
                     <span style={{fontSize:14,fontWeight:800,color:'#1e40af'}}>{t.soId}</span>
                     <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{t.cName}</span>
-                    {t.urgent&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fee2e2',color:'#dc2626',fontWeight:700}}>🔥 Rush — {t.daysOut}d</span>}
+                    {deliverToday&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:700}}>✅ Deliver TODAY</span>}
+                    {deliverPast&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fee2e2',color:'#dc2626',fontWeight:700}}>⚠️ {Math.abs(t.deliverDaysOut)}d past deliver date</span>}
+                    {!onHold&&!deliverToday&&!deliverPast&&t.urgent&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fee2e2',color:'#dc2626',fontWeight:700}}>🔥 Rush — {t.daysOut}d</span>}
                     <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fef3c7',color:'#92400e',fontWeight:700}}>{t.units} units</span>
                   </div>
                   <div style={{fontSize:12,color:'#475569'}}>{t.desc}</div>
@@ -14172,7 +14191,8 @@ export default function App(){
                 </div>
                 <div style={{fontSize:11,color:'#64748b',textAlign:'right'}}>
                   <div>Rep: <strong>{t.rep}</strong></div>
-                  {t.daysOut!=null&&<div>{t.daysOut>=0?'Due in '+t.daysOut+'d':Math.abs(t.daysOut)+'d overdue'}</div>}
+                  {t.deliverDate?<div style={{fontWeight:700,color:onHold?'#dc2626':'#0f172a',marginTop:2}}>Deliver: {t.deliverDate}</div>
+                  :t.daysOut!=null&&<div>{t.daysOut>=0?'Due in '+t.daysOut+'d':Math.abs(t.daysOut)+'d overdue'}</div>}
                 </div>
               </div>
             </div>})}
