@@ -381,6 +381,15 @@ const fetchAdidasInventory = async (sku) => {
   } catch (e) { console.error('[Adidas B2B] Fetch failed:', e); return { sizes: {}, lastSynced: null }; }
 };
 
+const fetchAdidasGlobalLastSync = async () => {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase.from('adidas_inventory').select('last_synced').order('last_synced', { ascending: false }).limit(1);
+    if (error) { console.warn('[Adidas B2B] Last-sync fetch error:', error.message); return null; }
+    return data?.[0]?.last_synced || null;
+  } catch (e) { console.error('[Adidas B2B] Last-sync fetch failed:', e); return null; }
+};
+
 const fetchAdidasInventoryBulk = async (skus) => {
   if (!supabase || !skus || skus.length === 0) return {};
   try {
@@ -2167,6 +2176,8 @@ export default function App(){
   const adidasBulkFetched=useRef(false);
   const[adidasSyncUploading,setAdidasSyncUploading]=useState(false);
   const[adidasSyncLog,setAdidasSyncLog]=useState([]);// [{ts,rows,skus,status,error}]
+  const[adidasGlobalLastSync,setAdidasGlobalLastSync]=useState(null);// most recent last_synced across whole adidas_inventory table
+  const refreshAdidasLastSync=React.useCallback(()=>{fetchAdidasGlobalLastSync().then(ts=>{if(ts)setAdidasGlobalLastSync(ts)}).catch(e=>console.warn('[Adidas B2B] Last-sync refresh error:',e))},[]);
   // ShipStation integration state
   const[ssConnected,setSSConnected]=useState(false);
   const[ssShipping,setSSShipping]=useState(false);
@@ -2672,6 +2683,7 @@ export default function App(){
     if(adidasSkus.length===0)return;
     adidasBulkFetched.current=true;
     fetchAdidasInventoryBulk(adidasSkus).then(data=>{if(data)setAdidasInvBulk(data)}).catch(e=>console.warn('[Adidas B2B] Bulk fetch error:',e));
+    fetchAdidasGlobalLastSync().then(ts=>{if(ts)setAdidasGlobalLastSync(ts)}).catch(e=>console.warn('[Adidas B2B] Last-sync fetch error:',e));
   },[prod]);
 
   // ─── Adidas B2B CSV Upload Handler ───
@@ -2722,6 +2734,8 @@ export default function App(){
         const freshData=await fetchAdidasInventoryBulk(adidasSkus);
         if(freshData)setAdidasInvBulk(freshData);
       }
+      const freshLastSync=await fetchAdidasGlobalLastSync();
+      if(freshLastSync)setAdidasGlobalLastSync(freshLastSync);
       const logEntry={ts:new Date().toLocaleString(),rows:upserted,skus:skuSet.size,status:'success',file:file.name};
       setAdidasSyncLog(prev=>[logEntry,...prev].slice(0,20));
       nf(upserted+' rows synced for '+skuSet.size+' SKUs from '+file.name);
@@ -6321,7 +6335,7 @@ export default function App(){
       {isA&&<button className={`tab ${invTab==='clearance'?'active':''}`} onClick={()=>setInvTab('clearance')}>Clearance{prod.filter(p=>p.is_clearance).length>0?' ('+prod.filter(p=>p.is_clearance).length+')':''}</button>}
       <button className={`tab ${invTab==='log'?'active':''}`} onClick={()=>setInvTab('log')}>Change Log{invAdjLog.length>0?' ('+invAdjLog.length+')':''}</button>
       <button className={`tab ${invTab==='pos'?'active':''}`} onClick={()=>setInvTab('pos')}>Inventory POs{invPOs.length>0?' ('+invPOs.length+')':''}</button>
-      {isA&&<button className={`tab ${invTab==='b2b'?'active':''}`} onClick={()=>setInvTab('b2b')} style={invTab==='b2b'?{}:{color:'#059669'}}>Adidas B2B</button>}
+      {isA&&<button className={`tab ${invTab==='b2b'?'active':''}`} onClick={()=>{setInvTab('b2b');refreshAdidasLastSync()}} style={invTab==='b2b'?{}:{color:'#059669'}}>Adidas B2B</button>}
     </div>
     {invTab==='stock'&&rInvStock()}
     {invTab==='clearance'&&isA&&rInvClearance()}
@@ -6331,8 +6345,10 @@ export default function App(){
       const adidasProds=prod.filter(p=>p.brand==='Adidas');
       const synced=Object.keys(adidasInvBulk).length;
       const totalB2B=Object.values(adidasInvBulk).reduce((a,v)=>a+Object.values(v.sizes||{}).reduce((b,s)=>b+(s.qty||0),0),0);
-      const firstSynced=Object.values(adidasInvBulk).find(v=>v.lastSynced);
-      const ls=firstSynced?new Date(firstSynced.lastSynced):null;
+      const bulkLatest=Object.values(adidasInvBulk).reduce((m,v)=>{const t=v.lastSynced?new Date(v.lastSynced).getTime():0;return t>m?t:m},0);
+      const globalLatest=adidasGlobalLastSync?new Date(adidasGlobalLastSync).getTime():0;
+      const lsMs=Math.max(bulkLatest,globalLatest);
+      const ls=lsMs>0?new Date(lsMs):null;
       return<>
         <div className="stats-row">
           <div className="stat-card" style={{borderColor:'#059669'}}><div className="stat-label">Adidas Products</div><div className="stat-value" style={{color:'#059669'}}>{adidasProds.length}</div></div>
