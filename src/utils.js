@@ -197,6 +197,34 @@ export const downloadDoc=async(opts,filename)=>{
     document.body.removeChild(container);
   }
 };
+
+// Render the document to a PDF Blob and open it in a new browser tab so the
+// user gets a real PDF viewer (not a print preview).
+export const openDocPDF=async(opts,filename)=>{
+  const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS});
+  const safe=String(filename||opts.docNum||'document').replace(/[^a-z0-9._-]+/gi,'_');
+  const fname=safe.replace(/\.html?$/i,'')+'.pdf';
+  const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);
+  const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
+  const pdfFixCss='.header{display:table!important;width:100%!important;table-layout:fixed}.header>*{display:table-cell!important;vertical-align:top!important}.logo{width:55%!important}.logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}.doc-id{width:45%!important;text-align:right!important}.bill-total{display:table!important;width:100%!important;table-layout:fixed}.bill-total>*{display:table-cell!important;vertical-align:top!important}.total-box{width:200px!important;text-align:left!important}.info-row{display:table!important;width:100%!important;table-layout:fixed}.info-cell{display:table-cell!important;vertical-align:top!important}.footer{display:table!important;width:100%!important}.footer>*{display:table-cell!important}.footer>*:last-child{text-align:right!important}';
+  const container=document.createElement('div');
+  container.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:white;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4';
+  const styleEl=document.createElement('style');
+  styleEl.textContent=(styleMatch?styleMatch[1]:'')+pdfFixCss;
+  container.appendChild(styleEl);
+  const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;
+  container.appendChild(bodyDiv);
+  document.body.appendChild(container);
+  try{
+    await new Promise(r=>setTimeout(r,500));
+    const blob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:fname,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
+    const url=URL.createObjectURL(blob);
+    window.open(url,'_blank');
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+  }finally{
+    document.body.removeChild(container);
+  }
+};
 export const nextInvId=invs=>{const nums=(invs||[]).map(i=>{const m=String(i.id).match(/(\d+)$/);return m?parseInt(m[1]):0});return'INV-'+(Math.max(1000,...nums)+1)};
 
 // Decoration label used on PDF line-item rows. Includes the decoration name
