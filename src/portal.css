@@ -40,6 +40,7 @@ body {
 }
 .topbar h1 { font-size: 16px; font-weight: 700; color: #0f172a; }
 .content { padding: 20px 24px 80px; max-width: 1200px; }
+.content.content-wide { max-width: 1600px; }
 
 /* Cards */
 .card {
