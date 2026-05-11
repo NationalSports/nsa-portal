@@ -7044,12 +7044,17 @@ export default function App(){
             });
             if(nameRows.length>0)tables.push({title:'Names List'+(nd2.sku?' — '+nd2.sku:''),headers:['Size','Names'],aligns:['left','left'],rows:nameRows});
           });
-          // Find displayable mockup image URLs for the PDF — show all mockups
-          const _pdfMockUrls=(()=>{const urls=[];const mf=mockupFiles.filter(f=>f);
-            for(const f of mf){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f)){urls.push(u)}else{const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)urls.push(pt)}}
-            if(urls.length===0){const fallback=itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url;if(fallback)urls.push(fallback)}
-            return urls})();
-          const _pdfMockHtml=_pdfMockUrls.length>0?'<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:8px 0 12px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">'+_pdfMockUrls.map(u=>'<img src="'+u+'" style="max-width:'+(_pdfMockUrls.length>1?'48%':'100%')+';max-height:300px;object-fit:contain;border-radius:6px"/>').join('')+'<div style="font-size:9px;color:#666;margin-top:4px;width:100%;text-align:center">Mockup Preview</div></div>':'';
+          // Per-item mockup URLs for the PDF — each SKU shows its own labeled mockup
+          const _urlsFor=arr=>{const urls=[];for(const f of (arr||[])){if(!f)continue;const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f)){urls.push(u)}else if(_isPdfUrl(u,f)){const pt=_cloudinaryPdfThumb(u);if(pt)urls.push(pt)}}return urls};
+          const _pdfPerItem=itemDetails.map(gi=>({sku:gi.sku,name:gi.name,color:gi.color,urls:_urlsFor(allArtFiles.flatMap(a=>(a?.item_mockups?.[gi.sku]||[])))})).filter(x=>x.urls.length>0);
+          const _pdfGenericUrls=_urlsFor(allArtFiles.flatMap(a=>(a?.mockup_files||a?.files||[])));
+          const _pdfHasAny=_pdfPerItem.length>0||_pdfGenericUrls.length>0;
+          const _pdfFallback=!_pdfHasAny&&itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url;
+          const _pdfMockHtml=_pdfHasAny||_pdfFallback?'<div style="margin:8px 0 12px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">'
+            +_pdfPerItem.map(x=>'<div style="margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:#1e293b;margin-bottom:4px">'+x.sku+' — '+x.name+(x.color?' ('+x.color+')':'')+'</div><div style="display:flex;gap:8px;flex-wrap:wrap">'+x.urls.map(u=>'<img src="'+u+'" style="max-width:240px;max-height:240px;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0"/>').join('')+'</div></div>').join('')
+            +(_pdfGenericUrls.length>0?'<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">'+_pdfGenericUrls.map(u=>'<img src="'+u+'" style="max-width:'+(_pdfGenericUrls.length>1?'48%':'100%')+';max-height:300px;object-fit:contain;border-radius:6px"/>').join('')+'</div>':'')
+            +(_pdfFallback?'<div style="display:flex;justify-content:center"><img src="'+_pdfFallback+'" style="max-width:100%;max-height:300px;object-fit:contain;border-radius:6px"/></div>':'')
+            +'<div style="font-size:9px;color:#666;margin-top:4px;width:100%;text-align:center">Mockup Preview</div></div>':'';
           printDoc({title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
             headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
             infoBoxes,tables,
@@ -7192,6 +7197,7 @@ export default function App(){
               <div style={{fontSize:14,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>SKUs & Quantities</div>
               {itemDetails.map((gi,gii)=>{
                 const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
+                const itemMocks=allArtFiles.flatMap(a=>(a?.item_mockups?.[gi.sku]||[])).filter(f=>f);
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?12:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
                     {gi.image_url?<img src={gi.image_url} alt="" style={{width:40,height:40,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>
@@ -7202,6 +7208,11 @@ export default function App(){
                     {gi.brand&&<span className="badge badge-gray">{gi.brand}</span>}
                     <span style={{marginLeft:'auto',fontWeight:800,fontSize:13,color:'#1e40af'}}>{rowTotal} units</span>
                   </div>
+                  {itemMocks.length>0&&<div style={{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap'}}>
+                    {itemMocks.map((f,fi)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const src=isImg?u:isPdf?_cloudinaryPdfThumb(u):null;
+                      return src?<img key={fi} src={src} alt="Mockup" style={{height:90,maxWidth:220,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(f)}/>:<div key={fi} style={{padding:'8px 12px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:6,fontSize:11,fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>openFile(f)}>📄 {fileDisplayName(f)}</div>;
+                    })}
+                  </div>}
                   <div style={{overflowX:'auto'}}>
                     <table style={{fontSize:12,minWidth:300}}><thead><tr style={{background:'#f0f2f5'}}>
                       <th style={{textAlign:'left',padding:'6px 8px',fontSize:10,fontWeight:700,color:'#555'}}>SIZE</th>
