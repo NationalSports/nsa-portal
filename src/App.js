@@ -23763,14 +23763,6 @@ export default function App(){
       cu={cu}
       nf={nf}
       onCreateEstimate={(c,items)=>{newE(c||null,null,items)}}
-      onCreateSO={(c,items)=>{
-        // Create estimate with seeded items, persist it so the SO can
-        // reference a real estimate ID, then convert. convertSO navigates
-        // to the new SO, so the user lands in the SO editor.
-        const est=newE(c||null,null,items);
-        const saved=savE(est);
-        convertSO(saved||est);
-      }}
     /></React.Suspense>}
     <VendorModal isOpen={vM.open} onClose={()=>setVM({open:false,v:null})} onSave={savV} vendor={vM.v} allVendors={vend}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>

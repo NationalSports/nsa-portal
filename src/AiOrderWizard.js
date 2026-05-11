@@ -1,10 +1,10 @@
 /* eslint-disable */
-// Global "Build with AI" wizard. Mounted from the top nav. Three steps:
-//   1) Order type (Estimate / Sales Order / [PO disabled in Phase 1])
-//   2) Customer
-//   3) AI parse (text / image / Google Sheets URL) → review → create
-// On finish, calls the App.js callback that creates the estimate (and
-// optionally converts to SO) with the parsed items pre-loaded.
+// Global "Build with AI" wizard. Mounted from the top nav. Two screens:
+//   1) Build: pick customer + supply input (text / image / Google Sheets URL),
+//      then parse with Claude (with vendor SKU enrichment for unmatched items).
+//   2) Review: confirm parsed lines → creates an estimate prefilled with them.
+// Hands off to App.js's `newE` callback which lands the user in the estimate
+// editor with all items already populated.
 import React, { useState } from 'react';
 import { Icon, SearchSelect } from './components';
 import { invokeEdgeFn, enrichAiLinesWithVendors } from './utils';
@@ -13,21 +13,13 @@ import { rQ } from './pricing';
 const isAU = b => { const l = (b || '').toLowerCase(); return l === 'adidas' || l === 'under armour' || l === 'new balance'; };
 const tD = { A: 0.4, B: 0.35, C: 0.3 };
 
-const TYPE_OPTIONS = [
-  { id: 'estimate', label: 'Estimate', icon: '📝', desc: 'Start a new estimate. You can convert to a Sales Order later.', enabled: true },
-  { id: 'so',       label: 'Sales Order', icon: '📦', desc: 'Creates an estimate, then immediately converts to a Sales Order.', enabled: true },
-  { id: 'po',       label: 'Purchase Order', icon: '🛒', desc: 'POs are created from inside a Sales Order. Pick "Sales Order" and use the in-order Create PO flow.', enabled: false },
-];
-
 const initialAi = () => ({
   inputMode: 'text', text: '', images: [], url: '',
   loading: false, error: null, statusMsg: null,
   parsed: [], warnings: [], build_id: null, hasParsed: false,
 });
 
-export function AiOrderWizard({ open, onClose, supabase, products, customers, vendors, defaultMarkup, onCreateEstimate, onCreateSO, nf, cu }) {
-  const [step, setStep] = useState(1);
-  const [orderType, setOrderType] = useState('estimate');
+export function AiOrderWizard({ open, onClose, supabase, products, customers, vendors, defaultMarkup, onCreateEstimate, nf, cu }) {
   const [customerId, setCustomerId] = useState(null);
   const [ai, setAi] = useState(initialAi);
 
@@ -35,10 +27,9 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
 
   const customer = customerId ? (customers || []).find(c => c.id === customerId) : null;
 
-  const reset = () => { setStep(1); setOrderType('estimate'); setCustomerId(null); setAi(initialAi()); };
+  const reset = () => { setCustomerId(null); setAi(initialAi()); };
   const close = () => { if (!ai.loading) { reset(); onClose(); } };
 
-  // STEP 3 — invoke the existing ai-order-builder edge function
   const runParse = async () => {
     if (!supabase) { setAi(x => ({ ...x, error: 'Supabase not configured' })); return; }
     setAi(x => ({ ...x, loading: true, error: null, statusMsg: 'Sending to Claude…' }));
@@ -64,9 +55,6 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       if (!d?.ok) { setAi(x => ({ ...x, loading: false, statusMsg: null, error: d?.error || 'AI parse failed' })); return; }
       let lines = (d.lines || []).map(l => ({ ...l, _skip: false }));
 
-      // Vendor enrichment: for unmatched SKUs, fan out to SanMar / S&S / Momentec
-      // and splice in name + pricing if anyone has it. Keeps the loading bar up
-      // so the user knows it's still working.
       const unmatchedCount = lines.filter(l => !l.product_id && (l.sku_guess || '').trim()).length;
       if (unmatchedCount > 0) {
         setAi(x => ({ ...x, statusMsg: `Looking up ${unmatchedCount} SKU${unmatchedCount === 1 ? '' : 's'} in vendor catalogs…` }));
@@ -91,7 +79,6 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
     }
   };
 
-  // FINAL — convert parsed lines into estimate items and hand off
   const handleCreate = () => {
     const keeping = (ai.parsed || []).filter(p => !p._skip);
     if (keeping.length === 0) { setAi(x => ({ ...x, error: 'Nothing to import — uncheck "skip" on at least one line.' })); return; }
@@ -125,150 +112,106 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
         po_lines: [],
       };
     });
-    // Best-effort: record accepted lines on the audit row
     if (supabase && ai.build_id) {
       try { supabase.from('ai_order_builds').update({ accepted_lines: keeping, accepted_count: keeping.length }).eq('id', ai.build_id); } catch (_) {}
     }
-    if (orderType === 'so' && onCreateSO) onCreateSO(customer, items);
-    else onCreateEstimate(customer, items);
-    if (nf) nf('✨ Created ' + (orderType === 'so' ? 'sales order' : 'estimate') + ' with ' + items.length + ' AI-parsed item' + (items.length === 1 ? '' : 's'));
+    onCreateEstimate(customer, items);
+    if (nf) nf('✨ Created estimate with ' + items.length + ' AI-parsed item' + (items.length === 1 ? '' : 's'));
     reset();
     onClose();
   };
 
-  // STEP TABS
-  const stepBubble = (n, label) => {
-    const active = step === n;
-    const done = step > n;
-    return <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      <div style={{ width: 22, height: 22, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 800, background: active ? '#7c3aed' : done ? '#a78bfa' : '#e2e8f0', color: active || done ? 'white' : '#64748b' }}>{done ? '✓' : n}</div>
-      <span style={{ fontSize: 12, fontWeight: 600, color: active ? '#7c3aed' : done ? '#7c3aed' : '#94a3b8' }}>{label}</span>
-    </div>;
-  };
-
-  const canAdvanceFrom1 = !!orderType;
-  const canAdvanceFrom2 = !!customerId;
   const inputReady = (ai.inputMode === 'text' && ai.text.trim()) || (ai.inputMode === 'image' && ai.images.length > 0) || (ai.inputMode === 'url' && ai.url.trim());
+  const canParse = !ai.loading && !!customerId && inputReady;
 
   return <div className="modal-overlay" onClick={close}>
     <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 960, maxHeight: '92vh', overflow: 'auto' }}>
       <div className="modal-header" style={{ background: 'linear-gradient(135deg,#ede9fe,#dbeafe)' }}>
-        <h2>✨ Build with AI</h2>
+        <h2>✨ Build Estimate with AI</h2>
         <button className="modal-close" onClick={close} disabled={ai.loading}>×</button>
-      </div>
-
-      <div style={{ padding: '12px 20px', borderBottom: '1px solid #e2e8f0', display: 'flex', gap: 18, alignItems: 'center', background: '#fafafa' }}>
-        {stepBubble(1, 'Order Type')}
-        <div style={{ flex: '0 0 24px', height: 1, background: '#e2e8f0' }} />
-        {stepBubble(2, 'Customer')}
-        <div style={{ flex: '0 0 24px', height: 1, background: '#e2e8f0' }} />
-        {stepBubble(3, 'Describe / Upload')}
       </div>
 
       <div className="modal-body" style={{ minHeight: 360 }}>
 
-        {/* STEP 1 — TYPE */}
-        {step === 1 && <>
-          <div style={{ fontSize: 13, color: '#64748b', marginBottom: 14 }}>What kind of order do you want to build?</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-            {TYPE_OPTIONS.map(t => {
-              const selected = orderType === t.id;
-              const disabled = !t.enabled;
-              return <div key={t.id}
-                onClick={() => { if (!disabled) setOrderType(t.id); }}
-                style={{ padding: 14, borderRadius: 10,
-                  border: selected ? '2px solid #7c3aed' : '2px solid #e2e8f0',
-                  background: selected ? '#faf5ff' : disabled ? '#f8fafc' : 'white',
-                  cursor: disabled ? 'not-allowed' : 'pointer',
-                  opacity: disabled ? 0.55 : 1, transition: 'all 0.12s' }}>
-                <div style={{ fontSize: 28, marginBottom: 6 }}>{t.icon}</div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: selected ? '#7c3aed' : disabled ? '#94a3b8' : '#1e293b' }}>{t.label}{disabled && <span style={{ marginLeft: 6, fontSize: 9, padding: '1px 6px', borderRadius: 4, background: '#e2e8f0', color: '#64748b', fontWeight: 700 }}>SOON</span>}</div>
-                <div style={{ fontSize: 11, color: '#64748b', marginTop: 4, lineHeight: 1.4 }}>{t.desc}</div>
-              </div>;
-            })}
-          </div>
-        </>}
-
-        {/* STEP 2 — CUSTOMER */}
-        {step === 2 && <>
-          <div style={{ fontSize: 13, color: '#64748b', marginBottom: 10 }}>Which customer is this {orderType === 'so' ? 'sales order' : 'estimate'} for?</div>
-          <SearchSelect
-            options={(customers || []).filter(c => c.is_active !== false).map(c => ({
-              value: c.id,
-              label: c.name + (c.alpha_tag ? ' (' + c.alpha_tag + ')' : ''),
-            }))}
-            value={customerId}
-            onChange={v => setCustomerId(v)}
-            placeholder="Search customer by name or tag…"
-          />
-          {customer && <div style={{ marginTop: 14, padding: 10, background: '#f0fdf4', borderRadius: 6, fontSize: 12, color: '#166534' }}>
-            ✓ Selected: <b>{customer.name}</b>
-            {customer.adidas_ua_tier && <span style={{ marginLeft: 8, fontSize: 10 }}>(Adidas/UA tier {customer.adidas_ua_tier})</span>}
-            {customer.catalog_markup && <span style={{ marginLeft: 8, fontSize: 10 }}>(markup {customer.catalog_markup}x)</span>}
-          </div>}
-        </>}
-
-        {/* STEP 3 — AI INPUT */}
-        {step === 3 && !ai.hasParsed && <>
-          <div style={{ fontSize: 13, color: '#64748b', marginBottom: 10 }}>
-            Paste the coach's order, drop screenshot(s), or paste a Google Sheets link. Claude will read it and pull out the line items.
-          </div>
-          <div style={{ display: 'flex', gap: 4, marginBottom: 12, borderBottom: '1px solid #e2e8f0' }}>
-            {[['text', '📝 Paste Text'], ['image', '📷 Upload Image'], ['url', '🔗 Sheets / URL']].map(([k, label]) =>
-              <button key={k} onClick={() => setAi(x => ({ ...x, inputMode: k, error: null }))}
-                style={{ padding: '8px 14px', fontSize: 12, fontWeight: 600, border: 'none', background: 'none', cursor: 'pointer',
-                  borderBottom: ai.inputMode === k ? '2px solid #7c3aed' : '2px solid transparent',
-                  color: ai.inputMode === k ? '#7c3aed' : '#64748b' }}>{label}</button>)}
+        {/* BUILD — customer + input on one screen */}
+        {!ai.hasParsed && <>
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 12, fontWeight: 700, color: '#475569', display: 'block', marginBottom: 6 }}>Customer</label>
+            <SearchSelect
+              options={(customers || []).filter(c => c.is_active !== false).map(c => ({
+                value: c.id,
+                label: c.name + (c.alpha_tag ? ' (' + c.alpha_tag + ')' : ''),
+              }))}
+              value={customerId}
+              onChange={v => setCustomerId(v)}
+              placeholder="Search customer by name or tag…"
+            />
+            {customer && <div style={{ marginTop: 8, padding: '6px 10px', background: '#f0fdf4', borderRadius: 6, fontSize: 11, color: '#166534' }}>
+              ✓ <b>{customer.name}</b>
+              {customer.adidas_ua_tier && <span style={{ marginLeft: 8, fontSize: 10 }}>Adidas/UA tier {customer.adidas_ua_tier}</span>}
+              {customer.catalog_markup && <span style={{ marginLeft: 8, fontSize: 10 }}>markup {customer.catalog_markup}x</span>}
+            </div>}
           </div>
 
-          {ai.inputMode === 'text' && <textarea className="form-input" rows={12} value={ai.text}
-            onChange={e => setAi(x => ({ ...x, text: e.target.value }))}
-            placeholder={"Paste whatever the coach sent. Examples:\n\nTechfit Sleeveless Tee (Black) JY6033\nS/40  M/60  L/60  XL/60  2XL/15  3XL/15\n\nM Everyday Pro Reversible (Black) JM5094\nSizing S/50  M/50  L/50  XL/30  2XL/15"}
-            style={{ fontFamily: 'monospace', fontSize: 12 }} />}
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 700, color: '#475569', display: 'block', marginBottom: 6 }}>What did the coach send?</label>
+            <div style={{ display: 'flex', gap: 4, marginBottom: 10, borderBottom: '1px solid #e2e8f0' }}>
+              {[['text', '📝 Paste Text'], ['image', '📷 Upload Image'], ['url', '🔗 Sheets / URL']].map(([k, label]) =>
+                <button key={k} onClick={() => setAi(x => ({ ...x, inputMode: k, error: null }))}
+                  style={{ padding: '8px 14px', fontSize: 12, fontWeight: 600, border: 'none', background: 'none', cursor: 'pointer',
+                    borderBottom: ai.inputMode === k ? '2px solid #7c3aed' : '2px solid transparent',
+                    color: ai.inputMode === k ? '#7c3aed' : '#64748b' }}>{label}</button>)}
+            </div>
 
-          {ai.inputMode === 'image' && <div>
-            <input type="file" accept="image/*" multiple onChange={async e => {
-              const files = Array.from(e.target.files || []);
-              const imgs = await Promise.all(files.map(f => new Promise(res => { const r = new FileReader(); r.onload = () => res({ name: f.name, dataUrl: r.result }); r.readAsDataURL(f); })));
-              setAi(x => ({ ...x, images: [...(x.images || []), ...imgs] }));
-            }} style={{ marginBottom: 8 }} />
-            <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>Tip: drop images here, or paste from clipboard.</div>
-            <div onDragOver={e => { e.preventDefault(); e.stopPropagation(); }}
-              onDrop={async e => {
-                e.preventDefault(); e.stopPropagation();
-                const files = Array.from(e.dataTransfer.files || []).filter(f => f.type.startsWith('image/'));
-                if (files.length === 0) return;
+            {ai.inputMode === 'text' && <textarea className="form-input" rows={10} value={ai.text}
+              onChange={e => setAi(x => ({ ...x, text: e.target.value }))}
+              placeholder={"Paste whatever the coach sent. Examples:\n\nTechfit Sleeveless Tee (Black) JY6033\nS/40  M/60  L/60  XL/60  2XL/15  3XL/15\n\nM Everyday Pro Reversible (Black) JM5094\nSizing S/50  M/50  L/50  XL/30  2XL/15"}
+              style={{ fontFamily: 'monospace', fontSize: 12 }} />}
+
+            {ai.inputMode === 'image' && <div>
+              <input type="file" accept="image/*" multiple onChange={async e => {
+                const files = Array.from(e.target.files || []);
                 const imgs = await Promise.all(files.map(f => new Promise(res => { const r = new FileReader(); r.onload = () => res({ name: f.name, dataUrl: r.result }); r.readAsDataURL(f); })));
                 setAi(x => ({ ...x, images: [...(x.images || []), ...imgs] }));
-              }}
-              onPaste={async e => {
-                const items = Array.from(e.clipboardData?.items || []).filter(it => it.type.startsWith('image/'));
-                if (items.length === 0) return;
-                const imgs = await Promise.all(items.map(it => new Promise(res => { const f = it.getAsFile(); const r = new FileReader(); r.onload = () => res({ name: f.name || 'pasted.png', dataUrl: r.result }); r.readAsDataURL(f); })));
-                setAi(x => ({ ...x, images: [...(x.images || []), ...imgs] }));
-              }}
-              tabIndex={0}
-              style={{ border: '2px dashed #c4b5fd', borderRadius: 8, padding: 20, minHeight: 120, background: '#faf5ff', textAlign: 'center', color: '#7c3aed', fontSize: 12, fontWeight: 600, outline: 'none', cursor: 'text' }}>
-              {(ai.images || []).length === 0 ? 'Drop or paste images here' : `${ai.images.length} image(s) attached`}
-            </div>
-            {(ai.images || []).length > 0 && <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {ai.images.map((im, i) => <div key={i} style={{ position: 'relative', border: '1px solid #e2e8f0', borderRadius: 6, padding: 4 }}>
-                <img src={im.dataUrl} alt={im.name} style={{ maxWidth: 120, maxHeight: 120, display: 'block' }} />
-                <button onClick={() => setAi(x => ({ ...x, images: x.images.filter((_, ii) => ii !== i) }))}
-                  style={{ position: 'absolute', top: 2, right: 2, background: '#fee2e2', border: 'none', borderRadius: '50%', width: 18, height: 18, cursor: 'pointer', fontSize: 11, color: '#991b1b' }}>×</button>
-              </div>)}
+              }} style={{ marginBottom: 8 }} />
+              <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>Tip: drop images here, or paste from clipboard.</div>
+              <div onDragOver={e => { e.preventDefault(); e.stopPropagation(); }}
+                onDrop={async e => {
+                  e.preventDefault(); e.stopPropagation();
+                  const files = Array.from(e.dataTransfer.files || []).filter(f => f.type.startsWith('image/'));
+                  if (files.length === 0) return;
+                  const imgs = await Promise.all(files.map(f => new Promise(res => { const r = new FileReader(); r.onload = () => res({ name: f.name, dataUrl: r.result }); r.readAsDataURL(f); })));
+                  setAi(x => ({ ...x, images: [...(x.images || []), ...imgs] }));
+                }}
+                onPaste={async e => {
+                  const items = Array.from(e.clipboardData?.items || []).filter(it => it.type.startsWith('image/'));
+                  if (items.length === 0) return;
+                  const imgs = await Promise.all(items.map(it => new Promise(res => { const f = it.getAsFile(); const r = new FileReader(); r.onload = () => res({ name: f.name || 'pasted.png', dataUrl: r.result }); r.readAsDataURL(f); })));
+                  setAi(x => ({ ...x, images: [...(x.images || []), ...imgs] }));
+                }}
+                tabIndex={0}
+                style={{ border: '2px dashed #c4b5fd', borderRadius: 8, padding: 20, minHeight: 100, background: '#faf5ff', textAlign: 'center', color: '#7c3aed', fontSize: 12, fontWeight: 600, outline: 'none', cursor: 'text' }}>
+                {(ai.images || []).length === 0 ? 'Drop or paste images here' : `${ai.images.length} image(s) attached`}
+              </div>
+              {(ai.images || []).length > 0 && <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {ai.images.map((im, i) => <div key={i} style={{ position: 'relative', border: '1px solid #e2e8f0', borderRadius: 6, padding: 4 }}>
+                  <img src={im.dataUrl} alt={im.name} style={{ maxWidth: 120, maxHeight: 120, display: 'block' }} />
+                  <button onClick={() => setAi(x => ({ ...x, images: x.images.filter((_, ii) => ii !== i) }))}
+                    style={{ position: 'absolute', top: 2, right: 2, background: '#fee2e2', border: 'none', borderRadius: '50%', width: 18, height: 18, cursor: 'pointer', fontSize: 11, color: '#991b1b' }}>×</button>
+                </div>)}
+              </div>}
+              <textarea className="form-input" rows={2} value={ai.text} placeholder="Optional: notes for Claude (e.g. 'youth sizes', 'add 2 of each for staff')"
+                onChange={e => setAi(x => ({ ...x, text: e.target.value }))} style={{ marginTop: 8, fontSize: 12 }} />
             </div>}
-            <textarea className="form-input" rows={3} value={ai.text} placeholder="Optional: notes for Claude (e.g. 'youth sizes', 'add 2 of each for staff')"
-              onChange={e => setAi(x => ({ ...x, text: e.target.value }))} style={{ marginTop: 8, fontSize: 12 }} />
-          </div>}
 
-          {ai.inputMode === 'url' && <div>
-            <input className="form-input" type="url" value={ai.url} onChange={e => setAi(x => ({ ...x, url: e.target.value }))}
-              placeholder="https://docs.google.com/spreadsheets/d/.../edit?gid=…" style={{ fontSize: 12 }} />
-            <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>
-              Google Sheets must be shared as "Anyone with the link can view." For private sheets, switch to "Paste Text" and copy the rows in.
-            </div>
-          </div>}
+            {ai.inputMode === 'url' && <div>
+              <input className="form-input" type="url" value={ai.url} onChange={e => setAi(x => ({ ...x, url: e.target.value }))}
+                placeholder="https://docs.google.com/spreadsheets/d/.../edit?gid=…" style={{ fontSize: 12 }} />
+              <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>
+                Google Sheets must be shared as "Anyone with the link can view." For private sheets, switch to "Paste Text" and copy the rows in.
+              </div>
+            </div>}
+          </div>
 
           {ai.error && <div style={{ marginTop: 10, padding: 8, background: '#fef2f2', borderRadius: 6, fontSize: 11, color: '#991b1b' }}>⚠ {ai.error}</div>}
 
@@ -281,8 +224,8 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
           </div>}
         </>}
 
-        {/* STEP 3b — REVIEW */}
-        {step === 3 && ai.hasParsed && <>
+        {/* REVIEW */}
+        {ai.hasParsed && <>
           <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
             <div style={{ padding: 8, background: '#f0fdf4', borderRadius: 6, flex: 1, textAlign: 'center' }}>
               <div style={{ fontSize: 18, fontWeight: 800, color: '#166534' }}>{ai.parsed.length}</div><div style={{ fontSize: 10, color: '#64748b' }}>Items Parsed</div></div>
@@ -333,25 +276,19 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
             </table>
           </div>
           <div style={{ marginTop: 8, padding: 8, background: '#f8fafc', borderRadius: 6, fontSize: 11, color: '#64748b' }}>
-            💡 Unmatched items become custom items. You can fix SKUs here, or in the {orderType === 'so' ? 'sales order' : 'estimate'} editor afterward.
+            💡 Unmatched items become custom items. You can fix SKUs here, or in the estimate editor afterward.
           </div>
           {ai.error && <div style={{ marginTop: 10, padding: 8, background: '#fef2f2', borderRadius: 6, fontSize: 11, color: '#991b1b' }}>⚠ {ai.error}</div>}
         </>}
 
       </div>
 
-      {/* FOOTER — navigation buttons */}
       <div style={{ padding: '12px 20px', borderTop: '1px solid #e2e8f0', display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center', background: '#fafafa' }}>
-        <div>{step > 1 && !ai.loading && <button className="btn btn-secondary" onClick={() => {
-          if (step === 3 && ai.hasParsed) { setAi(x => ({ ...x, hasParsed: false, parsed: [], warnings: [], build_id: null })); return; }
-          setStep(s => Math.max(1, s - 1));
-        }}>← Back</button>}</div>
+        <div>{ai.hasParsed && !ai.loading && <button className="btn btn-secondary" onClick={() => setAi(x => ({ ...x, hasParsed: false, parsed: [], warnings: [], build_id: null }))}>← Back</button>}</div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-secondary" onClick={close} disabled={ai.loading}>Cancel</button>
-          {step === 1 && <button className="btn btn-primary" style={{ background: '#7c3aed', borderColor: '#6d28d9' }} disabled={!canAdvanceFrom1} onClick={() => setStep(2)}>Next →</button>}
-          {step === 2 && <button className="btn btn-primary" style={{ background: '#7c3aed', borderColor: '#6d28d9' }} disabled={!canAdvanceFrom2} onClick={() => setStep(3)}>Next →</button>}
-          {step === 3 && !ai.hasParsed && <button className="btn btn-primary" style={{ background: '#7c3aed', borderColor: '#6d28d9' }} disabled={ai.loading || !inputReady} onClick={runParse}>{ai.loading ? '🤖 Working…' : '✨ Parse with AI'}</button>}
-          {step === 3 && ai.hasParsed && <button className="btn btn-primary" style={{ background: '#7c3aed', borderColor: '#6d28d9' }} disabled={ai.parsed.filter(p => !p._skip).length === 0} onClick={handleCreate}>✅ Create {orderType === 'so' ? 'Sales Order' : 'Estimate'} with {ai.parsed.filter(p => !p._skip).length} item{ai.parsed.filter(p => !p._skip).length === 1 ? '' : 's'}</button>}
+          {!ai.hasParsed && <button className="btn btn-primary" style={{ background: '#7c3aed', borderColor: '#6d28d9' }} disabled={!canParse} onClick={runParse}>{ai.loading ? '🤖 Working…' : '✨ Parse with AI'}</button>}
+          {ai.hasParsed && <button className="btn btn-primary" style={{ background: '#7c3aed', borderColor: '#6d28d9' }} disabled={ai.parsed.filter(p => !p._skip).length === 0} onClick={handleCreate}>✅ Create Estimate with {ai.parsed.filter(p => !p._skip).length} item{ai.parsed.filter(p => !p._skip).length === 1 ? '' : 's'}</button>}
         </div>
       </div>
     </div>
