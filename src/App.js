@@ -15,7 +15,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, openDocPDF, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
 import { calcOrderTotals } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -6013,6 +6013,90 @@ export default function App(){
     nf('PO '+po.po_number+' items received — inventory updated');
   };
 
+  const printInvPOPackingList=(po)=>{
+    if(!po)return;
+    const vendor=vend.find(v=>v.id===po.vendor_id);
+    const vendorSub=[vendor?.contact_email,vendor?.contact_phone].filter(Boolean).join('<br/>')||'';
+    const _ci=companyInfo||NSA;
+    const ourSub=[_ci.addr,((_ci.city||'')+', '+(_ci.state||'')+' '+(_ci.zip||'')).trim(),_ci.phone].filter(s=>s&&s.trim()&&s.trim()!==',').join('<br/>');
+    const rows=po.items.map(it=>{
+      const szObj=it.sizes||{};
+      const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
+      if(totalQty<=0)return null;
+      const szStr=Object.entries(szObj).filter(([,v])=>safeNum(v)>0).map(([sz,v])=>sz+': '+v).join('  ');
+      return{cells:[{value:it.sku||'',style:'font-family:monospace;font-weight:700'},{value:it.name||''},{value:it.color||'—'},{value:szStr,style:'font-size:11px'},{value:totalQty,style:'text-align:center;font-weight:700'}]};
+    }).filter(Boolean);
+    const totalUnits=po.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((b,v)=>b+safeNum(v),0),0);
+    const opts={
+      title:po.vendor_name||'Vendor',docNum:po.po_number,docType:'PACKING LIST',showPricing:false,
+      headerRight:'<div class="ta" style="font-size:20px">'+totalUnits+' Total Units</div>',
+      infoBoxes:[
+        {label:'Ship From',value:po.vendor_name||'—',sub:vendorSub},
+        {label:'Ship To',value:_ci.name||'National Sports Apparel',sub:ourSub},
+        {label:'PO #',value:po.po_number},
+        ...(po.expected_date?[{label:'Expected',value:po.expected_date}]:[]),
+        ...(po.memo?[{label:'Memo',value:po.memo}]:[]),
+      ],
+      tables:[{title:'Items on this PO',headers:['SKU','Item','Color','Sizes','Qty'],aligns:['left','left','left','left','center'],rows}],
+      notes:'Verify quantities against this list when receiving. Note any discrepancies on the receiving record.',
+      footer:'NO PRICING — Receiving Packing List'
+    };
+    openDocPDF(opts,'Packing-List-'+po.po_number).catch(err=>{console.warn('PDF open failed, falling back to print:',err);printDoc(opts)});
+    nf('📦 Packing list opened for PO '+po.po_number);
+  };
+
+  const printSOPackingList=(so,shipment,task)=>{
+    if(!so)return;
+    const c=cust.find(x=>x.id===so.customer_id);
+    const shipAddrSub=(()=>{
+      if(so.ship_to_id==='custom'&&so.ship_to_custom)return so.ship_to_custom;
+      if(c?.shipping_address_line1){let a=c.shipping_address_line1;if(c.shipping_address_line2)a+='<br/>'+c.shipping_address_line2;a+='<br/>'+(c.shipping_city||'')+', '+(c.shipping_state||'')+' '+(c.shipping_zip||'');return a}
+      if(c?.billing_address_line1){let a=c.billing_address_line1;if(c.billing_address_line2)a+='<br/>'+c.billing_address_line2;a+='<br/>'+(c.billing_city||'')+', '+(c.billing_state||'')+' '+(c.billing_zip||'');return a}
+      return '';
+    })();
+    // Scope items: shipment.items if shipping a box, else job's items if task carries a job, else all SO items
+    let sourceItems;
+    if(shipment){sourceItems=shipment.items||[]}
+    else if(task?.job?.items?.length){
+      const soItems=safeItems(so);
+      sourceItems=task.job.items.map(gi=>{
+        const it=soItems[gi.item_idx];
+        // Prefer SO-item sizes (real breakdown); fall back to job-item shape with whatever sizing it has.
+        return it?{...it,_jobItem:gi}:{sku:gi.sku||'',name:gi.name||'',color:gi.color||'',sizes:gi.sizes||{},_jobItem:gi};
+      });
+    }
+    else sourceItems=safeItems(so);
+    const rows=sourceItems.map(it=>{
+      const szObj=shipment?(it.sizes||{}):safeSizes(it);
+      const sizeEntries=Object.entries(szObj).filter(([,v])=>safeNum(v)>0);
+      const totalFromSizes=sizeEntries.reduce((a,[,v])=>a+safeNum(v),0);
+      const szStr=sizeEntries.map(([sz,v])=>sz+': '+v).join('  ');
+      const fallbackQty=safeNum(it._jobItem?.units)||safeNum(it._jobItem?.total)||safeNum(it.est_qty);
+      const qty=totalFromSizes>0?totalFromSizes:fallbackQty;
+      if(!it.sku&&!it.name&&qty<=0)return null;
+      return{cells:[{value:it.sku||'',style:'font-family:monospace;font-weight:700'},{value:it.name||''},{value:it.color||'—'},{value:szStr||'—',style:'font-size:11px'},{value:qty||'—',style:'text-align:center;font-weight:700'}]};
+    }).filter(Boolean);
+    const totalUnits=rows.reduce((a,r)=>{const v=r.cells[4].value;return a+(typeof v==='number'?v:0)},0)||safeNum(task?.units)||safeNum(task?.job?.total_units)||0;
+    const carrier=shipment?.carrier?shipment.carrier.toUpperCase():(so.ship_preference==='warehouse_delivery'?'Warehouse Delivery':'');
+    const opts={
+      title:c?.name||'Customer',docNum:so.id+(shipment?' — '+(shipment.tracking_number||shipment.id||'Shipment'):''),docType:'PACKING LIST',showPricing:false,
+      headerRight:'<div class="ta" style="font-size:20px">'+totalUnits+' Total Units</div>'+(shipment?.tracking_number?'<div class="ts" style="font-family:monospace">'+shipment.tracking_number+'</div>':''),
+      infoBoxes:[
+        {label:'Ship To',value:c?.name||'—',sub:shipAddrSub},
+        {label:'Ship Date',value:(shipment?.ship_date)||new Date().toLocaleDateString(),sub:carrier||undefined},
+        {label:'Sales Order',value:so.id},
+        ...(shipment?.tracking_number?[{label:'Tracking',value:shipment.tracking_number}]:[]),
+        ...(so.memo?[{label:'Memo',value:so.memo}]:[]),
+      ],
+      tables:[{title:shipment?'Items in this Shipment':task?.job?'Items in this Job':'Items on this Order',headers:['SKU','Item','Color','Sizes','Qty'],aligns:['left','left','left','left','center'],rows}],
+      notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
+      footer:'NO PRICING — Packing List'
+    };
+    openDocPDF(opts,'Packing-List-'+so.id).catch(err=>{console.warn('PDF open failed, falling back to print:',err);printDoc(opts)});
+    nf('📦 Packing list opened for '+(c?.name||so.id));
+  };
+
+
   function rInvPOs(){
     const q3=invPOSearch.trim().toLowerCase();
     const filtered=invPOs.filter(po=>{if(!q3)return true;return po.po_number.toLowerCase().includes(q3)||po.vendor_name.toLowerCase().includes(q3)||po.items.some(it=>it.sku.toLowerCase().includes(q3)||it.name.toLowerCase().includes(q3))});
@@ -6063,6 +6147,7 @@ export default function App(){
             </div>
             <div style={{padding:'10px 16px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',display:'flex',gap:8}}>
               {po.status!=='received'&&po.status!=='cancelled'&&<button className="btn btn-sm btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>setInvPOReceive(po)}>Receive Items</button>}
+              <button className="btn btn-sm btn-secondary" onClick={()=>printInvPOPackingList(po)}>📦 Packing List</button>
               {po.status==='ordered'&&<button className="btn btn-sm btn-secondary" onClick={()=>editInvPO(po)}>Edit</button>}
               <button className="btn btn-sm btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>deleteInvPO(po)}>Delete</button>
             </div>
@@ -13199,12 +13284,12 @@ export default function App(){
                           const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
                           if(totalQty<=0)return;
                           const szStr=Object.entries(szObj).filter(([,v])=>v>0).map(([sz,v])=>sz+': '+v).join('  ');
-                          packRows.push({cells:[soId,item.sku||'',item.name||'',szStr,totalQty]});
+                          packRows.push({cells:[soId,item.sku||'',item.name||'',item.color||'—',szStr,totalQty]});
                         });
                       });
-                      printDoc({
+                      const packOpts={
                         title:grp.cName,docNum:[...grp.soIds].join(', '),
-                        docType:'PACKING SLIP',showPricing:false,
+                        docType:'PACKING LIST',showPricing:false,
                         headerRight:'<div class="ta" style="font-size:20px">'+grp.totalUnits+' Total Units</div><div class="ts">Ship: '+(grp.shipMethod||'TBD')+'</div>',
                         infoBoxes:[
                           {label:'Ship To',value:grp.cName,sub:shipAddrSub},
@@ -13212,14 +13297,15 @@ export default function App(){
                         ],
                         tables:[{
                           title:'Items in this Shipment',
-                          headers:['SO#','SKU','Item','Sizes','Qty'],
-                          aligns:['left','left','left','left','center'],
+                          headers:['SO#','SKU','Item','Color','Sizes','Qty'],
+                          aligns:['left','left','left','left','left','center'],
                           rows:packRows
                         }],
                         notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
                         footer:'NO PRICING — Customer Copy'
-                      });
-                      nf('📦 Packing slip printed for '+grp.cName);
+                      };
+                      openDocPDF(packOpts,'Packing-List-'+[...grp.soIds].join('-')).catch(err=>{console.warn('PDF open failed, falling back to print:',err);printDoc(packOpts)});
+                      nf('📦 Packing list opened for '+grp.cName);
                     }}>🖨️ Pack Slip</button>
                 </div>
               </div>
@@ -13652,9 +13738,9 @@ export default function App(){
                       }
                       return '';
                     })();
-                    printDoc({
+                    const boxPackOpts={
                       title:shipModal.grp.cName,docNum:[...shipModal.grp.soIds].join(', ')+' — Box '+(bi+1),
-                      docType:'PACKING SLIP',showPricing:false,
+                      docType:'PACKING LIST',showPricing:false,
                       headerRight:'<div class="ta" style="font-size:18px">'+boxUnits+' Units — Box '+(bi+1)+' of '+shipModal.boxes.length+'</div>'+(box.tracking_number?'<div class="ts" style="font-family:monospace">'+box.tracking_number+'</div>':''),
                       infoBoxes:[
                         {label:'Ship To',value:shipModal.grp.cName,sub:boxAddrSub},
@@ -13672,8 +13758,9 @@ export default function App(){
                       }],
                       notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
                       footer:'NO PRICING — Customer Copy'
-                    });
-                    nf('🖨️ Packing slip for Box '+(bi+1));
+                    };
+                    openDocPDF(boxPackOpts,'Packing-List-Box-'+(bi+1)).catch(err=>{console.warn('PDF open failed, falling back to print:',err);printDoc(boxPackOpts)});
+                    nf('📦 Packing list opened for Box '+(bi+1));
                   }}>🖨️ Pack Slip</button>
                   {box.shipping_cost!=null&&<span style={{fontSize:10,fontWeight:700,color:'#166534',padding:'4px 8px',background:'#dcfce7',borderRadius:4}}>Ship cost: ${(box.shipping_cost||0).toFixed(2)}</span>}
                   {box.label_url&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
@@ -14163,6 +14250,8 @@ export default function App(){
                   <div>Rep: <strong>{t.rep}</strong></div>
                   {t.daysOut!=null&&<div>{t.daysOut>=0?'Due in '+t.daysOut+'d':Math.abs(t.daysOut)+'d overdue'}</div>}
                 </div>
+                <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                  onClick={e=>{e.stopPropagation();printSOPackingList(t.so,null,t)}}>📦 Packing List</button>
               </div>
             </div>})}
         </div>}
@@ -14203,6 +14292,8 @@ export default function App(){
                             setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
                         } else {const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
                       }}>Print Label</button>}
+                    <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                      onClick={()=>printSOPackingList(shp.so,shp)}>📦 Packing List</button>
                     <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                       onClick={()=>{
                         const tn=prompt('Tracking number:',shp.tracking_number||'');if(tn===null)return;
@@ -14321,6 +14412,7 @@ export default function App(){
                     w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Scan QR to open this PO</div>');
                     w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),400);
                   }}>🖨️ Print Label</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>printInvPOPackingList(po)}>📦 Packing List</button>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{setWhRecvPO(poRef);setWhTab('receive')}}>📱 Receive</button>
                 </div>
               </div>
@@ -23324,6 +23416,7 @@ export default function App(){
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setInvPOReceive(null)}>Cancel</button>
+        <button className="btn btn-secondary" onClick={()=>printInvPOPackingList(invPOReceive)}>📦 Print Packing List</button>
         <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>{
           const receivedMap={};
           invPOReceive.items.forEach((it,idx)=>{
