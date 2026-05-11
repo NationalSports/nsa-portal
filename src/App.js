@@ -769,13 +769,33 @@ const _dbSaveSOInner = async (so) => {
       else console.warn('[DB] SO saved with core columns only')
     }
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
-    const oldItemIds=(await supabase.from('so_items').select('id').eq('so_id',so.id)).data?.map(i=>i.id)||[];
+    const _oldItemsResp=await supabase.from('so_items').select('id').eq('so_id',so.id);
+    // Fail-closed: if we can't read the current items, refuse to proceed when the client has 0 items.
+    // Without this, a SELECT error returns oldItemIds=[] and the safety check below would fail-open,
+    // letting the subsequent DELETE wipe everything for this SO.
+    if((!items||items.length===0)&&_oldItemsResp.error){
+      console.error('[DB] SAFETY: Blocking SO save — failed to read existing items for',so.id,'and client has none:',_oldItemsResp.error.message);
+      if(_dbNotify)_dbNotify('Save blocked — could not verify existing items. Please reload the page.','error');
+      return false;
+    }
+    const oldItemIds=_oldItemsResp.data?.map(i=>i.id)||[];
     // Safety check: if client has 0 items but DB has some, abort to prevent data loss
     // Triggers when state was polluted by a timed-out so_items load and an autosave fires before a fresh load completes
     if((!items||items.length===0)&&oldItemIds.length>0){
       console.error('[DB] SAFETY: Blocking SO save — client has 0 items but DB has',oldItemIds.length,'for',so.id);
       if(_dbNotify)_dbNotify('Save blocked — '+oldItemIds.length+' item(s) would be lost. Please reload the page.','error');
       return false;
+    }
+    // Extra guard: even if oldItemIds came back empty, refuse the wipe when the SO still has jobs in the DB.
+    // Jobs reference so_items by item_idx, so if jobs exist there must have been items — saving empty items
+    // would leave orphaned jobs (the SO-1001 failure mode).
+    if(!items||items.length===0){
+      const{count:dbJobCount}=await supabase.from('so_jobs').select('id',{count:'exact',head:true}).eq('so_id',so.id);
+      if(dbJobCount&&dbJobCount>0){
+        console.error('[DB] SAFETY: Blocking SO save — client has 0 items but DB has',dbJobCount,'job(s) for',so.id);
+        if(_dbNotify)_dbNotify('Save blocked — items would be wiped while '+dbJobCount+' job(s) still exist. Please reload the page.','error');
+        return false;
+      }
     }
     // Safety check: if client has 0 decorations but DB has some, abort to prevent data loss
     const clientDecoCount=(items||[]).reduce((a,it)=>a+(it.decorations?.length||0),0);
@@ -3748,6 +3768,14 @@ export default function App(){
   const savSO=(s,opts)=>{const sl=lockPrices(s);const skipMerge=opts?.skipMerge;
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===sl.id);
+    // Last-line client guard: refuse to silently drop items. If the previous in-memory state had items but the
+    // incoming save has none, alert the user and abort. This catches the OrderEditor "Print/Pack-Slip after a
+    // race-loaded empty editor" failure mode that wiped SO-1001 before this guard existed.
+    if(prev&&(prev.items?.length||0)>0&&(!sl.items||sl.items.length===0)){
+      console.warn('[savSO] Refusing to save '+sl.id+' — would drop '+prev.items.length+' item(s) from current state.');
+      nf('⚠️ Save blocked for '+sl.id+': '+prev.items.length+' line item(s) would be deleted. Reload the page if items look wrong.','error');
+      return prev;
+    }
     if(prev){setSOHistory(h=>{const existing=h[sl.id]||[];return{...h,[sl.id]:[{ts:new Date().toLocaleString(),user:cu?.name||'Portal Coach',snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
     // Merge pick_line statuses — preserve 'pulled' status from current state so warehouse pulls aren't lost
     // Skip merge when warehouse is intentionally editing/reverting pick_line statuses
