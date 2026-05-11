@@ -6931,7 +6931,13 @@ export default function App(){
         if(!so)return null;
         const c=cust.find(x=>x.id===so.customer_id);
         const af=safeArt(so).find(f=>f.id===j.art_file_id);
-        const allArtFiles=(j._art_ids||[j.art_file_id].filter(Boolean)).map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
+        const allArtFiles=(()=>{const ids=new Set();
+          (j._art_ids||[j.art_file_id].filter(Boolean)).forEach(id=>ids.add(id));
+          (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;
+            safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)});
+          });
+          return[...ids].map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
+        })();
         // Build per-location decoration details — only decorations belonging to THIS job's deco_type
         const decoLocations=(()=>{const firstGi=(j.items||[])[0];const it=firstGi?safeItems(so)[firstGi.item_idx]:null;if(!it)return[];
           const jobDecoIdxs=firstGi.deco_idxs||[firstGi.deco_idx];
@@ -7300,7 +7306,13 @@ export default function App(){
       {/* Lightbox — full-size zoomable mockup viewer with gallery */}
       {prodJobLightbox&&prodJobModal&&(()=>{
         const so=prodJobModal.so||sos.find(s=>s.id===prodJobModal.soId);
-        const allArtIds=prodJobModal._art_ids||[prodJobModal.art_file_id].filter(Boolean);
+        const allArtIds=(()=>{const ids=new Set();
+          (prodJobModal._art_ids||[prodJobModal.art_file_id].filter(Boolean)).forEach(id=>ids.add(id));
+          (prodJobModal.items||[]).forEach(gi=>{const it=so?safeItems(so)[gi.item_idx]:null;if(!it)return;
+            safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)});
+          });
+          return[...ids];
+        })();
         const allMockups=[];
         allArtIds.forEach(aid=>{const artF=so?safeArt(so).find(f=>f.id===aid):null;if(!artF)return;(artF?.mockup_files||artF?.files||[]).forEach(f=>allMockups.push(f));Object.values(artF?.item_mockups||{}).flat().forEach(f=>{if(f)allMockups.push(f)})});
         const idx=Math.min(prodLightboxIdx,allMockups.length-1);
