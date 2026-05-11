@@ -14745,7 +14745,7 @@ export default function App(){
                 }}>⏱️ Clock In</button>}
                 <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'4px 10px',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();window.open(window.location.origin+window.location.pathname+'?so='+j.soId,'_blank')}}>Open SO ↗</button>
               </div>})()}
-            {(()=>{const showActions=col?.id==='waiting_for_art'||col?.id==='approved';if(!showActions)return null;return<div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
+            {(()=>{const showActions=col?.id==='waiting_for_art';if(!showActions)return null;return<div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
               {col?.id==='waiting_for_art'&&j.art_status==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveArtStatus(j,'art_in_progress')}}>Start Working</button>}
               {col?.id==='waiting_for_art'&&j.art_status==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();
                 const so2=sos.find(s=>s.id===j.soId);if(!so2)return;
@@ -14757,18 +14757,6 @@ export default function App(){
                 const updArt3=safeArt(so2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
                 savSO({...so2,art_files:updArt3,jobs:updJobs});
                 nf('Mockup sent to rep for approval')}}>Send to Rep</button>}
-              {col?.id==='approved'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();
-                const so=sos.find(s=>s.id===j.soId);if(!so){nf('SO not found','error');return}
-                const afIdx=safeArt(so).findIndex(f=>f.id===j.art_file_id);
-                if(afIdx>=0&&(safeArt(so)[afIdx].prod_files||[]).length===0){
-                  const ext=j.deco_type==='embroidery'?'.dst':j.deco_type==='screen_print'?'_seps.ai':'.pdf';
-                  const fn=(j.art_name||'art').replace(/\s+/g,'_')+'_FINAL'+ext;
-                  const updArt=[...safeArt(so)];updArt[afIdx]={...updArt[afIdx],prod_files:[...(updArt[afIdx].prod_files||[]),fn]};
-                  const updJobs=safeJobs(so).map(jj=>{if(jj.id!==j.id)return jj;return{...jj,art_status:'art_complete',art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}});
-                  savSO({...so,art_files:updArt,jobs:updJobs});
-                  nf('Prod files uploaded — Art Complete!');
-                }else{moveArtStatus(j,'art_complete')}
-              }}>Upload & Complete</button>}
             </div>})()}
           </>}
 
