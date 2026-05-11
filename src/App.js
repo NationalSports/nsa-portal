@@ -27,6 +27,20 @@ const nextInvId=invs=>'INV-'+(Math.max(_maxNum(invs),_dbMaxIds.inv,1000)+1);
 const fmtCreatedAt=s=>{if(!s)return'—';if(String(s).includes(','))return String(s).split(',')[0];const d=new Date(s);return isNaN(d)?String(s):d.toLocaleDateString('en-US')};
 const isDualRunJob=(j)=>j&&j.items&&j.items.length>1&&j.items.some(gi=>gi.run_order);
 const mapColorCategory=color=>{if(!color)return'';const c=color.toLowerCase();if(/white|natural|cream|ivory/.test(c))return'White';if(/black|charcoal/.test(c))return'Black';if(/navy|blue|royal|columbia|carolina/.test(c))return'Blue';if(/red|cardinal|scarlet|crimson/.test(c))return'Red';if(/green|forest|kelly|lime|hunter/.test(c))return'Green';if(/grey|gray|heather|silver|graphite/.test(c))return'Grey';if(/gold|yellow|vegas|athletic/.test(c))return'Gold';if(/orange|texas/.test(c))return'Orange';if(/purple|maroon|wine|burgundy/.test(c))return'Purple';if(/pink|fuchsia/.test(c))return'Pink';if(/brown|tan|khaki|sand|coyote/.test(c))return'Brown';return''};
+// Matches a product against a color-filter selection. Picks up products where the
+// chosen category is the PRIMARY color (the part before '/' in e.g. "BLACK/WHITE"),
+// so brand-style names like Adidas "BLACK/WHITE" register under Black, not White.
+const matchColorFilter=(p,clr)=>{
+  if(!clr||clr==='all')return true;
+  if(p.color_category===clr)return true;
+  if(!p.color)return false;
+  const primary=String(p.color).split(/[\/\\|,&]/)[0].trim().toLowerCase();
+  if(!primary)return false;
+  const f=clr.toLowerCase();
+  if(primary===f)return true;
+  const esc=f.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  return new RegExp('\\b'+esc+'\\b','i').test(primary);
+};
 // Dedup products by SKU+color — merges true duplicates, prefers the copy with images.
 // Different colors under the same SKU stay as separate products (do not merge or delete).
 const _dedupProducts=(products,onRemove)=>{
@@ -4014,8 +4028,8 @@ export default function App(){
     if(prodServerResults&&pg==='products')return prodServerResults.products;
     // Fallback: client-side filter (used when RPC unavailable or on other pages)
     let l=prod;if(q&&pg==='products'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.brand?.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s))}
-    if(pF.cat!=='all')l=l.filter(p=>p.category===pF.cat);if(pF.vnd!=='all')l=l.filter(p=>p.vendor_id===pF.vnd);if(pF.stk==='instock')l=l.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(pF.clr!=='all')l=l.filter(p=>p.color_category===pF.clr);if(pF.arc==='hide')l=l.filter(p=>!p.is_archived);else if(pF.arc==='only')l=l.filter(p=>p.is_archived);return l},[prod,q,pF,pg,prodServerResults]);
-  const iD=useMemo(()=>{let l=prod.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(iF.cat!=='all')l=l.filter(p=>p.category===iF.cat);if(iF.vnd!=='all')l=l.filter(p=>p.vendor_id===iF.vnd);if(iF.clr!=='all')l=l.filter(p=>p.color_category===iF.clr);
+    if(pF.cat!=='all')l=l.filter(p=>p.category===pF.cat);if(pF.vnd!=='all')l=l.filter(p=>p.vendor_id===pF.vnd);if(pF.stk==='instock')l=l.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(pF.clr!=='all')l=l.filter(p=>matchColorFilter(p,pF.clr));if(pF.arc==='hide')l=l.filter(p=>!p.is_archived);else if(pF.arc==='only')l=l.filter(p=>p.is_archived);return l},[prod,q,pF,pg,prodServerResults]);
+  const iD=useMemo(()=>{let l=prod.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(iF.cat!=='all')l=l.filter(p=>p.category===iF.cat);if(iF.vnd!=='all')l=l.filter(p=>p.vendor_id===iF.vnd);if(iF.clr!=='all')l=l.filter(p=>matchColorFilter(p,iF.clr));
     if(iShowFav&&favSkus.length>0)l=l.filter(p=>favSkus.includes(p.sku));
     if(q&&pg==='inventory'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s))}
     const m=l.map(p=>{const t=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);return{...p,_tQ:t,_tV:t*(p.nsa_cost||0)}});
