@@ -3699,6 +3699,17 @@ export default function App(){
   const[favSkus,setFavSkus]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_fav_skus')||'[]')}catch{return[]}});
   const toggleFav=sku=>{setFavSkus(f=>{const n=f.includes(sku)?f.filter(s=>s!==sku):[...f,sku];_lsSet('nsa_fav_skus',JSON.stringify(n));return n})};
   const[iShowFav,setIShowFav]=useState(false);
+  const[bulkMode,setBulkMode]=useState(false);
+  const[bulkSel,setBulkSel]=useState(()=>new Set());
+  const[bulkField,setBulkField]=useState('category');
+  const[bulkValue,setBulkValue]=useState('');
+  const applyBulkUpdate=()=>{
+    if(bulkSel.size===0){nf('No items selected','error');return}
+    if(!bulkValue){nf('Pick a value to apply','error');return}
+    setProd(pp=>pp.map(p=>bulkSel.has(p.id)?{...p,[bulkField]:bulkValue}:p));
+    nf(`Updated ${bulkSel.size} item${bulkSel.size===1?'':'s'} — ${bulkField==='color_category'?'Color Category':bulkField==='vendor_id'?'Vendor':'Category'} → ${bulkField==='vendor_id'?(vend.find(v=>v.id===bulkValue)?.name||bulkValue):bulkValue}`);
+    setBulkSel(new Set());setBulkValue('');
+  };
   const[dismissedNotifs,setDismissedNotifs]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_dismissed_notifs')||'[]')}catch{return[]}});
   const dismissNotif=(key)=>{setDismissedNotifs(prev=>{if(prev.includes(key))return prev;const n=[...prev,key];_lsSet('nsa_dismissed_notifs',JSON.stringify(n));if(supabase&&cu?.id)supabase.from('dismissed_notifs').upsert({id:cu.id+':'+key.slice(0,80),user_id:cu.id,dismiss_key:key},{onConflict:'user_id,dismiss_key'}).then(r=>{if(r.error)console.error('[DB] dismiss notif:',r.error.message)});return n})};
   const[dismissedTodos,setDismissedTodos]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_dismissed_todos')||'[]')}catch{return[]}});
@@ -5925,18 +5936,42 @@ export default function App(){
   </>);};
 
   // INVENTORY
-  const rInvStock=()=>(<>
+  const rInvStock=()=>{
+    const visibleIds=iD.map(p=>p.id);
+    const allSelected=visibleIds.length>0&&visibleIds.every(id=>bulkSel.has(id));
+    const toggleAll=()=>setBulkSel(s=>{const n=new Set(s);if(allSelected){visibleIds.forEach(id=>n.delete(id))}else{visibleIds.forEach(id=>n.add(id))}return n});
+    const toggleOne=id=>setBulkSel(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
+    const bulkOptions=bulkField==='category'?CATEGORIES:bulkField==='color_category'?COLOR_CATEGORIES:vend.map(v=>v.name);
+    return(<>
   <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
     <button className={`btn btn-sm ${iShowFav?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>setIShowFav(f=>!f)}>Favorites{favSkus.length>0?` (${favSkus.length})`:''}</button>
     <select className="form-select" style={{width:110}} value={iF.cat} onChange={e=>setIF(f=>({...f,cat:e.target.value}))}><option value="all">Category</option>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select>
     <select className="form-select" style={{width:110}} value={iF.vnd} onChange={e=>setIF(f=>({...f,vnd:e.target.value}))}><option value="all">Vendor</option>{vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>
-    <select className="form-select" style={{width:130}} value={iF.clr} onChange={e=>setIF(f=>({...f,clr:e.target.value}))}><option value="all">Color</option>{cols.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
+    <select className="form-select" style={{width:130}} value={iF.clr} onChange={e=>setIF(f=>({...f,clr:e.target.value}))}><option value="all">Color</option>{cols.map(c=><option key={c} value={c}>{c}</option>)}</select>
+    {isA&&<button className={`btn btn-sm ${bulkMode?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>{setBulkMode(m=>!m);setBulkSel(new Set());setBulkValue('')}}>{bulkMode?'Exit Bulk Edit':'Bulk Edit'}</button>}</div>
+  {isA&&bulkMode&&<div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:10,marginBottom:12,background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6}}>
+    <span style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{bulkSel.size} selected</span>
+    <span style={{fontSize:11,color:'#64748b'}}>Set</span>
+    <select className="form-select" style={{width:140,fontSize:11}} value={bulkField} onChange={e=>{setBulkField(e.target.value);setBulkValue('')}}>
+      <option value="category">Category</option>
+      <option value="color_category">Color Category</option>
+      <option value="vendor_id">Vendor</option>
+    </select>
+    <span style={{fontSize:11,color:'#64748b'}}>to</span>
+    <select className="form-select" style={{width:150,fontSize:11}} value={bulkValue} onChange={e=>setBulkValue(e.target.value)}>
+      <option value="">Select value...</option>
+      {bulkField==='vendor_id'?vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>):bulkOptions.map(o=><option key={o} value={o}>{o}</option>)}
+    </select>
+    <button className="btn btn-sm btn-primary" disabled={bulkSel.size===0||!bulkValue} onClick={applyBulkUpdate}>Apply to {bulkSel.size}</button>
+    <button className="btn btn-sm btn-secondary" onClick={()=>setBulkSel(new Set())} disabled={bulkSel.size===0}>Clear</button>
+  </div>}
   {(()=>{const anyB2B=Object.keys(adidasInvBulk).length>0;if(!anyB2B)return null;const firstSynced=Object.values(adidasInvBulk).find(v=>v.lastSynced);const ls=firstSynced?new Date(firstSynced.lastSynced):null;const staleHrs=ls?(Date.now()-ls.getTime())/3600000:999;
     return<div style={{marginBottom:8,display:'flex',alignItems:'center',gap:8}}>
       <span style={{fontSize:11,fontWeight:600,color:'#059669',background:'#ecfdf5',padding:'3px 8px',borderRadius:4}}>Adidas B2B Data Active</span>
       {ls&&<span style={{fontSize:10,color:staleHrs>48?'#d97706':'#94a3b8'}}>{staleHrs>48?'⚠ ':''}Last synced: {ls.toLocaleDateString()+' '+ls.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>}
     </div>})()}
   <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr>
+    {isA&&bulkMode&&<th style={{width:32}}><input type="checkbox" checked={allSelected} onChange={toggleAll} title="Select all visible"/></th>}
     <SortHeader label="SKU" field="sku" sortField={iS.f} sortDir={iS.d} onSort={f=>setIS(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}/>
     <SortHeader label="Product" field="name" sortField={iS.f} sortDir={iS.d} onSort={f=>setIS(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}/>
     <th>Sizes</th>
@@ -5944,16 +5979,17 @@ export default function App(){
     <th style={{fontSize:10}}>B2B</th>
     <SortHeader label="Value" field="value" sortField={iS.f} sortDir={iS.d} onSort={f=>setIS(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}/>
     <th>Actions</th></tr></thead>
-  <tbody>{iD.map(p=>{const ai=adidasInvBulk[p.sku];const b2bTotal=ai?Object.values(ai.sizes||{}).reduce((a,s)=>a+(s.qty||0),0):null;return<tr key={p.id}>
+  <tbody>{iD.map(p=>{const ai=adidasInvBulk[p.sku];const b2bTotal=ai?Object.values(ai.sizes||{}).reduce((a,s)=>a+(s.qty||0),0):null;const checked=bulkSel.has(p.id);return<tr key={p.id} style={isA&&bulkMode&&checked?{background:'#eff6ff'}:undefined}>
+    {isA&&bulkMode&&<td><input type="checkbox" checked={checked} onChange={()=>toggleOne(p.id)}/></td>}
     <td><div style={{display:'flex',alignItems:'center',gap:4}}><button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,padding:0,color:favSkus.includes(p.sku)?'#f59e0b':'#d1d5db'}} onClick={()=>toggleFav(p.sku)}>{favSkus.includes(p.sku)?'★':'☆'}</button><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span></div></td>
-    <td style={{fontSize:12}}>{p.name}{p.is_clearance&&<span style={{marginLeft:4,padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}<br/><span style={{color:'#94a3b8'}}>{p.color}</span></td>
+    <td style={{fontSize:12}}>{p.name}{p.is_clearance&&<span style={{marginLeft:4,padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}<br/><span style={{color:'#94a3b8'}}>{p.color}</span>{isA&&bulkMode&&<span style={{marginLeft:6,fontSize:10,color:'#64748b'}}>· {p.category||'No cat'} · {p.color_category||'No color cat'}</span>}</td>
     <td><div style={{display:'flex',gap:2}}>{[...new Set(p.available_sizes)].filter(sz=>showSz(sz,p._inv?.[sz])).map(sz=>{const v=p._inv?.[sz]||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{minWidth:30,padding:'1px 3px'}}><div className="size-label" style={{fontSize:8}}>{sz}</div><div className="size-qty" style={{fontSize:11}}>{v}</div></div>})}</div></td>
     <td style={{fontWeight:800,fontSize:15,color:p._tQ<=10?'#d97706':'#166534'}}>{p._tQ}</td>
     <td style={{fontWeight:700,fontSize:13,color:b2bTotal!=null?(b2bTotal>0?'#059669':'#dc2626'):'#d1d5db'}}>{b2bTotal!=null?b2bTotal:'—'}</td>
     <td style={{fontWeight:700}}>${p._tV.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
     <td><div style={{display:'flex',gap:4}}><button className="btn btn-sm btn-secondary" onClick={()=>newE(null,p)}>+EST</button>
       {isA&&<button className="btn btn-sm btn-secondary" onClick={()=>setAM({open:true,p})}>INV</button>}</div></td>
-  </tr>})}</tbody></table></div></div></>);
+  </tr>})}</tbody></table></div></div></>)};
 
   // CLEARANCE ITEMS
   const[clrSearch,setClrSearch]=useState('');
