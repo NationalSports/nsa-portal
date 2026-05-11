@@ -2100,6 +2100,7 @@ export default function App(){
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   const[qbTab,setQbTab]=useState('overview');
   const[qbSyncing,setQbSyncing]=useState(false);
+  const[qbSyncProgress,setQbSyncProgress]=useState(null);// {phase,current,total,label}
   const qbSyncAllRef=React.useRef(null);
   const[qbBillFile,setQbBillFile]=useState(null);
   const[qbBillVendor,setQbBillVendor]=useState('');
@@ -20245,7 +20246,11 @@ export default function App(){
         const qRes=await qbApi('query',{query:"SELECT Id, DisplayName, CompanyName, SyncToken FROM Customer MAXRESULTS 1000"});
         existingQBCusts=qRes?.QueryResponse?.Customer||[];
       }catch(e){console.warn('[QB] Customer query failed:',e)}
-      for(const c of cust.filter(c=>c.is_active!==false&&!c.deleted_at)){
+      const _custList=cust.filter(c=>c.is_active!==false&&!c.deleted_at);
+      let _custIdx=0;
+      for(const c of _custList){
+        _custIdx++;
+        setQbSyncProgress({phase:'Customers',current:_custIdx,total:_custList.length,label:c.name});
         // Calculate totals
         const custSOs=sos.filter(s=>s.customer_id===c.id);
         const totalRevenue=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.total??0),0);
@@ -20288,6 +20293,7 @@ export default function App(){
       log.details.unshift(synced+'/'+cust.filter(c=>c.is_active!==false).length+' customers synced');
       setQBConfig(prev=>({...prev,custQBMap:{...prev.custQBMap,...custQBMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' customers synced to QB');
+      setQbSyncProgress(null);
       setQbSyncing(false);
       return custQBMap;
     };
@@ -20298,7 +20304,10 @@ export default function App(){
       const log={ts:new Date().toLocaleString(),type:'invoices',status:'success',details:[]};
       let synced=0;
       const unsyncedInvs2=invs.filter(i=>!i.qb_invoice_id);
+      let _invIdx=0;
       for(const inv of unsyncedInvs2){
+        _invIdx++;
+        setQbSyncProgress({phase:'Invoices',current:_invIdx,total:unsyncedInvs2.length,label:inv.display_id||inv.id});
         const c=cust.find(cc=>cc.id===inv.customer_id);
         const cQBId=custQBMap[inv.customer_id]||(qbConfig.custQBMap||{})[inv.customer_id];
         if(!cQBId){log.details.push((inv.display_id||inv.id)+' — skipped: customer "'+c?.name+'" not synced to QB');continue}
@@ -20340,6 +20349,7 @@ export default function App(){
       log.details.unshift(synced+'/'+unsyncedInvs2.length+' invoices synced');
       setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' invoices synced to QB');
+      setQbSyncProgress(null);
       setQbSyncing(false);
     };
 
@@ -20561,7 +20571,11 @@ export default function App(){
       const prodQBMap={...(qbConfig.prodQBMap||{})};
       const today=new Date().toISOString().slice(0,10);
       // Aggregate inventory totals per product (not per size — just totals)
-      for(const p of prod.filter(p=>p.is_active!==false)){
+      const _prodList=prod.filter(p=>p.is_active!==false);
+      let _prodIdx=0;
+      for(const p of _prodList){
+        _prodIdx++;
+        setQbSyncProgress({phase:'Products',current:_prodIdx,total:_prodList.length,label:p.sku+' '+p.name});
         const inv=p._inv||{};
         const totalQty=Object.values(inv).reduce((a,v)=>a+safeNum(v),0);
         const existingQBId=prodQBMap[p.id];
@@ -20613,6 +20627,7 @@ export default function App(){
       log.details.unshift(synced+' product items synced');
       setQBConfig(prev=>({...prev,prodQBMap:{...prev.prodQBMap,...prodQBMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' inventory items synced to QB');
+      setQbSyncProgress(null);
       setQbSyncing(false);
       return prodQBMap;
     };
@@ -20717,7 +20732,10 @@ export default function App(){
         const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
         return hasItems&&!soMap[so.id];
       });
+      let _soIdx=0;
       for(const so of toSync){
+        _soIdx++;
+        setQbSyncProgress({phase:'Sales Orders',current:_soIdx,total:toSync.length,label:so.id});
         const c=cust.find(x=>x.id===so.customer_id);
         const cQBId=custQBMap[so.customer_id]||(qbConfig.custQBMap||{})[so.customer_id];
         if(!cQBId){log.details.push(so.id+' — skipped: customer not synced to QB');continue}
@@ -20760,6 +20778,7 @@ export default function App(){
       log.details.unshift(synced+'/'+toSync.length+' sales orders synced');
       setQBConfig(prev=>({...prev,qbSOMap:{...prev.qbSOMap,...soMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' sales orders synced to QB');
+      setQbSyncProgress(null);
       setQbSyncing(false);
     };
 
@@ -20791,7 +20810,10 @@ export default function App(){
         }
       })})});
       const poGroups=Object.values(poGroupMap);
+      let _poIdx=0;
       for(const group of poGroups){
+        _poIdx++;
+        setQbSyncProgress({phase:'Purchase Orders',current:_poIdx,total:poGroups.length,label:group.poId+' · '+(group.vendor||'?')});
         const vendorName=group.vendor;
         if(!vendorName){log.details.push(group.poId+' — skipped: no vendor name');log.status='partial';continue}
         // Find or create vendor in QB
@@ -20837,6 +20859,7 @@ export default function App(){
       log.details.unshift(synced+'/'+poGroups.length+' purchase orders synced');
       setQBConfig(prev=>({...prev,qbPOMap:{...prev.qbPOMap,...poMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' purchase orders synced to QB');
+      setQbSyncProgress(null);
       setQbSyncing(false);
     };
 
@@ -21014,6 +21037,18 @@ export default function App(){
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncPurchaseOrders}>POs</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInventory}>Inventory</button>
               </div>
+              {qbSyncing&&<div style={{marginTop:12,padding:10,background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,fontSize:12}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                  <span style={{fontWeight:600,color:'#1e40af'}}>
+                    {qbSyncProgress?`Syncing ${qbSyncProgress.phase} — ${qbSyncProgress.current.toLocaleString()} / ${qbSyncProgress.total.toLocaleString()}`:'Starting sync…'}
+                  </span>
+                  {qbSyncProgress&&qbSyncProgress.total>0&&<span style={{color:'#475569'}}>{Math.round(qbSyncProgress.current/qbSyncProgress.total*100)}%</span>}
+                </div>
+                {qbSyncProgress&&<div style={{height:6,background:'#dbeafe',borderRadius:3,overflow:'hidden',marginBottom:6}}>
+                  <div style={{height:'100%',width:(qbSyncProgress.total>0?(qbSyncProgress.current/qbSyncProgress.total*100):0)+'%',background:'#2563eb',transition:'width 200ms ease'}}/>
+                </div>}
+                {qbSyncProgress?.label&&<div style={{color:'#475569',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}} title={qbSyncProgress.label}>{qbSyncProgress.label}</div>}
+              </div>}
             </div>
           </div>
           <div className="card">
