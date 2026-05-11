@@ -9482,6 +9482,7 @@ export default function App(){
 
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
+  const[invDrill,setInvDrill]=useState(null);// {kind:'vendor'|'category',key:string}
   const[rptRep,setRptRep]=useState(()=>cu?.role==='rep'?cu.id:'all');// default to logged-in rep so they see their own numbers
   const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true,invByCategory:true,invByVendor:true,invTopValue:true,invLowStock:true,invOutOfStock:true,invRecentAdj:true});
   // Historical sales chart UI state — hover tooltip + rep-vs-team mode
@@ -10460,13 +10461,26 @@ export default function App(){
           {rptWidgets.invByCategory&&<div className="card-body" style={{padding:0}}>
             {byCategory.length===0?<div className="empty" style={{padding:12}}>No inventory data.</div>:
             <table><thead><tr><th>Category</th><th style={{textAlign:'center'}}>SKUs</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'right'}}>Value</th><th></th></tr></thead>
-            <tbody>{byCategory.map(c=><tr key={c.name}>
-              <td style={{fontWeight:600}}>{c.name}</td>
-              <td style={{textAlign:'center'}}>{c.skus.toLocaleString()}</td>
-              <td style={{textAlign:'center'}}>{c.units.toLocaleString()}</td>
-              <td style={{textAlign:'right',fontWeight:700}}>${c.value.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-              <td style={{width:120}}><Bar val={c.value} max={catMax} color="#2563eb"/></td>
-            </tr>)}</tbody></table>}
+            <tbody>{byCategory.map(c=>{const open=invDrill?.kind==='category'&&invDrill.key===c.name;const items=open?enriched.filter(p=>(p.category||'Uncategorized')===c.name).sort((a,b)=>b._tV-a._tV):[];return<React.Fragment key={c.name}>
+              <tr style={{cursor:'pointer'}} onClick={()=>setInvDrill(open?null:{kind:'category',key:c.name})}>
+                <td style={{fontWeight:600}}><span style={{display:'inline-block',width:12,color:'#94a3b8'}}>{open?'▼':'▶'}</span>{c.name}</td>
+                <td style={{textAlign:'center'}}>{c.skus.toLocaleString()}</td>
+                <td style={{textAlign:'center'}}>{c.units.toLocaleString()}</td>
+                <td style={{textAlign:'right',fontWeight:700}}>${c.value.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                <td style={{width:120}}><Bar val={c.value} max={catMax} color="#2563eb"/></td>
+              </tr>
+              {open&&<tr><td colSpan="5" style={{background:'#f8fafc',padding:8}}>
+                <table style={{width:'100%',fontSize:11}}><thead><tr><th>SKU</th><th>Product</th><th>Vendor</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'right'}}>Value</th></tr></thead>
+                <tbody>{items.slice(0,200).map(p=><tr key={p.id}>
+                  <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</td>
+                  <td>{p.name}{p.color&&<span style={{color:'#94a3b8'}}> — {p.color}</span>}</td>
+                  <td style={{color:'#64748b'}}>{p.vendor_id?vendName(p.vendor_id):'—'}</td>
+                  <td style={{textAlign:'center'}}>{p._tQ}</td>
+                  <td style={{textAlign:'right'}}>${p._tV.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                </tr>)}</tbody></table>
+                {items.length>200&&<div style={{fontSize:10,color:'#94a3b8',textAlign:'center',marginTop:4}}>Showing first 200 of {items.length}</div>}
+              </td></tr>}
+            </React.Fragment>})}</tbody></table>}
           </div>}
         </div>
 
@@ -10475,13 +10489,26 @@ export default function App(){
           {rptWidgets.invByVendor&&<div className="card-body" style={{padding:0}}>
             {byVendor.length===0?<div className="empty" style={{padding:12}}>No inventory data.</div>:
             <table><thead><tr><th>Vendor</th><th style={{textAlign:'center'}}>SKUs</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'right'}}>Value</th><th></th></tr></thead>
-            <tbody>{byVendor.map(v=><tr key={v.id}>
-              <td style={{fontWeight:600}}>{v.name}</td>
-              <td style={{textAlign:'center'}}>{v.skus.toLocaleString()}</td>
-              <td style={{textAlign:'center'}}>{v.units.toLocaleString()}</td>
-              <td style={{textAlign:'right',fontWeight:700}}>${v.value.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-              <td style={{width:120}}><Bar val={v.value} max={vndMax} color="#7c3aed"/></td>
-            </tr>)}</tbody></table>}
+            <tbody>{byVendor.map(v=>{const open=invDrill?.kind==='vendor'&&invDrill.key===v.id;const items=open?enriched.filter(p=>(p.vendor_id||'_none')===v.id).sort((a,b)=>b._tV-a._tV):[];return<React.Fragment key={v.id}>
+              <tr style={{cursor:'pointer'}} onClick={()=>setInvDrill(open?null:{kind:'vendor',key:v.id})}>
+                <td style={{fontWeight:600}}><span style={{display:'inline-block',width:12,color:'#94a3b8'}}>{open?'▼':'▶'}</span>{v.name}</td>
+                <td style={{textAlign:'center'}}>{v.skus.toLocaleString()}</td>
+                <td style={{textAlign:'center'}}>{v.units.toLocaleString()}</td>
+                <td style={{textAlign:'right',fontWeight:700}}>${v.value.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                <td style={{width:120}}><Bar val={v.value} max={vndMax} color="#7c3aed"/></td>
+              </tr>
+              {open&&<tr><td colSpan="5" style={{background:'#f8fafc',padding:8}}>
+                <table style={{width:'100%',fontSize:11}}><thead><tr><th>SKU</th><th>Product</th><th>Category</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'right'}}>Value</th></tr></thead>
+                <tbody>{items.slice(0,200).map(p=><tr key={p.id}>
+                  <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</td>
+                  <td>{p.name}{p.color&&<span style={{color:'#94a3b8'}}> — {p.color}</span>}</td>
+                  <td style={{color:'#64748b'}}>{p.category||'—'}</td>
+                  <td style={{textAlign:'center'}}>{p._tQ}</td>
+                  <td style={{textAlign:'right'}}>${p._tV.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                </tr>)}</tbody></table>
+                {items.length>200&&<div style={{fontSize:10,color:'#94a3b8',textAlign:'center',marginTop:4}}>Showing first 200 of {items.length}</div>}
+              </td></tr>}
+            </React.Fragment>})}</tbody></table>}
           </div>}
         </div>
 
