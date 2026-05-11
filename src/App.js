@@ -7109,9 +7109,19 @@ export default function App(){
 
       {/* ═══ PRODUCTION MOCKUP VIEW — full job detail for decorators ═══ */}
       {prodJobModal&&(()=>{
-        const j=prodJobModal;
-        const so=j.so||sos.find(s=>s.id===j.soId);
+        // Resolve live SO and job from current state so per-number tick-off toggles re-render
+        const _liveSO=sos.find(s=>s.id===prodJobModal.soId)||prodJobModal.so;
+        const _liveJob=_liveSO?safeJobs(_liveSO).find(jj=>jj.id===prodJobModal.id):null;
+        const j=_liveJob?{...prodJobModal,..._liveJob}:prodJobModal;
+        const so=_liveSO||j.so;
         if(!so)return null;
+        const numsDone=j.numbers_done||{};
+        const toggleNumDone=(sku,sz,num)=>{
+          const k=sku+'|'+sz+'|'+num;
+          const next={...numsDone};
+          if(next[k])delete next[k];else next[k]=true;
+          updateJobField(j,{numbers_done:next});
+        };
         const c=cust.find(x=>x.id===so.customer_id);
         const af=safeArt(so).find(f=>f.id===j.art_file_id);
         const allArtFiles=(()=>{const ids=new Set();
@@ -7399,17 +7409,30 @@ export default function App(){
                         {ndData.nd.num_font&&<span>Font: <strong>{ndData.nd.num_font}</strong></span>}
                         {ndData.nd.front_and_back&&<span style={{padding:'1px 8px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span>}
                       </div>}
-                      {ndData.roster&&Object.keys(ndData.roster).length>0&&<div style={{marginBottom:ndData.names?8:0}}>
-                        <div style={{fontSize:11,fontWeight:700,color:'#6d28d9',marginBottom:4}}>Number List</div>
+                      {ndData.roster&&Object.keys(ndData.roster).length>0&&(()=>{
+                        const allNums=ndData.sizes.flatMap(sz=>(ndData.roster[sz]||[]).filter(n=>n!=='').map(n=>({sz,n})));
+                        const doneCount=allNums.filter(x=>numsDone[gi.sku+'|'+x.sz+'|'+x.n]).length;
+                        return<div style={{marginBottom:ndData.names?8:0}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                          <div style={{fontSize:11,fontWeight:700,color:'#6d28d9'}}>Number List</div>
+                          {allNums.length>0&&<div style={{fontSize:10,fontWeight:700,color:doneCount===allNums.length?'#15803d':'#64748b'}}>{doneCount}/{allNums.length} done</div>}
+                          <div style={{fontSize:9,color:'#94a3b8',marginLeft:'auto'}}>Click a number to mark done</div>
+                        </div>
                         {ndData.sizes.map(sz=>{const nums=(ndData.roster[sz]||[]).filter(n=>n!=='');
                           if(nums.length===0)return null;
                           return<div key={sz} style={{display:'flex',gap:4,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
                             <span style={{fontSize:10,fontWeight:700,color:'#64748b',minWidth:40}}>{sz} ({nums.length})</span>
-                            {nums.sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>
-                              <span key={ni} style={{display:'inline-block',minWidth:28,textAlign:'center',padding:'2px 6px',background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:4,fontSize:12,fontWeight:700,color:'#6d28d9'}}>{n}</span>)}
+                            {nums.sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>{
+                              const done=!!numsDone[gi.sku+'|'+sz+'|'+n];
+                              return<button key={ni} type="button" onClick={()=>toggleNumDone(gi.sku,sz,n)}
+                                title={done?'Click to mark not done':'Click to mark done'}
+                                style={{display:'inline-flex',alignItems:'center',justifyContent:'center',gap:3,minWidth:28,textAlign:'center',padding:'2px 6px',background:done?'#dcfce7':'#faf5ff',border:'1px solid '+(done?'#86efac':'#e9d5ff'),borderRadius:4,fontSize:12,fontWeight:700,color:done?'#15803d':'#6d28d9',cursor:'pointer',textDecoration:done?'line-through':'none',fontFamily:'inherit',lineHeight:1.2}}>
+                                {done&&<span style={{fontSize:10}}>✓</span>}{n}
+                              </button>;
+                            })}
                           </div>;
                         })}
-                      </div>}
+                      </div>;})()}
                       {ndData.names&&Object.keys(ndData.names).length>0&&<div>
                         <div style={{fontSize:11,fontWeight:700,color:'#0369a1',marginBottom:4}}>Names List</div>
                         {ndData.sizes.map(sz=>{const nms=(ndData.names[sz]||[]).filter(n=>n!=='');
