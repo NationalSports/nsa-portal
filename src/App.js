@@ -2204,7 +2204,7 @@ export default function App(){
   // One-shot cleanup of legacy Stock PO localStorage keys. Runs after mount so StrictMode's double-invoke of useState initializers above is harmless.
   React.useEffect(()=>{try{if(localStorage.getItem('nsa_stock_pos')!==null)localStorage.removeItem('nsa_stock_pos');if(localStorage.getItem('nsa_stock_po_counter')!==null)localStorage.removeItem('nsa_stock_po_counter')}catch(e){}},[]);
   const[invTab,setInvTab]=useState('stock');// stock | log | pos
-  const[invPOModal,setInvPOModal]=useState({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null});// create/edit PO modal
+  const[invPOModal,setInvPOModal]=useState({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false});// create/edit PO modal
   const[invPOReceive,setInvPOReceive]=useState(null);// PO being received
   const[invPOSearch,setInvPOSearch]=useState('');
   // Changelog & backup system
@@ -3507,7 +3507,7 @@ export default function App(){
   },[q,rF,custPage,pg]);// eslint-disable-line
   useEffect(()=>{setCustPage(0)},[q,rF]);
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
-  const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
+  const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);
   const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);
@@ -6039,7 +6039,7 @@ export default function App(){
         if(po.id!==invPOModal.editId)return po;
         return{...po,vendor_id:vendorId,vendor_name:vendor.name,
           items:validItems.map(it=>({product_id:it.product_id,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||[],sizes:{...it.sizes},received:it.received||{},nsa_cost:it.nsa_cost||0})),
-          expected_date:invPOModal.expected_date||'',memo:invPOModal.memo||'',_qb_synced:false};
+          expected_date:invPOModal.expected_date||'',memo:invPOModal.memo||'',is_booking:!!invPOModal.is_booking,_qb_synced:false};
       }));
       const existingPO=invPOs.find(p=>p.id===invPOModal.editId);
       logChange('updated','Inventory PO',existingPO?.po_number||'',vendor.name+' — '+validItems.length+' items');
@@ -6050,15 +6050,15 @@ export default function App(){
       const po={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:vendorId,vendor_name:vendor.name,
         items:validItems.map(it=>({product_id:it.product_id,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||[],sizes:{...it.sizes},received:{},nsa_cost:it.nsa_cost||0})),
         status:'ordered',created_at:new Date().toLocaleString(),expected_date:invPOModal.expected_date||'',memo:invPOModal.memo||'',
-        created_by:cu?.name||'Unknown',received_at:null,received_by:null,_qb_synced:false};
+        created_by:cu?.name||'Unknown',created_by_id:cu?.id||null,is_booking:!!invPOModal.is_booking,received_at:null,received_by:null,_qb_synced:false};
       setInvPOs(prev=>[po,...prev]);setInvPOCounter(c2=>c2+1);
       logChange('created','Inventory PO',poNum,vendor.name+' — '+validItems.length+' items');
       nf('Inventory PO '+poNum+' created');
     }
-    setInvPOModal({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null});
+    setInvPOModal({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false});
   };
   const editInvPO=(po)=>{
-    setInvPOModal({open:true,vendor_id:po.vendor_id,items:po.items.map(it=>({...it})),memo:po.memo||'',expected_date:po.expected_date||'',productSearch:'',editId:po.id});
+    setInvPOModal({open:true,vendor_id:po.vendor_id,items:po.items.map(it=>({...it})),memo:po.memo||'',expected_date:po.expected_date||'',productSearch:'',editId:po.id,is_booking:!!po.is_booking});
   };
   const deleteInvPO=(po)=>{
     const isReceived=po.status==='received'||po.status==='partial';
@@ -6202,7 +6202,7 @@ export default function App(){
     return(<>
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={invPOSearch} onChange={e=>setInvPOSearch(e.target.value)}/></div>
-        <button className="btn btn-primary" onClick={()=>setInvPOModal({open:true,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null})}>+ New Inventory PO</button>
+        <button className="btn btn-primary" onClick={()=>setInvPOModal({open:true,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false})}>+ New Inventory PO</button>
       </div>
       {filtered.length===0?<div className="card"><div className="card-body"><div className="empty" style={{padding:30}}>No inventory POs yet. Click "+ New Inventory PO" to create one.</div></div></div>:
       <div style={{display:'flex',flexDirection:'column',gap:12}}>
@@ -7522,6 +7522,7 @@ export default function App(){
     // Build flat list of ALL PO lines across every SO + submitted batches
     const allPOs=[];
     sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);
+      const soIsBooking=isBookingOrder(so);
       safeItems(so).forEach((it,idx)=>{safePOs(it).forEach((po,pli)=>{
         const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship'].includes(k)&&typeof po[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
         const totalOrd=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);
@@ -7531,7 +7532,7 @@ export default function App(){
         const totalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0)),0);
         const st=totalOpen<=0&&totalRcvd>0?'received':totalRcvd>0?'partial':'waiting';
         const uc=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(it.nsa_cost);const poTotal=totalOrd*uc;
-        allPOs.push({po_id:po.po_id||`${so.id}-PO-${pli+1}`,vendor:po.vendor||'',status:st,so_id:so.id,so,customer:c2?.alpha_tag||c2?.name||'',soMemo:so.memo,itemSku:it.sku||'',itemName:it.name||'',totalOrd,totalRcvd,totalCncl,totalOpen,created_at:po.created_at||so.created_at||'',expected_date:po.expected_date||'',memo:po.memo||'',source:'so',lineIdx:idx,unitCost:uc,poTotal,poLineIdx:pli})
+        allPOs.push({po_id:po.po_id||`${so.id}-PO-${pli+1}`,vendor:po.vendor||'',status:st,so_id:so.id,so,customer:c2?.alpha_tag||c2?.name||'',soMemo:so.memo,itemSku:it.sku||'',itemName:it.name||'',totalOrd,totalRcvd,totalCncl,totalOpen,created_at:po.created_at||so.created_at||'',expected_date:po.expected_date||'',memo:po.memo||'',source:'so',lineIdx:idx,unitCost:uc,poTotal,poLineIdx:pli,isBooking:soIsBooking})
       })});
       // SO-level decoration POs — cost buckets, no size breakdown
       (so.deco_pos||[]).forEach(dp=>{
@@ -7551,6 +7552,18 @@ export default function App(){
       const batchTotal=sb.total_cost||0;
       allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name||'',status:st,so_id:soIds.join(', '),so:sos.find(x=>x.id===soIds[0]),customer:customers.join(', '),soMemo:soIds.join(', '),itemSku:'',itemName:`Batch: ${sb.total_units||0} units`,totalOrd,totalRcvd:st==='received'?totalOrd:0,totalCncl:0,totalOpen:st==='received'?0:totalOrd,created_at:sb.submitted_at||'',expected_date:'',memo:'',source:'batch',unitCost:totalOrd>0?batchTotal/totalOrd:0,poTotal:batchTotal})
     });
+    // Add standalone Inventory POs (not tied to any SO)
+    (invPOs||[]).forEach(ip=>{
+      const totalOrd=(ip.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((b,v)=>b+safeNum(v),0),0);
+      const totalRcvd=(ip.items||[]).reduce((a,it)=>a+Object.values(it.received||{}).reduce((b,v)=>b+safeNum(v),0),0);
+      const totalOpen=Math.max(0,totalOrd-totalRcvd);
+      const st=ip.status==='received'?'received':totalRcvd>0?'partial':'waiting';
+      const itemCount=(ip.items||[]).length;
+      const firstItem=(ip.items||[])[0];
+      const poTotal=(ip.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((b,v)=>b+safeNum(v),0)*safeNum(it.nsa_cost||0),0);
+      const repName=ip.created_by_id?REPS.find(r=>r.id===ip.created_by_id)?.name:ip.created_by;
+      allPOs.push({po_id:ip.po_number,vendor:ip.vendor_name||'',status:st,so_id:'',so:null,customer:'',soMemo:'',itemSku:firstItem?.sku||'',itemName:itemCount>1?`${itemCount} items`:(firstItem?.name||''),totalOrd,totalRcvd,totalCncl:0,totalOpen,created_at:ip.created_at||'',expected_date:ip.expected_date||'',memo:ip.memo||'',source:'inv',unitCost:0,poTotal,isInvPO:true,isBooking:!!ip.is_booking,invPOId:ip.id,_repName:repName,_createdById:ip.created_by_id||null})
+    });
     // Dedup by po_id (keep first occurrence)
     const seen=new Set();const dedupPOs=[];allPOs.forEach(po=>{if(!seen.has(po.po_id)){seen.add(po.po_id);dedupPOs.push(po)}});
     // Extract unique vendors for filter
@@ -7558,8 +7571,9 @@ export default function App(){
     // Apply filters
     let fPOs=dedupPOs;
     if(poF.status!=='all')fPOs=fPOs.filter(p=>p.status===poF.status);
+    if(poF.booking)fPOs=fPOs.filter(p=>p.isBooking);
     if(poF.vendor!=='all')fPOs=fPOs.filter(p=>p.vendor===poF.vendor);
-    if(poF.rep!=='all')fPOs=fPOs.filter(p=>p.so?.created_by===poF.rep);
+    if(poF.rep!=='all')fPOs=fPOs.filter(p=>p.so?.created_by===poF.rep||p._createdById===poF.rep);
     if(poF.search){const ss=poF.search.toLowerCase();fPOs=fPOs.filter(p=>p.po_id.toLowerCase().includes(ss)||p.vendor.toLowerCase().includes(ss)||p.so_id.toLowerCase().includes(ss)||p.customer.toLowerCase().includes(ss)||p.itemSku.toLowerCase().includes(ss)||p.itemName.toLowerCase().includes(ss)||p.memo.toLowerCase().includes(ss))}
     // Sort
     if(poF.sort==='date_desc')fPOs.sort((a,b)=>(new Date(b.created_at||0).getTime()||0)-(new Date(a.created_at||0).getTime()||0));
@@ -7573,8 +7587,9 @@ export default function App(){
     const waitCount=dedupPOs.filter(p=>p.status==='waiting').length;
     const partCount=dedupPOs.filter(p=>p.status==='partial').length;
     const rcvdCount=dedupPOs.filter(p=>p.status==='received').length;
+    const bookingCount=dedupPOs.filter(p=>p.isBooking).length;
     const totalOpenUnits=dedupPOs.reduce((a,p)=>a+p.totalOpen,0);
-    const activeFilters=poF.status!=='all'||poF.vendor!=='all'||poF.rep!=='all'||poF.search;
+    const activeFilters=poF.status!=='all'||poF.vendor!=='all'||poF.rep!=='all'||poF.search||poF.booking;
     return<>
       {/* Status filter tabs */}
       <div style={{display:'flex',gap:4,marginBottom:8,flexWrap:'wrap'}}>
@@ -7582,6 +7597,9 @@ export default function App(){
           <button key={id} className={`btn btn-sm ${poF.status===id?'btn-primary':'btn-secondary'}`}
             style={{background:poF.status===id?color:'',borderColor:poF.status===id?color:''}}
             onClick={()=>setPOF(f=>({...f,status:f.status===id&&id!=='all'?'all':id}))}>{label} ({count})</button>)}
+        <button className={`btn btn-sm ${poF.booking?'btn-primary':'btn-secondary'}`}
+          style={{background:poF.booking?'#4338ca':'',borderColor:poF.booking?'#4338ca':'',marginLeft:8}}
+          onClick={()=>setPOF(f=>({...f,booking:!f.booking}))} title="Show only booking POs (SO booking orders + inventory POs marked as Booking PO)">📋 Booking ({bookingCount})</button>
       </div>
       {/* Open units banner */}
       {totalOpenUnits>0&&<div style={{padding:'8px 16px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,fontSize:13,fontWeight:600,color:'#92400e',marginBottom:12}}>
@@ -7597,17 +7615,17 @@ export default function App(){
           <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select value={poF.sort} onChange={e=>setPOF(f=>({...f,sort:e.target.value}))} style={{padding:'6px 10px',borderRadius:6,border:'1px solid #e2e8f0',fontSize:12}}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="vendor">Vendor</option><option value="po_id">PO Number</option><option value="customer">Customer</option><option value="status">Status</option><option value="rep">Rep</option></select>
-        {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setPOF({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'})} style={{fontSize:11}}>Clear Filters</button>}
+        {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setPOF({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false})} style={{fontSize:11}}>Clear Filters</button>}
       </div>
       {/* Table */}
       <div className="card"><div className="card-body" style={{padding:0,overflow:'auto'}}>
         <table className="data-table">
           <thead><tr><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='po_id'?'date_desc':'po_id'}))}>PO #</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='vendor'?'date_desc':'vendor'}))}>Vendor</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='customer'?'date_desc':'customer'}))}>Customer</th><th>SO</th><th>Item</th><th style={{textAlign:'right'}}>Ordered</th><th style={{textAlign:'right'}}>Received</th><th style={{textAlign:'right'}}>Open</th><th style={{textAlign:'right'}}>Total</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='status'?'date_desc':'status'}))}>Status</th><th>Created</th><th>Expected</th></tr></thead>
           <tbody>{fPOs.length===0?<tr><td colSpan={12} style={{textAlign:'center',color:'#94a3b8',padding:32}}>No purchase orders{activeFilters?' match filters':' found'}</td></tr>:
-            fPOs.map((po,i)=>{const openPoPage=()=>{if(po.source==='batch'){setBatchScan(po.po_id);setPg('batch_pos')}else if(po.so){
+            fPOs.map((po,i)=>{const openPoPage=()=>{if(po.source==='inv'){setInvPOSearch(po.po_id);setInvTab('pos');setPg('inventory')}else if(po.source==='batch'){setBatchScan(po.po_id);setPg('batch_pos')}else if(po.so){
               const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders');
             }};return<tr key={po.po_id+'-'+i} style={{cursor:'pointer'}} onClick={openPoPage}>
-              <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={openPoPage}>{po.po_id}</span>{po.source==='batch'&&<span className="badge badge-purple" style={{marginLeft:4,fontSize:9}}>Batch</span>}</td>
+              <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={openPoPage}>{po.po_id}</span>{po.source==='batch'&&<span className="badge badge-purple" style={{marginLeft:4,fontSize:9}}>Batch</span>}{po.isInvPO&&<span style={{fontSize:9,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>INV</span>}{po.isBooking&&<span style={{fontSize:9,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700}} title="Booking PO">📋</span>}</td>
               <td>{po.vendor}</td>
               <td>{po.customer}</td>
               <td><span style={{color:'#1e40af',fontWeight:600}}>{po.so_id}</span></td>
@@ -9515,6 +9533,7 @@ export default function App(){
 
     const filtSOs=rptRep==='all'?sos:sos.filter(s=>s.created_by===rptRep);
     const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const so=sos.find(s=>s.id===i.so_id);return so?.created_by===rptRep});
+    const filtBookingInvPOs=(invPOs||[]).filter(p=>p.is_booking).filter(p=>rptRep==='all'?true:p.created_by_id===rptRep);
 
     // Pipeline data
     const pipeline=filtSOs.map(so=>{const m=soCalc(so);const c=cust.find(x=>x.id===so.customer_id);const st=calcSOStatus(so);
@@ -9981,16 +10000,24 @@ export default function App(){
               const rep=REPS.find(r=>r.id===so.created_by);
               const daysOut=bookingDaysUntilShip(so);
               const st=calcSOStatus(so);
-              return{...so,_rev:m.rev,_cost:m.cost,_margin:m.margin,_pct:m.pct,_units:m.units,_cname:c?.name||'Unknown',_alpha:c?.alpha_tag||'',_repName:rep?.name?.split(' ')[0]||'—',_daysOut:daysOut,_st:st};
-            }).sort((a,b)=>(a._daysOut??9999)-(b._daysOut??9999));
-            const confirmed=bookings.filter(b=>b.booking_confirmed);
-            const unconfirmed=bookings.filter(b=>!b.booking_confirmed);
-            const totalBookingRev=bookings.reduce((a,b)=>a+b._rev,0);
+              return{_kind:'so',...so,_rev:m.rev,_cost:m.cost,_margin:m.margin,_pct:m.pct,_units:m.units,_cname:c?.name||'Unknown',_alpha:c?.alpha_tag||'',_repName:rep?.name?.split(' ')[0]||'—',_daysOut:daysOut,_st:st};
+            });
+            const poBookings=filtBookingInvPOs.map(po=>{
+              const rep=REPS.find(r=>r.id===po.created_by_id);
+              const units=(po.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((b,v)=>b+(v||0),0),0);
+              const cost=(po.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((b,v)=>b+(v||0),0)*(it.nsa_cost||0),0);
+              const daysOut=po.expected_date?Math.ceil((new Date(po.expected_date)-new Date())/(1000*60*60*24)):null;
+              return{_kind:'po',id:po.po_number,_poId:po.id,_rev:cost,_cost:cost,_units:units,_cname:po.vendor_name||'—',_alpha:'',memo:po.memo||'',_repName:rep?.name?.split(' ')[0]||(po.created_by?po.created_by.split(' ')[0]:'—'),_daysOut:daysOut,expected_ship_date:po.expected_date||'',booking_confirmed:po.status==='received',booking_confirmed_at:po.received_at,booking_confirmed_by:null,_st:po.status==='received'?'complete':'booking',_poStatus:po.status};
+            });
+            const allBookings=[...bookings,...poBookings].sort((a,b)=>(a._daysOut??9999)-(b._daysOut??9999));
+            const confirmed=allBookings.filter(b=>b.booking_confirmed);
+            const unconfirmed=allBookings.filter(b=>!b.booking_confirmed);
+            const totalBookingRev=allBookings.reduce((a,b)=>a+b._rev,0);
             const urgent=unconfirmed.filter(b=>b._daysOut!==null&&b._daysOut<=100);
             return<div className="card-body">
               <div style={{display:'flex',gap:8,marginBottom:12}}>
                 <div style={{flex:1,padding:8,background:'#e0e7ff',borderRadius:6,textAlign:'center'}}>
-                  <div style={{fontSize:18,fontWeight:800,color:'#4338ca'}}>{bookings.length}</div>
+                  <div style={{fontSize:18,fontWeight:800,color:'#4338ca'}}>{allBookings.length}</div>
                   <div style={{fontSize:10,fontWeight:600,color:'#4338ca'}}>Total Bookings</div>
                 </div>
                 <div style={{flex:1,padding:8,background:'#dcfce7',borderRadius:6,textAlign:'center'}}>
@@ -10010,25 +10037,28 @@ export default function App(){
                   <div style={{fontSize:10,fontWeight:600,color:'#1e40af'}}>Booking Revenue</div>
                 </div>
               </div>
-              {bookings.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:16}}>No booking orders found</div>:
+              {allBookings.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:16}}>No booking orders found</div>:
               <table style={{fontSize:12}}><thead><tr>
-                <th>SO</th><th>Customer</th><th>Memo</th><th>Rep</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'center'}}>Ship Date</th><th style={{textAlign:'center'}}>Days Out</th><th style={{textAlign:'center'}}>Confirmed</th><th>Status</th>
+                <th>SO / PO</th><th>Customer / Vendor</th><th>Memo</th><th>Rep</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'center'}}>Ship Date</th><th style={{textAlign:'center'}}>Days Out</th><th style={{textAlign:'center'}}>Confirmed</th><th>Status</th>
               </tr></thead><tbody>
-                {bookings.map(b=>{
+                {allBookings.map(b=>{
+                  const isPO=b._kind==='po';
                   const isUrgent=!b.booking_confirmed&&b._daysOut!==null&&b._daysOut<=100;
                   const confirmedBy=b.booking_confirmed_by?REPS.find(r=>r.id===b.booking_confirmed_by)?.name?.split(' ')[0]:'';
                   const confirmedAt=b.booking_confirmed_at?new Date(b.booking_confirmed_at).toLocaleDateString():'';
-                  return<tr key={b.id} style={{cursor:'pointer',background:isUrgent?'#fef2f2':b.booking_confirmed?'#f0fdf4':''}} onClick={()=>{setESO(sos.find(x=>x.id===b.id));setESOC(cust.find(c=>c.id===b.customer_id));setPg('orders')}}>
-                    <td style={{fontWeight:700,color:'#4338ca',fontSize:12}}>{b.id}</td>
+                  return<tr key={(isPO?'po-':'so-')+b.id} style={{cursor:'pointer',background:isUrgent?'#fef2f2':b.booking_confirmed?'#f0fdf4':''}} onClick={()=>{if(isPO){setPg('inventory');setInvTab('pos')}else{setESO(sos.find(x=>x.id===b.id));setESOC(cust.find(c=>c.id===b.customer_id));setPg('orders')}}}>
+                    <td style={{fontWeight:700,color:isPO?'#7c3aed':'#4338ca',fontSize:12}}>{b.id}{isPO&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,verticalAlign:'middle'}}>INV PO</span>}</td>
                     <td style={{fontWeight:600}}>{b._cname} {b._alpha&&<span style={{fontSize:9,color:'#94a3b8'}}>{b._alpha}</span>}</td>
                     <td style={{fontSize:11,color:'#64748b',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.memo}</td>
                     <td style={{fontSize:11}}>{b._repName}</td>
-                    <td style={{textAlign:'right',fontWeight:600}}>${b._rev.toLocaleString()}</td>
+                    <td style={{textAlign:'right',fontWeight:600}}>${(b._rev||0).toLocaleString()}</td>
                     <td style={{textAlign:'center',fontWeight:600}}>{b.expected_ship_date||'—'}</td>
                     <td style={{textAlign:'center',fontWeight:800,color:b._daysOut===null?'#94a3b8':b._daysOut<=30?'#dc2626':b._daysOut<=100?'#d97706':'#166534'}}>{b._daysOut!==null?b._daysOut+'d':'—'}</td>
-                    <td style={{textAlign:'center'}}>{b.booking_confirmed
-                      ?<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:'#dcfce7',color:'#166534'}} title={confirmedBy&&confirmedAt?confirmedBy+' · '+confirmedAt:''}>Yes{confirmedBy?' · '+confirmedBy:''}</span>
-                      :<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:isUrgent?'#fecaca':'#fef3c7',color:isUrgent?'#dc2626':'#92400e'}}>{isUrgent?'Needs Confirm':'Pending'}</span>}</td>
+                    <td style={{textAlign:'center'}}>{isPO
+                      ?<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:b._poStatus==='received'?'#dcfce7':'#ede9fe',color:b._poStatus==='received'?'#166534':'#7c3aed'}}>{b._poStatus==='received'?'Received':b._poStatus==='partial'?'Partial':'Ordered'}</span>
+                      :(b.booking_confirmed
+                        ?<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:'#dcfce7',color:'#166534'}} title={confirmedBy&&confirmedAt?confirmedBy+' · '+confirmedAt:''}>Yes{confirmedBy?' · '+confirmedBy:''}</span>
+                        :<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:isUrgent?'#fecaca':'#fef3c7',color:isUrgent?'#dc2626':'#92400e'}}>{isUrgent?'Needs Confirm':'Pending'}</span>)}</td>
                     <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[b._st]?.bg,color:SC[b._st]?.c}}>{b._st==='booking'?'Booking':b._st==='need_order'?'Need Order':b._st==='waiting_receive'?'Waiting':b._st==='items_received'?'Items In':b._st==='in_production'?'In Prod':b._st==='ready_to_invoice'?'Ready Inv':b._st==='complete'?'Complete':b._st}</span></td>
                   </tr>})}
               </tbody></table>}
@@ -23053,6 +23083,7 @@ export default function App(){
       (so.deco_pos||[]).forEach(dp=>{if((dp.po_id||'').toLowerCase().includes(s)||(dp.vendor||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===dp.po_id))allPOs.push({po_id:dp.po_id,vendor:dp.vendor||'',status:dp.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||'',isDeco:true})}});
     });
     submittedBatches.forEach(sb=>{if((sb.po_number||'').toLowerCase().includes(s)||(sb.vendor_name||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===sb.po_number))allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name,status:sb.status||'waiting',so_id:(sb.source_pos||[])[0]?.so_id||'',so:sos.find(x=>x.id===((sb.source_pos||[])[0]?.so_id)),customer:(sb.source_pos||[])[0]?.customer||'',isBatch:true})}});
+    (invPOs||[]).forEach(ip=>{if((ip.po_number||'').toLowerCase().includes(s)||(ip.vendor_name||'').toLowerCase().includes(s)||(ip.memo||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===ip.po_number))allPOs.push({po_id:ip.po_number,vendor:ip.vendor_name,status:ip.status||'ordered',so_id:'',so:null,customer:'',isInvPO:true})}});
     const rpo=allPOs;
     const allJobs2=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeJobs(so).forEach(j=>{if((j.id||'').toLowerCase().includes(s)||(j.art_name||'').toLowerCase().includes(s)||(j.deco_type||'').toLowerCase().includes(s)||so.id.toLowerCase().includes(s)){if(!allJobs2.find(x=>x.id===j.id&&x.so_id===so.id))allJobs2.push({...j,so,so_id:so.id,customer:c2?.alpha_tag||c2?.name||''})}})});
     const rj=allJobs2;
@@ -23084,7 +23115,7 @@ export default function App(){
         {section('Sales Orders',rs,so=>{const cc=cust.find(x=>x.id===so.customer_id);return row(<><Icon name="box" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{so.id}</span><span>{so.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</>,()=>{setESO(so);setESOC(cc);setPg('orders')},so.id)})}
         {section('Products',rp,p=>row(<><Icon name="package" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span><span>{p.name}</span>{p.color&&<span style={{color:'#64748b',fontSize:11}}>{p.color}</span>}</>,()=>{setSelP(p);setPg('products');setQ('')},p.id))}
         {section('Item Fulfillments',rpk,pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return row(<><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></>,()=>{setESO(pk.so);setESOC(cc);setPg('orders')},pk.pick_id)})}
-        {section('Purchase Orders',rpo,po=>row(<><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status}</span></>,()=>{if(po.isBatch){setBatchScan(po.po_id);setPg('purchase_orders')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')}},po.po_id))}
+        {section('Purchase Orders',rpo,po=>row(<><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.isInvPO&&<span style={{fontSize:9,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>INV</span>}{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status}</span></>,()=>{if(po.isInvPO){setPOF(f=>({...f,search:po.po_id,status:'all',booking:false}));setPg('purchase_orders')}else if(po.isBatch){setBatchScan(po.po_id);setPg('purchase_orders')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')}},po.po_id))}
         {section('Jobs',rj,j=>row(<><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span><span>{j.art_name||j.deco_type}</span><span style={{color:'#64748b'}}>→ {j.so_id}</span></>,()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')},j.id+j.so_id))}
         {section('Invoices',ri,inv=>row(<><Icon name="file" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span><span>{cust.find(c=>c.id===inv.customer_id)?.name||''}</span><span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='partial'?'badge-amber':'badge-blue'}`}>{inv.status}</span></>,()=>{setViewInvoice(inv);setPg('invoices')},inv.id))}
         {section('Vendors',rv,v=>row(<><Icon name="building" size={14}/><span style={{fontWeight:600}}>{v.name}</span>{v.rep_name&&<span style={{color:'#64748b',fontSize:11}}>{v.rep_name}</span>}</>,()=>{setSelV(v);setPg('vendors')},v.id))}
@@ -23245,6 +23276,7 @@ export default function App(){
               (so.deco_pos||[]).forEach(dp=>{if((dp.po_id||'').toLowerCase().includes(s)||(dp.vendor||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===dp.po_id))allPOs.push({po_id:dp.po_id,vendor:dp.vendor||'',status:dp.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||'',isDeco:true})}});
             });
             submittedBatches.forEach(sb=>{if((sb.po_number||'').toLowerCase().includes(s)||(sb.vendor_name||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===sb.po_number))allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name,status:sb.status||'waiting',so_id:(sb.source_pos||[])[0]?.so_id||'',so:sos.find(x=>x.id===((sb.source_pos||[])[0]?.so_id)),customer:(sb.source_pos||[])[0]?.customer||'',isBatch:true})}});
+            (invPOs||[]).forEach(ip=>{if((ip.po_number||'').toLowerCase().includes(s)||(ip.vendor_name||'').toLowerCase().includes(s)||(ip.memo||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===ip.po_number))allPOs.push({po_id:ip.po_number,vendor:ip.vendor_name,status:ip.status||'ordered',so_id:'',so:null,customer:'',isInvPO:true})}});
             const rpo=allPOs.slice(0,4);
             // Build Jobs index from all SOs
             const allJobs2=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeJobs(so).forEach((j,ji)=>{if((j.id||'').toLowerCase().includes(s)||(j.art_name||'').toLowerCase().includes(s)||(j.deco_type||'').toLowerCase().includes(s)||so.id.toLowerCase().includes(s)){if(!allJobs2.find(x=>x.id===j.id&&x.so_id===so.id))allJobs2.push({...j,so,so_id:so.id,ji,customer:c2?.alpha_tag||c2?.name||''})}})});
@@ -23266,7 +23298,7 @@ export default function App(){
               {rpk.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Item Fulfillments</div>
                 {rpk.map(pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return<div key={pk.pick_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setESO(pk.so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></div>})}</>}
               {rpo.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Purchase Orders</div>
-                {rpo.map(po=><div key={po.po_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{if(po.isBatch){setBatchScan(po.po_id);setPg('purchase_orders')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')};setGQ('');setGOpen(false)}}><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status}</span></div>)}</>}
+                {rpo.map(po=><div key={po.po_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{if(po.isInvPO){setPOF(f=>({...f,search:po.po_id,status:'all',booking:false}));setPg('purchase_orders')}else if(po.isBatch){setBatchScan(po.po_id);setPg('purchase_orders')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')};setGQ('');setGOpen(false)}}><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.isInvPO&&<span style={{fontSize:9,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>INV</span>}{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status}</span></div>)}</>}
               {rj.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Jobs</div>
                 {rj.map(j=><div key={j.id+j.so_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span><span>{j.art_name||j.deco_type}</span><span style={{color:'#64748b'}}>→ {j.so_id}</span></div>)}</>}
               {ri.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Invoices</div>
@@ -23437,7 +23469,13 @@ export default function App(){
           <div><label className="form-label">Memo</label>
             <input className="form-input" style={{width:'100%'}} value={invPOModal.memo} onChange={e=>setInvPOModal(x=>({...x,memo:e.target.value}))} placeholder="Notes..."/></div>
         </div>
-        <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4,textTransform:'uppercase'}}>PO Number: <span style={{color:'#7c3aed',fontSize:13,letterSpacing:1}}>{invPOModal.editId?(invPOs.find(p=>p.id===invPOModal.editId)?.po_number||''):'PO-'+invPOCounter+'-NSA'}</span></div>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,flexWrap:'wrap',gap:8}}>
+          <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>PO Number: <span style={{color:'#7c3aed',fontSize:13,letterSpacing:1}}>{invPOModal.editId?(invPOs.find(p=>p.id===invPOModal.editId)?.po_number||''):'PO-'+invPOCounter+'-NSA'}</span></div>
+          <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'#4338ca',padding:'4px 8px',background:invPOModal.is_booking?'#e0e7ff':'#f8fafc',border:'1px solid '+(invPOModal.is_booking?'#4338ca':'#e2e8f0'),borderRadius:6,cursor:'pointer'}} title="Mark this as a booking order inventory PO — appears in the Booking Orders report.">
+            <input type="checkbox" checked={!!invPOModal.is_booking} onChange={e=>setInvPOModal(x=>({...x,is_booking:e.target.checked}))}/>
+            Booking PO
+          </label>
+        </div>
 
         {/* Product search & add */}
         <div style={{marginBottom:12,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',position:'relative'}}>
@@ -23466,21 +23504,39 @@ export default function App(){
         {invPOModal.items.length===0?<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:13}}>No items added yet. Select a vendor and add products above.</div>:
         invPOModal.items.map((it,idx)=>{
           const itTotal=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+          const baseSizes=it.available_sizes||['S','M','L','XL','2XL'];
+          const extras=Object.keys(it.sizes||{}).filter(sz=>!baseSizes.includes(sz));
+          const allSizes=[...baseSizes,...extras].sort((a,b)=>{const ai=SZ_ORD.indexOf(a),bi=SZ_ORD.indexOf(b);return (ai<0?999:ai)-(bi<0?999:bi)});
+          const addableSizes=[...SZ_ORD,...EXTRA_SIZES].filter((sz,i,a)=>a.indexOf(sz)===i&&!allSizes.includes(sz));
           return<div key={idx} style={{padding:12,background:'#f8fafc',borderRadius:6,marginBottom:8,border:'1px solid #e2e8f0'}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-              <div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</span> <span style={{fontWeight:600}}>{it.name}</span>{it.color&&<span style={{color:'#94a3b8'}}> — {it.color}</span>}
-                <span style={{fontSize:11,color:'#64748b',marginLeft:8}}>@ ${it.nsa_cost?.toFixed(2)}/ea</span></div>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,flexWrap:'wrap',gap:8}}>
+              <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</span> <span style={{fontWeight:600}}>{it.name}</span>{it.color&&<span style={{color:'#94a3b8'}}> — {it.color}</span>}
+                <span style={{fontSize:11,color:'#64748b',marginLeft:8}}>@ $</span>
+                <input type="number" step="0.01" min="0" style={{width:70,textAlign:'right',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 4px',fontSize:12,fontWeight:600}} value={it.nsa_cost??''} placeholder="0.00"
+                  onChange={e=>{const val=Math.max(0,parseFloat(e.target.value)||0);setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>i2!==idx?ii:{...ii,nsa_cost:val})}))}}/>
+                <span style={{fontSize:11,color:'#64748b'}}>/ea</span>
+              </div>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <span style={{fontWeight:700,fontSize:13}}>{itTotal} units = ${(itTotal*(it.nsa_cost||0)).toFixed(2)}</span>
                 <button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:16,padding:'0 4px'}} onClick={()=>setInvPOModal(x=>({...x,items:x.items.filter((_,i2)=>i2!==idx)}))}>x</button>
               </div>
             </div>
-            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-              {(it.available_sizes||['S','M','L','XL','2XL']).map(sz=><div key={sz} style={{textAlign:'center'}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#475569',marginBottom:2}}>{sz}</div>
-                <input style={{width:48,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} value={it.sizes[sz]||''} placeholder="0"
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end'}}>
+              {allSizes.map(sz=>{const isExtra=!baseSizes.includes(sz);return<div key={sz} style={{textAlign:'center',position:'relative'}}>
+                <div style={{fontSize:10,fontWeight:700,color:isExtra?'#7c3aed':'#475569',marginBottom:2}}>{sz}</div>
+                <input style={{width:48,textAlign:'center',border:'1px solid '+(isExtra?'#c4b5fd':'#d1d5db'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} value={it.sizes[sz]||''} placeholder="0"
                   onChange={e=>{const val=Math.max(0,parseInt(e.target.value)||0);setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>i2!==idx?ii:{...ii,sizes:{...ii.sizes,[sz]:val}})}))}}/>
-              </div>)}
+                {isExtra&&<button title="Remove this size" style={{position:'absolute',top:-4,right:-4,width:14,height:14,padding:0,fontSize:10,lineHeight:'12px',background:'#fff',border:'1px solid #c4b5fd',borderRadius:'50%',color:'#7c3aed',cursor:'pointer'}} onClick={()=>setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>{if(i2!==idx)return ii;const {[sz]:_drop,...rest}=ii.sizes||{};return{...ii,sizes:rest}})}))}>×</button>}
+              </div>})}
+              <div style={{textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',marginBottom:2}}>+ Size</div>
+                <select value="" style={{width:62,fontSize:11,padding:'4px 2px',border:'1px dashed #c4b5fd',borderRadius:4,background:'#faf5ff',color:'#7c3aed',cursor:'pointer'}}
+                  onChange={e=>{const sz=e.target.value;if(!sz)return;setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>i2!==idx?ii:{...ii,sizes:{...ii.sizes,[sz]:ii.sizes?.[sz]||0}})}))}}>
+                  <option value="">add…</option>
+                  {addableSizes.map(sz=><option key={sz} value={sz}>{sz}</option>)}
+                </select>
+              </div>
             </div>
           </div>})}
         {invPOModal.items.length>0&&<div style={{padding:10,background:'#eff6ff',borderRadius:6,marginTop:8,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
