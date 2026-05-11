@@ -27,6 +27,20 @@ const nextInvId=invs=>'INV-'+(Math.max(_maxNum(invs),_dbMaxIds.inv,1000)+1);
 const fmtCreatedAt=s=>{if(!s)return'—';if(String(s).includes(','))return String(s).split(',')[0];const d=new Date(s);return isNaN(d)?String(s):d.toLocaleDateString('en-US')};
 const isDualRunJob=(j)=>j&&j.items&&j.items.length>1&&j.items.some(gi=>gi.run_order);
 const mapColorCategory=color=>{if(!color)return'';const c=color.toLowerCase();if(/white|natural|cream|ivory/.test(c))return'White';if(/black|charcoal/.test(c))return'Black';if(/navy|blue|royal|columbia|carolina/.test(c))return'Blue';if(/red|cardinal|scarlet|crimson/.test(c))return'Red';if(/green|forest|kelly|lime|hunter/.test(c))return'Green';if(/grey|gray|heather|silver|graphite/.test(c))return'Grey';if(/gold|yellow|vegas|athletic/.test(c))return'Gold';if(/orange|texas/.test(c))return'Orange';if(/purple|maroon|wine|burgundy/.test(c))return'Purple';if(/pink|fuchsia/.test(c))return'Pink';if(/brown|tan|khaki|sand|coyote/.test(c))return'Brown';return''};
+// Matches a product against a color-filter selection. Picks up products where the
+// chosen category is the PRIMARY color (the part before '/' in e.g. "BLACK/WHITE"),
+// so brand-style names like Adidas "BLACK/WHITE" register under Black, not White.
+const matchColorFilter=(p,clr)=>{
+  if(!clr||clr==='all')return true;
+  if(p.color_category===clr)return true;
+  if(!p.color)return false;
+  const primary=String(p.color).split(/[\/\\|,&]/)[0].trim().toLowerCase();
+  if(!primary)return false;
+  const f=clr.toLowerCase();
+  if(primary===f)return true;
+  const esc=f.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  return new RegExp('\\b'+esc+'\\b','i').test(primary);
+};
 // Dedup products by SKU+color — merges true duplicates, prefers the copy with images.
 // Different colors under the same SKU stay as separate products (do not merge or delete).
 const _dedupProducts=(products,onRemove)=>{
@@ -3685,6 +3699,17 @@ export default function App(){
   const[favSkus,setFavSkus]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_fav_skus')||'[]')}catch{return[]}});
   const toggleFav=sku=>{setFavSkus(f=>{const n=f.includes(sku)?f.filter(s=>s!==sku):[...f,sku];_lsSet('nsa_fav_skus',JSON.stringify(n));return n})};
   const[iShowFav,setIShowFav]=useState(false);
+  const[bulkMode,setBulkMode]=useState(false);
+  const[bulkSel,setBulkSel]=useState(()=>new Set());
+  const[bulkField,setBulkField]=useState('category');
+  const[bulkValue,setBulkValue]=useState('');
+  const applyBulkUpdate=()=>{
+    if(bulkSel.size===0){nf('No items selected','error');return}
+    if(!bulkValue){nf('Pick a value to apply','error');return}
+    setProd(pp=>pp.map(p=>bulkSel.has(p.id)?{...p,[bulkField]:bulkValue}:p));
+    nf(`Updated ${bulkSel.size} item${bulkSel.size===1?'':'s'} — ${bulkField==='color_category'?'Color Category':bulkField==='vendor_id'?'Vendor':'Category'} → ${bulkField==='vendor_id'?(vend.find(v=>v.id===bulkValue)?.name||bulkValue):bulkValue}`);
+    setBulkSel(new Set());setBulkValue('');
+  };
   const[dismissedNotifs,setDismissedNotifs]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_dismissed_notifs')||'[]')}catch{return[]}});
   const dismissNotif=(key)=>{setDismissedNotifs(prev=>{if(prev.includes(key))return prev;const n=[...prev,key];_lsSet('nsa_dismissed_notifs',JSON.stringify(n));if(supabase&&cu?.id)supabase.from('dismissed_notifs').upsert({id:cu.id+':'+key.slice(0,80),user_id:cu.id,dismiss_key:key},{onConflict:'user_id,dismiss_key'}).then(r=>{if(r.error)console.error('[DB] dismiss notif:',r.error.message)});return n})};
   const[dismissedTodos,setDismissedTodos]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_dismissed_todos')||'[]')}catch{return[]}});
@@ -4014,8 +4039,8 @@ export default function App(){
     if(prodServerResults&&pg==='products')return prodServerResults.products;
     // Fallback: client-side filter (used when RPC unavailable or on other pages)
     let l=prod;if(q&&pg==='products'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.brand?.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s))}
-    if(pF.cat!=='all')l=l.filter(p=>p.category===pF.cat);if(pF.vnd!=='all')l=l.filter(p=>p.vendor_id===pF.vnd);if(pF.stk==='instock')l=l.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(pF.clr!=='all')l=l.filter(p=>p.color_category===pF.clr);if(pF.arc==='hide')l=l.filter(p=>!p.is_archived);else if(pF.arc==='only')l=l.filter(p=>p.is_archived);return l},[prod,q,pF,pg,prodServerResults]);
-  const iD=useMemo(()=>{let l=prod.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(iF.cat!=='all')l=l.filter(p=>p.category===iF.cat);if(iF.vnd!=='all')l=l.filter(p=>p.vendor_id===iF.vnd);if(iF.clr!=='all')l=l.filter(p=>p.color_category===iF.clr);
+    if(pF.cat!=='all')l=l.filter(p=>p.category===pF.cat);if(pF.vnd!=='all')l=l.filter(p=>p.vendor_id===pF.vnd);if(pF.stk==='instock')l=l.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(pF.clr!=='all')l=l.filter(p=>matchColorFilter(p,pF.clr));if(pF.arc==='hide')l=l.filter(p=>!p.is_archived);else if(pF.arc==='only')l=l.filter(p=>p.is_archived);return l},[prod,q,pF,pg,prodServerResults]);
+  const iD=useMemo(()=>{let l=prod.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(iF.cat!=='all')l=l.filter(p=>p.category===iF.cat);if(iF.vnd!=='all')l=l.filter(p=>p.vendor_id===iF.vnd);if(iF.clr!=='all')l=l.filter(p=>matchColorFilter(p,iF.clr));
     if(iShowFav&&favSkus.length>0)l=l.filter(p=>favSkus.includes(p.sku));
     if(q&&pg==='inventory'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s))}
     const m=l.map(p=>{const t=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);return{...p,_tQ:t,_tV:t*(p.nsa_cost||0)}});
@@ -5919,18 +5944,42 @@ export default function App(){
   </>);};
 
   // INVENTORY
-  const rInvStock=()=>(<>
+  const rInvStock=()=>{
+    const visibleIds=iD.map(p=>p.id);
+    const allSelected=visibleIds.length>0&&visibleIds.every(id=>bulkSel.has(id));
+    const toggleAll=()=>setBulkSel(s=>{const n=new Set(s);if(allSelected){visibleIds.forEach(id=>n.delete(id))}else{visibleIds.forEach(id=>n.add(id))}return n});
+    const toggleOne=id=>setBulkSel(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
+    const bulkOptions=bulkField==='category'?CATEGORIES:bulkField==='color_category'?COLOR_CATEGORIES:vend.map(v=>v.name);
+    return(<>
   <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
     <button className={`btn btn-sm ${iShowFav?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>setIShowFav(f=>!f)}>Favorites{favSkus.length>0?` (${favSkus.length})`:''}</button>
     <select className="form-select" style={{width:110}} value={iF.cat} onChange={e=>setIF(f=>({...f,cat:e.target.value}))}><option value="all">Category</option>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select>
     <select className="form-select" style={{width:110}} value={iF.vnd} onChange={e=>setIF(f=>({...f,vnd:e.target.value}))}><option value="all">Vendor</option>{vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>
-    <select className="form-select" style={{width:130}} value={iF.clr} onChange={e=>setIF(f=>({...f,clr:e.target.value}))}><option value="all">Color</option>{cols.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
+    <select className="form-select" style={{width:130}} value={iF.clr} onChange={e=>setIF(f=>({...f,clr:e.target.value}))}><option value="all">Color</option>{cols.map(c=><option key={c} value={c}>{c}</option>)}</select>
+    {isA&&<button className={`btn btn-sm ${bulkMode?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>{setBulkMode(m=>!m);setBulkSel(new Set());setBulkValue('')}}>{bulkMode?'Exit Bulk Edit':'Bulk Edit'}</button>}</div>
+  {isA&&bulkMode&&<div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:10,marginBottom:12,background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6}}>
+    <span style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{bulkSel.size} selected</span>
+    <span style={{fontSize:11,color:'#64748b'}}>Set</span>
+    <select className="form-select" style={{width:140,fontSize:11}} value={bulkField} onChange={e=>{setBulkField(e.target.value);setBulkValue('')}}>
+      <option value="category">Category</option>
+      <option value="color_category">Color Category</option>
+      <option value="vendor_id">Vendor</option>
+    </select>
+    <span style={{fontSize:11,color:'#64748b'}}>to</span>
+    <select className="form-select" style={{width:150,fontSize:11}} value={bulkValue} onChange={e=>setBulkValue(e.target.value)}>
+      <option value="">Select value...</option>
+      {bulkField==='vendor_id'?vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>):bulkOptions.map(o=><option key={o} value={o}>{o}</option>)}
+    </select>
+    <button className="btn btn-sm btn-primary" disabled={bulkSel.size===0||!bulkValue} onClick={applyBulkUpdate}>Apply to {bulkSel.size}</button>
+    <button className="btn btn-sm btn-secondary" onClick={()=>setBulkSel(new Set())} disabled={bulkSel.size===0}>Clear</button>
+  </div>}
   {(()=>{const anyB2B=Object.keys(adidasInvBulk).length>0;if(!anyB2B)return null;const firstSynced=Object.values(adidasInvBulk).find(v=>v.lastSynced);const ls=firstSynced?new Date(firstSynced.lastSynced):null;const staleHrs=ls?(Date.now()-ls.getTime())/3600000:999;
     return<div style={{marginBottom:8,display:'flex',alignItems:'center',gap:8}}>
       <span style={{fontSize:11,fontWeight:600,color:'#059669',background:'#ecfdf5',padding:'3px 8px',borderRadius:4}}>Adidas B2B Data Active</span>
       {ls&&<span style={{fontSize:10,color:staleHrs>48?'#d97706':'#94a3b8'}}>{staleHrs>48?'⚠ ':''}Last synced: {ls.toLocaleDateString()+' '+ls.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>}
     </div>})()}
   <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr>
+    {isA&&bulkMode&&<th style={{width:32}}><input type="checkbox" checked={allSelected} onChange={toggleAll} title="Select all visible"/></th>}
     <SortHeader label="SKU" field="sku" sortField={iS.f} sortDir={iS.d} onSort={f=>setIS(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}/>
     <SortHeader label="Product" field="name" sortField={iS.f} sortDir={iS.d} onSort={f=>setIS(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}/>
     <th>Sizes</th>
@@ -5938,16 +5987,17 @@ export default function App(){
     <th style={{fontSize:10}}>B2B</th>
     <SortHeader label="Value" field="value" sortField={iS.f} sortDir={iS.d} onSort={f=>setIS(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}/>
     <th>Actions</th></tr></thead>
-  <tbody>{iD.map(p=>{const ai=adidasInvBulk[p.sku];const b2bTotal=ai?Object.values(ai.sizes||{}).reduce((a,s)=>a+(s.qty||0),0):null;return<tr key={p.id}>
+  <tbody>{iD.map(p=>{const ai=adidasInvBulk[p.sku];const b2bTotal=ai?Object.values(ai.sizes||{}).reduce((a,s)=>a+(s.qty||0),0):null;const checked=bulkSel.has(p.id);return<tr key={p.id} style={isA&&bulkMode&&checked?{background:'#eff6ff'}:undefined}>
+    {isA&&bulkMode&&<td><input type="checkbox" checked={checked} onChange={()=>toggleOne(p.id)}/></td>}
     <td><div style={{display:'flex',alignItems:'center',gap:4}}><button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,padding:0,color:favSkus.includes(p.sku)?'#f59e0b':'#d1d5db'}} onClick={()=>toggleFav(p.sku)}>{favSkus.includes(p.sku)?'★':'☆'}</button><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span></div></td>
-    <td style={{fontSize:12}}>{p.name}{p.is_clearance&&<span style={{marginLeft:4,padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}<br/><span style={{color:'#94a3b8'}}>{p.color}</span></td>
+    <td style={{fontSize:12}}>{p.name}{p.is_clearance&&<span style={{marginLeft:4,padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}<br/><span style={{color:'#94a3b8'}}>{p.color}</span>{isA&&bulkMode&&<span style={{marginLeft:6,fontSize:10,color:'#64748b'}}>· {p.category||'No cat'} · {p.color_category||'No color cat'}</span>}</td>
     <td><div style={{display:'flex',gap:2}}>{[...new Set(p.available_sizes)].filter(sz=>showSz(sz,p._inv?.[sz])).map(sz=>{const v=p._inv?.[sz]||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{minWidth:30,padding:'1px 3px'}}><div className="size-label" style={{fontSize:8}}>{sz}</div><div className="size-qty" style={{fontSize:11}}>{v}</div></div>})}</div></td>
     <td style={{fontWeight:800,fontSize:15,color:p._tQ<=10?'#d97706':'#166534'}}>{p._tQ}</td>
     <td style={{fontWeight:700,fontSize:13,color:b2bTotal!=null?(b2bTotal>0?'#059669':'#dc2626'):'#d1d5db'}}>{b2bTotal!=null?b2bTotal:'—'}</td>
     <td style={{fontWeight:700}}>${p._tV.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
     <td><div style={{display:'flex',gap:4}}><button className="btn btn-sm btn-secondary" onClick={()=>newE(null,p)}>+EST</button>
       {isA&&<button className="btn btn-sm btn-secondary" onClick={()=>setAM({open:true,p})}>INV</button>}</div></td>
-  </tr>})}</tbody></table></div></div></>);
+  </tr>})}</tbody></table></div></div></>)};
 
   // CLEARANCE ITEMS
   const[clrSearch,setClrSearch]=useState('');
@@ -9568,8 +9618,9 @@ export default function App(){
 
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
+  const[invDrill,setInvDrill]=useState(null);// {kind:'vendor'|'category',key:string}
   const[rptRep,setRptRep]=useState(()=>cu?.role==='rep'?cu.id:'all');// default to logged-in rep so they see their own numbers
-  const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true});
+  const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true,invByCategory:true,invByVendor:true,invTopValue:true,invLowStock:true,invOutOfStock:true,invRecentAdj:true});
   // Historical sales chart UI state — hover tooltip + rep-vs-team mode
   const[histHover,setHistHover]=useState(null);// null | {x,y,label,value,year,scope}
   const[histShowTeam,setHistShowTeam]=useState(true);// when a rep is selected, overlay team totals so reps see their share
@@ -9764,7 +9815,7 @@ export default function App(){
       {/* Report controls */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
         <div style={{display:'flex',gap:4}}>
-          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['decorator','👤 Decorator'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax'],['csr_tasks','📌 CSR Tasks']].map(([v,l])=>
+          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['inventory','🗃️ Inventory'],['reps','🏆 Reps'],['production','🏭 Production'],['decorator','👤 Decorator'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax'],['csr_tasks','📌 CSR Tasks']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${rptTab===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab(v)}>{l}</button>)}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={rptRep} onChange={e=>setRptRep(e.target.value)}>
@@ -10529,6 +10580,153 @@ export default function App(){
         </div>}
       </div>}
 
+      {/* INVENTORY REPORTS — overview of stock health, value, and movement */}
+      {rptTab==='inventory'&&(()=>{
+        const enriched=prod.map(p=>{const tQ=Object.values(p._inv||{}).reduce((a,v)=>a+safeNum(v),0);return{...p,_tQ:tQ,_tV:tQ*safeNum(p.nsa_cost)}});
+        const inStock=enriched.filter(p=>p._tQ>0);
+        const outOfStock=enriched.filter(p=>!p._tQ);
+        const lowStock=enriched.filter(p=>p._tQ>0&&p._tQ<=10);
+        const totalUnits=enriched.reduce((a,p)=>a+p._tQ,0);
+        const totalValue=enriched.reduce((a,p)=>a+p._tV,0);
+        const vendName=id=>vend.find(v=>v.id===id)?.name||'—';
+        const byCategory=Object.values(enriched.reduce((a,p)=>{const k=p.category||'Uncategorized';if(!a[k])a[k]={name:k,skus:0,units:0,value:0};a[k].skus++;a[k].units+=p._tQ;a[k].value+=p._tV;return a},{})).sort((a,b)=>b.value-a.value);
+        const byVendor=Object.values(enriched.reduce((a,p)=>{const k=p.vendor_id||'_none';if(!a[k])a[k]={id:k,name:p.vendor_id?vendName(p.vendor_id):'No vendor',skus:0,units:0,value:0};a[k].skus++;a[k].units+=p._tQ;a[k].value+=p._tV;return a},{})).sort((a,b)=>b.value-a.value);
+        const topByValue=[...inStock].sort((a,b)=>b._tV-a._tV).slice(0,20);
+        const recentAdj=[...invAdjLog].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).slice(0,15);
+        const catMax=byCategory[0]?.value||1;
+        const vndMax=byVendor[0]?.value||1;
+        return<>
+        <div className="stats-row" style={{marginBottom:16}}>
+          <div className="stat-card"><div className="stat-label">SKUs In Stock</div><div className="stat-value">{inStock.length.toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value" style={{color:'#1e40af'}}>{totalUnits.toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Inventory Value</div><div className="stat-value" style={{color:'#166534'}}>${totalValue.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div>
+          <div className="stat-card"><div className="stat-label">Low Stock</div><div className="stat-value" style={{color:'#d97706'}}>{lowStock.length.toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Out of Stock</div><div className="stat-value" style={{color:'#dc2626'}}>{outOfStock.length.toLocaleString()}</div></div>
+        </div>
+
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="invByCategory" title="Inventory by Category" icon="🗂️"/>
+          {rptWidgets.invByCategory&&<div className="card-body" style={{padding:0}}>
+            {byCategory.length===0?<div className="empty" style={{padding:12}}>No inventory data.</div>:
+            <table><thead><tr><th>Category</th><th style={{textAlign:'center'}}>SKUs</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'right'}}>Value</th><th></th></tr></thead>
+            <tbody>{byCategory.map(c=>{const open=invDrill?.kind==='category'&&invDrill.key===c.name;const items=open?enriched.filter(p=>(p.category||'Uncategorized')===c.name).sort((a,b)=>b._tV-a._tV):[];return<React.Fragment key={c.name}>
+              <tr style={{cursor:'pointer'}} onClick={()=>setInvDrill(open?null:{kind:'category',key:c.name})}>
+                <td style={{fontWeight:600}}><span style={{display:'inline-block',width:12,color:'#94a3b8'}}>{open?'▼':'▶'}</span>{c.name}</td>
+                <td style={{textAlign:'center'}}>{c.skus.toLocaleString()}</td>
+                <td style={{textAlign:'center'}}>{c.units.toLocaleString()}</td>
+                <td style={{textAlign:'right',fontWeight:700}}>${c.value.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                <td style={{width:120}}><Bar val={c.value} max={catMax} color="#2563eb"/></td>
+              </tr>
+              {open&&<tr><td colSpan="5" style={{background:'#f8fafc',padding:8}}>
+                <table style={{width:'100%',fontSize:11}}><thead><tr><th>SKU</th><th>Product</th><th>Vendor</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'right'}}>Value</th></tr></thead>
+                <tbody>{items.slice(0,200).map(p=><tr key={p.id}>
+                  <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</td>
+                  <td>{p.name}{p.color&&<span style={{color:'#94a3b8'}}> — {p.color}</span>}</td>
+                  <td style={{color:'#64748b'}}>{p.vendor_id?vendName(p.vendor_id):'—'}</td>
+                  <td style={{textAlign:'center'}}>{p._tQ}</td>
+                  <td style={{textAlign:'right'}}>${p._tV.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                </tr>)}</tbody></table>
+                {items.length>200&&<div style={{fontSize:10,color:'#94a3b8',textAlign:'center',marginTop:4}}>Showing first 200 of {items.length}</div>}
+              </td></tr>}
+            </React.Fragment>})}</tbody></table>}
+          </div>}
+        </div>
+
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="invByVendor" title="Inventory by Vendor" icon="🏷️"/>
+          {rptWidgets.invByVendor&&<div className="card-body" style={{padding:0}}>
+            {byVendor.length===0?<div className="empty" style={{padding:12}}>No inventory data.</div>:
+            <table><thead><tr><th>Vendor</th><th style={{textAlign:'center'}}>SKUs</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'right'}}>Value</th><th></th></tr></thead>
+            <tbody>{byVendor.map(v=>{const open=invDrill?.kind==='vendor'&&invDrill.key===v.id;const items=open?enriched.filter(p=>(p.vendor_id||'_none')===v.id).sort((a,b)=>b._tV-a._tV):[];return<React.Fragment key={v.id}>
+              <tr style={{cursor:'pointer'}} onClick={()=>setInvDrill(open?null:{kind:'vendor',key:v.id})}>
+                <td style={{fontWeight:600}}><span style={{display:'inline-block',width:12,color:'#94a3b8'}}>{open?'▼':'▶'}</span>{v.name}</td>
+                <td style={{textAlign:'center'}}>{v.skus.toLocaleString()}</td>
+                <td style={{textAlign:'center'}}>{v.units.toLocaleString()}</td>
+                <td style={{textAlign:'right',fontWeight:700}}>${v.value.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                <td style={{width:120}}><Bar val={v.value} max={vndMax} color="#7c3aed"/></td>
+              </tr>
+              {open&&<tr><td colSpan="5" style={{background:'#f8fafc',padding:8}}>
+                <table style={{width:'100%',fontSize:11}}><thead><tr><th>SKU</th><th>Product</th><th>Category</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'right'}}>Value</th></tr></thead>
+                <tbody>{items.slice(0,200).map(p=><tr key={p.id}>
+                  <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</td>
+                  <td>{p.name}{p.color&&<span style={{color:'#94a3b8'}}> — {p.color}</span>}</td>
+                  <td style={{color:'#64748b'}}>{p.category||'—'}</td>
+                  <td style={{textAlign:'center'}}>{p._tQ}</td>
+                  <td style={{textAlign:'right'}}>${p._tV.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                </tr>)}</tbody></table>
+                {items.length>200&&<div style={{fontSize:10,color:'#94a3b8',textAlign:'center',marginTop:4}}>Showing first 200 of {items.length}</div>}
+              </td></tr>}
+            </React.Fragment>})}</tbody></table>}
+          </div>}
+        </div>
+
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="invTopValue" title="Top 20 SKUs by Inventory Value" icon="💎"/>
+          {rptWidgets.invTopValue&&<div className="card-body" style={{padding:0}}>
+            {topByValue.length===0?<div className="empty" style={{padding:12}}>No inventory in stock.</div>:
+            <table><thead><tr><th>SKU</th><th>Product</th><th>Category</th><th>Vendor</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'right'}}>Value</th></tr></thead>
+            <tbody>{topByValue.map(p=><tr key={p.id}>
+              <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{p.sku}</td>
+              <td style={{fontSize:12}}>{p.name}{p.color&&<span style={{color:'#94a3b8'}}> — {p.color}</span>}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{p.category||'—'}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{p.vendor_id?vendName(p.vendor_id):'—'}</td>
+              <td style={{textAlign:'center',fontWeight:600}}>{safeNum(p._tQ).toLocaleString()}</td>
+              <td style={{textAlign:'right',fontWeight:700}}>${safeNum(p._tV).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+            </tr>)}</tbody></table>}
+          </div>}
+        </div>
+
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="invLowStock" title={`Low Stock — ${lowStock.length} SKU${lowStock.length===1?'':'s'} ≤ 10 units`} icon="⚠️"/>
+          {rptWidgets.invLowStock&&<div className="card-body" style={{padding:0}}>
+            {lowStock.length===0?<div className="empty" style={{padding:12}}>No low stock SKUs.</div>:
+            <table><thead><tr><th>SKU</th><th>Product</th><th>Category</th><th>Vendor</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'right'}}>Value</th></tr></thead>
+            <tbody>{lowStock.sort((a,b)=>safeNum(a._tQ)-safeNum(b._tQ)).map(p=><tr key={p.id}>
+              <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{p.sku}</td>
+              <td style={{fontSize:12}}>{p.name}{p.color&&<span style={{color:'#94a3b8'}}> — {p.color}</span>}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{p.category||'—'}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{p.vendor_id?vendName(p.vendor_id):'—'}</td>
+              <td style={{textAlign:'center',fontWeight:700,color:'#d97706'}}>{safeNum(p._tQ)}</td>
+              <td style={{textAlign:'right'}}>${safeNum(p._tV).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+            </tr>)}</tbody></table>}
+          </div>}
+        </div>
+
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="invOutOfStock" title={`Out of Stock — ${outOfStock.length} SKU${outOfStock.length===1?'':'s'}`} icon="🚫"/>
+          {rptWidgets.invOutOfStock&&<div className="card-body" style={{padding:0}}>
+            {outOfStock.length===0?<div className="empty" style={{padding:12}}>Everything is in stock.</div>:
+            <table><thead><tr><th>SKU</th><th>Product</th><th>Category</th><th>Vendor</th></tr></thead>
+            <tbody>{outOfStock.slice(0,100).map(p=><tr key={p.id}>
+              <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{p.sku}</td>
+              <td style={{fontSize:12}}>{p.name}{p.color&&<span style={{color:'#94a3b8'}}> — {p.color}</span>}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{p.category||'—'}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{p.vendor_id?vendName(p.vendor_id):'—'}</td>
+            </tr>)}</tbody></table>}
+            {outOfStock.length>100&&<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:8}}>Showing first 100 of {outOfStock.length}</div>}
+          </div>}
+        </div>
+
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="invRecentAdj" title="Recent Inventory Adjustments" icon="📝"/>
+          {rptWidgets.invRecentAdj&&<div className="card-body" style={{padding:0}}>
+            {recentAdj.length===0?<div className="empty" style={{padding:12}}>No adjustments logged yet.</div>:
+            <table><thead><tr><th>When</th><th>SKU</th><th>Product</th><th>Size</th><th style={{textAlign:'center'}}>Change</th><th style={{textAlign:'center'}}>New Qty</th><th>Type</th><th>Reason</th><th>By</th></tr></thead>
+            <tbody>{recentAdj.map(a=><tr key={a.id}>
+              <td style={{fontSize:10,color:'#94a3b8'}}>{a.created_at}</td>
+              <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{a.sku}</td>
+              <td style={{fontSize:12}}>{a.product_name}{a.color&&<span style={{color:'#94a3b8'}}> — {a.color}</span>}</td>
+              <td style={{fontSize:11}}>{a.size}</td>
+              <td style={{textAlign:'center',fontWeight:700,color:a.qty_change>0?'#166534':'#dc2626'}}>{a.qty_change>0?'+':''}{a.qty_change}</td>
+              <td style={{textAlign:'center',fontWeight:600}}>{a.new_qty}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{a.adjustment_type||'—'}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{a.reason||'—'}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{a.performed_by||'—'}</td>
+            </tr>)}</tbody></table>}
+          </div>}
+        </div>
+        </>})()}
+
       {/* MARGIN ANALYSIS */}
       {(rptTab==='overview'||rptTab==='pipeline')&&<div className="card" style={{marginBottom:12}}>
         <WH id="margins" title="Margin Analysis — Where to Improve" icon="📈"/>
@@ -10766,6 +10964,21 @@ export default function App(){
         const isDecoratorRpt=cu?.role==='production'||cu?.role==='prod_assistant';
         const allDecorators=REPS.filter(r=>r.role==='production').filter(r=>r.is_active!==false);
         const{decoTasks}=buildWarehouseData();
+        const decoInRange=(ts)=>{
+          if(decoTimeF==='all')return true;
+          if(!ts)return false;
+          const d=new Date(ts);if(isNaN(d))return false;
+          const now=new Date();
+          const startToday=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+          if(decoTimeF==='today')return d>=startToday;
+          if(decoTimeF==='yesterday'){const y=new Date(startToday);y.setDate(y.getDate()-1);return d>=y&&d<startToday}
+          if(decoTimeF==='week'){const w=new Date(startToday);w.setDate(w.getDate()-7);return d>=w}
+          if(decoTimeF==='month'){const m=new Date(startToday);m.setDate(m.getDate()-30);return d>=m}
+          if(decoTimeF==='this_month')return d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth();
+          if(decoTimeF==='last_month'){const lm=new Date(now.getFullYear(),now.getMonth()-1,1);const lmEnd=new Date(now.getFullYear(),now.getMonth(),1);return d>=lm&&d<lmEnd}
+          if(decoTimeF==='ytd')return d.getFullYear()===now.getFullYear();
+          return true;
+        };
         // Completed jobs
         const completedDecoJobs=[];
         sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
@@ -10773,14 +10986,17 @@ export default function App(){
           const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
           const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
           safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
+            if(!decoInRange(j.completed_at||j.updated_at||so.updated_at))return;
             completedDecoJobs.push({so,soId:so.id,job:j,cName,rep,daysOut,
               artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
-              prodStatus:j.prod_status,machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to});
+              prodStatus:j.prod_status,machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to,
+              completedAt:j.completed_at||j.updated_at||so.updated_at});
           });
         });
         const personFilter=isDecoratorRpt?cu?.name:(decoPersonF!=='all'?decoPersonF:'all');
         const myCompleted=personFilter==='all'?completedDecoJobs:completedDecoJobs.filter(t=>t.assignedTo===personFilter);
-        const myLogs=personFilter==='all'?jobTimeLogs:jobTimeLogs.filter(l=>l.person===personFilter);
+        const filteredLogs=jobTimeLogs.filter(l=>decoInRange(l.clockOut));
+        const myLogs=personFilter==='all'?filteredLogs:filteredLogs.filter(l=>l.person===personFilter);
         const totalMins=myLogs.reduce((a,l)=>a+(l.minutes||0),0);
         const totalUnitsCompleted=myCompleted.reduce((a,t)=>a+t.totalUnits,0);
         // Items per day — group logs by date
@@ -10792,18 +11008,29 @@ export default function App(){
           const readyN=dJobs.filter(t=>t.isReady).length;
           const inProcN=dJobs.filter(t=>t.prodStatus==='in_process').length;
           const dCompleted=completedDecoJobs.filter(t=>t.assignedTo===d.name);
-          const dLogs=jobTimeLogs.filter(l=>l.person===d.name);
+          const dLogs=filteredLogs.filter(l=>l.person===d.name);
           const dMins=dLogs.reduce((a,l)=>a+(l.minutes||0),0);
           return{name:d.name,id:d.id,jobs:dJobs.length,units:dUnits,ready:readyN,inProcess:inProcN,completed:dCompleted.length,completedUnits:dCompleted.reduce((a,t)=>a+t.totalUnits,0),totalMins:dMins};
         }):[];
         const unassigned=isAdminRpt?decoTasks.filter(t=>!t.assignedTo&&t.prodStatus!=='completed'&&t.prodStatus!=='shipped'):[];
         return<>
-          {/* Admin: decorator filter */}
-          {isAdminRpt&&<div style={{marginBottom:12}}>
-            <select className="form-select" style={{width:180,fontSize:11}} value={decoPersonF} onChange={e=>setDecoPersonF(e.target.value)}>
+          {/* Filters: decorator (admin) + time range */}
+          <div style={{marginBottom:12,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+            {isAdminRpt&&<select className="form-select" style={{width:180,fontSize:11}} value={decoPersonF} onChange={e=>setDecoPersonF(e.target.value)}>
               <option value="all">All Decorators</option>{allDecorators.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
+            </select>}
+            <select className="form-select" style={{width:160,fontSize:11}} value={decoTimeF} onChange={e=>setDecoTimeF(e.target.value)}>
+              <option value="all">All Time</option>
+              <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="week">Last 7 Days</option>
+              <option value="month">Last 30 Days</option>
+              <option value="this_month">This Month</option>
+              <option value="last_month">Last Month</option>
+              <option value="ytd">Year to Date</option>
             </select>
-          </div>}
+            {decoTimeF!=='all'&&<span style={{fontSize:10,color:'#64748b'}}>Filtering completed jobs & time logs by {decoTimeF.replace(/_/g,' ')}</span>}
+          </div>
           {/* KPI */}
           <div className="stats-row" style={{marginBottom:16}}>
             <div className="stat-card"><div className="stat-label">Completed Jobs</div><div className="stat-value" style={{color:'#166534'}}>{myCompleted.length}</div></div>
@@ -11305,7 +11532,7 @@ export default function App(){
       <div className="card" style={{marginBottom:12}}>
         <div className="card-header" style={{padding:'8px 16px'}}><h2 style={{margin:0,fontSize:13}}>⚙️ Customize Dashboard</h2></div>
         <div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['winLoss','Quote Win/Loss'],['bookingOrders','Booking Orders'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['reorderForecast','Reorder Forecast'],['arAging','AR Aging'],['payDays','Avg Days to Pay'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers'],['prodThroughput','Prod Throughput'],['artTime','Art Time'],['decoTime','Deco Time'],['laborSummary','Labor Summary']].map(([k,label])=>
+          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['winLoss','Quote Win/Loss'],['bookingOrders','Booking Orders'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['reorderForecast','Reorder Forecast'],['arAging','AR Aging'],['payDays','Avg Days to Pay'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers'],['prodThroughput','Prod Throughput'],['artTime','Art Time'],['decoTime','Deco Time'],['laborSummary','Labor Summary'],['invByCategory','Inv by Category'],['invByVendor','Inv by Vendor'],['invTopValue','Top Inv Value'],['invLowStock','Low Stock'],['invOutOfStock','Out of Stock'],['invRecentAdj','Recent Adjustments']].map(([k,label])=>
             <label key={k} style={{fontSize:11,display:'flex',alignItems:'center',gap:4,padding:'4px 8px',background:rptWidgets[k]?'#dbeafe':'#f1f5f9',borderRadius:6,cursor:'pointer',border:'1px solid '+(rptWidgets[k]?'#93c5fd':'#e2e8f0')}}>
               <input type="checkbox" checked={rptWidgets[k]||false} onChange={()=>toggleWidget(k)}/> {label}
             </label>)}
@@ -12464,6 +12691,7 @@ export default function App(){
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
   const[decoCardFilter,setDecoCardFilter]=useState(null);// null|'ready'|'in_process'|'waiting'
   const[decoPersonF,setDecoPersonF]=useState('all');// filter by assigned decorator name
+  const[decoTimeF,setDecoTimeF]=useState('all');// filter by completion/clock-out date
 
   function handleReceiveScan(val){
     if(!val)return;
