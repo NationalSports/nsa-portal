@@ -10433,15 +10433,16 @@ export default function App(){
 
       {/* INVENTORY REPORTS — overview of stock health, value, and movement */}
       {rptTab==='inventory'&&(()=>{
-        const inStock=prod.filter(p=>safeNum(p._tQ)>0);
-        const outOfStock=prod.filter(p=>!safeNum(p._tQ));
-        const lowStock=prod.filter(p=>{const q=safeNum(p._tQ);return q>0&&q<=10});
-        const totalUnits=prod.reduce((a,p)=>a+safeNum(p._tQ),0);
-        const totalValue=prod.reduce((a,p)=>a+safeNum(p._tV),0);
+        const enriched=prod.map(p=>{const tQ=Object.values(p._inv||{}).reduce((a,v)=>a+safeNum(v),0);return{...p,_tQ:tQ,_tV:tQ*safeNum(p.nsa_cost)}});
+        const inStock=enriched.filter(p=>p._tQ>0);
+        const outOfStock=enriched.filter(p=>!p._tQ);
+        const lowStock=enriched.filter(p=>p._tQ>0&&p._tQ<=10);
+        const totalUnits=enriched.reduce((a,p)=>a+p._tQ,0);
+        const totalValue=enriched.reduce((a,p)=>a+p._tV,0);
         const vendName=id=>vend.find(v=>v.id===id)?.name||'—';
-        const byCategory=Object.values(prod.reduce((a,p)=>{const k=p.category||'Uncategorized';if(!a[k])a[k]={name:k,skus:0,units:0,value:0};a[k].skus++;a[k].units+=safeNum(p._tQ);a[k].value+=safeNum(p._tV);return a},{})).sort((a,b)=>b.value-a.value);
-        const byVendor=Object.values(prod.reduce((a,p)=>{const k=p.vendor_id||'_none';if(!a[k])a[k]={id:k,name:p.vendor_id?vendName(p.vendor_id):'No vendor',skus:0,units:0,value:0};a[k].skus++;a[k].units+=safeNum(p._tQ);a[k].value+=safeNum(p._tV);return a},{})).sort((a,b)=>b.value-a.value);
-        const topByValue=[...inStock].sort((a,b)=>safeNum(b._tV)-safeNum(a._tV)).slice(0,20);
+        const byCategory=Object.values(enriched.reduce((a,p)=>{const k=p.category||'Uncategorized';if(!a[k])a[k]={name:k,skus:0,units:0,value:0};a[k].skus++;a[k].units+=p._tQ;a[k].value+=p._tV;return a},{})).sort((a,b)=>b.value-a.value);
+        const byVendor=Object.values(enriched.reduce((a,p)=>{const k=p.vendor_id||'_none';if(!a[k])a[k]={id:k,name:p.vendor_id?vendName(p.vendor_id):'No vendor',skus:0,units:0,value:0};a[k].skus++;a[k].units+=p._tQ;a[k].value+=p._tV;return a},{})).sort((a,b)=>b.value-a.value);
+        const topByValue=[...inStock].sort((a,b)=>b._tV-a._tV).slice(0,20);
         const recentAdj=[...invAdjLog].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).slice(0,15);
         const catMax=byCategory[0]?.value||1;
         const vndMax=byVendor[0]?.value||1;
