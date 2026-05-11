@@ -7,7 +7,7 @@
 // optionally converts to SO) with the parsed items pre-loaded.
 import React, { useState } from 'react';
 import { Icon, SearchSelect } from './components';
-import { invokeEdgeFn } from './utils';
+import { invokeEdgeFn, enrichAiLinesWithVendors } from './utils';
 import { rQ } from './pricing';
 
 const isAU = b => { const l = (b || '').toLowerCase(); return l === 'adidas' || l === 'under armour' || l === 'new balance'; };
@@ -62,10 +62,25 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       try { d = await invokeEdgeFn(supabase, 'ai-order-builder', payload); }
       finally { clearInterval(ticker); }
       if (!d?.ok) { setAi(x => ({ ...x, loading: false, statusMsg: null, error: d?.error || 'AI parse failed' })); return; }
+      let lines = (d.lines || []).map(l => ({ ...l, _skip: false }));
+
+      // Vendor enrichment: for unmatched SKUs, fan out to SanMar / S&S / Momentec
+      // and splice in name + pricing if anyone has it. Keeps the loading bar up
+      // so the user knows it's still working.
+      const unmatchedCount = lines.filter(l => !l.product_id && (l.sku_guess || '').trim()).length;
+      if (unmatchedCount > 0) {
+        setAi(x => ({ ...x, statusMsg: `Looking up ${unmatchedCount} SKU${unmatchedCount === 1 ? '' : 's'} in vendor catalogs…` }));
+        try {
+          lines = await enrichAiLinesWithVendors(lines, (done, total) => {
+            setAi(x => ({ ...x, statusMsg: `Vendor lookup: ${done}/${total}…` }));
+          });
+        } catch (e) { console.warn('[AiOrderWizard] vendor enrichment failed:', e); }
+      }
+
       setAi(x => ({
         ...x,
         loading: false, statusMsg: null,
-        parsed: (d.lines || []).map(l => ({ ...l, _skip: false })),
+        parsed: lines,
         warnings: d.warnings || [],
         build_id: d.build_id || null,
         hasParsed: true,
@@ -87,8 +102,8 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
         (sku ? ((products || []).find(pr => pr.sku === sku) || (products || []).find(pr => pr.sku.toLowerCase() === sku.toLowerCase())) : null);
       const brand = catMatch?.brand || p.brand || '';
       const au = isAU(brand);
-      const cost = catMatch?.nsa_cost || 0;
-      const retail = catMatch?.retail_price || 0;
+      const cost = catMatch?.nsa_cost || p.vendor_price || 0;
+      const retail = catMatch?.retail_price || p.vendor_retail || 0;
       const sell = au
         ? rQ(retail * (1 - (tD[customer?.adidas_ua_tier || 'B'] || 0.35)))
         : rQ(cost * mk);
@@ -273,8 +288,10 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
               <div style={{ fontSize: 18, fontWeight: 800, color: '#166534' }}>{ai.parsed.length}</div><div style={{ fontSize: 10, color: '#64748b' }}>Items Parsed</div></div>
             <div style={{ padding: 8, background: '#ede9fe', borderRadius: 6, flex: 1, textAlign: 'center' }}>
               <div style={{ fontSize: 18, fontWeight: 800, color: '#7c3aed' }}>{ai.parsed.filter(p => p.product_id).length}</div><div style={{ fontSize: 10, color: '#64748b' }}>Catalog Matches</div></div>
-            <div style={{ padding: 8, background: ai.parsed.some(p => !p.product_id) ? '#fffbeb' : '#f8fafc', borderRadius: 6, flex: 1, textAlign: 'center' }}>
-              <div style={{ fontSize: 18, fontWeight: 800, color: ai.parsed.some(p => !p.product_id) ? '#d97706' : '#94a3b8' }}>{ai.parsed.filter(p => !p.product_id).length}</div><div style={{ fontSize: 10, color: '#64748b' }}>Unmatched</div></div>
+            <div style={{ padding: 8, background: ai.parsed.some(p => p.vendor_source) ? '#dbeafe' : '#f8fafc', borderRadius: 6, flex: 1, textAlign: 'center' }}>
+              <div style={{ fontSize: 18, fontWeight: 800, color: ai.parsed.some(p => p.vendor_source) ? '#1e40af' : '#94a3b8' }}>{ai.parsed.filter(p => p.vendor_source).length}</div><div style={{ fontSize: 10, color: '#64748b' }}>Vendor Matches</div></div>
+            <div style={{ padding: 8, background: ai.parsed.some(p => !p.product_id && !p.vendor_source) ? '#fffbeb' : '#f8fafc', borderRadius: 6, flex: 1, textAlign: 'center' }}>
+              <div style={{ fontSize: 18, fontWeight: 800, color: ai.parsed.some(p => !p.product_id && !p.vendor_source) ? '#d97706' : '#94a3b8' }}>{ai.parsed.filter(p => !p.product_id && !p.vendor_source).length}</div><div style={{ fontSize: 10, color: '#64748b' }}>Unmatched</div></div>
           </div>
 
           {(ai.warnings || []).length > 0 && <div style={{ marginBottom: 8, padding: 8, background: '#fef3c7', borderRadius: 6 }}>
@@ -290,10 +307,14 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
                 const toggle = () => setAi(x => ({ ...x, parsed: x.parsed.map((p, pi) => pi === i ? { ...p, _skip: !p._skip } : p) }));
                 const upd = (k, v) => setAi(x => ({ ...x, parsed: x.parsed.map((p, pi) => pi === i ? { ...p, [k]: v } : p) }));
                 const mq = it.match_quality;
-                const mqLabel = mq === 'exact' ? '✓ Exact' : mq === 'stripped' ? '✓ Trimmed' : mq === 'fuzzy_name' ? '~ Fuzzy' : mq === 'no_sku' ? '? No SKU' : '✗ Unmatched';
-                const mqColor = mq === 'exact' ? '#166534' : mq === 'stripped' ? '#166534' : mq === 'fuzzy_name' ? '#d97706' : '#dc2626';
-                const mqBg = mq === 'exact' || mq === 'stripped' ? '#dcfce7' : mq === 'fuzzy_name' ? '#fef3c7' : '#fee2e2';
-                return <tr key={i} style={{ opacity: it._skip ? 0.4 : 1, background: !it.product_id ? '#fffbeb' : 'white' }}>
+                const isVendor = typeof mq === 'string' && mq.startsWith('vendor_');
+                const vendorName = isVendor ? mq.slice('vendor_'.length) : null;
+                const vendorLabel = vendorName === 'sanmar' ? '🟦 SanMar' : vendorName === 'ss' ? '🟪 S&S' : vendorName === 'momentec' ? '🟧 Momentec' : null;
+                const mqLabel = vendorLabel || (mq === 'exact' ? '✓ Exact' : mq === 'stripped' ? '✓ Trimmed' : mq === 'fuzzy_name' ? '~ Fuzzy' : mq === 'no_sku' ? '? No SKU' : '✗ Unmatched');
+                const mqColor = isVendor ? '#1e40af' : (mq === 'exact' || mq === 'stripped' ? '#166534' : mq === 'fuzzy_name' ? '#d97706' : '#dc2626');
+                const mqBg = isVendor ? '#dbeafe' : (mq === 'exact' || mq === 'stripped' ? '#dcfce7' : mq === 'fuzzy_name' ? '#fef3c7' : '#fee2e2');
+                const hasResolvedSource = !!it.product_id || isVendor;
+                return <tr key={i} style={{ opacity: it._skip ? 0.4 : 1, background: !hasResolvedSource ? '#fffbeb' : 'white' }}>
                   <td><input type="checkbox" checked={!it._skip} onChange={toggle} /></td>
                   <td><input className="form-input" value={it.sku_guess || ''} onChange={e => upd('sku_guess', e.target.value)} style={{ width: 90, fontSize: 10, fontFamily: 'monospace' }} /></td>
                   <td><span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 4, background: mqBg, color: mqColor, fontWeight: 700, whiteSpace: 'nowrap' }}>{mqLabel}</span>

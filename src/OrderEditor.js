@@ -9,7 +9,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks, ImgGallery } from './components';
 import { CustModal } from './modals';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, openDocPDF, downloadDoc, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, openDocPDF, downloadDoc, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 
@@ -2842,7 +2842,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 try{d=await invokeEdgeFn(supabase,'ai-order-builder',payload)}
                 finally{clearInterval(ticker)}
                 if(!d?.ok){setAiBuild(x=>({...x,loading:false,statusMsg:null,error:d?.error||'AI parse failed'}));return}
-                setAiBuild(x=>({...x,loading:false,statusMsg:null,step:'review',parsed:(d.lines||[]).map(l=>({...l,_skip:false})),warnings:d.warnings||[],build_id:d.build_id||null}));
+                let lines=(d.lines||[]).map(l=>({...l,_skip:false}));
+                // Vendor enrichment: for SKUs we couldn't match in our internal
+                // catalog, fan out to SanMar / S&S / Momentec in parallel for
+                // pricing + product names. Keeps the loading bar up.
+                const unmatchedCount=lines.filter(l=>!l.product_id&&(l.sku_guess||'').trim()).length;
+                if(unmatchedCount>0){
+                  setAiBuild(x=>({...x,statusMsg:'Looking up '+unmatchedCount+' SKU'+(unmatchedCount===1?'':'s')+' in vendor catalogs…'}));
+                  try{lines=await enrichAiLinesWithVendors(lines,(done,total)=>setAiBuild(x=>({...x,statusMsg:'Vendor lookup: '+done+'/'+total+'…'})))}
+                  catch(e){console.warn('[aiBuild] vendor enrichment failed:',e)}
+                }
+                setAiBuild(x=>({...x,loading:false,statusMsg:null,step:'review',parsed:lines,warnings:d.warnings||[],build_id:d.build_id||null}));
               }catch(err){
                 console.error('[aiBuild] parse error:',err);
                 setAiBuild(x=>({...x,loading:false,statusMsg:null,error:'Unexpected error: '+(err?.message||String(err))}));
@@ -2866,8 +2876,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{aiBuild.parsed.length}</div><div style={{fontSize:10,color:'#64748b'}}>Items Parsed</div></div>
           <div style={{padding:8,background:'#ede9fe',borderRadius:6,flex:1,textAlign:'center'}}>
             <div style={{fontSize:18,fontWeight:800,color:'#7c3aed'}}>{aiBuild.parsed.filter(p=>p.product_id).length}</div><div style={{fontSize:10,color:'#64748b'}}>Catalog Matches</div></div>
-          <div style={{padding:8,background:aiBuild.parsed.some(p=>!p.product_id)?'#fffbeb':'#f8fafc',borderRadius:6,flex:1,textAlign:'center'}}>
-            <div style={{fontSize:18,fontWeight:800,color:aiBuild.parsed.some(p=>!p.product_id)?'#d97706':'#94a3b8'}}>{aiBuild.parsed.filter(p=>!p.product_id).length}</div><div style={{fontSize:10,color:'#64748b'}}>Unmatched</div></div>
+          <div style={{padding:8,background:aiBuild.parsed.some(p=>p.vendor_source)?'#dbeafe':'#f8fafc',borderRadius:6,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:18,fontWeight:800,color:aiBuild.parsed.some(p=>p.vendor_source)?'#1e40af':'#94a3b8'}}>{aiBuild.parsed.filter(p=>p.vendor_source).length}</div><div style={{fontSize:10,color:'#64748b'}}>Vendor Matches</div></div>
+          <div style={{padding:8,background:aiBuild.parsed.some(p=>!p.product_id&&!p.vendor_source)?'#fffbeb':'#f8fafc',borderRadius:6,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:18,fontWeight:800,color:aiBuild.parsed.some(p=>!p.product_id&&!p.vendor_source)?'#d97706':'#94a3b8'}}>{aiBuild.parsed.filter(p=>!p.product_id&&!p.vendor_source).length}</div><div style={{fontSize:10,color:'#64748b'}}>Unmatched</div></div>
         </div>
 
         {(aiBuild.warnings||[]).length>0&&<div style={{marginBottom:8,padding:8,background:'#fef3c7',borderRadius:6}}>
@@ -2882,10 +2894,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const toggle=()=>setAiBuild(x=>({...x,parsed:x.parsed.map((p,pi)=>pi===i?{...p,_skip:!p._skip}:p)}));
             const upd=(k,v)=>setAiBuild(x=>({...x,parsed:x.parsed.map((p,pi)=>pi===i?{...p,[k]:v}:p)}));
             const mq=it.match_quality;
-            const mqLabel=mq==='exact'?'✓ Exact':mq==='stripped'?'✓ Trimmed':mq==='fuzzy_name'?'~ Fuzzy':mq==='no_sku'?'? No SKU':'✗ Unmatched';
-            const mqColor=mq==='exact'?'#166534':mq==='stripped'?'#166534':mq==='fuzzy_name'?'#d97706':'#dc2626';
-            const mqBg=mq==='exact'||mq==='stripped'?'#dcfce7':mq==='fuzzy_name'?'#fef3c7':'#fee2e2';
-            return<tr key={i} style={{opacity:it._skip?0.4:1,background:!it.product_id?'#fffbeb':'white'}}>
+            const isVendor=typeof mq==='string'&&mq.startsWith('vendor_');
+            const vendorName=isVendor?mq.slice('vendor_'.length):null;
+            const vendorLabel=vendorName==='sanmar'?'🟦 SanMar':vendorName==='ss'?'🟪 S&S':vendorName==='momentec'?'🟧 Momentec':null;
+            const mqLabel=vendorLabel||(mq==='exact'?'✓ Exact':mq==='stripped'?'✓ Trimmed':mq==='fuzzy_name'?'~ Fuzzy':mq==='no_sku'?'? No SKU':'✗ Unmatched');
+            const mqColor=isVendor?'#1e40af':(mq==='exact'||mq==='stripped'?'#166534':mq==='fuzzy_name'?'#d97706':'#dc2626');
+            const mqBg=isVendor?'#dbeafe':(mq==='exact'||mq==='stripped'?'#dcfce7':mq==='fuzzy_name'?'#fef3c7':'#fee2e2');
+            const hasResolved=!!it.product_id||isVendor;
+            return<tr key={i} style={{opacity:it._skip?0.4:1,background:!hasResolved?'#fffbeb':'white'}}>
               <td><input type="checkbox" checked={!it._skip} onChange={toggle}/></td>
               <td><input className="form-input" value={it.sku_guess||''} onChange={e=>upd('sku_guess',e.target.value)} style={{width:90,fontSize:10,fontFamily:'monospace'}}/></td>
               <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:mqBg,color:mqColor,fontWeight:700,whiteSpace:'nowrap'}}>{mqLabel}</span>
@@ -2916,8 +2932,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 (sku?(products.find(pr=>pr.sku===sku)||products.find(pr=>pr.sku.toLowerCase()===sku.toLowerCase())):null);
               const brand=catMatch?.brand||p.brand||'';
               const au=isAU(brand);
-              const cost=catMatch?.nsa_cost||0;
-              const retail=catMatch?.retail_price||0;
+              const cost=catMatch?.nsa_cost||p.vendor_price||0;
+              const retail=catMatch?.retail_price||p.vendor_retail||0;
               const sell=au
                 ?rQ(retail*(1-(tD[cust?.adidas_ua_tier||'B']||0.35)))
                 :rQ(cost*(o.default_markup||1.65));

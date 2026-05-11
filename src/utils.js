@@ -262,3 +262,124 @@ export async function invokeEdgeFn(supabase,fnName,body){
   if(d&&d.error&&typeof d.error!=='string'){d.error=d.error?.message||JSON.stringify(d.error)}
   return d||{ok:false,error:'No response from edge function'};
 }
+
+// ── AI order builder: vendor SKU enrichment ──
+// When Claude returns a SKU we can't find in our internal `products` table,
+// fan out the SKU lookup to SanMar / S&S / Momentec in parallel. First
+// real hit wins. Returns a normalized object the wizard and OrderEditor's
+// build-with-AI modal can splice straight onto the line.
+//
+// Vendor helpers are imported lazily to avoid bloating the React entry chunk
+// — this function is only called when there are unmatched SKUs.
+export async function lookupVendorSku(sku){
+  if(!sku)return null;
+  const s=String(sku).trim();
+  if(!s||s.toUpperCase()==='CUSTOM'||s.length<3)return null;
+
+  let sanmarGetProduct, ssGetProducts, momentecGetProductByPartNumber;
+  try{
+    const v=await import('./vendorApis');
+    sanmarGetProduct=v.sanmarGetProduct;
+    ssGetProducts=v.ssGetProducts;
+    momentecGetProductByPartNumber=v.momentecGetProductByPartNumber;
+  }catch(e){console.warn('[lookupVendorSku] vendorApis import failed:',e);return null}
+
+  const safe=p=>p.then(v=>({ok:true,v})).catch(e=>({ok:false,e}));
+  const [sanmarR,ssR,momR]=await Promise.all([
+    sanmarGetProduct?safe(sanmarGetProduct(s,'','')):Promise.resolve({ok:false}),
+    ssGetProducts?safe(ssGetProducts({sku:s})):Promise.resolve({ok:false}),
+    momentecGetProductByPartNumber?safe(momentecGetProductByPartNumber(s)):Promise.resolve({ok:false}),
+  ]);
+
+  // SanMar — full product data + pricing + image
+  if(sanmarR.ok){
+    const items=sanmarR.v?.items||[];
+    if(items.length>0){
+      const it=items[0];
+      const basic=it.productBasicInfo||{};
+      const price=it.productPriceInfo||{};
+      const img=it.productImageInfo||{};
+      const piece=parseFloat(price.piecePrice||price.casePrice||0)||0;
+      const cust=parseFloat(price.customerPrice||price.salePrice||piece)||0;
+      return{
+        source:'sanmar',
+        sku:basic.style||basic.styleNumber||s,
+        name:basic.productTitle||basic.description||basic.styleNumber||'',
+        brand:basic.brandName||'',
+        color:basic.colorName||basic.catalogColor||'',
+        nsa_cost:piece,
+        retail_price:cust>0?cust:piece,
+        image_url:img.colorProductImageThumbnail||img.colorProductImage||null,
+      };
+    }
+  }
+
+  // S&S — endpoint returns single object (or array) of product detail
+  if(ssR.ok){
+    const raw=ssR.v;const v=Array.isArray(raw)?raw[0]:raw;
+    if(v&&(v.sku||v.styleID||v.styleNumber||v.style)){
+      const cost=parseFloat(v.customerPrice??v.CustomerPrice??v.salePrice??v.SalePrice??v.price??v.Price)||0;
+      const retail=parseFloat(v.piecePrice??v.PiecePrice??v.msrp??v.MSRP??v.customerPrice??v.CustomerPrice)||0;
+      return{
+        source:'ss',
+        sku:v.styleNumber||v.style||v.sku||s,
+        name:v.styleName||v.title||v.description||'',
+        brand:v.brandName||v.brand||'',
+        color:v.colorName||v.color||'',
+        nsa_cost:cost,
+        retail_price:retail>0?retail:cost,
+        image_url:v.colorFrontImage||v.styleImage||v.frontImage||null,
+      };
+    }
+  }
+
+  // Momentec — public catalog; pricing requires dealer auth so we surface name/image only
+  if(momR.ok){
+    const ev=momR.v?.CatalogEntryView||[];
+    if(ev.length>0){
+      const it=ev[0];
+      return{
+        source:'momentec',
+        sku:it.partNumber||s,
+        name:it.name||it.title||'',
+        brand:it.manufacturer||'',
+        color:'',
+        nsa_cost:0,
+        retail_price:0,
+        image_url:it.thumbnail||it.fullImage||null,
+      };
+    }
+  }
+
+  return null;
+}
+
+// Enrich an array of parsed AI lines with vendor pricing/names for any line
+// missing an internal catalog match. Mutates a shallow-copied array and
+// returns the new array so callers can swap state in one assignment.
+export async function enrichAiLinesWithVendors(lines,onProgress){
+  if(!Array.isArray(lines))return lines;
+  const out=lines.map(l=>({...l}));
+  const targets=[];
+  out.forEach((l,i)=>{if(!l.product_id&&(l.sku_guess||'').trim()&&l.match_quality!=='no_sku')targets.push(i)});
+  if(targets.length===0)return out;
+  let done=0;
+  await Promise.all(targets.map(async i=>{
+    const hit=await lookupVendorSku(out[i].sku_guess);
+    done++;if(onProgress)try{onProgress(done,targets.length)}catch(_){}
+    if(!hit)return;
+    out[i]={
+      ...out[i],
+      name:out[i].name||hit.name,
+      brand:out[i].brand||hit.brand,
+      color:out[i].color||hit.color,
+      vendor_source:hit.source,
+      vendor_price:hit.nsa_cost,
+      vendor_retail:hit.retail_price,
+      vendor_image:hit.image_url,
+      match_quality:'vendor_'+hit.source,
+    };
+  }));
+  return out;
+}
+
