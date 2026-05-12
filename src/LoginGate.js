@@ -5,7 +5,7 @@ import { NSA } from './constants';
 const ADMIN_PW_HASH=(process.env.REACT_APP_ADMIN_PW_HASH||'').trim();
 const hashPassword=async(pw)=>{const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pw));return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('')};
 
-function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,sbResendSignup:_sbResendSignup,sbGetSession:_sbGetSession,sbLinkTeamAuth:_sbLinkTeamAuth,sbGetMyProfile:_sbGetMyProfile}){
+function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,sbResendSignup:_sbResendSignup,sbResetPassword:_sbResetPassword,sbGetSession:_sbGetSession,sbLinkTeamAuth:_sbLinkTeamAuth,sbGetMyProfile:_sbGetMyProfile}){
   const REPS=(reps||[]).filter(r=>r.is_active!==false);
   const roleLabels={super_admin:'Super Admin',admin:'Admin',gm:'General Manager',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',rep:'Sales Rep',csr:'CSR',warehouse:'Warehouse',accounting:'Accounting',art:'Artist'};
   const roleColors={super_admin:'#dc2626',admin:'#1e40af',gm:'#7c3aed',prod_manager:'#b45309',production:'#d97706',prod_assistant:'#a16207',rep:'#166534',csr:'#0891b2',warehouse:'#9333ea',accounting:'#dc2626',art:'#ec4899'};
@@ -14,7 +14,7 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
   const[password2,setPassword2]=useState('');
   const[error,setError]=useState('');
   const[loading,setLoading]=useState(false);
-  const[mode,setMode]=useState('login');// 'login', 'setup', 'admin', 'confirm', or 'expired'
+  const[mode,setMode]=useState('login');// 'login', 'setup', 'admin', 'confirm', 'forgot', 'sent', or 'expired'
   const[adminFilter,setAdminFilter]=useState('');
   const[sessionChecked,setSessionChecked]=useState(false);
 
@@ -97,6 +97,16 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
     setMode('confirm');
   };
 
+  const handleForgot=async(e)=>{
+    e.preventDefault();setError('');
+    if(!email.trim()){setError('Please enter your email');return}
+    setLoading(true);
+    const res=await _sbResetPassword(email.trim());
+    setLoading(false);
+    if(res.error){setError(res.error);return}
+    setMode('sent');
+  };
+
   if(!sessionChecked)return(
     <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center'}}>
       <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3}}>Loading...</div>
@@ -151,6 +161,49 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
                 <div style={{fontSize:18,fontWeight:700,color:'#0f172a',marginBottom:8}}>Check Your Email</div>
                 <div style={{fontSize:13,color:'#64748b',marginBottom:16,lineHeight:1.5}}>
                   We sent a confirmation link to <strong>{email}</strong>. Click the link in the email to verify your account, then come back here to sign in.
+                </div>
+                <button type="button" onClick={()=>{setMode('login');setPassword('');setPassword2('');setError('')}}
+                  style={{padding:'10px 24px',background:'#1e40af',color:'white',border:'none',borderRadius:8,fontWeight:700,fontSize:14,cursor:'pointer'}}>
+                  Back to Sign In
+                </button>
+              </div>
+            </>
+          ):mode==='forgot'?(
+            /* Forgot password — send reset link */
+            <>
+              <div style={{textAlign:'center',paddingBottom:8}}>
+                <div style={{fontSize:18,fontWeight:700,color:'#0f172a',marginBottom:8}}>Reset Your Password</div>
+                <div style={{fontSize:13,color:'#64748b',marginBottom:16,lineHeight:1.5}}>
+                  Enter your email and we'll send you a link to set a new password.
+                </div>
+              </div>
+              <form onSubmit={handleForgot}>
+                <label style={{display:'block',fontSize:12,fontWeight:600,color:'#374151',marginBottom:4}}>Email</label>
+                <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" autoFocus
+                  autoComplete="email" name="email"
+                  style={{width:'100%',padding:'10px 12px',border:'1px solid #d1d5db',borderRadius:8,marginBottom:12,fontSize:14,boxSizing:'border-box',outline:'none'}}
+                  onFocus={e=>e.target.style.borderColor='#3b82f6'} onBlur={e=>e.target.style.borderColor='#d1d5db'}/>
+                {error&&<div style={{color:'#dc2626',fontSize:13,marginTop:4,marginBottom:4,padding:'8px 12px',background:'#fef2f2',borderRadius:8}}>{error}</div>}
+                <button type="submit" disabled={loading}
+                  style={{width:'100%',padding:'11px',background:'#1e40af',color:'white',border:'none',borderRadius:8,fontWeight:700,fontSize:14,cursor:'pointer',marginTop:8,opacity:loading?0.6:1,transition:'opacity 0.15s'}}>
+                  {loading?'Sending...':'Send Reset Link'}
+                </button>
+              </form>
+              <div style={{textAlign:'center',marginTop:16,paddingTop:16,borderTop:'1px solid #f1f5f9'}}>
+                <button type="button" onClick={()=>{setMode('login');setError('')}}
+                  style={{background:'none',border:'none',color:'#3b82f6',fontSize:13,cursor:'pointer',fontWeight:500}}>
+                  Back to Sign In
+                </button>
+              </div>
+            </>
+          ):mode==='sent'?(
+            /* Reset link sent */
+            <>
+              <div style={{textAlign:'center',padding:'16px 0'}}>
+                <div style={{fontSize:40,marginBottom:12}}>&#9993;</div>
+                <div style={{fontSize:18,fontWeight:700,color:'#0f172a',marginBottom:8}}>Check Your Email</div>
+                <div style={{fontSize:13,color:'#64748b',marginBottom:16,lineHeight:1.5}}>
+                  If an account exists for <strong>{email}</strong>, we sent a password reset link. Click the link in the email to choose a new password.
                 </div>
                 <button type="button" onClick={()=>{setMode('login');setPassword('');setPassword2('');setError('')}}
                   style={{padding:'10px 24px',background:'#1e40af',color:'white',border:'none',borderRadius:8,fontWeight:700,fontSize:14,cursor:'pointer'}}>
@@ -229,10 +282,16 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
 
           <div style={{textAlign:'center',marginTop:16,paddingTop:16,borderTop:'1px solid #f1f5f9'}}>
             {mode==='login'?(
-              <button type="button" onClick={()=>{setMode('setup');setError('');setPassword('');setPassword2('')}}
-                style={{background:'none',border:'none',color:'#3b82f6',fontSize:13,cursor:'pointer',fontWeight:500}}>
-                First time? Set up your account
-              </button>
+              <div style={{display:'flex',flexDirection:'column',gap:10}}>
+                <button type="button" onClick={()=>{setMode('forgot');setError('');setPassword('');setPassword2('')}}
+                  style={{background:'none',border:'none',color:'#3b82f6',fontSize:13,cursor:'pointer',fontWeight:500}}>
+                  Forgot your password?
+                </button>
+                <button type="button" onClick={()=>{setMode('setup');setError('');setPassword('');setPassword2('')}}
+                  style={{background:'none',border:'none',color:'#3b82f6',fontSize:13,cursor:'pointer',fontWeight:500}}>
+                  First time? Set up your account
+                </button>
+              </div>
             ):(
               <button type="button" onClick={()=>{setMode('login');setError('');setPassword('');setPassword2('')}}
                 style={{background:'none',border:'none',color:'#3b82f6',fontSize:13,cursor:'pointer',fontWeight:500}}>
