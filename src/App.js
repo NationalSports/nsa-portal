@@ -20267,8 +20267,11 @@ export default function App(){
         const qbCustomer={
           DisplayName:displayName,
           CompanyName:c.name,
-          ...(c.contact_email||c.contacts?.[0]?.email?{PrimaryEmailAddr:{Address:c.contact_email||c.contacts[0].email}}:{}),
-          ...(c.contact_phone||c.contacts?.[0]?.phone?{PrimaryPhone:{FreeFormNumber:c.contact_phone||c.contacts[0].phone}}:{}),
+          // QB rejects malformed emails (code 2210) and any sync attempt with a
+          // bad value blocks the whole batch. Trim and regex-validate before
+          // sending — omit the field entirely if the value isn't a real email.
+          ...((()=>{const raw=String(c.contact_email||c.contacts?.[0]?.email||'').trim();return raw&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)?{PrimaryEmailAddr:{Address:raw}}:{}})()),
+          ...((()=>{const raw=String(c.contact_phone||c.contacts?.[0]?.phone||'').trim();return raw?{PrimaryPhone:{FreeFormNumber:raw}}:{}})()),
           ...(c.billing_address_line1?{BillAddr:{Line1:c.billing_address_line1,City:c.billing_city||'',CountrySubDivisionCode:c.billing_state||'',PostalCode:c.billing_zip||''}}:{}),
           ...(c.shipping_address_line1?{ShipAddr:{Line1:c.shipping_address_line1,City:c.shipping_city||'',CountrySubDivisionCode:c.shipping_state||'',PostalCode:c.shipping_zip||''}}:{}),
           Notes:'Portal: '+custSOs.length+' orders, $'+totalRevenue.toFixed(0)+' revenue, $'+openBalance.toFixed(0)+' open balance. Tier: '+(c.adidas_ua_tier||'B')+'. Terms: '+(c.payment_terms||'net30'),
@@ -20570,7 +20573,11 @@ export default function App(){
         const existingQBId=prodQBMap[p.id];
         if(totalQty===0&&!existingQBId)continue; // skip products with no inventory and no QB record
         const totalValue=totalQty*safeNum(p.nsa_cost);
-        const itemName=(p.sku+' '+p.name).slice(0,100);
+        // Sanitize the name QB will display — strip control chars QB chokes on,
+        // collapse whitespace, trim, cap at 100. Same for description.
+        const cleanName=String(p.name||'').replace(/[ -]/g,' ').replace(/\s+/g,' ').trim();
+        const itemName=(p.sku+' '+cleanName).slice(0,100).trim();
+        const cleanColor=String(p.color||'').replace(/[ -]/g,' ').trim();
         // Match existing QB item by name or stored ID
         let qbId=existingQBId;let syncToken=null;let existingType=null;
         if(qbId){
@@ -20580,18 +20587,24 @@ export default function App(){
           const match=existingQBItems.find(i=>i.Name===itemName);
           if(match){qbId=match.Id;syncToken=match.SyncToken;existingType=match.Type}
         }
-        // Use Inventory type with QtyOnHand if we have an asset account
+        const isUpdate=!!qbId;
+        // QB rejects (code 2010) updates that try to change immutable properties.
+        // Type / TrackQtyOnHand / QtyOnHand / InvStartDate / AssetAccountRef are
+        // write-once at create. For updates we send only mutable fields; quantity
+        // changes go through the InventoryAdjustment call below.
         const useInventoryType=!!assetAcctRef;
         const qbItem={
           Name:itemName,
-          ...(useInventoryType?{Type:'Inventory',TrackQtyOnHand:true,QtyOnHand:totalQty,InvStartDate:today,AssetAccountRef:assetAcctRef}:
-            {Type:'NonInventory'}),
-          Description:p.name+(p.color?' - '+p.color:'')+' | Portal Qty: '+totalQty+' | Value: $'+totalValue.toFixed(2),
+          Description:cleanName+(cleanColor?' - '+cleanColor:'')+' | Portal Qty: '+totalQty+' | Value: $'+totalValue.toFixed(2),
           UnitPrice:safeNum(p.retail_price||p.nsa_cost),
           PurchaseCost:safeNum(p.nsa_cost),
           IncomeAccountRef:incomeAcctRef,
           ExpenseAccountRef:expenseAcctRef,
-          ...(qbId?{Id:qbId,SyncToken:syncToken,sparse:true}:{}),
+          ...(isUpdate
+            ?{Id:qbId,SyncToken:syncToken,sparse:true}
+            :(useInventoryType
+              ?{Type:'Inventory',TrackQtyOnHand:true,QtyOnHand:totalQty,InvStartDate:today,AssetAccountRef:assetAcctRef}
+              :{Type:'NonInventory'})),
         };
         const res=await qbApi('upsert_item',{item:qbItem});
         if(res?.Item?.Id){
