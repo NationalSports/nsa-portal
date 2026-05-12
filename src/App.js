@@ -349,6 +349,12 @@ const _sbResendSignup=async(email)=>{
   if(error)return{error:error.message};
   return{success:true};
 };
+const _sbResetPassword=async(email)=>{
+  if(!supabase)return{error:'Supabase not configured'};
+  const{error}=await supabase.auth.resetPasswordForEmail(email,{redirectTo:window.location.origin+'/auth/reset'});
+  if(error)return{error:error.message};
+  return{success:true};
+};
 const _sbSignOut=async()=>{if(supabase)await supabase.auth.signOut()};
 const _sbGetSession=async()=>{
   if(!supabase)return null;
@@ -23546,7 +23552,7 @@ export default function App(){
     <img src={NSA.logoUrl} alt="NSA" style={{height:70,filter:'brightness(0) invert(1)'}}/>
     <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3}}>Loading...</div></div>;
   // LOGIN GATE
-  if(!cu)return<ComponentErrorBoundary name="LoginGate"><React.Suspense fallback={<LazyFallback/>}><LoginGate onLogin={handleLogin} reps={REPS} supabase={supabase} sbSignIn={_sbSignIn} sbSignUp={_sbSignUp} sbResendSignup={_sbResendSignup} sbGetSession={_sbGetSession} sbLinkTeamAuth={_sbLinkTeamAuth} sbGetMyProfile={_sbGetMyProfile}/></React.Suspense></ComponentErrorBoundary>;
+  if(!cu)return<ComponentErrorBoundary name="LoginGate"><React.Suspense fallback={<LazyFallback/>}><LoginGate onLogin={handleLogin} reps={REPS} supabase={supabase} sbSignIn={_sbSignIn} sbSignUp={_sbSignUp} sbResendSignup={_sbResendSignup} sbResetPassword={_sbResetPassword} sbGetSession={_sbGetSession} sbLinkTeamAuth={_sbLinkTeamAuth} sbGetMyProfile={_sbGetMyProfile}/></React.Suspense></ComponentErrorBoundary>;
   // MOBILE PORTAL GATE
   if(mobileMode)return<MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs}/>;
 
