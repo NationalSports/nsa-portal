@@ -3142,7 +3142,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {/* PREVIOUS ARTWORK PICKER MODAL */}
     {showPrevArt&&(()=>{
       const custId=o.customer_id;const parentCust2=allCustomers.find(c=>c.id===custId);
-      const custIds2=parentCust2?.parent_id?[parentCust2.parent_id,custId,...allCustomers.filter(c=>c.parent_id===parentCust2.parent_id).map(c=>c.id)]:[custId,...allCustomers.filter(c=>c.parent_id===custId).map(c=>c.id)];
+      // Only cross-pollinate art from the parent account; sibling sub-accounts are segmented (e.g. OLu Basketball shouldn't see OLu Football art).
+      const custIds2=parentCust2?.parent_id?[parentCust2.parent_id,custId]:[custId];
       const prevArtList=[];
       const _seenKeys=new Set();
       const _dedupKey=a=>(a.id||'')+'|'+(a.name||'').toLowerCase().trim()+'|'+(a.deco_type||'')+'|'+(a.art_size||'')+'|'+((a.color_ways||[]).length);
