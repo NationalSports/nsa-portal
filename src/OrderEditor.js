@@ -4546,11 +4546,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>})()}
           {/* Follow-up reminder */}
           <div style={{padding:10,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
-            <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up in</span>
-            <select className="form-input" value={invFollowUpDays} onChange={e=>setInvFollowUpDays(parseInt(e.target.value))} style={{width:70,fontSize:12,padding:'4px 6px'}}>
-              {[1,2,3,5,7,10,14,21,30].map(d=><option key={d} value={d}>{d}</option>)}
+            <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up</span>
+            <select className="form-input" value={invFollowUpDays} onChange={e=>setInvFollowUpDays(parseInt(e.target.value))} style={{width:90,fontSize:12,padding:'4px 6px'}}>
+              <option value={0}>Never</option>
+              {[1,2,3,5,7,10,14,21,30].map(d=><option key={d} value={d}>in {d}</option>)}
             </select>
-            <span style={{fontSize:12,color:'#6d28d9'}}>days if no response</span>
+            {invFollowUpDays>0&&<span style={{fontSize:12,color:'#6d28d9'}}>days if no response</span>}
           </div>
         </div>
         <div className="modal-footer">
@@ -6170,11 +6171,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
             {/* ── Follow-up ── */}
             <div style={{padding:10,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
-              <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up in</span>
-              <select className="form-input" value={cam.followUpDays||7} onChange={e=>setCoachApprovalModal(m=>({...m,followUpDays:parseInt(e.target.value)}))} style={{width:70,fontSize:12,padding:'4px 6px'}}>
-                {[1,2,3,5,7,10,14,21,30].map(d=><option key={d} value={d}>{d}</option>)}
+              <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up</span>
+              <select className="form-input" value={cam.followUpDays==null?7:cam.followUpDays} onChange={e=>setCoachApprovalModal(m=>({...m,followUpDays:parseInt(e.target.value)}))} style={{width:90,fontSize:12,padding:'4px 6px'}}>
+                <option value={0}>Never</option>
+                {[1,2,3,5,7,10,14,21,30].map(d=><option key={d} value={d}>in {d}</option>)}
               </select>
-              <span style={{fontSize:12,color:'#6d28d9'}}>days if no response</span>
+              {(cam.followUpDays==null?7:cam.followUpDays)>0&&<span style={{fontSize:12,color:'#6d28d9'}}>days if no response</span>}
             </div>
           </div>
           <div className="modal-footer" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
