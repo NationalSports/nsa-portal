@@ -191,11 +191,12 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
       </div>}
       {/* Follow-up reminder */}
       <div style={{marginBottom:12,padding:10,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
-        <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up in</span>
-        <select className="form-input" value={followUpDays} onChange={e=>setFollowUpDays(parseInt(e.target.value))} style={{width:70,fontSize:12,padding:'4px 6px'}}>
-          {[1,2,3,5,7,10,14,21,30].map(d=><option key={d} value={d}>{d}</option>)}
+        <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up</span>
+        <select className="form-input" value={followUpDays} onChange={e=>setFollowUpDays(parseInt(e.target.value))} style={{width:90,fontSize:12,padding:'4px 6px'}}>
+          <option value={0}>Never</option>
+          {[1,2,3,5,7,10,14,21,30].map(d=><option key={d} value={d}>in {d}</option>)}
         </select>
-        <span style={{fontSize:12,color:'#6d28d9'}}>days if no response</span>
+        {followUpDays>0&&<span style={{fontSize:12,color:'#6d28d9'}}>days if no response</span>}
       </div>
       <div style={{padding:8,background:'#dbeafe',borderRadius:6,fontSize:11,color:'#1e40af'}}>📎 {label} PDF will be auto-attached | 🔗 Portal link included in message{!_brevoKey&&' | ⚠️ No Brevo API key — will open email client instead'}</div>
     </div>

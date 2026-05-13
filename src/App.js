@@ -2090,6 +2090,21 @@ function AuthSetupPage({mode}){
   );
 }
 
+// Build a deep-link URL for opening a record in a new tab.
+// Used by RowLink and by row-level middle-click handlers.
+const _buildTabHref=(params)=>window.location.pathname+'?'+new URLSearchParams(params).toString();
+// RowLink — wraps cell content in a real anchor so middle-click / Cmd-click /
+// right-click "Open in New Tab" all work natively in the browser. Plain
+// left-click runs onOpen() (in-place SPA nav) instead of following the href.
+const RowLink=React.memo(function RowLink({params,onOpen,children,style,className,title,inline}){
+  const handler=ev=>{
+    if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;// let browser open in new tab
+    ev.preventDefault();
+    onOpen&&onOpen();
+  };
+  return(<a href={_buildTabHref(params)} onClick={handler} className={className} title={title} style={{color:'inherit',textDecoration:'none',display:inline?'inline':'block',cursor:'pointer',...(style||{})}}>{children}</a>);
+});
+
 export default function App(){
   // /auth/setup and /auth/reset short-circuit the entire app — they live behind their own
   // landing page that completes the magic-link / password reset flow before bouncing to /.
@@ -3384,16 +3399,53 @@ export default function App(){
         }).catch(e=>{console.warn('[QB] Refresh error on load:',e);setQBConfig(prev=>({...prev,connected:false}))});
     }
   },[dbLoading]); // eslint-disable-line
-  // Handle ?so= deep link to open a specific sales order in a new tab
+  // Open a record in a new browser tab (NetSuite-style middle-click / Cmd-click).
+  // Builds a URL with the given deep-link params and opens it in a new tab.
+  const _newTabHref=React.useCallback((params)=>window.location.pathname+'?'+new URLSearchParams(params).toString(),[]);
+  // Wrap a row onClick so that middle-click, Cmd/Ctrl-click, or Shift-click opens
+  // the record in a new tab; plain left-click runs the original handler.
+  const _rowNav=React.useCallback((params,openHere)=>(e)=>{
+    const isAux=e.type==='auxclick';
+    const isMiddle=e.button===1;
+    if(isMiddle||e.ctrlKey||e.metaKey||(e.shiftKey&&!isAux)){
+      e.preventDefault&&e.preventDefault();
+      e.stopPropagation&&e.stopPropagation();
+      window.open(_newTabHref(params),'_blank','noopener,noreferrer');
+      return;
+    }
+    if(isAux)return;// non-middle aux button, ignore
+    openHere&&openHere();
+  },[_newTabHref]);
+  // Handle ?so= / ?est= / ?cust= deep links to open a specific record in a new tab
   React.useEffect(()=>{
-    try{const p=new URLSearchParams(window.location.search);const soId=p.get('so');
-      if(soId&&sos.length>0&&!dbLoading){
+    if(dbLoading)return;
+    try{
+      const p=new URLSearchParams(window.location.search);
+      const soId=p.get('so');const estId=p.get('est');const custId=p.get('cust');const invId=p.get('inv');
+      const u=new URL(window.location);let changed=false;
+      if(soId&&sos.length>0){
         const so=sos.find(s=>s.id===soId);
         if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);setPg('orders')}
-        const u=new URL(window.location);u.searchParams.delete('so');window.history.replaceState({},'',u);
+        u.searchParams.delete('so');changed=true;
       }
+      if(estId&&ests.length>0){
+        const est=ests.find(x=>x.id===estId);
+        if(est){const c2=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c2);setPg('estimates')}
+        u.searchParams.delete('est');changed=true;
+      }
+      if(custId&&cust.length>0){
+        const c2=cust.find(cc=>cc.id===custId||cc.alpha_tag===custId);
+        if(c2){setSelC(c2);setPg('customers')}
+        u.searchParams.delete('cust');changed=true;
+      }
+      if(invId&&invs.length>0){
+        const inv=invs.find(x=>x.id===invId);
+        if(inv){setViewInvoice(inv);setPg('invoices')}
+        u.searchParams.delete('inv');changed=true;
+      }
+      if(changed)window.history.replaceState({},'',u);
     }catch{}
-  },[sos,dbLoading]); // eslint-disable-line
+  },[sos,ests,cust,invs,dbLoading]); // eslint-disable-line
   // Handle ?pg=<id>[#anchor] deep link — used by the so-health-alert email to
   // land users on the System Health card (?pg=backup#system-health). Skipped
   // if ?so= is also set, since that handler takes precedence.
@@ -5389,14 +5441,14 @@ export default function App(){
         <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button>
       </div>
       <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>ID</th><th>Created</th><th>Customer</th><th>Memo</th><th>Items</th><th style={{textAlign:'right'}}>Total</th><th>Rep</th><th>Status</th><th>SO</th><th>Email</th><th></th></tr></thead><tbody>
-      {fe.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const rep=REPS.find(r=>r.id===e.created_by);const linkedSO=e.status==='converted'?sos.find(s=>s.estimate_id===e.id):null;return(<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>{setEEst(e);setEEstC(c)}}>
-        <td style={{fontWeight:700,color:'#1e40af'}}>{e.id}</td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtCreatedAt(e.created_at)}</td><td>{c?<>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></>:'--'}</td>
-        <td style={{fontSize:12}}>{e.memo}</td><td>{e.items?.length||0}</td>
-        <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>{(()=>{const t=calcOrderTotals(e,c?.tax_rate||0).grand;return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</td>
-        <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></td>
-        <td><span className={`badge ${e.status==='draft'||e.status==='open'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':e.status==='converted'?'badge-purple':'badge-blue'}`}>{e.status}</span></td>
-        <td onClick={ev=>ev.stopPropagation()}>{linkedSO?<span style={{color:'#1e40af',fontWeight:600,fontSize:11,cursor:'pointer',textDecoration:'underline'}} onClick={()=>{const cc=cust.find(x=>x.id===linkedSO.customer_id);setESO(linkedSO);setESOC(cc);setPg('orders')}}>{linkedSO.id}</span>:<span style={{color:'#94a3b8',fontSize:11}}>—</span>}</td>
-        <td><EmailBadge e={e}/></td>
+      {fe.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const rep=REPS.find(r=>r.id===e.created_by);const linkedSO=e.status==='converted'?sos.find(s=>s.estimate_id===e.id):null;const _openEst=()=>{setEEst(e);setEEstC(c)};const RL=({children,style})=><RowLink params={{est:e.id}} onOpen={_openEst} style={style}>{children}</RowLink>;return(<tr key={e.id} style={{cursor:'pointer'}}>
+        <td style={{fontWeight:700,color:'#1e40af'}}><RL>{e.id}</RL></td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}><RL>{fmtCreatedAt(e.created_at)}</RL></td><td><RL>{c?<>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></>:'--'}</RL></td>
+        <td style={{fontSize:12}}><RL>{e.memo||' '}</RL></td><td><RL>{e.items?.length||0}</RL></td>
+        <td style={{textAlign:'right',fontWeight:600,fontSize:12}}><RL>{(()=>{const t=calcOrderTotals(e,c?.tax_rate||0).grand;return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</RL></td>
+        <td><RL><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></RL></td>
+        <td><RL><span className={`badge ${e.status==='draft'||e.status==='open'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':e.status==='converted'?'badge-purple':'badge-blue'}`}>{e.status}</span></RL></td>
+        <td onClick={ev=>ev.stopPropagation()}>{linkedSO?<a href={_buildTabHref({so:linkedSO.id})} style={{color:'#1e40af',fontWeight:600,fontSize:11,cursor:'pointer',textDecoration:'underline'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();const cc=cust.find(x=>x.id===linkedSO.customer_id);setESO(linkedSO);setESOC(cc);setPg('orders')}}>{linkedSO.id}</a>:<span style={{color:'#94a3b8',fontSize:11}}>—</span>}</td>
+        <td><RL><EmailBadge e={e}/></RL></td>
         <td onClick={ev=>ev.stopPropagation()}>{e.status==='approved'&&<button className="btn btn-sm btn-primary" style={{background:'#7c3aed'}} onClick={()=>convertSO(e)}>→ SO</button>}{canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} onClick={()=>deleteEstimate(e.id)}><Icon name="trash" size={10}/></button>}</td>
       </tr>)})}</tbody></table></div></div></>);};
 
@@ -5469,18 +5521,18 @@ export default function App(){
       // Status badge uses the actual SO status field (what the user set)
       const displayStatus=calcSOStatus(so);
       const statusLabel={booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
-      return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
-      <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}{so.order_type==='booking'&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700,verticalAlign:'middle'}}>B</span>}</td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtCreatedAt(so.created_at)}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}{so.po_number&&<span style={{fontSize:9,marginLeft:6,padding:'1px 5px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700,fontFamily:'monospace'}}>PO# {so.po_number}</span>}</td><td>{so.order_type==='booking'&&so.expected_ship_date?<span>{so.expected_ship_date}<div style={{fontSize:9,color:'#94a3b8'}}>ship date</div></span>:(so.expected_date||'--')}</td>
-      <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></td>
-      <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>{(()=>{const t=calcOrderTotals(so,c?.tax_rate||0).grand;return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</td>
-      <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} ✓</span>:<span style={{fontSize:11,color:'#d97706'}}>—</span>}</td>
-      <td>{itemStatus&&<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,
+      const _openSO=()=>{setESO(so);setESOC(c)};const SL=({children})=><RowLink params={{so:so.id}} onOpen={_openSO}>{children}</RowLink>;return(<tr key={so.id} style={{cursor:'pointer'}}>
+      <td style={{fontWeight:700,color:'#1e40af'}}><SL>{so.id}{so.order_type==='booking'&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700,verticalAlign:'middle'}}>B</span>}</SL></td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}><SL>{fmtCreatedAt(so.created_at)}</SL></td><td><SL>{c?.name||' '} <span className="badge badge-gray">{c?.alpha_tag}</span></SL></td><td style={{fontSize:12}}><SL>{so.memo||' '}{so.po_number&&<span style={{fontSize:9,marginLeft:6,padding:'1px 5px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700,fontFamily:'monospace'}}>PO# {so.po_number}</span>}</SL></td><td><SL>{so.order_type==='booking'&&so.expected_ship_date?<span>{so.expected_ship_date}<div style={{fontSize:9,color:'#94a3b8'}}>ship date</div></span>:(so.expected_date||'--')}</SL></td>
+      <td><SL><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></SL></td>
+      <td style={{textAlign:'right',fontWeight:600,fontSize:12}}><SL>{(()=>{const t=calcOrderTotals(so,c?.tax_rate||0).grand;return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</SL></td>
+      <td><SL>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} ✓</span>:<span style={{fontSize:11,color:'#d97706'}}>—</span>}</SL></td>
+      <td><SL>{itemStatus?<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,
         background:itemStatus==='received'?'#dcfce7':itemStatus==='partial'?'#fef3c7':itemStatus==='on_order'?'#dbeafe':'#fef2f2',
         color:itemStatus==='received'?'#166534':itemStatus==='partial'?'#92400e':itemStatus==='on_order'?'#1e40af':'#dc2626'}}>
-        {itemStatus==='received'?'\u2713 All In':itemStatus==='partial'?fulfilledSz+'/'+totalSz:itemStatus==='on_order'?'On Order':'Needs Items'}</span>}</td>
-      <td>{(()=>{const unread=msgs.filter(m=>m.so_id===so.id&&!(m.read_by||[]).includes(cu.id)).length;const total=msgs.filter(m=>m.so_id===so.id).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'2px 8px',fontSize:10,fontWeight:700}}>{unread} new</span>:total>0?<span style={{fontSize:11,color:'#94a3b8'}}>{total}</span>:null})()}</td>
-      <td>{so._tracking_number?<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,background:'#dcfce7',color:'#166534'}}>Shipped</span>:so._shipstation_order_id?<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,background:'#dbeafe',color:'#1e40af'}}>Submitted</span>:displayStatus==='in_production'&&ssConnected?<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',border:'none',borderRadius:4}} onClick={ev=>{ev.stopPropagation();handleShipToShipStation(so)}} disabled={ssShipping}>Ship</button>:null}</td>
-      <td><span style={{padding:'3px 10px',borderRadius:12,fontSize:11,fontWeight:700,background:SC[displayStatus]?.bg||'#f1f5f9',color:SC[displayStatus]?.c||'#475569'}}>{statusLabel}</span></td>
+        {itemStatus==='received'?'\u2713 All In':itemStatus==='partial'?fulfilledSz+'/'+totalSz:itemStatus==='on_order'?'On Order':'Needs Items'}</span>:' '}</SL></td>
+      <td><SL>{(()=>{const unread=msgs.filter(m=>m.so_id===so.id&&!(m.read_by||[]).includes(cu.id)).length;const total=msgs.filter(m=>m.so_id===so.id).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'2px 8px',fontSize:10,fontWeight:700}}>{unread} new</span>:total>0?<span style={{fontSize:11,color:'#94a3b8'}}>{total}</span>:' '})()}</SL></td>
+      <td>{so._tracking_number?<SL><span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,background:'#dcfce7',color:'#166534'}}>Shipped</span></SL>:so._shipstation_order_id?<SL><span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,background:'#dbeafe',color:'#1e40af'}}>Submitted</span></SL>:displayStatus==='in_production'&&ssConnected?<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',border:'none',borderRadius:4}} onClick={ev=>{ev.stopPropagation();handleShipToShipStation(so)}} disabled={ssShipping}>Ship</button>:null}</td>
+      <td><SL><span style={{padding:'3px 10px',borderRadius:12,fontSize:11,fontWeight:700,background:SC[displayStatus]?.bg||'#f1f5f9',color:SC[displayStatus]?.c||'#475569'}}>{statusLabel}</span></SL></td>
       {canDelete&&<td onClick={ev=>ev.stopPropagation()}><button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',background:'white'}} onClick={()=>deleteSO(so.id)}><Icon name="trash" size={10}/></button></td>}</tr>)})}
     </tbody></table></div></div></>);
   };
@@ -5607,16 +5659,16 @@ export default function App(){
       return(<div key={p.id} className="card" style={{marginBottom:10}}>
         <div style={{padding:'12px 16px',display:'flex',alignItems:'center',gap:12}}>
           {kids.length>0?<button onClick={toggle} title={isExpanded?'Collapse subs':'Expand subs'} style={{width:24,height:24,padding:0,border:'1px solid #e2e8f0',borderRadius:4,background:'#fff',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#64748b'}}><Icon name={isExpanded?'chevron-down':'chevron-right'} size={14}/></button>:<div style={{width:24}}/>}
-          <div style={{width:36,height:36,borderRadius:8,background:'#dbeafe',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}} onClick={()=>setSelC(p)}><Icon name="building" size={18}/></div>
-          <div style={{flex:1,cursor:'pointer'}} onClick={()=>setSelC(p)}>
+          <RowLink params={{cust:p.id}} onOpen={()=>setSelC(p)} style={{width:36,height:36,borderRadius:8,background:'#dbeafe',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}><Icon name="building" size={18}/></RowLink>
+          <RowLink params={{cust:p.id}} onOpen={()=>setSelC(p)} style={{flex:1,cursor:'pointer'}}>
             <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:15,fontWeight:700}}>{p.name}</span><span className="badge badge-blue">{p.alpha_tag}</span><span className="badge badge-green">Tier {p.adidas_ua_tier}</span>{kids.length>0&&<span className="badge badge-gray" style={{fontSize:10}}>{kids.length} sub{kids.length===1?'':'s'}</span>}</div>
-            <div style={{fontSize:12,color:'#94a3b8'}}>{(p.contacts||[])[0]?.name&&`${p.contacts[0].name} · `}{p.billing_city&&`${p.billing_city}, ${p.billing_state}`}{p.primary_rep_id&&` · ${REPS.find(r=>r.id===p.primary_rep_id)?.name||''}`}</div></div>
+            <div style={{fontSize:12,color:'#94a3b8'}}>{(p.contacts||[])[0]?.name&&`${p.contacts[0].name} · `}{p.billing_city&&`${p.billing_city}, ${p.billing_state}`}{p.primary_rep_id&&` · ${REPS.find(r=>r.id===p.primary_rep_id)?.name||''}`}</div></RowLink>
           {bal>0&&<div style={{textAlign:'right'}}><div style={{fontSize:16,fontWeight:800,color:'#dc2626'}}>${bal.toLocaleString()}</div></div>}
           <button className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();newE(p)}}><Icon name="file" size={12}/></button>
           <button className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();setCM({open:true,c:p})}}><Icon name="edit" size={12}/></button></div>
-        {kids.length>0&&isExpanded&&<div style={{borderTop:'1px solid #f1f5f9'}}>{kids.map(ch=><div key={ch.id} style={{padding:'8px 16px 8px 64px',display:'flex',alignItems:'center',gap:10,borderBottom:'1px solid #f8fafc',cursor:'pointer'}} onClick={()=>setSelC(ch)}>
+        {kids.length>0&&isExpanded&&<div style={{borderTop:'1px solid #f1f5f9'}}>{kids.map(ch=><RowLink key={ch.id} params={{cust:ch.id}} onOpen={()=>setSelC(ch)} style={{padding:'8px 16px 8px 64px',display:'flex',alignItems:'center',gap:10,borderBottom:'1px solid #f8fafc',cursor:'pointer'}}>
           <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontSize:13,fontWeight:600}}>{ch.name}</span><span className="badge badge-gray">{ch.alpha_tag}</span>{ch.primary_rep_id&&ch.primary_rep_id!==p.primary_rep_id&&<span style={{fontSize:10,color:'#6d28d9',fontWeight:600}}>{REPS.find(r=>r.id===ch.primary_rep_id)?.name||''}</span>}<div style={{flex:1}}/>
-          {(ch._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${ch._ob.toLocaleString()}</span>}</div>)}</div>}
+          {(ch._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${ch._ob.toLocaleString()}</span>}</RowLink>)}</div>}
       </div>)})}
     {/* Customer pagination */}
     {custServerResults&&custServerResults.total>CUST_PAGE_SIZE&&<div style={{display:'flex',justifyContent:'center',alignItems:'center',gap:12,marginTop:12}}>
@@ -9308,24 +9360,25 @@ export default function App(){
         <tbody>{fi.map(inv=>{
           const repObj=REPS.find(r=>r.id===inv._rep);
           const rowKey=inv._hist?'h:'+(inv.netsuite_internal_id||inv.id):inv.id;
-          return<tr key={rowKey} style={{background:inv._overdue?'#fef2f2':inv._hist?'#fafbfc':undefined,cursor:inv._hist?'default':'pointer',color:inv._hist?'#475569':undefined}} onClick={inv._hist?undefined:()=>setViewInvoice(inv)} title={inv._hist?'NetSuite history — read only':undefined}>
-            <td style={{fontWeight:700,color:inv._hist?'#64748b':'#1e40af',fontSize:12,cursor:inv._hist?'default':'pointer',textDecoration:inv._hist?'none':'underline'}}>{inv.id}{inv._hist&&<span style={{marginLeft:4,fontSize:8,padding:'1px 4px',borderRadius:3,background:'#e2e8f0',color:'#475569',fontWeight:700,letterSpacing:0.5}}>NS</span>}</td>
-            <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtCreatedAt(inv.created_at)}</td>
-            <td style={{fontSize:12}}>{inv._cname}</td>
+          const il=(content)=>inv._hist?content:<RowLink params={{inv:inv.id}} onOpen={()=>setViewInvoice(inv)}>{content}</RowLink>;
+          return<tr key={rowKey} style={{background:inv._overdue?'#fef2f2':inv._hist?'#fafbfc':undefined,cursor:inv._hist?'default':'pointer',color:inv._hist?'#475569':undefined}} title={inv._hist?'NetSuite history — read only':undefined}>
+            <td style={{fontWeight:700,color:inv._hist?'#64748b':'#1e40af',fontSize:12,cursor:inv._hist?'default':'pointer',textDecoration:inv._hist?'none':'underline'}}>{il(inv.id)}{inv._hist&&<span style={{marginLeft:4,fontSize:8,padding:'1px 4px',borderRadius:3,background:'#e2e8f0',color:'#475569',fontWeight:700,letterSpacing:0.5}}>NS</span>}</td>
+            <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{il(fmtCreatedAt(inv.created_at))}</td>
+            <td style={{fontSize:12}}>{il(inv._cname||' ')}</td>
             <td style={{fontSize:11,color:'#7c3aed',cursor:inv.so_id?'pointer':'default',textDecoration:inv.so_id?'underline':'none'}}
               onClick={e=>{e.stopPropagation();if(inv.so_id){const so=sos.find(s=>s.id===inv.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}}>{inv.so_id||'—'}</td>
-            <td style={{fontSize:10,color:'#64748b'}}>{repObj?.name||'—'}</td>
-            <td style={{fontSize:11}}>{inv.date}</td>
-            <td style={{textAlign:'center'}}>{ageBadge(inv._age)}</td>
-            <td style={{fontSize:11,color:inv._overdue?'#dc2626':'#64748b',fontWeight:inv._overdue?700:400}}>{inv.due_date||'—'}{inv._overdue?' ⚠️':''}</td>
-            <td style={{fontWeight:600,textAlign:'right'}}>${inv.total.toLocaleString()}</td>
-            <td style={{color:'#166534',textAlign:'right'}}>${inv.paid.toLocaleString()}{inv.cc_fee>0?<span style={{fontSize:8,color:'#94a3b8'}}> +${inv.cc_fee.toFixed(0)}fee</span>:''}</td>
-            <td style={{fontWeight:700,color:inv._bal>0?'#dc2626':'#166534',textAlign:'right'}}>${inv._bal.toLocaleString()}</td>
-            <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,
+            <td style={{fontSize:10,color:'#64748b'}}>{il(repObj?.name||'—')}</td>
+            <td style={{fontSize:11}}>{il(inv.date||' ')}</td>
+            <td style={{textAlign:'center'}}>{il(ageBadge(inv._age))}</td>
+            <td style={{fontSize:11,color:inv._overdue?'#dc2626':'#64748b',fontWeight:inv._overdue?700:400}}>{il(<>{inv.due_date||'—'}{inv._overdue?' ⚠️':''}</>)}</td>
+            <td style={{fontWeight:600,textAlign:'right'}}>{il('$'+inv.total.toLocaleString())}</td>
+            <td style={{color:'#166534',textAlign:'right'}}>{il(<>${inv.paid.toLocaleString()}{inv.cc_fee>0?<span style={{fontSize:8,color:'#94a3b8'}}> +${inv.cc_fee.toFixed(0)}fee</span>:''}</>)}</td>
+            <td style={{fontWeight:700,color:inv._bal>0?'#dc2626':'#166534',textAlign:'right'}}>{il('$'+inv._bal.toLocaleString())}</td>
+            <td>{il(<><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,
               background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
               color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
               {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
-              {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3,verticalAlign:'middle'}} title="Reported to TaxCloud for filing">TC</span>}</td>
+              {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3,verticalAlign:'middle'}} title="Reported to TaxCloud for filing">TC</span>}</>)}</td>
             <td onClick={e=>e.stopPropagation()}>{inv._hist?<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title="Mark this NetSuite-imported invoice as paid in the portal (sync to NetSuite separately)" onClick={()=>setPayModal({inv:{...inv,_bal:safeNum(inv.total)-safeNum(inv.paid),paid:safeNum(inv.paid)},amount:safeNum(inv.total)-safeNum(inv.paid),method:'check',ref:''})}>💰 Pay</button>}{inv.status==='paid'&&<span style={{fontSize:9,color:'#94a3b8',fontStyle:'italic'}}>—</span>}</>:<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
               onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
               {inv.status==='paid'&&!inv.tc_reported&&inv.tax>0&&<button className="btn btn-sm" style={{fontSize:8,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} title="Report this invoice to TaxCloud for state tax filing" onClick={async()=>{const c=cust.find(x=>x.id===inv.customer_id);if(!c)return;if(!supabase){nf('Supabase not configured','error');return}try{const d=await invokeEdgeFn(supabase,'taxcloud-capture',{action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}});if(d?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:d.total_tax}:i));nf('Reported to TaxCloud — $'+d.total_tax+' tax filed')}else{nf(d?.error||'TaxCloud capture failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>TC File</button>}
@@ -9414,26 +9467,26 @@ export default function App(){
           </div>
           <div className="card-body" style={{padding:0}}>
             <table><thead><tr><th>Invoice</th><th>SO</th><th>Memo</th><th>Date</th><th>Age</th><th>Due</th><th>Total</th><th>Balance</th><th>Status</th><th></th></tr></thead>
-            <tbody>{g.invoices.map(inv=>
-              <tr key={inv._hist?'h:'+(inv.netsuite_internal_id||inv.id):inv.id} style={{background:inv._overdue?'#fef2f2':inv._hist?'#fafbfc':undefined,cursor:inv._hist?'default':'pointer',color:inv._hist?'#475569':undefined}} onClick={inv._hist?undefined:()=>setViewInvoice(inv)} title={inv._hist?'NetSuite history — read only':undefined}>
-                <td style={{fontWeight:700,color:inv._hist?'#64748b':'#1e40af',fontSize:12,cursor:inv._hist?'default':'pointer',textDecoration:inv._hist?'none':'underline'}}>{inv.id}{inv._hist&&<span style={{marginLeft:4,fontSize:8,padding:'1px 4px',borderRadius:3,background:'#e2e8f0',color:'#475569',fontWeight:700,letterSpacing:0.5}}>NS</span>}</td>
+            <tbody>{g.invoices.map(inv=>{const il2=(content)=>inv._hist?content:<RowLink params={{inv:inv.id}} onOpen={()=>setViewInvoice(inv)}>{content}</RowLink>;return(
+              <tr key={inv._hist?'h:'+(inv.netsuite_internal_id||inv.id):inv.id} style={{background:inv._overdue?'#fef2f2':inv._hist?'#fafbfc':undefined,cursor:inv._hist?'default':'pointer',color:inv._hist?'#475569':undefined}} title={inv._hist?'NetSuite history — read only':undefined}>
+                <td style={{fontWeight:700,color:inv._hist?'#64748b':'#1e40af',fontSize:12,cursor:inv._hist?'default':'pointer',textDecoration:inv._hist?'none':'underline'}}>{il2(inv.id)}{inv._hist&&<span style={{marginLeft:4,fontSize:8,padding:'1px 4px',borderRadius:3,background:'#e2e8f0',color:'#475569',fontWeight:700,letterSpacing:0.5}}>NS</span>}</td>
                 <td style={{fontSize:11,color:'#7c3aed',cursor:inv.so_id?'pointer':'default',textDecoration:inv.so_id?'underline':'none'}}
                   onClick={e=>{e.stopPropagation();if(inv.so_id){const so=sos.find(s=>s.id===inv.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}}>{inv.so_id||'—'}</td>
-                <td style={{fontSize:11}}>{inv.memo}</td>
-                <td style={{fontSize:11}}>{inv.date}</td>
-                <td style={{textAlign:'center'}}>{ageBadge(inv._age)}</td>
-                <td style={{fontSize:11,color:inv._overdue?'#dc2626':'#64748b',fontWeight:inv._overdue?700:400}}>{inv.due_date||'—'}{inv._overdue?' ⚠️':''}</td>
-                <td style={{fontWeight:600,textAlign:'right'}}>${inv.total.toLocaleString()}</td>
-                <td style={{fontWeight:700,color:inv._bal>0?'#dc2626':'#166534',textAlign:'right'}}>${inv._bal.toLocaleString()}</td>
-                <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,
+                <td style={{fontSize:11}}>{il2(inv.memo||' ')}</td>
+                <td style={{fontSize:11}}>{il2(inv.date||' ')}</td>
+                <td style={{textAlign:'center'}}>{il2(ageBadge(inv._age))}</td>
+                <td style={{fontSize:11,color:inv._overdue?'#dc2626':'#64748b',fontWeight:inv._overdue?700:400}}>{il2(<>{inv.due_date||'—'}{inv._overdue?' ⚠️':''}</>)}</td>
+                <td style={{fontWeight:600,textAlign:'right'}}>{il2('$'+inv.total.toLocaleString())}</td>
+                <td style={{fontWeight:700,color:inv._bal>0?'#dc2626':'#166534',textAlign:'right'}}>{il2('$'+inv._bal.toLocaleString())}</td>
+                <td>{il2(<><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,
                   background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
                   color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
                   {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
-                  {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3}} title="Reported to TaxCloud">TC</span>}</td>
+                  {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3}} title="Reported to TaxCloud">TC</span>}</>)}</td>
                 <td onClick={e=>e.stopPropagation()}>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title={inv._hist?'Mark this NetSuite invoice paid in portal (sync to NetSuite separately)':undefined}
                   onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
                   {canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} title={inv._hist?'Delete NetSuite invoice':'Delete invoice'} onClick={()=>deleteInvoice(inv.id)}><Icon name="trash" size={10}/></button>}</td>
-              </tr>)}</tbody></table>
+              </tr>)})}</tbody></table>
             {/* Payment history */}
             {g.invoices.some(i=>(i.payments||[]).length>0)&&<div style={{padding:'8px 16px',borderTop:'1px solid #f1f5f9'}}>
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>PAYMENT HISTORY</div>
@@ -23572,8 +23625,8 @@ export default function App(){
         const ubadge=_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;
         const _isSidebarMention=(m)=>{if((m.tagged_members||[]).includes(cu.id))return true;if(m.text){const t=m.text.toLowerCase();const fn=(cu.name||'').split(' ')[0].toLowerCase();const full=(cu.name||'').toLowerCase();if(fn&&(t.includes('@'+fn)||t.includes('@'+full)))return true}return false};
         const mentionBadge=item.id==='messages'?_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&_isSidebarMention(m)).length:0;
-        return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
-          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</button>})}</nav>
+        return<a key={item.id} href={_newTabHref({pg:item.id})} className={`sidebar-link ${pg===item.id?'active':''}`} style={{textDecoration:'none',color:'inherit'}}
+          onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</a>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><div style={{display:'flex',gap:4}}><button onClick={()=>setMobileMode(true)} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Switch to mobile view">📱 Mobile</button><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
