@@ -22347,7 +22347,7 @@ export default function App(){
       const c=cust.find(x=>x.id===qr.customer_id);if(!c)return;
       const estId=nextEstId(ests);
       const newEst={id:estId,customer_id:c.id,status:'draft',default_markup:c.custom_multiplier||1.65,
-        shipping_type:'flat',shipping_value:0,items:(qr.items||[]).map((it,i)=>{
+        shipping_type:'pct',shipping_value:5,items:(qr.items||[]).map((it,i)=>{
           const matchProd=it.sku?prod.find(p=>(p.sku||'').toLowerCase()===it.sku.toLowerCase()):null;
           return{sku:matchProd?.sku||it.sku||'',name:matchProd?.name||it.description||'',brand:matchProd?.brand||'',
             color:matchProd?.color||it.color||'',nsa_cost:matchProd?.nsa_cost||0,unit_sell:0,
@@ -22687,7 +22687,7 @@ export default function App(){
             const cloneToEstimate=(source)=>{
               const estId=nextEstId(ests);
               const newEst={id:estId,customer_id:reorderCust,status:'draft',default_markup:c?.custom_multiplier||1.65,
-                shipping_type:source.shipping_type||'flat',shipping_value:source.shipping_value||0,
+                shipping_type:source.shipping_type||'pct',shipping_value:source.shipping_value!=null?source.shipping_value:5,
                 items:(source.items||[]).map(it=>({sku:it.sku||'',name:it.name||'',brand:it.brand||'',color:it.color||'',
                   nsa_cost:it.nsa_cost||0,unit_sell:it.unit_sell||0,sizes:it.sizes||{},no_deco:it.no_deco||false,notes:it.notes||null,
                   decorations:(it.decorations||[]).map(d=>({...d}))})),
