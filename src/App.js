@@ -21832,6 +21832,9 @@ export default function App(){
   const[laborRates,setLaborRates]=useState(()=>loadState('labor_rates',{}));// {personName: hourlyRate}
   React.useEffect(()=>{_saveAppState('labor_rates',laborRates)},[laborRates]);
   const[settingsTab,setSettingsTab]=useState('pricing');
+  const[dvEdit,setDvEdit]=useState(null);// deco vendor id being edited for pricing
+  const[dvTab,setDvTab]=useState('embroidery');
+  const[dvNewName,setDvNewName]=useState('');
   const savSettings=(key,val)=>{
     try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;_lsSet('nsa_settings',JSON.stringify(s));
       if(key==='SP')SP=val;if(key==='EM')EM=val;if(key==='NP')NP=val;if(key==='DTF')DTF=val;
@@ -21957,9 +21960,6 @@ export default function App(){
 
       {/* DECO VENDORS */}
       {settingsTab==='deco_vendors'&&<>{(()=>{
-        const[dvEdit,setDvEdit]=React.useState(null);// vendor id being edited for pricing
-        const[dvTab,setDvTab]=React.useState('embroidery');
-        const[dvNewName,setDvNewName]=React.useState('');
         const saveDV=async(vendor)=>{if(!supabase)return;const{error}=await supabase.from('deco_vendors').upsert(vendor,{onConflict:'id'});if(error)nf('Error saving vendor: '+error.message,'error');else{setDecoVendors(prev=>{const idx=prev.findIndex(v=>v.id===vendor.id);return idx>=0?prev.map(v=>v.id===vendor.id?vendor:v):[...prev,vendor]});nf('Vendor saved')}};
         const saveDVP=async(pricing)=>{if(!supabase)return;const{data,error}=await supabase.from('deco_vendor_pricing').upsert(pricing,{onConflict:'id'}).select();if(error)nf('Error saving pricing: '+error.message,'error');else{const saved=data?.[0]||pricing;setDecoVendorPricing(prev=>{const idx=prev.findIndex(p=>p.id===saved.id||(p.deco_vendor_id===saved.deco_vendor_id&&p.deco_type===saved.deco_type));return idx>=0?prev.map((p,i)=>i===idx?saved:p):[...prev,saved]});nf('Pricing saved')}};
         const editVendor=dvEdit?decoVendors.find(v=>v.id===dvEdit):null;
