@@ -5435,7 +5435,7 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search estimates, customers..." value={estF.search} onChange={e=>setEstF(f=>({...f,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:140}} value={estF.rep} onChange={e=>setEstF(f=>({...f,rep:e.target.value}))}>
-          <option value="all">All Reps</option><option value="_me_">My Estimates</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+          <option value="all">All Reps</option><option value="_me_">My Estimates</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={estF.sort} onChange={e=>setEstF(f=>({...f,sort:e.target.value}))}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="customer">By Customer</option></select>
         {estActiveFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setEstF({status:'open',rep:'all',search:'',sort:'date_desc'})}>✕ Reset</button>}
@@ -5503,7 +5503,7 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search SOs, customers, SKUs, PO#..." value={soF.search} onChange={e=>setSOF(f=>({...f,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:140}} value={soF.rep} onChange={e=>setSOF(f=>({...f,rep:e.target.value}))}>
-          <option value="all">All Reps</option><option value="_me_">My Orders</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+          <option value="all">All Reps</option><option value="_me_">My Orders</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={soF.sort} onChange={e=>setSOF(f=>({...f,sort:e.target.value}))}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="expected">By Expected Date</option><option value="customer">By Customer</option></select>
         {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setSOF({status:'active',rep:'all',search:'',sort:'date_desc'})}>✕ Clear</button>}
@@ -5624,7 +5624,7 @@ export default function App(){
       nf('Renamed '+renames.length+' alpha tag'+(renames.length===1?'':'s'));
     };
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
-      <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+      <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
       {isA&&<button className="btn btn-secondary" onClick={refreshTaxRates} disabled={!!taxRefresh} title="Look up tax rates from TaxCloud for all active, non-exempt customers missing a rate">{taxRefresh?'Refreshing…':'Refresh Tax Rates'}</button>}
       <button className="btn btn-primary" onClick={()=>setCM({open:true,c:null})}><Icon name="plus" size={14}/> New</button></div>
     {isA&&taxRefresh&&<div style={{padding:'10px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:8,marginBottom:12,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
@@ -9699,7 +9699,7 @@ export default function App(){
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
   const[invDrill,setInvDrill]=useState(null);// {kind:'vendor'|'category',key:string}
-  const[rptRep,setRptRep]=useState(()=>cu?.role==='rep'?cu.id:'all');// default to logged-in rep so they see their own numbers
+  const[rptRep,setRptRep]=useState(()=>(cu?.role==='rep'||cu?.role==='admin')&&cu?.id?cu.id:'all');// default to logged-in rep/admin so they see their own numbers
   const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true,invByCategory:true,invByVendor:true,invTopValue:true,invLowStock:true,invOutOfStock:true,invRecentAdj:true});
   // Historical sales chart UI state — hover tooltip + rep-vs-team mode
   const[histHover,setHistHover]=useState(null);// null | {x,y,label,value,year,scope}
