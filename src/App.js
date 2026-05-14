@@ -2220,7 +2220,7 @@ export default function App(){
   // Batch PO system
   const[batchPOs,setBatchPOs]=useState(()=>loadState('batch_pos',[]));// pending queue
   const[submittedBatches,setSubmittedBatches]=useState(()=>loadState('submitted_batches',[]));// submitted batches for scan lookup
-  const[batchCounter,setBatchCounter]=useState(()=>loadState('batch_counter',4501));// sequential PO numbers: NSA-4501, NSA-4502...
+  const[batchCounter,setBatchCounter]=useState(()=>loadState('batch_counter',4501));// sequential PO numbers: NSA 4501, NSA 4502...
   const[batchScan,setBatchScan]=useState('');// scan/lookup field
   const[editingBatchId,setEditingBatchId]=useState(null);// batch PO id being edited in queue
   // Inventory adjustments log & inventory POs
@@ -2247,7 +2247,7 @@ export default function App(){
   const[invPOCounter,setInvPOCounter]=useState(()=>{
     const ipo=loadState('inv_po_counter',1001);const spo=loadState('stock_po_counter',0);
     return Math.max(ipo,spo,1001);
-  });// sequential: PO-1001-NSA, PO-1002-NSA... (unified for inventory + warehouse POs)
+  });// sequential: PO 1001 NSA, PO 1002 NSA... (unified for inventory + warehouse POs)
   // One-shot cleanup of legacy Stock PO localStorage keys. Runs after mount so StrictMode's double-invoke of useState initializers above is harmless.
   React.useEffect(()=>{try{if(localStorage.getItem('nsa_stock_pos')!==null)localStorage.removeItem('nsa_stock_pos');if(localStorage.getItem('nsa_stock_po_counter')!==null)localStorage.removeItem('nsa_stock_po_counter')}catch(e){}},[]);
   const[invTab,setInvTab]=useState('stock');// stock | log | pos
@@ -6179,7 +6179,7 @@ export default function App(){
       nf('PO '+(existingPO?.po_number||'')+' updated');
     } else {
       // Create new PO
-      const poNum='PO-'+invPOCounter+'-NSA';
+      const poNum='PO '+invPOCounter+' NSA';
       const po={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:vendorId,vendor_name:vendor.name,
         items:validItems.map(it=>({product_id:it.product_id,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||[],sizes:{...it.sizes},received:{},nsa_cost:it.nsa_cost||0})),
         status:'ordered',created_at:new Date().toLocaleString(),expected_date:invPOModal.expected_date||'',memo:invPOModal.memo||'',
@@ -8116,7 +8116,7 @@ export default function App(){
         const total=vg.pos.reduce((a,bp)=>a+bp.total_cost,0);
         const totalUnits=vg.pos.reduce((a,bp)=>a+bp.items.reduce((a2,it)=>a2+it.qty,0),0);
         const hitThreshold=total>=vg.threshold;
-        const nextPO='NSA-'+batchCounter;
+        const nextPO='NSA '+batchCounter;
         return<div key={vk} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
           <div className="card-header">
             <div><h2>{vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
@@ -14965,7 +14965,7 @@ export default function App(){
                 if(!showStockPO.vendor_id){nf('Select a vendor','error');return}
                 const validItems=showStockPO.items.filter(it=>it.sku&&Object.values(it.sizes||{}).some(v=>v>0));
                 if(validItems.length===0){nf('Add at least one item with quantities','error');return}
-                const poNum='PO-'+invPOCounter+'-NSA';
+                const poNum='PO '+invPOCounter+' NSA';
                 const newPO={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:showStockPO.vendor_id,vendor_name:showStockPO.vendor_name||D_V.find(v=>v.id===showStockPO.vendor_id)?.name||'',
                   items:validItems.map(it=>({product_id:it.product_id||null,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||Object.keys(it.sizes||{}),sizes:{...it.sizes},received:{},nsa_cost:it.nsa_cost||0})),
                   status:'ordered',created_at:new Date().toLocaleString(),expected_date:'',memo:showStockPO.memo||'',
@@ -23856,7 +23856,7 @@ export default function App(){
             <input className="form-input" style={{width:'100%'}} value={invPOModal.memo} onChange={e=>setInvPOModal(x=>({...x,memo:e.target.value}))} placeholder="Notes..."/></div>
         </div>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,flexWrap:'wrap',gap:8}}>
-          <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>PO Number: <span style={{color:'#7c3aed',fontSize:13,letterSpacing:1}}>{invPOModal.editId?(invPOs.find(p=>p.id===invPOModal.editId)?.po_number||''):'PO-'+invPOCounter+'-NSA'}</span></div>
+          <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>PO Number: <span style={{color:'#7c3aed',fontSize:13,letterSpacing:1}}>{invPOModal.editId?(invPOs.find(p=>p.id===invPOModal.editId)?.po_number||''):'PO '+invPOCounter+' NSA'}</span></div>
           <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'#4338ca',padding:'4px 8px',background:invPOModal.is_booking?'#e0e7ff':'#f8fafc',border:'1px solid '+(invPOModal.is_booking?'#4338ca':'#e2e8f0'),borderRadius:6,cursor:'pointer'}} title="Mark this as a booking order inventory PO — appears in the Booking Orders report.">
             <input type="checkbox" checked={!!invPOModal.is_booking} onChange={e=>setInvPOModal(x=>({...x,is_booking:e.target.checked}))}/>
             Booking PO
