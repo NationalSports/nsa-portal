@@ -9,11 +9,11 @@ export const _soCols=['id','customer_id','estimate_id','memo','status','created_
 // React state only. Including them here would cause batch inserts to fail on
 // schemas that don't have those columns, and the retry-with-extras-stripped
 // path silently drops est_qty / qty_only along with them — losing user input.
-export const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','notes','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','qty_only','size_availability'];
+export const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','notes','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','qty_only','size_availability','is_footwear'];
 export const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','vendor','deco_type','notes','custom_font_art_id','print_color','print_color_b','front_and_back','reversible','num_qty','name_qty','color_way_id','color_way_id_b'];
 // NOTE: names_list (jsonb) and _cost_locked (boolean) exist in DB but PostgREST schema cache hasn't picked them up yet — add back here once Supabase refreshes
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
-export const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','est_qty','qty_only','size_availability','notes']);
+export const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','est_qty','qty_only','size_availability','notes','is_footwear']);
 export const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','approved_by','approved_at','credit_applied','credit_amount']);
 export const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','deliver_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount','deco_pos']);
 export const _decoExtraCols=new Set(['print_color','print_color_b','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id','color_way_id_b','_cost_locked','names_list']);
@@ -324,8 +324,12 @@ export let CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Foot
 export const COLOR_CATEGORIES=['Black','White','Red','Navy','Royal','Dark Green','Cardinal','Maroon','Light Grey','Dark Grey','Vegas Gold','Athletic Gold','Orange'];
 
 export const EXTRA_SIZES=['XXS','XS','3XL','4XL','5XL','6XL','LT','XLT','2XLT','3XLT','OSFA'];
+// Footwear sizes — men's whole + half from 6 to 14
+export const FOOTWEAR_SIZES=['6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','13','14'];
+export const FOOTWEAR_DEFAULT_SIZES=['8','9','10','11','12'];
 export const SZ_ORD=['YXS','YS','YM','YL','YXL','YOUTH','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','LT','XLT','2XLT','3XLT','OSFA',
   'XS-SM','S-M','SM-MD','MD-LG','L-XL','LG-XL','XL-2XL',
+  '6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','13','14',
   '28','30','32','34','36','38','40','42','44','46','48','50','52','54'];
 export const SZ_NORM={'XXS':'XXS','2XS':'XXS','SM':'S','SML':'S','SMALL':'S','MD':'M','MED':'M','MEDIUM':'M','LG':'L','LRG':'L','LARGE':'L',
   'XLG':'XL','XLARGE':'XL','X-LARGE':'XL','XXL':'2XL','2X':'2XL','2XLARGE':'2XL','2X-LARGE':'2XL',
