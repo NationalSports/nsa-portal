@@ -627,7 +627,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);
   // Helper: effective PO committed qty for a size (ordered minus cancelled)
   const poCommitted=(poLines,sz)=>(poLines||[]).reduce((a,pk)=>{const ordered=pk[sz]||0;const cancelled=(pk.cancelled||{})[sz]||0;return a+(ordered-cancelled)},0);
-  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});
+  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});
   const[aiBuild,setAiBuild]=useState(null);// {step:'input'|'review', inputMode:'text'|'image'|'url', text:'', images:[], url:'', loading:false, error:null, parsed:[], warnings:[], build_id:null}
 
   // ─── Live S&S Product Search ───
@@ -2155,10 +2155,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {!isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:'#64748b'}}>({((item._sizeSells&&szQty>0?pRev/szQty:item.unit_sell)/(item._sizeCosts&&szQty>0?pCost/szQty:item.nsa_cost)).toFixed(2)}x)</span>}
                 {isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:item.unit_sell>item.nsa_cost?'#166534':'#dc2626'}}>({Math.round((item.unit_sell-item.nsa_cost)/item.unit_sell*100)}% margin)</span>}
               </div></div>
-            <div style={{display:'flex',flexDirection:'column',gap:4}}>
-              <button title="Copy item (same SKU)" onClick={()=>copyI(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#2563eb',padding:4}}><Icon name="file" size={14}/></button>
-              <button title="Change SKU (in place) or copy → new SKU" onClick={()=>{const canReplace=safePicks(item).length===0&&safePOs(item).length===0;setCopySkuModal({itemIdx:idx,search:'',mode:canReplace?'replace':'copy'})}} style={{background:'none',border:'none',cursor:'pointer',color:'#7c3aed',padding:4,fontSize:9,fontWeight:700}}>SKU</button>
-              <button title="Delete item" onClick={()=>rmI(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:4}}><Icon name="trash" size={14}/></button>
+            <div style={{position:'relative'}}>
+              <button title="Item actions" onClick={()=>setShowItemMenu(showItemMenu===idx?null:idx)} style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',color:'#475569',padding:'4px 8px',fontSize:14,fontWeight:700,lineHeight:1}}>⋯</button>
+              {showItemMenu===idx&&<>
+                <div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowItemMenu(null)}/>
+                <div style={{position:'absolute',top:'100%',right:0,marginTop:4,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:40,minWidth:170,padding:4}}>
+                  <button onClick={()=>{copyI(idx);setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#2563eb',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={14}/> Copy item</button>
+                  <button onClick={()=>{const canReplace=safePicks(item).length===0&&safePOs(item).length===0;setCopySkuModal({itemIdx:idx,search:'',mode:canReplace?'replace':'copy'});setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#7c3aed',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f5f3ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:10,fontWeight:800}}>SKU</span> Change SKU</button>
+                  <div style={{height:1,background:'#e2e8f0',margin:'4px 0'}}/>
+                  <button onClick={()=>{rmI(idx);setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="trash" size={14}/> Delete item</button>
+                </div>
+              </>}
             </div>
           </div></div>
         {/* SIZES ROW with financials inline */}
