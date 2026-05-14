@@ -3800,11 +3800,13 @@ export default function App(){
     if(!supabase||!cu)return;
     let cancelled=false;
     (async()=>{
-      // Supabase session restore is async on first load — retry briefly before kicking out
-      for(let i=0;i<10&&!cancelled;i++){
+      // Supabase session restore is async on first load — retry generously before kicking out.
+      // Bumped from 2s to ~9s so a forced chunk-reload (lazyRetry) on slow connections doesn't
+      // boot the user to login while the session is still being restored.
+      for(let i=0;i<30&&!cancelled;i++){
         const{data}=await supabase.auth.getSession();
         if(data?.session)return;
-        await new Promise(r=>setTimeout(r,200));
+        await new Promise(r=>setTimeout(r,300));
       }
       if(cancelled)return;
       console.warn('[Auth] Cached user has no Supabase session — forcing re-login to restore RLS access');
@@ -19172,7 +19174,7 @@ export default function App(){
 
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'review'}))}>← Back</button>
-              <button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
+              <button className="btn btn-primary" style={{background:'#166534'}} onClick={async()=>{
                 // Create new products for items marked "create_product"
                 const createdProducts=[];
                 keeping.forEach((it,pi)=>{
@@ -19232,6 +19234,9 @@ export default function App(){
                 const now=new Date().toLocaleString();
                 const importMemo=imp.memo||('Imported from NetSuite'+(imp.externalDocNum?' #'+imp.externalDocNum:''));
 
+                // Persist BEFORE navigating into the lazy-loaded editor — if the editor chunk
+                // fails to load (stale deploy → 404 → lazyRetry reload), the import data is already
+                // safe in the database and the user can find it on the list view after re-login.
                 if(imp.docType==='so'){
                   const newSO={id:nextSOId(sos),customer_id:imp.custId,memo:importMemo,status:'need_order',
                     created_by:cu.id,created_at:now,updated_at:now,
@@ -19239,9 +19244,9 @@ export default function App(){
                     shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
                     ship_to_id:'default',firm_dates:[],art_files:[],items:newItems,
                     _ns_ref:imp.externalDocNum,_import_source:'netsuite'};
-                  setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c);setPg('orders');
-                  // Explicitly save to DB immediately — don't rely solely on useEffect chain
-                  _dbSaveSO(newSO);
+                  setSOs(prev=>[newSO,...prev]);
+                  try{await _dbSaveSO(newSO)}catch(e){console.error('[Import] SO save failed:',e)}
+                  setESO(newSO);setESOC(c);setPg('orders');
                   nf('✅ Imported SO with '+newItems.length+' items'+(imp.externalDocNum?' (NS #'+imp.externalDocNum+')':''));
                 } else if(imp.docType==='est'){
                   const newEst={id:nextEstId(ests),customer_id:imp.custId,memo:importMemo,status:'open',
@@ -19249,9 +19254,9 @@ export default function App(){
                     default_markup:mk,shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
                     ship_to_id:'default',email_status:null,art_files:[],items:newItems,
                     _ns_ref:imp.externalDocNum,_import_source:'netsuite'};
-                  setEsts(prev=>[newEst,...prev]);setEEst(newEst);setEEstC(c);setPg('estimates');
-                  // Explicitly save to DB immediately
-                  _dbSaveEstimate(newEst);
+                  setEsts(prev=>[newEst,...prev]);
+                  try{await _dbSaveEstimate(newEst)}catch(e){console.error('[Import] Estimate save failed:',e)}
+                  setEEst(newEst);setEEstC(c);setPg('estimates');
                   nf('✅ Imported Estimate with '+newItems.length+' items'+(imp.externalDocNum?' (NS #'+imp.externalDocNum+')':''));
                 } else if(imp.docType==='inv'){
                   const newInv={id:nextInvId(invs),so_id:imp.linkedSoId||null,customer_id:imp.custId,
@@ -19262,9 +19267,9 @@ export default function App(){
                     subtotal:totalRev,tax:imp.pdfParsed?.tax||0,shipping:shipAmt,
                     total:totalRev+(imp.pdfParsed?.tax||0)+shipAmt,
                     _ns_ref:imp.externalDocNum,_import_source:'netsuite'};
-                  setInvs(prev=>[newInv,...prev]);setPg('invoices');
-                  // Explicitly save to DB immediately
-                  _dbSaveInvoice(newInv);
+                  setInvs(prev=>[newInv,...prev]);
+                  try{await _dbSaveInvoice(newInv)}catch(e){console.error('[Import] Invoice save failed:',e)}
+                  setPg('invoices');
                   nf('✅ Imported Invoice with '+newItems.length+' items'+(imp.externalDocNum?' (NS #'+imp.externalDocNum+')':''));
                 } else if(imp.docType==='po'){
                   const poMemo=importMemo+(imp.linkedSoId?'\nLinked SO: '+imp.linkedSoId:'');
@@ -19273,7 +19278,7 @@ export default function App(){
                     if(so){
                       const updated={...so,production_notes:(so.production_notes||'')+(so.production_notes?'\n':'')+nsRef+' | PO imported with '+newItems.length+' items',updated_at:now};
                       setSOs(prev=>prev.map(s=>s.id===so.id?updated:s));
-                      _dbSaveSO(updated);
+                      try{await _dbSaveSO(updated)}catch(e){console.error('[Import] PO link save failed:',e)}
                       nf('✅ PO imported and linked to '+imp.linkedSoId);
                     }
                   } else {
@@ -19283,9 +19288,9 @@ export default function App(){
                       shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
                       ship_to_id:'default',firm_dates:[],art_files:[],items:newItems,
                       _ns_ref:imp.externalDocNum,_import_source:'netsuite',_doc_type:'po'};
-                    setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c);setPg('orders');
-                    // Explicitly save to DB immediately
-                    _dbSaveSO(newSO);
+                    setSOs(prev=>[newSO,...prev]);
+                    try{await _dbSaveSO(newSO)}catch(e){console.error('[Import] PO save failed:',e)}
+                    setESO(newSO);setESOC(c);setPg('orders');
                     nf('✅ PO imported as SO with '+newItems.length+' items');
                   }
                 }
