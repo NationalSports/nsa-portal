@@ -236,9 +236,12 @@ serve(async (req: Request) => {
       ? buildCatalogBlock(catalog.slice(0, 5000) as CatalogItem[])
       : "PRODUCT CATALOG: (not provided — return sku_guess as-written)";
 
+    // 1-hour TTL on the catalog block: it's ~130k tokens and changes rarely.
+    // Without this we pay the cache-write cost on every call (and burn through
+    // the org's input-tokens-per-minute rate limit on back-to-back parses).
     const systemBlocks: any[] = [
       { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-      { type: "text", text: catalogBlock, cache_control: { type: "ephemeral" } },
+      { type: "text", text: catalogBlock, cache_control: { type: "ephemeral", ttl: "1h" } },
     ];
 
     const userContent: any[] = [];
@@ -277,30 +280,65 @@ serve(async (req: Request) => {
       auditId = (ins.data as any)?.id || null;
     }
 
-    const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 4096,
-        system: systemBlocks,
-        messages: [{ role: "user", content: userContent }],
-      }),
+    const anthropicHeaders = {
+      "Content-Type": "application/json",
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      // Required to opt into the 1h cache_control TTL used above.
+      "anthropic-beta": "extended-cache-ttl-2025-04-11",
+    };
+    const anthropicBody = JSON.stringify({
+      model: MODEL,
+      max_tokens: 4096,
+      system: systemBlocks,
+      messages: [{ role: "user", content: userContent }],
     });
+
+    // Retry 429 (rate_limit) and 529 (overloaded) up to 3 attempts, respecting
+    // the Retry-After header when present. Total wait is capped so we don't
+    // blow the edge function's runtime budget.
+    let anthropicRes!: Response;
+    let lastRetryAfter: number | null = null;
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: anthropicHeaders,
+        body: anthropicBody,
+      });
+      if (anthropicRes.ok) break;
+      if (anthropicRes.status !== 429 && anthropicRes.status !== 529) break;
+      const raHeader = parseInt(anthropicRes.headers.get("retry-after") || "", 10);
+      lastRetryAfter = Number.isFinite(raHeader) ? raHeader : null;
+      if (attempt === maxAttempts) break;
+      try { await anthropicRes.text(); } catch (_) { /* drain */ }
+      const waitMs = lastRetryAfter
+        ? Math.min(lastRetryAfter * 1000, 10_000)
+        : Math.min(1000 * Math.pow(2, attempt - 1), 8000);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
 
     if (!anthropicRes.ok) {
       const errText = await anthropicRes.text();
+      const isRateLimit = anthropicRes.status === 429;
+      const isOverloaded = anthropicRes.status === 529;
+      const friendly = isRateLimit
+        ? `The AI service is busy right now${lastRetryAfter ? ` — please try again in ~${lastRetryAfter}s` : " — please try again in a minute"}.`
+        : isOverloaded
+        ? "The AI service is temporarily overloaded — please try again in a moment."
+        : `Claude API error ${anthropicRes.status}: ${errText.slice(0, 300)}`;
       if (admin && auditId) {
         await admin.from("ai_order_builds").update({
           error: `Anthropic ${anthropicRes.status}: ${errText.slice(0, 500)}`,
           duration_ms: Date.now() - t0,
         }).eq("id", auditId);
       }
-      return new Response(JSON.stringify({ ok: false, error: `Claude API error ${anthropicRes.status}: ${errText.slice(0, 300)}` }), { status: 200, headers: CORS });
+      return new Response(JSON.stringify({
+        ok: false,
+        error: friendly,
+        error_code: isRateLimit ? "rate_limit" : isOverloaded ? "overloaded" : null,
+        retry_after_s: lastRetryAfter,
+      }), { status: 200, headers: CORS });
     }
 
     const claudeJson = await anthropicRes.json();
