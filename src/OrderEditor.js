@@ -2119,33 +2119,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {item.vendor_source&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{item.vendor_source==='sanmar'?'🟦 via SanMar':item.vendor_source==='ss'?'🟪 via S&S':item.vendor_source==='momentec'?'🟧 via Momentec':'via vendor'}</span>}
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={dp.vendor+' — '+dp.deco_type?.replace(/_/g,' ')} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>{dp.po_id} · {dp.vendor}</span>)}
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
-                <label title="Mark as footwear: swaps the size grid to shoe sizes (6–14) and uses footwear cost multipliers for Adidas/UA"
-                  style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',
-                    background:item.is_footwear?'#dcfce7':'#f1f5f9',color:item.is_footwear?'#166534':'#94a3b8',border:item.is_footwear?'1px solid #86efac':'1px solid #e2e8f0'}}>
-                  <input type="checkbox" checked={!!item.is_footwear} onChange={e=>{
-                    const checked=e.target.checked;
-                    const apparelDef=['S','M','L','XL','2XL'];
-                    const curAvail=item.available_sizes||[];
-                    const isApparelDefault=curAvail.length===0||(curAvail.length===apparelDef.length&&curAvail.every(s=>apparelDef.includes(s)));
-                    const isFootwearDefault=curAvail.length>0&&curAvail.every(s=>FOOTWEAR_SIZES.includes(s));
-                    const hasQty=Object.values(item.sizes||{}).some(v=>safeNum(v)>0);
-                    if(checked){
-                      if(!hasQty&&isApparelDefault)uI(idx,'available_sizes',[...FOOTWEAR_DEFAULT_SIZES]);
-                      uI(idx,'is_footwear',true);
-                      if(isAU(item.brand)&&safeNum(item.retail_price)>0){
-                        const mult=item.brand==='Adidas'?0.55*0.75:0.55*0.85;
-                        uI(idx,'nsa_cost',Math.floor(item.retail_price*mult*100)/100);
-                      }
-                    }else{
-                      if(!hasQty&&isFootwearDefault)uI(idx,'available_sizes',[...apparelDef]);
-                      uI(idx,'is_footwear',false);
-                      if(isAU(item.brand)&&safeNum(item.retail_price)>0){
-                        const mult=item.brand==='Adidas'?0.375:0.425;
-                        uI(idx,'nsa_cost',Math.floor(item.retail_price*mult*100)/100);
-                      }
-                    }
-                  }} style={{width:12,height:12}}/> 👟 Footwear
-                </label>
+                {(item.is_footwear||(item.available_sizes||[]).join(',')==='OSFA')&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:10,fontWeight:700,background:item.is_footwear?'#dcfce7':'#fef3c7',color:item.is_footwear?'#166534':'#92400e'}}>{item.is_footwear?'👟 Footwear':'🧢 OSFA'}</span>}
                 {o.promo_applied&&<label style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',background:item.is_promo?'#fef3c7':'#f1f5f9',color:item.is_promo?'#92400e':'#94a3b8',border:item.is_promo?'1px solid #fde68a':'1px solid #e2e8f0'}}><input type="checkbox" checked={item.is_promo||false} onChange={e=>{const checked=e.target.checked;if(checked){uI(idx,'_pre_promo_sell',item.unit_sell);uI(idx,'unit_sell',safeNum(item.retail_price)||safeNum(item.nsa_cost)*2);uI(idx,'is_promo',true)}else{uI(idx,'unit_sell',item._pre_promo_sell!=null?item._pre_promo_sell:item.unit_sell);uI(idx,'_pre_promo_sell',undefined);uI(idx,'is_promo',false)}}} style={{width:12,height:12}}/> Promo{item.is_promo&&item.retail_price?' ($'+item.retail_price+')':''}</label>}</div>
               <div style={{display:'flex',alignItems:'center',gap:8,marginTop:4,flexWrap:'wrap'}}>
                 <span style={{fontSize:13,fontWeight:600}}>Sell: <$In value={item._sizeSells&&szQty>0?rQ(pRev/szQty):item.unit_sell} onChange={v=>{if(item._sizeSells&&item._sizeCosts){const ratio=item.nsa_cost>0?v/rQ(item.nsa_cost*(o.default_markup||1.65)):1;const ns={};Object.entries(item._sizeCosts).forEach(([sz,c])=>{ns[sz]=rQ(c*(o.default_markup||1.65)*ratio)});uI(idx,'_sizeSells',ns)}uI(idx,'unit_sell',v)}}/>/ea</span>
@@ -2159,7 +2133,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <button title="Item actions" onClick={()=>setShowItemMenu(showItemMenu===idx?null:idx)} style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',color:'#475569',padding:'4px 8px',fontSize:14,fontWeight:700,lineHeight:1}}>⋯</button>
               {showItemMenu===idx&&<>
                 <div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowItemMenu(null)}/>
-                <div style={{position:'absolute',top:'100%',right:0,marginTop:4,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:40,minWidth:170,padding:4}}>
+                <div style={{position:'absolute',top:'100%',right:0,marginTop:4,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:40,minWidth:200,padding:4}}>
+                  {(()=>{const curAvail=item.available_sizes||[];const apparelDef=['S','M','L','XL','2XL'];const curMode=item.is_footwear?'footwear':(curAvail.join(',')==='OSFA'?'osfa':'apparel');
+                    const switchMode=(mode)=>{
+                      const hasQty=Object.values(item.sizes||{}).some(v=>safeNum(v)>0);
+                      if(hasQty&&!window.confirm('This item has quantities filled in. Switching the size mode will clear them. Continue?'))return;
+                      if(hasQty)uI(idx,'sizes',{});
+                      if(mode==='footwear'){uI(idx,'available_sizes',[...FOOTWEAR_DEFAULT_SIZES]);uI(idx,'is_footwear',true);
+                        if(isAU(item.brand)&&safeNum(item.retail_price)>0){const mult=item.brand==='Adidas'?0.55*0.75:0.55*0.85;uI(idx,'nsa_cost',Math.floor(item.retail_price*mult*100)/100)}
+                      }else if(mode==='osfa'){uI(idx,'available_sizes',['OSFA']);uI(idx,'is_footwear',false);
+                        if(isAU(item.brand)&&safeNum(item.retail_price)>0){const mult=item.brand==='Adidas'?0.375:0.425;uI(idx,'nsa_cost',Math.floor(item.retail_price*mult*100)/100)}
+                      }else{uI(idx,'available_sizes',[...apparelDef]);uI(idx,'is_footwear',false);
+                        if(isAU(item.brand)&&safeNum(item.retail_price)>0){const mult=item.brand==='Adidas'?0.375:0.425;uI(idx,'nsa_cost',Math.floor(item.retail_price*mult*100)/100)}
+                      }
+                      setShowItemMenu(null);
+                    };
+                    return<>
+                      <div style={{padding:'4px 10px 2px',fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.5}}>Size mode</div>
+                      <div style={{display:'flex',gap:3,padding:'2px 6px 6px'}}>
+                        {[{k:'apparel',l:'👕 Apparel'},{k:'footwear',l:'👟 Footwear'},{k:'osfa',l:'🧢 OSFA'}].map(m=><button key={m.k} onClick={()=>switchMode(m.k)} style={{flex:1,padding:'4px 4px',fontSize:10,fontWeight:700,borderRadius:4,cursor:'pointer',border:'1px solid '+(curMode===m.k?'#0f172a':'#e2e8f0'),background:curMode===m.k?'#0f172a':'white',color:curMode===m.k?'white':'#475569'}}>{m.l}</button>)}
+                      </div>
+                      <div style={{height:1,background:'#e2e8f0',margin:'2px 0 4px'}}/>
+                    </>})()}
                   <button onClick={()=>{setEditingItemName(idx);setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#0f766e',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f0fdfa'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>✏️</span> Edit name</button>
                   <button onClick={()=>{copyI(idx);setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#2563eb',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={14}/> Copy item</button>
                   <button onClick={()=>{const canReplace=safePicks(item).length===0&&safePOs(item).length===0;setCopySkuModal({itemIdx:idx,search:'',mode:canReplace?'replace':'copy'});setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#7c3aed',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f5f3ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:10,fontWeight:800}}>SKU</span> Change SKU</button>
