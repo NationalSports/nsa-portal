@@ -16,7 +16,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[custArtDetail,setCustArtDetail]=useState(null);
   const[custArtExpanded,setCustArtExpanded]=useState(null);// art id of expanded customer library item
   const[custArtFilter,setCustArtFilter]=useState('all');
-  const[subsCollapsed,setSubsCollapsed]=useState(false);
+  const[subsCollapsed,setSubsCollapsed]=useState(true);
   // Promo state
   const[promoEdit,setPromoEdit]=useState(null);// null or {type,fixed_amount,spend_percentage,notes,id?}
   const[promoNewPeriod,setPromoNewPeriod]=useState(null);// null or {program_id,allocated,notes}
@@ -44,6 +44,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const orders=allOrders.filter(o=>ids.includes(o.customer_id));
   const fo=orders.filter(o=>{if(oF!=='all'&&o.type!==oF)return false;if(sF==='open')return['sent','draft','open','need_order','waiting_receive','needs_pull'].includes(o.status)||calcSOStatus(o)!=='complete';if(sF==='closed')return['approved','paid','complete'].includes(o.status)||calcSOStatus(o)==='complete';return true});
   const gn=id=>allCustomers.find(x=>x.id===id)?.alpha_tag||'';
+  const teamName=id=>{const c=allCustomers.find(x=>x.id===id);if(!c)return'';const parent=c.parent_id?allCustomers.find(x=>x.id===c.parent_id):null;if(parent?.name&&c.name?.startsWith(parent.name))return c.name.slice(parent.name.length).trim().replace(/^[-—–]\s*/,'')||c.name;return c.name||c.alpha_tag||''};
   // Contact editing
   const saveContact=(idx,updated)=>{const newContacts=[...(customer.contacts||[])];newContacts[idx]=updated;const newCust={...customer,contacts:newContacts};setCustLocal(newCust);onEdit(newCust);setEditContact(null)};
   const addContact=()=>{const newContacts=[...(customer.contacts||[]),{name:'',email:'',phone:'',role:''}];setCustLocal({...customer,contacts:newContacts});setEditContact(newContacts.length-1)};
@@ -217,7 +218,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <td style={{fontSize:11,color:'#64748b'}}>{t.date}</td>
           <td style={{fontSize:11,color:'#94a3b8'}}>{t.so_id&&t._src!=='order'?t.so_id:'—'}</td>
           <td>{t.memo}</td>
-          {isP&&<td><span className="badge badge-gray">{gn(t.customer_id)}</span></td>}
+          {isP&&<td><span className="badge badge-gray" title={gn(t.customer_id)}>{teamName(t.customer_id)||gn(t.customer_id)}</span></td>}
           <td style={{fontWeight:t.total?700:400,color:t.type==='invoice'&&t.status==='open'?'#dc2626':t.total?'#374151':'#94a3b8'}}>{t.total?'$'+t.total.toLocaleString():'—'}</td>
           <td><span className={`badge ${statusBadge(t.status)}`}>{t.status?.replace(/_/g,' ')||'—'}</span></td>
         </tr>)}</tbody></table></div></div>})()}

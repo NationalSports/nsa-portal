@@ -1988,9 +1988,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           }
           const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' promo order closed');
         }}><Icon name="check" size={14}/> Close Promo Order</button>)
-        :<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
-          setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('final');setInvDepositPct(50);setInvDate(new Date().toLocaleDateString('en-CA'));setShowInvCreate(true);
-        }}><Icon name="dollar" size={14}/> Create Invoice</button>}
+        :(allInvoices||[]).some(inv=>inv.so_id===o.id)
+          ?(o.status==='complete'
+            ?<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Sales Order Closed</span>
+            :<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={()=>{
+              if(!window.confirm('Close sales order '+o.id+'? It will be marked complete.'))return;
+              const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' closed');
+            }}><Icon name="check" size={14}/> Close Sales Order</button>)
+          :<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
+            setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('final');setInvDepositPct(50);setInvDate(new Date().toLocaleDateString('en-CA'));setShowInvCreate(true);
+          }}><Icon name="dollar" size={14}/> Create Invoice</button>}
         {o.order_type==='booking'&&!o.booking_confirmed&&<button style={{fontSize:13,padding:'7px 14px',borderRadius:6,background:'#059669',border:'none',color:'white',cursor:'pointer',fontWeight:700}} onClick={()=>{if(!window.confirm('Confirm this booking order with coach? It will enter the active pipeline.'))return;sv('booking_confirmed',true);sv('booking_confirmed_at',new Date().toISOString());sv('booking_confirmed_by',cu?.id||'');nf('Booking order confirmed — entering pipeline')}}><Icon name="check" size={14}/> Confirm with Coach</button>}
         {o.order_type==='booking'&&o.booking_confirmed&&<span style={{fontSize:12,color:'#059669',fontWeight:600,padding:'6px 8px',background:'#ecfdf5',borderRadius:6,border:'1px solid #86efac'}}>✓ Confirmed with Coach</span>}
       </div>}

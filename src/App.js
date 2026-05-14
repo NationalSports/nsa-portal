@@ -15,7 +15,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, openDocPDF, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
 import { calcOrderTotals } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -8495,6 +8495,58 @@ export default function App(){
       const overdue=dd!==null&&dd<0&&inv.status!=='paid';
       const contacts=(ic?.contacts||[]).filter(c=>c.email);
 
+      const buildInvDocOpts=()=>{
+        const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+        const billToName=inv.billing_name||ic?.name||'—';
+        const billToSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
+        const billAddr=billToSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
+        const shipAddr=ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'';
+        const poNum=inv._po_number||so?.po_number;
+        const pRows=[];let pSubTotal=0;
+        const pSoItems=so?safeItems(so):[];const pSoArt=so?safeArt(so):[];
+        const _pAQ2={};pSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ2[d.art_file_id]=(_pAQ2[d.art_file_id]||0)+q2}})});
+        const pIsDeposit=inv.inv_type==='deposit';const pDepPct=pIsDeposit?(inv.deposit_pct||50)/100:1;
+        if(pSoItems.length>0){
+          pSoItems.forEach(it=>{
+            const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
+            const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+            const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*pDepPct*100)/100;pSubTotal+=lineAmt;
+            let itemName=(it.name||'')+(it.color?' - '+it.color:'');
+            if(szStr)itemName+='<br/><span>'+szStr+'</span>';
+            if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
+            pRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
+            safeDecos(it).forEach(d=>{
+              const cq=d.kind==='art'&&d.art_file_id?_pAQ2[d.art_file_id]:qty;const dp2=dP(d,qty,pSoArt,cq);
+              const artF=pSoArt.find(a2=>a2.id===d.art_file_id);
+              const decoLabel=pdfDecoLabel(d,artF);
+              const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*pDepPct*100)/100;pSubTotal+=decoAmt;
+              pRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
+            });
+          });
+        }else{
+          lineItems.forEach(li=>{pSubTotal+=safeNum(li.amount);pRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$(safeNum(li.rate)),style:'text-align:right'},{value:_$(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
+        }
+        return{title:billToName,docNum:inv.id,docType:'INVOICE',
+          headerRight:'<div class="ta">'+_$(inv.total)+'</div><div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
+          infoBoxes:[
+            {label:'Bill To',value:billToName,sub:billAddr},
+            ...(shipAddr?[{label:'Ship To',value:ic?.name||'—',sub:shipAddr}]:[]),
+            {label:'Invoice Date',value:inv.date||'—',sub:inv.due_date?'Due: '+inv.due_date:''},
+            {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||''+(poNum?'<br/><strong>PO# '+poNum+'</strong>':'')},
+            {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':inv.inv_type==='full'?'Invoice':'Final Invoice',sub:'Rep: '+(repObj?.name||'—')}
+          ],
+          tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
+            rows:[...pRows,
+              {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(pSubTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
+              ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(shipAmt),style:'text-align:right;border:none'}]}]:[]),
+              ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$(taxAmt),style:'text-align:right;border:none'}]}]:[]),
+              ...(safeNum(inv.credit_amount)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$(safeNum(inv.credit_amount))+'</strong>',style:'text-align:right;border:none'}]}]:[]),
+              {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(inv.total)+'</strong>',style:'text-align:right'}]},
+              ...(inv.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$(inv.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
+              ...(bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$(bal)+'</strong>',style:'text-align:right'}]}]:[]),
+            ]}],footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms};
+      };
+
       return(<>
         {/* Back button + breadcrumb */}
         <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:16}}>
@@ -8557,59 +8609,17 @@ export default function App(){
               }}>Send Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
-                const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-                const billToName=inv.billing_name||ic?.name||'—';
-                const billToSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
-                const billAddr=billToSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
-                const shipAddr=ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'';
-                const poNum=inv._po_number||so?.po_number;
-                // Build rows with decoration detail from SO items
-                const pRows=[];let pSubTotal=0;
-                const pSoItems=so?safeItems(so):[];const pSoArt=so?safeArt(so):[];
-                const _pAQ2={};pSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ2[d.art_file_id]=(_pAQ2[d.art_file_id]||0)+q2}})});
-                const pIsDeposit=inv.inv_type==='deposit';const pDepPct=pIsDeposit?(inv.deposit_pct||50)/100:1;
-                if(pSoItems.length>0){
-                  pSoItems.forEach(it=>{
-                    const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-                    const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
-                    const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*pDepPct*100)/100;pSubTotal+=lineAmt;
-                    let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-                    if(szStr)itemName+='<br/><span>'+szStr+'</span>';
-                    if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
-                    pRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
-                    safeDecos(it).forEach(d=>{
-                      const cq=d.kind==='art'&&d.art_file_id?_pAQ2[d.art_file_id]:qty;const dp2=dP(d,qty,pSoArt,cq);
-                      const artF=pSoArt.find(a2=>a2.id===d.art_file_id);
-                      const decoLabel=pdfDecoLabel(d,artF);
-                      const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*pDepPct*100)/100;pSubTotal+=decoAmt;
-                      pRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
-                    });
-                  });
-                }else{
-                  lineItems.forEach(li=>{pSubTotal+=safeNum(li.amount);pRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$(safeNum(li.rate)),style:'text-align:right'},{value:_$(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
-                }
-                printDoc({title:billToName,docNum:inv.id,docType:'INVOICE',
-                  headerRight:'<div class="ta">'+_$(inv.total)+'</div><div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
-                  infoBoxes:[
-                    {label:'Bill To',value:billToName,sub:billAddr},
-                    ...(shipAddr?[{label:'Ship To',value:ic?.name||'—',sub:shipAddr}]:[]),
-                    {label:'Invoice Date',value:inv.date||'—',sub:inv.due_date?'Due: '+inv.due_date:''},
-                    {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||''+(poNum?'<br/><strong>PO# '+poNum+'</strong>':'')},
-                    {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':inv.inv_type==='full'?'Invoice':'Final Invoice',sub:'Rep: '+(repObj?.name||'—')}
-                  ],
-                  tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
-                    rows:[...pRows,
-                      {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(pSubTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
-                      ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(shipAmt),style:'text-align:right;border:none'}]}]:[]),
-                      ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$(taxAmt),style:'text-align:right;border:none'}]}]:[]),
-                      ...(safeNum(inv.credit_amount)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$(safeNum(inv.credit_amount))+'</strong>',style:'text-align:right;border:none'}]}]:[]),
-                      {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(inv.total)+'</strong>',style:'text-align:right'}]},
-                      ...(inv.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$(inv.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
-                      ...(bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$(bal)+'</strong>',style:'text-align:right'}]}]:[]),
-                    ]}],footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms});
+                printDoc(buildInvDocOpts());
                 const ph=[...(inv.print_history||[]),{printed_at:new Date().toLocaleString(),printed_by:cu.name||cu.id}];
                 setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,print_history:ph}:i));setViewInvoice(v=>({...v,print_history:ph}));
               }}>Print</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
+              onClick={async()=>{
+                try{
+                  const billToName=inv.billing_name||ic?.name||'';
+                  await downloadDoc(buildInvDocOpts(),'Invoice-'+inv.id+(billToName?'-'+billToName:''));
+                }catch(err){console.warn('PDF download failed:',err)}
+              }}>📥 Download PDF</button>
             {lineItems.length>=2&&inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',background:'#7c3aed',color:'white',border:'none'}}
               onClick={()=>{
                 // If line_items not stored on invoice, populate from computed items before splitting
