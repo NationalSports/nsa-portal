@@ -78,7 +78,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
   const[showFirmApprove,setShowFirmApprove]=useState(false);const[firmRushPct,setFirmRushPct]=useState(0);
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('final');const[invDepositPct,setInvDepositPct]=useState(50);const[invBilling,setInvBilling]=useState('');const[invDate,setInvDate]=useState(()=>new Date().toLocaleDateString('en-CA'));
-  const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');const[invSendTo,setInvSendTo]=useState('');const[invSendCustomEmail,setInvSendCustomEmail]=useState('');const[invSendAt,setInvSendAt]=useState('');
+  const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');const[invSendTo,setInvSendTo]=useState('');const[invSendCustomEmail,setInvSendCustomEmail]=useState('');const[invSendAt,setInvSendAt]=useState('');const[invSentStatus,setInvSentStatus]=useState(null);
   const[invSmsEnabled,setInvSmsEnabled]=useState(false);const[invSmsPhone,setInvSmsPhone]=useState('');const[invSmsMsg,setInvSmsMsg]=useState('');
   const[invFollowUpDays,setInvFollowUpDays]=useState(7);
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
@@ -4408,12 +4408,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             ]}],
           footer:ir.inv_type==='deposit'?_ci.depositTerms:_ci.terms});
       };
-      return<div className="modal-overlay" onClick={()=>{setInvReview(null);if(onNavInvoice)onNavInvoice(ir)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
+      return<div className="modal-overlay" onClick={()=>{setInvReview(null);setInvSentStatus(null);if(onNavInvoice)onNavInvoice(ir)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header" style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white'}}>
           <h2 style={{color:'white'}}>Invoice Created — {ir.id}</h2>
-          <button className="modal-close" style={{color:'white'}} onClick={()=>{setInvReview(null);if(onNavInvoice)onNavInvoice(ir)}}>x</button>
+          <button className="modal-close" style={{color:'white'}} onClick={()=>{setInvReview(null);setInvSentStatus(null);if(onNavInvoice)onNavInvoice(ir)}}>x</button>
         </div>
         <div className="modal-body" style={{padding:0}}>
+          {invSentStatus&&<div style={{margin:'12px 16px 0',padding:'12px 16px',background:invSentStatus.type==='scheduled'?'#eff6ff':'#f0fdf4',border:'1px solid '+(invSentStatus.type==='scheduled'?'#93c5fd':'#86efac'),borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
+            <span style={{fontSize:20}}>{invSentStatus.type==='scheduled'?'📅':'✅'}</span>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:700,color:invSentStatus.type==='scheduled'?'#1e40af':'#166534'}}>{invSentStatus.type==='scheduled'?'Invoice scheduled':'Invoice sent'}</div>
+              <div style={{fontSize:12,color:invSentStatus.type==='scheduled'?'#1e40af':'#166534',wordBreak:'break-word'}}>{invSentStatus.type==='scheduled'?'Will send on '+invSentStatus.sendAt+' to ':'Sent to '}{invSentStatus.to}</div>
+            </div>
+            <button onClick={()=>setInvSentStatus(null)} style={{background:'none',border:'none',cursor:'pointer',color:'#64748b',fontSize:18,padding:0,lineHeight:1}}>x</button>
+          </div>}
           {/* Invoice preview */}
           <div style={{padding:20}}>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:16}}>
@@ -4473,7 +4481,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
         </div>
         <div className="modal-footer" style={{display:'flex',gap:8,justifyContent:'space-between',flexWrap:'wrap'}}>
-          <button className="btn btn-secondary" onClick={()=>{setInvReview(null);if(onNavInvoice)onNavInvoice(ir)}}>Go to Invoices</button>
+          <button className="btn btn-secondary" onClick={()=>{setInvReview(null);setInvSentStatus(null);if(onNavInvoice)onNavInvoice(ir)}}>Go to Invoices</button>
           <div style={{display:'flex',gap:8}}>
             <button className="btn btn-secondary" onClick={printInvoice}>🖨️ Print Invoice</button>
             <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>{const _c=(cust?.contacts||[]).filter(c=>c.email);const _accts=getBillingContacts(cust,allCustomers).filter(a=>a.email);const _primary=_c.length>0?_c[0].email:null;const _sel=[...(_primary?[_primary]:[]),..._accts.map(a=>a.email).filter(e=>e!==_primary)];setInvSendTo(_sel);setInvSendCustomEmail('');setInvSendModal(true)}}>📧 Send to Coach</button>
@@ -4656,6 +4664,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               });
               if(schedRes.ok){
                 nf('Invoice '+ir.id+' scheduled to send on '+invSendAt);
+                setInvSentStatus({type:'scheduled',to:toEmail,sendAt:invSendAt});
                 res={ok:true,messageId:null,scheduledId:schedRes.id};
               }else{
                 nf('Failed to schedule invoice: '+(schedRes.error||'Unknown error'),'error');
@@ -4674,6 +4683,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               });
               if(res.ok){
                 nf('Invoice '+ir.id+' sent to '+toEmail);
+                setInvSentStatus({type:'sent',to:toEmail});
               }else{
                 nf('Failed to send invoice: '+(res.error||'Unknown error'),'error');
               }
