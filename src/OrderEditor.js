@@ -5,7 +5,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, BATCH_VENDORS, EXTRA_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks, ImgGallery } from './components';
 import { CustModal } from './modals';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
@@ -2090,7 +2090,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     </div>
 
     {/* LINE ITEMS */}
-    {tab==='items'&&<>{safeItems(o).map((item,idx)=>{const szQty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);const qty=szQty>0?szQty:safeNum(item.est_qty);
+    {tab==='items'&&(()=>{
+      const _invsForSO=isSO?(allInvoices||[]).filter(inv=>inv.so_id===o.id):[];
+      const _itemInvoicedMap=isSO?buildInvoicedQtyMap(o,_invsForSO):new Map();
+      return<>{safeItems(o).map((item,idx)=>{const szQty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);const qty=szQty>0?szQty:safeNum(item.est_qty);
+      const _itemInvoicedQty=_itemInvoicedMap.get(soLineKey(item,idx))||0;
+      const _itemFullyInvoiced=_itemInvoicedQty>0&&_itemInvoicedQty>=qty;
       let dR=0,dC=0;const decoBreak=[];safeDecos(item).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const pds=item.is_promo&&o.promo_applied?rQ(dp.sell*1.25):dp.sell;const dr=eq*pds;const dc=eq*dp.cost;dR+=dr;dC+=dc;
         const artF=d.kind==='art'?af.find(f=>f.id===d.art_file_id):null;const label=d.kind==='art'?(artF?artF.deco_type?.replace('_',' '):d.position)+(d.reversible?' (Rev)':''):'Numbers @ '+d.position+(d.front_and_back?' (F+B)':'')+(d.reversible?' (Rev)':'');
         decoBreak.push({label,sell:pds,cost:dp.cost,rev:dr,costTot:dc,margin:dr-dc,pct:dr>0?((dr-dc)/dr*100):0})});
@@ -2111,6 +2116,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <button title="Move down" disabled={idx===safeItems(o).length-1} onClick={()=>mvI(idx,1)} style={{background:'none',border:'none',cursor:idx===safeItems(o).length-1?'not-allowed':'pointer',color:idx===safeItems(o).length-1?'#cbd5e1':'#94a3b8',padding:0,lineHeight:0}}><Icon name="sortDown" size={14}/></button>
             </div>
             <div style={{flex:1}}>
+              {isSO&&_itemInvoicedQty>0&&<div style={{marginBottom:4}}>
+                <span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:_itemFullyInvoiced?'#dcfce7':'#fef3c7',color:_itemFullyInvoiced?'#166534':'#92400e',fontWeight:700,letterSpacing:0.3}}>
+                  {_itemFullyInvoiced?'✓ Fully Invoiced':'Invoiced '+_itemInvoicedQty+' of '+qty}
+                </span>
+              </div>}
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                 {item.is_custom?<input className="form-input" value={item.sku} onChange={e=>uI(idx,'sku',e.target.value)} style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15,width:100,border:'1px solid #93c5fd'}}/>
                   :<span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15}}>{item.sku}</span>}
@@ -3037,7 +3047,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </>}
       </div>
     </div></div>}
-    </>}
+    </>;
+    })()}
 
     {/* ART LIBRARY TAB */}
     {tab==='art'&&<div className="card"><div className="card-header"><h2>Art Library</h2><div style={{display:'flex',gap:6}}>{dirty&&<button className="btn btn-sm btn-primary" onClick={()=>{const updated={...o,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSaved(true);nf('Art saved')}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11}} onClick={()=>setShowPrevArt(true)}>📂 Previous Artwork</button><button className="btn btn-sm btn-primary" onClick={addArt}><Icon name="plus" size={12}/> New Art Group</button></div></div>
@@ -4189,6 +4200,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {showInvCreate&&(()=>{
       const items=safeItems(o);
       const isPromoOrder=o.promo_applied;
+      // Per-SO-item invoiced qty across prior invoices for this SO — used to prevent double-billing the same line
+      const _priorInvs=(allInvoices||[]).filter(inv=>inv.so_id===o.id);
+      const invoicedQtyMap=buildInvoicedQtyMap(o,_priorInvs);
       // Compute per-item totals — for promo orders, only non-promo items are invoiceable
       const itemTotals=items.map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const rev=qty*safeNum(it.unit_sell);
         let decoRev=0;safeDecos(it).forEach(d=>{const dp2=dP(d,qty,safeArt(o),qty);decoRev+=qty*dp2.sell});
@@ -4286,11 +4300,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
               {items.map((it,idx)=>{
                 const sel=invSelItems.includes(idx);const t=itemTotals[idx];
-                return<div key={idx} style={{padding:'10px 14px',borderBottom:idx<items.length-1?'1px solid #f1f5f9':'none',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:sel?'#eff6ff':'white'}} onClick={()=>setInvSelItems(sel?invSelItems.filter(i=>i!==idx):[...invSelItems,idx])}>
-                  <input type="checkbox" checked={sel} readOnly style={{accentColor:'#2563eb',width:16,height:16}}/>
+                const inv=invoicedQtyMap.get(soLineKey(it,idx))||0;
+                const remaining=Math.max(0,t.qty-inv);
+                const fullyInvoiced=inv>0&&remaining===0;
+                return<div key={idx} style={{padding:'10px 14px',borderBottom:idx<items.length-1?'1px solid #f1f5f9':'none',display:'flex',alignItems:'center',gap:10,cursor:fullyInvoiced?'not-allowed':'pointer',background:fullyInvoiced?'#f8fafc':(sel?'#eff6ff':'white'),opacity:fullyInvoiced?0.55:1}} onClick={()=>{if(fullyInvoiced)return;setInvSelItems(sel?invSelItems.filter(i=>i!==idx):[...invSelItems,idx])}}>
+                  <input type="checkbox" checked={sel&&!fullyInvoiced} disabled={fullyInvoiced} readOnly style={{accentColor:'#2563eb',width:16,height:16}}/>
                   <div style={{flex:1}}>
-                    <div style={{fontWeight:600,fontSize:13}}><span style={{fontFamily:'monospace',color:'#1e40af'}}>{it.sku||'—'}</span> {safeStr(it.name)||'Item'}</div>
-                    <div style={{fontSize:11,color:'#64748b'}}>{safeStr(it.color)||'—'} · {t.qty} units · ${safeNum(it.unit_sell).toFixed(2)}/ea{t.decoRev>0?' + $'+t.decoRev.toFixed(2)+' deco':''}</div>
+                    <div style={{fontWeight:600,fontSize:13,display:'flex',alignItems:'center',gap:6}}>
+                      <span style={{fontFamily:'monospace',color:'#1e40af'}}>{it.sku||'—'}</span> {safeStr(it.name)||'Item'}
+                      {inv>0&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:fullyInvoiced?'#d1d5db':'#fef3c7',color:fullyInvoiced?'#475569':'#92400e',fontWeight:700}}>{fullyInvoiced?'Fully invoiced':inv+' of '+t.qty+' invoiced'}</span>}
+                    </div>
+                    <div style={{fontSize:11,color:'#64748b'}}>{safeStr(it.color)||'—'} · {fullyInvoiced?'0':remaining} of {t.qty} units remaining · ${safeNum(it.unit_sell).toFixed(2)}/ea{t.decoRev>0?' + $'+t.decoRev.toFixed(2)+' deco':''}</div>
                   </div>
                   <div style={{fontWeight:700,fontSize:13,color:sel?'#1e40af':'#94a3b8'}}>${t.total.toFixed(2)}</div>
                 </div>})}
@@ -4380,10 +4400,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const _invDateStr=invDate||new Date().toLocaleDateString('en-CA');
             const termDays=parseInt((cust?.payment_terms||'net30').replace(/\D/g,''))||30;
             const _dueBase=new Date(_invDateStr+'T00:00:00');_dueBase.setDate(_dueBase.getDate()+termDays);const dueDate=_dueBase.toLocaleDateString('en-CA');
-            const lineItems=activeItems.map(idx=>{const it=items[idx];if(!it)return null;const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+            const lineItems=activeItems.map(idx=>{const it=items[idx];if(!it)return null;const totalQty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+              // For partial invoices, subtract qty already invoiced on this SO line so the same line can't be billed twice
+              const alreadyInvoiced=invType==='partial'?(invoicedQtyMap.get(soLineKey(it,idx))||0):0;
+              const qty=Math.max(0,totalQty-alreadyInvoiced);
+              if(invType==='partial'&&qty===0)return null;
               const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,safeArt(o),cq);return a+dp2.sell},0);
               const lineAmt=qty*(safeNum(it.unit_sell)+decoSell);
-              return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:invType==='deposit'?Math.round(lineAmt*invDepositPct/100*100)/100:lineAmt}}).filter(Boolean);
+              return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:invType==='deposit'?Math.round(lineAmt*invDepositPct/100*100)/100:lineAmt,
+                _sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,idx)}}).filter(Boolean);
             const invShipAmt=invType==='deposit'?Math.round(invShip*invDepositPct/100*100)/100:invShip;
             const invTaxAmt=invType==='deposit'?Math.round(invTax*invDepositPct/100*100)/100:invTax;
             const defaultMemo=invType==='deposit'?invDepositPct+'% Deposit — '+o.memo:invType==='partial'?'Partial — '+o.memo:invType==='full'?'Invoice — '+o.memo:'Final Invoice — '+o.memo;

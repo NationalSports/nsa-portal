@@ -12,7 +12,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
@@ -964,8 +964,8 @@ const _dbSaveSOInner = async (so) => {
   }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
-const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address'];
-const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address']);
+const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','shipping_name','shipping_address'];
+const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','shipping_name','shipping_address']);
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{try{
@@ -8455,7 +8455,7 @@ export default function App(){
       const bal=inv.total-(inv.paid??0);
       const storedLineItems=inv.line_items||[];
       // Fallback: compute line items from SO when not stored on invoice
-      const soComputedItems=(!storedLineItems.length&&so)?safeItems(so).map(it=>{
+      const soComputedItems=(!storedLineItems.length&&so)?safeItems(so).map((it,_soIdx)=>{
         const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return null;
         const af=safeArt(so);const aqMap={};safeItems(so).forEach(sit=>{const sq2=Object.values(safeSizes(sit)).reduce((a2,v2)=>a2+safeNum(v2),0);safeDecos(sit).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){aqMap[d2.art_file_id]=(aqMap[d2.art_file_id]||0)+sq2}})});
         const decos=safeDecos(it);
@@ -8469,7 +8469,7 @@ export default function App(){
         });
         const decoSell=decoDetails.reduce((a,dd)=>a+dd.sell,0);
         return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell),
-          _unitSell:safeNum(it.unit_sell),_decoSell:decoSell,_decos:decoDetails,_sku:it.sku,_name:it.name,_color:it.color}}).filter(Boolean):[];
+          _unitSell:safeNum(it.unit_sell),_decoSell:decoSell,_decos:decoDetails,_sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,_soIdx)}}).filter(Boolean):[];
       const lineItems=storedLineItems.length>0?storedLineItems:soComputedItems;
       const shipAmt=inv.shipping||0;
       const taxAmt=inv.tax||0;
@@ -8500,7 +8500,9 @@ export default function App(){
         const billToName=inv.billing_name||ic?.name||'—';
         const billToSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
         const billAddr=billToSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
-        const shipAddr=ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'';
+        const shipToName=inv.shipping_name||ic?.name||'—';
+        const shipToOverrideSub=inv.shipping_name?(inv.shipping_address||'').replace(/\n/g,'<br/>')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
+        const shipAddr=shipToOverrideSub||(ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'');
         const poNum=inv._po_number||so?.po_number;
         const pRows=[];let pSubTotal=0;
         const pSoItems=so?safeItems(so):[];const pSoArt=so?safeArt(so):[];
@@ -8530,7 +8532,7 @@ export default function App(){
           headerRight:'<div class="ta">'+_$(inv.total)+'</div><div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
           infoBoxes:[
             {label:'Bill To',value:billToName,sub:billAddr},
-            ...(shipAddr?[{label:'Ship To',value:ic?.name||'—',sub:shipAddr}]:[]),
+            ...(shipAddr?[{label:'Ship To',value:shipToName,sub:shipAddr}]:[]),
             {label:'Invoice Date',value:inv.date||'—',sub:inv.due_date?'Due: '+inv.due_date:''},
             {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||''+(poNum?'<br/><strong>PO# '+poNum+'</strong>':'')},
             {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':inv.inv_type==='full'?'Invoice':'Final Invoice',sub:'Rep: '+(repObj?.name||'—')}
@@ -8598,7 +8600,21 @@ export default function App(){
             {inv.status!=='paid'&&<button className="btn btn-sm" style={{background:'#166534',color:'white',border:'none',fontSize:12,padding:'6px 14px'}}
               onClick={()=>setPayModal({inv:{...inv,_bal:bal},amount:bal,method:'check',ref:''})}>Record Payment</button>}
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
-              onClick={()=>setInvEditModal({inv,memo:inv.memo||'',due_date:inv.due_date||''})}>Edit Invoice</button>
+              onClick={()=>setInvEditModal({
+                inv,
+                customer_id:inv.customer_id||'',
+                memo:inv.memo||'',
+                due_date:inv.due_date||'',
+                billing_name:inv.billing_name||'',
+                billing_address:inv.billing_address||'',
+                shipping_name:inv.shipping_name||'',
+                shipping_address:inv.shipping_address||'',
+                shipping:safeNum(inv.shipping),
+                tax:safeNum(inv.tax),
+                line_items:(lineItems.length?lineItems:[]).map(li=>({...li,qty:safeNum(li.qty),rate:safeNum(li.rate),amount:safeNum(li.amount)})),
+                customerSearch:'',
+                customerSearchOpen:false
+              })}>Edit Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 const contact=contacts[0];
@@ -8633,7 +8649,7 @@ export default function App(){
 
           {/* Invoice info grid */}
           <div className="card-body" style={{padding:'20px 24px'}}>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:16,marginBottom:20}}>
+            <div style={{display:'grid',gridTemplateColumns:(inv.shipping_name||inv.shipping_address||ic?.shipping_address_line1)?'1fr 1fr 1fr 1fr 1fr':'1fr 1fr 1fr 1fr',gap:16,marginBottom:20}}>
               <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Bill To</div>
                 {inv.billing_name?<><div style={{fontSize:14,fontWeight:700}}>{inv.billing_name}</div><div style={{fontSize:11,color:'#64748b'}}>{inv.billing_address||''}</div><div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>on behalf of {ic?.name}</div></>
                 :<><div style={{fontSize:14,fontWeight:700}}>{ic?.name||'—'}</div>{ic?.alpha_tag&&<div style={{fontSize:11,color:'#64748b'}}>{ic.alpha_tag}</div>}{ic?.billing_address_line1&&<div style={{fontSize:11,color:'#64748b',marginTop:2}}>{ic.billing_address_line1}{ic.billing_city?', '+ic.billing_city:''}{ic.billing_state?' '+ic.billing_state:''}{ic.billing_zip?' '+ic.billing_zip:''}</div>}</>}
@@ -8644,6 +8660,10 @@ export default function App(){
                     {altAddrs2.map((a,i)=><option key={i} value={JSON.stringify(a)}>{a.label||'Alt '+(i+1)}</option>)}
                   </select>})()}
               </div>
+              {(inv.shipping_name||inv.shipping_address||ic?.shipping_address_line1)&&<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Ship To</div>
+                {inv.shipping_name||inv.shipping_address?<><div style={{fontSize:14,fontWeight:700}}>{inv.shipping_name||ic?.name||'—'}</div><div style={{fontSize:11,color:'#64748b',whiteSpace:'pre-line'}}>{inv.shipping_address||''}</div>{inv.shipping_name&&<div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>on behalf of {ic?.name}</div>}</>
+                :<><div style={{fontSize:14,fontWeight:700}}>{ic?.name||'—'}</div>{ic?.shipping_address_line1&&<div style={{fontSize:11,color:'#64748b',marginTop:2}}>{ic.shipping_address_line1}{ic.shipping_city?', '+ic.shipping_city:''}{ic.shipping_state?' '+ic.shipping_state:''}{ic.shipping_zip?' '+ic.shipping_zip:''}</div>}</>}
+              </div>}
               <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Invoice Date</div>
                 <div style={{fontSize:14,fontWeight:600}}>{inv.date||'—'}</div>
                 <div style={{fontSize:11,color:overdue?'#dc2626':'#64748b',fontWeight:overdue?700:400}}>Due: {inv.due_date||'—'}{overdue?' (Overdue)':''}</div>
@@ -9023,24 +9043,148 @@ export default function App(){
           </div></div>})()}
 
         {/* ═══ EDIT INVOICE MODAL ═══ */}
-        {invEditModal&&<div className="modal-overlay" onClick={()=>setInvEditModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:450}}>
-          <div className="modal-header"><h2>Edit Invoice — {invEditModal.inv.id}</h2><button className="modal-close" onClick={()=>setInvEditModal(null)}>x</button></div>
-          <div className="modal-body">
-            <div style={{marginBottom:12}}><label className="form-label">Memo</label>
-              <input className="form-input" value={invEditModal.memo} onChange={e=>setInvEditModal(s=>({...s,memo:e.target.value}))} placeholder="Invoice memo"/></div>
-            <div style={{marginBottom:12}}><label className="form-label">Due Date</label>
-              <input className="form-input" type="date" value={(()=>{const d=invEditModal.due_date;if(!d)return'';const m=d.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?'20'+m[3]+'-'+m[1]+'-'+m[2]:d})()}
-                onChange={e=>{const v=e.target.value;if(!v){setInvEditModal(s=>({...s,due_date:''}));return}const d=new Date(v+'T12:00:00');setInvEditModal(s=>({...s,due_date:d.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'})}))}}/></div>
+        {invEditModal&&(()=>{
+          const em=invEditModal;
+          const emCust=cust.find(c=>c.id===em.customer_id);
+          const custMatches=em.customerSearch?cust.filter(c=>{const q2=em.customerSearch.toLowerCase();return(c.name||'').toLowerCase().includes(q2)||(c.alpha_tag||'').toLowerCase().includes(q2)||(c.id||'').toLowerCase().includes(q2)}).slice(0,10):[];
+          const emSubtotal=em.line_items.reduce((a,l)=>a+safeNum(l.amount),0);
+          const emTotal=Math.round((emSubtotal+safeNum(em.shipping)+safeNum(em.tax)-safeNum(em.inv.credit_amount))*100)/100;
+          const updateLine=(i,patch)=>setInvEditModal(s=>{
+            const next=[...s.line_items];
+            const merged={...next[i],...patch};
+            if(patch.qty!==undefined||patch.rate!==undefined){merged.amount=Math.round(safeNum(merged.qty)*safeNum(merged.rate)*100)/100}
+            next[i]=merged;return{...s,line_items:next};
+          });
+          const addLine=()=>setInvEditModal(s=>({...s,line_items:[...s.line_items,{desc:'',qty:1,rate:0,amount:0,_sku:'',_name:'',_color:''}]}));
+          const rmLine=i=>setInvEditModal(s=>({...s,line_items:s.line_items.filter((_,x)=>x!==i)}));
+          return<div className="modal-overlay" onClick={()=>setInvEditModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:980,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
+          <div className="modal-header"><h2>Edit Invoice — {em.inv.id}</h2><button className="modal-close" onClick={()=>setInvEditModal(null)}>x</button></div>
+          <div className="modal-body" style={{overflow:'auto',flex:1}}>
+            {/* Customer */}
+            <div style={{marginBottom:14,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+              <label className="form-label" style={{fontWeight:700}}>Customer</label>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:em.customerSearchOpen?8:0}}>
+                <div style={{flex:1,fontSize:13}}>{emCust?<><strong>{emCust.name}</strong>{emCust.alpha_tag?<span style={{color:'#64748b'}}> — {emCust.alpha_tag}</span>:null}</>:<span style={{color:'#94a3b8'}}>No customer</span>}</div>
+                <button className="btn btn-sm btn-secondary" onClick={()=>setInvEditModal(s=>({...s,customerSearchOpen:!s.customerSearchOpen,customerSearch:''}))} style={{fontSize:11}}>{em.customerSearchOpen?'Cancel':'Change'}</button>
+              </div>
+              {em.customerSearchOpen&&<div>
+                <input className="form-input" autoFocus placeholder="Search customers by name, alpha tag, or ID..." value={em.customerSearch} onChange={e=>setInvEditModal(s=>({...s,customerSearch:e.target.value}))} style={{fontSize:13}}/>
+                {custMatches.length>0&&<div style={{marginTop:6,maxHeight:200,overflow:'auto',border:'1px solid #e2e8f0',borderRadius:6,background:'white'}}>
+                  {custMatches.map(c=><div key={c.id} onClick={()=>{
+                    // Switching customer clears overrides so the new customer's address shows through.
+                    setInvEditModal(s=>({...s,customer_id:c.id,billing_name:'',billing_address:'',shipping_name:'',shipping_address:'',customerSearchOpen:false,customerSearch:''}));
+                  }} style={{padding:'8px 10px',cursor:'pointer',borderBottom:'1px solid #f1f5f9',fontSize:12}} onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='white'}>
+                    <div style={{fontWeight:600}}>{c.name}{c.alpha_tag?<span style={{color:'#64748b',fontWeight:400}}> — {c.alpha_tag}</span>:null}</div>
+                    <div style={{fontSize:10,color:'#94a3b8'}}>{c.id}</div>
+                  </div>)}
+                </div>}
+                {em.customerSearch&&custMatches.length===0&&<div style={{marginTop:6,fontSize:11,color:'#94a3b8'}}>No matches.</div>}
+              </div>}
+            </div>
+
+            {/* Memo + Due Date + Shipping + Tax */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 140px 120px 120px',gap:10,marginBottom:14}}>
+              <div><label className="form-label">Memo</label>
+                <input className="form-input" value={em.memo} onChange={e=>setInvEditModal(s=>({...s,memo:e.target.value}))} placeholder="Invoice memo"/></div>
+              <div><label className="form-label">Due Date</label>
+                <input className="form-input" type="date" value={(()=>{const d=em.due_date;if(!d)return'';const m=d.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?'20'+m[3]+'-'+m[1]+'-'+m[2]:d})()}
+                  onChange={e=>{const v=e.target.value;if(!v){setInvEditModal(s=>({...s,due_date:''}));return}const d=new Date(v+'T12:00:00');setInvEditModal(s=>({...s,due_date:d.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'})}))}}/></div>
+              <div><label className="form-label">Shipping</label>
+                <input className="form-input" type="number" step="0.01" value={em.shipping} onChange={e=>setInvEditModal(s=>({...s,shipping:e.target.value===''?'':parseFloat(e.target.value)||0}))}/></div>
+              <div><label className="form-label">Tax</label>
+                <input className="form-input" type="number" step="0.01" value={em.tax} onChange={e=>setInvEditModal(s=>({...s,tax:e.target.value===''?'':parseFloat(e.target.value)||0}))}/></div>
+            </div>
+
+            {/* Bill To / Ship To override */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:14}}>
+              <div style={{padding:12,background:'#fefce8',borderRadius:8,border:'1px solid #fde68a'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
+                  <label className="form-label" style={{fontWeight:700,margin:0}}>Bill To Override</label>
+                  <label style={{display:'flex',alignItems:'center',gap:4,fontSize:11,cursor:'pointer'}}>
+                    <input type="checkbox" checked={!!em.billing_name||!!em.billing_address} onChange={e=>{if(!e.target.checked)setInvEditModal(s=>({...s,billing_name:'',billing_address:''}));else setInvEditModal(s=>({...s,billing_name:s.billing_name||emCust?.name||''}))}}/>
+                    Override
+                  </label>
+                </div>
+                {(em.billing_name||em.billing_address)?<>
+                  <input className="form-input" placeholder="Bill to name" value={em.billing_name} onChange={e=>setInvEditModal(s=>({...s,billing_name:e.target.value}))} style={{fontSize:12,marginBottom:6}}/>
+                  <textarea className="form-input" placeholder="Bill to address" value={em.billing_address} onChange={e=>setInvEditModal(s=>({...s,billing_address:e.target.value}))} style={{fontSize:12,minHeight:60}} rows={3}/>
+                </>:<div style={{fontSize:11,color:'#92400e'}}>Using customer's billing address: <strong>{emCust?.billing_address_line1?emCust.billing_address_line1+(emCust.billing_city?', '+emCust.billing_city:'')+(emCust.billing_state?' '+emCust.billing_state:'')+(emCust.billing_zip?' '+emCust.billing_zip:''):'(none on file)'}</strong></div>}
+              </div>
+              <div style={{padding:12,background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
+                  <label className="form-label" style={{fontWeight:700,margin:0}}>Ship To Override</label>
+                  <label style={{display:'flex',alignItems:'center',gap:4,fontSize:11,cursor:'pointer'}}>
+                    <input type="checkbox" checked={!!em.shipping_name||!!em.shipping_address} onChange={e=>{if(!e.target.checked)setInvEditModal(s=>({...s,shipping_name:'',shipping_address:''}));else setInvEditModal(s=>({...s,shipping_name:s.shipping_name||emCust?.name||''}))}}/>
+                    Override
+                  </label>
+                </div>
+                {(em.shipping_name||em.shipping_address)?<>
+                  <input className="form-input" placeholder="Ship to name" value={em.shipping_name} onChange={e=>setInvEditModal(s=>({...s,shipping_name:e.target.value}))} style={{fontSize:12,marginBottom:6}}/>
+                  <textarea className="form-input" placeholder="Ship to address" value={em.shipping_address} onChange={e=>setInvEditModal(s=>({...s,shipping_address:e.target.value}))} style={{fontSize:12,minHeight:60}} rows={3}/>
+                </>:<div style={{fontSize:11,color:'#065f46'}}>Using customer's shipping address: <strong>{emCust?.shipping_address_line1?emCust.shipping_address_line1+(emCust.shipping_city?', '+emCust.shipping_city:'')+(emCust.shipping_state?' '+emCust.shipping_state:'')+(emCust.shipping_zip?' '+emCust.shipping_zip:''):'(none on file)'}</strong></div>}
+              </div>
+            </div>
+
+            {/* Line items */}
+            <div style={{marginBottom:12}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                <label className="form-label" style={{margin:0,fontWeight:700}}>Line Items</label>
+                <button className="btn btn-sm btn-secondary" onClick={addLine} style={{fontSize:11}}>+ Add Line</button>
+              </div>
+              <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 70px 90px 90px 32px',gap:0,background:'#f1f5f9',padding:'8px 10px',fontSize:10,fontWeight:700,color:'#475569',textTransform:'uppercase'}}>
+                  <div>Description</div><div style={{textAlign:'center'}}>Qty</div><div style={{textAlign:'right'}}>Rate</div><div style={{textAlign:'right'}}>Amount</div><div></div>
+                </div>
+                {em.line_items.length===0&&<div style={{padding:'14px 10px',fontSize:12,color:'#94a3b8',textAlign:'center'}}>No line items. Click "+ Add Line" to add one.</div>}
+                {em.line_items.map((li,i)=><div key={i} style={{display:'grid',gridTemplateColumns:'1fr 70px 90px 90px 32px',gap:6,padding:'8px 10px',alignItems:'center',borderTop:'1px solid #f1f5f9'}}>
+                  <input className="form-input" value={li.desc||''} onChange={e=>updateLine(i,{desc:e.target.value})} style={{fontSize:12}} placeholder="Description"/>
+                  <input className="form-input" type="number" min="0" value={li.qty||0} onChange={e=>updateLine(i,{qty:parseFloat(e.target.value)||0})} style={{fontSize:12,textAlign:'center'}}/>
+                  <input className="form-input" type="number" step="0.01" min="0" value={li.rate||0} onChange={e=>updateLine(i,{rate:parseFloat(e.target.value)||0})} style={{fontSize:12,textAlign:'right'}}/>
+                  <div style={{fontSize:12,textAlign:'right',fontWeight:600,padding:'6px 8px'}}>${safeNum(li.amount).toFixed(2)}</div>
+                  <button onClick={()=>rmLine(i)} title="Remove line" style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:18,padding:0,lineHeight:1}}>×</button>
+                </div>)}
+              </div>
+              {em.inv.so_id&&<div style={{fontSize:11,color:'#64748b',marginTop:6,fontStyle:'italic'}}>Lines removed here become available to invoice again from <strong>{em.inv.so_id}</strong>.</div>}
+            </div>
+
+            {/* Totals preview */}
+            <div style={{display:'flex',justifyContent:'flex-end',padding:12,background:'#f8fafc',borderRadius:8}}>
+              <div style={{minWidth:240}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3}}><span style={{color:'#64748b'}}>Subtotal</span><span style={{fontWeight:600}}>${emSubtotal.toFixed(2)}</span></div>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3}}><span style={{color:'#64748b'}}>Shipping</span><span>${safeNum(em.shipping).toFixed(2)}</span></div>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3}}><span style={{color:'#64748b'}}>Tax</span><span>${safeNum(em.tax).toFixed(2)}</span></div>
+                {safeNum(em.inv.credit_amount)>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3,color:'#065f46'}}><span>Credit</span><span>-${safeNum(em.inv.credit_amount).toFixed(2)}</span></div>}
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:15,fontWeight:800,paddingTop:6,borderTop:'2px solid #cbd5e1',color:'#1e3a5f'}}><span>New Total</span><span>${emTotal.toFixed(2)}</span></div>
+                {Math.abs(emTotal-em.inv.total)>0.01&&<div style={{fontSize:10,color:'#dc2626',textAlign:'right',marginTop:3}}>Was ${safeNum(em.inv.total).toFixed(2)}</div>}
+              </div>
+            </div>
           </div>
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={()=>setInvEditModal(null)}>Cancel</button>
-            <button className="btn btn-primary" onClick={()=>{
-              setInvs(prev=>prev.map(i=>i.id===invEditModal.inv.id?{...i,memo:invEditModal.memo,due_date:invEditModal.due_date,updated_at:new Date().toLocaleString()}:i));
-              setViewInvoice(v=>({...v,memo:invEditModal.memo,due_date:invEditModal.due_date}));
-              setInvEditModal(null);nf('Invoice '+invEditModal.inv.id+' updated');
+            <button className="btn btn-primary" onClick={async()=>{
+              // Strip transient UI fields off line items before persisting
+              const cleanLines=em.line_items.map(li=>{const{...keep}=li;return keep});
+              const updated={...em.inv,
+                customer_id:em.customer_id,
+                memo:em.memo,
+                due_date:em.due_date,
+                billing_name:em.billing_name||null,
+                billing_address:em.billing_address||null,
+                shipping_name:em.shipping_name||null,
+                shipping_address:em.shipping_address||null,
+                shipping:safeNum(em.shipping),
+                tax:safeNum(em.tax),
+                line_items:cleanLines,
+                total:emTotal,
+                updated_at:new Date().toLocaleString()};
+              setInvs(prev=>prev.map(i=>i.id===em.inv.id?updated:i));
+              setViewInvoice(updated);
+              setInvEditModal(null);
+              nf('Invoice '+em.inv.id+' updated');
+              try{await _dbSaveInvoice(updated)}catch(err){console.warn('[invoice save]',err);nf('Saved locally — DB sync failed: '+err.message,'error')}
             }}>Save Changes</button>
           </div>
-        </div></div>}
+        </div></div>})()}
 
         {/* ═══ SEND INVOICE MODAL (from detail page) ═══ */}
         {invSendModalDirect&&(()=>{

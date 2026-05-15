@@ -11,6 +11,68 @@ export const safePOs = (it) => safeArr(it?.po_lines);
 export const safeDecos = (it) => safeArr(it?.decorations);
 export const safeItems = (o) => safeArr(o?.items);
 export const safeArt = (o) => safeArr(o?.art_files);
+
+// Stable-ish identifier for a sales-order line item, used to track which SO
+// lines have been invoiced. Combines sku + color + position so reordering an
+// SO with duplicate sku+color rows doesn't collide. Falls back to sku+color
+// for legacy invoices that pre-date this key.
+export const soLineKey = (it, idx) => (safeStr(it?.sku)||'')+'|'+(safeStr(it?.color)||'')+'|'+(idx==null?'':idx);
+
+// Returns a Map of soLineKey -> total invoiced qty across the given invoices.
+// Matches first by exact key, then degrades to sku+color (summed) for items
+// from invoices written before the key existed.
+export const buildInvoicedQtyMap = (so, invoicesForSO) => {
+  const map = new Map();
+  const items = safeItems(so);
+  // Pre-seed all keys to 0 so callers can read .get(key) || 0
+  items.forEach((it, idx) => map.set(soLineKey(it, idx), 0));
+  // Index by sku|color (no idx) for legacy fallback
+  const skuColorBuckets = new Map(); // sku|color -> [idx,...]
+  items.forEach((it, idx) => {
+    const k = (safeStr(it?.sku)||'')+'|'+(safeStr(it?.color)||'');
+    if (!skuColorBuckets.has(k)) skuColorBuckets.set(k, []);
+    skuColorBuckets.get(k).push(idx);
+  });
+  (invoicesForSO || []).forEach(inv => {
+    const lines = safeArr(inv?.line_items);
+    lines.forEach(li => {
+      const q = safeNum(li?.qty);
+      if (!q) return;
+      if (li?._so_line_key && map.has(li._so_line_key)) {
+        map.set(li._so_line_key, map.get(li._so_line_key) + q);
+        return;
+      }
+      // Fallback: match by sku+color. If multiple SO rows share sku+color,
+      // distribute against the first one that still has remaining qty.
+      const sku = safeStr(li?._sku || (li?.desc||'').split(' ')[0]);
+      const color = safeStr(li?._color);
+      const bucket = skuColorBuckets.get(sku+'|'+color) || skuColorBuckets.get(sku+'|') || [];
+      if (bucket.length === 1) {
+        const k = soLineKey(items[bucket[0]], bucket[0]);
+        map.set(k, (map.get(k)||0) + q);
+      } else if (bucket.length > 1) {
+        // Greedy: pour into the first row with remaining capacity
+        let remaining = q;
+        for (const idx of bucket) {
+          if (remaining <= 0) break;
+          const it = items[idx];
+          const cap = Object.values(it?.sizes || {}).reduce((a, v) => a + safeNum(v), 0);
+          const k = soLineKey(it, idx);
+          const used = map.get(k) || 0;
+          const room = Math.max(0, cap - used);
+          const take = Math.min(room, remaining);
+          if (take > 0) { map.set(k, used + take); remaining -= take; }
+        }
+        // If still remaining (overflow), drop onto the first bucket row
+        if (remaining > 0) {
+          const k = soLineKey(items[bucket[0]], bucket[0]);
+          map.set(k, (map.get(k)||0) + remaining);
+        }
+      }
+    });
+  });
+  return map;
+};
 export const safeJobs = (o) => safeArr(o?.jobs);
 export const safeFirm = (o) => safeArr(o?.firm_dates);
 
