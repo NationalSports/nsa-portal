@@ -89,6 +89,7 @@ const lazyRetry = (importFn) => React.lazy(() =>
 );
 const OrderEditor = lazyRetry(() => import('./OrderEditor'));
 const AiOrderWizard = lazyRetry(() => import('./AiOrderWizard').then(m => ({ default: m.AiOrderWizard })));
+const AiInventoryPoWizard = lazyRetry(() => import('./AiInventoryPoWizard').then(m => ({ default: m.AiInventoryPoWizard })));
 const CustDetail = lazyRetry(() => import('./CustDetail'));
 const CoachPortal = lazyRetry(() => import('./CoachPortal'));
 const SalesHistory = lazyRetry(() => import('./SalesHistory'));
@@ -3606,6 +3607,7 @@ export default function App(){
   useEffect(()=>{setCustPage(0)},[q,rF]);
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
   const[aiWizOpen,setAiWizOpen]=useState(false);
+  const[aiInvPoWizOpen,setAiInvPoWizOpen]=useState(false);
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);
@@ -6458,6 +6460,7 @@ export default function App(){
     return(<>
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={invPOSearch} onChange={e=>setInvPOSearch(e.target.value)}/></div>
+        <button className="btn" onClick={()=>setAiInvPoWizOpen(true)} style={{background:'linear-gradient(135deg,#7c3aed,#6d28d9)',color:'white',border:'none',fontWeight:700,boxShadow:'0 1px 3px rgba(124,58,237,0.3)'}} title="Build an inventory PO with AI from a paste, image, or sheet">✨ Build with AI</button>
         <button className="btn btn-primary" onClick={()=>setInvPOModal({open:true,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false})}>+ New Inventory PO</button>
       </div>
       {filtered.length===0?<div className="card"><div className="card-body"><div className="empty" style={{padding:30}}>No inventory POs yet. Click "+ New Inventory PO" to create one.</div></div></div>:
@@ -24144,6 +24147,15 @@ export default function App(){
       cu={cu}
       nf={nf}
       onCreateEstimate={(c,items)=>{newE(c||null,null,items)}}
+    /></React.Suspense>}
+    {aiInvPoWizOpen&&<React.Suspense fallback={<LazyFallback/>}><AiInventoryPoWizard
+      open={aiInvPoWizOpen}
+      onClose={()=>setAiInvPoWizOpen(false)}
+      supabase={supabase}
+      products={prod}
+      vendors={vend}
+      nf={nf}
+      onCreatePO={(vendorId,items)=>{setInvPOModal({open:true,vendor_id:vendorId,items,memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false})}}
     /></React.Suspense>}
     <VendorModal isOpen={vM.open} onClose={()=>setVM({open:false,v:null})} onSave={savV} vendor={vM.v} allVendors={vend}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
