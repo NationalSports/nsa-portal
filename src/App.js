@@ -5750,7 +5750,7 @@ export default function App(){
   const _pdRef=React.useRef(null);
   if(!_pdRef.current){_pdRef.current=({product,onBack,ctx})=>{
     const{vend,cust,ests,sos,invPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES}=ctx.current;
-    const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());
+    const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());const[salesView,setSalesView]=useState('month');
     const[autoSaved,setAutoSaved]=useState(false);
     // Sync ep with product prop when inventory changes externally (e.g. AdjModal)
     React.useEffect(()=>{if(!editing){setEp({...product})}else{setEp(prev=>({...prev,_inv:product._inv}))}},[product._inv]);
@@ -5787,6 +5787,16 @@ export default function App(){
       return{month:MONTHS[mi],units,revenue,orders}});
     const totalUnits=monthlyData.reduce((a,m)=>a+m.units,0);const totalRev=monthlyData.reduce((a,m)=>a+m.revenue,0);const totalOrders=monthlyData.reduce((a,m)=>a+m.orders,0);
     const maxUnits=Math.max(...monthlyData.map(m=>m.units),1);
+    // Sales volume by size (for the selected year)
+    const sizeTotals={};
+    pSOs.forEach(so=>{const dt=parseDt(so.created_at);if(!dt||dt.y!==salesYr)return;
+      so.items?.forEach(it=>{if(it.product_id!==product.id&&it.sku!==product.sku)return;
+        const sz=safeSizes(it);Object.entries(sz).forEach(([k,v2])=>{const q=Number(v2)||0;if(q<=0)return;
+          if(!sizeTotals[k])sizeTotals[k]={units:0,revenue:0};
+          sizeTotals[k].units+=q;sizeTotals[k].revenue+=q*(it.unit_sell||0)})})});
+    const _szDisplay=SZ_ORD.filter(s=>sizeTotals[s]);Object.keys(sizeTotals).forEach(k=>{if(!_szDisplay.includes(k))_szDisplay.push(k)});
+    const sizeData=_szDisplay.map(s=>({size:s,units:sizeTotals[s].units,revenue:sizeTotals[s].revenue}));
+    const maxSizeUnits=Math.max(...sizeData.map(s=>s.units),1);
     const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));_dbSaveProduct(ep);setEditing(false);nf('Product updated')};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
     const _coreSz=['XS','S','M','L','XL','2XL','3XL','4XL'];
@@ -5917,19 +5927,27 @@ export default function App(){
         </tbody></table></div></div>}
 
       {/* SALES VOLUME TAB */}
-      {tab==='sales'&&<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-        <h3>Sales Volume by Month</h3>
-        <select className="form-select" style={{width:100}} value={salesYr} onChange={e=>setSalesYr(parseInt(e.target.value))}>
-          {(salesYears.length>0?salesYears:[new Date().getFullYear()]).map(y=><option key={y} value={y}>{y}</option>)}
-        </select>
+      {tab==='sales'&&<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        <h3>Sales Volume by {salesView==='size'?'Size':'Month'}</h3>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          <div style={{display:'inline-flex',border:'1px solid #e2e8f0',borderRadius:6,overflow:'hidden'}}>
+            {[['month','By Month'],['size','By Size']].map(([k,lbl])=><button key={k} className="btn btn-sm" style={{borderRadius:0,border:'none',background:salesView===k?'#2563eb':'#fff',color:salesView===k?'#fff':'#64748b',fontWeight:700}} onClick={()=>setSalesView(k)}>{lbl}</button>)}
+          </div>
+          <select className="form-select" style={{width:100}} value={salesYr} onChange={e=>setSalesYr(parseInt(e.target.value))}>
+            {(salesYears.length>0?salesYears:[new Date().getFullYear()]).map(y=><option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
       </div><div className="card-body">
         {/* Summary stats */}
         <div style={{display:'flex',gap:24,marginBottom:20,flexWrap:'wrap'}}>
           <div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Total Units</div><div style={{fontSize:24,fontWeight:800,color:'#1e40af'}}>{totalUnits}</div></div>
           <div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Revenue</div><div style={{fontSize:24,fontWeight:800,color:'#059669'}}>${totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div>
           <div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Line Items</div><div style={{fontSize:24,fontWeight:800,color:'#7c3aed'}}>{totalOrders}</div></div>
-          <div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Avg/Month</div><div style={{fontSize:24,fontWeight:800,color:'#d97706'}}>{totalUnits>0?Math.round(totalUnits/12):0}</div></div>
+          {salesView==='month'
+            ?<div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Avg/Month</div><div style={{fontSize:24,fontWeight:800,color:'#d97706'}}>{totalUnits>0?Math.round(totalUnits/12):0}</div></div>
+            :<div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Sizes Sold</div><div style={{fontSize:24,fontWeight:800,color:'#d97706'}}>{sizeData.length}</div></div>}
         </div>
+        {salesView==='month'?<>
         {/* Bar chart */}
         <div style={{display:'flex',alignItems:'flex-end',gap:4,height:180,marginBottom:16,padding:'0 4px'}}>
           {monthlyData.map((m,i)=>{const h=maxUnits>0?(m.units/maxUnits)*150:0;const isNow=salesYr===new Date().getFullYear()&&i===new Date().getMonth();
@@ -5951,6 +5969,31 @@ export default function App(){
             <td>Total</td><td style={{color:'#1e40af'}}>{totalUnits}</td><td style={{color:'#059669'}}>${totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td><td>{totalOrders}</td>
             <td>{totalUnits>0?'$'+(totalRev/totalUnits).toFixed(2):'—'}</td></tr>
         </tbody></table>
+        </>:<>
+        {/* Size bar chart */}
+        {sizeData.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:30}}>No sales by size for {salesYr}</div>:<>
+        <div style={{display:'flex',alignItems:'flex-end',gap:4,height:180,marginBottom:16,padding:'0 4px'}}>
+          {sizeData.map((s,i)=>{const h=maxSizeUnits>0?(s.units/maxSizeUnits)*150:0;
+            return<div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+              <span style={{fontSize:10,fontWeight:700,color:s.units>0?'#1e293b':'#cbd5e1'}}>{s.units>0?s.units:''}</span>
+              <div style={{width:'100%',maxWidth:40,height:Math.max(h,2),background:s.units>0?'#2563eb':'#f1f5f9',borderRadius:'4px 4px 0 0',transition:'height 0.3s'}}/>
+              <span style={{fontSize:9,color:'#1e40af',fontWeight:800}}>{s.size}</span>
+            </div>})}
+        </div>
+        {/* Size table */}
+        <table><thead><tr><th>Size</th><th>Units Sold</th><th>Revenue</th><th>% of Total</th><th>Avg Sell Price</th></tr></thead><tbody>
+          {sizeData.map((s,i)=><tr key={i}>
+            <td style={{fontWeight:700}}>{s.size}</td>
+            <td style={{fontWeight:800,color:'#1e40af'}}>{s.units}</td>
+            <td style={{fontWeight:700,color:'#059669'}}>${s.revenue.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+            <td>{totalUnits>0?((s.units/totalUnits)*100).toFixed(1)+'%':'—'}</td>
+            <td>{s.units>0?'$'+(s.revenue/s.units).toFixed(2):'—'}</td></tr>)}
+          <tr style={{fontWeight:800,borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
+            <td>Total</td><td style={{color:'#1e40af'}}>{totalUnits}</td><td style={{color:'#059669'}}>${totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td><td>100%</td>
+            <td>{totalUnits>0?'$'+(totalRev/totalUnits).toFixed(2):'—'}</td></tr>
+        </tbody></table>
+        </>}
+        </>}
       </div></div>}
 
       {/* ESTIMATES TAB */}
