@@ -44,26 +44,30 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
   catch(e){return{ok:false,error:e.message}}
 };
 
-// ── Billing contact resolution ──
-// Returns the billing contacts that apply to a customer, including any inherited
-// from the parent customer. Sub-customers automatically pick up the parent's billing
-// contact so we only have to set it once at the parent level.
-export const getBillingContacts=(customer,allCustomers)=>{
+// ── Inherited-contact resolution ──
+// Returns contacts of a given role that apply to a customer, including any inherited
+// from the parent customer. Sub-customers automatically pick up the parent's contact for
+// the role so we only have to set it once at the parent level. Used for Billing and
+// Athletic Director contacts today.
+export const getInheritedContactsByRole=(customer,allCustomers,role)=>{
   if(!customer)return[];
+  const target=(role||'').toLowerCase();
   const out=[];const seen=new Set();
-  const pushBilling=(c,inheritedFrom)=>{
-    (c?.contacts||[]).filter(x=>x&&x.email&&(x.role||'').toLowerCase()==='billing').forEach(x=>{
+  const push=(c,inheritedFrom)=>{
+    (c?.contacts||[]).filter(x=>x&&x.email&&(x.role||'').toLowerCase()===target).forEach(x=>{
       const key=x.email.toLowerCase();if(seen.has(key))return;seen.add(key);
       out.push(inheritedFrom?{...x,_inherited_from:inheritedFrom}:x);
     });
   };
-  pushBilling(customer,null);
+  push(customer,null);
   if(customer.parent_id&&Array.isArray(allCustomers)){
     const parent=allCustomers.find(c=>c.id===customer.parent_id);
-    if(parent)pushBilling(parent,parent.name||parent.alpha_tag||'parent');
+    if(parent)push(parent,parent.name||parent.alpha_tag||'parent');
   }
   return out;
 };
+export const getBillingContacts=(customer,allCustomers)=>getInheritedContactsByRole(customer,allCustomers,'billing');
+export const getAthleticDirectorContacts=(customer,allCustomers)=>getInheritedContactsByRole(customer,allCustomers,'athletic director');
 
 // ── Cloudinary Upload ──
 const CLOUDINARY_CLOUD='dwlyljyuz';

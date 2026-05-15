@@ -4,7 +4,7 @@ import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex } from './constan
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks } from './components';
 import { dP, rQ, DTF, mergeColors } from './pricing';
-import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, getBillingContacts } from './utils';
+import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, getBillingContacts, getAthleticDirectorContacts } from './utils';
 
 // CUSTOMER DETAIL
 
@@ -227,21 +227,24 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {/* CONTACTS TAB — editable */}
   {tab==='contacts'&&(()=>{
     const inheritedAccts=getBillingContacts(customer,allCustomers).filter(a=>a._inherited_from);
-    return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-    <h2>Contacts</h2><button className="btn btn-sm btn-primary" onClick={addContact}><Icon name="plus" size={12}/> Add Contact</button>
-  </div><div className="card-body" style={{padding:0}}>
-    {inheritedAccts.length>0&&<div style={{padding:'10px 18px',background:'#faf5ff',borderBottom:'1px solid #e9d5ff'}}>
-      <div style={{fontSize:11,fontWeight:700,color:'#6d28d9',marginBottom:6}}>INHERITED BILLING CONTACT{inheritedAccts.length>1?'S':''} (from parent)</div>
-      {inheritedAccts.map((c,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'6px 0'}}>
+    const inheritedADs=getAthleticDirectorContacts(customer,allCustomers).filter(a=>a._inherited_from);
+    const renderInherited=(items,label,roleHint)=>items.length>0&&<div style={{padding:'10px 18px',background:'#faf5ff',borderBottom:'1px solid #e9d5ff'}}>
+      <div style={{fontSize:11,fontWeight:700,color:'#6d28d9',marginBottom:6}}>INHERITED {label}{items.length>1?'S':''} (from parent)</div>
+      {items.map((c,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'6px 0'}}>
         <div style={{width:32,height:32,borderRadius:16,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,color:'#6d28d9',fontSize:13}}>{(c.name||'?')[0]}</div>
         <div style={{flex:1}}>
-          <div><strong>{c.name}</strong> <span style={{fontSize:11,color:'#6d28d9'}}>(Billing · auto-CC'd)</span></div>
+          <div><strong>{c.name}</strong> <span style={{fontSize:11,color:'#6d28d9'}}>({roleHint})</span></div>
           <div style={{fontSize:12,color:'#64748b'}}>{c.email}{c.phone&&` · ${c.phone}`}</div>
           <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>From parent: {c._inherited_from} — edit on parent to change</div>
         </div>
       </div>)}
-    </div>}
-    {(customer.contacts||[]).length===0&&inheritedAccts.length===0&&<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No contacts</div>}
+    </div>;
+    return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+    <h2>Contacts</h2><button className="btn btn-sm btn-primary" onClick={addContact}><Icon name="plus" size={12}/> Add Contact</button>
+  </div><div className="card-body" style={{padding:0}}>
+    {renderInherited(inheritedAccts,'BILLING CONTACT',"Billing · auto-CC'd")}
+    {renderInherited(inheritedADs,'ATHLETIC DIRECTOR','Athletic Director')}
+    {(customer.contacts||[]).length===0&&inheritedAccts.length===0&&inheritedADs.length===0&&<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No contacts</div>}
     {(customer.contacts||[]).map((c,i)=>editContact===i?
       <div key={i} style={{padding:14,borderBottom:'1px solid #f1f5f9',background:'#fffbeb'}}>
         <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>

@@ -3895,7 +3895,7 @@ export default function App(){
   const cols=useMemo(()=>COLOR_CATEGORIES,[]);
   const savV=v=>{setVend(p=>{const e=p.find(x=>x.id===v.id);return e?p.map(x=>x.id===v.id?{...x,...v}:x):[...p,v]});nf(vend.some(x=>x.id===v.id)?'Vendor updated':'Vendor created')};
   const savC=c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});
-    let subCount=0;let tagCount=0;
+    let subCount=0;let tagCount=0;let shipCount=0;let contactCount=0;
     setCust(p=>{
       const e=p.find(x=>x.id===c.id);
       let next=e?p.map(x=>x.id===c.id?c:x):[...p,c];
@@ -3903,6 +3903,39 @@ export default function App(){
       if(!c.parent_id){
         const inherit={pantone_colors:c.pantone_colors||[],thread_colors:c.thread_colors||[],adidas_ua_tier:c.adidas_ua_tier,catalog_markup:c.catalog_markup,tax_rate:c.tax_rate||0,tax_exempt:!!c.tax_exempt};
         next=next.map(x=>{if(x.parent_id!==c.id)return x;const differs=JSON.stringify(x.pantone_colors||[])!==JSON.stringify(inherit.pantone_colors)||JSON.stringify(x.thread_colors||[])!==JSON.stringify(inherit.thread_colors)||x.adidas_ua_tier!==inherit.adidas_ua_tier||x.catalog_markup!==inherit.catalog_markup||(x.tax_rate||0)!==inherit.tax_rate||!!x.tax_exempt!==inherit.tax_exempt;if(differs)subCount++;return differs?{...x,...inherit}:x});
+        // Shipping address cascade — push parent's shipping address to each sub. If a sub already had a different
+        // address, preserve it as a selectable alternate (in alt_billing_addresses) so it isn't lost.
+        const pShip={line1:c.shipping_address_line1||'',line2:c.shipping_address_line2||'',city:c.shipping_city||'',state:c.shipping_state||'',zip:c.shipping_zip||''};
+        if(pShip.line1||pShip.city||pShip.state||pShip.zip){
+          next=next.map(x=>{
+            if(x.parent_id!==c.id)return x;
+            const xShip={line1:x.shipping_address_line1||'',line2:x.shipping_address_line2||'',city:x.shipping_city||'',state:x.shipping_state||'',zip:x.shipping_zip||''};
+            const same=xShip.line1===pShip.line1&&xShip.city===pShip.city&&xShip.state===pShip.state&&xShip.zip===pShip.zip;
+            if(same)return x;
+            const alts=[...(x.alt_billing_addresses||[])];
+            const subHadAddress=!!(xShip.line1||xShip.city);
+            const dupAlt=alts.some(a=>(a.street||'')===xShip.line1&&(a.city||'')===xShip.city&&(a.state||'')===xShip.state&&(a.zip||'')===xShip.zip);
+            if(subHadAddress&&!dupAlt){
+              alts.unshift({type:'shipping',label:(x.name||x.alpha_tag||'Original')+' ship-to',street:xShip.line1,city:xShip.city,state:xShip.state,zip:xShip.zip});
+            }
+            shipCount++;
+            return{...x,shipping_address_line1:pShip.line1,shipping_address_line2:pShip.line2,shipping_city:pShip.city,shipping_state:pShip.state,shipping_zip:pShip.zip,alt_billing_addresses:alts};
+          });
+        }
+        // Billing + Athletic Director contact cascade — copy parent's billing and AD contacts to each sub
+        // (deduped by email). Subs keep their own contacts; this just guarantees the parent's billing and AD
+        // people show up on every sub-account.
+        const parentExtra=(c.contacts||[]).filter(ct=>ct&&ct.email&&['billing','athletic director'].includes((ct.role||'').toLowerCase()));
+        if(parentExtra.length){
+          next=next.map(x=>{
+            if(x.parent_id!==c.id)return x;
+            const have=new Set((x.contacts||[]).filter(ct=>ct&&ct.email).map(ct=>ct.email.toLowerCase()));
+            const toAdd=parentExtra.filter(ct=>!have.has(ct.email.toLowerCase()));
+            if(!toAdd.length)return x;
+            contactCount++;
+            return{...x,contacts:[...(x.contacts||[]),...toAdd.map(ct=>({name:ct.name||'',email:ct.email,phone:ct.phone||'',role:ct.role||''}))]};
+          });
+        }
         // Alpha-tag cascade — when the parent's alpha tag changes, regenerate every sub's tag as parent_prefix + sport/suffix (OLu → OLuF, OLuBB, OLuBSB, ...).
         const oldTag=(e?.alpha_tag||'').trim();
         const newTag=(c.alpha_tag||'').trim();
@@ -3922,7 +3955,7 @@ export default function App(){
       }
       return next;
     });
-    const parts=[];if(subCount)parts.push('synced '+subCount+' sub-account'+(subCount===1?'':'s'));if(tagCount)parts.push('retagged '+tagCount+' sub alpha tag'+(tagCount===1?'':'s'));
+    const parts=[];if(subCount)parts.push('synced '+subCount+' sub-account'+(subCount===1?'':'s'));if(tagCount)parts.push('retagged '+tagCount+' sub alpha tag'+(tagCount===1?'':'s'));if(shipCount)parts.push('updated shipping address on '+shipCount+' sub'+(shipCount===1?'':'s'));if(contactCount)parts.push('copied contacts to '+contactCount+' sub'+(contactCount===1?'':'s'));
     nf(parts.length?'Saved — '+parts.join(', '):'Saved');
   };
   // Lock decoration pricing on save so matrix changes don't affect existing orders
