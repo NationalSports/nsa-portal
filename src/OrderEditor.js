@@ -9,7 +9,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks, ImgGallery } from './components';
 import { CustModal } from './modals';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, openDocPDF, downloadDoc, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 
@@ -624,7 +624,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       }
     }
   };
-  const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);
+  const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);const[poEmail,setPoEmail]=useState(null);
   // Helper: effective PO committed qty for a size (ordered minus cancelled)
   const poCommitted=(poLines,sz)=>(poLines||[]).reduce((a,pk)=>{const ordered=pk[sz]||0;const cancelled=(pk.cancelled||{})[sz]||0;return a+(ordered-cancelled)},0);
   const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[editingItemName,setEditingItemName]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});
@@ -5103,6 +5103,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const dropShipElId=preexistingPO?'po-dropship-preexisting':'po-dropship-'+autoPoId;
           // Save PO lines back to order items (immutable)
           const updatedItems=o.items.map(it=>({...it,pick_lines:[...(it.pick_lines||[])],po_lines:[...(it.po_lines||[])]}));
+          const newPoLines=[];// {lineIdx,poIdx} pairs for the just-created PO so we can auto-open the modal
           poItems.forEach((pit,vi)=>{
             if(poExcluded[vi])return;
             const idx=pit._idx;if(idx==null)return;
@@ -5120,6 +5121,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
             if(hasQty){
               updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
+              newPoLines.push({lineIdx:idx,poIdx:updatedItems[idx].po_lines.length-1});
             }
           });
           const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
@@ -5127,6 +5129,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(!preexistingPO)setPOCounter(c=>c+1);
           const selCount=poItems.filter((_,vi)=>!poExcluded[vi]).length;
           setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')');
+          // Auto-open the PO modal on the newly created PO so the user can immediately email or download.
+          if(newPoLines.length>0&&!preexistingPO){
+            const first=newPoLines[0];
+            const newPo=updatedItems[first.lineIdx].po_lines[first.poIdx];
+            setEditPO({lineIdx:first.lineIdx,poIdx:first.poIdx,po:newPo,allLines:newPoLines});
+          }
         }}><Icon name="cart" size={14}/> {preexistingPO?'Apply Preexisting PO':'Create PO'} ({poItems.filter((_,vi)=>!poExcluded[vi]).length})</button>}</div>
       </div></div>})()}
 
@@ -7353,35 +7361,63 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               if(totalOpen>0)w.document.write('<p class="sz a">Open: '+szKeys.filter(sz=>getOpen(sz)>0).map(sz=>sz+': '+getOpen(sz)).join(' &nbsp; ')+'</p>');
               w.document.write('</div></div></body></html>');w.document.close();w.print();
             }}>🖨️ Print PO Label</button>
-            <button className="btn btn-sm btn-primary" style={{marginTop:8,marginLeft:6,fontSize:11}} onClick={()=>{
-              const vendor=po.po_type==='outside_deco'?(po.deco_vendor||'Outside Decorator'):(D_V.find(v=>v.id===item?.vendor_id)?.name||item?.brand||'Vendor');
+            {(()=>{
+              // Build PO doc options once, shared by Print / Download / Email so the PDF format
+              // matches the SO PDF (same buildDocHtml pipeline, same _PRINT_CSS).
+              const vendorRec=po.po_type==='outside_deco'?null:vendorList.find(v=>v.id===item?.vendor_id);
+              const vendor=po.po_type==='outside_deco'?(po.deco_vendor||'Outside Decorator'):(vendorRec?.name||D_V.find(v=>v.id===item?.vendor_id)?.name||item?.brand||'Vendor');
+              const vendorEmail=po.po_type==='outside_deco'?'':(vendorRec?.contact_email||'');
               const isDPO=po.po_type==='outside_deco';
               const szHeaders=szKeys.filter(sz=>po[sz]>0);
-              printDoc({
+              const _unit=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(item?.nsa_cost);
+              const _poTotal=totalOrdered*_unit;
+              const _makePoDocOpts=()=>({
                 title:vendor,docNum:po.po_id,
                 docType:isDPO?'DECORATION PURCHASE ORDER':'PURCHASE ORDER',
-                headerRight:'<div class="ta" style="font-size:18px">Status: '+(poStatus==='received'?'Received':poStatus==='partial'?'Partial':'Open')+'</div>',
+                headerRight:'<div class="ta" style="font-size:18px">Status: '+(poStatus==='received'?'Received':poStatus==='partial'?'Partial':'Open')+'</div><div class="ts">Total: <strong>$'+_poTotal.toFixed(2)+'</strong></div>',
                 infoBoxes:[
-                  {label:'Vendor',value:vendor,sub:isDPO?(po.deco_type||'').replace(/_/g,' '):undefined},
+                  {label:'Vendor',value:vendor,sub:isDPO?(po.deco_type||'').replace(/_/g,' '):(vendorEmail||undefined)},
                   {label:'Ship To',value:_ci.name,sub:_ci.fullAddr},
                   {label:'Sales Order',value:o.id,sub:(cust?.name||'')+(o.memo?' — '+o.memo:'')},
                   {label:'Expected Date',value:o.expected_date||'TBD',sub:'Rep: '+(REPS.find(r=>r.id===o.created_by)?.name||'—')},
                 ],
                 tables:[{
                   title:item?.sku+' — '+(item?.name||'')+(item?.color?' · '+item.color:''),
-                  headers:['Size',...szHeaders.map(s=>s),'Total'],
-                  aligns:['left',...szHeaders.map(()=>'center'),'center'],
+                  headers:['Size',...szHeaders.map(s=>s),'Total','Unit $','Amount'],
+                  aligns:['left',...szHeaders.map(()=>'center'),'center','right','right'],
                   rows:[
-                    {cells:[{value:'<strong>Ordered</strong>',style:'font-weight:700'},...szHeaders.map(s=>({value:po[s]||0,style:(po[s]>0?'font-weight:800;color:#1e3a5f':'')})),{value:totalOrdered,style:'font-weight:800'}]},
-                    ...(totalBilled>0?[{cells:[{value:'Billed',style:'color:#1e40af'},...szHeaders.map(s=>({value:getBilled(s)||'—',style:'color:#1e40af'})),{value:totalBilled,style:'color:#1e40af;font-weight:700'}]}]:[]),
-                    ...(totalReceived>0?[{cells:[{value:'Received',style:'color:#166534'},...szHeaders.map(s=>({value:getRcvd(s)||'—',style:'color:#166534'})),{value:totalReceived,style:'color:#166534;font-weight:700'}]}]:[]),
-                    ...(totalOpen>0?[{cells:[{value:'Open',style:'color:#b45309'},...szHeaders.map(s=>({value:getOpen(s)||'—',style:'color:#b45309'})),{value:totalOpen,style:'color:#b45309;font-weight:700'}]}]:[]),
+                    {cells:[{value:'<strong>Ordered</strong>',style:'font-weight:700'},...szHeaders.map(s=>({value:po[s]||0,style:(po[s]>0?'font-weight:800;color:#1e3a5f':'')})),{value:totalOrdered,style:'font-weight:800'},{value:'$'+_unit.toFixed(2),style:'text-align:right'},{value:'$'+_poTotal.toFixed(2),style:'text-align:right;font-weight:800'}]},
+                    ...(totalBilled>0?[{cells:[{value:'Billed',style:'color:#1e40af'},...szHeaders.map(s=>({value:getBilled(s)||'—',style:'color:#1e40af'})),{value:totalBilled,style:'color:#1e40af;font-weight:700'},{value:'',style:''},{value:'$'+(totalBilled*_unit).toFixed(2),style:'text-align:right;color:#1e40af'}]}]:[]),
+                    ...(totalReceived>0?[{cells:[{value:'Received',style:'color:#166534'},...szHeaders.map(s=>({value:getRcvd(s)||'—',style:'color:#166534'})),{value:totalReceived,style:'color:#166534;font-weight:700'},{value:'',style:''},{value:'$'+(totalReceived*_unit).toFixed(2),style:'text-align:right;color:#166534'}]}]:[]),
+                    ...(totalOpen>0?[{cells:[{value:'Open',style:'color:#b45309'},...szHeaders.map(s=>({value:getOpen(s)||'—',style:'color:#b45309'})),{value:totalOpen,style:'color:#b45309;font-weight:700'},{value:'',style:''},{value:'$'+(totalOpen*_unit).toFixed(2),style:'text-align:right;color:#b45309'}]}]:[]),
                   ]
                 }],
                 notes:isDPO?('Deco Type: '+(po.deco_type||'—').replace(/_/g,' ')+(po.notes?'<br/>'+po.notes:'')):(po.notes||null),
-                footer:isDPO?'Expected return: '+(po.expected_date||'TBD'):null
+                footer:isDPO?'Expected return: '+(po.expected_date||'TBD'):'Please confirm receipt and expected ship date.'
               });
-            }}>🖨️ Print Full PO</button>
+              const _pdfFilename='PO-'+po.po_id+(vendor?'-'+vendor.replace(/[^a-z0-9]+/gi,'_'):'');
+              return<>
+                <button className="btn btn-sm btn-primary" style={{marginTop:8,marginLeft:6,fontSize:11}} onClick={()=>printDoc(_makePoDocOpts())}>🖨️ Print Full PO</button>
+                <button className="btn btn-sm btn-secondary" style={{marginTop:8,marginLeft:6,fontSize:11}} onClick={async()=>{
+                  try{await downloadDoc(_makePoDocOpts(),_pdfFilename);nf('📥 Downloaded '+po.po_id+'.pdf')}
+                  catch(err){console.warn('PO PDF download failed:',err);nf('Download failed: '+(err?.message||'unknown'),'error')}
+                }}>📥 Download PDF</button>
+                <button className="btn btn-sm" style={{marginTop:8,marginLeft:6,fontSize:11,background:'#2563eb',color:'white'}} onClick={()=>{
+                  if(isDPO){nf('Decoration PO — vendor record not linked. Use Download PDF and attach manually.','error');return}
+                  const defaultMsg='Hi,\n\nPlease find attached PO '+po.po_id+' for '+totalOrdered+' unit'+(totalOrdered!==1?'s':'')+' of '+(item?.sku||'')+' '+(item?.name||'')+(item?.color?' ('+item.color+')':'')+'.\n\nExpected delivery: '+(o.expected_date||'TBD')+'.\n\nPlease confirm receipt and let us know your expected ship date.\n\nThank you,\n'+(cu?.name||'')+'\nNational Sports Apparel';
+                  setPoEmail({
+                    poId:po.po_id,lineIdx:activeLine.lineIdx,poIdx:activeLine.poIdx,
+                    to:vendorEmail||'',
+                    subject:'PO '+po.po_id+' from National Sports Apparel',
+                    message:defaultMsg,
+                    sending:false,
+                    docOpts:_makePoDocOpts(),
+                    filename:_pdfFilename,
+                    vendorName:vendor,
+                  });
+                }}>📧 Email Vendor{vendorEmail?'':' ⚠'}</button>
+              </>;
+            })()}
           </div>
         </div>
         <div className="modal-footer" style={{justifyContent:'space-between'}}>
@@ -7394,6 +7430,60 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <button className="btn btn-primary" onClick={()=>setEditPO(null)}>Close</button>
         </div>
       </div></div>})()}
+
+    {/* PO — Email Vendor modal: sends the same SO-format PDF as Download PDF, pre-fills the vendor's contact_email */}
+    {poEmail&&<div className="modal-overlay" onClick={()=>{if(!poEmail.sending)setPoEmail(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+      <div className="modal-header"><h2>📧 Email PO {poEmail.poId} to Vendor</h2><button className="modal-close" onClick={()=>{if(!poEmail.sending)setPoEmail(null)}}>x</button></div>
+      <div className="modal-body">
+        <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Vendor: <strong style={{color:'#0f172a'}}>{poEmail.vendorName}</strong> · PDF attached: <strong style={{color:'#0f172a'}}>{poEmail.filename}.pdf</strong></div>
+        <div style={{marginBottom:10}}>
+          <label className="form-label" style={{fontSize:11}}>To{!poEmail.to&&<span style={{color:'#dc2626',marginLeft:6}}>⚠ No email on vendor record</span>}</label>
+          <input className="form-input" type="email" value={poEmail.to} onChange={e=>setPoEmail(p=>({...p,to:e.target.value}))} placeholder="vendor@example.com"/>
+        </div>
+        <div style={{marginBottom:10}}>
+          <label className="form-label" style={{fontSize:11}}>Subject</label>
+          <input className="form-input" value={poEmail.subject} onChange={e=>setPoEmail(p=>({...p,subject:e.target.value}))}/>
+        </div>
+        <div style={{marginBottom:4}}>
+          <label className="form-label" style={{fontSize:11}}>Message</label>
+          <textarea className="form-input" rows={9} value={poEmail.message} onChange={e=>setPoEmail(p=>({...p,message:e.target.value}))} style={{fontSize:12,resize:'vertical',fontFamily:'inherit'}}/>
+        </div>
+      </div>
+      <div className="modal-footer">
+        <button className="btn btn-secondary" disabled={poEmail.sending} onClick={()=>setPoEmail(null)}>Cancel</button>
+        <button className="btn btn-primary" disabled={poEmail.sending||!poEmail.to||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(poEmail.to.trim())} onClick={async()=>{
+          setPoEmail(p=>({...p,sending:true}));
+          try{
+            const attach=await buildPdfAttachment(poEmail.docOpts,poEmail.filename);
+            const html=buildBrandedEmailHtml('<div style="white-space:pre-wrap">'+poEmail.message.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>',_ci);
+            const res=await sendBrevoEmail({
+              to:[{email:poEmail.to.trim(),name:poEmail.vendorName}],
+              subject:poEmail.subject,
+              htmlContent:html,
+              senderName:cu?.name||'National Sports Apparel',
+              senderEmail:'noreply@nationalsportsapparel.com',
+              replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
+              attachment:[attach],
+            });
+            if(res.ok){
+              nf('PO '+poEmail.poId+' emailed to '+poEmail.to);
+              // Record send on the PO line so it shows in history.
+              const sentEntry={sent_at:new Date().toLocaleString(),sent_by:cu?.name||cu?.id||'',to:poEmail.to,method:'email',messageId:res.messageId||null};
+              const updatedItems=o.items.map((it,i)=>i===poEmail.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===poEmail.poIdx?{...p,email_history:[...(p.email_history||[]),sentEntry]}:p)}:it);
+              const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);
+              setPoEmail(null);
+            }else{
+              nf('Failed to send: '+(res.error||'Unknown error'),'error');
+              setPoEmail(p=>({...p,sending:false}));
+            }
+          }catch(err){
+            console.warn('PO email send failed:',err);
+            nf('Send failed: '+(err?.message||'unknown'),'error');
+            setPoEmail(p=>({...p,sending:false}));
+          }
+        }}>{poEmail.sending?'Sending...':'📧 Send Email'}</button>
+      </div>
+    </div></div>}
 
     {/* PO FULL PAGE VIEW */}
     {poFullPage&&(()=>{
