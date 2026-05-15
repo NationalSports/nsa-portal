@@ -5132,7 +5132,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {safeItems(o).map((item,idx)=>{const q=Object.values(item.sizes).reduce((a,v)=>a+v,0);const szList=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=SZ_ORD;return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
           const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
           const hasOpen=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const inv=p?._inv?.[sz]||0;return v-picked-po>0&&inv>0});
-          if(!hasOpen)return<div key={idx} style={{padding:10,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:6,opacity:0.5}}><span style={{fontWeight:700}}>{item.sku}</span> {item.name} — <span style={{color:'#166534',fontWeight:600}}>Fully assigned</span></div>;
+          if(!hasOpen){
+            // hasOpen=false has two meanings: (a) every size is already picked/on PO ("Fully assigned"),
+            // or (b) open qty remains but no inventory exists yet ("Need to order"). Only render the
+            // Fully-assigned row for case (a); case (b) belongs on a PO, not an IF.
+            const trulyFullyAssigned=szList.every(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);return v-picked-po<=0});
+            if(!trulyFullyAssigned)return null;
+            return<div key={idx} style={{padding:10,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:6,opacity:0.5}}><span style={{fontWeight:700}}>{item.sku}</span> {item.name} — <span style={{color:'#166534',fontWeight:600}}>Fully assigned</span></div>;
+          }
           return<div key={idx} style={{padding:10,border:pickSel[idx]?'2px solid #3b82f6':'1px solid #e2e8f0',borderRadius:6,marginBottom:6,cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:pickSel[idx]?'#eff6ff':'white'}} onClick={()=>setPickSel(prev=>({...prev,[idx]:!prev[idx]}))}>
             <input type="checkbox" checked={!!pickSel[idx]} readOnly style={{width:18,height:18}}/>
             <div style={{flex:1}}><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:6}}>{item.sku}</span><strong>{item.name}</strong> — {item.color}
