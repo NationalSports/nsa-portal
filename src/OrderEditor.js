@@ -5,7 +5,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, BATCH_VENDORS, EXTRA_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks, ImgGallery } from './components';
 import { CustModal } from './modals';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
@@ -4224,28 +4224,41 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Per-SO-item invoiced qty across prior invoices for this SO — used to prevent double-billing the same line
       const _priorInvs=(allInvoices||[]).filter(inv=>inv.so_id===o.id);
       const invoicedQtyMap=buildInvoicedQtyMap(o,_priorInvs);
-      // Compute per-item totals — for promo orders, only non-promo items are invoiceable
-      const itemTotals=items.map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const rev=qty*safeNum(it.unit_sell);
+      const depositCredit=sumDepositInvoiced(_priorInvs);
+      // Compute per-item totals — for promo orders, only non-promo items are invoiceable.
+      // For non-deposit invoices, the effective qty drops to the remaining-to-invoice
+      // qty so the same line can't be billed twice across partial/full/final.
+      const itemTotals=items.map((it,idx)=>{const fullQty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+        const invoiced=invoicedQtyMap.get(soLineKey(it,idx))||0;
+        const remaining=Math.max(0,fullQty-invoiced);
+        const qty=invType==='deposit'?fullQty:remaining;
+        const rev=qty*safeNum(it.unit_sell);
         let decoRev=0;safeDecos(it).forEach(d=>{const dp2=dP(d,qty,safeArt(o),qty);decoRev+=qty*dp2.sell});
         // Promo items are covered by promo funds — $0 on invoice
-        if(isPromoOrder&&it.is_promo)return{qty,rev:0,decoRev:0,total:0,isPromo:true};
+        if(isPromoOrder&&it.is_promo)return{qty,fullQty,remaining,invoiced,rev:0,decoRev:0,total:0,isPromo:true};
         // Partially promo items: use _promo_credit to reduce
         const promoCredit=isPromoOrder?safeNum(it._promo_credit):0;
-        return{qty,rev,decoRev,total:Math.max(0,rev+decoRev-promoCredit),isPromo:false}});
+        return{qty,fullQty,remaining,invoiced,rev,decoRev,total:Math.max(0,rev+decoRev-promoCredit),isPromo:false}});
 
       // For deposit: use full order total * pct
-      // For partial: use selected items total
+      // For partial: use selected items total (qty already reflects remaining-to-bill)
       // For final: use full order total
       const activeItems=invType==='partial'?invSelItems:items.map((_,i)=>i);
       const selTotals=activeItems.reduce((acc,idx)=>{const t=itemTotals[idx];if(!t)return acc;return{items:acc.items+1,units:acc.units+t.qty,subtotal:acc.subtotal+t.total}},{items:0,units:0,subtotal:0});
-      // Prorate shipping & tax based on fraction of order being invoiced
-      const orderSubtotal=itemTotals.reduce((a,t)=>a+t.total,0)||1;
-      const selFraction=selTotals.subtotal/orderSubtotal;
+      // Prorate shipping & tax against the FULL order subtotal so a partial invoice
+      // billing the remaining 5 of 26 units pays its share — not the full shipping
+      // line the prior invoice already prorated against.
+      const fullSubtotalByItem=items.map((it)=>{const fq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const rev=fq*safeNum(it.unit_sell);let dr=0;safeDecos(it).forEach(d=>{const dp2=dP(d,fq,safeArt(o),fq);dr+=fq*dp2.sell});if(isPromoOrder&&it.is_promo)return 0;const pc=isPromoOrder?safeNum(it._promo_credit):0;return Math.max(0,rev+dr-pc)});
+      const fullOrderSub=fullSubtotalByItem.reduce((a,v)=>a+v,0)||1;
+      const selFraction=Math.min(1,selTotals.subtotal/fullOrderSub);
       // For promo orders: shipping/tax on promo portion is covered by promo, only charge for non-promo portion
       const nonPromoShip=isPromoOrder?(promoTotals?totals.ship-promoTotals.promoShip:0):totals.ship;
       const nonPromoTax=isPromoOrder?0:totals.tax;
-      const invShip=activeItems.length===items.length?nonPromoShip:Math.round(nonPromoShip*selFraction*100)/100;
-      let invTax=activeItems.length===items.length?nonPromoTax:Math.round(nonPromoTax*selFraction*100)/100;
+      // For deposits, bill the whole shipping/tax (the deposit percentage applies later).
+      // For everything else, prorate by the fraction of the order being billed in this invoice.
+      const _billingAll=invType==='deposit';
+      const invShip=_billingAll?nonPromoShip:Math.round(nonPromoShip*selFraction*100)/100;
+      let invTax=_billingAll?nonPromoTax:Math.round(nonPromoTax*selFraction*100)/100;
       // Credit: subtract from subtotal and recalculate tax on reduced amount
       const creditAmt=o.credit_applied?safeNum(o.credit_amount):0;
       let invCredit=0;
@@ -4258,8 +4271,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         invTax=Math.round(reducedSubtotal*taxRate2*100)/100;
         invCredit=Math.min(creditAmt,selTotals.subtotal+invShip+invTax);
       }
-      const fullTotal=selTotals.subtotal+invShip+invTax-invCredit;
-      const invTotal=invType==='deposit'?Math.round(fullTotal*invDepositPct/100*100)/100:fullTotal;
+      const grossTotal=selTotals.subtotal+invShip+invTax-invCredit;
+      // Prior deposit $ are already collected against this SO — apply as a credit on
+      // non-deposit invoices so the new bill only charges the remaining balance.
+      const depositApplied=(invType==='partial'||invType==='full'||invType==='final')?Math.min(depositCredit,grossTotal):0;
+      const fullTotal=Math.max(0,grossTotal-depositApplied);
+      const invTotal=invType==='deposit'?Math.round(grossTotal*invDepositPct/100*100)/100:fullTotal;
 
       // Existing invoices on this SO
       const soInvs=(allInvoices||[]).filter(i=>i.so_id===o.id);
@@ -4315,23 +4332,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {invType==='partial'&&<div style={{marginBottom:12}}>
             <label className="form-label">Select Items to Invoice</label>
             <div style={{display:'flex',gap:4,marginBottom:8}}>
-              <button className="btn btn-sm btn-secondary" onClick={()=>setInvSelItems(items.map((_,i)=>i))}>Select All</button>
+              <button className="btn btn-sm btn-secondary" onClick={()=>setInvSelItems(items.map((_,i)=>i).filter(i=>(itemTotals[i]?.remaining||0)>0))}>Select All Remaining</button>
               <button className="btn btn-sm btn-secondary" onClick={()=>setInvSelItems([])}>Clear</button>
             </div>
             <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
               {items.map((it,idx)=>{
                 const sel=invSelItems.includes(idx);const t=itemTotals[idx];
-                const inv=invoicedQtyMap.get(soLineKey(it,idx))||0;
-                const remaining=Math.max(0,t.qty-inv);
-                const fullyInvoiced=inv>0&&remaining===0;
+                const fullyInvoiced=t.invoiced>0&&t.remaining===0;
                 return<div key={idx} style={{padding:'10px 14px',borderBottom:idx<items.length-1?'1px solid #f1f5f9':'none',display:'flex',alignItems:'center',gap:10,cursor:fullyInvoiced?'not-allowed':'pointer',background:fullyInvoiced?'#f8fafc':(sel?'#eff6ff':'white'),opacity:fullyInvoiced?0.55:1}} onClick={()=>{if(fullyInvoiced)return;setInvSelItems(sel?invSelItems.filter(i=>i!==idx):[...invSelItems,idx])}}>
                   <input type="checkbox" checked={sel&&!fullyInvoiced} disabled={fullyInvoiced} readOnly style={{accentColor:'#2563eb',width:16,height:16}}/>
                   <div style={{flex:1}}>
                     <div style={{fontWeight:600,fontSize:13,display:'flex',alignItems:'center',gap:6}}>
                       <span style={{fontFamily:'monospace',color:'#1e40af'}}>{it.sku||'—'}</span> {safeStr(it.name)||'Item'}
-                      {inv>0&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:fullyInvoiced?'#d1d5db':'#fef3c7',color:fullyInvoiced?'#475569':'#92400e',fontWeight:700}}>{fullyInvoiced?'Fully invoiced':inv+' of '+t.qty+' invoiced'}</span>}
+                      {t.invoiced>0&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:fullyInvoiced?'#d1d5db':'#fef3c7',color:fullyInvoiced?'#475569':'#92400e',fontWeight:700}}>{fullyInvoiced?'Fully invoiced':t.invoiced+' of '+t.fullQty+' invoiced'}</span>}
                     </div>
-                    <div style={{fontSize:11,color:'#64748b'}}>{safeStr(it.color)||'—'} · {fullyInvoiced?'0':remaining} of {t.qty} units remaining · ${safeNum(it.unit_sell).toFixed(2)}/ea{t.decoRev>0?' + $'+t.decoRev.toFixed(2)+' deco':''}</div>
+                    <div style={{fontSize:11,color:'#64748b'}}>{safeStr(it.color)||'—'} · {t.remaining} of {t.fullQty} units remaining · ${safeNum(it.unit_sell).toFixed(2)}/ea{t.decoRev>0?' + $'+t.decoRev.toFixed(2)+' deco':''}</div>
                   </div>
                   <div style={{fontWeight:700,fontSize:13,color:sel?'#1e40af':'#94a3b8'}}>${t.total.toFixed(2)}</div>
                 </div>})}
@@ -4404,6 +4419,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <span style={{fontSize:12,color:'#065f46',fontWeight:600}}>Credit Applied</span>
               <span style={{fontSize:12,fontWeight:700,color:'#065f46'}}>-${(invType==='deposit'?invCredit*invDepositPct/100:invCredit).toFixed(2)}</span>
             </div>}
+            {depositApplied>0&&<div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+              <span style={{fontSize:12,color:'#065f46',fontWeight:600}}>Deposit Applied</span>
+              <span style={{fontSize:12,fontWeight:700,color:'#065f46'}}>-${depositApplied.toFixed(2)}</span>
+            </div>}
             {invType==='deposit'&&<div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
               <span style={{fontSize:12,color:'#1e40af',fontWeight:600}}>Deposit ({invDepositPct}%)</span>
               <span style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>${invTotal.toFixed(2)}</span>
@@ -4422,10 +4441,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const termDays=parseInt((cust?.payment_terms||'net30').replace(/\D/g,''))||30;
             const _dueBase=new Date(_invDateStr+'T00:00:00');_dueBase.setDate(_dueBase.getDate()+termDays);const dueDate=_dueBase.toLocaleDateString('en-CA');
             const lineItems=activeItems.map(idx=>{const it=items[idx];if(!it)return null;const totalQty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
-              // For partial invoices, subtract qty already invoiced on this SO line so the same line can't be billed twice
-              const alreadyInvoiced=invType==='partial'?(invoicedQtyMap.get(soLineKey(it,idx))||0):0;
+              // Subtract qty already invoiced so the same line can't be billed twice across partial/full/final.
+              // Deposits bill a % of the whole order and intentionally use the full qty.
+              const alreadyInvoiced=invType==='deposit'?0:(invoicedQtyMap.get(soLineKey(it,idx))||0);
               const qty=Math.max(0,totalQty-alreadyInvoiced);
-              if(invType==='partial'&&qty===0)return null;
+              if(invType!=='deposit'&&qty===0)return null;
               const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,safeArt(o),cq);return a+dp2.sell},0);
               const lineAmt=qty*(safeNum(it.unit_sell)+decoSell);
               return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:invType==='deposit'?Math.round(lineAmt*invDepositPct/100*100)/100:lineAmt,
@@ -4442,6 +4462,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               ...(billingOverride?{billing_name:billingOverride.label||'',billing_address:[billingOverride.street,billingOverride.city,billingOverride.state,billingOverride.zip].filter(Boolean).join(', ')}:{}),
               ...(o.po_number?{_po_number:o.po_number}:{}),
               ...(invCredit>0?{credit_amount:Math.round((invType==='deposit'?invCredit*invDepositPct/100:invCredit)*100)/100}:{}),
+              ...(depositApplied>0?{deposit_applied:Math.round(depositApplied*100)/100}:{}),
               line_items:lineItems,
               items:activeItems.map(idx=>{const it=items[idx];return{sku:it.sku,name:it.name,qty:Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0),unit_sell:safeNum(it.unit_sell)}})};
             onInv(prev=>[...prev,inv]);

@@ -19,21 +19,54 @@ export const safeArt = (o) => safeArr(o?.art_files);
 export const soLineKey = (it, idx) => (safeStr(it?.sku)||'')+'|'+(safeStr(it?.color)||'')+'|'+(idx==null?'':idx);
 
 // Returns a Map of soLineKey -> total invoiced qty across the given invoices.
-// Matches first by exact key, then degrades to sku+color (summed) for items
-// from invoices written before the key existed.
+// Matches first by exact key, then degrades to sku+color, then to sku alone,
+// for items from invoices written before the key existed or that lost their
+// color metadata. Deposit invoices bill a percentage of the whole order and
+// do NOT lock specific units, so their line qty is intentionally ignored
+// here — callers should credit the deposit amount as $ paid instead.
 export const buildInvoicedQtyMap = (so, invoicesForSO) => {
   const map = new Map();
   const items = safeItems(so);
   // Pre-seed all keys to 0 so callers can read .get(key) || 0
   items.forEach((it, idx) => map.set(soLineKey(it, idx), 0));
-  // Index by sku|color (no idx) for legacy fallback
+  // Index by sku|color and by sku alone for fallback lookups
   const skuColorBuckets = new Map(); // sku|color -> [idx,...]
+  const skuBuckets = new Map();      // sku -> [idx,...]
   items.forEach((it, idx) => {
-    const k = (safeStr(it?.sku)||'')+'|'+(safeStr(it?.color)||'');
+    const sku = safeStr(it?.sku)||'';
+    const k = sku+'|'+(safeStr(it?.color)||'');
     if (!skuColorBuckets.has(k)) skuColorBuckets.set(k, []);
     skuColorBuckets.get(k).push(idx);
+    if (!skuBuckets.has(sku)) skuBuckets.set(sku, []);
+    skuBuckets.get(sku).push(idx);
   });
+  const pourInto = (bucket, q) => {
+    if (bucket.length === 0) return;
+    if (bucket.length === 1) {
+      const k = soLineKey(items[bucket[0]], bucket[0]);
+      map.set(k, (map.get(k)||0) + q);
+      return;
+    }
+    // Greedy: pour into the first row with remaining capacity
+    let rem = q;
+    for (const idx of bucket) {
+      if (rem <= 0) break;
+      const it = items[idx];
+      const cap = Object.values(it?.sizes || {}).reduce((a, v) => a + safeNum(v), 0);
+      const k = soLineKey(it, idx);
+      const used = map.get(k) || 0;
+      const room = Math.max(0, cap - used);
+      const take = Math.min(room, rem);
+      if (take > 0) { map.set(k, used + take); rem -= take; }
+    }
+    if (rem > 0) {
+      const k = soLineKey(items[bucket[0]], bucket[0]);
+      map.set(k, (map.get(k)||0) + rem);
+    }
+  };
   (invoicesForSO || []).forEach(inv => {
+    // Deposits bill a % of the order without locking specific units
+    if (inv?.inv_type === 'deposit') return;
     const lines = safeArr(inv?.line_items);
     lines.forEach(li => {
       const q = safeNum(li?.qty);
@@ -42,37 +75,27 @@ export const buildInvoicedQtyMap = (so, invoicesForSO) => {
         map.set(li._so_line_key, map.get(li._so_line_key) + q);
         return;
       }
-      // Fallback: match by sku+color. If multiple SO rows share sku+color,
-      // distribute against the first one that still has remaining qty.
-      const sku = safeStr(li?._sku || (li?.desc||'').split(' ')[0]);
-      const color = safeStr(li?._color);
-      const bucket = skuColorBuckets.get(sku+'|'+color) || skuColorBuckets.get(sku+'|') || [];
-      if (bucket.length === 1) {
-        const k = soLineKey(items[bucket[0]], bucket[0]);
-        map.set(k, (map.get(k)||0) + q);
-      } else if (bucket.length > 1) {
-        // Greedy: pour into the first row with remaining capacity
-        let remaining = q;
-        for (const idx of bucket) {
-          if (remaining <= 0) break;
-          const it = items[idx];
-          const cap = Object.values(it?.sizes || {}).reduce((a, v) => a + safeNum(v), 0);
-          const k = soLineKey(it, idx);
-          const used = map.get(k) || 0;
-          const room = Math.max(0, cap - used);
-          const take = Math.min(room, remaining);
-          if (take > 0) { map.set(k, used + take); remaining -= take; }
-        }
-        // If still remaining (overflow), drop onto the first bucket row
-        if (remaining > 0) {
-          const k = soLineKey(items[bucket[0]], bucket[0]);
-          map.set(k, (map.get(k)||0) + remaining);
-        }
-      }
+      // Legacy fallback chain: parse sku/color from explicit fields or the desc
+      // ("SKU Name — Color"). Try sku+color, then sku alone.
+      const desc = safeStr(li?.desc);
+      const sku = safeStr(li?._sku) || desc.split(' ')[0] || '';
+      let color = safeStr(li?._color);
+      if (!color && desc.includes(' — ')) color = desc.split(' — ').slice(1).join(' — ').trim();
+      const bucket = (color && skuColorBuckets.get(sku+'|'+color))
+        || skuColorBuckets.get(sku+'|')
+        || skuBuckets.get(sku)
+        || [];
+      pourInto(bucket, q);
     });
   });
   return map;
 };
+
+// Sum of paid-but-non-unit-billing invoice amounts on an SO (deposits today).
+// These don't lock specific units but represent $ already collected, so the
+// next invoice should credit them against the remaining balance.
+export const sumDepositInvoiced = (invoicesForSO) =>
+  (invoicesForSO || []).reduce((a, inv) => inv?.inv_type === 'deposit' ? a + safeNum(inv?.total) : a, 0);
 export const safeJobs = (o) => safeArr(o?.jobs);
 export const safeFirm = (o) => safeArr(o?.firm_dates);
 
