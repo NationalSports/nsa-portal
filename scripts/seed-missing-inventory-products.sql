@@ -2,20 +2,11 @@
 -- Seed missing inventory products + apply inventory from the May 2026
 -- inventory sheet (https://docs.google.com/spreadsheets/d/1RX3Pjg...).
 --
--- DRAFT — review color_category mappings, retail_price (set to 0.0
--- placeholder where the sheet didn't give us a number), and brand
--- assignment before applying.
+-- APPLIED 2026-05-15 — 83 new product rows, 295 inventory rows.
+-- retail_price = ROUND(nsa_cost * 8/3) (standard Adidas 2.6667x markup).
+-- Rows with no sheet cost are left at retail_price = 0.
 --
--- Three steps:
---   1. INSERT new product rows
---   2. UPSERT product_inventory from the sheet for the new SKUs
---   3. Set available_sizes from sheet sizes that have qty > 0
---
--- Run inside one transaction so a typo doesn't leave half-seeded rows:
---   BEGIN;
---   \i scripts/seed-missing-inventory-products.sql
---   -- inspect
---   COMMIT;  -- or ROLLBACK
+-- Idempotent: ON CONFLICT clauses are no-ops if rerun.
 -- =====================================================================
 
 BEGIN;
@@ -24,6 +15,7 @@ BEGIN;
 -- 1. New product rows
 -- ---------------------------------------------------------------------
 INSERT INTO products (id, sku, name, brand, color, color_category, category, vendor_id, retail_price, nsa_cost, is_active, is_archived, available_sizes) VALUES
+-- retail_price below is the computed cost * 8/3 rounded; rows with nsa_cost=0 stay at retail=0.
 -- Polos
 ('p-1779148800000-001','HS1301','Adidas Classic Polo','Adidas','Black','Black','Polos','v1',0.00,24.37,true,false,'["S","M","L","XL","2XL","3XL"]'::jsonb),
 ('p-1779148800000-002','IQ2720','Adidas M. C. SS Polo','Adidas','Navy','Blue','Polos','v1',0.00,24.37,true,false,'["S","M","L","XL","2XL","3XL"]'::jsonb),
@@ -221,6 +213,15 @@ FROM sheet s
 JOIN products p ON p.sku=s.sku
 CROSS JOIN LATERAL jsonb_each(s.sizes) kv
 ON CONFLICT (product_id, size) DO UPDATE SET quantity=EXCLUDED.quantity;
+
+-- ---------------------------------------------------------------------
+-- 3. Compute retail_price = round(nsa_cost * 8/3) for any new row that
+--    still has retail=0 (matches the Adidas catalog markup).
+-- ---------------------------------------------------------------------
+UPDATE products
+SET retail_price = ROUND(nsa_cost * 8.0/3.0)::numeric,
+    updated_at = now()
+WHERE id LIKE 'p-1779148800000-%' AND nsa_cost > 0 AND retail_price = 0;
 
 -- Sanity: how many rows did we insert?
 SELECT category, COUNT(*) FROM products WHERE id LIKE 'p-1779148800000-%' GROUP BY category ORDER BY 1;
