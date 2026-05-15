@@ -5787,15 +5787,18 @@ export default function App(){
       return{month:MONTHS[mi],units,revenue,orders}});
     const totalUnits=monthlyData.reduce((a,m)=>a+m.units,0);const totalRev=monthlyData.reduce((a,m)=>a+m.revenue,0);const totalOrders=monthlyData.reduce((a,m)=>a+m.orders,0);
     const maxUnits=Math.max(...monthlyData.map(m=>m.units),1);
-    // Sales volume by size (for the selected year)
+    // Sales volume by size (for the selected year) — also broken out per-month
     const sizeTotals={};
+    const sizeByMonth={}; // sizeByMonth[size][monthIndex] = units
     pSOs.forEach(so=>{const dt=parseDt(so.created_at);if(!dt||dt.y!==salesYr)return;
       so.items?.forEach(it=>{if(it.product_id!==product.id&&it.sku!==product.sku)return;
         const sz=safeSizes(it);Object.entries(sz).forEach(([k,v2])=>{const q=Number(v2)||0;if(q<=0)return;
           if(!sizeTotals[k])sizeTotals[k]={units:0,revenue:0};
-          sizeTotals[k].units+=q;sizeTotals[k].revenue+=q*(it.unit_sell||0)})})});
+          sizeTotals[k].units+=q;sizeTotals[k].revenue+=q*(it.unit_sell||0);
+          if(!sizeByMonth[k])sizeByMonth[k]=Array(12).fill(0);
+          sizeByMonth[k][dt.m]+=q})})});
     const _szDisplay=SZ_ORD.filter(s=>sizeTotals[s]);Object.keys(sizeTotals).forEach(k=>{if(!_szDisplay.includes(k))_szDisplay.push(k)});
-    const sizeData=_szDisplay.map(s=>({size:s,units:sizeTotals[s].units,revenue:sizeTotals[s].revenue}));
+    const sizeData=_szDisplay.map(s=>({size:s,units:sizeTotals[s].units,revenue:sizeTotals[s].revenue,months:sizeByMonth[s]||Array(12).fill(0)}));
     const maxSizeUnits=Math.max(...sizeData.map(s=>s.units),1);
     const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));_dbSaveProduct(ep);setEditing(false);nf('Product updated')};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
@@ -5980,18 +5983,34 @@ export default function App(){
               <span style={{fontSize:9,color:'#1e40af',fontWeight:800}}>{s.size}</span>
             </div>})}
         </div>
-        {/* Size table */}
-        <table><thead><tr><th>Size</th><th>Units Sold</th><th>Revenue</th><th>% of Total</th><th>Avg Sell Price</th></tr></thead><tbody>
-          {sizeData.map((s,i)=><tr key={i}>
-            <td style={{fontWeight:700}}>{s.size}</td>
-            <td style={{fontWeight:800,color:'#1e40af'}}>{s.units}</td>
-            <td style={{fontWeight:700,color:'#059669'}}>${s.revenue.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-            <td>{totalUnits>0?((s.units/totalUnits)*100).toFixed(1)+'%':'—'}</td>
-            <td>{s.units>0?'$'+(s.revenue/s.units).toFixed(2):'—'}</td></tr>)}
+        {/* Size x Month matrix */}
+        <div style={{overflowX:'auto'}}><table style={{fontSize:12}}><thead><tr>
+          <th style={{textAlign:'left',position:'sticky',left:0,background:'#fff'}}>Month</th>
+          {sizeData.map(s=><th key={s.size} style={{textAlign:'center'}}>{s.size}</th>)}
+          <th style={{textAlign:'center'}}>Total</th>
+        </tr></thead><tbody>
+          {MONTHS.map((mName,mi)=>{const mTot=sizeData.reduce((a,s)=>a+(s.months[mi]||0),0);
+            return<tr key={mi} style={{opacity:mTot===0?0.4:1}}>
+              <td style={{fontWeight:700,position:'sticky',left:0,background:'#fff'}}>{mName} {salesYr}</td>
+              {sizeData.map(s=>{const q=s.months[mi]||0;return<td key={s.size} style={{textAlign:'center',color:q>0?'#1e40af':'#cbd5e1',fontWeight:q>0?700:400}}>{q||'—'}</td>})}
+              <td style={{textAlign:'center',fontWeight:800,color:mTot>0?'#1e40af':'#cbd5e1'}}>{mTot||'—'}</td>
+            </tr>})}
           <tr style={{fontWeight:800,borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
-            <td>Total</td><td style={{color:'#1e40af'}}>{totalUnits}</td><td style={{color:'#059669'}}>${totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td><td>100%</td>
-            <td>{totalUnits>0?'$'+(totalRev/totalUnits).toFixed(2):'—'}</td></tr>
-        </tbody></table>
+            <td style={{position:'sticky',left:0,background:'#f8fafc'}}>Total</td>
+            {sizeData.map(s=><td key={s.size} style={{textAlign:'center',color:'#1e40af'}}>{s.units}</td>)}
+            <td style={{textAlign:'center',color:'#1e40af'}}>{totalUnits}</td>
+          </tr>
+          <tr style={{fontWeight:700,background:'#f8fafc',color:'#64748b',fontSize:11}}>
+            <td style={{position:'sticky',left:0,background:'#f8fafc'}}>% of Total</td>
+            {sizeData.map(s=><td key={s.size} style={{textAlign:'center'}}>{totalUnits>0?((s.units/totalUnits)*100).toFixed(1)+'%':'—'}</td>)}
+            <td style={{textAlign:'center'}}>100%</td>
+          </tr>
+          <tr style={{fontWeight:700,background:'#f8fafc',color:'#059669',fontSize:11}}>
+            <td style={{position:'sticky',left:0,background:'#f8fafc',color:'#64748b'}}>Revenue</td>
+            {sizeData.map(s=><td key={s.size} style={{textAlign:'center'}}>${s.revenue.toLocaleString(undefined,{maximumFractionDigits:0})}</td>)}
+            <td style={{textAlign:'center'}}>${totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+          </tr>
+        </tbody></table></div>
         </>}
         </>}
       </div></div>}
