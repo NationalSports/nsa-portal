@@ -8600,21 +8600,30 @@ export default function App(){
             {inv.status!=='paid'&&<button className="btn btn-sm" style={{background:'#166534',color:'white',border:'none',fontSize:12,padding:'6px 14px'}}
               onClick={()=>setPayModal({inv:{...inv,_bal:bal},amount:bal,method:'check',ref:''})}>Record Payment</button>}
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
-              onClick={()=>setInvEditModal({
-                inv,
-                customer_id:inv.customer_id||'',
-                memo:inv.memo||'',
-                due_date:inv.due_date||'',
-                billing_name:inv.billing_name||'',
-                billing_address:inv.billing_address||'',
-                shipping_name:inv.shipping_name||'',
-                shipping_address:inv.shipping_address||'',
-                shipping:safeNum(inv.shipping),
-                tax:safeNum(inv.tax),
-                line_items:(lineItems.length?lineItems:[]).map(li=>({...li,qty:safeNum(li.qty),rate:safeNum(li.rate),amount:safeNum(li.amount)})),
-                customerSearch:'',
-                customerSearchOpen:false
-              })}>Edit Invoice</button>
+              onClick={()=>{
+                // Seed billing_custom: true if there's an override that doesn't match any alt billing address on the customer
+                const _parent=ic?.parent_id?cust.find(c=>c.id===ic.parent_id):ic;
+                const _alts=(_parent?.alt_billing_addresses||[]).filter(a=>a.label||a.street);
+                const _matchesAlt=inv.billing_name?_alts.some(a=>(a.label||'')===inv.billing_name):false;
+                const _billingCustom=!!(inv.billing_name||inv.billing_address)&&!_matchesAlt;
+                setInvEditModal({
+                  inv,
+                  customer_id:inv.customer_id||'',
+                  memo:inv.memo||'',
+                  due_date:inv.due_date||'',
+                  billing_name:inv.billing_name||'',
+                  billing_address:inv.billing_address||'',
+                  billing_custom:_billingCustom,
+                  shipping_name:inv.shipping_name||'',
+                  shipping_address:inv.shipping_address||'',
+                  shipping_custom:!!(inv.shipping_name||inv.shipping_address),
+                  shipping:safeNum(inv.shipping),
+                  tax:safeNum(inv.tax),
+                  line_items:(lineItems.length?lineItems:[]).map(li=>({...li,qty:safeNum(li.qty),rate:safeNum(li.rate),amount:safeNum(li.amount)})),
+                  customerSearch:'',
+                  customerSearchOpen:false
+                });
+              }}>Edit Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 const contact=contacts[0];
@@ -8669,8 +8678,8 @@ export default function App(){
                 <div style={{fontSize:11,color:overdue?'#dc2626':'#64748b',fontWeight:overdue?700:400}}>Due: {inv.due_date||'—'}{overdue?' (Overdue)':''}</div>
               </div>
               <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Sales Order</div>
-                <div style={{fontSize:14,fontWeight:600,color:'#7c3aed',cursor:inv.so_id?'pointer':'default',textDecoration:inv.so_id?'underline':'none'}}
-                  onClick={()=>{if(so){setViewInvoice(null);setESO(so);setESOC(ic);setPg('orders')}}}>{inv.so_id||'—'}</div>
+                {inv.so_id?<a href={_buildTabHref({so:inv.so_id})} onClick={e=>{if(e.ctrlKey||e.metaKey||e.shiftKey||e.button===1)return;e.preventDefault();if(so){setViewInvoice(null);setESO(so);setESOC(ic);setPg('orders')}}} style={{fontSize:14,fontWeight:600,color:'#7c3aed',textDecoration:'underline',cursor:'pointer'}}>{inv.so_id}</a>
+                :<div style={{fontSize:14,fontWeight:600,color:'#94a3b8'}}>—</div>}
                 <div style={{fontSize:11,color:'#64748b'}}>{inv.memo||''}</div>
               </div>
               <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Type / Rep</div>
@@ -9095,33 +9104,54 @@ export default function App(){
                 <input className="form-input" type="number" step="0.01" value={em.tax} onChange={e=>setInvEditModal(s=>({...s,tax:e.target.value===''?'':parseFloat(e.target.value)||0}))}/></div>
             </div>
 
-            {/* Bill To / Ship To override */}
+            {/* Bill To / Ship To selector */}
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:14}}>
               <div style={{padding:12,background:'#fefce8',borderRadius:8,border:'1px solid #fde68a'}}>
-                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
-                  <label className="form-label" style={{fontWeight:700,margin:0}}>Bill To Override</label>
-                  <label style={{display:'flex',alignItems:'center',gap:4,fontSize:11,cursor:'pointer'}}>
-                    <input type="checkbox" checked={!!em.billing_name||!!em.billing_address} onChange={e=>{if(!e.target.checked)setInvEditModal(s=>({...s,billing_name:'',billing_address:''}));else setInvEditModal(s=>({...s,billing_name:s.billing_name||emCust?.name||''}))}}/>
-                    Override
-                  </label>
-                </div>
-                {(em.billing_name||em.billing_address)?<>
-                  <input className="form-input" placeholder="Bill to name" value={em.billing_name} onChange={e=>setInvEditModal(s=>({...s,billing_name:e.target.value}))} style={{fontSize:12,marginBottom:6}}/>
-                  <textarea className="form-input" placeholder="Bill to address" value={em.billing_address} onChange={e=>setInvEditModal(s=>({...s,billing_address:e.target.value}))} style={{fontSize:12,minHeight:60}} rows={3}/>
-                </>:<div style={{fontSize:11,color:'#92400e'}}>Using customer's billing address: <strong>{emCust?.billing_address_line1?emCust.billing_address_line1+(emCust.billing_city?', '+emCust.billing_city:'')+(emCust.billing_state?' '+emCust.billing_state:'')+(emCust.billing_zip?' '+emCust.billing_zip:''):'(none on file)'}</strong></div>}
+                <label className="form-label" style={{fontWeight:700,marginBottom:6,color:'#92400e'}}>Bill To</label>
+                {(()=>{
+                  const parentC=emCust?.parent_id?cust.find(c=>c.id===emCust.parent_id):emCust;
+                  const altAddrs=(parentC?.alt_billing_addresses||[]).filter(a=>a.label||a.street);
+                  const defaultLabel='Customer default'+(emCust?.billing_address_line1?' — '+emCust.billing_address_line1+(emCust.billing_city?', '+emCust.billing_city:'')+(emCust.billing_state?' '+emCust.billing_state:''):' (no address on file)');
+                  const matchingAlt=em.billing_name&&!em.billing_custom?altAddrs.find(a=>(a.label||'')===em.billing_name):null;
+                  const selValue=em.billing_custom?'__custom__':matchingAlt?JSON.stringify(matchingAlt):'';
+                  return<>
+                    <select className="form-select" value={selValue} onChange={e=>{
+                      const v=e.target.value;
+                      if(v==='__custom__')setInvEditModal(s=>({...s,billing_custom:true,billing_name:s.billing_name||emCust?.name||'',billing_address:s.billing_address||''}));
+                      else if(v==='')setInvEditModal(s=>({...s,billing_custom:false,billing_name:'',billing_address:''}));
+                      else{const a=JSON.parse(v);setInvEditModal(s=>({...s,billing_custom:false,billing_name:a.label||'',billing_address:[a.street,a.city,a.state,a.zip].filter(Boolean).join(', ')}))}
+                    }} style={{fontSize:12}}>
+                      <option value="">{defaultLabel}</option>
+                      {altAddrs.map((a,i)=><option key={i} value={JSON.stringify(a)}>{(a.label||'Alt '+(i+1))+' — '+[a.street,a.city,a.state,a.zip].filter(Boolean).join(', ')}</option>)}
+                      <option value="__custom__">✏️ Custom address...</option>
+                    </select>
+                    {em.billing_custom&&<>
+                      <input className="form-input" placeholder="Bill to name" value={em.billing_name} onChange={e=>setInvEditModal(s=>({...s,billing_name:e.target.value}))} style={{fontSize:12,marginTop:6}}/>
+                      <textarea className="form-input" placeholder="Bill to address (one address per invoice)" value={em.billing_address} onChange={e=>setInvEditModal(s=>({...s,billing_address:e.target.value}))} style={{fontSize:12,marginTop:6,minHeight:50}} rows={3}/>
+                    </>}
+                  </>;
+                })()}
               </div>
               <div style={{padding:12,background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0'}}>
-                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
-                  <label className="form-label" style={{fontWeight:700,margin:0}}>Ship To Override</label>
-                  <label style={{display:'flex',alignItems:'center',gap:4,fontSize:11,cursor:'pointer'}}>
-                    <input type="checkbox" checked={!!em.shipping_name||!!em.shipping_address} onChange={e=>{if(!e.target.checked)setInvEditModal(s=>({...s,shipping_name:'',shipping_address:''}));else setInvEditModal(s=>({...s,shipping_name:s.shipping_name||emCust?.name||''}))}}/>
-                    Override
-                  </label>
-                </div>
-                {(em.shipping_name||em.shipping_address)?<>
-                  <input className="form-input" placeholder="Ship to name" value={em.shipping_name} onChange={e=>setInvEditModal(s=>({...s,shipping_name:e.target.value}))} style={{fontSize:12,marginBottom:6}}/>
-                  <textarea className="form-input" placeholder="Ship to address" value={em.shipping_address} onChange={e=>setInvEditModal(s=>({...s,shipping_address:e.target.value}))} style={{fontSize:12,minHeight:60}} rows={3}/>
-                </>:<div style={{fontSize:11,color:'#065f46'}}>Using customer's shipping address: <strong>{emCust?.shipping_address_line1?emCust.shipping_address_line1+(emCust.shipping_city?', '+emCust.shipping_city:'')+(emCust.shipping_state?' '+emCust.shipping_state:'')+(emCust.shipping_zip?' '+emCust.shipping_zip:''):'(none on file)'}</strong></div>}
+                <label className="form-label" style={{fontWeight:700,marginBottom:6,color:'#065f46'}}>Ship To</label>
+                {(()=>{
+                  const defaultLabel='Customer default'+(emCust?.shipping_address_line1?' — '+emCust.shipping_address_line1+(emCust.shipping_city?', '+emCust.shipping_city:'')+(emCust.shipping_state?' '+emCust.shipping_state:''):' (no address on file)');
+                  const selValue=em.shipping_custom?'__custom__':'';
+                  return<>
+                    <select className="form-select" value={selValue} onChange={e=>{
+                      const v=e.target.value;
+                      if(v==='__custom__')setInvEditModal(s=>({...s,shipping_custom:true,shipping_name:s.shipping_name||emCust?.name||'',shipping_address:s.shipping_address||''}));
+                      else setInvEditModal(s=>({...s,shipping_custom:false,shipping_name:'',shipping_address:''}));
+                    }} style={{fontSize:12}}>
+                      <option value="">{defaultLabel}</option>
+                      <option value="__custom__">✏️ Custom address...</option>
+                    </select>
+                    {em.shipping_custom&&<>
+                      <input className="form-input" placeholder="Ship to name" value={em.shipping_name} onChange={e=>setInvEditModal(s=>({...s,shipping_name:e.target.value}))} style={{fontSize:12,marginTop:6}}/>
+                      <textarea className="form-input" placeholder="Ship to address" value={em.shipping_address} onChange={e=>setInvEditModal(s=>({...s,shipping_address:e.target.value}))} style={{fontSize:12,marginTop:6,minHeight:50}} rows={3}/>
+                    </>}
+                  </>;
+                })()}
               </div>
             </div>
 

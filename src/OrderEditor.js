@@ -1969,7 +1969,38 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>
       {isSO&&<div style={{display:'flex',gap:6,marginTop:8,alignItems:'center'}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
-        {o.promo_applied?(o.status==='complete'?<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Promo Order Closed</span>:<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={async()=>{
+        {(()=>{
+          // Decide which invoicing actions to show. If any SO line still has un-invoiced qty,
+          // surface "Create Invoice" alongside "Close Sales Order" so the user can bill the remainder.
+          const _hasAnyInv=(allInvoices||[]).some(inv=>inv.so_id===o.id);
+          const _invMap=_hasAnyInv?buildInvoicedQtyMap(o,(allInvoices||[]).filter(inv=>inv.so_id===o.id)):new Map();
+          const _hasRemaining=safeItems(o).some((it,idx)=>{
+            const tot=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+            const inv=_invMap.get(soLineKey(it,idx))||0;
+            return tot-inv>0;
+          });
+          const _openCreateInv=(typeHint)=>{
+            // Pre-select only items that still have remaining qty
+            const remIdxs=safeItems(o).map((it,idx)=>{
+              const tot=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+              const inv=_invMap.get(soLineKey(it,idx))||0;
+              return tot-inv>0?idx:null;
+            }).filter(i=>i!==null);
+            setInvSelItems(remIdxs.length?remIdxs:safeItems(o).map((_,i)=>i));
+            setInvMemo(o.memo||'');setInvType(typeHint||(_hasAnyInv?'partial':'final'));setInvDepositPct(50);setInvDate(new Date().toLocaleDateString('en-CA'));setShowInvCreate(true);
+          };
+          if(o.promo_applied)return null;// promo flow handled below
+          if(o.status==='complete')return<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Sales Order Closed</span>;
+          if(!_hasAnyInv)return<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>_openCreateInv('final')}><Icon name="dollar" size={14}/> Create Invoice</button>;
+          // Has prior invoices with un-billed remaining qty: only show Create Invoice — nothing left to "close ahead of".
+          if(_hasRemaining)return<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>_openCreateInv('partial')}><Icon name="dollar" size={14}/> Create Invoice</button>;
+          // Fully invoiced but SO still open — this is the "invoiced ahead" case; offer Close Sales Order.
+          return<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={()=>{
+            if(!window.confirm('Close sales order '+o.id+'? It will be marked complete.'))return;
+            const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' closed');
+          }}><Icon name="check" size={14}/> Close Sales Order</button>;
+        })()}
+        {o.promo_applied&&(o.status==='complete'?<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Promo Order Closed</span>:<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={async()=>{
           if(!window.confirm('Mark promo order '+o.id+' as complete? No invoice needed — costs are tracked on the SO.'))return;
           // Backfill: if this SO has promo applied but never recorded a usage row (e.g. converted before deduction was wired up), record it now.
           if(isSO&&cust&&!(cust.promo_usage||[]).some(u=>u.so_id===o.id)){
@@ -1987,17 +2018,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }
           }
           const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' promo order closed');
-        }}><Icon name="check" size={14}/> Close Promo Order</button>)
-        :(allInvoices||[]).some(inv=>inv.so_id===o.id)
-          ?(o.status==='complete'
-            ?<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Sales Order Closed</span>
-            :<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={()=>{
-              if(!window.confirm('Close sales order '+o.id+'? It will be marked complete.'))return;
-              const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' closed');
-            }}><Icon name="check" size={14}/> Close Sales Order</button>)
-          :<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
-            setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('final');setInvDepositPct(50);setInvDate(new Date().toLocaleDateString('en-CA'));setShowInvCreate(true);
-          }}><Icon name="dollar" size={14}/> Create Invoice</button>}
+        }}><Icon name="check" size={14}/> Close Promo Order</button>)}
         {o.order_type==='booking'&&!o.booking_confirmed&&<button style={{fontSize:13,padding:'7px 14px',borderRadius:6,background:'#059669',border:'none',color:'white',cursor:'pointer',fontWeight:700}} onClick={()=>{if(!window.confirm('Confirm this booking order with coach? It will enter the active pipeline.'))return;sv('booking_confirmed',true);sv('booking_confirmed_at',new Date().toISOString());sv('booking_confirmed_by',cu?.id||'');nf('Booking order confirmed — entering pipeline')}}><Icon name="check" size={14}/> Confirm with Coach</button>}
         {o.order_type==='booking'&&o.booking_confirmed&&<span style={{fontSize:12,color:'#059669',fontWeight:600,padding:'6px 8px',background:'#ecfdf5',borderRadius:6,border:'1px solid #86efac'}}>✓ Confirmed with Coach</span>}
       </div>}
