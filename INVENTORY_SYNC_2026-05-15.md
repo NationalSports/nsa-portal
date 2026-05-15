@@ -2,7 +2,7 @@
 
 Source: Google Sheet `1RX3PjgTVUidR9i-vQOFAvY7ym_CiDkytMnsTnuCbuzg` (gid 1497183956).
 
-Categories covered: Tees, Polos, Hoods, Shorts & Pants, Outerwear.
+Categories covered: Tees, Polos, Hoods, Shorts & Pants, Outerwear, Bags & Balls.
 
 ## Applied
 
@@ -12,7 +12,10 @@ Categories covered: Tees, Polos, Hoods, Shorts & Pants, Outerwear.
 | Polos  | 8  | `JN5174, JM5223, 1370399-001, 1370399-400, KD2999, KD2995, JM5231, KC3589`. Set `category='Polos'` where it was null. |
 | Hoods  | 12 | `JM1033, JM5286, JW6597, JW6601, JW6602, JX6793, JX6802, JY2498, IS9752, IS9765, IS9767, IS9769`. Normalized `category='Hoods'` (was `Hood`/`Other` on a few). |
 | Shorts & Pants | 17 | `GM2365, IP3085, IS1111, JH3620, JL5410, JL5412, JL6888, JM5103, JM5104, JW5115, JW6604, JW6607, JY2483, JZ4600, JZ7651, KB5248, KC5466`. Recategorized `JM5104` (Tees→Shorts), `KB5248` (Jersey→Shorts), `JL5410/JL5412` (Pants→Shorts). |
-| Outerwear | 1 | `JW4305` Red Crewneck (M=2). Everything else in the jacket/outerwear rows is missing from `products` — see list below. |
+| Outerwear | 1 | `JW4305` Red Crewneck (M=2). |
+| **Seed: missing products** | **83 inserted** | 18 polos, 14 hoods, 31 shorts/pants, 9 outerwear (+ `FK3159-BLK` split). retail = round(cost × 8/3). |
+| Bags & Balls (existing refresh) | 5 | `5157751` (0), `5159406` (0), `5159440` (17), `5159512` (11), `IP1648` (sz5=102, fixed sizes). |
+| Bags & Balls (new) | 21 | 10 bags (9 Adidas via Agron + 1 UA), 6 Adidas soccer balls, 1 Nike Vivido, 3 Wilson balls (vendor=NULL), 1 Rawlings softball. |
 
 ## Skipped — SKUs in sheet but not in `products` table
 
@@ -130,3 +133,8 @@ These need a product row created before inventory can land. Cost/description fro
 - `IR7498` Navy Tiro24 Jkt ($20.62)
 - `IJ9959` Black Tiro24 Jkt ($20.62)
 - `IA0408` Cardinal ENT 22 Hood — DB row exists but `color='CUSTOM'`; sheet color is Cardinal
+
+### Bags & Balls — skipped (no qty in sheet)
+- `JW3692` White/Pink MLS Club Soccer Ball
+- `WTF1003B / GST1003` Wilson Football
+- `WTF1003 BLEM` Wilson BLEM Football
