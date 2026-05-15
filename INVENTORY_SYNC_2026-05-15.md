@@ -2,7 +2,7 @@
 
 Source: Google Sheet `1RX3PjgTVUidR9i-vQOFAvY7ym_CiDkytMnsTnuCbuzg` (gid 1497183956).
 
-Categories covered: Tees, Polos, Hoods, Shorts & Pants.
+Categories covered: Tees, Polos, Hoods, Shorts & Pants, Outerwear.
 
 ## Applied
 
@@ -12,6 +12,7 @@ Categories covered: Tees, Polos, Hoods, Shorts & Pants.
 | Polos  | 8  | `JN5174, JM5223, 1370399-001, 1370399-400, KD2999, KD2995, JM5231, KC3589`. Set `category='Polos'` where it was null. |
 | Hoods  | 12 | `JM1033, JM5286, JW6597, JW6601, JW6602, JX6793, JX6802, JY2498, IS9752, IS9765, IS9767, IS9769`. Normalized `category='Hoods'` (was `Hood`/`Other` on a few). |
 | Shorts & Pants | 17 | `GM2365, IP3085, IS1111, JH3620, JL5410, JL5412, JL6888, JM5103, JM5104, JW5115, JW6604, JW6607, JY2483, JZ4600, JZ7651, KB5248, KC5466`. Recategorized `JM5104` (Tees→Shorts), `KB5248` (Jersey→Shorts), `JL5410/JL5412` (Pants→Shorts). |
+| Outerwear | 1 | `JW4305` Red Crewneck (M=2). Everything else in the jacket/outerwear rows is missing from `products` — see list below. |
 
 ## Skipped — SKUs in sheet but not in `products` table
 
@@ -116,3 +117,16 @@ These need a product row created before inventory can land. Cost/description fro
 - `HS9949` Black W. TI Run Shorts ($15.00)
 - `IP1952` Black Tiro24 Pant ($18.75)
 - `IR9343` Navy Tiro Pant ($18.75)
+
+### Outerwear / Jackets
+- `HY7893` Navy 1/2 zip golf jacket
+- `HY7894` Black 1/2 zip golf jacket
+- `HK7656` Black Tiro 23 Black Jkt
+- `HC8462` Black Icon M. Fleece Jacket
+- `IJ7391` Black Trio24 Parka
+- `HF6160` Black Icon Cage Jacket
+- `HF6264` Black Icon SS Hood
+- `1369256` Dark Grey Rain Jacket (UA)
+- `IR7498` Navy Tiro24 Jkt ($20.62)
+- `IJ9959` Black Tiro24 Jkt ($20.62)
+- `IA0408` Cardinal ENT 22 Hood — DB row exists but `color='CUSTOM'`; sheet color is Cardinal
