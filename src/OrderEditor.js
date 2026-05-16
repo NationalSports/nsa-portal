@@ -4514,7 +4514,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const taxAmt=ir._taxAmt!=null?ir._taxAmt:(ir.tax||0);
       const bal=ir.total-(ir.paid||0);
       const contact=(ic?.contacts||[])[0];
-      const printInvoice=()=>{
+      const buildInvoiceDocOpts=()=>{
         const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
         const rBillName=ir.billing_name||ic?.name||'—';const rBillSub=ir.billing_name?(ir.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
         const rBillAddr=rBillSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
@@ -4545,7 +4545,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }else{
           lineItems.forEach(li=>{subTotal+=safeNum(li.amount);rows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$(safeNum(li.rate)),style:'text-align:right'},{value:_$(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
         }
-        printDoc({title:rBillName,docNum:ir.id,docType:'INVOICE',
+        return{title:rBillName,docNum:ir.id,docType:'INVOICE',
           headerRight:'<div class="ta">'+_$(ir.total)+'</div>'
             +'<div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(rPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+rPoNum+'</div>':''),
           infoBoxes:[
@@ -4565,7 +4565,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               ...(ir.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$(ir.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
               ...(bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$(bal)+'</strong>',style:'text-align:right'}]}]:[]),
             ]}],
-          footer:ir.inv_type==='deposit'?_ci.depositTerms:_ci.terms});
+          footer:ir.inv_type==='deposit'?_ci.depositTerms:_ci.terms};
+      };
+      const printInvoice=()=>printDoc(buildInvoiceDocOpts());
+      const downloadInvoice=async()=>{
+        try{await downloadDoc(buildInvoiceDocOpts(),ir.id+(ic?.name?' - '+ic.name:''));nf('📥 Downloaded '+ir.id+'.pdf')}
+        catch(err){console.warn('Invoice PDF download failed:',err);nf('Download failed: '+(err?.message||'unknown'),'error')}
       };
       return<div className="modal-overlay" onClick={()=>{setInvReview(null);setInvSentStatus(null);if(onNavInvoice)onNavInvoice(ir)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header" style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white'}}>
@@ -4643,6 +4648,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <button className="btn btn-secondary" onClick={()=>{setInvReview(null);setInvSentStatus(null);if(onNavInvoice)onNavInvoice(ir)}}>Go to Invoices</button>
           <div style={{display:'flex',gap:8}}>
             <button className="btn btn-secondary" onClick={printInvoice}>🖨️ Print Invoice</button>
+            <button className="btn btn-secondary" onClick={downloadInvoice}>📥 Download PDF</button>
             <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>{const _c=(cust?.contacts||[]).filter(c=>c.email);const _accts=getBillingContacts(cust,allCustomers).filter(a=>a.email);const _primary=_c.length>0?_c[0].email:null;const _sel=[...(_primary?[_primary]:[]),..._accts.map(a=>a.email).filter(e=>e!==_primary)];setInvSendTo(_sel);setInvSendCustomEmail('');setInvSendModal(true)}}>📧 Send to Coach</button>
           </div>
         </div>
