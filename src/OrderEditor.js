@@ -1324,9 +1324,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   const addrs=useMemo(()=>getAddrs(cust,allCustomers),[cust,allCustomers]);
   const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+q*(d.reversible?2:1)}})});return m},[o]);
-  const totals=useMemo(()=>{let rev=0,cost=0;safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;
-    // Use per-size sells/costs when available (vendor items have _sizeCosts/_sizeSells for 2XL+ upcharges)
-    if(it._sizeCosts&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0){rev+=n*(it._sizeSells?.[sz]||safeNum(it.unit_sell));cost+=n*(it._sizeCosts[sz]||safeNum(it.nsa_cost))}})}else{rev+=q*safeNum(it.unit_sell);cost+=q*safeNum(it.nsa_cost)}
+  const totals=useMemo(()=>{
+    // PO size-key exclusion list — matches the per-PO modal so we count only true size qty fields.
+    const _poMeta=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history']);
+    let rev=0,cost=0;safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;
+    // Use per-size sells when available (vendor items have _sizeSells for 2XL+ upcharges)
+    if(it._sizeSells&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)rev+=n*(it._sizeSells[sz]||safeNum(it.unit_sell))})}else{rev+=q*safeNum(it.unit_sell)}
+    // Garment cost — prefer actual PO unit costs when POs exist. Each PO line's covered qty
+    // is costed at its own unit_cost; any remaining uncovered qty falls back to catalog cost
+    // (with _sizeCosts upcharges if present).
+    let poQty=0,poCost=0;(Array.isArray(it.po_lines)?it.po_lines:[]).forEach(pl=>{if(!pl)return;const u=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);Object.entries(pl).forEach(([k,v])=>{if(k.startsWith('_')||_poMeta.has(k))return;if(typeof v!=='number'||v<=0)return;poQty+=v;poCost+=v*u})});
+    if(poQty>0){
+      cost+=poCost;
+      const uncov=Math.max(0,q-poQty);
+      if(uncov>0){
+        if(it._sizeCosts&&sq>0){const tot=Object.entries(safeSizes(it)).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeCosts[sz]||safeNum(it.nsa_cost)):a},0);const avg=sq>0?tot/sq:safeNum(it.nsa_cost);cost+=uncov*avg}
+        else{cost+=uncov*safeNum(it.nsa_cost)}
+      }
+    }else if(it._sizeCosts&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)cost+=n*(it._sizeCosts[sz]||safeNum(it.nsa_cost))})}
+    else{cost+=q*safeNum(it.nsa_cost)}
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=eq*dp.cost});
     });
     // Outside-deco POs live at SO level (so.deco_pos), not under items
