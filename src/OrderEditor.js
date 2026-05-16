@@ -1345,9 +1345,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     else{cost+=q*safeNum(it.nsa_cost)}
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=eq*dp.cost});
     });
-    // PO-level shipping — shipping is mirrored onto every po_line sharing a po_id, so dedupe.
-    const _seenPoShip=new Set();
-    safeItems(o).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(!pl?.po_id||_seenPoShip.has(pl.po_id))return;_seenPoShip.add(pl.po_id);cost+=safeNum(pl.shipping)})});
     // Outside-deco POs live at SO level (so.deco_pos), not under items
     (o.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const tax=rev*taxRate;
