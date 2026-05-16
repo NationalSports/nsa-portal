@@ -7134,7 +7134,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>}
 
           {/* PO Summary Table */}
-          {(()=>{const unitCost=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(item?.nsa_cost);const poTotal=totalOrdered*unitCost;const rcvdTotal=totalReceived*unitCost;const openTotal=totalOpen*unitCost;return<>
+          {(()=>{const unitCost=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(item?.nsa_cost);const poTotal=totalOrdered*unitCost;const rcvdTotal=totalReceived*unitCost;const openTotal=totalOpen*unitCost;
+          // Grand totals across every item on this PO (not just the active tab) so the "PO Total"
+          // at the bottom reflects the entire purchase order. Falls back to active-line totals when
+          // there is only one item on the PO.
+          const _grand=allLines.reduce((acc,ln)=>{const it=o.items[ln.lineIdx];const pl=it?.po_lines?.[ln.poIdx];if(!it||!pl)return acc;const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&k!=='batch_queue_id'&&k!=='batch_po_number'&&k!=='preexisting'&&k!=='email_history'&&typeof pl[k]==='number');const u=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);const ord=sk.reduce((a,sz)=>a+(pl[sz]||0),0);const rcvd=sk.reduce((a,sz)=>a+((pl.received||{})[sz]||0),0);const opn=sk.reduce((a,sz)=>a+Math.max(0,(pl[sz]||0)-((pl.received||{})[sz]||0)-((pl.cancelled||{})[sz]||0)),0);acc.ord+=ord*u;acc.rcvd+=rcvd*u;acc.open+=opn*u;return acc},{ord:0,rcvd:0,open:0});
+          return<>
           <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',marginBottom:12}}>
             <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th><th style={{padding:'4px 8px',textAlign:'right',minWidth:70}}>$</th></tr></thead>
             <tbody>
@@ -7150,8 +7155,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{display:'flex',gap:16,fontSize:12}}>
               <span style={{color:'#64748b',display:'flex',alignItems:'center',gap:4}}>Unit Cost: $<input key={unitCost} defaultValue={unitCost.toFixed(2)} style={{width:64,fontWeight:800,color:'#0f172a',border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 4px',fontSize:12,textAlign:'right',background:'white'}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}} onBlur={e=>{const val=parseFloat(String(e.target.value).replace(/[$,\s]/g,''));if(isNaN(val)||val===unitCost)return;const updatedPO={...po,unit_cost:val};const updatedItems=o.items.map((it,i)=>i===activeLine.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===activeLine.poIdx?updatedPO:p)}:it);const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(prev=>({...prev,po:updatedPO}));nf('Unit cost updated to $'+val.toFixed(2))}}/></span>
               {po.po_type==='outside_deco'&&<span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>}
+              {allLines.length>1&&<span style={{color:'#64748b',fontSize:11}}>Line Total: <strong style={{color:'#0f172a'}}>${poTotal.toFixed(2)}</strong></span>}
             </div>
-            <div style={{fontWeight:800,fontSize:16,color:'#0f172a'}}>PO Total: ${poTotal.toFixed(2)}</div>
+            <div style={{fontWeight:800,fontSize:16,color:'#0f172a'}}>PO Total{allLines.length>1?' ('+allLines.length+' items)':''}: ${_grand.ord.toFixed(2)}</div>
           </div></>})()}
 
           {/* Cancel sizes from PO */}
