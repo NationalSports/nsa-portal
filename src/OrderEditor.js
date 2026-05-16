@@ -4900,7 +4900,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </select>
               </div>
             </div>})}
-          </div>}}
+          </div>}
           {/* Outside Decoration PO section */}
           <div style={{borderTop:'2px solid #e2e8f0',marginTop:8,paddingTop:8}}>
             <div style={{fontSize:10,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',marginBottom:6}}>🎨 Outside Decoration PO</div>
@@ -7368,31 +7368,71 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const vendor=po.po_type==='outside_deco'?(po.deco_vendor||'Outside Decorator'):(vendorRec?.name||D_V.find(v=>v.id===item?.vendor_id)?.name||item?.brand||'Vendor');
               const vendorEmail=po.po_type==='outside_deco'?'':(vendorRec?.contact_email||'');
               const isDPO=po.po_type==='outside_deco';
-              const szHeaders=szKeys.filter(sz=>po[sz]>0);
-              const _unit=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(item?.nsa_cost);
-              const _poTotal=totalOrdered*_unit;
+              // Drop-ship POs ship directly from the vendor to the customer, so the Ship To
+              // on the PO should be the customer's shipping address, not NSA's address.
+              const _shipTo=(()=>{
+                if(!isDropShip)return{name:_ci.name,sub:_ci.fullAddr};
+                let addr='';
+                if(o.ship_to_id==='custom'&&o.ship_to_custom){addr=o.ship_to_custom}
+                else{
+                  const sel=addrs.find(a=>a.id===o.ship_to_id);
+                  if(sel&&sel.addr){addr=sel.addr}
+                  else if(cust?.shipping_address_line1){
+                    addr=cust.shipping_address_line1;
+                    if(cust.shipping_address_line2)addr+='<br/>'+cust.shipping_address_line2;
+                    addr+='<br/>'+(cust.shipping_city||'')+', '+(cust.shipping_state||'')+' '+(cust.shipping_zip||'');
+                  }else if(cust?.billing_address_line1){
+                    addr=cust.billing_address_line1;
+                    if(cust.billing_address_line2)addr+='<br/>'+cust.billing_address_line2;
+                    addr+='<br/>'+(cust.billing_city||'')+', '+(cust.billing_state||'')+' '+(cust.billing_zip||'');
+                  }
+                }
+                return{name:(cust?.name||'Customer')+' (Drop Ship)',sub:addr};
+              })();
+              // Per-line data for every item on this PO (not just the active one) so the PDF
+              // captures the full purchase order. Re-derive size keys / totals from the live
+              // po line for each item, since the user may have different sizes per line.
+              const _excludeKeys=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history']);
+              const linesData=allLines.map(ln=>{
+                const it=o.items[ln.lineIdx];const pl=it?.po_lines?.[ln.poIdx];
+                if(!it||!pl)return null;
+                const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&!_excludeKeys.has(k)&&typeof pl[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+                const rcvd=pl.received||{};const cncl=pl.cancelled||{};const billed=pl.billed||{};
+                const gR=sz=>(rcvd[sz]||0),gC=sz=>(cncl[sz]||0),gB=sz=>(billed[sz]||0),gO=sz=>Math.max(0,(pl[sz]||0)-gR(sz)-gC(sz));
+                const tOrd=sk.reduce((a,sz)=>a+(pl[sz]||0),0);
+                const tR=sk.reduce((a,sz)=>a+gR(sz),0);const tC=sk.reduce((a,sz)=>a+gC(sz),0);
+                const tB=sk.reduce((a,sz)=>a+gB(sz),0);const tO=sk.reduce((a,sz)=>a+gO(sz),0);
+                const u=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
+                return{it,pl,sk,tOrd,tR,tC,tB,tO,u,lineTotal:tOrd*u,gR,gC,gB,gO};
+              }).filter(Boolean);
+              const grandTotal=linesData.reduce((a,l)=>a+l.lineTotal,0);
+              const grandOrdered=linesData.reduce((a,l)=>a+l.tOrd,0);
               const _makePoDocOpts=()=>({
                 title:vendor,docNum:po.po_id,
                 docType:isDPO?'DECORATION PURCHASE ORDER':'PURCHASE ORDER',
-                headerRight:'<div class="ta" style="font-size:18px">Status: '+(poStatus==='received'?'Received':poStatus==='partial'?'Partial':'Open')+'</div><div class="ts">Total: <strong>$'+_poTotal.toFixed(2)+'</strong></div>',
+                headerRight:'<div class="ta" style="font-size:18px">Status: '+(poStatus==='received'?'Received':poStatus==='partial'?'Partial':poStatus==='shipped'?'Shipped':'Open')+'</div><div class="ts">'+grandOrdered+' unit'+(grandOrdered!==1?'s':'')+' · Total: <strong>$'+grandTotal.toFixed(2)+'</strong></div>',
                 infoBoxes:[
                   {label:'Vendor',value:vendor,sub:isDPO?(po.deco_type||'').replace(/_/g,' '):(vendorEmail||undefined)},
-                  {label:'Ship To',value:_ci.name,sub:_ci.fullAddr},
+                  {label:'Ship To',value:_shipTo.name,sub:_shipTo.sub},
                   {label:'Sales Order',value:o.id,sub:(cust?.name||'')+(o.memo?' — '+o.memo:'')},
                   {label:'Expected Date',value:o.expected_date||'TBD',sub:'Rep: '+(REPS.find(r=>r.id===o.created_by)?.name||'—')},
                 ],
-                tables:[{
-                  title:item?.sku+' — '+(item?.name||'')+(item?.color?' · '+item.color:''),
-                  headers:['Size',...szHeaders.map(s=>s),'Total','Unit $','Amount'],
-                  aligns:['left',...szHeaders.map(()=>'center'),'center','right','right'],
-                  rows:[
-                    {cells:[{value:'<strong>Ordered</strong>',style:'font-weight:700'},...szHeaders.map(s=>({value:po[s]||0,style:(po[s]>0?'font-weight:800;color:#1e3a5f':'')})),{value:totalOrdered,style:'font-weight:800'},{value:'$'+_unit.toFixed(2),style:'text-align:right'},{value:'$'+_poTotal.toFixed(2),style:'text-align:right;font-weight:800'}]},
-                    ...(totalBilled>0?[{cells:[{value:'Billed',style:'color:#1e40af'},...szHeaders.map(s=>({value:getBilled(s)||'—',style:'color:#1e40af'})),{value:totalBilled,style:'color:#1e40af;font-weight:700'},{value:'',style:''},{value:'$'+(totalBilled*_unit).toFixed(2),style:'text-align:right;color:#1e40af'}]}]:[]),
-                    ...(totalReceived>0?[{cells:[{value:'Received',style:'color:#166534'},...szHeaders.map(s=>({value:getRcvd(s)||'—',style:'color:#166534'})),{value:totalReceived,style:'color:#166534;font-weight:700'},{value:'',style:''},{value:'$'+(totalReceived*_unit).toFixed(2),style:'text-align:right;color:#166534'}]}]:[]),
-                    ...(totalOpen>0?[{cells:[{value:'Open',style:'color:#b45309'},...szHeaders.map(s=>({value:getOpen(s)||'—',style:'color:#b45309'})),{value:totalOpen,style:'color:#b45309;font-weight:700'},{value:'',style:''},{value:'$'+(totalOpen*_unit).toFixed(2),style:'text-align:right;color:#b45309'}]}]:[]),
-                  ]
-                }],
-                notes:isDPO?('Deco Type: '+(po.deco_type||'—').replace(/_/g,' ')+(po.notes?'<br/>'+po.notes:'')):(po.notes||null),
+                tables:linesData.map(ld=>({
+                  title:(ld.it.sku||'')+' — '+(ld.it.name||'')+(ld.it.color?' · '+ld.it.color:''),
+                  headers:['Size',...ld.sk.filter(sz=>ld.pl[sz]>0).map(s=>s),'Total','Unit $','Amount'],
+                  aligns:['left',...ld.sk.filter(sz=>ld.pl[sz]>0).map(()=>'center'),'center','right','right'],
+                  rows:(()=>{
+                    const szH=ld.sk.filter(sz=>ld.pl[sz]>0);
+                    const rows=[
+                      {cells:[{value:'<strong>Ordered</strong>',style:'font-weight:700'},...szH.map(s=>({value:ld.pl[s]||0,style:(ld.pl[s]>0?'font-weight:800;color:#1e3a5f':'')})),{value:ld.tOrd,style:'font-weight:800'},{value:'$'+ld.u.toFixed(2),style:'text-align:right'},{value:'$'+ld.lineTotal.toFixed(2),style:'text-align:right;font-weight:800'}]},
+                    ];
+                    if(ld.tB>0)rows.push({cells:[{value:'Billed',style:'color:#1e40af'},...szH.map(s=>({value:ld.gB(s)||'—',style:'color:#1e40af'})),{value:ld.tB,style:'color:#1e40af;font-weight:700'},{value:'',style:''},{value:'$'+(ld.tB*ld.u).toFixed(2),style:'text-align:right;color:#1e40af'}]});
+                    if(ld.tR>0)rows.push({cells:[{value:'Received',style:'color:#166534'},...szH.map(s=>({value:ld.gR(s)||'—',style:'color:#166534'})),{value:ld.tR,style:'color:#166534;font-weight:700'},{value:'',style:''},{value:'$'+(ld.tR*ld.u).toFixed(2),style:'text-align:right;color:#166534'}]});
+                    if(ld.tO>0)rows.push({cells:[{value:'Open',style:'color:#b45309'},...szH.map(s=>({value:ld.gO(s)||'—',style:'color:#b45309'})),{value:ld.tO,style:'color:#b45309;font-weight:700'},{value:'',style:''},{value:'$'+(ld.tO*ld.u).toFixed(2),style:'text-align:right;color:#b45309'}]});
+                    return rows;
+                  })()
+                })),
+                notes:(()=>{const parts=[];if(isDPO)parts.push('Deco Type: '+(po.deco_type||'—').replace(/_/g,' '));if(po.notes)parts.push(po.notes);if(isDropShip)parts.push('<strong>DROP SHIP</strong> — Please ship directly to the customer address above.');return parts.length?parts.join('<br/>'):null})(),
                 footer:isDPO?'Expected return: '+(po.expected_date||'TBD'):'Please confirm receipt and expected ship date.'
               });
               const _pdfFilename='PO-'+po.po_id+(vendor?'-'+vendor.replace(/[^a-z0-9]+/gi,'_'):'');
