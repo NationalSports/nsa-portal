@@ -1345,6 +1345,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     else{cost+=q*safeNum(it.nsa_cost)}
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=eq*dp.cost});
     });
+    // PO-level shipping — shipping is mirrored onto every po_line sharing a po_id, so dedupe.
+    const _seenPoShip=new Set();
+    safeItems(o).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(!pl?.po_id||_seenPoShip.has(pl.po_id))return;_seenPoShip.add(pl.po_id);cost+=safeNum(pl.shipping)})});
     // Outside-deco POs live at SO level (so.deco_pos), not under items
     (o.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const tax=rev*taxRate;
@@ -7167,13 +7170,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {hasOpen&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'3px 8px',fontSize:10,fontWeight:600}}>Open</td>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOpen}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#b45309'}}>${openTotal.toFixed(2)}</td></tr>}
             </tbody>
           </table>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'#f0f9ff',borderRadius:6,marginBottom:12}}>
-            <div style={{display:'flex',gap:16,fontSize:12}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'#f0f9ff',borderRadius:6,marginBottom:12,flexWrap:'wrap',gap:8}}>
+            <div style={{display:'flex',gap:16,fontSize:12,alignItems:'center',flexWrap:'wrap'}}>
               <span style={{color:'#64748b',display:'flex',alignItems:'center',gap:4}}>Unit Cost: $<input key={unitCost} defaultValue={unitCost.toFixed(2)} style={{width:64,fontWeight:800,color:'#0f172a',border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 4px',fontSize:12,textAlign:'right',background:'white'}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}} onBlur={e=>{const val=parseFloat(String(e.target.value).replace(/[$,\s]/g,''));if(isNaN(val)||val===unitCost)return;const updatedPO={...po,unit_cost:val};const updatedItems=o.items.map((it,i)=>i===activeLine.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===activeLine.poIdx?updatedPO:p)}:it);const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(prev=>({...prev,po:updatedPO}));nf('Unit cost updated to $'+val.toFixed(2))}}/></span>
+              <span style={{color:'#64748b',display:'flex',alignItems:'center',gap:4}}>Shipping: $<input key={'ship-'+(po.shipping||0)} defaultValue={safeNum(po.shipping).toFixed(2)} placeholder="0.00" style={{width:70,fontWeight:800,color:'#0f172a',border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 4px',fontSize:12,textAlign:'right',background:'white'}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}} onBlur={e=>{const val=parseFloat(String(e.target.value).replace(/[$,\s]/g,''))||0;const cur=safeNum(po.shipping);if(val===cur)return;// Shipping is PO-level — mirror to every po_line sharing this po_id.
+                const updatedItems=o.items.map(it=>({...it,po_lines:(it.po_lines||[]).map(p=>p.po_id===po.po_id?{...p,shipping:val}:p)}));
+                const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);
+                setEditPO(prev=>({...prev,po:{...prev.po,shipping:val}}));
+                nf('Shipping updated to $'+val.toFixed(2));
+              }}/></span>
               {po.po_type==='outside_deco'&&<span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>}
               {allLines.length>1&&<span style={{color:'#64748b',fontSize:11}}>Line Total: <strong style={{color:'#0f172a'}}>${poTotal.toFixed(2)}</strong></span>}
             </div>
-            <div style={{fontWeight:800,fontSize:16,color:'#0f172a'}}>PO Total{allLines.length>1?' ('+allLines.length+' items)':''}: ${_grand.ord.toFixed(2)}</div>
+            <div style={{textAlign:'right'}}>
+              {safeNum(po.shipping)>0&&<div style={{fontSize:11,color:'#64748b'}}>Subtotal: ${_grand.ord.toFixed(2)} · Shipping: ${safeNum(po.shipping).toFixed(2)}</div>}
+              <div style={{fontWeight:800,fontSize:16,color:'#0f172a'}}>PO Total{allLines.length>1?' ('+allLines.length+' items)':''}: ${(_grand.ord+safeNum(po.shipping)).toFixed(2)}</div>
+            </div>
           </div></>})()}
 
           {/* Cancel sizes from PO */}
@@ -7427,8 +7439,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const u=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
                 return{it,pl,sk,tOrd,tR,tC,tB,tO,u,lineTotal:tOrd*u,gR,gC,gB,gO};
               }).filter(Boolean);
-              const grandTotal=linesData.reduce((a,l)=>a+l.lineTotal,0);
+              const grandSubtotal=linesData.reduce((a,l)=>a+l.lineTotal,0);
               const grandOrdered=linesData.reduce((a,l)=>a+l.tOrd,0);
+              const shipping=safeNum(po.shipping);
+              const grandTotal=grandSubtotal+shipping;
               const _makePoDocOpts=()=>({
                 title:vendor,docNum:po.po_id,
                 docType:isDPO?'DECORATION PURCHASE ORDER':'PURCHASE ORDER',
@@ -7439,21 +7453,34 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {label:'Sales Order',value:o.id,sub:(cust?.name||'')+(o.memo?' — '+o.memo:'')},
                   {label:'Expected Date',value:o.expected_date||'TBD',sub:'Rep: '+(REPS.find(r=>r.id===o.created_by)?.name||'—')},
                 ],
-                tables:linesData.map(ld=>({
-                  title:(ld.it.sku||'')+' — '+(ld.it.name||'')+(ld.it.color?' · '+ld.it.color:''),
-                  headers:['Size',...ld.sk.filter(sz=>ld.pl[sz]>0).map(s=>s),'Total','Unit $','Amount'],
-                  aligns:['left',...ld.sk.filter(sz=>ld.pl[sz]>0).map(()=>'center'),'center','right','right'],
-                  rows:(()=>{
-                    const szH=ld.sk.filter(sz=>ld.pl[sz]>0);
-                    const rows=[
-                      {cells:[{value:'<strong>Ordered</strong>',style:'font-weight:700'},...szH.map(s=>({value:ld.pl[s]||0,style:(ld.pl[s]>0?'font-weight:800;color:#1e3a5f':'')})),{value:ld.tOrd,style:'font-weight:800'},{value:'$'+ld.u.toFixed(2),style:'text-align:right'},{value:'$'+ld.lineTotal.toFixed(2),style:'text-align:right;font-weight:800'}]},
-                    ];
-                    if(ld.tB>0)rows.push({cells:[{value:'Billed',style:'color:#1e40af'},...szH.map(s=>({value:ld.gB(s)||'—',style:'color:#1e40af'})),{value:ld.tB,style:'color:#1e40af;font-weight:700'},{value:'',style:''},{value:'$'+(ld.tB*ld.u).toFixed(2),style:'text-align:right;color:#1e40af'}]});
-                    if(ld.tR>0)rows.push({cells:[{value:'Received',style:'color:#166534'},...szH.map(s=>({value:ld.gR(s)||'—',style:'color:#166534'})),{value:ld.tR,style:'color:#166534;font-weight:700'},{value:'',style:''},{value:'$'+(ld.tR*ld.u).toFixed(2),style:'text-align:right;color:#166534'}]});
-                    if(ld.tO>0)rows.push({cells:[{value:'Open',style:'color:#b45309'},...szH.map(s=>({value:ld.gO(s)||'—',style:'color:#b45309'})),{value:ld.tO,style:'color:#b45309;font-weight:700'},{value:'',style:''},{value:'$'+(ld.tO*ld.u).toFixed(2),style:'text-align:right;color:#b45309'}]});
-                    return rows;
-                  })()
-                })),
+                tables:[
+                  ...linesData.map(ld=>({
+                    title:(ld.it.sku||'')+' — '+(ld.it.name||'')+(ld.it.color?' · '+ld.it.color:''),
+                    headers:['Size',...ld.sk.filter(sz=>ld.pl[sz]>0).map(s=>s),'Total','Unit $','Amount'],
+                    aligns:['left',...ld.sk.filter(sz=>ld.pl[sz]>0).map(()=>'center'),'center','right','right'],
+                    rows:(()=>{
+                      const szH=ld.sk.filter(sz=>ld.pl[sz]>0);
+                      const rows=[
+                        {cells:[{value:'<strong>Ordered</strong>',style:'font-weight:700'},...szH.map(s=>({value:ld.pl[s]||0,style:(ld.pl[s]>0?'font-weight:800;color:#1e3a5f':'')})),{value:ld.tOrd,style:'font-weight:800'},{value:'$'+ld.u.toFixed(2),style:'text-align:right'},{value:'$'+ld.lineTotal.toFixed(2),style:'text-align:right;font-weight:800'}]},
+                      ];
+                      if(ld.tB>0)rows.push({cells:[{value:'Billed',style:'color:#1e40af'},...szH.map(s=>({value:ld.gB(s)||'—',style:'color:#1e40af'})),{value:ld.tB,style:'color:#1e40af;font-weight:700'},{value:'',style:''},{value:'$'+(ld.tB*ld.u).toFixed(2),style:'text-align:right;color:#1e40af'}]});
+                      if(ld.tR>0)rows.push({cells:[{value:'Received',style:'color:#166534'},...szH.map(s=>({value:ld.gR(s)||'—',style:'color:#166534'})),{value:ld.tR,style:'color:#166534;font-weight:700'},{value:'',style:''},{value:'$'+(ld.tR*ld.u).toFixed(2),style:'text-align:right;color:#166534'}]});
+                      if(ld.tO>0)rows.push({cells:[{value:'Open',style:'color:#b45309'},...szH.map(s=>({value:ld.gO(s)||'—',style:'color:#b45309'})),{value:ld.tO,style:'color:#b45309;font-weight:700'},{value:'',style:''},{value:'$'+(ld.tO*ld.u).toFixed(2),style:'text-align:right;color:#b45309'}]});
+                      return rows;
+                    })()
+                  })),
+                  // Totals summary — Subtotal + (optional) Shipping + Total
+                  {
+                    title:'PO Totals',
+                    headers:['','Amount'],
+                    aligns:['right','right'],
+                    rows:[
+                      {cells:[{value:'Subtotal ('+grandOrdered+' unit'+(grandOrdered!==1?'s':'')+')',style:'text-align:right'},{value:'$'+grandSubtotal.toFixed(2),style:'text-align:right;font-weight:700'}]},
+                      ...(shipping>0?[{cells:[{value:'Shipping',style:'text-align:right'},{value:'$'+shipping.toFixed(2),style:'text-align:right'}]}]:[]),
+                      {_class:'totals-row',cells:[{value:'<strong>PO Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:13px">$'+grandTotal.toFixed(2)+'</strong>',style:'text-align:right'}]},
+                    ]
+                  },
+                ],
                 notes:(()=>{const parts=[];if(isDPO)parts.push('Deco Type: '+(po.deco_type||'—').replace(/_/g,' '));if(po.notes)parts.push(po.notes);if(isDropShip)parts.push('<strong>DROP SHIP</strong> — Please ship directly to the customer address above.');return parts.length?parts.join('<br/>'):null})(),
                 footer:isDPO?'Expected return: '+(po.expected_date||'TBD'):'Please confirm receipt and expected ship date.'
               });
