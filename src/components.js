@@ -72,7 +72,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
   const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);const[toEmails,setToEmails]=useState('');
   const[sending,setSending]=useState(false);const[dragOver,setDragOver]=useState(false);
   const[smsEnabled,setSmsEnabled]=useState(false);const[smsPhone,setSmsPhone]=useState('');const[smsMsg,setSmsMsg]=useState('');
-  const[followUpDays,setFollowUpDays]=useState(defaultFollowUpDays||7);
+  const[followUpDays,setFollowUpDays]=useState(0);
   const label=docType==='so'?'Sales Order':'Estimate';
   const prevOpenRef=React.useRef(false);const sendingRef=React.useRef(false);
   // Use refs so the init effect doesn't re-run when parent re-renders (auto-save, realtime, polls)
@@ -93,7 +93,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     setSmsPhone(primaryContact?.phone||'');
     const portalUrl2=cust2?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+cust2.alpha_tag:'';
     setSmsMsg('Hi '+(primaryContact?.name||'Coach')+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+portalUrl2);
-    setSmsEnabled(_smsUiEnabled&&!!primaryContact?.phone);setFollowUpDays(defaultFollowUpRef.current||7);
+    setSmsEnabled(_smsUiEnabled&&!!primaryContact?.phone);setFollowUpDays(0);
     setAttachments([]);setSending(false);sendingRef.current=false}}prevOpenRef.current=isOpen},[isOpen]);
   const handleFiles=(files)=>{const newFiles=Array.from(files).map(f=>({name:f.name,size:(f.size/1024).toFixed(0)+' KB',file:f}));setAttachments(a=>[...a,...newFiles])};
   const doSend=async()=>{
@@ -190,13 +190,13 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
         </div>}
       </div>}
       {/* Follow-up reminder */}
-      <div style={{marginBottom:12,padding:10,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
+      <div style={{marginBottom:12,padding:10,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:8,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
         <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up</span>
-        <select className="form-input" value={followUpDays} onChange={e=>setFollowUpDays(parseInt(e.target.value))} style={{width:90,fontSize:12,padding:'4px 6px'}}>
-          <option value={0}>Never</option>
-          {[1,2,3,5,7,10,14,21,30].map(d=><option key={d} value={d}>in {d}</option>)}
-        </select>
-        {followUpDays>0&&<span style={{fontSize:12,color:'#6d28d9'}}>days if no response</span>}
+        {[1,3,7].map(d=><label key={d} style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:12,color:'#6d28d9',fontWeight:600}}>
+          <input type="checkbox" checked={followUpDays===d} onChange={()=>setFollowUpDays(followUpDays===d?0:d)} style={{width:14,height:14,accentColor:'#6d28d9',cursor:'pointer'}}/>
+          in {d} day{d>1?'s':''}
+        </label>)}
+        {followUpDays>0&&<span style={{fontSize:12,color:'#6d28d9'}}>if no response</span>}
       </div>
       <div style={{padding:8,background:'#dbeafe',borderRadius:6,fontSize:11,color:'#1e40af'}}>📎 {label} PDF will be auto-attached | 🔗 Portal link included in message{!_brevoKey&&' | ⚠️ No Brevo API key — will open email client instead'}</div>
     </div>
