@@ -8999,7 +8999,7 @@ export default function App(){
             const accountedQty=poBlankQty+pickQty;
             const hasActual=blankPOs.length>0||pickQty>0;
             const billedCostFromPOs=blankPOs.reduce((a,pl)=>a+safeNum(pl._bill_cost||0),0);
-            const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(hasActual?accountedQty*safeNum(it.nsa_cost):0);
+            const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(pickQty>0?pickQty*safeNum(it.nsa_cost):0);
             costLines.push({category:'Blanks',sku:it.sku,name:it.name,vendor:D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'—',
               qty,expected:expectedBlank,actual:actualBlank,poCount:blankPOs.length+(pickQty>0?1:0),
               poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
@@ -9046,7 +9046,7 @@ export default function App(){
           if(costLines.length===0)return null;
           const totalExpected=costLines.reduce((a,l)=>a+l.expected,0);
           const totalActual=costLines.reduce((a,l)=>a+l.actual,0);
-          const hasActuals=costLines.some(l=>l.poCount>0);
+          const hasActuals=costLines.some(l=>l.actual>0);
           const variance=totalActual-totalExpected;
           const revenue=inv.total??0;
           const gp=revenue-totalActual;
