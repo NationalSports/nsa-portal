@@ -5,6 +5,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { calcSOStatus } from './components';
 import { dP, rQ, SP } from './pricing';
 import { sendBrevoEmail, _brevoKey, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, getBillingContacts } from './utils';
+import { StripePaymentModal } from './modals';
 
 function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs,onUpdateSOs,onUpdateEsts,savSOFn,portalSettings,dbSaveEstimate:_dbSaveEstimate}){
   const _portalDisclaimer=portalSettings?.disclaimer||'';
@@ -890,6 +891,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       customerName={customer.name}
       customerEmail={contactEmail}
       alphaTag={customer.alpha_tag}
+      feePct={typeof portalSettings?.ccFeePct==='number'?portalSettings.ccFeePct:undefined}
+      paymentNote={portalSettings?.paymentNote||''}
       onSuccess={handlePaymentSuccess}
       onClose={()=>{setShowPay(null);setPayLoading(false)}}
     />}

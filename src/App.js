@@ -6812,7 +6812,7 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('active_art_timers',activeArtTimers)},[activeArtTimers]);
   const[idleSettings,setIdleSettings]=useState(()=>loadState('idle_settings',{warnMin:5,autoOutMin:10}));
   React.useEffect(()=>{_saveAppState('idle_settings',idleSettings)},[idleSettings]);
-  const[portalSettings,setPortalSettings]=useState(()=>loadState('portal_settings',{followUpDays:7,estFollowUpDays:7,invFollowUpDays:7,disclaimer:'Please check all artwork, quantities, and personalization very closely. Once approved, this will be exactly what is printed.'}));
+  const[portalSettings,setPortalSettings]=useState(()=>loadState('portal_settings',{followUpDays:7,estFollowUpDays:7,invFollowUpDays:7,disclaimer:'Please check all artwork, quantities, and personalization very closely. Once approved, this will be exactly what is printed.',ccFeePct:0.029,paymentNote:''}));
   React.useEffect(()=>{_saveAppState('portal_settings',portalSettings)},[portalSettings]);
 
   // ─── COMPUTED TODOS (shared between desktop dashboard and mobile portal) ───
@@ -22203,7 +22203,7 @@ export default function App(){
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
-    const tabs=[['company','Company Info'],['pricing','Decoration Pricing'],['deco_vendors','Deco Vendors'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['taxcloud','TaxCloud']];
+    const tabs=[['company','Company Info'],['pricing','Decoration Pricing'],['deco_vendors','Deco Vendors'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['payments','Payments'],['taxcloud','TaxCloud']];
     return(<>
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
         {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${settingsTab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab(k)}>{label}</button>)}
@@ -22557,6 +22557,61 @@ export default function App(){
             {portalSettings.disclaimer?<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,fontSize:12,color:'#991b1b',lineHeight:1.5}}><strong>⚠️ Important:</strong> {portalSettings.disclaimer}</div>
             :<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No disclaimer set — nothing will show to coaches</div>}
           </div>
+        </div></div>
+      </>}
+
+      {/* PAYMENTS */}
+      {settingsTab==='payments'&&<>
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>💳 Payment Processing</h3></div><div className="card-body">
+          <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Controls the credit card surcharge and message shown when customers pay invoices through the Coach Portal.</div>
+
+          <div style={{marginBottom:20,maxWidth:520}}>
+            <label className="form-label">Credit Card Processing Fee Surcharge (%)</label>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>Percentage added on top of the invoice balance to cover Stripe processing. Shown to the customer as a separate line item. Default 2.90%.</div>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <input className="form-input" type="number" step="0.01" min="0" max="10" style={{width:100}}
+                value={((portalSettings.ccFeePct??0.029)*100).toFixed(2)}
+                onChange={e=>{const pct=parseFloat(e.target.value);if(isNaN(pct))return;setPortalSettings(p=>({...p,ccFeePct:Math.max(0,Math.min(10,pct))/100}))}}/>
+              <span style={{fontSize:13,color:'#64748b'}}>%</span>
+            </div>
+          </div>
+
+          <div style={{marginBottom:20,maxWidth:520}}>
+            <label className="form-label">Customer Payment Note (optional)</label>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>Shown inside the payment modal above the card fields. Use for instructions like "ACH coming soon" or contact info for large payments.</div>
+            <textarea className="form-input" rows={3} value={portalSettings.paymentNote||''}
+              onChange={e=>setPortalSettings(p=>({...p,paymentNote:e.target.value}))}
+              style={{resize:'vertical',fontSize:12}}
+              placeholder="e.g., For payments over $5,000 please contact your rep to arrange ACH transfer."/>
+          </div>
+
+          <div style={{marginTop:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+            <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:8}}>Preview — what customers will see</div>
+            <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:8,padding:12}}>
+              {portalSettings.paymentNote&&<div style={{padding:'10px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e40af',marginBottom:10,lineHeight:1.4}}>{portalSettings.paymentNote}</div>}
+              <div style={{padding:12,background:'#f8fafc',borderRadius:8,fontSize:12}}>
+                <div style={{display:'flex',justifyContent:'space-between'}}><span>Subtotal:</span><span>$1,000.00</span></div>
+                <div style={{display:'flex',justifyContent:'space-between',color:'#d97706'}}><span>Processing Fee ({(((portalSettings.ccFeePct??0.029)*100)).toFixed(2).replace(/\.?0+$/,'')}%):</span><span>+${(1000*(portalSettings.ccFeePct??0.029)).toFixed(2)}</span></div>
+                <div style={{display:'flex',justifyContent:'space-between',fontWeight:800,borderTop:'2px solid #e2e8f0',paddingTop:6,marginTop:6,fontSize:14}}><span>Total:</span><span>${(1000+1000*(portalSettings.ccFeePct??0.029)).toFixed(2)}</span></div>
+              </div>
+            </div>
+          </div>
+        </div></div>
+
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Stripe Connection</h3></div><div className="card-body">
+          <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>The Stripe publishable key is configured via the <code>REACT_APP_STRIPE_PK</code> environment variable in Netlify. The secret key lives in the <code>stripe-payment</code> Netlify Function.</div>
+          {_stripePk
+            ? <div style={{padding:'10px 14px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,fontSize:12,color:'#166534',display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:16}}>✅</span>
+                <div>
+                  <div style={{fontWeight:700}}>Stripe is configured</div>
+                  <div style={{fontSize:11,color:'#15803d',marginTop:2}}>Key: {_stripePk.slice(0,8)}…{_stripePk.slice(-4)} ({_stripePk.startsWith('pk_live')?'live mode':'test mode'})</div>
+                </div>
+              </div>
+            : <div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,fontSize:12,color:'#991b1b'}}>
+                <div style={{fontWeight:700,marginBottom:4}}>⚠️ Stripe is not configured</div>
+                <div style={{fontSize:11}}>Add <code>REACT_APP_STRIPE_PK</code> in Netlify → Site settings → Environment variables and redeploy.</div>
+              </div>}
         </div></div>
       </>}
 
