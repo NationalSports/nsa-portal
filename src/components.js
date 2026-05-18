@@ -69,10 +69,13 @@ function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_lin
 // SEND ESTIMATE MODAL
 
 function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser,defaultFollowUpDays,companyInfo}){
-  const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);const[toEmails,setToEmails]=useState('');
+  const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);
+  const[checkedEmails,setCheckedEmails]=useState({});const[customEmails,setCustomEmails]=useState([]);const[addingEmail,setAddingEmail]=useState('');
   const[sending,setSending]=useState(false);const[dragOver,setDragOver]=useState(false);
   const[smsEnabled,setSmsEnabled]=useState(false);const[smsPhone,setSmsPhone]=useState('');const[smsMsg,setSmsMsg]=useState('');
   const[followUpDays,setFollowUpDays]=useState(0);
+  const contactEmails=[...new Set((customer?.contacts||[]).filter(c=>c.email).map(c=>c.email))];
+  const allTargets=[...contactEmails,...customEmails].filter(em=>checkedEmails[em]);
   const label=docType==='so'?'Sales Order':'Estimate';
   const prevOpenRef=React.useRef(false);const sendingRef=React.useRef(false);
   // Use refs so the init effect doesn't re-run when parent re-renders (auto-save, realtime, polls)
@@ -85,9 +88,10 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     const cust2=customerRef.current;const est2=estimateRef.current;const dt=docTypeRef.current;
     const lbl=dt==='so'?'Sales Order':'Estimate';
     if(cust2){
-    const emails=(cust2?.contacts||[]).map(c=>c.email).filter(Boolean);
+    const emails=[...new Set((cust2?.contacts||[]).map(c=>c.email).filter(Boolean))];
     const primaryContact=(cust2.contacts||[])[0];
-    setToEmails(emails.join(', '));
+    const initChecked={};emails.forEach(em=>{initChecked[em]=true});
+    setCheckedEmails(initChecked);setCustomEmails([]);setAddingEmail('');
     const _signer=repUserRef.current?.name||'National Sports Apparel';
     setBody(`Hi ${primaryContact?.name||'Coach'},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nsa-portal.netlify.app/?portal=${cust2.alpha_tag}\n\nLet me know if you have any questions!\n\n${_signer}\nNational Sports Apparel`);
     setSmsPhone(primaryContact?.phone||'');
@@ -98,8 +102,8 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
   const handleFiles=(files)=>{const newFiles=Array.from(files).map(f=>({name:f.name,size:(f.size/1024).toFixed(0)+' KB',file:f}));setAttachments(a=>[...a,...newFiles])};
   const doSend=async()=>{
     if(sendingRef.current)return;// prevent double send
-    const emails=toEmails.split(',').map(e2=>e2.trim()).filter(Boolean);
-    if(emails.length===0){alert('Please enter at least one email address');return}
+    const emails=allTargets;
+    if(emails.length===0){alert('Please select at least one recipient');return}
     sendingRef.current=true;setSending(true);
     const subject=`National Sports ${label} - ${estimate?.id}${estimate?.memo?' - "'+estimate.memo+'"':''}`;
     const portalUrl=customer?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+customer.alpha_tag:'';
@@ -152,17 +156,35 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
         const smsRes=await sendBrevoSms({to:smsPhone,content:smsMsg.substring(0,160)});
         if(smsRes.ok){if(_notify)_notify('Text sent to '+smsPhone)}else{if(_notify)_notify('SMS failed: '+(smsRes.error||'Unknown'),'error');console.warn('SMS send failed:',smsRes.error)}
       }
-      onSend({followUpDays,toEmails,messageId:res.messageId});onClose();
+      onSend({followUpDays,toEmails:emails.join(', '),messageId:res.messageId});onClose();
     }else{
       const mailTo='mailto:'+emails[0]+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
       window.open(mailTo,'_blank');
-      onSend({followUpDays,toEmails});onClose();
+      onSend({followUpDays,toEmails:emails.join(', ')});onClose();
     }};
   if(!isOpen)return null;
   return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:650}}>
     <div className="modal-header"><h2>Send {label}</h2><button className="modal-close" onClick={onClose}>x</button></div>
     <div className="modal-body">
-      <div style={{marginBottom:12}}><label className="form-label">To</label><input className="form-input" value={toEmails} onChange={e=>setToEmails(e.target.value)} placeholder="Enter email addresses separated by commas"/></div>
+      <div style={{marginBottom:12}}>
+        <label className="form-label">To {allTargets.length>0&&<span style={{fontSize:11,fontWeight:400,color:'#64748b'}}>({allTargets.length} selected)</span>}</label>
+        <div style={{border:'1px solid #e2e8f0',borderRadius:8,padding:8,background:'#fafafa'}}>
+          {contactEmails.length===0&&customEmails.length===0&&<div style={{fontSize:12,color:'#94a3b8',padding:'4px 8px'}}>No contacts on file — add an email below.</div>}
+          {contactEmails.map(em=>{const ct=(customer?.contacts||[]).find(c=>c.email===em);return<label key={em} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',padding:'6px 8px',borderRadius:6,background:checkedEmails[em]?'#dbeafe':'transparent',marginBottom:4}}>
+            <input type="checkbox" checked={!!checkedEmails[em]} onChange={e=>setCheckedEmails(m=>({...m,[em]:e.target.checked}))} style={{width:14,height:14,accentColor:'#2563eb'}}/>
+            <span style={{fontSize:12}}><strong>{ct?.name||'Contact'}</strong> — {em}{ct?.role?' ('+ct.role+')':''}</span>
+          </label>})}
+          {customEmails.map(em=><label key={em} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',padding:'6px 8px',borderRadius:6,background:checkedEmails[em]?'#dbeafe':'transparent',marginBottom:4}}>
+            <input type="checkbox" checked={!!checkedEmails[em]} onChange={e=>setCheckedEmails(m=>({...m,[em]:e.target.checked}))} style={{width:14,height:14,accentColor:'#2563eb'}}/>
+            <span style={{fontSize:12}}>{em} <span style={{fontSize:10,color:'#64748b'}}>(added)</span></span>
+            <button style={{marginLeft:'auto',background:'none',border:'none',color:'#94a3b8',cursor:'pointer',fontSize:14,padding:0}} onClick={()=>{setCustomEmails(arr=>arr.filter(x=>x!==em));setCheckedEmails(m=>{const c={...m};delete c[em];return c})}}>x</button>
+          </label>)}
+          <div style={{display:'flex',gap:6,marginTop:6}}>
+            <input className="form-input" type="email" placeholder="+ Add another email..." value={addingEmail} onChange={e=>setAddingEmail(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&addingEmail.includes('@')){e.preventDefault();const em=addingEmail.trim();setCustomEmails(arr=>arr.includes(em)?arr:[...arr,em]);setCheckedEmails(m=>({...m,[em]:true}));setAddingEmail('')}}} style={{fontSize:12,flex:1}}/>
+            <button className="btn btn-sm btn-secondary" disabled={!addingEmail.includes('@')} onClick={()=>{const em=addingEmail.trim();setCustomEmails(arr=>arr.includes(em)?arr:[...arr,em]);setCheckedEmails(m=>({...m,[em]:true}));setAddingEmail('')}}>Add</button>
+          </div>
+        </div>
+      </div>
       <div style={{marginBottom:12}}><label className="form-label">Subject</label><input className="form-input" value={`National Sports ${label} - ${estimate?.id}${estimate?.memo?' - "'+estimate.memo+'"':''}`} readOnly style={{color:'#64748b'}}/></div>
       <div style={{marginBottom:12}}><label className="form-label">Message</label><textarea className="form-input" rows={8} value={body} onChange={e=>setBody(e.target.value)} style={{fontFamily:'inherit',resize:'vertical'}}/></div>
       <div style={{marginBottom:12}}><label className="form-label">Attachments</label>
