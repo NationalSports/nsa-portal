@@ -7117,9 +7117,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         return{text:destLabel+(addr?' — '+addr:''),color:shipPk.ship_dest==='ship_customer'?'#3b82f6':'#d97706',bg:shipPk.ship_dest==='ship_customer'?'#eff6ff':'#fffbeb'};
       };
       const buildLabelLines=()=>{
-        const lines=[{text:o.id+' — '+(cust?.name||''),cls:'sub'}];
+        const lines=[];
+        if(cust?.name)lines.push({text:cust.name,cls:'team'});
+        lines.push({text:o.id,cls:'so'});
         itemInfos.forEach(info=>{
-          lines.push({text:'<strong>'+(info.item.sku||'')+' '+(info.item.name||'')+'</strong>'});
+          lines.push({text:(info.item.sku||'')+' '+(info.item.name||''),cls:'sku'});
           lines.push({text:(info.item.color||'')+' — '+info.total+' units'});
           lines.push({text:info.szKeys.map(sz=>sz+': '+info.pick[sz]).join(' &nbsp; '),cls:'sz'});
         });

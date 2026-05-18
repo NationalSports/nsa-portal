@@ -203,6 +203,9 @@ export const printQrLabel=({id,qrData,lines,shipBadge})=>{
   h1{font-size:22px;margin:0 0 4px;line-height:1.1;text-align:center}
   .sub{font-size:11px;color:#475569;text-align:center;margin:0 0 8px}
   p{margin:3px 0;font-size:13px;line-height:1.25}
+  .team{font-size:22px;font-weight:900;text-align:center;margin:2px 0 0;line-height:1.15}
+  .so{font-size:12px;font-weight:500;color:#475569;text-align:center;margin:0 0 8px}
+  .sku{font-size:15px;font-weight:800}
   .sz{font-size:18px;font-weight:800;letter-spacing:0.5px}
   .ship{padding:6px 8px;border:2px solid #d97706;border-radius:6px;font-weight:800;font-size:13px;text-align:center;margin:6px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
   .muted{color:#64748b;font-size:11px}
@@ -242,9 +245,16 @@ export const downloadQrLabel=async({id,qrData,lines,shipBadge})=>{
   const safeLines=(lines||[]).filter(Boolean).map(l=>typeof l==='string'?{text:l}:l);
   const badgeHtml=shipBadge?`<div style="border:2px solid ${shipBadge.color||'#d97706'};color:${shipBadge.color||'#92400e'};background:${shipBadge.bg||'#fffbeb'};border-radius:6px;font-weight:800;font-size:13px;text-align:center;padding:6px 8px;margin:6px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact">${shipBadge.text}</div>`:'';
   const linesHtml=safeLines.map(l=>{
-    const isSz=l.cls==='sz';const isSub=l.cls==='sub';const isMuted=l.cls==='muted';
-    const style='margin:3px 0;line-height:1.25;'+(isSz?'font-size:18px;font-weight:800;letter-spacing:0.5px;':isSub?'font-size:11px;color:#475569;text-align:center;':isMuted?'color:#64748b;font-size:11px;':'font-size:13px;')+(l.style||'');
-    return '<p style="'+style+'">'+l.text+'</p>';
+    const c=l.cls;
+    let style='margin:3px 0;line-height:1.25;';
+    if(c==='team')style='margin:2px 0 0;line-height:1.15;font-size:22px;font-weight:900;text-align:center;';
+    else if(c==='so')style='margin:0 0 8px;line-height:1.2;font-size:12px;font-weight:500;color:#475569;text-align:center;';
+    else if(c==='sku')style+='font-size:15px;font-weight:800;';
+    else if(c==='sz')style+='font-size:18px;font-weight:800;letter-spacing:0.5px;';
+    else if(c==='sub')style+='font-size:11px;color:#475569;text-align:center;';
+    else if(c==='muted')style+='color:#64748b;font-size:11px;';
+    else style+='font-size:13px;';
+    return '<p style="'+style+(l.style||'')+'">'+l.text+'</p>';
   }).join('');
   const container=document.createElement('div');
   container.style.cssText='position:fixed;left:-10000px;top:0;width:360px;background:white;font-family:Helvetica,Arial,sans-serif;color:#0f172a;padding:8px 12px;line-height:1.25;box-sizing:border-box;z-index:-1';
