@@ -1936,14 +1936,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // Calculate promo cost per item (retail price + 25% deco markup)
               const items=safeItems(o);const _aq={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
               let remaining=promoBudget;const newItems=[];let fullCount=0;let partialItem=false;
-              items.forEach(it=>{
+              // Pre-compute original revenue per item so flat shipping can be allocated proportionally,
+              // matching how promoTotals.promoShip distributes flat ship across promo items.
+              const _origRev=items.map(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);let r=q2*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q2;const dp=dP(d,q2,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q2*2:q2);r+=eq*dp.sell});return r});
+              const _totalOrigRev=_origRev.reduce((a,v)=>a+v,0);
+              const _flatShip=o.shipping_type==='flat'?safeNum(o.shipping_value):0;
+              items.forEach((it,_ix)=>{
                 const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!q){newItems.push(it);return}
                 if(remaining<=0){newItems.push(it);return}
                 const promoSell=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;
                 let itemPromoCost=q*promoSell;
                 safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);itemPromoCost+=eq*rQ(dp.sell*1.25)});
-                // Add proportional shipping estimate (25% markup on promo portion)
-                const shipBase=o.shipping_type==='pct'?itemPromoCost*(o.shipping_value||0)/100:0;
+                // Add proportional shipping estimate (25% markup on promo portion). For flat shipping,
+                // allocate by share of original revenue so the budget deduction matches promoTotals.promoAmount.
+                const shipBase=o.shipping_type==='pct'?itemPromoCost*(o.shipping_value||0)/100:(_totalOrigRev>0?_flatShip*_origRev[_ix]/_totalOrigRev:0);
                 const itemTotal=itemPromoCost+rQ(shipBase*1.25);
                 if(remaining>=itemTotal){
                   // Fully covered by promo
