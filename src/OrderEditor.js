@@ -2235,7 +2235,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <input value={item.est_qty||''} onChange={e=>uI(idx,'est_qty',e.target.value===''?0:parseInt(e.target.value)||0)} placeholder="0"
                   style={{width:64,textAlign:'center',fontSize:24,fontWeight:800,color:safeNum(item.est_qty)>0?'#1e40af':'#cbd5e1',border:'2px dashed #93c5fd',borderRadius:6,padding:'4px 0',background:'#eff6ff'}}/>
               </div>
-              <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:8,color:'#2563eb'}} onClick={()=>{uI(idx,'qty_only',false);uSz(idx,szs[0]||'S',item.est_qty||0)}}>+ Add Sizes</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:8,color:'#2563eb'}} onClick={()=>{
+                // Expand qty-only into a size grid. If the product is currently OSFA-only
+                // (or has no size list), seed it with the standard apparel/footwear sizes
+                // so users get a real size breakdown to fill in — not an OSFA bucket that
+                // silently swallows the entire qty.
+                const curAvail=item.available_sizes||[];
+                const isOsfaOnly=curAvail.length===0||(curAvail.length===1&&curAvail[0]==='OSFA');
+                const defaults=item.is_footwear?[...FOOTWEAR_DEFAULT_SIZES]:['S','M','L','XL','2XL'];
+                if(isOsfaOnly)uI(idx,'available_sizes',defaults);
+                uI(idx,'qty_only',false);
+                // Leave size quantities blank so the user fills them in; est_qty stays
+                // as the target total and renders as a "⚠️ Sizes:" warning until filled.
+              }}>+ Add Sizes</button>
             </>:<>
             {szs.map(sz=><div key={sz} style={{textAlign:'center',width:48}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
               <input value={item.sizes[sz]||''} onChange={e=>uSz(idx,sz,e.target.value)} placeholder="0"
