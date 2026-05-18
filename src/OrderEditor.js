@@ -6652,10 +6652,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>}
             <div style={{marginTop:6}}>
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>Sample Art / Reference Files</div>
-              <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-                <button style={{fontSize:10,padding:'3px 10px',background:'#f1f5f9',border:'1px solid #d1d5db',borderRadius:4,cursor:'pointer',color:'#475569',fontWeight:600}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.onchange=async()=>{for(const f of Array.from(inp.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-requests');const gs=[...jobWizard.groups];gs[gi]={...gs[gi],files:[...(gs[gi].files||[]),{name:f.name,size:f.size,type:f.type,url}]};setJobWizard({...jobWizard,groups:gs})}catch(err){nf('Upload failed: '+err.message,'error')}}};inp.click()}}>+ Add Files</button>
+              {(()=>{const uploadFiles=async(fileList)=>{for(const f of Array.from(fileList||[])){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-requests');const gs=[...jobWizard.groups];gs[gi]={...gs[gi],files:[...(gs[gi].files||[]),{name:f.name,size:f.size,type:f.type,url}]};setJobWizard({...jobWizard,groups:gs})}catch(err){nf('Upload failed: '+err.message,'error')}}};
+              return<div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',padding:'4px 6px',border:'1px dashed #cbd5e1',borderRadius:4,background:'#fafafa',transition:'border-color 0.15s, background 0.15s'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#f5f3ff'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#fafafa'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#fafafa';uploadFiles(e.dataTransfer.files)}}>
+                <button style={{fontSize:10,padding:'3px 10px',background:'#f1f5f9',border:'1px solid #d1d5db',borderRadius:4,cursor:'pointer',color:'#475569',fontWeight:600}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.onchange=()=>uploadFiles(inp.files);inp.click()}}>+ Add Files</button>
+                <span style={{fontSize:10,color:'#94a3b8'}}>or drop files here</span>
                 {(g.files||[]).map((f,fi)=><span key={fi} style={{fontSize:10,padding:'2px 6px',background:'#ede9fe',borderRadius:3,color:'#6d28d9',fontWeight:600,display:'flex',alignItems:'center',gap:3}}>{f.name}<button style={{background:'none',border:'none',color:'#dc2626',cursor:'pointer',fontSize:12,padding:0,lineHeight:1}} onClick={()=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],files:(gs[gi].files||[]).filter((_,i)=>i!==fi)};setJobWizard({...jobWizard,groups:gs})}}>×</button></span>)}
-              </div>
+              </div>})()}
             </div>
           </div>}
         </div>)}
