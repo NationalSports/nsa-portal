@@ -1448,9 +1448,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const jobMap={};
     Object.values(sigGroups).forEach(grp=>{
       const firstEntry=grp.items[0];
-      const positions=new Set();const artIds=[];const artNames=[];const decoTypes=[];let worstArtSt='art_complete';
+      const positions=new Set();const artIds=[];const artNames=[];const decoTypes=[];let worstArtSt='art_complete';let hasArtDeco=false;
       firstEntry.decos.forEach(({d})=>{
         if(d.kind==='art'){
+          hasArtDeco=true;
           positions.add(safeStr(d.position));
           if(d.art_file_id){
             const artF=af.find(a=>a.id===d.art_file_id);
@@ -1470,6 +1471,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           decoTypes.push(d.num_method||'heat_transfer');
         }
       });
+      // Numbers-only jobs (no art decoration) still need a mockup / setup — they
+      // should start in 'needs_art' so the rep can submit them, not 'art_complete'.
+      if(!hasArtDeco)worstArtSt='needs_art';
       const jobKey=grp.sig;
       const job={key:jobKey,art_file_id:artIds[0]||null,art_name:artNames.join(' + '),
         deco_type:decoTypes[0]||'screen_print',positions,items:[],art_status:worstArtSt,
