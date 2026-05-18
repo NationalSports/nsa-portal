@@ -15,7 +15,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
 import { calcOrderTotals } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -13180,7 +13180,24 @@ export default function App(){
           !(t.artName||'').toLowerCase().includes(s))return false}
       return true;
     });
-    const fPull=filt(pullTasks);const fShip=filt(shipTasks);const fDeliver=filt(deliverTasks);
+    const fPullRaw=filt(pullTasks);const fShip=filt(shipTasks);const fDeliver=filt(deliverTasks);
+    // Group pull tasks by (soId, pick_id) so an IF that spans multiple line items
+    // appears as a single warehouse row (and opens a single multi-item detail page).
+    const fPull=(()=>{
+      const out=[];const seen={};
+      fPullRaw.forEach(t=>{
+        const key=t.soId+'|'+(t._pickId||'__'+t.itemIdx);
+        if(seen[key]){
+          const g=seen[key];g._groupTasks.push(t);g.needsPull+=t.needsPull;g.totalOrdered+=t.totalOrdered;g.totalPulled+=(t.totalPulled||0);
+          (t.szKeys||[]).forEach(s=>{g.sizes[s]=(g.sizes[s]||0)+(t.sizes[s]||0);g.pulled[s]=(g.pulled[s]||0)+(t.pulled?.[s]||0);if(!g.szKeys.includes(s))g.szKeys.push(s)});
+          g._extraCount=(g._extraCount||0)+1;
+        }else{
+          const g={...t,sizes:{...t.sizes},pulled:{...(t.pulled||{})},szKeys:[...(t.szKeys||[])],_groupTasks:[t],_extraCount:0};
+          seen[key]=g;out.push(g);
+        }
+      });
+      return out;
+    })();
     const readyForDeco=decoTasks.filter(t=>t.isReady&&(t.prodStatus==='hold'||t.prodStatus==='draft')&&t.prodStatus!=='ready');const fDeco=filt(readyForDeco);
     const openStockPOs=invPOs.filter(p=>p.status!=='received'&&p.status!=='cancelled');
     // Count awaiting pickup shipments for tab badge
@@ -13198,25 +13215,43 @@ export default function App(){
     return(<>
       {/* ── IF DETAIL VIEW ── */}
       {whViewIF&&(()=>{
-        const t=whViewIF;const so=t.so;const item=t.item;
+        const t=whViewIF;const so=t.so;
         const c=cust.find(x=>x.id===so.customer_id);
-        const allPicks=safePicks(item);
-        // Use the specific pick for this task (from _pickId), not just the first active pick
-        const activePick=t._pickId?allPicks.find(pk=>pk.pick_id===t._pickId&&pk.status!=='pulled'):allPicks.find(pk=>pk.status!=='pulled');
-        const pickId=activePick?.pick_id||t._pickId||'IF';
-        const szKeys=t.szKeys||Object.keys(t.sizes||{}).filter(k=>SZ_ORD.includes(k)||(t.sizes[k]>0)).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
-        const p=prod.find(pp=>pp.sku===t.sku||pp.id===item.product_id);
+        const pickId=t._pickId||'IF';
+        // Aggregate every order item that has an unpulled pick_line with this pick_id.
+        // Falls back to the legacy single-item shape for picks without an IF number.
+        const pickItems=[];
+        safeItems(so).forEach((it,ii)=>{
+          const ap=safePicks(it).find(pk=>pk.pick_id===pickId&&pk.status!=='pulled');
+          if(!ap)return;
+          const szk=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0)).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+          const sizes={};szk.forEach(s=>{const v=ap[s]||0;if(v>0)sizes[s]=v});
+          const szKeysActive=Object.keys(sizes);
+          const needsPull=Object.values(sizes).reduce((a,v)=>a+v,0);
+          pickItems.push({item:it,itemIdx:ii,activePick:ap,szKeys:szKeysActive,sizes,pulled:{},needsPull,totalOrdered:needsPull,totalPulled:0,sku:it.sku,name:it.name,color:it.color||'',brand:it.brand||'',p:prod.find(pp=>pp.sku===it.sku||pp.id===it.product_id)});
+        });
+        if(pickItems.length===0&&t.item){
+          const it=t.item;const ap=t._activePicks?.[0]||safePicks(it).find(pk=>pk.pick_id===pickId);
+          pickItems.push({item:it,itemIdx:t.itemIdx,activePick:ap,szKeys:t.szKeys||[],sizes:t.sizes||{},pulled:t.pulled||{},needsPull:t.needsPull,totalOrdered:t.totalOrdered,totalPulled:t.totalPulled,sku:t.sku,name:t.name,color:t.color||'',brand:t.brand||'',p:prod.find(pp=>pp.sku===t.sku||pp.id===it.product_id)});
+        }
+        const firstPI=pickItems[0];const activePick=firstPI.activePick;
+        const grandNeed=pickItems.reduce((a,pi)=>a+pi.needsPull,0);
+        const grandOrdered=pickItems.reduce((a,pi)=>a+pi.totalOrdered,0);
+        const grandPulled=pickItems.reduce((a,pi)=>a+(pi.totalPulled||0),0);
         const addrs2=c?getAddrs(c,cust):[];
         const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId);
         const shipDest=activePick?.ship_dest||t.shipDest||'in_house';
         const showShipping=shipDest==='ship_customer'||shipDest==='ship_deco';
-
-        // Local shipping state stored on whViewIF
-        const boxes=t._boxes||[{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:[{sku:item.sku,name:item.name,color:item.color||'',sizes:Object.fromEntries(szKeys.map(sz=>[(sz),Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0))]))}]}];
+        const defaultPullQtys=()=>Object.fromEntries(pickItems.map(pi=>[pi.itemIdx,Object.fromEntries(pi.szKeys.map(sz=>[sz,pi.activePick?(pi.activePick[sz]||0):0]))]));
+        const pullQtys=t._pullQtys||defaultPullQtys();
+        const setPullQtys=fn=>setWhViewIF(prev=>{const cur=prev._pullQtys||defaultPullQtys();return{...prev,_pullQtys:typeof fn==='function'?fn(cur):fn}});
+        const totalPullingFor=(pi)=>pi.szKeys.reduce((a,sz)=>a+((pullQtys[pi.itemIdx]||{})[sz]||0),0);
+        const grandPulling=pickItems.reduce((a,pi)=>a+totalPullingFor(pi),0);
+        const defaultBoxItems=pickItems.map(pi=>({sku:pi.sku,name:pi.name,color:pi.color||'',sizes:Object.fromEntries(pi.szKeys.map(sz=>[sz,Math.max(0,(pi.item.sizes[sz]||0)-(pi.pulled[sz]||0))]))}));
+        const boxes=t._boxes||[{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:defaultBoxItems}];
         const setBoxes=newBoxes=>setWhViewIF(prev=>({...prev,_boxes:newBoxes}));
-        // Editable pull quantities — default to the pick line quantities (what was requested)
-        const pullQtys=t._pullQtys||(activePick?Object.fromEntries(szKeys.map(sz=>[sz,activePick[sz]||0])):{});
-        const setPullQtys=fn=>setWhViewIF(prev=>{const cur=prev._pullQtys||(activePick?Object.fromEntries(szKeys.map(sz=>[sz,activePick[sz]||0])):{});return{...prev,_pullQtys:typeof fn==='function'?fn(cur):fn}});
+        // Single-item alias retained so the rest of the original page (shipping label section etc.) keeps working
+        const item=firstPI.item;const p=firstPI.p;
 
         return<div style={{maxWidth:900,margin:'0 auto'}}>
           {/* Back button */}
@@ -13245,84 +13280,88 @@ export default function App(){
             </div>
           </div>
 
-          {/* Item details */}
+          {/* Item details — one block per line item on this IF */}
           <div className="card" style={{marginBottom:12}}>
             <div style={{padding:'12px 18px'}}>
-              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8}}>Item Details</div>
-              <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:12}}>
-                {p?.image_url&&<img src={p.image_url} alt="" style={{width:56,height:56,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0'}}/>}
-                <div>
-                  <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{t.sku}</span>
-                    <span style={{fontWeight:700,fontSize:14}}>{t.name}</span>
-                    {t.color&&<span className="badge badge-gray">{t.color}</span>}
-                    {t.brand&&<span style={{fontSize:11,color:'#64748b'}}>{t.brand}</span>}
-                  </div>
-                  <div style={{marginTop:4,fontSize:12,color:'#64748b'}}>
-                    Need to pull: <strong style={{color:'#d97706'}}>{t.needsPull} units</strong>
-                    {' · '}Total ordered: {t.totalOrdered}{' · '}Already pulled: {t.totalPulled}
-                  </div>
-                </div>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Item Details</div>
+                {pickItems.length>1&&<span style={{fontSize:10,padding:'2px 7px',background:'#dbeafe',color:'#1e40af',borderRadius:10,fontWeight:700}}>{pickItems.length} items on this IF</span>}
               </div>
-
-              {/* Sizes grid */}
-              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Sizes to Pull</div>
-              <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
-                {szKeys.map(sz=>{
-                  const ordered=t.sizes[sz]||0;const pulled=t.pulled[sz]||0;const need=Math.max(0,ordered-pulled);
-                  const inv=p?._inv?.[sz]||0;const pq=pullQtys[sz]||0;
-                  if(ordered===0)return null;
-                  return<div key={sz} style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:need>0?'2px solid #d97706':'1px solid #e2e8f0',background:need>0?'#fffbeb':'#f0fdf4'}}>
-                    <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:2}}>{sz}</div>
-                    <div style={{fontSize:22,fontWeight:900,color:need>0?'#92400e':'#166534',lineHeight:1}}>{need>0?need:'✓'}</div>
-                    <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>need of {ordered}</div>
-                    {need>0&&<>
-                      <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
-                      <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
-                      <input type="number" min={0} max={need} value={pq} style={{width:40,textAlign:'center',fontSize:14,fontWeight:800,border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 0',color:pq<need?'#dc2626':'#166534'}}
-                        onChange={e=>{const v=Math.max(0,Math.min(need,parseInt(e.target.value)||0));setPullQtys(prev=>({...prev,[sz]:v}))}}/>
-                      <div style={{fontSize:8,color:inv<need?'#dc2626':'#94a3b8',marginTop:2}}>{inv} in stock</div>
-                    </>}
-                  </div>})}
-                {(()=>{const totPulling=szKeys.reduce((a,sz)=>a+(pullQtys[sz]||0),0);
-                  return<div style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:'2px solid #e2e8f0',background:'#f8fafc'}}>
-                    <div style={{fontSize:11,fontWeight:800,color:'#64748b',marginBottom:2}}>QTY</div>
-                    <div style={{fontSize:22,fontWeight:900,color:'#d97706',lineHeight:1}}>{t.needsPull}</div>
-                    <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>of {t.totalOrdered}</div>
-                    {t.needsPull>0&&<>
-                      <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
-                      <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
-                      <div style={{fontSize:14,fontWeight:800,color:totPulling<t.needsPull?'#dc2626':'#166534'}}>{totPulling}</div>
-                    </>}
-                  </div>})()}
-              </div>
+              {pickItems.map((pi,piIdx)=>{
+                const piPull=pullQtys[pi.itemIdx]||{};
+                const piTotPulling=totalPullingFor(pi);
+                return<div key={pi.itemIdx} style={{padding:pickItems.length>1?12:0,border:pickItems.length>1?'1px solid #e2e8f0':'none',borderRadius:8,marginBottom:pickItems.length>1?10:0,background:pickItems.length>1?'#fafafa':'transparent'}}>
+                  <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:12}}>
+                    {pi.p?.image_url&&<img src={pi.p.image_url} alt="" style={{width:56,height:56,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0'}}/>}
+                    <div>
+                      <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                        <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{pi.sku}</span>
+                        <span style={{fontWeight:700,fontSize:14}}>{pi.name}</span>
+                        {pi.color&&<span className="badge badge-gray">{pi.color}</span>}
+                        {pi.brand&&<span style={{fontSize:11,color:'#64748b'}}>{pi.brand}</span>}
+                      </div>
+                      <div style={{marginTop:4,fontSize:12,color:'#64748b'}}>
+                        Need to pull: <strong style={{color:'#d97706'}}>{pi.needsPull} units</strong>
+                        {' · '}Total ordered: {pi.totalOrdered}{' · '}Already pulled: {pi.totalPulled}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Sizes to Pull</div>
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                    {pi.szKeys.map(sz=>{
+                      const ordered=pi.sizes[sz]||0;const pulled=pi.pulled[sz]||0;const need=Math.max(0,ordered-pulled);
+                      const inv=pi.p?._inv?.[sz]||0;const pq=piPull[sz]||0;
+                      if(ordered===0)return null;
+                      return<div key={sz} style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:need>0?'2px solid #d97706':'1px solid #e2e8f0',background:need>0?'#fffbeb':'#f0fdf4'}}>
+                        <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:2}}>{sz}</div>
+                        <div style={{fontSize:22,fontWeight:900,color:need>0?'#92400e':'#166534',lineHeight:1}}>{need>0?need:'✓'}</div>
+                        <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>need of {ordered}</div>
+                        {need>0&&<>
+                          <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
+                          <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
+                          <input type="number" min={0} max={need} value={pq} style={{width:40,textAlign:'center',fontSize:14,fontWeight:800,border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 0',color:pq<need?'#dc2626':'#166534'}}
+                            onChange={e=>{const v=Math.max(0,Math.min(need,parseInt(e.target.value)||0));setPullQtys(prev=>({...prev,[pi.itemIdx]:{...(prev[pi.itemIdx]||{}),[sz]:v}}))}}/>
+                          <div style={{fontSize:8,color:inv<need?'#dc2626':'#94a3b8',marginTop:2}}>{inv} in stock</div>
+                        </>}
+                      </div>})}
+                    <div style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:'2px solid #e2e8f0',background:'#f8fafc'}}>
+                      <div style={{fontSize:11,fontWeight:800,color:'#64748b',marginBottom:2}}>QTY</div>
+                      <div style={{fontSize:22,fontWeight:900,color:'#d97706',lineHeight:1}}>{pi.needsPull}</div>
+                      <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>of {pi.totalOrdered}</div>
+                      {pi.needsPull>0&&<>
+                        <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
+                        <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
+                        <div style={{fontSize:14,fontWeight:800,color:piTotPulling<pi.needsPull?'#dc2626':'#166534'}}>{piTotPulling}</div>
+                      </>}
+                    </div>
+                  </div>
+                </div>;
+              })}
+              {pickItems.length>1&&<div style={{padding:'8px 12px',marginTop:4,background:'#eff6ff',borderRadius:6,fontSize:12,fontWeight:700,color:'#1e40af',textAlign:'right'}}>Total: {grandPulling} of {grandNeed} units across {pickItems.length} items</div>}
 
               {/* Pull Action Buttons */}
-              {t.needsPull>0&&<div style={{marginTop:12,padding:'12px 16px',background:'#f0fdf4',borderRadius:8,border:'2px solid #166534'}}>
+              {grandNeed>0&&<div style={{marginTop:12,padding:'12px 16px',background:'#f0fdf4',borderRadius:8,border:'2px solid #166534'}}>
                 <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                  {(()=>{const totPulling2=szKeys.reduce((a,sz)=>a+(pullQtys[sz]||0),0);const isPartial=totPulling2>0&&totPulling2<t.needsPull;const isFull=totPulling2>=t.needsPull;
+                  {(()=>{const totPulling2=grandPulling;const isPartial=totPulling2>0&&totPulling2<grandNeed;const isFull=totPulling2>=grandNeed;
                     return<>
                     <button className="btn btn-primary" disabled={whPulling||totPulling2===0} style={{fontSize:13,padding:'10px 20px',fontWeight:800,background:'#166534',borderColor:'#166534',opacity:whPulling||totPulling2===0?0.5:1}} onClick={()=>{
                       if(whPulling)return;setWhPulling(true);
-                      const actualQtys2=pullQtys;
-                      // Create pick line if none exists
-                      const pickIdToUse=activePick?.pick_id||('IF-'+Date.now().toString(36).toUpperCase().slice(-4));
+                      const pickIdToUse=pickId||('IF-'+Date.now().toString(36).toUpperCase().slice(-4));
+                      const byItemIdx={};pickItems.forEach(pi=>{byItemIdx[pi.itemIdx]=pi});
                       const updatedItems=safeItems(so).map((it2,ii)=>{
-                        if(ii!==t.itemIdx)return it2;
+                        const pi=byItemIdx[ii];if(!pi)return it2;
+                        const qtysForItem=pullQtys[ii]||{};
                         const existingPicks=it2.pick_lines||[];
-                        if(activePick){
-                          // Update existing pick
+                        if(pi.activePick){
                           const newPicks=existingPicks.map(pk=>{
-                            if(pk.pick_id===activePick.pick_id&&pk.status!=='pulled'){
+                            if(pk.pick_id===pi.activePick.pick_id&&pk.status!=='pulled'){
                               const updated={...pk,status:'pulled',pulled_at:new Date().toLocaleString()};
-                              szKeys.forEach(sz=>{updated[sz]=actualQtys2[sz]||0});return updated;}return pk});
+                              pi.szKeys.forEach(sz=>{updated[sz]=qtysForItem[sz]||0});return updated;}return pk});
                           return{...it2,pick_lines:newPicks};
-                        } else {
-                          // Create new pick line marked as pulled
-                          const newPick={pick_id:pickIdToUse,status:'pulled',pulled_at:new Date().toLocaleString(),ship_dest:t.shipDest||'in_house'};
-                          szKeys.forEach(sz=>{newPick[sz]=actualQtys2[sz]||0});
-                          return{...it2,pick_lines:[...existingPicks,newPick]};
                         }
+                        const newPick={pick_id:pickIdToUse,status:'pulled',pulled_at:new Date().toLocaleString(),ship_dest:t.shipDest||'in_house'};
+                        pi.szKeys.forEach(sz=>{newPick[sz]=qtysForItem[sz]||0});
+                        return{...it2,pick_lines:[...existingPicks,newPick]};
                       });
                       // Recalculate job item_status after pulling — mirrors PO receive flow so the warehouse "Ready for Deco" tab and job-level todos reflect stock-pull fulfillment.
                       const updatedJobs=safeJobs(so).map(j=>{
@@ -13340,7 +13379,10 @@ export default function App(){
                         return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
                       });
                       const updatedSO={...so,items:updatedItems,jobs:updatedJobs,updated_at:new Date().toLocaleString()};
-                      if(p){const newInv={...p._inv};szKeys.forEach(sz=>{const v=actualQtys2[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v)}});setProd(pp=>pp.map(x=>x.id===p.id?{...x,_inv:newInv}:x))}
+                      // Inventory adjustments per item product
+                      const prodPatches={};
+                      pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});prodPatches[pi.p.id]=newInv});
+                      if(Object.keys(prodPatches).length>0)setProd(pp=>pp.map(x=>prodPatches[x.id]?{...x,_inv:prodPatches[x.id]}:x));
                       if(showShipping&&boxes.some(bx=>bx.tracking_number)){
                         const shipments=[...(updatedSO._shipments||[])];
                         boxes.filter(bx=>bx.tracking_number).forEach(bx=>{shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'ups',ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,created_by:cu?.id,created_at:new Date().toLocaleString()})});
@@ -13348,34 +13390,39 @@ export default function App(){
                       }
                       _markRecentlyPulled(t.soId);
                       savSO(updatedSO,{skipMerge:true});
-                      // Also do a direct atomic pick_line update to DB — fast cross-tab sync without waiting for full SO save
-                      if(activePick){const pq={};szKeys.forEach(sz=>{pq[sz]=actualQtys2[sz]||0});_dbUpdatePickLineStatus(t.soId,t.itemIdx,activePick.pick_id,'pulled',pq)}
-                      const pulledSizes2=szKeys.filter(sz=>(actualQtys2[sz]||0)>0).map(sz=>sz+':'+actualQtys2[sz]).join(' ');
-                      const totalPulling2=szKeys.reduce((a,sz)=>a+(actualQtys2[sz]||0),0);
-                      addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:t.sku,name:t.name,color:t.color,productId:p?.id||item.product_id,sizes:pulledSizes2,qty:totalPulling2,by:cu?.id||'warehouse'});
-                      nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totalPulling2+' units');setWhPulling(false);setWhViewIF(null);
-                    }}>{whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPulling2+' units)':isPartial?'✓ Mark Partial Pull ('+totPulling2+' of '+t.needsPull+')':'✓ Mark as Pulled')}</button>
+                      // Atomic per-line DB updates for cross-tab sync
+                      pickItems.forEach(pi=>{if(!pi.activePick)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const pq={};pi.szKeys.forEach(sz=>{pq[sz]=qtysForItem[sz]||0});_dbUpdatePickLineStatus(t.soId,pi.itemIdx,pi.activePick.pick_id,'pulled',pq)});
+                      pickItems.forEach(pi=>{const qtysForItem=pullQtys[pi.itemIdx]||{};const pulledSizes=pi.szKeys.filter(sz=>(qtysForItem[sz]||0)>0).map(sz=>sz+':'+qtysForItem[sz]).join(' ');const qty=pi.szKeys.reduce((a,sz)=>a+(qtysForItem[sz]||0),0);if(qty>0)addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:pi.sku,name:pi.name,color:pi.color,productId:pi.p?.id||pi.item.product_id,sizes:pulledSizes,qty,by:cu?.id||'warehouse'})});
+                      nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totPulling2+' units');setWhPulling(false);setWhViewIF(null);
+                    }}>{whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPulling2+' units)':isPartial?'✓ Mark Partial Pull ('+totPulling2+' of '+grandNeed+')':'✓ Mark as Pulled')}</button>
                     {!isFull&&<button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
-                      const filled={};szKeys.forEach(sz=>{filled[sz]=Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0))});setPullQtys(filled);
+                      const filled={};pickItems.forEach(pi=>{filled[pi.itemIdx]=Object.fromEntries(pi.szKeys.map(sz=>[sz,Math.max(0,(pi.sizes[sz]||0)-(pi.pulled[sz]||0))]))});setPullQtys(filled);
                     }}>Fill All</button>}
                     {totPulling2>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 14px'}} onClick={()=>{
-                      const empty={};szKeys.forEach(sz=>{empty[sz]=0});setPullQtys(empty);
+                      const empty={};pickItems.forEach(pi=>{empty[pi.itemIdx]=Object.fromEntries(pi.szKeys.map(sz=>[sz,0]))});setPullQtys(empty);
                     }}>Clear</button>}
                   </>})()}
                 </div>
                 <div style={{fontSize:10,color:'#64748b',marginTop:6}}>Adjust quantities above then click to confirm. Partial pulls will keep the IF open for remaining units.</div>
               </div>}
 
-              {/* All pick lines for this item */}
-              {allPicks.length>0&&<div style={{marginTop:8}}>
+              {/* Pick history — per item on this IF */}
+              {pickItems.some(pi=>safePicks(pi.item).length>0)&&<div style={{marginTop:8}}>
                 <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Pick History</div>
-                {(()=>{const allSzKeys=[...new Set(allPicks.flatMap(pk=>Object.keys(pk).filter(k=>SZ_ORD.includes(k)&&pk[k]>0)))].sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));return allPicks.map((pk,pi)=>{const st=pk.status||'pick';
-                  return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:4,padding:'4px 8px',borderRadius:4,background:st==='pulled'?'#f0fdf4':'#fffbeb'}}>
-                    <span style={{fontSize:11,fontWeight:700,color:st==='pulled'?'#166534':'#92400e',minWidth:56}}>{pk.pick_id||'PICK'}</span>
-                    {allSzKeys.map(sz=>{const v=pk[sz]||0;return<span key={sz} style={{minWidth:36,textAlign:'center',fontSize:11,fontWeight:v?700:400,color:v?'#0f172a':'#d1d5db'}}>{v||'—'}</span>})}
-                    <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:st==='pulled'?'#dcfce7':'#fef3c7',color:st==='pulled'?'#166534':'#92400e'}}>{st==='pulled'?'✓ Pulled':'Needs Pull'}</span>
-                    {pk.memo&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>{pk.memo}</span>}
-                  </div>})})()}
+                {pickItems.map(pi=>{const allPicks=safePicks(pi.item);if(allPicks.length===0)return null;
+                  const allSzKeys=[...new Set(allPicks.flatMap(pk=>Object.keys(pk).filter(k=>SZ_ORD.includes(k)&&pk[k]>0)))].sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+                  return<div key={pi.itemIdx} style={{marginBottom:8}}>
+                    {pickItems.length>1&&<div style={{fontSize:10,fontWeight:700,color:'#475569',marginBottom:3}}>{pi.sku} {pi.name}</div>}
+                    {allPicks.map((pk,pidx)=>{const st=pk.status||'pick';
+                      return<div key={pidx} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:4,padding:'4px 8px',borderRadius:4,background:st==='pulled'?'#f0fdf4':'#fffbeb'}}>
+                        <span style={{fontSize:11,fontWeight:700,color:st==='pulled'?'#166534':'#92400e',minWidth:56}}>{pk.pick_id||'PICK'}</span>
+                        {allSzKeys.map(sz=>{const v=pk[sz]||0;return<span key={sz} style={{minWidth:36,textAlign:'center',fontSize:11,fontWeight:v?700:400,color:v?'#0f172a':'#d1d5db'}}>{v||'—'}</span>})}
+                        <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:st==='pulled'?'#dcfce7':'#fef3c7',color:st==='pulled'?'#166534':'#92400e'}}>{st==='pulled'?'✓ Pulled':'Needs Pull'}</span>
+                        {pk.memo&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>{pk.memo}</span>}
+                      </div>;
+                    })}
+                  </div>;
+                })}
               </div>}
             </div>
           </div>
@@ -13402,29 +13449,26 @@ export default function App(){
                 <div style={{flex:1,fontSize:12}}>
                   <div style={{fontWeight:800,fontSize:16}}>{pickId}</div>
                   <div style={{color:'#64748b'}}>{t.soId} — {t.cName}</div>
-                  <div style={{fontWeight:600}}>{t.sku} {t.name}</div>
-                  <div>{t.color} — {t.needsPull} units</div>
-                  <div style={{marginTop:4,fontFamily:'monospace',fontSize:11}}>{szKeys.filter(sz=>(t.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+':'+(Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0)))).join('  ')}</div>
+                  {pickItems.map(pi=><div key={pi.itemIdx} style={{marginTop:4}}>
+                    <div style={{fontWeight:600}}>{pi.sku} {pi.name}</div>
+                    <div>{pi.color} — {pi.needsPull} units</div>
+                    <div style={{fontFamily:'monospace',fontSize:11,color:'#475569'}}>{pi.szKeys.map(sz=>sz+':'+(pi.sizes[sz]||0)).join('  ')}</div>
+                  </div>)}
+                  {pickItems.length>1&&<div style={{marginTop:4,fontWeight:700}}>Total: {grandNeed} units</div>}
                 </div>
               </div>
-              <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
+              {(()=>{
                 const shipBadge=shipDest==='in_house'?null:{
                   text:(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'')),
                   color:shipDest==='ship_customer'?'#3b82f6':'#d97706',
                   bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'
                 };
-                printQrLabel({
-                  id:pickId,
-                  qrData,
-                  shipBadge,
-                  lines:[
-                    {text:t.soId+' — '+t.cName,cls:'sub'},
-                    {text:'<strong>'+t.sku+' '+t.name+'</strong>'},
-                    {text:(t.color||'')+' — '+t.needsPull+' units'},
-                    {text:szKeys.filter(sz=>(t.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+': '+Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0))).join(' &nbsp; '),cls:'sz'},
-                  ]
-                });
-              }}>🖨️ Print Pick Label (4×6)</button>
+                const buildLines=()=>{const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});lines.push({text:t.soId,cls:'so'});pickItems.forEach(pi=>{lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+pi.needsPull+' units'});lines.push({text:pi.szKeys.map(sz=>sz+': '+(pi.sizes[sz]||0)).join(' &nbsp; '),cls:'sz'})});if(pickItems.length>1)lines.push({text:'TOTAL: '+grandNeed+' units',cls:'sz'});return lines};
+                return<div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>printQrLabel({id:pickId,qrData,shipBadge,lines:buildLines()})}>🖨️ Print Label (4×6)</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{try{await downloadQrLabel({id:pickId,qrData,shipBadge,lines:buildLines()});nf('Label downloaded')}catch(err){nf('Download failed: '+err.message,'error')}}}>⬇️ Download (PDF)</button>
+                </div>;
+              })()}
             </div>
           </div>
 
@@ -13535,7 +13579,7 @@ export default function App(){
                 </div>})}
 
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginTop:4}} onClick={()=>{
-                setBoxes([...boxes,{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:[{sku:item.sku,name:item.name,color:item.color||'',sizes:Object.fromEntries(szKeys.map(sz=>[sz,0]))}]}])}}>
+                setBoxes([...boxes,{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:pickItems.map(pi=>({sku:pi.sku,name:pi.name,color:pi.color||'',sizes:Object.fromEntries(pi.szKeys.map(sz=>[sz,0]))}))}])}}>
                 + Add Box</button>
             </div>
           </div>}
@@ -14002,8 +14046,8 @@ export default function App(){
             <td>{t.urgent&&<span title={'Due in '+t.daysOut+'d'}>🔥</span>}{t.noDeco&&<span title="No decoration">📦</span>}</td>
             <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}</td>
             <td style={{fontWeight:600,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cName}</td>
-            <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#475569'}}>{t.sku}</td>
-            <td style={{fontSize:10,color:'#64748b',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.name}{t.color?' · '+t.color:''}</td>
+            <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#475569'}}>{t.sku}{t._extraCount>0?<span style={{marginLeft:4,padding:'1px 4px',background:'#dbeafe',color:'#1e40af',borderRadius:3,fontSize:9}}>+{t._extraCount}</span>:null}</td>
+            <td style={{fontSize:10,color:'#64748b',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t._extraCount>0?(t.name+' & '+t._extraCount+' more'):(t.name+(t.color?' · '+t.color:''))}</td>
             <td style={{textAlign:'center',fontWeight:800,color:'#d97706'}}>{t.needsPull}</td>
             <td style={{textAlign:'center'}}>{(()=>{const p=prod.find(pp=>pp.sku===t.sku);if(!p||!p._inv)return<span style={{color:'#cbd5e1'}}>—</span>;
               const total=Object.values(p._inv).reduce((a,v)=>a+(typeof v==='number'?v:0),0);
