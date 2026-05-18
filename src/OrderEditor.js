@@ -6,7 +6,7 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, BATCH_VENDORS, EXTRA_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced } from './safeHelpers';
-import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks, ImgGallery } from './components';
+import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery } from './components';
 import { CustModal } from './modals';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
@@ -2500,19 +2500,40 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       if(cwA||cwB)return[cwA?.garment_color||'Side A',cwB?.garment_color||'Side B']}}
                     if(item.color&&item.color.includes('/')){const[a,b]=item.color.split('/').map(s=>s.trim());return[a||'Side A',b||'Side B']}
                     return['Side A','Side B']})();
-                  return<div style={{display:'flex',flexDirection:'column',gap:4}}>
+                  const custPantones=mergeColors(cust,allCustomers,'pantone_colors');
+                  const renderPicker=(field,placeholder)=>{const val=deco[field];return val
+                    ?<div style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 6px',background:'white',border:'1px solid #67e8f9',borderRadius:4}}>
+                        <span style={{width:14,height:14,borderRadius:2,background:pantoneHex(val)||'#ccc',border:'1px solid #d1d5db',flexShrink:0}}/>
+                        <span style={{fontSize:11,fontWeight:600,color:'#0f172a'}}>{val}</span>
+                        <button onClick={()=>uD(idx,di,field,'')} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0,fontSize:14,lineHeight:1}} title="Clear">×</button>
+                      </div>
+                    :<div style={{display:'flex',flexDirection:'column',gap:2}}>
+                        <PantoneAdder onAdd={({code})=>uD(idx,di,field,'PMS '+code)} existingCodes={[]}/>
+                        {custPantones.length>0&&<PantoneQuickPicks colors={custPantones} onPick={v=>uD(idx,di,field,v)}/>}
+                      </div>};
+                  return<div style={{display:'flex',flexDirection:'column',gap:6}}>
                     <div style={{display:'flex',alignItems:'center',gap:6}}>
-                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:80}}>{sideLabels[0]} color</span>
-                      <input className="form-input" style={{width:110,fontSize:12,padding:'2px 6px',borderColor:'#67e8f9'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
+                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:90}}>{sideLabels[0]}</span>
+                      {renderPicker('print_color','e.g. White')}
                     </div>
                     <div style={{display:'flex',alignItems:'center',gap:6}}>
-                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:80}}>{sideLabels[1]} color</span>
-                      <input className="form-input" style={{width:110,fontSize:12,padding:'2px 6px',borderColor:'#67e8f9'}} placeholder="e.g. Navy" value={deco.print_color_b||''} onChange={e=>uD(idx,di,'print_color_b',e.target.value)}/>
+                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:90}}>{sideLabels[1]}</span>
+                      {renderPicker('print_color_b','e.g. Navy')}
                     </div>
-                  </div>})():<>
-                  <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>Color:</span>
-                  <input className="form-input" style={{width:90,fontSize:12,padding:'2px 6px'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
-                </>}
+                  </div>})():(()=>{
+                  const custPantones=mergeColors(cust,allCustomers,'pantone_colors');
+                  return<><span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>Color:</span>
+                    {deco.print_color
+                      ?<div style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 6px',background:'white',border:'1px solid #cbd5e1',borderRadius:4}}>
+                          <span style={{width:14,height:14,borderRadius:2,background:pantoneHex(deco.print_color)||'#ccc',border:'1px solid #d1d5db',flexShrink:0}}/>
+                          <span style={{fontSize:11,fontWeight:600,color:'#0f172a'}}>{deco.print_color}</span>
+                          <button onClick={()=>uD(idx,di,'print_color','')} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0,fontSize:14,lineHeight:1}} title="Clear">×</button>
+                        </div>
+                      :<div style={{display:'flex',flexDirection:'column',gap:2}}>
+                          <PantoneAdder onAdd={({code})=>uD(idx,di,'print_color','PMS '+code)} existingCodes={[]}/>
+                          {custPantones.length>0&&<PantoneQuickPicks colors={custPantones} onPick={v=>uD(idx,di,'print_color',v)}/>}
+                        </div>}
+                  </>})()}
               </div>
               {deco.front_and_back&&<div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Size (Back):</span>
@@ -6499,6 +6520,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         setJobWizard({groups:Object.values(dtMap)});
       };
       const wizActivate=(groups,activateAll)=>{
+        // Block art submission when reversible Numbers decos are missing their
+        // Pantone ink colors — the artist needs to see both sides' colors.
+        if(activateAll){
+          const missing=[];
+          groups.forEach(g=>{
+            g.items.filter(it=>!it._excluded).forEach(it=>{
+              const item=safeItems(o)[it.item_idx];if(!item)return;
+              safeDecos(item).forEach(d=>{
+                if(d.kind==='numbers'&&d.reversible&&(!d.print_color||!d.print_color_b)){
+                  const label=(item.sku||('Item '+(it.item_idx+1)))+(item.color?' ('+item.color+')':'');
+                  if(!missing.includes(label))missing.push(label);
+                }
+              });
+            });
+          });
+          if(missing.length>0){
+            nf('Cannot submit to art — set both Pantone ink colors on reversible Numbers for: '+missing.join(', '));
+            return;
+          }
+        }
         // Preserve already-submitted jobs (anything past needs_art) so re-running
         // the wizard doesn't wipe their art_requests, prod state, etc.
         const preservedJobs=safeJobs(o).filter(jj=>jj.art_status!=='needs_art');
