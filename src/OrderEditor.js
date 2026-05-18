@@ -7132,44 +7132,62 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div></>}
       </div></div>})()}
 
-    {/* EDIT PICK MODAL */}
+    {/* EDIT PICK MODAL — shows every item that shares the pick_id, since one IF can span multiple line items */}
     {editPick&&(()=>{
-      const pk=editPick.pick;const item=o.items[editPick.lineIdx];
-      const pkSzKeys=Object.keys(pk).filter(k=>k!=='status'&&k!=='pick_id'&&typeof pk[k]==='number'&&pk[k]>0);
-      const pkTotal=pkSzKeys.reduce((a,sz)=>a+(pk[sz]||0),0);
-      const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pk.pick_id);
-      return<div className="modal-overlay" onClick={()=>setEditPick(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
-      <div className="modal-header"><h2>Pick — {pk.pick_id||'Pick'}</h2>
+      const pk=editPick.pick;const pickIdEdit=pk.pick_id;
+      // Find all line items that have a pick_line with this pick_id (matched picks aren't necessarily at the same index across items)
+      const ifLines=[];o.items.forEach((it,li)=>{(it.pick_lines||[]).forEach((p,pi)=>{if(p.pick_id===pickIdEdit)ifLines.push({lineIdx:li,pickIdx:pi,pick:p,item:it})})});
+      // Fall back to the single editPick entry if no match (defensive)
+      const lines=ifLines.length?ifLines:[{lineIdx:editPick.lineIdx,pickIdx:editPick.pickIdx,pick:pk,item:o.items[editPick.lineIdx]}];
+      // Editable copies in editPick._lines (one per line). Keep the original editPick.pick in sync with the first sub for any legacy code paths.
+      const editLines=editPick._lines||lines.map(l=>({...l,pick:{...l.pick}}));
+      const setEditLines=fn=>setEditPick(prev=>({...prev,_lines:typeof fn==='function'?fn(prev._lines||editLines):fn}));
+      const isMultiPick=editLines.length>1;
+      const firstPk=editLines[0].pick;
+      const status=firstPk.status||'pick';
+      const totalQty=editLines.reduce((a,l)=>a+Object.keys(l.pick).filter(k=>k!=='status'&&k!=='pick_id'&&typeof l.pick[k]==='number').reduce((b,sz)=>b+(l.pick[sz]||0),0),0);
+      const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickIdEdit);
+      return<div className="modal-overlay" onClick={()=>setEditPick(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
+      <div className="modal-header"><h2>Pick — {pickIdEdit||'Pick'}{isMultiPick?<span style={{marginLeft:8,fontSize:12,padding:'2px 8px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{editLines.length} items</span>:null}</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
-          <span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status==='pulled'?'Pulled':'Needs Pull'}</span>
+          <span className={`badge ${status==='pulled'?'badge-green':'badge-amber'}`}>{status==='pulled'?'Pulled':'Needs Pull'}</span>
           <button className="modal-close" onClick={()=>setEditPick(null)}>x</button>
         </div></div>
       <div className="modal-body">
-        {/* Ship Destination */}
-        {pk.ship_dest&&pk.ship_dest!=='in_house'&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid '+(pk.ship_dest==='ship_customer'?'#3b82f6':'#d97706'),background:pk.ship_dest==='ship_customer'?'#eff6ff':'#fffbeb'}}>
-          <div style={{fontSize:12,fontWeight:800,color:pk.ship_dest==='ship_customer'?'#1e40af':'#92400e'}}>{pk.ship_dest==='ship_customer'?'📦 Ship to Customer':'🚚 Ship to Deco'}</div>
-          {pk.ship_dest==='ship_customer'&&(()=>{const addr=addrs.find(a=>a.id===pk.ship_addr)||addrs[0];return addr?<div style={{fontSize:12,color:'#475569',marginTop:4}}>{addr.label}</div>:null})()}
-          {pk.ship_dest==='ship_deco'&&pk.deco_vendor&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>Vendor: {pk.deco_vendor}</div>}
+        {/* Ship Destination — shared on the IF */}
+        {firstPk.ship_dest&&firstPk.ship_dest!=='in_house'&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid '+(firstPk.ship_dest==='ship_customer'?'#3b82f6':'#d97706'),background:firstPk.ship_dest==='ship_customer'?'#eff6ff':'#fffbeb'}}>
+          <div style={{fontSize:12,fontWeight:800,color:firstPk.ship_dest==='ship_customer'?'#1e40af':'#92400e'}}>{firstPk.ship_dest==='ship_customer'?'📦 Ship to Customer':'🚚 Ship to Deco'}</div>
+          {firstPk.ship_dest==='ship_customer'&&(()=>{const addr=addrs.find(a=>a.id===firstPk.ship_addr)||addrs[0];return addr?<div style={{fontSize:12,color:'#475569',marginTop:4}}>{addr.label}</div>:null})()}
+          {firstPk.ship_dest==='ship_deco'&&firstPk.deco_vendor&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>Vendor: {firstPk.deco_vendor}</div>}
         </div>}
-        {pk.ship_dest==='in_house'&&<div style={{padding:'8px 14px',marginBottom:12,borderRadius:8,border:'1px solid #e2e8f0',background:'#f8fafc'}}>
+        {firstPk.ship_dest==='in_house'&&<div style={{padding:'8px 14px',marginBottom:12,borderRadius:8,border:'1px solid #e2e8f0',background:'#f8fafc'}}>
           <div style={{fontSize:12,fontWeight:700,color:'#475569'}}>🏭 In-House Deco</div>
         </div>}
-        {/* Product info */}
-        {item&&<div style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,marginBottom:12,display:'flex',gap:8,alignItems:'center'}}>
-          <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
-          <span style={{fontWeight:600,fontSize:13}}>{item.name}</span>
-          <span className="badge badge-gray">{item.color}</span>
-        </div>}
+        {/* Shared status toggle — applies to every item in the IF */}
         <div style={{marginBottom:12}}><label className="form-label">Status</label>
-          <div style={{display:'flex',gap:6}}>{['pick','pulled'].map(s=><button key={s} className={`btn btn-sm ${pk.status===s?'btn-primary':'btn-secondary'}`} onClick={()=>setEditPick(p=>({...p,pick:{...p.pick,status:s}}))}>{s==='pulled'?'✓ Pulled':'Needs Pull'}</button>)}</div></div>
-        <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:6}}>Quantities by size:</div>
-        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
-          {pkSzKeys.map(sz=><div key={sz} style={{textAlign:'center'}}>
-            <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-            <input style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={pk[sz]} onChange={e=>setEditPick(p=>({...p,pick:{...p.pick,[sz]:parseInt(e.target.value)||0}}))}/>
-          </div>)}
-          <div style={{textAlign:'center',borderLeft:'2px solid #e2e8f0',paddingLeft:8}}><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>QTY</div><div style={{fontSize:18,fontWeight:800}}>{pkTotal}</div></div>
-        </div>
+          <div style={{display:'flex',gap:6}}>{['pick','pulled'].map(s=><button key={s} className={`btn btn-sm ${status===s?'btn-primary':'btn-secondary'}`} onClick={()=>setEditLines(prev=>prev.map(l=>({...l,pick:{...l.pick,status:s,...(s==='pulled'&&!l.pick.pulled_at?{pulled_at:new Date().toLocaleString()}:{})}})))}>{s==='pulled'?'✓ Pulled':'Needs Pull'}</button>)}</div></div>
+        {/* One section per item in the IF */}
+        {editLines.map((line,li)=>{
+          const lpk=line.pick;const lit=line.item;
+          const szKeys=Object.keys(lpk).filter(k=>k!=='status'&&k!=='pick_id'&&typeof lpk[k]==='number'&&lpk[k]>0);
+          const lTotal=szKeys.reduce((a,sz)=>a+(lpk[sz]||0),0);
+          return<div key={line.lineIdx+'-'+line.pickIdx} style={{marginBottom:12,padding:'10px 12px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0'}}>
+            {lit&&<div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8}}>
+              <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{lit.sku}</span>
+              <span style={{fontWeight:600,fontSize:13}}>{lit.name}</span>
+              {lit.color&&<span className="badge badge-gray">{lit.color}</span>}
+              {isMultiPick&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{li+1} of {editLines.length}</span>}
+            </div>}
+            <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:4}}>Quantities by size</div>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+              {szKeys.map(sz=><div key={sz} style={{textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                <input style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={lpk[sz]} onChange={e=>{const v=parseInt(e.target.value)||0;setEditLines(prev=>prev.map((x,xi)=>xi===li?{...x,pick:{...x.pick,[sz]:v}}:x))}}/>
+              </div>)}
+              <div style={{textAlign:'center',borderLeft:'2px solid #e2e8f0',paddingLeft:8}}><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>QTY</div><div style={{fontSize:18,fontWeight:800}}>{lTotal}</div></div>
+            </div>
+          </div>;
+        })}
         {/* QR / Print Label */}
         <div style={{padding:12,border:'1px dashed #d1d5db',borderRadius:8,background:'#fafafa'}}>
           <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>📋 Label / QR Code</div>
@@ -7178,52 +7196,62 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <img src={'https://api.qrserver.com/v1/create-qr-code/?size=100x100&data='+encodeURIComponent(qrData)} alt="QR" style={{width:80,height:80,display:'block'}}/>
             </div>
             <div style={{flex:1,fontSize:11}}>
-              <div style={{fontWeight:800,fontSize:14}}>{pk.pick_id}</div>
+              <div style={{fontWeight:800,fontSize:14}}>{pickIdEdit}</div>
               <div style={{color:'#64748b'}}>{o.id} — {cust?.name}</div>
-              <div style={{fontWeight:600}}>{item?.sku} {item?.name}</div>
-              <div>{item?.color} — {pkTotal} units</div>
-              <div style={{marginTop:4}}>{pkSzKeys.map(sz=>sz+':'+pk[sz]).join('  ')}</div>
+              {editLines.map(line=>{const szKeys=Object.keys(line.pick).filter(k=>k!=='status'&&k!=='pick_id'&&typeof line.pick[k]==='number'&&line.pick[k]>0);const lT=szKeys.reduce((a,sz)=>a+(line.pick[sz]||0),0);
+                return<div key={line.lineIdx+'-'+line.pickIdx} style={{marginTop:4,paddingTop:4,borderTop:isMultiPick?'1px dashed #e2e8f0':'none'}}>
+                  <div style={{fontWeight:600}}>{line.item?.sku} {line.item?.name}</div>
+                  <div>{line.item?.color} — {lT} units</div>
+                  <div style={{marginTop:2}}>{szKeys.map(sz=>sz+':'+line.pick[sz]).join('  ')}</div>
+                </div>;
+              })}
             </div>
           </div>
           <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
             let shipBadge=null;
-            if(pk.ship_dest&&pk.ship_dest!=='in_house'){
-              const destLabel=pk.ship_dest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(pk.deco_vendor?' — '+pk.deco_vendor:'');
-              const addr=pk.ship_dest==='ship_customer'?(addrs.find(a=>a.id===pk.ship_addr)||addrs[0])?.label||'':'';
-              shipBadge={text:destLabel+(addr?' — '+addr:''),color:pk.ship_dest==='ship_customer'?'#3b82f6':'#d97706',bg:pk.ship_dest==='ship_customer'?'#eff6ff':'#fffbeb'};
+            if(firstPk.ship_dest&&firstPk.ship_dest!=='in_house'){
+              const destLabel=firstPk.ship_dest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(firstPk.deco_vendor?' — '+firstPk.deco_vendor:'');
+              const addr=firstPk.ship_dest==='ship_customer'?(addrs.find(a=>a.id===firstPk.ship_addr)||addrs[0])?.label||'':'';
+              shipBadge={text:destLabel+(addr?' — '+addr:''),color:firstPk.ship_dest==='ship_customer'?'#3b82f6':'#d97706',bg:firstPk.ship_dest==='ship_customer'?'#eff6ff':'#fffbeb'};
             }
-            printQrLabel({
-              id:pk.pick_id,
-              qrData,
-              shipBadge,
-              lines:[
-                {text:o.id+' — '+(cust?.name||''),cls:'sub'},
-                {text:'<strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong>'},
-                {text:(item?.color||'')+' — '+pkTotal+' units'},
-                {text:pkSzKeys.map(sz=>sz+': '+pk[sz]).join(' &nbsp; '),cls:'sz'},
-              ]
+            const labelLines=[{text:o.id+' — '+(cust?.name||''),cls:'sub'}];
+            editLines.forEach(line=>{const szKeys=Object.keys(line.pick).filter(k=>k!=='status'&&k!=='pick_id'&&typeof line.pick[k]==='number'&&line.pick[k]>0);const lT=szKeys.reduce((a,sz)=>a+(line.pick[sz]||0),0);
+              labelLines.push({text:'<strong>'+(line.item?.sku||'')+' '+(line.item?.name||'')+'</strong>'});
+              labelLines.push({text:(line.item?.color||'')+' — '+lT+' units'});
+              labelLines.push({text:szKeys.map(sz=>sz+': '+line.pick[sz]).join(' &nbsp; '),cls:'sz'});
             });
+            printQrLabel({id:pickIdEdit,qrData,shipBadge,lines:labelLines});
           }}>🖨️ Print Label (4×6)</button>
         </div>
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setEditPick(null)}>Close</button>
         <button className="btn btn-sm" style={{background:'#dc2626',color:'white'}} onClick={()=>{
-          const oldPick=o.items[editPick.lineIdx].pick_lines[editPick.pickIdx];
-          const item=o.items[editPick.lineIdx];
-          if(oldPick.status==='pulled'){adjustInvForPick(oldPick,item,1)}
-          const updatedItems=[...o.items];updatedItems[editPick.lineIdx].pick_lines=updatedItems[editPick.lineIdx].pick_lines.filter((_,i)=>i!==editPick.pickIdx);
-          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick deleted');
+          // Delete every pick_line in the IF (across all items)
+          const updatedItems=o.items.map((it,li)=>{
+            const matching=(it.pick_lines||[]).filter(p=>p.pick_id===pickIdEdit);
+            if(!matching.length)return it;
+            matching.forEach(p=>{if(p.status==='pulled')adjustInvForPick(p,it,1)});
+            return{...it,pick_lines:(it.pick_lines||[]).filter(p=>p.pick_id!==pickIdEdit)};
+          });
+          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf(isMultiPick?'IF '+pickIdEdit+' deleted ('+editLines.length+' items)':'Pick deleted');
         }}><Icon name="trash" size={12}/> Delete</button>
         <button className="btn btn-primary" onClick={()=>{
-          const oldPick=o.items[editPick.lineIdx].pick_lines[editPick.pickIdx];
-          const newPick=editPick.pick;
-          const item=o.items[editPick.lineIdx];
-          // Adjust inventory if status changed
-          if(oldPick.status!=='pulled'&&newPick.status==='pulled'){adjustInvForPick(newPick,item,-1)}
-          else if(oldPick.status==='pulled'&&newPick.status!=='pulled'){adjustInvForPick(oldPick,item,1)}
-          const updatedItems=o.items.map((it,i)=>i===editPick.lineIdx?{...it,pick_lines:it.pick_lines.map((p,j)=>j===editPick.pickIdx?newPick:p)}:it);
-          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick updated');
+          // Save updates across every item in the IF
+          const updatedItems=o.items.map((it,li)=>{
+            const lineEdits=editLines.filter(l=>l.lineIdx===li);
+            if(!lineEdits.length)return it;
+            const newPicks=(it.pick_lines||[]).map((p,pi)=>{
+              const match=lineEdits.find(l=>l.pickIdx===pi&&p.pick_id===pickIdEdit);
+              if(!match)return p;
+              const newPick=match.pick;
+              if(p.status!=='pulled'&&newPick.status==='pulled')adjustInvForPick(newPick,it,-1);
+              else if(p.status==='pulled'&&newPick.status!=='pulled')adjustInvForPick(p,it,1);
+              return newPick;
+            });
+            return{...it,pick_lines:newPicks};
+          });
+          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf(isMultiPick?'IF '+pickIdEdit+' updated ('+editLines.length+' items)':'Pick updated');
         }}>Save Changes</button>
       </div>
     </div></div>})()}

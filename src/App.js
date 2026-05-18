@@ -924,7 +924,7 @@ const _dbSaveSOInner = async (so) => {
     // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition)
     if(art_files?.length){
       let soAfRows=art_files.map(a=>({..._pick(a,_artCols),so_id:so.id}));
-      const{error:afErr}=await supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'});
+      const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
       if(afErr){
         if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
           console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
@@ -1352,8 +1352,12 @@ _dbDuplicateSkuIds.forEach(id=>{_dbSaveFailedIds.delete(id)});if(_dbDuplicateSku
 const _dbSavePendingIds=new Set();
 // Track recent saves by this client — prevents false "modified by another user" conflicts from own realtime echo
 const _dbRecentSaves={};// {id: timestamp}
-// Legacy compat — keep old _dbSave for team_members and other simple tables
-const _dbSave = (table, data) => { if(supabase && data) return supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
+// Retry a network-flaky upsert/select promise factory. Only retries transport errors (TypeError: Failed to fetch),
+// not real server-side errors. Backoff: 400ms, 1.2s.
+const _isNetErr=(e)=>{const m=(e?.message||e?.error?.message||String(e||'')).toLowerCase();return m.includes('failed to fetch')||m.includes('network')||m.includes('err_ssl')||m.includes('load failed')};
+const _retryNet=async(fn,tries=3)=>{let last;for(let i=0;i<tries;i++){try{const r=await fn();if(r&&r.error&&_isNetErr(r.error)){last={error:r.error};if(i<tries-1){await new Promise(res=>setTimeout(res,400*Math.pow(3,i)));continue}}return r}catch(e){last=e;if(!_isNetErr(e)||i===tries-1)throw e;await new Promise(res=>setTimeout(res,400*Math.pow(3,i)))}}throw last};
+// Legacy compat — keep old _dbSave for team_members and other simple tables. Retries transient network errors.
+const _dbSave = (table, data) => { if(supabase && data) return _retryNet(()=>supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'})).then(r=>{if(r&&r.error)console.error('[DB] save '+table+':', r.error.message)}).catch(e=>{console.error('[DB] save '+table+':', e.message||e)}) };
 // ─── Cloudinary Config ───
 const CLOUDINARY_CLOUD='dwlyljyuz';
 const CLOUDINARY_PRESET='ml_default_nsaportal';
@@ -4705,18 +4709,28 @@ export default function App(){
           desc:'Full order ready',units:totalUnits,shipMethod:'pending',shipPref:'wait_complete'});
       }
     });
-    // Deduplicate pullTasks by SO+SKU+color (handles duplicate items in SO data)
+    // Group pullTasks by SO + pick_id (one warehouse row per IF, even when an IF spans multiple SKUs).
+    // Top-level aggregates (sizes/pulled/szKeys/needsPull) are unions across items, so the list and stats stay meaningful.
+    // Each per-item sub-task is preserved in _subTasks so the detail view can render and pull every item in the IF.
     const dedupPull=[];const pullSeen={};
     pullTasks.forEach(t=>{
-      const key=t.soId+'|'+t.sku+'|'+(t.color||'');
+      const key=t.soId+'|'+(t._pickId||('item-'+t.itemIdx+'|'+t.sku+'|'+(t.color||'')));
+      const sub={item:t.item,itemIdx:t.itemIdx,sku:t.sku,name:t.name,brand:t.brand,color:t.color,
+        sizes:{...t.sizes},pulled:{...t.pulled},szKeys:[...t.szKeys],
+        needsPull:t.needsPull,totalOrdered:t.totalOrdered,totalPulled:t.totalPulled,
+        _activePicks:t._activePicks,noDeco:t.noDeco,shipDest:t.shipDest};
       if(pullSeen[key]){
         const m=pullSeen[key];
-        // Merge sizes and pulled quantities
         t.szKeys.forEach(s=>{m.sizes[s]=(m.sizes[s]||0)+(t.sizes[s]||0);m.pulled[s]=(m.pulled[s]||0)+(t.pulled[s]||0)});
         m.szKeys=[...new Set([...m.szKeys,...t.szKeys])];
         m.totalOrdered+=t.totalOrdered;m.totalPulled+=t.totalPulled;m.needsPull=m.totalOrdered-m.totalPulled;
+        m._subTasks.push(sub);
+        if(!m._skus.includes(t.sku))m._skus.push(t.sku);
+        if(t.urgent)m.urgent=true;
+        if(t.noDeco===false)m.noDeco=false;// any deco item makes the whole IF non-no-deco
       } else {
-        const clone={...t,sizes:{...t.sizes},pulled:{...t.pulled},szKeys:[...t.szKeys]};
+        const clone={...t,sizes:{...t.sizes},pulled:{...t.pulled},szKeys:[...t.szKeys],
+          pickId:t._pickId||null,_skus:[t.sku],_subTasks:[sub]};
         pullSeen[key]=clone;dedupPull.push(clone);
       }
     });
@@ -13241,8 +13255,10 @@ export default function App(){
     const filt=(arr)=>arr.filter(t=>{
       if(whRepF!=='all'&&t.so?.created_by!==whRepF)return false;
       if(whSearch){const s=whSearch.toLowerCase();
-        if(!(t.cName||'').toLowerCase().includes(s)&&!(t.sku||'').toLowerCase().includes(s)&&
+        const skuHay=(t._skus||[t.sku]).join(' ');
+        if(!(t.cName||'').toLowerCase().includes(s)&&!skuHay.toLowerCase().includes(s)&&
           !(t.soId||'').toLowerCase().includes(s)&&!(t.desc||'').toLowerCase().includes(s)&&
+          !(t.pickId||'').toLowerCase().includes(s)&&
           !(t.artName||'').toLowerCase().includes(s))return false}
       return true;
     });
@@ -13264,25 +13280,42 @@ export default function App(){
     return(<>
       {/* ── IF DETAIL VIEW ── */}
       {whViewIF&&(()=>{
-        const t=whViewIF;const so=t.so;const item=t.item;
+        const t=whViewIF;const so=t.so;
         const c=cust.find(x=>x.id===so.customer_id);
+        // subs: every (item, pick) the warehouse needs to handle in this IF — multi-item IFs share one pick_id.
+        const rawSubs=t._subTasks||[{item:t.item,itemIdx:t.itemIdx,sku:t.sku,name:t.name,brand:t.brand,color:t.color,sizes:t.sizes,pulled:t.pulled,szKeys:t.szKeys,needsPull:t.needsPull,totalOrdered:t.totalOrdered,totalPulled:t.totalPulled,_activePicks:t._activePicks,shipDest:t.shipDest,noDeco:t.noDeco}];
+        const subs=rawSubs.map(sub=>{
+          const curItem=safeItems(so)[sub.itemIdx]||sub.item;
+          const itemPicks=safePicks(curItem);
+          const activePick=t._pickId?itemPicks.find(pk=>pk.pick_id===t._pickId&&pk.status!=='pulled'):itemPicks.find(pk=>pk.status!=='pulled');
+          const szKeysOrdered=(sub.szKeys||Object.keys(sub.sizes||{}).filter(k=>SZ_ORD.includes(k)||(sub.sizes[k]>0))).slice().sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+          const p2=prod.find(pp=>pp.sku===sub.sku||pp.id===curItem?.product_id);
+          return{...sub,_item:curItem,_activePick:activePick,_szKeys:szKeysOrdered,_p:p2};
+        });
+        const isMulti=subs.length>1;
+        const item=subs[0]._item;const p=subs[0]._p;
         const allPicks=safePicks(item);
-        // Use the specific pick for this task (from _pickId), not just the first active pick
-        const activePick=t._pickId?allPicks.find(pk=>pk.pick_id===t._pickId&&pk.status!=='pulled'):allPicks.find(pk=>pk.status!=='pulled');
-        const pickId=activePick?.pick_id||t._pickId||'IF';
-        const szKeys=t.szKeys||Object.keys(t.sizes||{}).filter(k=>SZ_ORD.includes(k)||(t.sizes[k]>0)).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
-        const p=prod.find(pp=>pp.sku===t.sku||pp.id===item.product_id);
+        const firstActivePick=subs[0]._activePick;
+        const pickId=t._pickId||firstActivePick?.pick_id||'IF';
+        const szKeys=subs[0]._szKeys;// kept for QR/print label backwards-compat
         const addrs2=c?getAddrs(c,cust):[];
         const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId);
-        const shipDest=activePick?.ship_dest||t.shipDest||'in_house';
+        const shipDest=firstActivePick?.ship_dest||subs[0].shipDest||'in_house';
         const showShipping=shipDest==='ship_customer'||shipDest==='ship_deco';
+        const aggNeedsPull=subs.reduce((a,s)=>a+s.needsPull,0);
+        const aggTotalOrdered=subs.reduce((a,s)=>a+s.totalOrdered,0);
+        const aggTotalPulled=subs.reduce((a,s)=>a+s.totalPulled,0);
 
-        // Local shipping state stored on whViewIF
-        const boxes=t._boxes||[{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:[{sku:item.sku,name:item.name,color:item.color||'',sizes:Object.fromEntries(szKeys.map(sz=>[(sz),Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0))]))}]}];
+        // pullQtys keyed by `${itemIdx}:${sz}` so each item in a multi-item IF tracks its own pull quantities.
+        const buildDefaultPullQtys=()=>{const init={};subs.forEach(s=>{const ap=s._activePick;s._szKeys.forEach(sz=>{init[s.itemIdx+':'+sz]=ap?(ap[sz]||0):0})});return init};
+        const pullQtys=t._pullQtys||buildDefaultPullQtys();
+        const setPullQtys=fn=>setWhViewIF(prev=>{const cur=prev._pullQtys||buildDefaultPullQtys();return{...prev,_pullQtys:typeof fn==='function'?fn(cur):fn}});
+        const pqGet=(idx,sz)=>pullQtys[idx+':'+sz]||0;
+        const totPullingAll=subs.reduce((a,s)=>a+s._szKeys.reduce((b,sz)=>b+pqGet(s.itemIdx,sz),0),0);
+
+        // Local shipping state stored on whViewIF — seed one box containing every item in the IF.
+        const boxes=t._boxes||[{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:subs.map(s=>({sku:s.sku,name:s.name,color:s.color||'',sizes:Object.fromEntries(s._szKeys.map(sz=>[sz,Math.max(0,(s.sizes[sz]||0)-(s.pulled[sz]||0))]))}))}];
         const setBoxes=newBoxes=>setWhViewIF(prev=>({...prev,_boxes:newBoxes}));
-        // Editable pull quantities — default to the pick line quantities (what was requested)
-        const pullQtys=t._pullQtys||(activePick?Object.fromEntries(szKeys.map(sz=>[sz,activePick[sz]||0])):{});
-        const setPullQtys=fn=>setWhViewIF(prev=>{const cur=prev._pullQtys||(activePick?Object.fromEntries(szKeys.map(sz=>[sz,activePick[sz]||0])):{});return{...prev,_pullQtys:typeof fn==='function'?fn(cur):fn}});
 
         return<div style={{maxWidth:900,margin:'0 auto'}}>
           {/* Back button */}
@@ -13297,154 +13330,184 @@ export default function App(){
               <div style={{flex:1}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
                   <span style={{fontSize:20,fontWeight:900,color:'#1e40af'}}>{pickId}</span>
-                  <span className={`badge ${activePick?.status==='pulled'?'badge-green':'badge-amber'}`} style={{fontSize:11}}>
-                    {activePick?.status==='pulled'?'✓ Pulled':'Needs Pull'}</span>
+                  <span className={`badge ${firstActivePick?.status==='pulled'?'badge-green':'badge-amber'}`} style={{fontSize:11}}>
+                    {firstActivePick?.status==='pulled'?'✓ Pulled':'Needs Pull'}</span>
+                  {isMulti&&<span style={{fontSize:11,padding:'2px 8px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{subs.length} items</span>}
                   {t.urgent&&<span style={{fontSize:11,padding:'2px 8px',borderRadius:8,background:'#fee2e2',color:'#dc2626',fontWeight:700}}>🔥 Rush — {t.daysOut}d</span>}
                 </div>
                 <div style={{display:'flex',gap:12,fontSize:12,color:'#64748b',flexWrap:'wrap'}}>
-                  <span>SO: <strong style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{setESOTab('items');setESOScrollItem(t.itemIdx);setESO(so);setESOC(c);setPg('orders')}}>{t.soId}</strong></span>
+                  <span>SO: <strong style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{setESOTab('items');setESOScrollItem(subs[0].itemIdx);setESO(so);setESOC(c);setPg('orders')}}>{t.soId}</strong></span>
                   <span>Customer: <strong style={{color:'#0f172a'}}>{t.cName}</strong></span>
                   <span>Rep: {t.rep}</span>
-                  {activePick?.created_at&&<span>Created: {activePick.created_at}</span>}
+                  {firstActivePick?.created_at&&<span>Created: {firstActivePick.created_at}</span>}
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Item details */}
-          <div className="card" style={{marginBottom:12}}>
-            <div style={{padding:'12px 18px'}}>
-              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8}}>Item Details</div>
-              <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:12}}>
-                {p?.image_url&&<img src={p.image_url} alt="" style={{width:56,height:56,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0'}}/>}
-                <div>
-                  <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{t.sku}</span>
-                    <span style={{fontWeight:700,fontSize:14}}>{t.name}</span>
-                    {t.color&&<span className="badge badge-gray">{t.color}</span>}
-                    {t.brand&&<span style={{fontSize:11,color:'#64748b'}}>{t.brand}</span>}
-                  </div>
-                  <div style={{marginTop:4,fontSize:12,color:'#64748b'}}>
-                    Need to pull: <strong style={{color:'#d97706'}}>{t.needsPull} units</strong>
-                    {' · '}Total ordered: {t.totalOrdered}{' · '}Already pulled: {t.totalPulled}
+          {/* Item details — one section per item in the IF */}
+          {subs.map((sub,si)=>{
+            const subP=sub._p;const subSzKeys=sub._szKeys;
+            return<div key={sub.itemIdx} className="card" style={{marginBottom:12}}>
+              <div style={{padding:'12px 18px'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8,display:'flex',alignItems:'center',gap:8}}>
+                  Item Details{isMulti&&<span style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>({si+1} of {subs.length})</span>}
+                </div>
+                <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:12}}>
+                  {subP?.image_url&&<img src={subP.image_url} alt="" style={{width:56,height:56,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0'}}/>}
+                  <div>
+                    <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                      <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{sub.sku}</span>
+                      <span style={{fontWeight:700,fontSize:14}}>{sub.name}</span>
+                      {sub.color&&<span className="badge badge-gray">{sub.color}</span>}
+                      {sub.brand&&<span style={{fontSize:11,color:'#64748b'}}>{sub.brand}</span>}
+                    </div>
+                    <div style={{marginTop:4,fontSize:12,color:'#64748b'}}>
+                      Need to pull: <strong style={{color:'#d97706'}}>{sub.needsPull} units</strong>
+                      {' · '}Total ordered: {sub.totalOrdered}{' · '}Already pulled: {sub.totalPulled}
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              {/* Sizes grid */}
-              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Sizes to Pull</div>
-              <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
-                {szKeys.map(sz=>{
-                  const ordered=t.sizes[sz]||0;const pulled=t.pulled[sz]||0;const need=Math.max(0,ordered-pulled);
-                  const inv=p?._inv?.[sz]||0;const pq=pullQtys[sz]||0;
-                  if(ordered===0)return null;
-                  return<div key={sz} style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:need>0?'2px solid #d97706':'1px solid #e2e8f0',background:need>0?'#fffbeb':'#f0fdf4'}}>
-                    <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:2}}>{sz}</div>
-                    <div style={{fontSize:22,fontWeight:900,color:need>0?'#92400e':'#166534',lineHeight:1}}>{need>0?need:'✓'}</div>
-                    <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>need of {ordered}</div>
-                    {need>0&&<>
-                      <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
-                      <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
-                      <input type="number" min={0} max={need} value={pq} style={{width:40,textAlign:'center',fontSize:14,fontWeight:800,border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 0',color:pq<need?'#dc2626':'#166534'}}
-                        onChange={e=>{const v=Math.max(0,Math.min(need,parseInt(e.target.value)||0));setPullQtys(prev=>({...prev,[sz]:v}))}}/>
-                      <div style={{fontSize:8,color:inv<need?'#dc2626':'#94a3b8',marginTop:2}}>{inv} in stock</div>
-                    </>}
-                  </div>})}
-                {(()=>{const totPulling=szKeys.reduce((a,sz)=>a+(pullQtys[sz]||0),0);
-                  return<div style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:'2px solid #e2e8f0',background:'#f8fafc'}}>
-                    <div style={{fontSize:11,fontWeight:800,color:'#64748b',marginBottom:2}}>QTY</div>
-                    <div style={{fontSize:22,fontWeight:900,color:'#d97706',lineHeight:1}}>{t.needsPull}</div>
-                    <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>of {t.totalOrdered}</div>
-                    {t.needsPull>0&&<>
-                      <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
-                      <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
-                      <div style={{fontSize:14,fontWeight:800,color:totPulling<t.needsPull?'#dc2626':'#166534'}}>{totPulling}</div>
-                    </>}
-                  </div>})()}
+                {/* Sizes grid */}
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Sizes to Pull</div>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
+                  {subSzKeys.map(sz=>{
+                    const ordered=sub.sizes[sz]||0;const pulled=sub.pulled[sz]||0;const need=Math.max(0,ordered-pulled);
+                    const inv=subP?._inv?.[sz]||0;const pq=pqGet(sub.itemIdx,sz);
+                    if(ordered===0)return null;
+                    return<div key={sz} style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:need>0?'2px solid #d97706':'1px solid #e2e8f0',background:need>0?'#fffbeb':'#f0fdf4'}}>
+                      <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:2}}>{sz}</div>
+                      <div style={{fontSize:22,fontWeight:900,color:need>0?'#92400e':'#166534',lineHeight:1}}>{need>0?need:'✓'}</div>
+                      <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>need of {ordered}</div>
+                      {need>0&&<>
+                        <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
+                        <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
+                        <input type="number" min={0} max={need} value={pq} style={{width:40,textAlign:'center',fontSize:14,fontWeight:800,border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 0',color:pq<need?'#dc2626':'#166534'}}
+                          onChange={e=>{const v=Math.max(0,Math.min(need,parseInt(e.target.value)||0));const key=sub.itemIdx+':'+sz;setPullQtys(prev=>({...prev,[key]:v}))}}/>
+                        <div style={{fontSize:8,color:inv<need?'#dc2626':'#94a3b8',marginTop:2}}>{inv} in stock</div>
+                      </>}
+                    </div>})}
+                  {(()=>{const totPullingSub=subSzKeys.reduce((a,sz)=>a+pqGet(sub.itemIdx,sz),0);
+                    return<div style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:'2px solid #e2e8f0',background:'#f8fafc'}}>
+                      <div style={{fontSize:11,fontWeight:800,color:'#64748b',marginBottom:2}}>QTY</div>
+                      <div style={{fontSize:22,fontWeight:900,color:'#d97706',lineHeight:1}}>{sub.needsPull}</div>
+                      <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>of {sub.totalOrdered}</div>
+                      {sub.needsPull>0&&<>
+                        <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
+                        <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
+                        <div style={{fontSize:14,fontWeight:800,color:totPullingSub<sub.needsPull?'#dc2626':'#166534'}}>{totPullingSub}</div>
+                      </>}
+                    </div>})()}
+                </div>
               </div>
+            </div>;
+          })}
 
-              {/* Pull Action Buttons */}
-              {t.needsPull>0&&<div style={{marginTop:12,padding:'12px 16px',background:'#f0fdf4',borderRadius:8,border:'2px solid #166534'}}>
-                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                  {(()=>{const totPulling2=szKeys.reduce((a,sz)=>a+(pullQtys[sz]||0),0);const isPartial=totPulling2>0&&totPulling2<t.needsPull;const isFull=totPulling2>=t.needsPull;
-                    return<>
-                    <button className="btn btn-primary" disabled={whPulling||totPulling2===0} style={{fontSize:13,padding:'10px 20px',fontWeight:800,background:'#166534',borderColor:'#166534',opacity:whPulling||totPulling2===0?0.5:1}} onClick={()=>{
-                      if(whPulling)return;setWhPulling(true);
-                      const actualQtys2=pullQtys;
-                      // Create pick line if none exists
-                      const pickIdToUse=activePick?.pick_id||('IF-'+Date.now().toString(36).toUpperCase().slice(-4));
-                      const updatedItems=safeItems(so).map((it2,ii)=>{
-                        if(ii!==t.itemIdx)return it2;
-                        const existingPicks=it2.pick_lines||[];
-                        if(activePick){
-                          // Update existing pick
-                          const newPicks=existingPicks.map(pk=>{
-                            if(pk.pick_id===activePick.pick_id&&pk.status!=='pulled'){
-                              const updated={...pk,status:'pulled',pulled_at:new Date().toLocaleString()};
-                              szKeys.forEach(sz=>{updated[sz]=actualQtys2[sz]||0});return updated;}return pk});
-                          return{...it2,pick_lines:newPicks};
-                        } else {
-                          // Create new pick line marked as pulled
-                          const newPick={pick_id:pickIdToUse,status:'pulled',pulled_at:new Date().toLocaleString(),ship_dest:t.shipDest||'in_house'};
-                          szKeys.forEach(sz=>{newPick[sz]=actualQtys2[sz]||0});
-                          return{...it2,pick_lines:[...existingPicks,newPick]};
-                        }
-                      });
-                      // Recalculate job item_status after pulling — mirrors PO receive flow so the warehouse "Ready for Deco" tab and job-level todos reflect stock-pull fulfillment.
-                      const updatedJobs=safeJobs(so).map(j=>{
-                        let total=0,fulfilled=0;
-                        (j.items||[]).forEach(gi=>{const it=updatedItems[gi.item_idx];if(!it)return;
-                          Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-                            total+=v;
-                            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-                            const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-                            fulfilled+=Math.min(v,pQ+rQ);
-                          });
-                        });
-                        const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-                        if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
-                        return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
-                      });
-                      const updatedSO={...so,items:updatedItems,jobs:updatedJobs,updated_at:new Date().toLocaleString()};
-                      if(p){const newInv={...p._inv};szKeys.forEach(sz=>{const v=actualQtys2[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v)}});setProd(pp=>pp.map(x=>x.id===p.id?{...x,_inv:newInv}:x))}
-                      if(showShipping&&boxes.some(bx=>bx.tracking_number)){
-                        const shipments=[...(updatedSO._shipments||[])];
-                        boxes.filter(bx=>bx.tracking_number).forEach(bx=>{shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'ups',ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,created_by:cu?.id,created_at:new Date().toLocaleString()})});
-                        updatedSO._shipments=shipments;
+          {/* Unified Pull Action — applies to every item in the IF */}
+          {aggNeedsPull>0&&<div className="card" style={{marginBottom:12}}>
+            <div style={{padding:'12px 16px',background:'#f0fdf4',borderRadius:8,border:'2px solid #166534'}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                {(()=>{const isPartial=totPullingAll>0&&totPullingAll<aggNeedsPull;const isFull=totPullingAll>=aggNeedsPull;
+                  // Shared pull logic. keepOpen=true → record what was pulled, decrement the active pick_line by that amount, leave IF open for the remaining qty.
+                  const applyPull=(keepOpen)=>{
+                    if(whPulling)return;setWhPulling(true);
+                    const pickIdToUse=t._pickId||firstActivePick?.pick_id||('IF-'+Date.now().toString(36).toUpperCase().slice(-4));
+                    const now=new Date().toLocaleString();
+                    const updatedItems=safeItems(so).map((it2,ii)=>{
+                      const sub=subs.find(s=>s.itemIdx===ii);
+                      if(!sub)return it2;
+                      const subActive=sub._activePick;
+                      const subPullQty=sub._szKeys.reduce((a,sz)=>a+pqGet(sub.itemIdx,sz),0);
+                      if(subPullQty<=0)return it2;
+                      const existingPicks=it2.pick_lines||[];
+                      if(keepOpen&&subActive){
+                        // Decrement the active pick line by the pulled qty; append a new pulled pick_line tracking what was pulled.
+                        const remainingPick={...subActive};
+                        sub._szKeys.forEach(sz=>{remainingPick[sz]=Math.max(0,(subActive[sz]||0)-pqGet(sub.itemIdx,sz))});
+                        const pulledChild={pick_id:subActive.pick_id,status:'pulled',pulled_at:now,ship_dest:subActive.ship_dest||sub.shipDest||'in_house',_partial:true,_orig_sizes:Object.fromEntries(sub._szKeys.map(sz=>[sz,subActive[sz]||0]))};
+                        sub._szKeys.forEach(sz=>{pulledChild[sz]=pqGet(sub.itemIdx,sz)});
+                        const newPicks=existingPicks.map(pk=>(pk.pick_id===subActive.pick_id&&pk.status!=='pulled')?remainingPick:pk);
+                        newPicks.push(pulledChild);
+                        return{...it2,pick_lines:newPicks};
                       }
-                      _markRecentlyPulled(t.soId);
-                      savSO(updatedSO,{skipMerge:true});
-                      // Also do a direct atomic pick_line update to DB — fast cross-tab sync without waiting for full SO save
-                      if(activePick){const pq={};szKeys.forEach(sz=>{pq[sz]=actualQtys2[sz]||0});_dbUpdatePickLineStatus(t.soId,t.itemIdx,activePick.pick_id,'pulled',pq)}
-                      const pulledSizes2=szKeys.filter(sz=>(actualQtys2[sz]||0)>0).map(sz=>sz+':'+actualQtys2[sz]).join(' ');
-                      const totalPulling2=szKeys.reduce((a,sz)=>a+(actualQtys2[sz]||0),0);
-                      addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:t.sku,name:t.name,color:t.color,productId:p?.id||item.product_id,sizes:pulledSizes2,qty:totalPulling2,by:cu?.id||'warehouse'});
-                      nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totalPulling2+' units');setWhPulling(false);setWhViewIF(null);
-                    }}>{whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPulling2+' units)':isPartial?'✓ Mark Partial Pull ('+totPulling2+' of '+t.needsPull+')':'✓ Mark as Pulled')}</button>
-                    {!isFull&&<button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
-                      const filled={};szKeys.forEach(sz=>{filled[sz]=Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0))});setPullQtys(filled);
-                    }}>Fill All</button>}
-                    {totPulling2>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 14px'}} onClick={()=>{
-                      const empty={};szKeys.forEach(sz=>{empty[sz]=0});setPullQtys(empty);
-                    }}>Clear</button>}
-                  </>})()}
-                </div>
-                <div style={{fontSize:10,color:'#64748b',marginTop:6}}>Adjust quantities above then click to confirm. Partial pulls will keep the IF open for remaining units.</div>
-              </div>}
-
-              {/* All pick lines for this item */}
-              {allPicks.length>0&&<div style={{marginTop:8}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Pick History</div>
-                {(()=>{const allSzKeys=[...new Set(allPicks.flatMap(pk=>Object.keys(pk).filter(k=>SZ_ORD.includes(k)&&pk[k]>0)))].sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));return allPicks.map((pk,pi)=>{const st=pk.status||'pick';
-                  return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:4,padding:'4px 8px',borderRadius:4,background:st==='pulled'?'#f0fdf4':'#fffbeb'}}>
-                    <span style={{fontSize:11,fontWeight:700,color:st==='pulled'?'#166534':'#92400e',minWidth:56}}>{pk.pick_id||'PICK'}</span>
-                    {allSzKeys.map(sz=>{const v=pk[sz]||0;return<span key={sz} style={{minWidth:36,textAlign:'center',fontSize:11,fontWeight:v?700:400,color:v?'#0f172a':'#d1d5db'}}>{v||'—'}</span>})}
-                    <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:st==='pulled'?'#dcfce7':'#fef3c7',color:st==='pulled'?'#166534':'#92400e'}}>{st==='pulled'?'✓ Pulled':'Needs Pull'}</span>
-                    {pk.memo&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>{pk.memo}</span>}
-                  </div>})})()}
-              </div>}
+                      if(subActive){
+                        // Full close — preserve _orig_sizes so this IF can be Re-opened later from Recent Actions
+                        const newPicks=existingPicks.map(pk=>{
+                          if(pk.pick_id===subActive.pick_id&&pk.status!=='pulled'){
+                            const origSizes=pk._orig_sizes||Object.fromEntries(sub._szKeys.map(sz=>[sz,pk[sz]||0]));
+                            const updated={...pk,status:'pulled',pulled_at:now,_orig_sizes:origSizes};
+                            sub._szKeys.forEach(sz=>{updated[sz]=pqGet(sub.itemIdx,sz)});return updated;
+                          }return pk});
+                        return{...it2,pick_lines:newPicks};
+                      }
+                      const newPick={pick_id:pickIdToUse,status:'pulled',pulled_at:now,ship_dest:sub.shipDest||'in_house'};
+                      sub._szKeys.forEach(sz=>{newPick[sz]=pqGet(sub.itemIdx,sz)});
+                      newPick._orig_sizes={...newPick};delete newPick._orig_sizes.status;delete newPick._orig_sizes.pick_id;delete newPick._orig_sizes.pulled_at;delete newPick._orig_sizes.ship_dest;delete newPick._orig_sizes._orig_sizes;
+                      return{...it2,pick_lines:[...existingPicks,newPick]};
+                    });
+                    const updatedJobs=safeJobs(so).map(j=>{
+                      let total=0,fulfilled=0;
+                      (j.items||[]).forEach(gi=>{const it=updatedItems[gi.item_idx];if(!it)return;
+                        Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
+                          total+=v;
+                          const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+                          const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+                          fulfilled+=Math.min(v,pQ+rQ);
+                        });
+                      });
+                      const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
+                      if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
+                      return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
+                    });
+                    const updatedSO={...so,items:updatedItems,jobs:updatedJobs,updated_at:now};
+                    subs.forEach(sub=>{const p2=sub._p;if(!p2)return;const newInv={...p2._inv};sub._szKeys.forEach(sz=>{const v=pqGet(sub.itemIdx,sz);if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});setProd(pp=>pp.map(x=>x.id===p2.id?{...x,_inv:newInv}:x))});
+                    if(!keepOpen&&showShipping&&boxes.some(bx=>bx.tracking_number)){
+                      const shipments=[...(updatedSO._shipments||[])];
+                      boxes.filter(bx=>bx.tracking_number).forEach(bx=>{shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'ups',ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,created_by:cu?.id,created_at:now})});
+                      updatedSO._shipments=shipments;
+                    }
+                    _markRecentlyPulled(t.soId);
+                    savSO(updatedSO,{skipMerge:true});
+                    // Direct DB sync only works for status flips on existing rows; partial-keep-open inserts a new row, so rely on the SO save.
+                    if(!keepOpen){subs.forEach(sub=>{if(sub._activePick){const pq2={};sub._szKeys.forEach(sz=>{pq2[sz]=pqGet(sub.itemIdx,sz)});_dbUpdatePickLineStatus(t.soId,sub.itemIdx,sub._activePick.pick_id,'pulled',pq2)}})}
+                    subs.forEach(sub=>{
+                      const subPulledSizes=sub._szKeys.filter(sz=>pqGet(sub.itemIdx,sz)>0).map(sz=>sz+':'+pqGet(sub.itemIdx,sz)).join(' ');
+                      const subQty=sub._szKeys.reduce((a,sz)=>a+pqGet(sub.itemIdx,sz),0);
+                      if(subQty>0)addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:sub.sku,name:sub.name,color:sub.color,productId:sub._p?.id||sub._item?.product_id,sizes:subPulledSizes,qty:subQty,partial:keepOpen?true:undefined,by:cu?.id||'warehouse'});
+                    });
+                    nf('✅ '+pickIdToUse+(keepOpen?' partial pull saved — IF still open':' pulled — '+totPullingAll+' units'));setWhPulling(false);setWhViewIF(null);
+                  };
+                  return<>
+                  <button className="btn btn-primary" disabled={whPulling||totPullingAll===0} style={{fontSize:13,padding:'10px 20px',fontWeight:800,background:'#166534',borderColor:'#166534',opacity:whPulling||totPullingAll===0?0.5:1}} onClick={()=>applyPull(false)}>
+                    {whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPullingAll+' units)':isPartial?'✓ Mark Partial Pull — Close IF ('+totPullingAll+' of '+aggNeedsPull+')':'✓ Mark as Pulled')}</button>
+                  {isPartial&&<button className="btn btn-sm" disabled={whPulling} style={{fontSize:11,background:'#0891b2',color:'white',border:'none',padding:'10px 14px',fontWeight:700,opacity:whPulling?0.5:1}} onClick={()=>applyPull(true)} title="Record this pull but keep the IF open for the remaining units">
+                    💾 Save Partial — Keep IF Open ({totPullingAll}/{aggNeedsPull})</button>}
+                  {!isFull&&<button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
+                    const filled={};subs.forEach(sub=>{sub._szKeys.forEach(sz=>{filled[sub.itemIdx+':'+sz]=Math.max(0,(sub.sizes[sz]||0)-(sub.pulled[sz]||0))})});setPullQtys(filled);
+                  }}>Fill All</button>}
+                  {totPullingAll>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 14px'}} onClick={()=>{
+                    const empty={};subs.forEach(sub=>{sub._szKeys.forEach(sz=>{empty[sub.itemIdx+':'+sz]=0})});setPullQtys(empty);
+                  }}>Clear</button>}
+                </>})()}
+              </div>
+              <div style={{fontSize:10,color:'#64748b',marginTop:6}}>Adjust quantities above. <strong>Mark as Pulled</strong> closes the IF; <strong>Save Partial — Keep IF Open</strong> records what you pulled and leaves the rest open.{isMulti?' All '+subs.length+' items will be marked together.':''}</div>
             </div>
-          </div>
+          </div>}
+
+          {/* Pick History — first item's pick lines (representative for the IF) */}
+          {allPicks.length>0&&<div className="card" style={{marginBottom:12}}>
+            <div style={{padding:'12px 18px'}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Pick History{isMulti?' — '+subs[0].sku:''}</div>
+              {(()=>{const allSzKeys=[...new Set(allPicks.flatMap(pk=>Object.keys(pk).filter(k=>SZ_ORD.includes(k)&&pk[k]>0)))].sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));return allPicks.map((pk,pi)=>{const st=pk.status||'pick';
+                return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:4,padding:'4px 8px',borderRadius:4,background:st==='pulled'?'#f0fdf4':'#fffbeb'}}>
+                  <span style={{fontSize:11,fontWeight:700,color:st==='pulled'?'#166534':'#92400e',minWidth:56}}>{pk.pick_id||'PICK'}</span>
+                  {allSzKeys.map(sz=>{const v=pk[sz]||0;return<span key={sz} style={{minWidth:36,textAlign:'center',fontSize:11,fontWeight:v?700:400,color:v?'#0f172a':'#d1d5db'}}>{v||'—'}</span>})}
+                  <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:st==='pulled'?'#dcfce7':'#fef3c7',color:st==='pulled'?'#166534':'#92400e'}}>{st==='pulled'?'✓ Pulled':'Needs Pull'}</span>
+                  {pk.memo&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>{pk.memo}</span>}
+                </div>})})()}
+            </div>
+          </div>}
 
           {/* Ship Destination */}
           <div className="card" style={{marginBottom:12,borderLeft:'3px solid '+(shipDest==='ship_customer'?'#3b82f6':shipDest==='ship_deco'?'#d97706':'#64748b')}}>
@@ -13452,8 +13515,8 @@ export default function App(){
               <div style={{fontSize:12,fontWeight:800,color:shipDest==='ship_customer'?'#1e40af':shipDest==='ship_deco'?'#92400e':'#475569'}}>
                 {shipDest==='ship_customer'?'📦 Ship to Customer':shipDest==='ship_deco'?'🚚 Ship to Decorator':'🏭 In-House Deco'}</div>
               {shipDest==='ship_customer'&&addrs2.length>0&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>{addrs2[0]?.label}</div>}
-              {shipDest==='ship_deco'&&activePick?.deco_vendor&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>Vendor: {activePick.deco_vendor}</div>}
-              {activePick?.memo&&<div style={{marginTop:6,fontSize:12,color:'#64748b'}}>📝 {activePick.memo}</div>}
+              {shipDest==='ship_deco'&&firstActivePick?.deco_vendor&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>Vendor: {firstActivePick.deco_vendor}</div>}
+              {firstActivePick?.memo&&<div style={{marginTop:6,fontSize:12,color:'#64748b'}}>📝 {firstActivePick.memo}</div>}
             </div>
           </div>
 
@@ -13468,29 +13531,50 @@ export default function App(){
                 <div style={{flex:1,fontSize:12}}>
                   <div style={{fontWeight:800,fontSize:16}}>{pickId}</div>
                   <div style={{color:'#64748b'}}>{t.soId} — {t.cName}</div>
-                  <div style={{fontWeight:600}}>{t.sku} {t.name}</div>
-                  <div>{t.color} — {t.needsPull} units</div>
-                  <div style={{marginTop:4,fontFamily:'monospace',fontSize:11}}>{szKeys.filter(sz=>(t.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+':'+(Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0)))).join('  ')}</div>
+                  {subs.map(sub=>{const needPerSz=sub._szKeys.filter(sz=>(sub.sizes[sz]||0)-(sub.pulled[sz]||0)>0);
+                    return<div key={sub.itemIdx} style={{marginTop:4,paddingTop:4,borderTop:isMulti?'1px dashed #e2e8f0':'none'}}>
+                      <div style={{fontWeight:600}}>{sub.sku} {sub.name}</div>
+                      <div>{sub.color} — {sub.needsPull} units</div>
+                      <div style={{marginTop:2,fontFamily:'monospace',fontSize:11}}>{needPerSz.map(sz=>sz+':'+(Math.max(0,(sub.sizes[sz]||0)-(sub.pulled[sz]||0)))).join('  ')}</div>
+                    </div>})}
                 </div>
               </div>
-              <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
-                const shipBadge=shipDest==='in_house'?null:{
-                  text:(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'')),
-                  color:shipDest==='ship_customer'?'#3b82f6':'#d97706',
-                  bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'
-                };
-                printQrLabel({
-                  id:pickId,
-                  qrData,
-                  shipBadge,
-                  lines:[
-                    {text:t.soId+' — '+t.cName,cls:'sub'},
-                    {text:'<strong>'+t.sku+' '+t.name+'</strong>'},
-                    {text:(t.color||'')+' — '+t.needsPull+' units'},
-                    {text:szKeys.filter(sz=>(t.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+': '+Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0))).join(' &nbsp; '),cls:'sz'},
-                  ]
-                });
-              }}>🖨️ Print Pick Label (4×6)</button>
+              <div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{
+                  const shipBadge=shipDest==='in_house'?null:{
+                    text:(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(firstActivePick?.deco_vendor?' — '+firstActivePick.deco_vendor:'')),
+                    color:shipDest==='ship_customer'?'#3b82f6':'#d97706',
+                    bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'
+                  };
+                  const lines=[{text:t.soId+' — '+t.cName,cls:'sub'}];
+                  subs.forEach(sub=>{
+                    lines.push({text:'<strong>'+sub.sku+' '+sub.name+'</strong>'});
+                    lines.push({text:(sub.color||'')+' — '+sub.needsPull+' units'});
+                    lines.push({text:sub._szKeys.filter(sz=>(sub.sizes[sz]||0)-(sub.pulled[sz]||0)>0).map(sz=>sz+': '+Math.max(0,(sub.sizes[sz]||0)-(sub.pulled[sz]||0))).join(' &nbsp; '),cls:'sz'});
+                  });
+                  printQrLabel({id:pickId,qrData,shipBadge,lines});
+                }}>🖨️ Print Pick Label (4×6)</button>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{
+                  // Full-page walk-around sheet for the warehouse
+                  const w=window.open('','_blank','width=900,height=1100');if(!w)return;
+                  const esc=s=>(s==null?'':String(s)).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+                  const destLabel=shipDest==='ship_customer'?'📦 Ship to Customer':shipDest==='ship_deco'?'🚚 Ship to Decorator':'🏭 In-House Deco';
+                  const addrLine=shipDest==='ship_customer'&&addrs2.length>0?esc(addrs2[0]?.addr||addrs2[0]?.label||''):shipDest==='ship_deco'&&firstActivePick?.deco_vendor?esc(firstActivePick.deco_vendor):'';
+                  let html='<html><head><title>'+esc(pickId)+' — Pick Sheet</title><style>@page{size:letter;margin:0.4in}body{font-family:Arial,sans-serif;margin:0;padding:0;color:#0f172a}h1{font-size:28px;margin:0 0 4px;color:#1e40af;font-family:monospace;letter-spacing:2px}.hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #d97706;padding-bottom:8px;margin-bottom:10px}.hdr .meta{font-size:12px;color:#475569}.hdr .meta strong{color:#0f172a}.dest{display:inline-block;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:700;margin-top:4px}.item{border:2px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:10px;page-break-inside:avoid}.item h2{margin:0 0 6px;font-size:16px}.sku{font-family:monospace;background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:4px;font-weight:800;font-size:13px;margin-right:6px}.color{background:#f1f5f9;padding:1px 6px;border-radius:3px;font-size:11px;color:#475569}.sz-grid{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.sz-cell{min-width:64px;text-align:center;padding:8px 6px;border:2px solid #d97706;border-radius:8px;background:#fffbeb}.sz-cell .lbl{font-size:11px;font-weight:700;color:#475569}.sz-cell .qty{font-size:24px;font-weight:900;color:#92400e;line-height:1}.sz-cell .box{margin-top:6px;border-top:1px solid #d97706;padding-top:6px;font-size:9px;color:#64748b}.sz-cell .pulled-box{height:22px;border:1px solid #94a3b8;border-radius:3px;background:white}.total{text-align:right;font-size:14px;font-weight:900;margin-top:8px;color:#0f172a}.footer{margin-top:14px;padding-top:8px;border-top:1px solid #cbd5e1;font-size:10px;color:#94a3b8;display:flex;justify-content:space-between}.qr{width:96px;height:96px}.sig{margin-top:14px;padding:10px 0;border-top:1px solid #e2e8f0;font-size:11px;color:#64748b}.sig .row{display:flex;gap:24px;margin-top:6px}.sig .line{flex:1;border-bottom:1px solid #0f172a;padding-bottom:14px}</style></head><body>';
+                  html+='<div class="hdr"><div><h1>'+esc(pickId)+'</h1><div class="meta"><strong>SO:</strong> '+esc(t.soId)+' &nbsp;·&nbsp; <strong>'+esc(t.cName)+'</strong> &nbsp;·&nbsp; Rep: '+esc(t.rep||'')+'</div><div class="meta">Created: '+esc(firstActivePick?.created_at||'')+(t.urgent?' &nbsp;·&nbsp; <span style="color:#dc2626;font-weight:700">🔥 RUSH — '+esc(t.daysOut)+'d</span>':'')+'</div><div class="dest" style="background:'+(shipDest==='ship_customer'?'#eff6ff;color:#1e40af':shipDest==='ship_deco'?'#fffbeb;color:#92400e':'#f1f5f9;color:#475569')+'">'+destLabel+(addrLine?' — '+addrLine:'')+'</div></div><img class="qr" src="https://api.qrserver.com/v1/create-qr-code/?size=160x160&data='+encodeURIComponent(qrData)+'"/></div>';
+                  subs.forEach((sub,si)=>{
+                    const needSz=sub._szKeys.filter(sz=>(sub.sizes[sz]||0)-(sub.pulled[sz]||0)>0);
+                    html+='<div class="item"><h2><span class="sku">'+esc(sub.sku)+'</span>'+esc(sub.name)+(sub.color?' <span class="color">'+esc(sub.color)+'</span>':'')+(isMulti?'<span style="float:right;font-size:11px;color:#94a3b8;font-weight:600">'+(si+1)+' of '+subs.length+'</span>':'')+'</h2>';
+                    html+='<div class="sz-grid">';
+                    needSz.forEach(sz=>{const need=Math.max(0,(sub.sizes[sz]||0)-(sub.pulled[sz]||0));html+='<div class="sz-cell"><div class="lbl">'+esc(sz)+'</div><div class="qty">'+need+'</div><div class="box">pulled<div class="pulled-box"></div></div></div>'});
+                    html+='</div><div class="total">Pull total: '+sub.needsPull+' units</div></div>';
+                  });
+                  html+='<div class="sig">Pulled by:<div class="row"><div class="line"></div><div class="line" style="max-width:120px">Date</div></div></div>';
+                  html+='<div class="footer"><span>NSA · '+new Date().toLocaleDateString()+'</span><span>'+esc(pickId)+' · '+(aggNeedsPull)+' units total</span></div>';
+                  html+='</body></html>';
+                  w.document.write(html);w.document.close();setTimeout(()=>{try{w.print()}catch{}},400);
+                }}>📄 Print Sheet (Letter)</button>
+              </div>
             </div>
           </div>
 
@@ -13601,14 +13685,14 @@ export default function App(){
                 </div>})}
 
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginTop:4}} onClick={()=>{
-                setBoxes([...boxes,{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:[{sku:item.sku,name:item.name,color:item.color||'',sizes:Object.fromEntries(szKeys.map(sz=>[sz,0]))}]}])}}>
+                setBoxes([...boxes,{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:subs.map(s=>({sku:s.sku,name:s.name,color:s.color||'',sizes:Object.fromEntries(s._szKeys.map(sz=>[sz,0]))}))}])}}>
                 + Add Box</button>
             </div>
           </div>}
 
           {/* Actions */}
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-            <button className="btn btn-secondary" style={{fontSize:12,padding:'8px 16px'}} onClick={()=>{setESOTab('items');setESOScrollItem(t.itemIdx);setESO(so);setESOC(c);setPg('orders')}}>
+            <button className="btn btn-secondary" style={{fontSize:12,padding:'8px 16px'}} onClick={()=>{setESOTab('items');setESOScrollItem(subs[0].itemIdx);setESO(so);setESOC(c);setPg('orders')}}>
               Open Sales Order</button>
           </div>
         </div>})()}
@@ -14060,18 +14144,20 @@ export default function App(){
         {fPull.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No open item fulfillment requests</div>:
         <div className="card"><div className="card-body" style={{padding:0}}>
           <table style={{fontSize:11}}><thead><tr>
-            <th style={{width:20}}></th><th>SO#</th><th>Customer</th><th>SKU</th><th>Item</th>
+            <th style={{width:20}}></th><th>SO#</th><th>IF#</th><th>Customer</th><th>SKU</th><th>Item</th>
             <th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Dest</th><th>Rep</th><th style={{width:60}}></th>
           </tr></thead><tbody>
-          {fPull.map((t,ti)=><tr key={ti} style={{cursor:'pointer',background:t.urgent?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
+          {fPull.map((t,ti)=>{const subs=t._subTasks||[t];const extraSkus=subs.length-1;
+            return<tr key={ti} style={{cursor:'pointer',background:t.urgent?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
             onClick={()=>setWhViewIF(t)}>
             <td>{t.urgent&&<span title={'Due in '+t.daysOut+'d'}>🔥</span>}{t.noDeco&&<span title="No decoration">📦</span>}</td>
             <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}</td>
+            <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#1e40af',whiteSpace:'nowrap'}}>{t.pickId||'—'}{extraSkus>0?<span title={subs.length+' items in this IF'} style={{marginLeft:4,fontSize:9,padding:'1px 5px',borderRadius:10,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>×{subs.length}</span>:null}</td>
             <td style={{fontWeight:600,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cName}</td>
-            <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#475569'}}>{t.sku}</td>
-            <td style={{fontSize:10,color:'#64748b',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.name}{t.color?' · '+t.color:''}</td>
+            <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#475569'}}>{subs[0].sku}{extraSkus>0?<span style={{color:'#94a3b8',fontWeight:600}}> +{extraSkus}</span>:null}</td>
+            <td style={{fontSize:10,color:'#64748b',maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{subs[0].name}{subs[0].color?' · '+subs[0].color:''}{extraSkus>0?' & '+extraSkus+' more':''}</td>
             <td style={{textAlign:'center',fontWeight:800,color:'#d97706'}}>{t.needsPull}</td>
-            <td style={{textAlign:'center'}}>{(()=>{const p=prod.find(pp=>pp.sku===t.sku);if(!p||!p._inv)return<span style={{color:'#cbd5e1'}}>—</span>;
+            <td style={{textAlign:'center'}}>{(()=>{if(subs.length>1)return<span style={{fontSize:9,color:'#94a3b8'}}>multi</span>;const p=prod.find(pp=>pp.sku===subs[0].sku);if(!p||!p._inv)return<span style={{color:'#cbd5e1'}}>—</span>;
               const total=Object.values(p._inv).reduce((a,v)=>a+(typeof v==='number'?v:0),0);
               return<span style={{fontWeight:700,color:total>=t.needsPull?'#166534':total>0?'#d97706':'#dc2626'}}>{total}</span>})()}</td>
             <td><div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
@@ -14084,7 +14170,7 @@ export default function App(){
             <td><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
               onClick={e=>{e.stopPropagation();setWhViewIF(t)}}>
               Pick →</button></td>
-          </tr>)}
+          </tr>})}
           </tbody></table>
         </div></div>}
       </>}
@@ -15574,8 +15660,79 @@ export default function App(){
             </div>
             <div style={{textAlign:'right',flexShrink:0,display:'flex',flexDirection:'column',gap:2,alignItems:'flex-end'}}>
               <div style={{fontSize:10,color:'#94a3b8'}}>{a.at}</div>
-              <button style={{fontSize:9,color:'#64748b',background:'none',border:'1px solid #e2e8f0',borderRadius:4,padding:'1px 6px',cursor:'pointer'}}
-                onClick={e=>{e.stopPropagation();setWhEditActionIdx(origIdx);setWhEditOrigSizes(a.sizes||null)}}>Edit</button>
+              <div style={{display:'flex',gap:4}}>
+                {a.type==='pulled'&&a.pickId&&a.soId&&<button style={{fontSize:9,color:'#1e40af',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:4,padding:'1px 6px',cursor:'pointer',fontWeight:700}}
+                  onClick={e=>{e.stopPropagation();
+                    // Re-open IF: flip every pulled pick_line with this pick_id on this SO back to 'pick' status, restoring the original requested sizes (when known) and inventory.
+                    const so2=sos.find(s=>s.id===a.soId);if(!so2){nf('SO not found','error');return}
+                    if(!window.confirm('Re-open IF '+a.pickId+'? Pulled inventory will be returned and the IF will appear back in the warehouse queue with its original requested quantities.'))return;
+                    const invReturns={};// productId -> {sz:qty}
+                    const updItems=safeItems(so2).map(it2=>{
+                      const picks=it2.pick_lines||[];
+                      const matching=picks.filter(pk=>pk.pick_id===a.pickId&&pk.status==='pulled');
+                      if(!matching.length)return it2;
+                      // Collect inv to return + restore sizes from _orig_sizes when present
+                      const restoreSizes={};
+                      matching.forEach(pk=>{
+                        const origSz=pk._orig_sizes&&Object.keys(pk._orig_sizes).length?pk._orig_sizes:Object.fromEntries(Object.entries(pk).filter(([k,v])=>typeof v==='number'&&v>0&&SZ_ORD.includes(k)));
+                        Object.entries(pk).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&SZ_ORD.includes(k)){const pid=it2.product_id||'';if(!invReturns[pid])invReturns[pid]={};invReturns[pid][k]=(invReturns[pid][k]||0)+v}});
+                        Object.entries(origSz).forEach(([sz,v])=>{restoreSizes[sz]=(restoreSizes[sz]||0)+(v||0)});
+                      });
+                      // If a sibling active pick already exists for this pick_id, fold restored sizes into it. Otherwise revive the first matching pulled line as 'pick'.
+                      let folded=false;
+                      let newPicks=picks.map(pk=>{
+                        if(pk.pick_id===a.pickId&&pk.status!=='pulled'&&!folded){folded=true;const u={...pk};Object.entries(restoreSizes).forEach(([sz,v])=>{u[sz]=(u[sz]||0)+v});return u}
+                        return pk;
+                      });
+                      if(!folded){
+                        // Drop pulled lines except the first, which we convert to 'pick' with restored sizes
+                        let usedRevival=false;
+                        newPicks=newPicks.flatMap(pk=>{
+                          if(pk.pick_id===a.pickId&&pk.status==='pulled'){
+                            if(usedRevival)return[];
+                            usedRevival=true;
+                            const revived={...pk,status:'pick'};delete revived.pulled_at;delete revived._partial;
+                            Object.keys(revived).forEach(k=>{if(SZ_ORD.includes(k)&&typeof revived[k]==='number')revived[k]=0});
+                            Object.entries(restoreSizes).forEach(([sz,v])=>{revived[sz]=v});
+                            return[revived];
+                          }
+                          return[pk];
+                        });
+                      } else {
+                        // Folded into the active pick — drop all pulled lines for this pick_id
+                        newPicks=newPicks.filter(pk=>!(pk.pick_id===a.pickId&&pk.status==='pulled'));
+                      }
+                      return{...it2,pick_lines:newPicks};
+                    });
+                    // Restore inventory (best effort — match by product_id, fall back to sku+color from the action)
+                    setProd(pp=>pp.map(x=>{
+                      const ret=invReturns[x.id]||(a.productId&&x.id===a.productId?invReturns['']:null)||(x.sku===a.sku&&(!a.color||x.color===a.color)?invReturns['']:null);
+                      if(!ret)return x;
+                      const newInv={...(x._inv||{})};Object.entries(ret).forEach(([sz,v])=>{newInv[sz]=(newInv[sz]||0)+v});
+                      return{...x,_inv:newInv};
+                    }));
+                    // Refresh job item_status so deco queues recompute
+                    const updJobs=safeJobs(so2).map(j=>{
+                      let total=0,fulfilled=0;
+                      (j.items||[]).forEach(gi=>{const it=updItems[gi.item_idx];if(!it)return;
+                        Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{total+=v;
+                          const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((b,pk)=>b+safeNum(pk[sz]),0);
+                          const rQ=safePOs(it).reduce((b,pk)=>b+safeNum((pk.received||{})[sz]),0);
+                          fulfilled+=Math.min(v,pQ+rQ);});
+                      });
+                      const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
+                      if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
+                      return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
+                    });
+                    savSO({...so2,items:updItems,jobs:updJobs,updated_at:new Date().toLocaleString()},{skipMerge:true});
+                    // Remove every recent action entry tied to this pick_id+SO so the history stays clean
+                    const nextActions=whRecentActions.filter(x=>!(x.type==='pulled'&&x.pickId===a.pickId&&x.soId===a.soId));
+                    setWhRecentActions(nextActions);_lsSet('nsa_wh_recent',JSON.stringify(nextActions));
+                    nf('🔓 '+a.pickId+' re-opened — back in the pull queue');
+                  }}>🔓 Re-open IF</button>}
+                <button style={{fontSize:9,color:'#64748b',background:'none',border:'1px solid #e2e8f0',borderRadius:4,padding:'1px 6px',cursor:'pointer'}}
+                  onClick={e=>{e.stopPropagation();setWhEditActionIdx(origIdx);setWhEditOrigSizes(a.sizes||null)}}>Edit</button>
+              </div>
             </div>
           </div>}
         </div>})}
