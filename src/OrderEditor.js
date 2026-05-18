@@ -1856,6 +1856,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(shipAmt),style:'text-align:right;border:none'}]}]:[]),
                     ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(taxRate*100).toFixed(3)+'%)</strong>',style:'text-align:right;border:none'},{value:_$(taxAmt),style:'text-align:right;border:none'}]}]:[]),
                     ...(_pdfCreditApplied>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$(_pdfCreditApplied)+'</strong>',style:'text-align:right;border:none'}]}]:[]),
+                    ...(o.promo_applied&&promoTotals?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Promo Funds Applied</strong>',style:'text-align:right;border:none;color:#92400e'},{value:'<strong style="color:#92400e">'+_$(safeNum(promoTotals.promoAmount))+'</strong>',style:'text-align:right;border:none'}]}]:[]),
                     {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(total)+'</strong>',style:'text-align:right'}]},
                   ]}],
                 footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+_ci.depositTerms:_ci.terms,
@@ -1973,19 +1974,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   }
                 }
               });
-              sv('promo_applied',true);sv('items',newItems);
+              const _promoUsed=promoBudget-remaining;
+              sv('promo_applied',true);sv('items',newItems);sv('promo_amount',_promoUsed);
               // On SOs (committed orders), deduct from balance + record usage immediately so the Promo $ tab and balance reflect the spend.
               // Estimates skip this — their promo is provisional until conversion to SO (handled in App.convertSO).
               if(isSO){
-                const promoUsed=promoBudget-remaining;
                 const targetPeriod=_ps[0];
-                if(promoUsed>0&&targetPeriod){
-                  const updatedPeriod={...targetPeriod,used:safeNum(targetPeriod.used)+promoUsed};
-                  const usageRec={period_id:targetPeriod.id,amount:promoUsed,description:o.memo||('Promo on '+o.id),created_by:cu?.name||'System',so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()};
+                if(_promoUsed>0&&targetPeriod){
+                  const updatedPeriod={...targetPeriod,used:safeNum(targetPeriod.used)+_promoUsed};
+                  const usageRec={period_id:targetPeriod.id,amount:_promoUsed,description:o.memo||('Promo on '+o.id),created_by:cu?.name||'System',so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()};
                   if(onSavePromoPeriod)await onSavePromoPeriod(updatedPeriod);else if(_dbSavePromoPeriod)await _dbSavePromoPeriod(updatedPeriod);
                   if(onSavePromoUsage)await onSavePromoUsage(usageRec);
                   setCust(c=>c?{...c,promo_periods:(c.promo_periods||[]).map(p=>p.id===targetPeriod.id?updatedPeriod:p),promo_usage:[...(c.promo_usage||[]),usageRec]}:c);
-                  sv('promo_amount',promoUsed);
                 }
               }
               const totalItems=items.filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0).length;
@@ -2108,7 +2108,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <span style={{fontSize:12,fontWeight:700,color:'#92400e'}}>Promo Total: ${promoTotals.promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
         {promoTotals.normalRev>0&&<span style={{fontSize:12}}>Customer Pays: <strong style={{color:'#166534'}}>${promoTotals.customerPays.toFixed(2)}</strong></span>}
         {promoTotals.normalRev===0&&promoTotals.promoCredit===0&&<span style={{fontSize:12,fontWeight:700,color:'#166534'}}>$0.00 Order</span>}
-        {(()=>{if(!cust)return null;const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);const _ownDeducted=(cust.promo_usage||[]).filter(u=>u.so_id===o.id).reduce((a,u)=>a+safeNum(u.amount),0);const _availableForThis=_bal+_ownDeducted;if(promoTotals.promoAmount>_availableForThis)return<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠️ Exceeds available funds — ${_availableForThis.toLocaleString(undefined,{maximumFractionDigits:2})} available</span>;return<span style={{fontSize:11,color:'#64748b'}}>Remaining: ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
+        {(()=>{if(!cust)return null;const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);const _ownDeducted=(cust.promo_usage||[]).filter(u=>u.so_id===o.id).reduce((a,u)=>a+safeNum(u.amount),0);const _availableForThis=_bal+_ownDeducted;if(promoTotals.promoAmount>_availableForThis)return<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠️ Exceeds available funds — ${_availableForThis.toLocaleString(undefined,{maximumFractionDigits:2})} available</span>;const _remainingAfter=Math.max(0,_availableForThis-safeNum(promoTotals.promoAmount));return<span style={{fontSize:11,color:'#64748b'}}>Remaining: ${_remainingAfter.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
       </div>}
       {/* Credit Summary */}
       {o.credit_applied&&safeNum(o.credit_amount)>0&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>
@@ -2218,7 +2218,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={dp.vendor+' — '+dp.deco_type?.replace(/_/g,' ')} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>{dp.po_id} · {dp.vendor}</span>)}
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
                 {(item.is_footwear||(item.available_sizes||[]).join(',')==='OSFA')&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:10,fontWeight:700,background:item.is_footwear?'#dcfce7':'#fef3c7',color:item.is_footwear?'#166534':'#92400e'}}>{item.is_footwear?'👟 Footwear':'🧢 OSFA'}</span>}
-                {o.promo_applied&&<label style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',background:item.is_promo?'#fef3c7':'#f1f5f9',color:item.is_promo?'#92400e':'#94a3b8',border:item.is_promo?'1px solid #fde68a':'1px solid #e2e8f0'}}><input type="checkbox" checked={item.is_promo||false} onChange={e=>{const checked=e.target.checked;if(checked){uI(idx,'_pre_promo_sell',item.unit_sell);uI(idx,'unit_sell',safeNum(item.retail_price)||safeNum(item.nsa_cost)*2);uI(idx,'is_promo',true)}else{uI(idx,'unit_sell',item._pre_promo_sell!=null?item._pre_promo_sell:item.unit_sell);uI(idx,'_pre_promo_sell',undefined);uI(idx,'is_promo',false)}}} style={{width:12,height:12}}/> Promo{item.is_promo&&item.retail_price?' ($'+item.retail_price+')':''}</label>}
+                {o.promo_applied&&item.is_promo&&<span title="Fully covered by promo at retail pricing" style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'help'}}>🎁 Promo{item.retail_price?' ($'+item.retail_price+')':''}</span>}
                 {o.promo_applied&&!item.is_promo&&safeNum(item._promo_partial_qty)>0&&<span title={'Promo covers '+item._promo_partial_qty+' of '+qty+' units at retail. Sell prices on this line are blended across all '+qty+' units.'} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'help'}}>🎁 {item._promo_partial_qty}/{qty} at retail (blended)</span>}</div>
               <div style={{display:'flex',alignItems:'center',gap:8,marginTop:4,flexWrap:'wrap'}}>
                 <span style={{fontSize:13,fontWeight:600}}>Sell: <$In value={item._sizeSells&&szQty>0?rQ(pRev/szQty):item.unit_sell} onChange={v=>{if(item._sizeSells&&item._sizeCosts){const ratio=item.nsa_cost>0?v/rQ(item.nsa_cost*(o.default_markup||1.65)):1;const ns={};Object.entries(item._sizeCosts).forEach(([sz,c])=>{ns[sz]=rQ(c*(o.default_markup||1.65)*ratio)});uI(idx,'_sizeSells',ns)}uI(idx,'unit_sell',v)}}/>/ea</span>
