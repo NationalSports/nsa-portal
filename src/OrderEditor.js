@@ -2508,11 +2508,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       </div>};
                   return<div style={{display:'flex',flexDirection:'column',gap:6}}>
                     <div style={{display:'flex',alignItems:'center',gap:6}}>
-                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:90}}>{sideLabels[0]} ink</span>
+                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:90}}>{sideLabels[0]}</span>
                       {renderPicker('print_color','e.g. White')}
                     </div>
                     <div style={{display:'flex',alignItems:'center',gap:6}}>
-                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:90}}>{sideLabels[1]} ink</span>
+                      <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:90}}>{sideLabels[1]}</span>
                       {renderPicker('print_color_b','e.g. Navy')}
                     </div>
                   </div>})():(()=>{
