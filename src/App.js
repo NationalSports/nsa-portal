@@ -6912,6 +6912,7 @@ export default function App(){
   const[expandedArtCard,setExpandedArtCard]=useState(null);// key of the art kanban card currently expanded (null = all collapsed)
   const[artJobDetailEditColors,setArtJobDetailEditColors]=useState(null);// editing color string or null
   const[artJobDetailEditSize,setArtJobDetailEditSize]=useState(null);// editing art size string or null
+  const[artJobDetailEditCW,setArtJobDetailEditCW]=useState(null);// editing color way: {artFileId, cwId, garment_color, inks} or null
   // Helper: build product search URL — uses Google Images to find the product
   const _vendorProductUrl=(sku,color,brand)=>'https://www.google.com/search?tbm=isch&q='+encodeURIComponent((sku||'')+' '+(brand||'')+' '+(color||''));
   const[artJobDetailApprovalMsg,setArtJobDetailApprovalMsg]=useState('');// message to include with approval send
@@ -15739,7 +15740,7 @@ export default function App(){
       const af=j.artFile;
       const cardKey=j.id+j.soId+view;
       const isExp=expandedArtCard===cardKey;
-      const openDetails=()=>{setArtJobDetailModal(j);setArtJobDetailMsg('');setArtJobDetailEditColors(null);setArtJobDetailApprovalMsg('')};
+      const openDetails=()=>{setArtJobDetailModal(j);setArtJobDetailMsg('');setArtJobDetailEditColors(null);setArtJobDetailEditCW(null);setArtJobDetailApprovalMsg('')};
       return<div key={cardKey} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
         {/* COMPACT HEADER — always visible. Click toggles expand. */}
         <div style={{padding:'8px 10px',cursor:'pointer',minWidth:0}} onClick={()=>setExpandedArtCard(isExp?null:cardKey)}>
@@ -16468,6 +16469,26 @@ export default function App(){
           setArtJobDetailEditColors(null);
           nf('Colors updated');
         };
+        // Color way editing — lets the artist rename a CW or adjust its ink list (e.g., customer changed Black to White).
+        // Writes to art_files[].color_ways[]; the rest of the UI reads CW labels/inks from that array.
+        const _startEditCW=(artFileId,cw)=>{
+          setArtJobDetailEditCW({artFileId,cwId:cw.id,garment_color:cw.garment_color||'',inks:[...(cw.inks||[''])]});
+        };
+        const _saveCW=()=>{
+          if(!artJobDetailEditCW)return;
+          const{artFileId,cwId,garment_color,inks}=artJobDetailEditCW;
+          const cleanInks=(inks||[]).map(s=>(s||'').trim()).filter(Boolean);
+          const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+          const updArt=safeArt(liveSO).map(a=>{
+            if(a.id!==artFileId)return a;
+            const cws=(a.color_ways||[]).map(c=>c.id===cwId?{...c,garment_color:(garment_color||'').trim(),inks:cleanInks}:c);
+            return{...a,color_ways:cws};
+          });
+          savSO({...liveSO,art_files:updArt});
+          setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
+          setArtJobDetailEditCW(null);
+          nf('Color way updated');
+        };
         // Composite key for per-item mockups: SKU + color, so the same SKU in
         // different colors doesn't collapse onto a single entry.
         const _mockKey=(sku,color)=>sku+'|'+(color||'');
@@ -16865,7 +16886,30 @@ export default function App(){
                           <div style={{minWidth:120,paddingTop:2}}>
                             <div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{pos||'—'}</div>
                             {deco.artFile&&<div style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>{deco.artFile.title||deco.artFile.name||'—'}</div>}
-                            {deco.cwLabel&&<div style={{fontSize:10,fontWeight:600,color:'#0369a1',background:'#e0f2fe',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>CW: {deco.cwLabel}</div>}
+                            {deco.colorWayId&&deco.artFile&&(()=>{const _isEditingThisCW=artJobDetailEditCW&&artJobDetailEditCW.cwId===deco.colorWayId&&artJobDetailEditCW.artFileId===deco.artFile.id;
+                              if(!_isEditingThisCW){const _cwObj=(deco.artFile.color_ways||[]).find(c=>c.id===deco.colorWayId);return<div style={{display:'inline-flex',alignItems:'center',gap:4,marginTop:2}}>
+                                <div style={{fontSize:10,fontWeight:600,color:'#0369a1',background:'#e0f2fe',padding:'1px 6px',borderRadius:3}}>CW: {deco.cwLabel||'—'}</div>
+                                {_cwObj&&<button title="Edit color way" onClick={()=>_startEditCW(deco.artFile.id,_cwObj)} style={{background:'none',border:'1px solid #bae6fd',color:'#0369a1',fontSize:9,fontWeight:700,cursor:'pointer',padding:'1px 5px',borderRadius:3}}>✏️</button>}
+                              </div>}
+                              return<div style={{marginTop:2,padding:6,background:'#eff6ff',border:'1px solid #bae6fd',borderRadius:4,display:'flex',flexDirection:'column',gap:4}}>
+                                <div style={{display:'flex',gap:4,alignItems:'center'}}>
+                                  <span style={{fontSize:9,fontWeight:700,color:'#0369a1',minWidth:46}}>Garment:</span>
+                                  <input className="form-input" value={artJobDetailEditCW.garment_color} onChange={e=>setArtJobDetailEditCW({...artJobDetailEditCW,garment_color:e.target.value})} placeholder="e.g. White" style={{fontSize:11,padding:'2px 6px',flex:1,minWidth:80}}/>
+                                </div>
+                                <div style={{display:'flex',flexDirection:'column',gap:3}}>
+                                  <span style={{fontSize:9,fontWeight:700,color:'#0369a1'}}>Inks:</span>
+                                  {artJobDetailEditCW.inks.map((ink,ii)=><div key={ii} style={{display:'flex',gap:3,alignItems:'center'}}>
+                                    <input className="form-input" value={ink} onChange={e=>{const upd=[...artJobDetailEditCW.inks];upd[ii]=e.target.value;setArtJobDetailEditCW({...artJobDetailEditCW,inks:upd})}} placeholder="Ink color" style={{fontSize:11,padding:'2px 6px',flex:1,minWidth:80}}/>
+                                    <button onClick={()=>{const upd=artJobDetailEditCW.inks.filter((_,x)=>x!==ii);setArtJobDetailEditCW({...artJobDetailEditCW,inks:upd.length?upd:['']})}} style={{background:'none',border:'none',color:'#dc2626',fontSize:12,cursor:'pointer',padding:'0 4px',fontWeight:700}}>×</button>
+                                  </div>)}
+                                  <button onClick={()=>setArtJobDetailEditCW({...artJobDetailEditCW,inks:[...artJobDetailEditCW.inks,'']})} style={{background:'none',border:'1px dashed #93c5fd',color:'#0369a1',fontSize:10,fontWeight:700,cursor:'pointer',padding:'2px 6px',borderRadius:3,alignSelf:'flex-start'}}>+ Add ink</button>
+                                </div>
+                                <div style={{display:'flex',gap:4}}>
+                                  <button onClick={_saveCW} style={{background:'#0369a1',border:'none',color:'white',fontSize:10,fontWeight:700,cursor:'pointer',padding:'3px 10px',borderRadius:3}}>Save</button>
+                                  <button onClick={()=>setArtJobDetailEditCW(null)} style={{background:'none',border:'1px solid #cbd5e1',color:'#475569',fontSize:10,fontWeight:700,cursor:'pointer',padding:'3px 10px',borderRadius:3}}>Cancel</button>
+                                </div>
+                              </div>;
+                            })()}
                           </div>
                           <div style={{flex:1,display:'flex',flexWrap:'wrap',gap:4,alignItems:'center'}}>
                             <span style={{fontSize:11,color:'#475569',fontWeight:600}}>{method}</span>
