@@ -874,9 +874,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(offer>0)return offer;
         // Try offerPrice/salePrice fields
         const op=parseFloat(e.offerPrice||e.salePrice||0);if(op>0)return op;
-        // Fall back to Display/List * 0.5 (retail-to-wholesale estimate)
-        if(display>0)return display*0.5;
-        const lp=parseFloat(e.listPrice||0);if(lp>0)return lp*0.5;
+        // Fall back to Display/List * 0.5 (retail-to-wholesale estimate) — this is a guess, not real pricing.
+        // Log it so we can identify entries where Momentec didn't return an Offer price.
+        if(display>0){console.warn('[Momentec] No Offer price on',e.partNumber||e.name,'— estimating wholesale as Display * 0.5 =',(display*0.5).toFixed(2));return display*0.5}
+        const lp=parseFloat(e.listPrice||0);if(lp>0){console.warn('[Momentec] No Offer/Display price on',e.partNumber||e.name,'— estimating wholesale as listPrice * 0.5 =',(lp*0.5).toFixed(2));return lp*0.5}
         // Last resort: lowest price in array
         let min=Infinity;if(prices.length){for(const p of prices){const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>0&&v<min)min=v}}
         return min<Infinity?min:0;
@@ -936,18 +937,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // Process child SKUs from detailed response for colors (HCL Commerce uses both SKUs and sKUs casing)
         const skus=src.SKUs||src.sKUs||detail?.SKUs||detail?.sKUs||[];
         if(skus.length){
+          // Sizes considered "base" (no upcharge) — use these to set the color's base price
+          const BASE_SIZES=new Set(['XS','S','SM','M','MD','L','LG','XL']);
           for(const sk of skus){
             const skPrice=mtCost(getOfferPrice(sk));const skColor=getColor(sk)||'Default';const skSize=getSize(sk);
             const skImg=colorImgMap[skColor]||sk.thumbnail||sk.fullImage||'';
             const skBackImg=sk.fullImageBack||sk.backImage||'';
+            const isBaseSize=skSize&&BASE_SIZES.has(skSize.toUpperCase());
             if(!style.colors[skColor]){
               style.colors[skColor]={colorName:skColor,sku:sk.partNumber||sk.SKUPartNumber||baseSku,piecePrice:skPrice,customerPrice:skPrice,
-                colorFrontImage:skImg||style.styleImage,colorBackImage:skBackImg||style.styleBackImage||'',sizes:[],totalQty:0};
-            }else{const c=style.colors[skColor];if(skPrice>0&&(c.customerPrice===0||skPrice<c.customerPrice)){c.customerPrice=skPrice;c.piecePrice=skPrice}if(skImg&&!c.colorFrontImage)c.colorFrontImage=skImg;if(skBackImg&&!c.colorBackImage)c.colorBackImage=skBackImg}
+                colorFrontImage:skImg||style.styleImage,colorBackImage:skBackImg||style.styleBackImage||'',sizes:[],totalQty:0,_basePriceFromBaseSize:isBaseSize};
+            }else{const c=style.colors[skColor];
+              // Prefer base-size pricing: if we haven't locked in a base-size price yet, or this is a base size with a lower price, update.
+              // This avoids the bug where a color's "base" price is set to a 2XL+ upcharge because base-size SKUs were missing/late.
+              if(skPrice>0){
+                const shouldUpdate=isBaseSize&&!c._basePriceFromBaseSize
+                  ||isBaseSize&&c._basePriceFromBaseSize&&skPrice<c.customerPrice
+                  ||!isBaseSize&&!c._basePriceFromBaseSize&&(c.customerPrice===0||skPrice<c.customerPrice);
+                if(shouldUpdate){c.customerPrice=skPrice;c.piecePrice=skPrice;if(isBaseSize)c._basePriceFromBaseSize=true}
+              }
+              if(skImg&&!c.colorFrontImage)c.colorFrontImage=skImg;if(skBackImg&&!c.colorBackImage)c.colorBackImage=skBackImg}
             // Add size entry with per-size price (sizes like 3XL+ are more expensive)
             if(skSize){const c=style.colors[skColor];if(!c.sizes.find(s=>s.sizeName===skSize)){c.sizes.push({sizeName:skSize,qty:0,price:skPrice})}}
             if(skPrice>0&&(style._mtPrice===0||skPrice<style._mtPrice))style._mtPrice=skPrice;
           }
+          // Cleanup internal marker so it doesn't leak into UI state
+          Object.values(style.colors).forEach(c=>{delete c._basePriceFromBaseSize});
         }
         // If no child SKUs found, add single color from attributes or default
         if(!Object.keys(style.colors).length){
@@ -5080,19 +5095,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div><label className="form-label">Expected Date</label><input className="form-input" type="date" id={'po-date-'+(preexistingPO?'preexisting':autoPoId)}/></div></div>
           <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" id={'po-dropship-'+(preexistingPO?'preexisting':autoPoId)}/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school/decorator, skip warehouse receive</span></label></div>
           {poItems.map((it,vi)=>{const soQ=Object.values(it.sizes).reduce((a,v)=>a+v,0);const excluded=!!poExcluded[vi];const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const rawCost=catP?safeNum(catP.nsa_cost):safeNum(it.nsa_cost);const catCost=isAdidas?Math.floor(rawCost*100)/100:rawCost;
+            // Per-size pricing: vendors like Momentec/SanMar charge upcharges for 2XL+. If the item has a _sizeCosts map
+            // with size-level variation, render a price input per size so the upcharge isn't lost when creating the PO.
+            const sizeCostMap=it._sizeCosts||{};
+            const priceForSize=sz=>{const sc=safeNum(sizeCostMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):catCost};
+            const distinctPrices=new Set(it.openSizes.map(([sz])=>priceForSize(sz).toFixed(2)));
+            const hasSizeUpcharges=distinctPrices.size>1;
             return<div key={vi} style={{padding:12,border:'1px solid '+(excluded?'#f1f5f9':'#e2e8f0'),borderRadius:6,marginBottom:8,opacity:excluded?0.4:1,transition:'opacity 0.15s'}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
                 <div style={{display:'flex',alignItems:'center',gap:8}}><input type="checkbox" checked={!excluded} onChange={()=>setPOExcluded(x=>({...x,[vi]:!x[vi]}))} style={{marginTop:1}}/><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:4}}>{it.sku}</span><strong>{it.name}</strong> — {it.color}</div>
                 <div style={{fontWeight:700}}>SO Qty: {soQ} <span style={{color:'#dc2626',fontSize:12,marginLeft:6}}>Open: {it.totalOpen}</span></div></div>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>PO Qty:</span>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b',width:64}}>PO Qty:</span>
                 {it.openSizes.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
                   <input id={'po-qty-'+vi+'-'+sz} style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={v}/></div>)}</div>
-              <div style={{display:'flex',gap:8,alignItems:'center',marginTop:8}}>
-                <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Price/Unit:</span>
+              {hasSizeUpcharges?<div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:8}}>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b',width:64}}>Price/Unit:</span>
+                {it.openSizes.map(([sz])=>{const p=priceForSize(sz);const isUpcharge=p.toFixed(2)!==catCost.toFixed(2);return<div key={sz} style={{textAlign:'center'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:isUpcharge?'#b45309':'#94a3b8'}}>{sz}</div>
+                  <input id={'po-price-'+vi+'-'+sz} style={{width:52,textAlign:'center',border:'1px solid '+(isUpcharge?'#fcd34d':'#d1d5db'),borderRadius:4,padding:'4px 2px',fontSize:13,fontWeight:700,color:isUpcharge?'#b45309':'#0f172a',background:isUpcharge?'#fffbeb':'white'}} defaultValue={p.toFixed(2)}/>
+                </div>})}
+                <span style={{fontSize:10,color:'#b45309',marginLeft:4}} title="Larger sizes typically carry an upcharge from the vendor">Size upcharges applied</span>
+              </div>:<div style={{display:'flex',gap:8,alignItems:'center',marginTop:8}}>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b',width:64}}>Price/Unit:</span>
                 <span style={{fontSize:12,color:'#94a3b8'}}>$</span>
                 <input id={'po-price-'+vi} style={{width:80,border:'1px solid #d1d5db',borderRadius:4,padding:'4px 6px',fontSize:14,fontWeight:700}} defaultValue={catCost.toFixed(2)}/>
-              </div>
+              </div>}
             </div>})}
           <div style={{marginTop:8}}><label className="form-label">Notes</label><input className="form-input" placeholder="PO notes for vendor..." id={'po-notes-'+poId}/></div></>}
         </div>
@@ -5105,11 +5133,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const sizes={};
               pit.openSizes.forEach(([sz,v])=>{const el=document.getElementById('po-qty-'+vi+'-'+sz);sizes[sz]=el?parseInt(el.value)||0:v});
               const qty=Object.values(sizes).reduce((a,v)=>a+v,0);
-              const batchPriceEl=document.getElementById('po-price-'+vi);
               const batchCatProd=products.find(p=>p.id===pit.product_id||p.sku===pit.sku);
-              const batchUnitCost=batchPriceEl?parseFloat(String(batchPriceEl.value).replace(/[$,\s]/g,''))||0:safeNum(batchCatProd?.nsa_cost??pit.nsa_cost);
-              totalCost+=qty*batchUnitCost;
-              batchItems.push({sku:pit.sku,name:pit.name,color:pit.color,sizes,qty,unit_cost:batchUnitCost,item_idx:pit._idx});
+              const fallbackCost=safeNum(batchCatProd?.nsa_cost??pit.nsa_cost);
+              // Prefer per-size price inputs (size upcharges); fall back to single Price/Unit input
+              const sizePriceEls=pit.openSizes.map(([sz])=>document.getElementById('po-price-'+vi+'-'+sz));
+              const hasSizePrices=sizePriceEls.some(el=>el);
+              const sizeCosts={};let batchUnitCost=0;let batchLineTotal=0;
+              if(hasSizePrices){
+                pit.openSizes.forEach(([sz],i)=>{const el=sizePriceEls[i];const p=el?parseFloat(String(el.value).replace(/[$,\s]/g,''))||0:safeNum(pit._sizeCosts?.[sz])||fallbackCost;sizeCosts[sz]=p;batchLineTotal+=(sizes[sz]||0)*p});
+                batchUnitCost=qty>0?Math.round((batchLineTotal/qty)*100)/100:fallbackCost;
+              }else{
+                const batchPriceEl=document.getElementById('po-price-'+vi);
+                batchUnitCost=batchPriceEl?parseFloat(String(batchPriceEl.value).replace(/[$,\s]/g,''))||0:fallbackCost;
+                batchLineTotal=qty*batchUnitCost;
+              }
+              totalCost+=batchLineTotal;
+              const bItem={sku:pit.sku,name:pit.name,color:pit.color,sizes,qty,unit_cost:batchUnitCost,item_idx:pit._idx};
+              if(hasSizePrices&&new Set(Object.values(sizeCosts).map(v=>v.toFixed(2))).size>1)bItem._size_costs=sizeCosts;
+              batchItems.push(bItem);
             });
             const bpId='BPO '+Date.now();
             const bp={id:bpId,vendor_key:batchKey,vendor_name:batchConfig.name,so_id:o.id,so_memo:o.memo||'',customer:cust?.alpha_tag||cust?.name||'',po_id:autoPoId,
@@ -5120,6 +5161,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             batchItems.forEach(bit=>{
               const idx=bit.item_idx;if(idx==null||!updatedItems[idx])return;
               const poLine={po_id:autoPoId,vendor:vn,status:'queued',created_at:new Date().toLocaleDateString(),memo:'Batch queue — '+batchConfig.name,received:{},shipments:[],unit_cost:bit.unit_cost,batch_queue_id:bpId};
+              if(bit._size_costs)poLine._size_costs=bit._size_costs;
               Object.entries(bit.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
               const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
               if(hasQty)updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
@@ -5142,16 +5184,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(poExcluded[vi])return;
             const idx=pit._idx;if(idx==null)return;
             const isDropShip=document.getElementById(dropShipElId)?.checked||false;
-            const priceEl=document.getElementById('po-price-'+vi);
             const catProd=products.find(p=>p.id===pit.product_id||p.sku===pit.sku);
-            const unitCostVal=priceEl?parseFloat(String(priceEl.value).replace(/[$,\s]/g,''))||0:safeNum(catProd?.nsa_cost??pit.nsa_cost);
+            const fallbackCost=safeNum(catProd?.nsa_cost??pit.nsa_cost);
+            // Read PO qtys first so we can weight per-size prices
+            const lineSizes={};pit.openSizes.forEach(([sz,v])=>{const el=document.getElementById('po-qty-'+vi+'-'+sz);lineSizes[sz]=el?parseInt(el.value)||0:v});
+            const lineQty=Object.values(lineSizes).reduce((a,v)=>a+v,0);
+            // Prefer per-size price inputs (size upcharges); fall back to single Price/Unit input
+            const sizePriceEls=pit.openSizes.map(([sz])=>document.getElementById('po-price-'+vi+'-'+sz));
+            const hasSizePrices=sizePriceEls.some(el=>el);
+            const sizeCosts={};let unitCostVal=0;
+            if(hasSizePrices){
+              let lineTotal=0;
+              pit.openSizes.forEach(([sz],i)=>{const el=sizePriceEls[i];const p=el?parseFloat(String(el.value).replace(/[$,\s]/g,''))||0:safeNum(pit._sizeCosts?.[sz])||fallbackCost;sizeCosts[sz]=p;lineTotal+=(lineSizes[sz]||0)*p});
+              unitCostVal=lineQty>0?Math.round((lineTotal/lineQty)*100)/100:fallbackCost;
+            }else{
+              const priceEl=document.getElementById('po-price-'+vi);
+              unitCostVal=priceEl?parseFloat(String(priceEl.value).replace(/[$,\s]/g,''))||0:fallbackCost;
+            }
             const poLine={po_id:effectivePoId,vendor:vn,status:preexistingPO?'ordered':'waiting',created_at:new Date().toLocaleDateString(),memo:preexistingPO?'Preexisting PO (NetSuite)':'',received:{},shipments:[],unit_cost:unitCostVal};
+            if(hasSizePrices&&new Set(Object.values(sizeCosts).map(v=>v.toFixed(2))).size>1)poLine._size_costs=sizeCosts;
             if(preexistingPO)poLine.preexisting=true;
             if(isDropShip)poLine.drop_ship=true;
-            pit.openSizes.forEach(([sz,v])=>{
-              const el=document.getElementById('po-qty-'+vi+'-'+sz);
-              poLine[sz]=el?parseInt(el.value)||0:v;
-            });
+            Object.entries(lineSizes).forEach(([sz,v])=>{poLine[sz]=v});
             const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
             if(hasQty){
               updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
@@ -6610,10 +6664,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>}
             <div style={{marginTop:6}}>
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>Sample Art / Reference Files</div>
-              <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-                <button style={{fontSize:10,padding:'3px 10px',background:'#f1f5f9',border:'1px solid #d1d5db',borderRadius:4,cursor:'pointer',color:'#475569',fontWeight:600}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.onchange=async()=>{for(const f of Array.from(inp.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-requests');const gs=[...jobWizard.groups];gs[gi]={...gs[gi],files:[...(gs[gi].files||[]),{name:f.name,size:f.size,type:f.type,url}]};setJobWizard({...jobWizard,groups:gs})}catch(err){nf('Upload failed: '+err.message,'error')}}};inp.click()}}>+ Add Files</button>
+              {(()=>{const uploadFiles=async(fileList)=>{for(const f of Array.from(fileList||[])){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-requests');const gs=[...jobWizard.groups];gs[gi]={...gs[gi],files:[...(gs[gi].files||[]),{name:f.name,size:f.size,type:f.type,url}]};setJobWizard({...jobWizard,groups:gs})}catch(err){nf('Upload failed: '+err.message,'error')}}};
+              return<div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',padding:'4px 6px',border:'1px dashed #cbd5e1',borderRadius:4,background:'#fafafa',transition:'border-color 0.15s, background 0.15s'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#f5f3ff'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#fafafa'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#fafafa';uploadFiles(e.dataTransfer.files)}}>
+                <button style={{fontSize:10,padding:'3px 10px',background:'#f1f5f9',border:'1px solid #d1d5db',borderRadius:4,cursor:'pointer',color:'#475569',fontWeight:600}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.onchange=()=>uploadFiles(inp.files);inp.click()}}>+ Add Files</button>
+                <span style={{fontSize:10,color:'#94a3b8'}}>or drop files here</span>
                 {(g.files||[]).map((f,fi)=><span key={fi} style={{fontSize:10,padding:'2px 6px',background:'#ede9fe',borderRadius:3,color:'#6d28d9',fontWeight:600,display:'flex',alignItems:'center',gap:3}}>{f.name}<button style={{background:'none',border:'none',color:'#dc2626',cursor:'pointer',fontSize:12,padding:0,lineHeight:1}} onClick={()=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],files:(gs[gi].files||[]).filter((_,i)=>i!==fi)};setJobWizard({...jobWizard,groups:gs})}}>×</button></span>)}
-              </div>
+              </div>})()}
             </div>
           </div>}
         </div>)}
