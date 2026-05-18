@@ -5,6 +5,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks } from './components';
 import { dP, rQ, DTF, mergeColors } from './pricing';
 import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, getBillingContacts, getAthleticDirectorContacts } from './utils';
+import { StripePaymentModal } from './modals';
 
 // CUSTOMER DETAIL
 

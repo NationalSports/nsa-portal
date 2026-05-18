@@ -1,6 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
+import { loadStripe } from '@stripe/stripe-js';
 import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES } from './constants';
 import { safeNum, safeItems, safeSizes, safeArr, safeStr, safeDecos } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, SortHeader, PantoneAdder, SearchSelect } from './components';
@@ -453,14 +454,22 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
 }
 
 // ─── STRIPE CHECKOUT ───
-const CC_FEE_PORTAL=0.029;// 2.9% CC surcharge — matches admin CC_FEE_PCT
+const CC_FEE_PORTAL_DEFAULT=0.029;// 2.9% CC surcharge — matches admin CC_FEE_PCT
+
+// Lazy-init Stripe so the payment modal works regardless of which page
+// (CoachPortal, CustDetail, etc.) imports the modal first.
+const _stripePkPublic = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_STRIPE_PK) || '';
+let stripePromise = null;
+try { if (_stripePkPublic) stripePromise = loadStripe(_stripePkPublic); }
+catch(e) { console.warn('[Stripe] Init failed:', e.message); }
 
 
-function StripeCheckoutForm({amount,onSuccess,onCancel}){
+function StripeCheckoutForm({amount,feePct,onSuccess,onCancel}){
   const stripe=useStripe();const elements=useElements();
   const[processing,setProcessing]=useState(false);
   const[error,setError]=useState(null);
-  const fee=Math.round(amount*CC_FEE_PORTAL*100)/100;
+  const _feePct=typeof feePct==='number'?feePct:CC_FEE_PORTAL_DEFAULT;
+  const fee=Math.round(amount*_feePct*100)/100;
   const total=amount+fee;
 
   const handleSubmit=async(e)=>{
@@ -484,7 +493,7 @@ function StripeCheckoutForm({amount,onSuccess,onCancel}){
     {error&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,color:'#dc2626',fontSize:12,marginBottom:12}}>{error}</div>}
     <div style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:16,fontSize:12}}>
       <div style={{display:'flex',justifyContent:'space-between'}}><span>Subtotal:</span><span>${amount.toLocaleString(undefined,{minimumFractionDigits:2})}</span></div>
-      <div style={{display:'flex',justifyContent:'space-between',color:'#d97706'}}><span>Processing Fee (2.9%):</span><span>+${fee.toFixed(2)}</span></div>
+      <div style={{display:'flex',justifyContent:'space-between',color:'#d97706'}}><span>Processing Fee ({(_feePct*100).toFixed(2).replace(/\.?0+$/,'')}%):</span><span>+${fee.toFixed(2)}</span></div>
       <div style={{display:'flex',justifyContent:'space-between',fontWeight:800,borderTop:'2px solid #e2e8f0',paddingTop:6,marginTop:6,fontSize:14}}><span>Total:</span><span>${total.toFixed(2)}</span></div>
     </div>
     <div style={{display:'flex',gap:8}}>
@@ -497,12 +506,13 @@ function StripeCheckoutForm({amount,onSuccess,onCancel}){
 }
 
 
-function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,onSuccess,onClose}){
+function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct,paymentNote,onSuccess,onClose}){
   const[clientSecret,setClientSecret]=useState(null);
   const[loading,setLoading]=useState(true);
   const[error,setError]=useState(null);
+  const _feePct=typeof feePct==='number'?feePct:CC_FEE_PORTAL_DEFAULT;
   const totalDue=invoices.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
-  const fee=Math.round(totalDue*CC_FEE_PORTAL*100)/100;
+  const fee=Math.round(totalDue*_feePct*100)/100;
   const totalCharge=totalDue+fee;
   const invoiceIds=invoices.map(i=>i.id).join(', ');
 
@@ -538,7 +548,13 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,onSucc
         <div style={{fontSize:13,opacity:0.8,marginTop:2}}>{customerName} · {invoiceIds}</div>
       </div>
       <div style={{padding:'20px 24px'}}>
-        {loading&&<div style={{textAlign:'center',padding:40}}><div style={{fontSize:14,color:'#64748b'}}>Setting up secure checkout...</div></div>}
+        {paymentNote&&<div style={{padding:'10px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e40af',marginBottom:12,lineHeight:1.4}}>{paymentNote}</div>}
+        {loading&&<div style={{textAlign:'center',padding:40}}>
+          <div style={{display:'inline-block',width:28,height:28,border:'3px solid #e2e8f0',borderTop:'3px solid #22c55e',borderRadius:'50%',animation:'spin 0.8s linear infinite',marginBottom:10}}/>
+          <div style={{fontSize:14,color:'#64748b'}}>Setting up secure checkout...</div>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>This usually takes a few seconds.</div>
+          <button className="btn btn-secondary btn-sm" style={{marginTop:14,fontSize:11}} onClick={onClose}>Cancel</button>
+        </div>}
         {error&&<div style={{padding:20,textAlign:'center'}}>
           <div style={{fontSize:32,marginBottom:8}}>⚠️</div>
           <div style={{fontSize:14,color:'#dc2626',fontWeight:600,marginBottom:4}}>{error}</div>
@@ -546,7 +562,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,onSucc
           <button className="btn btn-secondary" onClick={onClose}>Close</button>
         </div>}
         {clientSecret&&stripePromise&&<Elements stripe={stripePromise} options={{clientSecret,appearance:{theme:'stripe',variables:{colorPrimary:'#22c55e',borderRadius:'8px'}}}}>
-          <StripeCheckoutForm amount={totalDue} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
+          <StripeCheckoutForm amount={totalDue} feePct={_feePct} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
         </Elements>}
       </div>
     </div>

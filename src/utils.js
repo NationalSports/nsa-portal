@@ -176,6 +176,54 @@ export const printDoc=opts=>{
   const w=window.open('','_blank');if(!w)return;
   w.document.write(docHtml);w.document.close();setTimeout(()=>w.print(),300);
 };
+
+// Print a 4x6 thermal/label-printer-friendly QR label. The QR image is loaded
+// from api.qrserver.com; we wait for it to finish loading (with a safety
+// timeout) before triggering print, otherwise the browser prints an empty
+// box where the QR should be.
+export const printQrLabel=({id,qrData,lines,shipBadge})=>{
+  const w=window.open('','_blank','width=420,height=620');if(!w)return;
+  const qrSrc='https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=4&data='+encodeURIComponent(qrData||id||'');
+  const safeLines=(lines||[]).filter(Boolean).map(l=>typeof l==='string'?{text:l}:l);
+  const badgeHtml=shipBadge?`<div class="ship" style="border-color:${shipBadge.color||'#d97706'};color:${shipBadge.color||'#92400e'};background:${shipBadge.bg||'#fffbeb'}">${shipBadge.text}</div>`:'';
+  const linesHtml=safeLines.map(l=>{
+    const cls=l.cls?' class="'+l.cls+'"':'';
+    const style=l.style?' style="'+l.style+'"':'';
+    return '<p'+cls+style+'>'+l.text+'</p>';
+  }).join('');
+  const html=`<!doctype html><html><head><title>${id||'Label'}</title>
+<style>
+  @page{size:4in 6in;margin:0.15in}
+  @media print{html,body{width:3.7in}}
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;font-family:Helvetica,Arial,sans-serif;color:#0f172a}
+  body{padding:6px 8px;width:3.7in}
+  .qr-wrap{text-align:center;margin-bottom:6px}
+  .qr-wrap img{width:1.9in;height:1.9in;display:block;margin:0 auto;image-rendering:pixelated}
+  h1{font-size:22px;margin:0 0 4px;line-height:1.1;text-align:center}
+  .sub{font-size:11px;color:#475569;text-align:center;margin:0 0 8px}
+  p{margin:3px 0;font-size:13px;line-height:1.25}
+  .sz{font-size:18px;font-weight:800;letter-spacing:0.5px}
+  .ship{padding:6px 8px;border:2px solid #d97706;border-radius:6px;font-weight:800;font-size:13px;text-align:center;margin:6px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .muted{color:#64748b;font-size:11px}
+  strong{font-weight:700}
+</style>
+</head><body>
+  <div class="qr-wrap"><img id="qr" src="${qrSrc}" alt="${id||''}"/></div>
+  <h1>${id||''}</h1>
+  ${badgeHtml}
+  ${linesHtml}
+<script>
+  var printed=false;
+  function go(){if(printed)return;printed=true;setTimeout(function(){window.focus();window.print();},80);}
+  var img=document.getElementById('qr');
+  if(img){if(img.complete&&img.naturalWidth>0){go();}else{img.addEventListener('load',go);img.addEventListener('error',go);}}
+  // Safety fallback: print after 3s even if the image never loads.
+  setTimeout(go,3000);
+</script>
+</body></html>`;
+  w.document.write(html);w.document.close();
+};
 // Auto-download the document as a PDF file. Renders the same HTML used for
 // printing/email attachments via html2pdf, with flex→table CSS overrides so
 // html2canvas lays it out correctly.
