@@ -9,7 +9,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks, ImgGallery } from './components';
 import { CustModal } from './modals';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 
@@ -625,6 +625,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
   };
   const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);const[poEmail,setPoEmail]=useState(null);
+  // Open the IF (pick) modal aggregating ALL line items that share the same pick_id.
+  // Falls back to single-line edit when no pick_id is set (legacy/unsaved picks).
+  const openPickModal=(pickId,fallbackLineIdx,fallbackPickIdx)=>{
+    const picks=[];
+    if(pickId){
+      safeItems(o).forEach((it,li)=>{(it.pick_lines||[]).forEach((pl,pi)=>{if(pl.pick_id===pickId)picks.push({lineIdx:li,pickIdx:pi,pick:{...pl}})})});
+    }
+    if(picks.length===0){
+      const pl=o.items?.[fallbackLineIdx]?.pick_lines?.[fallbackPickIdx];
+      if(!pl)return;
+      picks.push({lineIdx:fallbackLineIdx,pickIdx:fallbackPickIdx,pick:{...pl}});
+    }
+    setEditPick({pickId:pickId||picks[0].pick.pick_id||'',picks});
+  };
   // Helper: effective PO committed qty for a size (ordered minus cancelled)
   const poCommitted=(poLines,sz)=>(poLines||[]).reduce((a,pk)=>{const ordered=pk[sz]||0;const cancelled=(pk.cancelled||{})[sz]||0;return a+(ordered-cancelled)},0);
   const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[editingItemName,setEditingItemName]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});
@@ -2315,7 +2329,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {isSO&&(item.pick_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
           {safePicks(item).map((pk,pi)=>{const st=pk.status||'pick';
             return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:2}}>
-              <span style={{fontSize:10,fontWeight:700,width:46,color:st==='pulled'?'#166534':'#92400e',cursor:'pointer',textDecoration:'underline'}} onClick={()=>setEditPick({lineIdx:idx,pickIdx:pi,pick:pk})} title="Click to edit">{pk.pick_id||'PICK'}:</span>
+              <span style={{fontSize:10,fontWeight:700,width:46,color:st==='pulled'?'#166534':'#92400e',cursor:'pointer',textDecoration:'underline'}} onClick={()=>openPickModal(pk.pick_id,idx,pi)} title="Click to edit">{pk.pick_id||'PICK'}:</span>
               {szs.map(sz=>{const v=pk[sz]||0;if(!v)return<div key={sz} style={{width:48,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
                 return<div key={sz} style={{width:48,textAlign:'center',fontSize:12,fontWeight:700,padding:'2px 0',borderRadius:3,
                   background:st==='pulled'?'#dcfce7':st==='pick'?'#fef3c7':'#f1f5f9',
@@ -7010,10 +7024,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {isSO&&(()=>{
       const allPickIds=[];const allPoIds=[];
       safeItems(o).forEach((it,i)=>{
-        safePicks(it).forEach((pk,pi)=>{if(pk.pick_id&&!allPickIds.find(x=>x.id===pk.pick_id)){
+        safePicks(it).forEach((pk,pi)=>{if(pk.pick_id){
           const qty=Object.entries(pk).reduce((a,[k,v])=>k!=='status'&&k!=='pick_id'&&typeof v==='number'?a+v:a,0);
           const itemTotal=qty*it.unit_sell;
-          allPickIds.push({id:pk.pick_id,status:pk.status||'pick',qty,lineIdx:i,pickIdx:pi,sku:it.sku,name:it.name,color:it.color,total:itemTotal,created_at:pk.created_at,memo:pk.memo})}});
+          const existing=allPickIds.find(x=>x.id===pk.pick_id);
+          if(existing){existing.qty+=qty;existing.total+=itemTotal;existing.skus.push({sku:it.sku,name:it.name,color:it.color});if(pk.status!=='pulled')existing.status='pick';}
+          else allPickIds.push({id:pk.pick_id,status:pk.status||'pick',qty,lineIdx:i,pickIdx:pi,sku:it.sku,name:it.name,color:it.color,total:itemTotal,created_at:pk.created_at,memo:pk.memo,skus:[{sku:it.sku,name:it.name,color:it.color}]})}});
         safePOs(it).forEach((po,pi)=>{if(po.po_id){
           const szKeysP=Object.keys(po).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','notes','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof po[k]==='number');
           const qty=szKeysP.reduce((a,sz)=>a+(po[sz]||0),0);
@@ -7041,15 +7057,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return<div className="card" style={{marginTop:16}}><div className="card-header"><h2>Linked Documents</h2></div><div className="card-body">
         {allPickIds.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Item Fulfillments</div>
           <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:allPoIds.length>0?16:0}}>
-            {allPickIds.map(pk=><div key={pk.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,cursor:'pointer',background:pk.status==='pulled'?'#f0fdf4':'#fffbeb',transition:'box-shadow 0.15s'}} className="hover-card" onClick={()=>{const pickData=o.items[pk.lineIdx]?.pick_lines?.[pk.pickIdx];if(pickData)setEditPick({lineIdx:pk.lineIdx,pickIdx:pk.pickIdx,pick:pickData})}}>
+            {allPickIds.map(pk=><div key={pk.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,cursor:'pointer',background:pk.status==='pulled'?'#f0fdf4':'#fffbeb',transition:'box-shadow 0.15s'}} className="hover-card" onClick={()=>openPickModal(pk.id,pk.lineIdx,pk.pickIdx)}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
                 <Icon name="grid" size={14}/><span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{pk.id}</span>
                 <span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`} style={{fontSize:9}}>{pk.status==='pulled'?'✓ Pulled':'Needs Pull'}</span>
                 <span style={{marginLeft:'auto',fontWeight:700,fontSize:14,color:'#166534'}}>${pk.total.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
               </div>
-              <div style={{display:'flex',gap:12,fontSize:11,color:'#64748b'}}>
-                <span><strong style={{color:'#1e40af'}}>{pk.sku}</strong> {pk.name}</span>
-                <span>{pk.color}</span>
+              <div style={{display:'flex',gap:12,fontSize:11,color:'#64748b',flexWrap:'wrap'}}>
+                {(pk.skus||[{sku:pk.sku,name:pk.name,color:pk.color}]).map((s,si)=><span key={si}><strong style={{color:'#1e40af'}}>{s.sku}</strong> {s.name} <span style={{color:'#94a3b8'}}>{s.color}</span></span>)}
                 <span>{pk.qty} units</span>
                 {pk.created_at&&<span>📅 {pk.created_at}</span>}
               </div>
@@ -7079,42 +7094,74 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
     {/* EDIT PICK MODAL */}
     {editPick&&(()=>{
-      const pk=editPick.pick;const item=o.items[editPick.lineIdx];
-      const pkSzKeys=Object.keys(pk).filter(k=>k!=='status'&&k!=='pick_id'&&typeof pk[k]==='number'&&pk[k]>0);
-      const pkTotal=pkSzKeys.reduce((a,sz)=>a+(pk[sz]||0),0);
-      const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pk.pick_id);
-      return<div className="modal-overlay" onClick={()=>setEditPick(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
-      <div className="modal-header"><h2>Pick — {pk.pick_id||'Pick'}</h2>
+      const picks=editPick.picks||[];
+      if(picks.length===0)return null;
+      const firstPk=picks[0].pick;
+      const pickId=editPick.pickId||firstPk.pick_id||'Pick';
+      const NON_SZ=['pick_id','status','created_at','memo','ship_dest','ship_addr','deco_vendor','notes'];
+      const itemInfos=picks.map((p,i)=>{
+        const it=o.items[p.lineIdx]||{};const pk=p.pick;
+        const szKeys=Object.keys(pk).filter(k=>!NON_SZ.includes(k)&&typeof pk[k]==='number'&&pk[k]>0);
+        const total=szKeys.reduce((a,sz)=>a+(pk[sz]||0),0);
+        return{idx:i,item:it,pick:pk,szKeys,total,lineIdx:p.lineIdx,pickIdx:p.pickIdx};
+      });
+      const grandTotal=itemInfos.reduce((a,x)=>a+x.total,0);
+      const overallStatus=picks.every(p=>p.pick.status==='pulled')?'pulled':'pick';
+      const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId);
+      // Build shared ship badge from first pick that has ship info
+      const shipPk=picks.map(p=>p.pick).find(pk=>pk.ship_dest&&pk.ship_dest!=='in_house')||firstPk;
+      const buildShipBadge=()=>{
+        if(!shipPk.ship_dest||shipPk.ship_dest==='in_house')return null;
+        const destLabel=shipPk.ship_dest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(shipPk.deco_vendor?' — '+shipPk.deco_vendor:'');
+        const addr=shipPk.ship_dest==='ship_customer'?(addrs.find(a=>a.id===shipPk.ship_addr)||addrs[0])?.label||'':'';
+        return{text:destLabel+(addr?' — '+addr:''),color:shipPk.ship_dest==='ship_customer'?'#3b82f6':'#d97706',bg:shipPk.ship_dest==='ship_customer'?'#eff6ff':'#fffbeb'};
+      };
+      const buildLabelLines=()=>{
+        const lines=[{text:o.id+' — '+(cust?.name||''),cls:'sub'}];
+        itemInfos.forEach(info=>{
+          lines.push({text:'<strong>'+(info.item.sku||'')+' '+(info.item.name||'')+'</strong>'});
+          lines.push({text:(info.item.color||'')+' — '+info.total+' units'});
+          lines.push({text:info.szKeys.map(sz=>sz+': '+info.pick[sz]).join(' &nbsp; '),cls:'sz'});
+        });
+        if(itemInfos.length>1)lines.push({text:'TOTAL: '+grandTotal+' units',cls:'sz'});
+        return lines;
+      };
+      return<div className="modal-overlay" onClick={()=>setEditPick(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
+      <div className="modal-header"><h2>Pick — {pickId}</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
-          <span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status==='pulled'?'Pulled':'Needs Pull'}</span>
+          <span className={`badge ${overallStatus==='pulled'?'badge-green':'badge-amber'}`}>{overallStatus==='pulled'?'Pulled':'Needs Pull'}</span>
           <button className="modal-close" onClick={()=>setEditPick(null)}>x</button>
         </div></div>
       <div className="modal-body">
         {/* Ship Destination */}
-        {pk.ship_dest&&pk.ship_dest!=='in_house'&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid '+(pk.ship_dest==='ship_customer'?'#3b82f6':'#d97706'),background:pk.ship_dest==='ship_customer'?'#eff6ff':'#fffbeb'}}>
-          <div style={{fontSize:12,fontWeight:800,color:pk.ship_dest==='ship_customer'?'#1e40af':'#92400e'}}>{pk.ship_dest==='ship_customer'?'📦 Ship to Customer':'🚚 Ship to Deco'}</div>
-          {pk.ship_dest==='ship_customer'&&(()=>{const addr=addrs.find(a=>a.id===pk.ship_addr)||addrs[0];return addr?<div style={{fontSize:12,color:'#475569',marginTop:4}}>{addr.label}</div>:null})()}
-          {pk.ship_dest==='ship_deco'&&pk.deco_vendor&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>Vendor: {pk.deco_vendor}</div>}
+        {shipPk.ship_dest&&shipPk.ship_dest!=='in_house'&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid '+(shipPk.ship_dest==='ship_customer'?'#3b82f6':'#d97706'),background:shipPk.ship_dest==='ship_customer'?'#eff6ff':'#fffbeb'}}>
+          <div style={{fontSize:12,fontWeight:800,color:shipPk.ship_dest==='ship_customer'?'#1e40af':'#92400e'}}>{shipPk.ship_dest==='ship_customer'?'📦 Ship to Customer':'🚚 Ship to Deco'}</div>
+          {shipPk.ship_dest==='ship_customer'&&(()=>{const addr=addrs.find(a=>a.id===shipPk.ship_addr)||addrs[0];return addr?<div style={{fontSize:12,color:'#475569',marginTop:4}}>{addr.label}</div>:null})()}
+          {shipPk.ship_dest==='ship_deco'&&shipPk.deco_vendor&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>Vendor: {shipPk.deco_vendor}</div>}
         </div>}
-        {pk.ship_dest==='in_house'&&<div style={{padding:'8px 14px',marginBottom:12,borderRadius:8,border:'1px solid #e2e8f0',background:'#f8fafc'}}>
+        {firstPk.ship_dest==='in_house'&&<div style={{padding:'8px 14px',marginBottom:12,borderRadius:8,border:'1px solid #e2e8f0',background:'#f8fafc'}}>
           <div style={{fontSize:12,fontWeight:700,color:'#475569'}}>🏭 In-House Deco</div>
         </div>}
-        {/* Product info */}
-        {item&&<div style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,marginBottom:12,display:'flex',gap:8,alignItems:'center'}}>
-          <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
-          <span style={{fontWeight:600,fontSize:13}}>{item.name}</span>
-          <span className="badge badge-gray">{item.color}</span>
-        </div>}
+        {/* Status (applies to all items on this IF) */}
         <div style={{marginBottom:12}}><label className="form-label">Status</label>
-          <div style={{display:'flex',gap:6}}>{['pick','pulled'].map(s=><button key={s} className={`btn btn-sm ${pk.status===s?'btn-primary':'btn-secondary'}`} onClick={()=>setEditPick(p=>({...p,pick:{...p.pick,status:s}}))}>{s==='pulled'?'✓ Pulled':'Needs Pull'}</button>)}</div></div>
-        <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:6}}>Quantities by size:</div>
-        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
-          {pkSzKeys.map(sz=><div key={sz} style={{textAlign:'center'}}>
-            <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-            <input style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={pk[sz]} onChange={e=>setEditPick(p=>({...p,pick:{...p.pick,[sz]:parseInt(e.target.value)||0}}))}/>
-          </div>)}
-          <div style={{textAlign:'center',borderLeft:'2px solid #e2e8f0',paddingLeft:8}}><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>QTY</div><div style={{fontSize:18,fontWeight:800}}>{pkTotal}</div></div>
-        </div>
+          <div style={{display:'flex',gap:6}}>{['pick','pulled'].map(s=><button key={s} className={`btn btn-sm ${overallStatus===s?'btn-primary':'btn-secondary'}`} onClick={()=>setEditPick(p=>({...p,picks:p.picks.map(pp=>({...pp,pick:{...pp.pick,status:s}}))}))}>{s==='pulled'?'✓ Pulled':'Needs Pull'}</button>)}</div></div>
+        {/* Per-item product info + quantities */}
+        {itemInfos.map(info=><div key={info.idx} style={{marginBottom:12,padding:10,border:'1px solid #e2e8f0',borderRadius:6,background:'#fafafa'}}>
+          <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}>
+            <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{info.item.sku}</span>
+            <span style={{fontWeight:600,fontSize:13}}>{info.item.name}</span>
+            {info.item.color&&<span className="badge badge-gray">{info.item.color}</span>}
+          </div>
+          <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:6}}>Quantities by size:</div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            {info.szKeys.map(sz=><div key={sz} style={{textAlign:'center'}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+              <input style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={info.pick[sz]} onChange={e=>{const v=parseInt(e.target.value)||0;setEditPick(p=>({...p,picks:p.picks.map((pp,i)=>i===info.idx?{...pp,pick:{...pp.pick,[sz]:v}}:pp)}))}}/>
+            </div>)}
+            <div style={{textAlign:'center',borderLeft:'2px solid #e2e8f0',paddingLeft:8}}><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>QTY</div><div style={{fontSize:18,fontWeight:800}}>{info.total}</div></div>
+          </div>
+        </div>)}
+        {itemInfos.length>1&&<div style={{padding:'6px 10px',marginBottom:12,background:'#eff6ff',borderRadius:6,fontSize:12,fontWeight:700,color:'#1e40af',textAlign:'right'}}>Total: {grandTotal} units across {itemInfos.length} items</div>}
         {/* QR / Print Label */}
         <div style={{padding:12,border:'1px dashed #d1d5db',borderRadius:8,background:'#fafafa'}}>
           <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>📋 Label / QR Code</div>
@@ -7123,51 +7170,36 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <img src={'https://api.qrserver.com/v1/create-qr-code/?size=100x100&data='+encodeURIComponent(qrData)} alt="QR" style={{width:80,height:80,display:'block'}}/>
             </div>
             <div style={{flex:1,fontSize:11}}>
-              <div style={{fontWeight:800,fontSize:14}}>{pk.pick_id}</div>
+              <div style={{fontWeight:800,fontSize:14}}>{pickId}</div>
               <div style={{color:'#64748b'}}>{o.id} — {cust?.name}</div>
-              <div style={{fontWeight:600}}>{item?.sku} {item?.name}</div>
-              <div>{item?.color} — {pkTotal} units</div>
-              <div style={{marginTop:4}}>{pkSzKeys.map(sz=>sz+':'+pk[sz]).join('  ')}</div>
+              {itemInfos.map(info=><div key={info.idx} style={{marginTop:4}}>
+                <div style={{fontWeight:600}}>{info.item.sku} {info.item.name}</div>
+                <div>{info.item.color} — {info.total} units</div>
+                <div style={{color:'#475569'}}>{info.szKeys.map(sz=>sz+':'+info.pick[sz]).join('  ')}</div>
+              </div>)}
+              {itemInfos.length>1&&<div style={{marginTop:4,fontWeight:700}}>Total: {grandTotal} units</div>}
             </div>
           </div>
-          <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
-            let shipBadge=null;
-            if(pk.ship_dest&&pk.ship_dest!=='in_house'){
-              const destLabel=pk.ship_dest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(pk.deco_vendor?' — '+pk.deco_vendor:'');
-              const addr=pk.ship_dest==='ship_customer'?(addrs.find(a=>a.id===pk.ship_addr)||addrs[0])?.label||'':'';
-              shipBadge={text:destLabel+(addr?' — '+addr:''),color:pk.ship_dest==='ship_customer'?'#3b82f6':'#d97706',bg:pk.ship_dest==='ship_customer'?'#eff6ff':'#fffbeb'};
-            }
-            printQrLabel({
-              id:pk.pick_id,
-              qrData,
-              shipBadge,
-              lines:[
-                {text:o.id+' — '+(cust?.name||''),cls:'sub'},
-                {text:'<strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong>'},
-                {text:(item?.color||'')+' — '+pkTotal+' units'},
-                {text:pkSzKeys.map(sz=>sz+': '+pk[sz]).join(' &nbsp; '),cls:'sz'},
-              ]
-            });
-          }}>🖨️ Print Label (4×6)</button>
+          <div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>printQrLabel({id:pickId,qrData,shipBadge:buildShipBadge(),lines:buildLabelLines()})}>🖨️ Print Label (4×6)</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{try{await downloadQrLabel({id:pickId,qrData,shipBadge:buildShipBadge(),lines:buildLabelLines()});nf('Label downloaded')}catch(err){nf('Download failed: '+err.message,'error')}}}>⬇️ Download (PDF)</button>
+          </div>
         </div>
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setEditPick(null)}>Close</button>
         <button className="btn btn-sm" style={{background:'#dc2626',color:'white'}} onClick={()=>{
-          const oldPick=o.items[editPick.lineIdx].pick_lines[editPick.pickIdx];
-          const item=o.items[editPick.lineIdx];
-          if(oldPick.status==='pulled'){adjustInvForPick(oldPick,item,1)}
-          const updatedItems=[...o.items];updatedItems[editPick.lineIdx].pick_lines=updatedItems[editPick.lineIdx].pick_lines.filter((_,i)=>i!==editPick.pickIdx);
+          // Reverse inventory for any pulled picks before removing
+          picks.forEach(p=>{const oldPick=o.items[p.lineIdx]?.pick_lines?.[p.pickIdx];const it=o.items[p.lineIdx];if(oldPick&&it&&oldPick.status==='pulled')adjustInvForPick(oldPick,it,1)});
+          const removeMap=new Map();picks.forEach(p=>{if(!removeMap.has(p.lineIdx))removeMap.set(p.lineIdx,new Set());removeMap.get(p.lineIdx).add(p.pickIdx)});
+          const updatedItems=o.items.map((it,i)=>removeMap.has(i)?{...it,pick_lines:(it.pick_lines||[]).filter((_,pi)=>!removeMap.get(i).has(pi))}:it);
           const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick deleted');
         }}><Icon name="trash" size={12}/> Delete</button>
         <button className="btn btn-primary" onClick={()=>{
-          const oldPick=o.items[editPick.lineIdx].pick_lines[editPick.pickIdx];
-          const newPick=editPick.pick;
-          const item=o.items[editPick.lineIdx];
-          // Adjust inventory if status changed
-          if(oldPick.status!=='pulled'&&newPick.status==='pulled'){adjustInvForPick(newPick,item,-1)}
-          else if(oldPick.status==='pulled'&&newPick.status!=='pulled'){adjustInvForPick(oldPick,item,1)}
-          const updatedItems=o.items.map((it,i)=>i===editPick.lineIdx?{...it,pick_lines:it.pick_lines.map((p,j)=>j===editPick.pickIdx?newPick:p)}:it);
+          // Apply inventory adjustments per line based on status transitions
+          picks.forEach(p=>{const oldPick=o.items[p.lineIdx]?.pick_lines?.[p.pickIdx];const it=o.items[p.lineIdx];const newPick=p.pick;if(!oldPick||!it)return;if(oldPick.status!=='pulled'&&newPick.status==='pulled')adjustInvForPick(newPick,it,-1);else if(oldPick.status==='pulled'&&newPick.status!=='pulled')adjustInvForPick(oldPick,it,1)});
+          const writeMap=new Map();picks.forEach(p=>{if(!writeMap.has(p.lineIdx))writeMap.set(p.lineIdx,new Map());writeMap.get(p.lineIdx).set(p.pickIdx,p.pick)});
+          const updatedItems=o.items.map((it,i)=>writeMap.has(i)?{...it,pick_lines:(it.pick_lines||[]).map((pl,pi)=>writeMap.get(i).has(pi)?writeMap.get(i).get(pi):pl)}:it);
           const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick updated');
         }}>Save Changes</button>
       </div>

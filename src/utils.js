@@ -224,6 +224,32 @@ export const printQrLabel=({id,qrData,lines,shipBadge})=>{
 </body></html>`;
   w.document.write(html);w.document.close();
 };
+// Generate the same 4x6 QR label as `printQrLabel` and trigger a PDF download
+// via html2pdf. Useful when users want to save the label rather than print it
+// directly (e.g. attach to an email or batch-print later).
+export const downloadQrLabel=async({id,qrData,lines,shipBadge})=>{
+  const qrSrc='https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=4&data='+encodeURIComponent(qrData||id||'');
+  const safeLines=(lines||[]).filter(Boolean).map(l=>typeof l==='string'?{text:l}:l);
+  const badgeHtml=shipBadge?`<div style="border:2px solid ${shipBadge.color||'#d97706'};color:${shipBadge.color||'#92400e'};background:${shipBadge.bg||'#fffbeb'};border-radius:6px;font-weight:800;font-size:13px;text-align:center;padding:6px 8px;margin:6px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact">${shipBadge.text}</div>`:'';
+  const linesHtml=safeLines.map(l=>{
+    const isSz=l.cls==='sz';const isSub=l.cls==='sub';const isMuted=l.cls==='muted';
+    const style='margin:3px 0;line-height:1.25;'+(isSz?'font-size:18px;font-weight:800;letter-spacing:0.5px;':isSub?'font-size:11px;color:#475569;text-align:center;':isMuted?'color:#64748b;font-size:11px;':'font-size:13px;')+(l.style||'');
+    return '<p style="'+style+'">'+l.text+'</p>';
+  }).join('');
+  // Pre-load QR image so html2canvas captures it
+  await new Promise(resolve=>{const img=new Image();img.crossOrigin='anonymous';img.onload=resolve;img.onerror=resolve;img.src=qrSrc;setTimeout(resolve,3000)});
+  const container=document.createElement('div');
+  container.style.cssText='position:absolute;left:-9999px;top:0;width:3.7in;background:white;font-family:Helvetica,Arial,sans-serif;color:#0f172a;padding:6px 8px;line-height:1.25;box-sizing:border-box';
+  container.innerHTML=`<div style="text-align:center;margin-bottom:6px"><img src="${qrSrc}" crossorigin="anonymous" alt="${id||''}" style="width:1.9in;height:1.9in;display:block;margin:0 auto;image-rendering:pixelated"/></div><h1 style="font-size:22px;margin:0 0 4px;line-height:1.1;text-align:center">${id||''}</h1>${badgeHtml}${linesHtml}`;
+  document.body.appendChild(container);
+  const fname=String(id||'label').replace(/[^a-z0-9._-]+/gi,'_')+'.pdf';
+  try{
+    await new Promise(r=>setTimeout(r,300));
+    await html2pdf().set({margin:0.15,filename:fname,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:[4,6],orientation:'portrait'}}).from(container).save();
+  }finally{
+    document.body.removeChild(container);
+  }
+};
 // Auto-download the document as a PDF file. Renders the same HTML used for
 // printing/email attachments via html2pdf, with flex→table CSS overrides so
 // html2canvas lays it out correctly.
