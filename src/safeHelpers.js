@@ -124,7 +124,14 @@ export const skusMissingMockups = (job, so) => {
       ? decoArtIds
       : (job?.art_file_id && jobArtIds.has(job.art_file_id) ? [job.art_file_id] : []);
     const artFiles = useIds.map(aid => allArt.find(a => a?.id === aid)).filter(Boolean);
-    const perSku = artFiles.flatMap(a => safeArr(a?.item_mockups?.[gi?.sku]));
+    // Mockups are keyed by `sku|color` to disambiguate items that share a SKU
+    // across colors. Older data may use a plain SKU key — accept either.
+    const mColor = gi?.color || it?.color || '';
+    const mockKey = (gi?.sku || '') + '|' + mColor;
+    const perSku = artFiles.flatMap(a => {
+      const byKey = safeArr(a?.item_mockups?.[mockKey]);
+      return byKey.length > 0 ? byKey : safeArr(a?.item_mockups?.[gi?.sku]);
+    });
     if (perSku.length > 0) return;
     const general = artFiles.flatMap(a => safeArr(a?.mockup_files).length > 0 ? safeArr(a?.mockup_files) : safeArr(a?.files));
     if (general.length > 0) return;
