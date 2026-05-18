@@ -5663,7 +5663,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
                     // Mockups: per-item (scoped to this SKU), then general (only if no per-item mockups exist for this SKU)
                     const _seen=new Set();
-                    const perSkuMocks=_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.item_mockups?.[gi.sku]||[]));
+                    const _mk=gi.sku+'|'+(gi.color||'');
+                    const perSkuMocks=_filterDisplayable(itemArtFiles.flatMap(_af=>{const v=_af?.item_mockups?.[_mk];return v&&v.length>0?v:(_af?.item_mockups?.[gi.sku]||[])}));
                     const generalMocks=perSkuMocks.length===0?_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[])):[];
                     const itemMockups=[...perSkuMocks,...generalMocks].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
                     const artDecos=it?safeDecos(it).filter(d=>d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||_jobArtIds.has(d.art_file_id))):[];
@@ -5843,7 +5844,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const _useIds=itemArtIds.length>0?itemArtIds:(j.art_file_id&&_jArtIds.has(j.art_file_id)?[j.art_file_id]:[]);
                     const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
                     const _seen=new Set();
-                    const perSkuMocks=_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.item_mockups?.[gi.sku]||[]));
+                    const _mk=gi.sku+'|'+(gi.color||'');
+                    const perSkuMocks=_filterDisplayable(itemArtFiles.flatMap(_af=>{const v=_af?.item_mockups?.[_mk];return v&&v.length>0?v:(_af?.item_mockups?.[gi.sku]||[])}));
                     const generalMocks=perSkuMocks.length===0?_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[])):[];
                     const itemMockups=[...perSkuMocks,...generalMocks].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
                     const artDecos=it?safeDecos(it).filter(d=>d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||_jArtIds.has(d.art_file_id))):[];
