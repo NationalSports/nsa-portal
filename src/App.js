@@ -16484,8 +16484,11 @@ export default function App(){
             const cws=(a.color_ways||[]).map(c=>c.id===cwId?{...c,garment_color:(garment_color||'').trim(),inks:cleanInks}:c);
             return{...a,color_ways:cws};
           });
-          savSO({...liveSO,art_files:updArt});
-          setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
+          const newSO={...liveSO,art_files:updArt};
+          savSO(newSO);
+          // Refresh j.so too — the modal reads `j.so || sos.find(...)` (line 16387) and the cached j.so
+          // would otherwise still hold the pre-edit color_ways, leaving the chip stale until reopen.
+          setArtJobDetailModal({...j,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)});
           setArtJobDetailEditCW(null);
           nf('Color way updated');
         };
