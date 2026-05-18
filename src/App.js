@@ -3933,8 +3933,8 @@ export default function App(){
       let next=e?p.map(x=>x.id===c.id?c:x):[...p,c];
       // Parent accounts cascade Pantones, thread colors, pricing (tier + markup), and tax (rate + exempt) to all sub-accounts.
       if(!c.parent_id){
-        const inherit={pantone_colors:c.pantone_colors||[],thread_colors:c.thread_colors||[],adidas_ua_tier:c.adidas_ua_tier,catalog_markup:c.catalog_markup,tax_rate:c.tax_rate||0,tax_exempt:!!c.tax_exempt};
-        next=next.map(x=>{if(x.parent_id!==c.id)return x;const differs=JSON.stringify(x.pantone_colors||[])!==JSON.stringify(inherit.pantone_colors)||JSON.stringify(x.thread_colors||[])!==JSON.stringify(inherit.thread_colors)||x.adidas_ua_tier!==inherit.adidas_ua_tier||x.catalog_markup!==inherit.catalog_markup||(x.tax_rate||0)!==inherit.tax_rate||!!x.tax_exempt!==inherit.tax_exempt;if(differs)subCount++;return differs?{...x,...inherit}:x});
+        const inherit={pantone_colors:c.pantone_colors||[],thread_colors:c.thread_colors||[],adidas_ua_tier:c.adidas_ua_tier,catalog_markup:c.catalog_markup,tax_rate:c.tax_rate||0,tax_exempt:!!c.tax_exempt,disable_cc_pay:!!c.disable_cc_pay};
+        next=next.map(x=>{if(x.parent_id!==c.id)return x;const differs=JSON.stringify(x.pantone_colors||[])!==JSON.stringify(inherit.pantone_colors)||JSON.stringify(x.thread_colors||[])!==JSON.stringify(inherit.thread_colors)||x.adidas_ua_tier!==inherit.adidas_ua_tier||x.catalog_markup!==inherit.catalog_markup||(x.tax_rate||0)!==inherit.tax_rate||!!x.tax_exempt!==inherit.tax_exempt||!!x.disable_cc_pay!==inherit.disable_cc_pay;if(differs)subCount++;return differs?{...x,...inherit}:x});
         // Shipping address cascade — push parent's shipping address to each sub. If a sub already had a different
         // address, preserve it as a selectable alternate (in alt_billing_addresses) so it isn't lost.
         const pShip={line1:c.shipping_address_line1||'',line2:c.shipping_address_line2||'',city:c.shipping_city||'',state:c.shipping_state||'',zip:c.shipping_zip||''};

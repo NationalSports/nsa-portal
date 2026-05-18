@@ -102,7 +102,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _greet=getBillingContacts(customer,allCustomers)[0]?.name||(customer.contacts||[])[0]?.name||'';setInvEmailMsg('Hi '+_greet+',\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setShowInvEmail(true)}}>📄 Email Invoices ({customer._oi})</button>
       </>}
       <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:11}} onClick={()=>setShowPortal(true)}>🔗 Portal</button>
-      {customer.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const url=window.location.origin+'/?portal='+customer.alpha_tag;navigator.clipboard.writeText(url).then(()=>alert('Copied portal link:\n'+url)).catch(()=>{window.prompt('Copy this portal link:',url)})}}>📋 Copy Portal Link</button>}
+      {customer.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const url=window.location.origin+'/?portal='+customer.alpha_tag;try{navigator.clipboard&&navigator.clipboard.writeText(url)}catch(_){}window.open(url,'_blank','noopener,noreferrer')}}>📋 Open Portal Link</button>}
     </div>
   </div>
   {(customer._ob||0)>0&&<div style={{textAlign:'right'}}><div style={{fontSize:11,color:'#dc2626',fontWeight:600}}>BALANCE</div><div style={{fontSize:24,fontWeight:800,color:'#dc2626'}}>${customer._ob.toLocaleString()}</div></div>}</div></div>
