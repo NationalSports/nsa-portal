@@ -7494,7 +7494,7 @@ export default function App(){
           }
           // Per-item mockup URLs for the PDF — each SKU shows its own labeled mockup
           const _urlsFor=arr=>{const urls=[];for(const f of (arr||[])){if(!f)continue;const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f)){urls.push(u)}else if(_isPdfUrl(u,f)){const pt=_cloudinaryPdfThumb(u);if(pt)urls.push(pt)}}return urls};
-          const _pdfPerItem=itemDetails.map(gi=>({sku:gi.sku,name:gi.name,color:gi.color,urls:_urlsFor(allArtFiles.flatMap(a=>(a?.item_mockups?.[gi.sku]||[])))})).filter(x=>x.urls.length>0);
+          const _pdfPerItem=itemDetails.map(gi=>{const _mk=gi.sku+'|'+(gi.color||'');return{sku:gi.sku,name:gi.name,color:gi.color,urls:_urlsFor(allArtFiles.flatMap(a=>{const v=a?.item_mockups?.[_mk];return v&&v.length>0?v:(a?.item_mockups?.[gi.sku]||[])}))}}).filter(x=>x.urls.length>0);
           const _pdfGenericUrls=_urlsFor(allArtFiles.flatMap(a=>(a?.mockup_files||a?.files||[])));
           const _pdfHasAny=_pdfPerItem.length>0||_pdfGenericUrls.length>0;
           const _pdfFallback=!_pdfHasAny&&itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url;
@@ -7605,7 +7605,8 @@ export default function App(){
                 {itemDetails.map((gi,gii)=>{
                   const it=safeItems(so)[gi.item_idx];
                   if(!it)return null;
-                  const itemMocks=allArtFiles.flatMap(a=>(a?.item_mockups?.[gi.sku]||[])).filter(f=>f);
+                  const _mk=gi.sku+'|'+(gi.color||'');
+                  const itemMocks=allArtFiles.flatMap(a=>{const v=a?.item_mockups?.[_mk];return v&&v.length>0?v:(a?.item_mockups?.[gi.sku]||[])}).filter(f=>f);
                   const artDecos=safeDecos(it).filter(d=>d.kind==='art');
                   const numDecos=safeDecos(it).filter(d=>d.kind==='numbers');
                   const nameDecos=safeDecos(it).filter(d=>d.kind==='names');
@@ -7750,7 +7751,7 @@ export default function App(){
                       <div style={{fontSize:10,fontWeight:700,color:'#92400e',marginBottom:4,textTransform:'uppercase',letterSpacing:0.5}}>Production Files ({itemProdFiles.length})</div>
                       <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
                         {itemProdFiles.map(({f,artName},fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                          return<div key={fi} style={{padding:'4px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:11,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:4}} onClick={()=>openFile(f)}>📁 {name}{artName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({artName})</span>}</div>;
+                          return<a key={fi} href={url} target="_blank" rel="noopener noreferrer" style={{padding:'4px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:11,fontWeight:600,color:'#92400e',display:'inline-flex',alignItems:'center',gap:4,textDecoration:'none'}} onClick={e=>{e.preventDefault();openFile(f)}}>📁 {name}{artName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({artName})</span>}</a>;
                         })}
                       </div>
                     </div>}
@@ -15977,11 +15978,17 @@ export default function App(){
           // Prefer art files this item actually uses; if multiple, take the first; fall back to the job's primary
           return skuArtIds[0]||j.art_file_id||null;
         };
-        const handleMockupUploadForItem=async(files,sku)=>{
+        // Composite key for per-item mockups: SKU + color, so the same SKU in
+        // different colors doesn't collapse onto a single entry.
+        const _mockKey=(sku,color)=>sku+'|'+(color||'');
+        // Read with fallback to the legacy plain-SKU key so existing data still renders.
+        const _getMocks=(artF,sku,color)=>{const m=artF?.item_mockups||{};const v=m[_mockKey(sku,color)];return v&&v.length>0?v:(m[sku]||[]);};
+        const handleMockupUploadForItem=async(files,sku,color)=>{
           if(!files||files.length===0)return;
           setArtJobDetailUploading(true);
           try{
             const artId=resolveItemArtId(sku);
+            const mk=_mockKey(sku,color);
             const uploaded=[];
             for(const f of files){
               if(typeof nf==='function')nf('Uploading '+f.name+' for '+sku+'...');
@@ -15995,12 +16002,14 @@ export default function App(){
             if(hasMatch){
               const liveAf=existingArt.find(a=>a.id===artId);
               const curItemMockups=liveAf?.item_mockups||{};
-              const updItemMockups={...curItemMockups,[sku]:[...(curItemMockups[sku]||[]),...uploaded]};
+              // Migrate any legacy plain-SKU entry onto the composite key while preserving it.
+              const existing=curItemMockups[mk]||curItemMockups[sku]||[];
+              const updItemMockups={...curItemMockups,[mk]:[...existing,...uploaded]};
               updArt=existingArt.map(a=>a.id===artId?{...a,item_mockups:updItemMockups,status:'uploaded'}:a);
             }else{
               newArtFileId=artId||('af-'+Date.now());
               uploaded.forEach(u=>{u.art_file_id=newArtFileId});
-              const newAf={id:newArtFileId,name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:[],item_mockups:{[sku]:uploaded},prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
+              const newAf={id:newArtFileId,name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:[],item_mockups:{[mk]:uploaded},prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
               updArt=[...existingArt,newAf];
             }
             const newSO=savSO({...liveSO,art_files:updArt});
@@ -16052,7 +16061,7 @@ export default function App(){
           </div>
           <div className="modal-body" style={{padding:0}}>
             {/* General mockup — only shown if no per-item mockups have been uploaded */}
-            {!itemDetails.some(gi=>( af?.item_mockups?.[gi.sku]||[]).length>0)&&<div style={{background:'#f8fafc',padding:28,display:'flex',flexDirection:'column',alignItems:'center',borderBottom:'1px solid #e2e8f0'}}>
+            {!itemDetails.some(gi=>_getMocks(af,gi.sku,gi.color).length>0)&&<div style={{background:'#f8fafc',padding:28,display:'flex',flexDirection:'column',alignItems:'center',borderBottom:'1px solid #e2e8f0'}}>
               {mockupFiles.length>0?<>
                 {mockupFiles.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
                   return<div key={i} style={{width:'100%',maxWidth:600,marginBottom:i<mockupFiles.length-1?12:0,borderRadius:12,background:'white',border:'1px solid #e2e8f0',overflow:'hidden'}}>
@@ -16109,12 +16118,12 @@ export default function App(){
                   // Per-item mockup for this item — look up in the item's actual art file (not just the job's primary art)
                   const itemArtId=resolveItemArtId(gi.sku);
                   const itemArtFile=itemArtId?safeArt(so).find(a=>a.id===itemArtId):af;
-                  const repItemMocks=itemArtFile?.item_mockups?.[gi.sku]||[];
+                  const repItemMocks=_getMocks(itemArtFile,gi.sku,gi.color);
                   const repPrimary=repItemMocks[0]||null;
                   const repExtraMocks=repItemMocks.slice(1);
                   // Production files for this item's art
                   const repItemPFs=artDecos.filter(d=>d.artFile).flatMap(d=>(d.artFile?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f)})));
-                  const _openFilePicker=()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>handleMockupUploadForItem(Array.from(inp.files),gi.sku);inp.click()};
+                  const _openFilePicker=()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>handleMockupUploadForItem(Array.from(inp.files),gi.sku,gi.color);inp.click()};
                   return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?16:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'white'}}>
                     {/* Item header */}
                     <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
@@ -16153,7 +16162,7 @@ export default function App(){
                         <div style={{width:120,padding:8,textAlign:'center',borderRadius:6,border:'1px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer',fontSize:10,alignSelf:'stretch',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center'}}
                           onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed'}}
                           onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa'}}
-                          onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';if(!artJobDetailUploading)handleMockupUploadForItem(Array.from(e.dataTransfer.files),gi.sku)}}
+                          onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';if(!artJobDetailUploading)handleMockupUploadForItem(Array.from(e.dataTransfer.files),gi.sku,gi.color)}}
                           onClick={()=>{if(!artJobDetailUploading)_openFilePicker()}}>
                           {artJobDetailUploading?<div style={{color:'#7c3aed',fontWeight:600}}>Uploading...</div>
                           :<><div style={{fontSize:18,marginBottom:2}}>📎</div><div style={{color:'#7c3aed',fontWeight:600}}>+ Add More</div></>}
@@ -16162,7 +16171,7 @@ export default function App(){
                       :<div style={{padding:16,textAlign:'center',borderRadius:8,border:'2px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer'}}
                         onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#ede9fe'}}
                         onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff'}}
-                        onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff';if(!artJobDetailUploading)handleMockupUploadForItem(Array.from(e.dataTransfer.files),gi.sku)}}
+                        onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff';if(!artJobDetailUploading)handleMockupUploadForItem(Array.from(e.dataTransfer.files),gi.sku,gi.color)}}
                         onClick={()=>{if(!artJobDetailUploading)_openFilePicker()}}>
                         {artJobDetailUploading?<div style={{fontSize:11,color:'#7c3aed',fontWeight:600}}>Uploading...</div>
                         :<><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup for {gi.sku} here or click to upload</div></>}
@@ -16205,7 +16214,7 @@ export default function App(){
                     {/* Production files */}
                     {repItemPFs.length>0&&<div style={{padding:'8px 14px'}}>
                       <div style={{fontSize:10,fontWeight:700,color:'#92400e',marginBottom:4}}>Production Files ({repItemPFs.length})</div>
-                      <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{repItemPFs.map((f,fi)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);return<div key={fi} style={{padding:'4px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,color:'#92400e'}} onClick={()=>openFile(url)}>📁 {name}</div>;})}</div>
+                      <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{repItemPFs.map((f,fi)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);return<a key={fi} href={url} target="_blank" rel="noopener noreferrer" style={{padding:'4px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,color:'#92400e',textDecoration:'none'}} onClick={e=>{e.preventDefault();openFile(f)}}>📁 {name}</a>;})}</div>
                     </div>}
                   </div>;
                 });
@@ -16333,12 +16342,18 @@ export default function App(){
           setArtJobDetailEditColors(null);
           nf('Colors updated');
         };
+        // Composite key for per-item mockups: SKU + color, so the same SKU in
+        // different colors doesn't collapse onto a single entry.
+        const _mockKey=(sku,color)=>sku+'|'+(color||'');
+        // Read with fallback to the legacy plain-SKU key so existing data still renders.
+        const _getMocks=(artF,sku,color)=>{const m=artF?.item_mockups||{};const v=m[_mockKey(sku,color)];return v&&v.length>0?v:(m[sku]||[]);};
         // Copy mockup helper
-        const _copyMockup=(fromSku,toSku)=>{
-          const fromMocks=af?.item_mockups?.[fromSku]||[];
+        const _copyMockup=(fromSku,fromColor,toSku,toColor)=>{
+          const fromMocks=_getMocks(af,fromSku,fromColor);
           if(fromMocks.length===0)return;
           const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-          const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,item_mockups:{...(a.item_mockups||{}),[toSku]:[...fromMocks]}}:a);
+          const toKey=_mockKey(toSku,toColor);
+          const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,item_mockups:{...(a.item_mockups||{}),[toKey]:[...fromMocks]}}:a);
           savSO({...liveSO,art_files:updArt});
           setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
           nf('Mockup copied from '+fromSku+' to '+toSku);
@@ -16422,7 +16437,7 @@ export default function App(){
         // Upload handler for per-item mockups.
         // targetArtId: which art_file this mockup applies to. If omitted, derives from the SKU's decorations
         // (the first art_file used on this SKU), falling back to the job's primary art.
-        const handleItemMockupUpload=async(files,sku,targetArtId)=>{
+        const handleItemMockupUpload=async(files,sku,color,targetArtId)=>{
           setArtJobDetailUploading(true);
           try{
             // Derive art_file_id from the SKU's decorations if not explicitly passed
@@ -16436,6 +16451,7 @@ export default function App(){
               // If this SKU uses exactly one art, route there. Otherwise fall back to job primary.
               artId=uniqueSkuArts.length===1?uniqueSkuArts[0]:j.art_file_id;
             }
+            const mk=_mockKey(sku,color);
             const uploaded=[];
             for(const f of files){
               nf('Uploading '+f.name+' for '+sku+'...');
@@ -16447,7 +16463,9 @@ export default function App(){
             const hasMatch=artId&&existingArt.some(a=>a.id===artId);
             const liveAf=hasMatch?existingArt.find(a=>a.id===artId):af;
             const curItemMockups=liveAf?.item_mockups||{};
-            const updItemMockups={...curItemMockups,[sku]:[...(curItemMockups[sku]||[]),...uploaded]};
+            // Migrate any legacy plain-SKU entry onto the composite key while preserving it.
+            const existing=curItemMockups[mk]||curItemMockups[sku]||[];
+            const updItemMockups={...curItemMockups,[mk]:[...existing,...uploaded]};
             let updArt;
             let newArtFileId=artId;
             if(hasMatch){
@@ -16456,7 +16474,7 @@ export default function App(){
               // Create art file if none exists for this job
               newArtFileId=artId||('af-'+Date.now());
               uploaded.forEach(u=>{u.art_file_id=newArtFileId});
-              const newAf={id:newArtFileId,name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:[],item_mockups:{[sku]:uploaded},prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
+              const newAf={id:newArtFileId,name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:[],item_mockups:{[mk]:uploaded},prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
               updArt=[...existingArt,newAf];
               if(!j.art_file_id)j.art_file_id=newArtFileId;
             }
@@ -16473,12 +16491,16 @@ export default function App(){
         };
 
         // Delete a per-item mockup
-        const handleItemMockupDelete=(fileUrl,sku)=>{
+        const handleItemMockupDelete=(fileUrl,sku,color)=>{
           const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
           const liveAf=safeArt(liveSO).find(a=>a.id===j.art_file_id)||af;
           const curItemMockups=liveAf?.item_mockups||{};
           const _fUrl=f=>(typeof f==='string'?f:(f?.url||''));
-          const updItemMockups={...curItemMockups,[sku]:(curItemMockups[sku]||[]).filter(f=>_fUrl(f)!==fileUrl)};
+          // Filter the URL out of both the composite-key entry and the legacy plain-SKU entry.
+          const mk=_mockKey(sku,color);
+          const updItemMockups={...curItemMockups};
+          if(updItemMockups[mk])updItemMockups[mk]=updItemMockups[mk].filter(f=>_fUrl(f)!==fileUrl);
+          if(updItemMockups[sku])updItemMockups[sku]=updItemMockups[sku].filter(f=>_fUrl(f)!==fileUrl);
           // Also remove from mockup_files
           const curFiles=(liveAf?.mockup_files||liveAf?.files||[]);
           const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,item_mockups:updItemMockups,mockup_files:curFiles.filter(f=>_fUrl(f)!==fileUrl)}:a);
@@ -16530,7 +16552,7 @@ export default function App(){
 
         // Kick off per-item mockup upload: auto-route to the art used by the SKU's decorations.
         // If the SKU uses multiple arts (multi-art decoration), open a picker so the artist tags which art the mockup shows.
-        const startMockupUpload=(files,sku)=>{
+        const startMockupUpload=(files,sku,color)=>{
           if(!files||files.length===0)return;
           const skuItem=(j.items||[]).find(gi=>gi.sku===sku);
           const itIdx=skuItem?.item_idx;
@@ -16539,10 +16561,10 @@ export default function App(){
           const skuArts=skuArtIds.map(aid=>allArtFiles.find(a=>a.id===aid)).filter(Boolean);
           if(skuArts.length<=1||allArtFiles.length<=1){
             // single art — just upload
-            handleItemMockupUpload(files,sku,skuArts[0]?.id);
+            handleItemMockupUpload(files,sku,color,skuArts[0]?.id);
           }else{
             // multiple arts on this SKU — prompt artist to pick which one this mockup shows
-            setMockupArtPicker({files,sku,arts:skuArts});
+            setMockupArtPicker({files,sku,color,arts:skuArts});
           }
         };
 
@@ -16614,7 +16636,7 @@ export default function App(){
               </div>
               {/* Per-item grouped cards */}
               {itemDetails.map((gi,gii)=>{
-                const itemMocks=(af?.item_mockups?.[gi.sku]||[]);
+                const itemMocks=_getMocks(af,gi.sku,gi.color);
                 const primaryUrl=itemMocks[0]||null;
                 const extraMocks=itemMocks.slice(1);
                 // Per-item decoration data
@@ -16635,7 +16657,7 @@ export default function App(){
                 // Per-item production files
                 const _itemPFs=(cu.role==='production'||cu.role==='prod_assistant')?[]:_decos.filter(d=>d.kind==='art'&&d.artFile).flatMap(d=>(d.artFile?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_afName:_decos.filter(d2=>d2.kind==='art').length>1?d.artName:''})));
                 // Copy mockup candidates
-                const _copyFromOthers=itemMocks.length===0?itemDetails.filter((oi,oii)=>oii!==gii&&(af?.item_mockups?.[oi.sku]||[]).length>0):[];
+                const _copyFromOthers=itemMocks.length===0?itemDetails.filter((oi,oii)=>oii!==gii&&_getMocks(af,oi.sku,oi.color).length>0):[];
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'#fafbfc'}}>
                   {/* Item header */}
                   <div style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
@@ -16673,7 +16695,7 @@ export default function App(){
                           <div style={{padding:'4px 8px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4}}>
                             <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{name}</span>
                             <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
-                            <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1}} onClick={()=>{if(window.confirm('Remove this mockup?'))handleItemMockupDelete(url,gi.sku)}} title="Remove">×</button>
+                            <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1}} onClick={()=>{if(window.confirm('Remove this mockup?'))handleItemMockupDelete(url,gi.sku,gi.color)}} title="Remove">×</button>
                           </div>
                         </div>
                         {/* Extra mockups + upload zone for more */}
@@ -16683,14 +16705,14 @@ export default function App(){
                               {_isImgUrl(eu)?<img src={eu} alt={en} style={{width:'100%',maxHeight:90,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(eu)}/>
                               :<div style={{padding:8,textAlign:'center',cursor:'pointer',fontSize:10,color:'#1e40af',fontWeight:600}} onClick={()=>openFile(eu)}>{en}</div>}
                               <div style={{padding:'2px 4px',borderTop:'1px solid #f1f5f9',display:'flex',gap:2,justifyContent:'center'}}>
-                                <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:11,padding:0}} onClick={()=>{if(window.confirm('Remove?'))handleItemMockupDelete(eu,gi.sku)}}>×</button>
+                                <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:11,padding:0}} onClick={()=>{if(window.confirm('Remove?'))handleItemMockupDelete(eu,gi.sku,gi.color)}}>×</button>
                               </div>
                             </div>})}
                           <div style={{padding:8,textAlign:'center',borderRadius:6,border:'1px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer',fontSize:10}}
                             onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed'}}
                             onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa'}}
-                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';if(!artJobDetailUploading)startMockupUpload(Array.from(e.dataTransfer.files),gi.sku)}}
-                            onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>startMockupUpload(Array.from(inp.files),gi.sku);inp.click()}}>
+                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';if(!artJobDetailUploading)startMockupUpload(Array.from(e.dataTransfer.files),gi.sku,gi.color)}}
+                            onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>startMockupUpload(Array.from(inp.files),gi.sku,gi.color);inp.click()}}>
                             <div style={{color:'#7c3aed',fontWeight:600}}>+ Add More</div>
                           </div>
                         </div>
@@ -16698,14 +16720,14 @@ export default function App(){
                     :<div style={{padding:16,textAlign:'center',borderRadius:8,border:'2px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer'}}
                       onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#ede9fe'}}
                       onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff'}}
-                      onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff';if(!artJobDetailUploading)startMockupUpload(Array.from(e.dataTransfer.files),gi.sku)}}
-                      onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>startMockupUpload(Array.from(inp.files),gi.sku);inp.click()}}>
+                      onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff';if(!artJobDetailUploading)startMockupUpload(Array.from(e.dataTransfer.files),gi.sku,gi.color)}}
+                      onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>startMockupUpload(Array.from(inp.files),gi.sku,gi.color);inp.click()}}>
                       {artJobDetailUploading?<div style={{fontSize:11,color:'#7c3aed',fontWeight:600}}>Uploading...</div>
                       :<><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup for {gi.sku} here or click to upload</div></>}
                     </div>}
                   </div>
                   {/* ─── Copy Mockup From Another Item ─── */}
-                  {_copyFromOthers.length>0&&<div style={{padding:'6px 14px',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',background:'#fdfcff'}}><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Copy mock from:</span>{_copyFromOthers.map((oi,oii)=><button key={oii} className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#ede9fe',color:'#7c3aed',border:'1px solid #ddd6fe',borderRadius:4,fontWeight:700,cursor:'pointer'}} onClick={()=>_copyMockup(oi.sku,gi.sku)}>{oi.sku}{oi.color?' ('+oi.color+')':''}</button>)}</div>}
+                  {_copyFromOthers.length>0&&<div style={{padding:'6px 14px',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',background:'#fdfcff'}}><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Copy mock from:</span>{_copyFromOthers.map((oi,oii)=><button key={oii} className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#ede9fe',color:'#7c3aed',border:'1px solid #ddd6fe',borderRadius:4,fontWeight:700,cursor:'pointer'}} onClick={()=>_copyMockup(oi.sku,oi.color,gi.sku,gi.color)}>{oi.sku}{oi.color?' ('+oi.color+')':''}</button>)}</div>}
                   {/* ─── Decoration Spec ─── */}
                   {_hasDecoData&&<div style={{borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
                     <div style={{padding:'8px 14px 0'}}>
@@ -16772,7 +16794,7 @@ export default function App(){
                   {/* ─── Production Files ─── */}
                   {_itemPFs.length>0&&<div style={{borderTop:'2px solid #e2e8f0',padding:'8px 14px'}}>
                     <div style={{fontSize:10,fontWeight:700,color:'#92400e',marginBottom:4}}>Production Files ({_itemPFs.length})</div>
-                    <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{_itemPFs.map((f,fi)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);return<div key={fi} style={{padding:'4px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:3}} onClick={()=>openFile(url)}>📁 {name}{f._afName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({f._afName})</span>}</div>;})}
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{_itemPFs.map((f,fi)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);return<a key={fi} href={url} target="_blank" rel="noopener noreferrer" style={{padding:'4px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,color:'#92400e',display:'inline-flex',alignItems:'center',gap:3,textDecoration:'none'}} onClick={e=>{e.preventDefault();openFile(f)}}>📁 {name}{f._afName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({f._afName})</span>}</a>;})}
                     </div>
                   </div>}
                 </div>})}
@@ -16951,16 +16973,17 @@ export default function App(){
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Production Files ({prodFilesL.length})</div>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                   {prodFilesL.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const artId=f?._artId||j.art_file_id;
-                    return<div key={i} style={{padding:'6px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontSize:11,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:4}}
-                      onClick={()=>openFile(url)}>📁 {name}{f?._artName&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#fde68a',color:'#78350f'}}>{f._artName}</span>}
-                      <button style={{background:'none',border:'none',color:'#dc2626',cursor:'pointer',fontSize:12,padding:'0 2px',lineHeight:1}} onClick={e=>{e.stopPropagation();if(window.confirm('Remove this production file?')){
+                    // Anchor wrapper so right-click offers "Open Link in New Tab"; intercept left-click to route through openFile (handles download-only types like AI/EPS).
+                    return<a key={i} href={url} target="_blank" rel="noopener noreferrer" style={{padding:'6px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontSize:11,fontWeight:600,color:'#92400e',display:'inline-flex',alignItems:'center',gap:4,textDecoration:'none'}}
+                      onClick={e=>{e.preventDefault();openFile(url)}}>📁 {name}{f?._artName&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#fde68a',color:'#78350f'}}>{f._artName}</span>}
+                      <span role="button" style={{background:'none',border:'none',color:'#dc2626',cursor:'pointer',fontSize:12,padding:'0 2px',lineHeight:1}} onClick={e=>{e.preventDefault();e.stopPropagation();if(window.confirm('Remove this production file?')){
                         const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
                         const updArt=safeArt(liveSO).map(a=>a.id===artId?{...a,prod_files:(a.prod_files||[]).filter(pf=>(typeof pf==='string'?pf:(pf?.url||''))!==url)}:a);
                         savSO({...liveSO,art_files:updArt});
                         setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
                         nf('Production file removed');
-                      }}} title="Remove">×</button>
-                    </div>})}
+                      }}} title="Remove">×</span>
+                    </a>})}
                 </div>
               </div>}
               <div style={{padding:20,textAlign:'center',borderRadius:8,border:'2px dashed #f59e0b',background:'#fffbeb',cursor:artJobDetailUploading?'wait':'pointer',opacity:artJobDetailUploading?0.6:1}}
@@ -17007,14 +17030,14 @@ export default function App(){
                 </div>;
               })()}
               {mockupArtPicker&&(()=>{
-                const {files,sku,arts}=mockupArtPicker;
+                const {files,sku,color,arts}=mockupArtPicker;
                 return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(15,23,42,0.6)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:20}} onClick={()=>!artJobDetailUploading&&setMockupArtPicker(null)}>
                   <div style={{background:'white',borderRadius:12,padding:20,maxWidth:480,width:'100%'}} onClick={e=>e.stopPropagation()}>
                     <div style={{fontSize:16,fontWeight:800,color:'#1e293b',marginBottom:4}}>Which art is this mockup showing?</div>
                     <div style={{fontSize:12,color:'#64748b',marginBottom:14}}>{sku} has {arts.length} different arts. Pick the one the mockup {files.length>1?'files show':'file shows'} so they're saved to the right art's folder.</div>
                     <div style={{fontSize:11,color:'#94a3b8',marginBottom:10}}>{files.length} file{files.length>1?'s':''}: {files.map(f=>f.name).join(', ')}</div>
                     <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:14}}>
-                      {arts.map(a=><button key={a.id} className="btn" style={{padding:'10px 14px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,textAlign:'left',cursor:'pointer'}} disabled={artJobDetailUploading} onClick={async()=>{setMockupArtPicker(null);await handleItemMockupUpload(files,sku,a.id)}}>
+                      {arts.map(a=><button key={a.id} className="btn" style={{padding:'10px 14px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,textAlign:'left',cursor:'pointer'}} disabled={artJobDetailUploading} onClick={async()=>{setMockupArtPicker(null);await handleItemMockupUpload(files,sku,color,a.id)}}>
                         <div style={{fontSize:13,fontWeight:700,color:'#1e3a5f'}}>{a.name||'Unnamed'}</div>
                         <div style={{fontSize:10,color:'#64748b'}}>{(a.deco_type||'').replace(/_/g,' ')}{a.art_size?' · '+a.art_size:''}</div>
                       </button>)}
