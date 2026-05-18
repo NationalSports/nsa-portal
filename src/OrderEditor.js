@@ -9,7 +9,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks, ImgGallery } from './components';
 import { CustModal } from './modals';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 
@@ -7060,15 +7060,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
           </div>
           <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
-            const w=window.open('','_blank','width=400,height=300');
-            w.document.write('<html><head><title>'+pk.pick_id+'</title><style>body{font-family:sans-serif;padding:20px}h1{font-size:24px;margin:0}p{margin:4px 0;font-size:14px}.sz{font-size:16px;font-weight:bold}</style></head><body>');
-            w.document.write('<div style="display:flex;gap:20px;align-items:flex-start"><img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data='+encodeURIComponent(qrData)+'" width="120" height="120"/><div>');
-            w.document.write('<h1>'+pk.pick_id+'</h1><p>'+o.id+' — '+(cust?.name||'')+'</p>');
-            if(pk.ship_dest&&pk.ship_dest!=='in_house'){const destLabel=pk.ship_dest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(pk.deco_vendor?' — '+pk.deco_vendor:'');const addr=pk.ship_dest==='ship_customer'?(addrs.find(a=>a.id===pk.ship_addr)||addrs[0])?.label||'':'';w.document.write('<p style="background:#fffbeb;padding:8px;border:2px solid '+(pk.ship_dest==='ship_customer'?'#3b82f6':'#d97706')+';border-radius:6px;font-weight:bold;font-size:16px">'+destLabel+(addr?' — '+addr:'')+'</p>')}
-            w.document.write('<p><strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong></p><p>'+(item?.color||'')+' — '+pkTotal+' units</p>');
-            w.document.write('<p class="sz">'+pkSzKeys.map(sz=>sz+': '+pk[sz]).join(' &nbsp; ')+'</p>');
-            w.document.write('</div></div></body></html>');w.document.close();w.print();
-          }}>🖨️ Print Label</button>
+            let shipBadge=null;
+            if(pk.ship_dest&&pk.ship_dest!=='in_house'){
+              const destLabel=pk.ship_dest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(pk.deco_vendor?' — '+pk.deco_vendor:'');
+              const addr=pk.ship_dest==='ship_customer'?(addrs.find(a=>a.id===pk.ship_addr)||addrs[0])?.label||'':'';
+              shipBadge={text:destLabel+(addr?' — '+addr:''),color:pk.ship_dest==='ship_customer'?'#3b82f6':'#d97706',bg:pk.ship_dest==='ship_customer'?'#eff6ff':'#fffbeb'};
+            }
+            printQrLabel({
+              id:pk.pick_id,
+              qrData,
+              shipBadge,
+              lines:[
+                {text:o.id+' — '+(cust?.name||''),cls:'sub'},
+                {text:'<strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong>'},
+                {text:(item?.color||'')+' — '+pkTotal+' units'},
+                {text:pkSzKeys.map(sz=>sz+': '+pk[sz]).join(' &nbsp; '),cls:'sz'},
+              ]
+            });
+          }}>🖨️ Print Label (4×6)</button>
         </div>
       </div>
       <div className="modal-footer">
@@ -7237,12 +7246,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {szKeys.map(sz=>sh[sz]?<span key={sz} style={{color:'#374151'}}>{sz}:<strong>{sh[sz]}</strong></span>:null)}
               <span style={{marginLeft:'auto',fontSize:9,color:'#64748b'}}>{isEditing?'▲ close':'✏️ edit'}</span>
               <button style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#64748b',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();
-                const w=window.open('','_blank','width=400,height=300');
-                w.document.write('<html><head><title>'+po.po_id+' Recv #'+(si+1)+'</title><style>body{font-family:sans-serif;padding:20px}h1{font-size:22px;margin:0}p{margin:4px 0;font-size:13px}.sz{font-size:15px;font-weight:bold}</style></head><body>');
-                w.document.write('<div style="display:flex;gap:20px;align-items:flex-start"><img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data='+encodeURIComponent(shQrData)+'" width="120" height="120"/><div>');
-                w.document.write('<h1>'+po.po_id+' — Shipment #'+(si+1)+'</h1><p>Received: '+sh.date+'</p><p>'+o.id+' — '+(cust?.name||'')+'</p><p><strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong> — '+(item?.color||'')+'</p>');
-                w.document.write('<p class="sz">'+szKeys.filter(sz=>sh[sz]).map(sz=>sz+': '+sh[sz]).join(' &nbsp; ')+'</p>');
-                w.document.write('</div></div></body></html>');w.document.close();w.print();
+                printQrLabel({
+                  id:po.po_id+' — Shipment #'+(si+1),
+                  qrData:shQrData,
+                  lines:[
+                    {text:'Received: '+sh.date,cls:'sub'},
+                    {text:o.id+' — '+(cust?.name||'')},
+                    {text:'<strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong> — '+(item?.color||'')},
+                    {text:szKeys.filter(sz=>sh[sz]).map(sz=>sz+': '+sh[sz]).join(' &nbsp; '),cls:'sz'},
+                  ]
+                });
               }}>🖨️</button>
             </div>
             {isEditing&&<div style={{padding:10,border:'1px solid #bfdbfe',borderRadius:'0 0 6px 6px',background:'#eff6ff',marginBottom:2}}>
@@ -7388,16 +7401,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
             </div>
             <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
-              const w=window.open('','_blank','width=500,height=400');
-              w.document.write('<html><head><title>'+po.po_id+'</title><style>body{font-family:sans-serif;padding:20px}h1{font-size:24px;margin:0}p{margin:4px 0;font-size:14px}.sz{font-size:14px;font-weight:bold}.g{color:#166534}.a{color:#b45309}</style></head><body>');
-              w.document.write('<div style="display:flex;gap:20px;align-items:flex-start"><img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data='+encodeURIComponent(qrData)+'" width="120" height="120"/><div>');
-              w.document.write('<h1>'+po.po_id+'</h1><p>'+o.id+' — '+(cust?.name||'')+'</p><p><strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong> — '+(item?.color||'')+'</p>');
-              w.document.write('<p>'+totalOrdered+' ordered'+(totalReceived>0?' · '+totalReceived+' received':'')+'</p>');
-              w.document.write('<p class="sz">Ordered: '+szKeys.map(sz=>sz+': '+po[sz]).join(' &nbsp; ')+'</p>');
-              if(totalReceived>0)w.document.write('<p class="sz g">Received: '+szKeys.filter(sz=>getRcvd(sz)>0).map(sz=>sz+': '+getRcvd(sz)).join(' &nbsp; ')+'</p>');
-              if(totalOpen>0)w.document.write('<p class="sz a">Open: '+szKeys.filter(sz=>getOpen(sz)>0).map(sz=>sz+': '+getOpen(sz)).join(' &nbsp; ')+'</p>');
-              w.document.write('</div></div></body></html>');w.document.close();w.print();
-            }}>🖨️ Print PO Label</button>
+              const lines=[
+                {text:o.id+' — '+(cust?.name||''),cls:'sub'},
+                {text:'<strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong> — '+(item?.color||'')},
+                {text:totalOrdered+' ordered'+(totalReceived>0?' · '+totalReceived+' received':'')},
+                {text:'Ordered: '+szKeys.map(sz=>sz+': '+po[sz]).join(' &nbsp; '),cls:'sz'},
+              ];
+              if(totalReceived>0)lines.push({text:'Received: '+szKeys.filter(sz=>getRcvd(sz)>0).map(sz=>sz+': '+getRcvd(sz)).join(' &nbsp; '),cls:'sz',style:'color:#166534'});
+              if(totalOpen>0)lines.push({text:'Open: '+szKeys.filter(sz=>getOpen(sz)>0).map(sz=>sz+': '+getOpen(sz)).join(' &nbsp; '),cls:'sz',style:'color:#b45309'});
+              printQrLabel({id:po.po_id,qrData,lines});
+            }}>🖨️ Print PO Label (4×6)</button>
             {(()=>{
               // Build PO doc options once, shared by Print / Download / Email so the PDF format
               // matches the SO PDF (same buildDocHtml pipeline, same _PRINT_CSS).

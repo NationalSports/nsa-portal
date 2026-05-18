@@ -15,7 +15,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
 import { calcOrderTotals } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -13334,15 +13334,23 @@ export default function App(){
                 </div>
               </div>
               <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
-                const w=window.open('','_blank','width=400,height=300');
-                w.document.write('<html><head><title>'+pickId+'</title><style>body{font-family:sans-serif;padding:20px}h1{font-size:24px;margin:0}p{margin:4px 0;font-size:14px}</style></head><body>');
-                w.document.write('<div style="display:flex;gap:20px;align-items:flex-start"><img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data='+encodeURIComponent(qrData)+'" width="120" height="120"/><div>');
-                w.document.write('<h1>'+pickId+'</h1><p>'+t.soId+' — '+t.cName+'</p>');
-                if(shipDest!=='in_house'){const destLabel=shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'');w.document.write('<p style="background:#fffbeb;padding:8px;border:2px solid '+(shipDest==='ship_customer'?'#3b82f6':'#d97706')+';border-radius:6px;font-weight:bold;font-size:16px">'+destLabel+'</p>')}
-                w.document.write('<p><strong>'+t.sku+' '+t.name+'</strong></p><p>'+(t.color||'')+' — '+t.needsPull+' units</p>');
-                w.document.write('<p style="font-size:16px;font-weight:bold">'+szKeys.filter(sz=>(t.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+': '+Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0))).join(' &nbsp; ')+'</p>');
-                w.document.write('</div></div></body></html>');w.document.close();w.print();
-              }}>🖨️ Print Pick Label</button>
+                const shipBadge=shipDest==='in_house'?null:{
+                  text:(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'')),
+                  color:shipDest==='ship_customer'?'#3b82f6':'#d97706',
+                  bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'
+                };
+                printQrLabel({
+                  id:pickId,
+                  qrData,
+                  shipBadge,
+                  lines:[
+                    {text:t.soId+' — '+t.cName,cls:'sub'},
+                    {text:'<strong>'+t.sku+' '+t.name+'</strong>'},
+                    {text:(t.color||'')+' — '+t.needsPull+' units'},
+                    {text:szKeys.filter(sz=>(t.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+': '+Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0))).join(' &nbsp; '),cls:'sz'},
+                  ]
+                });
+              }}>🖨️ Print Pick Label (4×6)</button>
             </div>
           </div>
 
