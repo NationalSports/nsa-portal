@@ -118,11 +118,14 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
 
   {/* ORDERS TAB — with live SO status */}
   {tab==='activity'&&<>
-    {/* Active SOs with fulfillment progress + nested jobs */}
-    {custSOs.filter(s=>calcSOStatus(s)!=='complete').length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Sales Orders</h2></div><div className="card-body" style={{padding:0}}>
-      <table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th>{isP&&<th>Customer</th>}{isP&&<th>Rep</th>}<th>Status</th><th>Items</th><th>Fulfillment</th><th style={{textAlign:'right'}}>Total</th><th>Expected</th></tr></thead><tbody>
-      {custSOs.filter(s=>calcSOStatus(s)!=='complete').map(so=>{
-        const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
+    {/* Active SOs with fulfillment progress + nested jobs. Booking SOs (still
+        far from their ship date) are split into their own section below so
+        they don't crowd out work-in-flight orders. */}
+    {(()=>{
+      const activeSOs=custSOs.filter(s=>{const st=calcSOStatus(s);return st!=='complete'&&st!=='booking'});
+      const bookingSOs=custSOs.filter(s=>calcSOStatus(s)==='booking');
+      const renderSORow=(so)=>{
+        const st=calcSOStatus(so);const stL={booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         let totalU=0,fulU=0;
         safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
         const pct=totalU>0?Math.round(fulU/totalU*100):0;
@@ -173,9 +176,12 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <td><span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#64748b'}}>{jobProdLabels[j.prod_status]||j.prod_status}</span></td>
           </tr>)}
           {isExp&&jobs.length===0&&<tr style={{background:'#f8fafc'}}><td colSpan={isP?9:7} style={{paddingLeft:28,fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No decorations assigned yet</td></tr>}
-        </React.Fragment>})}
-      </tbody></table>
-    </div></div>}
+        </React.Fragment>};
+      const renderTable=(list)=><table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th>{isP&&<th>Customer</th>}{isP&&<th>Rep</th>}<th>Status</th><th>Items</th><th>Fulfillment</th><th style={{textAlign:'right'}}>Total</th><th>Expected</th></tr></thead><tbody>{list.map(renderSORow)}</tbody></table>;
+      return<>
+        {activeSOs.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Sales Orders</h2></div><div className="card-body" style={{padding:0}}>{renderTable(activeSOs)}</div></div>}
+        {bookingSOs.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header" style={{background:'#eef2ff',borderBottom:'1px solid #c7d2fe'}}><h2 style={{color:'#4338ca'}}>Booking Orders ({bookingSOs.length})</h2><span style={{fontSize:11,color:'#6366f1',marginLeft:8}}>Future ship dates — not yet in production</span></div><div className="card-body" style={{padding:0}}>{renderTable(bookingSOs)}</div></div>}
+      </>})()}
     {/* All transactions — unified: est, SO, inv, IF, PO, payments */}
     {(()=>{
       // Build unified transaction list
