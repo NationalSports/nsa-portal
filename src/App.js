@@ -691,7 +691,15 @@ const _dbSaveEstimateInner = async (est) => {
       else console.warn('[DB] estimate saved with core columns only')
     }
     // Delete old children — must delete grandchildren (decorations) BEFORE estimate_items due to FK constraints
-    const _oldEstItems=(await supabase.from('estimate_items').select('id,item_index,sku').eq('estimate_id',est.id)).data||[];
+    const _oldEstResp=await supabase.from('estimate_items').select('id,item_index,sku').eq('estimate_id',est.id);
+    // Fail-closed: if reading existing items errored, refuse to proceed. Otherwise oldItemIds=[] would fail-open
+    // and the unconditional `DELETE FROM estimate_items WHERE estimate_id=...` below would wipe whatever was there.
+    if(_oldEstResp.error){
+      console.error('[DB] SAFETY: Blocking estimate save — failed to read existing items for',est.id,':',_oldEstResp.error.message);
+      if(_dbNotify)_dbNotify('Save blocked — could not verify existing items. Please reload the page.','error');
+      return false;
+    }
+    const _oldEstItems=_oldEstResp.data||[];
     const oldItemIds=_oldEstItems.map(i=>i.id);
     // Safety check: if client has 0 items but DB has some, abort to prevent data loss
     if((!items||items.length===0)&&oldItemIds.length>0){
@@ -827,13 +835,13 @@ const _dbSaveSOInner = async (so) => {
     }
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
     const _oldItemsResp=await supabase.from('so_items').select('id,item_index,sku').eq('so_id',so.id);
-    // Fail-closed: if we can't read the current items, refuse to proceed when the client has 0 items.
-    // Without this, a SELECT error returns oldItemIds=[] and the safety check below would fail-open,
-    // letting the subsequent DELETE wipe everything for this SO.
-    if((!items||items.length===0)&&_oldItemsResp.error){
-      console.error('[DB] SAFETY: Blocking SO save — failed to read existing items for',so.id,'and client has none:',_oldItemsResp.error.message);
+    // Fail-closed: refuse the save whenever reading existing items errored. A SELECT error returns oldItemIds=[],
+    // which would skip the deco/pick/PO deletes' `.in([])` filter but still let the unconditional
+    // `DELETE FROM so_items WHERE so_id=...` below wipe everything. Retrying later (via _dbSaveFailedIds) is safer.
+    if(_oldItemsResp.error){
+      console.error('[DB] SAFETY: Blocking SO save — failed to read existing items for',so.id,':',_oldItemsResp.error.message);
       if(_dbNotify)_dbNotify('Save blocked — could not verify existing items. Please reload the page.','error');
-      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'so_items SELECT errored while client had 0 items: '+_oldItemsResp.error.message});
+      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'so_items SELECT errored: '+_oldItemsResp.error.message});
       return false;
     }
     const _oldSoItems=_oldItemsResp.data||[];
