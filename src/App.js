@@ -3394,6 +3394,19 @@ export default function App(){
       }
     }catch{}
   },[sos,dbLoading]); // eslint-disable-line
+  // Handle ?product=<id> deep link — opens product detail in a new tab when
+  // the inventory row link is Ctrl/Cmd-clicked or middle-clicked.
+  React.useEffect(()=>{
+    if(dbLoading||!prod.length)return;
+    try{
+      const p=new URLSearchParams(window.location.search);
+      const pid=p.get('product');
+      if(!pid)return;
+      const found=prod.find(x=>x.id===pid||x.sku===pid);
+      if(found){setSelP(found);setPg('products')}
+      const u=new URL(window.location);u.searchParams.delete('product');window.history.replaceState({},'',u);
+    }catch{}
+  },[prod,dbLoading]); // eslint-disable-line
   // Handle ?pg=<id>[#anchor] deep link — used by the so-health-alert email to
   // land users on the System Health card (?pg=backup#system-health). Skipped
   // if ?so= is also set, since that handler takes precedence.
@@ -6012,8 +6025,8 @@ export default function App(){
     <th>Actions</th></tr></thead>
   <tbody>{iD.map(p=>{const ai=adidasInvBulk[p.sku];const b2bTotal=ai?Object.values(ai.sizes||{}).reduce((a,s)=>a+(s.qty||0),0):null;const checked=bulkSel.has(p.id);return<tr key={p.id} style={isA&&bulkMode&&checked?{background:'#eff6ff'}:undefined}>
     {isA&&bulkMode&&<td><input type="checkbox" checked={checked} onChange={()=>toggleOne(p.id)}/></td>}
-    <td><div style={{display:'flex',alignItems:'center',gap:4}}><button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,padding:0,color:favSkus.includes(p.sku)?'#f59e0b':'#d1d5db'}} onClick={()=>toggleFav(p.sku)}>{favSkus.includes(p.sku)?'★':'☆'}</button><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span></div></td>
-    <td style={{fontSize:12}}>{p.name}{p.is_clearance&&<span style={{marginLeft:4,padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}<br/><span style={{color:'#94a3b8'}}>{p.color}</span>{isA&&bulkMode&&<span style={{marginLeft:6,fontSize:10,color:'#64748b'}}>· {p.category||'No cat'} · {p.color_category||'No color cat'}</span>}</td>
+    <td><div style={{display:'flex',alignItems:'center',gap:4}}><button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,padding:0,color:favSkus.includes(p.sku)?'#f59e0b':'#d1d5db'}} onClick={()=>toggleFav(p.sku)}>{favSkus.includes(p.sku)?'★':'☆'}</button><a href={`?product=${encodeURIComponent(p.id)}`} onClick={e=>{if(e.metaKey||e.ctrlKey||e.button===1)return;e.preventDefault();setSelP(p);setPg('products')}} style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',textDecoration:'none',cursor:'pointer'}}>{p.sku}</a></div></td>
+    <td style={{fontSize:12}}><a href={`?product=${encodeURIComponent(p.id)}`} onClick={e=>{if(e.metaKey||e.ctrlKey||e.button===1)return;e.preventDefault();setSelP(p);setPg('products')}} style={{color:'inherit',textDecoration:'none',cursor:'pointer'}}>{p.name}</a>{p.is_clearance&&<span style={{marginLeft:4,padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}<br/><span style={{color:'#94a3b8'}}>{p.color}</span>{isA&&bulkMode&&<span style={{marginLeft:6,fontSize:10,color:'#64748b'}}>· {p.category||'No cat'} · {p.color_category||'No color cat'}</span>}</td>
     <td><div style={{display:'flex',gap:2}}>{[...new Set(p.available_sizes)].filter(sz=>showSz(sz,p._inv?.[sz])).map(sz=>{const v=p._inv?.[sz]||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{minWidth:30,padding:'1px 3px'}}><div className="size-label" style={{fontSize:8}}>{sz}</div><div className="size-qty" style={{fontSize:11}}>{v}</div></div>})}</div></td>
     <td style={{fontWeight:800,fontSize:15,color:p._tQ<=10?'#d97706':'#166534'}}>{p._tQ}</td>
     <td style={{fontWeight:700,fontSize:13,color:b2bTotal!=null?(b2bTotal>0?'#059669':'#dc2626'):'#d1d5db'}}>{b2bTotal!=null?b2bTotal:'—'}</td>
