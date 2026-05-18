@@ -1120,6 +1120,7 @@ const _dbSaveProduct = async (p) => {
     const row={id:p.id,vendor_id:p.vendor_id||null,sku:p.sku,name:p.name,brand:p.brand||null,color:p.color||null,
       color_category:p.color_category||null,category:p.category||null,retail_price:p.retail_price||0,nsa_cost:p.nsa_cost||0,
       is_active:p.is_active!==false,is_archived:p.is_archived||false,available_sizes:p.available_sizes||[],_colors:p._colors||null,
+      is_clearance:p.is_clearance||false,clearance_cost:p.clearance_cost!=null?p.clearance_cost:null,
       image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
     const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
     if(error){
@@ -1129,8 +1130,8 @@ const _dbSaveProduct = async (p) => {
         _dbDuplicateSkuIds.add(p.id);_persistDuplicateSkuIds();_dbSaveFailedIds.delete(p.id);_clearSaveError(p.id);_persistFailedIds();return true;
       }
       // If image columns don't exist yet, retry without them (product data still saves)
-      if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('color_category')||error.message?.includes('is_archived')){
-        const{image_front_url,image_back_url,color_category,is_archived,...rowNoExtra}=row;
+      if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('color_category')||error.message?.includes('is_archived')||error.message?.includes('is_clearance')||error.message?.includes('clearance_cost')){
+        const{image_front_url,image_back_url,color_category,is_archived,is_clearance,clearance_cost,...rowNoExtra}=row;
         const{error:e2}=await supabase.from('products').upsert(rowNoExtra,{onConflict:'id'});
         if(e2){if(e2.message?.includes('products_sku_unique')||e2.message?.includes('duplicate key value')){console.warn('[DB] Skipping duplicate SKU:',p.sku);return false}console.error('[DB] save product (no extra cols):',e2.message);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,'products: '+e2.message);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
       }else{console.error('[DB] save product:',error.message);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,'products: '+error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error');return false}
@@ -5794,7 +5795,7 @@ export default function App(){
   // causes React to remount them on every parent re-render (losing state like editing mode)
   const _pdRef=React.useRef(null);
   if(!_pdRef.current){_pdRef.current=({product,onBack,ctx})=>{
-    const{vend,cust,ests,sos,invPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES}=ctx.current;
+    const{vend,cust,ests,sos,invPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES,isA}=ctx.current;
     const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());const[salesView,setSalesView]=useState('month');
     const[autoSaved,setAutoSaved]=useState(false);
     // Sync ep with product prop when inventory changes externally (e.g. AdjModal)
@@ -5929,6 +5930,23 @@ export default function App(){
                   </div>;
                 })()}
                 <div style={{gridColumn:'1/3'}}><label className="form-label">Available Sizes</label><input className="form-input" value={ep.available_sizes.join(', ')} onChange={e=>setEp(x=>({...x,available_sizes:e.target.value.split(',').map(s=>s.trim()).filter(Boolean)}))}/></div>
+                {isA&&<div style={{gridColumn:'1/3',padding:10,borderRadius:8,background:ep.is_clearance?'#fffbeb':'#f8fafc',border:'1px solid '+(ep.is_clearance?'#fde68a':'#e2e8f0')}}>
+                  <label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,fontWeight:700,color:'#92400e',cursor:'pointer'}}>
+                    <input type="checkbox" checked={!!ep.is_clearance} onChange={e=>setEp(x=>({...x,is_clearance:e.target.checked,clearance_cost:e.target.checked?(x.clearance_cost??rQ((x.nsa_cost||0)*0.5)):null}))}/>
+                    <span>Mark as Clearance</span>
+                    {ep.is_clearance&&<span style={{padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}
+                  </label>
+                  {ep.is_clearance&&<div style={{marginTop:8,display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,alignItems:'end'}}>
+                    <div>
+                      <label className="form-label" style={{color:'#92400e'}}>Clearance Cost (rep cost)</label>
+                      <input className="form-input" type="number" step="0.01" style={{fontWeight:700,color:'#166534'}} value={ep.clearance_cost??''} onChange={e=>setEp(x=>({...x,clearance_cost:parseFloat(e.target.value)||0}))}/>
+                    </div>
+                    <div style={{fontSize:11,color:'#475569',paddingBottom:6}}>
+                      NSA Cost stays <strong>${(ep.nsa_cost||0).toFixed(2)}</strong> for accounting.
+                      {ep.clearance_cost!=null&&ep.nsa_cost>0&&<> Rep saves <strong style={{color:'#166534'}}>${(ep.nsa_cost-ep.clearance_cost).toFixed(2)}</strong> ({Math.round((ep.nsa_cost-ep.clearance_cost)/ep.nsa_cost*100)}%) per unit.</>}
+                    </div>
+                  </div>}
+                </div>}
               </div>
               <div style={{display:'flex',gap:8,alignItems:'center'}}>
                 <button className="btn btn-primary" onClick={saveProduct}><Icon name="check" size={14}/> Save</button>
@@ -6250,9 +6268,9 @@ export default function App(){
     const nonClearance=prod.filter(p=>!p.is_clearance&&Object.values(p._inv||{}).some(v=>v>0));
     const filtered=clearanceProds.filter(p=>{if(!clrSearch)return true;const s=clrSearch.toLowerCase();return p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s)});
     const addFiltered=nonClearance.filter(p=>{if(!clrAddModal.search)return true;const s=clrAddModal.search.toLowerCase();return p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s)});
-    const markClearance=(pid,cost)=>{setProd(pp=>pp.map(x=>x.id===pid?{...x,is_clearance:true,clearance_cost:cost}:x));nf('Marked as clearance')};
-    const updateClearanceCost=(pid,cost)=>{setProd(pp=>pp.map(x=>x.id===pid?{...x,clearance_cost:cost}:x));nf('Clearance cost updated')};
-    const removeClearance=(pid)=>{setProd(pp=>pp.map(x=>x.id===pid?{...x,is_clearance:false,clearance_cost:undefined}:x));nf('Removed from clearance')};
+    const markClearance=(pid,cost)=>{setProd(pp=>pp.map(x=>{if(x.id!==pid)return x;const upd={...x,is_clearance:true,clearance_cost:cost};_dbSaveProduct(upd);return upd}));nf('Marked as clearance')};
+    const updateClearanceCost=(pid,cost)=>{setProd(pp=>pp.map(x=>{if(x.id!==pid)return x;const upd={...x,clearance_cost:cost};_dbSaveProduct(upd);return upd}));nf('Clearance cost updated')};
+    const removeClearance=(pid)=>{setProd(pp=>pp.map(x=>{if(x.id!==pid)return x;const upd={...x,is_clearance:false,clearance_cost:null};_dbSaveProduct(upd);return upd}));nf('Removed from clearance')};
     return(<>
       <div style={{padding:12,marginBottom:12,background:'#fffbeb',borderRadius:8,border:'1px solid #fde68a',fontSize:12,color:'#92400e'}}>
         <strong>Clearance Items:</strong> When a product is marked as clearance, the rep cost is reduced to the clearance price you set. The item remains at full value (NSA Cost) in inventory for accounting purposes, but reps see improved margin when adding to estimates/orders.
@@ -13128,7 +13146,7 @@ export default function App(){
   const[whEditOrigSizes,setWhEditOrigSizes]=useState(null);
   const[showStockPO,setShowStockPO]=useState(null);
   // Populate ProductDetail context ref — must be after setWhTab is declared
-  _pdCtx.current={vend,cust,ests,sos,invPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES};
+  _pdCtx.current={vend,cust,ests,sos,invPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES,isA};
   // Ship package modal: {grp, soMap:{soId:so}, boxes:[{items:[{sku,name,color,sizes:{}}],tracking_number:'',carrier:'',weight:5,notes:''}]}
   const[shipModal,setShipModal]=useState(null);
   const[manualShipModal,setManualShipModal]=useState(null);
