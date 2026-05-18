@@ -326,7 +326,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             {soJobsList.map(j=>{const artFile=soAF.find(a=>a.id===j.art_file_id);const _jArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jArtIds.add(d.art_file_id)})});const _jArtFiles=[..._jArtIds].map(aid=>soAF.find(a=>a.id===aid)).filter(Boolean);
               // Scope mockups to SKUs that belong to THIS job — prevents leakage from sibling jobs that share an art file.
               const _jSkus=new Set((j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];return it?.sku||gi.sku}).filter(Boolean));
-              const _jIm=_filterDisplayable(_jArtFiles.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([sku])=>_jSkus.has(sku)).flatMap(([,arr])=>arr||[])));
+              const _jIm=_filterDisplayable(_jArtFiles.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([k])=>_jSkus.has(k.split('|')[0])).flatMap(([,arr])=>arr||[])));
               const _jMf=_jIm.length===0?_filterDisplayable(_jArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[])):[];
               const _jSeen=new Set();const mockups=[..._jIm,..._jMf].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_jSeen.has(u))return false;_jSeen.add(u);return true});
               const _clickJob=()=>{setJobView({job:j,so});setComment('');if(j.sent_to_coach_at&&!j.coach_email_opened_at){const liveSO2=sos.find(s=>s.id===so.id);if(liveSO2){const updSO2={...liveSO2,jobs:(liveSO2.jobs||safeJobs(liveSO2)).map(jj=>jj.id===j.id?{...jj,coach_email_opened_at:new Date().toISOString()}:jj),updated_at:new Date().toLocaleString()};if(savSOFn)savSOFn(updSO2);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO2:s))}}};
@@ -383,7 +383,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});
     const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
     const mockups=_filterDisplayable(_jobArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));
-    const _hasAnyItemMockup=gi=>_jobArtFiles.some(_af=>_filterDisplayable(_af?.item_mockups?.[gi.sku]||[]).length>0);
+    const _hasAnyItemMockup=gi=>{const _mk=gi.sku+'|'+(gi.color||'');return _jobArtFiles.some(_af=>{const m=_af?.item_mockups||{};const v=m[_mk]&&m[_mk].length>0?m[_mk]:(m[gi.sku]||[]);return _filterDisplayable(v).length>0})};
     const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd=it?prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku):null;return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it?._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it?._colorBackImage||''}});
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
       {/* ── Lightbox overlay ── */}
@@ -407,7 +407,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {items.map((gi,i)=>{const srcItem=safeItems(so)[gi.item_idx];
             const _itemArtIds=srcItem?[...new Set(safeDecos(srcItem).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id))]:[];
             const _itemArtFiles=[...new Set([artFile?.id,...(j._art_ids||[]),..._itemArtIds].filter(Boolean))].map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
-            const itemMockups=_filterDisplayable(_itemArtFiles.flatMap(_af=>_af?.item_mockups?.[gi.sku]||[]));
+            const _mk=gi.sku+'|'+(gi.color||'');
+            const itemMockups=_filterDisplayable(_itemArtFiles.flatMap(_af=>{const v=_af?.item_mockups?.[_mk];return v&&v.length>0?v:(_af?.item_mockups?.[gi.sku]||[])}));
             const artDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'):[];
             const artPos=artDecos.map(d=>d.position||'Front Center').filter((v,idx,arr)=>arr.indexOf(v)===idx);
             const numDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='numbers'):[];
@@ -449,21 +450,43 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               </div>
               {/* Per-item art details */}
               {artFile&&<div style={{padding:'10px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:10}}>
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:itemColors.length>0||nd?8:0}}>
-                  <div><div style={{fontSize:9,fontWeight:600,color:'#94a3b8'}}>Method</div><div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{artFile.deco_type?.replace(/_/g,' ')||'—'}</div></div>
-                  <div><div style={{fontSize:9,fontWeight:600,color:'#94a3b8'}}>Location</div><div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{artPos.length>0?artPos.join(', '):'—'}</div></div>
-                  <div><div style={{fontSize:9,fontWeight:600,color:'#94a3b8'}}>Art Size</div><div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{artFile.art_size||'—'}</div></div>
-                </div>
-                {itemColors.length>0&&<div style={{marginBottom:nd?8:0}}>
-                  <div style={{fontSize:9,fontWeight:600,color:'#94a3b8',marginBottom:3}}>{_isEmb?'Thread Colors':'Ink Colors / Pantones'} ({itemColors.length})</div>
-                  <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-                    {itemColors.map((cl,ci)=>{const clL=cl.toLowerCase();const sw=_cm3[cl]||Object.entries(_cm3).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
-                      return<div key={ci} style={{display:'flex',alignItems:'center',gap:4,padding:'2px 8px',background:'white',border:'1px solid #e2e8f0',borderRadius:5,fontSize:10,fontWeight:600}}>
-                        <div style={{width:12,height:12,borderRadius:2,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
-                        {cl}</div>})}
-                  </div>
-                </div>}
-                {nd&&<div>
+                {(()=>{
+                  // Render one row per decoration so coaches see each location's method, size, and inks separately.
+                  // Falls back to a single row built from the job's primary art file when no per-item art decorations exist.
+                  const _gk2=gi.sku+'|'+(gi.color||'');
+                  const _renderDeco=(d,di,_aF)=>{
+                    const _gc2=_aF?.garment_colors?.[_gk2]||{};
+                    const _gcCols=Object.values(_gc2).flat().filter((v,idx,arr)=>v&&v.trim()&&arr.indexOf(v)===idx);
+                    const cwObj=d?.color_way_id&&_aF?.color_ways?_aF.color_ways.find(c=>c.id===d.color_way_id):null;
+                    const _cwCols=cwObj?(cwObj.inks||[]).filter(c=>c&&c.trim()):[];
+                    const _fbCols=(_aF?.ink_colors||_aF?.thread_colors||'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+                    const _allCwInks=[...new Set((_aF?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
+                    const dColors=_gcCols.length>0?_gcCols:_cwCols.length>0?_cwCols:_fbCols.length>0?_fbCols:_allCwInks;
+                    const method=((d?.type||_aF?.deco_type||j.deco_type||'')+'').replace(/_/g,' ')||'—';
+                    const position=d?.position||(artPos.length>0?artPos.join(', '):'—');
+                    const size=(d?.position&&_aF?.art_sizes?.[d.position])||_aF?.art_size||'—';
+                    const _isEmb2=(_aF?.deco_type||d?.type)==='embroidery';
+                    return<div key={di} style={{paddingTop:di>0?10:0,borderTop:di>0?'1px solid #e2e8f0':'none',marginTop:di>0?10:0}}>
+                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:dColors.length>0?8:0}}>
+                        <div><div style={{fontSize:9,fontWeight:600,color:'#94a3b8'}}>Method</div><div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{method}</div></div>
+                        <div><div style={{fontSize:9,fontWeight:600,color:'#94a3b8'}}>Location</div><div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{position}</div></div>
+                        <div><div style={{fontSize:9,fontWeight:600,color:'#94a3b8'}}>Art Size</div><div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{size}</div></div>
+                      </div>
+                      {dColors.length>0&&<div>
+                        <div style={{fontSize:9,fontWeight:600,color:'#94a3b8',marginBottom:3}}>{_isEmb2?'Thread Colors':'Ink Colors / Pantones'} ({dColors.length})</div>
+                        <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                          {dColors.map((cl,ci)=>{const clL=cl.toLowerCase();const sw=_cm3[cl]||Object.entries(_cm3).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
+                            return<div key={ci} style={{display:'flex',alignItems:'center',gap:4,padding:'2px 8px',background:'white',border:'1px solid #e2e8f0',borderRadius:5,fontSize:10,fontWeight:600}}>
+                              <div style={{width:12,height:12,borderRadius:2,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
+                              {cl}</div>})}
+                        </div>
+                      </div>}
+                    </div>;
+                  };
+                  if(artDecos.length===0)return _renderDeco(null,0,artFile);
+                  return artDecos.map((d,di)=>{const _dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;return _renderDeco(d,di,_dAf||artFile)});
+                })()}
+                {nd&&<div style={{marginTop:10,paddingTop:10,borderTop:'1px solid #e2e8f0'}}>
                   <div style={{fontSize:9,fontWeight:600,color:'#94a3b8',marginBottom:3}}>Numbers</div>
                   <div style={{display:'flex',gap:10,flexWrap:'wrap',fontSize:11}}>
                     <span><strong>{(nd.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
