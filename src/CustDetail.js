@@ -4,19 +4,20 @@ import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex } from './constan
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks } from './components';
 import { dP, rQ, DTF, mergeColors } from './pricing';
-import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, getBillingContacts } from './utils';
+import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, getBillingContacts, getAthleticDirectorContacts } from './utils';
+import { StripePaymentModal } from './modals';
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,ests,onSaveSO,REPS,prod,onCopy,onDelete,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
-  const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('all');const[rR,setRR]=useState('thisyear');
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,REPS,prod,onCopy,onDelete,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
+  const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[rR,setRR]=useState('thisyear');
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[showPortal,setShowPortal]=useState(false);
   const[showActions,setShowActions]=useState(false);const[showStatement,setShowStatement]=useState(false);const[stmtEmail,setStmtEmail]=useState('');const[stmtMsg,setStmtMsg]=useState('');
   const[custArtDetail,setCustArtDetail]=useState(null);
   const[custArtExpanded,setCustArtExpanded]=useState(null);// art id of expanded customer library item
   const[custArtFilter,setCustArtFilter]=useState('all');
-  const[subsCollapsed,setSubsCollapsed]=useState(false);
+  const[subsCollapsed,setSubsCollapsed]=useState(true);
   // Promo state
   const[promoEdit,setPromoEdit]=useState(null);// null or {type,fixed_amount,spend_percentage,notes,id?}
   const[promoNewPeriod,setPromoNewPeriod]=useState(null);// null or {program_id,allocated,notes}
@@ -44,6 +45,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const orders=allOrders.filter(o=>ids.includes(o.customer_id));
   const fo=orders.filter(o=>{if(oF!=='all'&&o.type!==oF)return false;if(sF==='open')return['sent','draft','open','need_order','waiting_receive','needs_pull'].includes(o.status)||calcSOStatus(o)!=='complete';if(sF==='closed')return['approved','paid','complete'].includes(o.status)||calcSOStatus(o)==='complete';return true});
   const gn=id=>allCustomers.find(x=>x.id===id)?.alpha_tag||'';
+  const teamName=id=>{const c=allCustomers.find(x=>x.id===id);if(!c)return'';const parent=c.parent_id?allCustomers.find(x=>x.id===c.parent_id):null;if(parent?.name&&c.name?.startsWith(parent.name))return c.name.slice(parent.name.length).trim().replace(/^[-—–]\s*/,'')||c.name;return c.name||c.alpha_tag||''};
   // Contact editing
   const saveContact=(idx,updated)=>{const newContacts=[...(customer.contacts||[])];newContacts[idx]=updated;const newCust={...customer,contacts:newContacts};setCustLocal(newCust);onEdit(newCust);setEditContact(null)};
   const addContact=()=>{const newContacts=[...(customer.contacts||[]),{name:'',email:'',phone:'',role:''}];setCustLocal({...customer,contacts:newContacts});setEditContact(newContacts.length-1)};
@@ -211,13 +213,13 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {[['all','All'],['open','Open'],['closed','Closed']].map(([v,l])=><button key={v} className={`btn btn-sm ${sF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setSF(v)}>{l}</button>)}
       </div></div><div className="card-body" style={{padding:0}}><table style={{fontSize:12}}><thead><tr><th>ID</th><th>Type</th><th>Date</th><th>SO</th><th>Memo</th>{isP&&<th>Sub</th>}<th>Amount</th><th>Status</th></tr></thead><tbody>
         {filt.length===0?<tr><td colSpan={8} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No records</td></tr>:
-        filt.map((t,i)=><tr key={t.id+'-'+i} style={{cursor:(t._src==='order'||t.type==='estimate')?'pointer':undefined}} onClick={()=>{if(t.type==='estimate'){const est2=(ests||[]).find(e=>e.id===t.id);if(est2&&onOpenEst)onOpenEst(est2)}else if(t._src==='order'){const so2=(sos||[]).find(s=>s.id===t.id);if(so2&&onOpenSO)onOpenSO(so2)}else if(t.so_id){const so2=(sos||[]).find(s=>s.id===t.so_id);if(so2&&onOpenSO)onOpenSO(so2)}}}>
+        filt.map((t,i)=><tr key={t.id+'-'+i} style={{cursor:(t._src==='order'||t.type==='estimate'||t.type==='invoice'||t.so_id)?'pointer':undefined}} onClick={()=>{if(t.type==='estimate'){const est2=(ests||[]).find(e=>e.id===t.id);if(est2&&onOpenEst)onOpenEst(est2)}else if(t.type==='invoice'){if(onOpenInv){const inv2=(invs||[]).find(x=>x.id===t.id)||t;onOpenInv(inv2)}}else if(t._src==='order'){const so2=(sos||[]).find(s=>s.id===t.id);if(so2&&onOpenSO)onOpenSO(so2)}else if(t.so_id){const so2=(sos||[]).find(s=>s.id===t.so_id);if(so2&&onOpenSO)onOpenSO(so2)}}}>
           <td style={{fontWeight:700,color:'#1e40af'}}>{t.id}</td>
           <td><span className={`badge ${typeBadge[t.type]||'badge-gray'}`}>{typeLabels[t.type]||t.type}</span></td>
           <td style={{fontSize:11,color:'#64748b'}}>{t.date}</td>
           <td style={{fontSize:11,color:'#94a3b8'}}>{t.so_id&&t._src!=='order'?t.so_id:'—'}</td>
           <td>{t.memo}</td>
-          {isP&&<td><span className="badge badge-gray">{gn(t.customer_id)}</span></td>}
+          {isP&&<td><span className="badge badge-gray" title={gn(t.customer_id)}>{teamName(t.customer_id)||gn(t.customer_id)}</span></td>}
           <td style={{fontWeight:t.total?700:400,color:t.type==='invoice'&&t.status==='open'?'#dc2626':t.total?'#374151':'#94a3b8'}}>{t.total?'$'+t.total.toLocaleString():'—'}</td>
           <td><span className={`badge ${statusBadge(t.status)}`}>{t.status?.replace(/_/g,' ')||'—'}</span></td>
         </tr>)}</tbody></table></div></div>})()}
@@ -226,21 +228,24 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {/* CONTACTS TAB — editable */}
   {tab==='contacts'&&(()=>{
     const inheritedAccts=getBillingContacts(customer,allCustomers).filter(a=>a._inherited_from);
-    return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-    <h2>Contacts</h2><button className="btn btn-sm btn-primary" onClick={addContact}><Icon name="plus" size={12}/> Add Contact</button>
-  </div><div className="card-body" style={{padding:0}}>
-    {inheritedAccts.length>0&&<div style={{padding:'10px 18px',background:'#faf5ff',borderBottom:'1px solid #e9d5ff'}}>
-      <div style={{fontSize:11,fontWeight:700,color:'#6d28d9',marginBottom:6}}>INHERITED BILLING CONTACT{inheritedAccts.length>1?'S':''} (from parent)</div>
-      {inheritedAccts.map((c,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'6px 0'}}>
+    const inheritedADs=getAthleticDirectorContacts(customer,allCustomers).filter(a=>a._inherited_from);
+    const renderInherited=(items,label,roleHint)=>items.length>0&&<div style={{padding:'10px 18px',background:'#faf5ff',borderBottom:'1px solid #e9d5ff'}}>
+      <div style={{fontSize:11,fontWeight:700,color:'#6d28d9',marginBottom:6}}>INHERITED {label}{items.length>1?'S':''} (from parent)</div>
+      {items.map((c,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'6px 0'}}>
         <div style={{width:32,height:32,borderRadius:16,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,color:'#6d28d9',fontSize:13}}>{(c.name||'?')[0]}</div>
         <div style={{flex:1}}>
-          <div><strong>{c.name}</strong> <span style={{fontSize:11,color:'#6d28d9'}}>(Billing · auto-CC'd)</span></div>
+          <div><strong>{c.name}</strong> <span style={{fontSize:11,color:'#6d28d9'}}>({roleHint})</span></div>
           <div style={{fontSize:12,color:'#64748b'}}>{c.email}{c.phone&&` · ${c.phone}`}</div>
           <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>From parent: {c._inherited_from} — edit on parent to change</div>
         </div>
       </div>)}
-    </div>}
-    {(customer.contacts||[]).length===0&&inheritedAccts.length===0&&<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No contacts</div>}
+    </div>;
+    return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+    <h2>Contacts</h2><button className="btn btn-sm btn-primary" onClick={addContact}><Icon name="plus" size={12}/> Add Contact</button>
+  </div><div className="card-body" style={{padding:0}}>
+    {renderInherited(inheritedAccts,'BILLING CONTACT',"Billing · auto-CC'd")}
+    {renderInherited(inheritedADs,'ATHLETIC DIRECTOR','Athletic Director')}
+    {(customer.contacts||[]).length===0&&inheritedAccts.length===0&&inheritedADs.length===0&&<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No contacts</div>}
     {(customer.contacts||[]).map((c,i)=>editContact===i?
       <div key={i} style={{padding:14,borderBottom:'1px solid #f1f5f9',background:'#fffbeb'}}>
         <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>

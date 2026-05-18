@@ -44,26 +44,30 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
   catch(e){return{ok:false,error:e.message}}
 };
 
-// ── Billing contact resolution ──
-// Returns the billing contacts that apply to a customer, including any inherited
-// from the parent customer. Sub-customers automatically pick up the parent's billing
-// contact so we only have to set it once at the parent level.
-export const getBillingContacts=(customer,allCustomers)=>{
+// ── Inherited-contact resolution ──
+// Returns contacts of a given role that apply to a customer, including any inherited
+// from the parent customer. Sub-customers automatically pick up the parent's contact for
+// the role so we only have to set it once at the parent level. Used for Billing and
+// Athletic Director contacts today.
+export const getInheritedContactsByRole=(customer,allCustomers,role)=>{
   if(!customer)return[];
+  const target=(role||'').toLowerCase();
   const out=[];const seen=new Set();
-  const pushBilling=(c,inheritedFrom)=>{
-    (c?.contacts||[]).filter(x=>x&&x.email&&(x.role||'').toLowerCase()==='billing').forEach(x=>{
+  const push=(c,inheritedFrom)=>{
+    (c?.contacts||[]).filter(x=>x&&x.email&&(x.role||'').toLowerCase()===target).forEach(x=>{
       const key=x.email.toLowerCase();if(seen.has(key))return;seen.add(key);
       out.push(inheritedFrom?{...x,_inherited_from:inheritedFrom}:x);
     });
   };
-  pushBilling(customer,null);
+  push(customer,null);
   if(customer.parent_id&&Array.isArray(allCustomers)){
     const parent=allCustomers.find(c=>c.id===customer.parent_id);
-    if(parent)pushBilling(parent,parent.name||parent.alpha_tag||'parent');
+    if(parent)push(parent,parent.name||parent.alpha_tag||'parent');
   }
   return out;
 };
+export const getBillingContacts=(customer,allCustomers)=>getInheritedContactsByRole(customer,allCustomers,'billing');
+export const getAthleticDirectorContacts=(customer,allCustomers)=>getInheritedContactsByRole(customer,allCustomers,'athletic director');
 
 // ── Cloudinary Upload ──
 const CLOUDINARY_CLOUD='dwlyljyuz';
@@ -172,6 +176,54 @@ export const printDoc=opts=>{
   const w=window.open('','_blank');if(!w)return;
   w.document.write(docHtml);w.document.close();setTimeout(()=>w.print(),300);
 };
+
+// Print a 4x6 thermal/label-printer-friendly QR label. The QR image is loaded
+// from api.qrserver.com; we wait for it to finish loading (with a safety
+// timeout) before triggering print, otherwise the browser prints an empty
+// box where the QR should be.
+export const printQrLabel=({id,qrData,lines,shipBadge})=>{
+  const w=window.open('','_blank','width=420,height=620');if(!w)return;
+  const qrSrc='https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=4&data='+encodeURIComponent(qrData||id||'');
+  const safeLines=(lines||[]).filter(Boolean).map(l=>typeof l==='string'?{text:l}:l);
+  const badgeHtml=shipBadge?`<div class="ship" style="border-color:${shipBadge.color||'#d97706'};color:${shipBadge.color||'#92400e'};background:${shipBadge.bg||'#fffbeb'}">${shipBadge.text}</div>`:'';
+  const linesHtml=safeLines.map(l=>{
+    const cls=l.cls?' class="'+l.cls+'"':'';
+    const style=l.style?' style="'+l.style+'"':'';
+    return '<p'+cls+style+'>'+l.text+'</p>';
+  }).join('');
+  const html=`<!doctype html><html><head><title>${id||'Label'}</title>
+<style>
+  @page{size:4in 6in;margin:0.15in}
+  @media print{html,body{width:3.7in}}
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;font-family:Helvetica,Arial,sans-serif;color:#0f172a}
+  body{padding:6px 8px;width:3.7in}
+  .qr-wrap{text-align:center;margin-bottom:6px}
+  .qr-wrap img{width:1.9in;height:1.9in;display:block;margin:0 auto;image-rendering:pixelated}
+  h1{font-size:22px;margin:0 0 4px;line-height:1.1;text-align:center}
+  .sub{font-size:11px;color:#475569;text-align:center;margin:0 0 8px}
+  p{margin:3px 0;font-size:13px;line-height:1.25}
+  .sz{font-size:18px;font-weight:800;letter-spacing:0.5px}
+  .ship{padding:6px 8px;border:2px solid #d97706;border-radius:6px;font-weight:800;font-size:13px;text-align:center;margin:6px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .muted{color:#64748b;font-size:11px}
+  strong{font-weight:700}
+</style>
+</head><body>
+  <div class="qr-wrap"><img id="qr" src="${qrSrc}" alt="${id||''}"/></div>
+  <h1>${id||''}</h1>
+  ${badgeHtml}
+  ${linesHtml}
+<script>
+  var printed=false;
+  function go(){if(printed)return;printed=true;setTimeout(function(){window.focus();window.print();},80);}
+  var img=document.getElementById('qr');
+  if(img){if(img.complete&&img.naturalWidth>0){go();}else{img.addEventListener('load',go);img.addEventListener('error',go);}}
+  // Safety fallback: print after 3s even if the image never loads.
+  setTimeout(go,3000);
+</script>
+</body></html>`;
+  w.document.write(html);w.document.close();
+};
 // Auto-download the document as a PDF file. Renders the same HTML used for
 // printing/email attachments via html2pdf, with flex→table CSS overrides so
 // html2canvas lays it out correctly.
@@ -193,6 +245,34 @@ export const downloadDoc=async(opts,filename)=>{
   try{
     await new Promise(r=>setTimeout(r,500));
     await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:fname,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).save();
+  }finally{
+    document.body.removeChild(container);
+  }
+};
+
+// Render the same doc HTML used for print/download to a base64-encoded PDF
+// suitable for use as a Brevo `attachment` entry ({name, content}). Used to
+// attach PO/SO PDFs to outgoing vendor and customer emails.
+export const buildPdfAttachment=async(opts,filename)=>{
+  const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS});
+  const safe=String(filename||opts.docNum||'document').replace(/[^a-z0-9._-]+/gi,'_');
+  const fname=safe.replace(/\.html?$/i,'')+'.pdf';
+  const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);
+  const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
+  const pdfFixCss='.header{display:table!important;width:100%!important;table-layout:fixed}.header>*{display:table-cell!important;vertical-align:top!important}.logo{width:55%!important}.logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}.doc-id{width:45%!important;text-align:right!important}.bill-total{display:table!important;width:100%!important;table-layout:fixed}.bill-total>*{display:table-cell!important;vertical-align:top!important}.total-box{width:200px!important;text-align:left!important}.info-row{display:table!important;width:100%!important;table-layout:fixed}.info-cell{display:table-cell!important;vertical-align:top!important}.footer{display:table!important;width:100%!important}.footer>*{display:table-cell!important}.footer>*:last-child{text-align:right!important}';
+  const container=document.createElement('div');
+  container.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:white;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4';
+  const styleEl=document.createElement('style');
+  styleEl.textContent=(styleMatch?styleMatch[1]:'')+pdfFixCss;
+  container.appendChild(styleEl);
+  const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;
+  container.appendChild(bodyDiv);
+  document.body.appendChild(container);
+  try{
+    await new Promise(r=>setTimeout(r,500));
+    const blob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:fname,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
+    const b64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(blob)});
+    return{name:fname,content:b64};
   }finally{
     document.body.removeChild(container);
   }

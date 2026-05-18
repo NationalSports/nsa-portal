@@ -11,11 +11,11 @@ import { createWorker } from 'tesseract.js';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm } from './safeHelpers';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, openDocPDF, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
 import { calcOrderTotals } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -89,6 +89,7 @@ const lazyRetry = (importFn) => React.lazy(() =>
 );
 const OrderEditor = lazyRetry(() => import('./OrderEditor'));
 const AiOrderWizard = lazyRetry(() => import('./AiOrderWizard').then(m => ({ default: m.AiOrderWizard })));
+const AiInventoryPoWizard = lazyRetry(() => import('./AiInventoryPoWizard').then(m => ({ default: m.AiInventoryPoWizard })));
 const CustDetail = lazyRetry(() => import('./CustDetail'));
 const CoachPortal = lazyRetry(() => import('./CoachPortal'));
 const SalesHistory = lazyRetry(() => import('./SalesHistory'));
@@ -964,8 +965,8 @@ const _dbSaveSOInner = async (so) => {
   }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
-const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address'];
-const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address']);
+const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','shipping_name','shipping_address'];
+const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','shipping_name','shipping_address']);
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{try{
@@ -2090,6 +2091,21 @@ function AuthSetupPage({mode}){
   );
 }
 
+// Build a deep-link URL for opening a record in a new tab.
+// Used by RowLink and by row-level middle-click handlers.
+const _buildTabHref=(params)=>window.location.pathname+'?'+new URLSearchParams(params).toString();
+// RowLink — wraps cell content in a real anchor so middle-click / Cmd-click /
+// right-click "Open in New Tab" all work natively in the browser. Plain
+// left-click runs onOpen() (in-place SPA nav) instead of following the href.
+const RowLink=React.memo(function RowLink({params,onOpen,children,style,className,title,inline}){
+  const handler=ev=>{
+    if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;// let browser open in new tab
+    ev.preventDefault();
+    onOpen&&onOpen();
+  };
+  return(<a href={_buildTabHref(params)} onClick={handler} className={className} title={title} style={{color:'inherit',textDecoration:'none',display:inline?'inline':'block',cursor:'pointer',...(style||{})}}>{children}</a>);
+});
+
 export default function App(){
   // /auth/setup and /auth/reset short-circuit the entire app — they live behind their own
   // landing page that completes the magic-link / password reset flow before bouncing to /.
@@ -2205,7 +2221,7 @@ export default function App(){
   // Batch PO system
   const[batchPOs,setBatchPOs]=useState(()=>loadState('batch_pos',[]));// pending queue
   const[submittedBatches,setSubmittedBatches]=useState(()=>loadState('submitted_batches',[]));// submitted batches for scan lookup
-  const[batchCounter,setBatchCounter]=useState(()=>loadState('batch_counter',4501));// sequential PO numbers: NSA-4501, NSA-4502...
+  const[batchCounter,setBatchCounter]=useState(()=>loadState('batch_counter',4501));// sequential PO numbers: NSA 4501, NSA 4502...
   const[batchScan,setBatchScan]=useState('');// scan/lookup field
   const[editingBatchId,setEditingBatchId]=useState(null);// batch PO id being edited in queue
   // Inventory adjustments log & inventory POs
@@ -2232,7 +2248,7 @@ export default function App(){
   const[invPOCounter,setInvPOCounter]=useState(()=>{
     const ipo=loadState('inv_po_counter',1001);const spo=loadState('stock_po_counter',0);
     return Math.max(ipo,spo,1001);
-  });// sequential: PO-1001-NSA, PO-1002-NSA... (unified for inventory + warehouse POs)
+  });// sequential: PO 1001 NSA, PO 1002 NSA... (unified for inventory + warehouse POs)
   // One-shot cleanup of legacy Stock PO localStorage keys. Runs after mount so StrictMode's double-invoke of useState initializers above is harmless.
   React.useEffect(()=>{try{if(localStorage.getItem('nsa_stock_pos')!==null)localStorage.removeItem('nsa_stock_pos');if(localStorage.getItem('nsa_stock_po_counter')!==null)localStorage.removeItem('nsa_stock_po_counter')}catch(e){}},[]);
   const[invTab,setInvTab]=useState('stock');// stock | log | pos
@@ -2334,7 +2350,7 @@ export default function App(){
           if(d._decoTimedOut){console.error('[DB] Initial load had child-table timeouts — items/decorations/jobs/art may be incomplete');if(typeof nf==='function')nf('Some data took too long to load. Items, decorations, jobs, or art may be incomplete — please refresh if anything looks wrong.','error')}
           // Supabase has data — use it as source of truth
           _dbLoadSuccess.current=true;_syncDbMaxIds();
-          _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
+          _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues,assignedTodos:d.assignedTodos||[]};
           setREPS(d.team.length?d.team:DEFAULT_REPS);
           // Preserve local versions of any entities whose save previously failed (persisted in localStorage)
           if(_dbSaveFailedIds.size){
@@ -2405,7 +2421,7 @@ export default function App(){
             await new Promise(r=>setTimeout(r,5000));
             const d2=await _dbLoad();
             if(d2?.hasData){
-              _dbSnap.current={ests:d2.estimates,sos:d2.sales_orders,invs:d2.invoices,msgs:d2.messages,cust:d2.customers,prod:d2.products,vend:d2.vendors,team:d2.team,omg:d2.omg_stores,issues:d2.issues};
+              _dbSnap.current={ests:d2.estimates,sos:d2.sales_orders,invs:d2.invoices,msgs:d2.messages,cust:d2.customers,prod:d2.products,vend:d2.vendors,team:d2.team,omg:d2.omg_stores,issues:d2.issues,assignedTodos:d2.assignedTodos||[]};
               setREPS(d2.team.length?d2.team:DEFAULT_REPS);setCust(d2.customers);
               if(d2.vendors.length)setVend(d2.vendors);setProd(d2.products.length?d2.products:prod);
               setEsts(d2.estimates);setSOs(d2.sales_orders);
@@ -2578,7 +2594,8 @@ export default function App(){
           vend:d._coreOnly?_prevSnap.vend:d.vendors,
           team:d._coreOnly?_prevSnap.team:d.team,
           omg:d._coreOnly?_prevSnap.omg:d.omg_stores,
-          issues:d._coreOnly?_prevSnap.issues:d.issues};
+          issues:d._coreOnly?_prevSnap.issues:d.issues,
+          assignedTodos:_prevSnap.assignedTodos||[]};
         setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(prev.find(p=>p.id===e.id)||e):mergeEst(e));return changed(prev,merged)?merged:prev}const merged2=d.estimates.map(mergeEst);return changed(prev,merged2)?merged2:prev});
         setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;
           // If DB has empty items/jobs (mid-save transient state), keep local entirely
@@ -3384,29 +3401,63 @@ export default function App(){
         }).catch(e=>{console.warn('[QB] Refresh error on load:',e);setQBConfig(prev=>({...prev,connected:false}))});
     }
   },[dbLoading]); // eslint-disable-line
-  // Handle ?so= deep link to open a specific sales order in a new tab
+  // Open a record in a new browser tab (NetSuite-style middle-click / Cmd-click).
+  // Builds a URL with the given deep-link params and opens it in a new tab.
+  const _newTabHref=React.useCallback((params)=>window.location.pathname+'?'+new URLSearchParams(params).toString(),[]);
+  // Wrap a row onClick so that middle-click, Cmd/Ctrl-click, or Shift-click opens
+  // the record in a new tab; plain left-click runs the original handler.
+  const _rowNav=React.useCallback((params,openHere)=>(e)=>{
+    const isAux=e.type==='auxclick';
+    const isMiddle=e.button===1;
+    if(isMiddle||e.ctrlKey||e.metaKey||(e.shiftKey&&!isAux)){
+      e.preventDefault&&e.preventDefault();
+      e.stopPropagation&&e.stopPropagation();
+      window.open(_newTabHref(params),'_blank','noopener,noreferrer');
+      return;
+    }
+    if(isAux)return;// non-middle aux button, ignore
+    openHere&&openHere();
+  },[_newTabHref]);
+  // Handle ?so= / ?est= / ?cust= deep links to open a specific record in a new tab
   React.useEffect(()=>{
-    try{const p=new URLSearchParams(window.location.search);const soId=p.get('so');
-      if(soId&&sos.length>0&&!dbLoading){
-        const so=sos.find(s=>s.id===soId);
-        if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);setPg('orders')}
-        const u=new URL(window.location);u.searchParams.delete('so');window.history.replaceState({},'',u);
-      }
-    }catch{}
-  },[sos,dbLoading]); // eslint-disable-line
-  // Handle ?product=<id> deep link — opens product detail in a new tab when
-  // the inventory row link is Ctrl/Cmd-clicked or middle-clicked.
-  React.useEffect(()=>{
-    if(dbLoading||!prod.length)return;
+    if(dbLoading)return;
     try{
       const p=new URLSearchParams(window.location.search);
-      const pid=p.get('product');
-      if(!pid)return;
-      const found=prod.find(x=>x.id===pid||x.sku===pid);
-      if(found){setSelP(found);setPg('products')}
-      const u=new URL(window.location);u.searchParams.delete('product');window.history.replaceState({},'',u);
+      const soId=p.get('so');const estId=p.get('est');const custId=p.get('cust');const invId=p.get('inv');const vendId=p.get('vend');const prodId=p.get('prod');
+      const u=new URL(window.location);let changed=false;
+      if(soId&&sos.length>0){
+        const so=sos.find(s=>s.id===soId);
+        if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);setPg('orders')}
+        u.searchParams.delete('so');changed=true;
+      }
+      if(estId&&ests.length>0){
+        const est=ests.find(x=>x.id===estId);
+        if(est){const c2=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c2);setPg('estimates')}
+        u.searchParams.delete('est');changed=true;
+      }
+      if(custId&&cust.length>0){
+        const c2=cust.find(cc=>cc.id===custId||cc.alpha_tag===custId);
+        if(c2){setSelC(c2);setPg('customers')}
+        u.searchParams.delete('cust');changed=true;
+      }
+      if(invId&&invs.length>0){
+        const inv=invs.find(x=>x.id===invId);
+        if(inv){setViewInvoice(inv);setPg('invoices')}
+        u.searchParams.delete('inv');changed=true;
+      }
+      if(vendId&&vend.length>0){
+        const v=vend.find(x=>x.id===vendId);
+        if(v){setSelV(v);setPg('vendors')}
+        u.searchParams.delete('vend');changed=true;
+      }
+      if(prodId&&prod.length>0){
+        const pr=prod.find(x=>x.id===prodId);
+        if(pr){setSelP(pr);setPg('products')}
+        u.searchParams.delete('prod');changed=true;
+      }
+      if(changed)window.history.replaceState({},'',u);
     }catch{}
-  },[prod,dbLoading]); // eslint-disable-line
+  },[sos,ests,cust,invs,vend,prod,dbLoading]); // eslint-disable-line
   // Handle ?pg=<id>[#anchor] deep link — used by the so-health-alert email to
   // land users on the System Health card (?pg=backup#system-health). Skipped
   // if ?so= is also set, since that handler takes precedence.
@@ -3556,6 +3607,7 @@ export default function App(){
   useEffect(()=>{setCustPage(0)},[q,rF]);
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
   const[aiWizOpen,setAiWizOpen]=useState(false);
+  const[aiInvPoWizOpen,setAiInvPoWizOpen]=useState(false);
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);
@@ -3761,11 +3813,13 @@ export default function App(){
     if(!supabase||!cu)return;
     let cancelled=false;
     (async()=>{
-      // Supabase session restore is async on first load — retry briefly before kicking out
-      for(let i=0;i<10&&!cancelled;i++){
+      // Supabase session restore is async on first load — retry generously before kicking out.
+      // Bumped from 2s to ~9s so a forced chunk-reload (lazyRetry) on slow connections doesn't
+      // boot the user to login while the session is still being restored.
+      for(let i=0;i<30&&!cancelled;i++){
         const{data}=await supabase.auth.getSession();
         if(data?.session)return;
-        await new Promise(r=>setTimeout(r,200));
+        await new Promise(r=>setTimeout(r,300));
       }
       if(cancelled)return;
       console.warn('[Auth] Cached user has no Supabase session — forcing re-login to restore RLS access');
@@ -3844,14 +3898,47 @@ export default function App(){
   const cols=useMemo(()=>COLOR_CATEGORIES,[]);
   const savV=v=>{setVend(p=>{const e=p.find(x=>x.id===v.id);return e?p.map(x=>x.id===v.id?{...x,...v}:x):[...p,v]});nf(vend.some(x=>x.id===v.id)?'Vendor updated':'Vendor created')};
   const savC=c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});
-    let subCount=0;let tagCount=0;
+    let subCount=0;let tagCount=0;let shipCount=0;let contactCount=0;
     setCust(p=>{
       const e=p.find(x=>x.id===c.id);
       let next=e?p.map(x=>x.id===c.id?c:x):[...p,c];
-      // Parent accounts cascade Pantones, thread colors, and pricing (tier + markup) to all sub-accounts.
+      // Parent accounts cascade Pantones, thread colors, pricing (tier + markup), and tax (rate + exempt) to all sub-accounts.
       if(!c.parent_id){
-        const inherit={pantone_colors:c.pantone_colors||[],thread_colors:c.thread_colors||[],adidas_ua_tier:c.adidas_ua_tier,catalog_markup:c.catalog_markup};
-        next=next.map(x=>{if(x.parent_id!==c.id)return x;const differs=JSON.stringify(x.pantone_colors||[])!==JSON.stringify(inherit.pantone_colors)||JSON.stringify(x.thread_colors||[])!==JSON.stringify(inherit.thread_colors)||x.adidas_ua_tier!==inherit.adidas_ua_tier||x.catalog_markup!==inherit.catalog_markup;if(differs)subCount++;return differs?{...x,...inherit}:x});
+        const inherit={pantone_colors:c.pantone_colors||[],thread_colors:c.thread_colors||[],adidas_ua_tier:c.adidas_ua_tier,catalog_markup:c.catalog_markup,tax_rate:c.tax_rate||0,tax_exempt:!!c.tax_exempt};
+        next=next.map(x=>{if(x.parent_id!==c.id)return x;const differs=JSON.stringify(x.pantone_colors||[])!==JSON.stringify(inherit.pantone_colors)||JSON.stringify(x.thread_colors||[])!==JSON.stringify(inherit.thread_colors)||x.adidas_ua_tier!==inherit.adidas_ua_tier||x.catalog_markup!==inherit.catalog_markup||(x.tax_rate||0)!==inherit.tax_rate||!!x.tax_exempt!==inherit.tax_exempt;if(differs)subCount++;return differs?{...x,...inherit}:x});
+        // Shipping address cascade — push parent's shipping address to each sub. If a sub already had a different
+        // address, preserve it as a selectable alternate (in alt_billing_addresses) so it isn't lost.
+        const pShip={line1:c.shipping_address_line1||'',line2:c.shipping_address_line2||'',city:c.shipping_city||'',state:c.shipping_state||'',zip:c.shipping_zip||''};
+        if(pShip.line1||pShip.city||pShip.state||pShip.zip){
+          next=next.map(x=>{
+            if(x.parent_id!==c.id)return x;
+            const xShip={line1:x.shipping_address_line1||'',line2:x.shipping_address_line2||'',city:x.shipping_city||'',state:x.shipping_state||'',zip:x.shipping_zip||''};
+            const same=xShip.line1===pShip.line1&&xShip.city===pShip.city&&xShip.state===pShip.state&&xShip.zip===pShip.zip;
+            if(same)return x;
+            const alts=[...(x.alt_billing_addresses||[])];
+            const subHadAddress=!!(xShip.line1||xShip.city);
+            const dupAlt=alts.some(a=>(a.street||'')===xShip.line1&&(a.city||'')===xShip.city&&(a.state||'')===xShip.state&&(a.zip||'')===xShip.zip);
+            if(subHadAddress&&!dupAlt){
+              alts.unshift({type:'shipping',label:(x.name||x.alpha_tag||'Original')+' ship-to',street:xShip.line1,city:xShip.city,state:xShip.state,zip:xShip.zip});
+            }
+            shipCount++;
+            return{...x,shipping_address_line1:pShip.line1,shipping_address_line2:pShip.line2,shipping_city:pShip.city,shipping_state:pShip.state,shipping_zip:pShip.zip,alt_billing_addresses:alts};
+          });
+        }
+        // Billing + Athletic Director contact cascade — copy parent's billing and AD contacts to each sub
+        // (deduped by email). Subs keep their own contacts; this just guarantees the parent's billing and AD
+        // people show up on every sub-account.
+        const parentExtra=(c.contacts||[]).filter(ct=>ct&&ct.email&&['billing','athletic director'].includes((ct.role||'').toLowerCase()));
+        if(parentExtra.length){
+          next=next.map(x=>{
+            if(x.parent_id!==c.id)return x;
+            const have=new Set((x.contacts||[]).filter(ct=>ct&&ct.email).map(ct=>ct.email.toLowerCase()));
+            const toAdd=parentExtra.filter(ct=>!have.has(ct.email.toLowerCase()));
+            if(!toAdd.length)return x;
+            contactCount++;
+            return{...x,contacts:[...(x.contacts||[]),...toAdd.map(ct=>({name:ct.name||'',email:ct.email,phone:ct.phone||'',role:ct.role||''}))]};
+          });
+        }
         // Alpha-tag cascade — when the parent's alpha tag changes, regenerate every sub's tag as parent_prefix + sport/suffix (OLu → OLuF, OLuBB, OLuBSB, ...).
         const oldTag=(e?.alpha_tag||'').trim();
         const newTag=(c.alpha_tag||'').trim();
@@ -3871,7 +3958,7 @@ export default function App(){
       }
       return next;
     });
-    const parts=[];if(subCount)parts.push('synced '+subCount+' sub-account'+(subCount===1?'':'s'));if(tagCount)parts.push('retagged '+tagCount+' sub alpha tag'+(tagCount===1?'':'s'));
+    const parts=[];if(subCount)parts.push('synced '+subCount+' sub-account'+(subCount===1?'':'s'));if(tagCount)parts.push('retagged '+tagCount+' sub alpha tag'+(tagCount===1?'':'s'));if(shipCount)parts.push('updated shipping address on '+shipCount+' sub'+(shipCount===1?'':'s'));if(contactCount)parts.push('copied contacts to '+contactCount+' sub'+(contactCount===1?'':'s'));
     nf(parts.length?'Saved — '+parts.join(', '):'Saved');
   };
   // Lock decoration pricing on save so matrix changes don't affect existing orders
@@ -4731,16 +4818,18 @@ export default function App(){
     }):myTodos;
     // Get assigned todos for this user (manually created)
     const myAssignedTodos=assignedTodos.filter(t=>t.status==='open'&&(t.assigned_to===cu.id||t.created_by===cu.id));
+    const _fmtTodoDate=(d)=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);if(days<1)return'Today';if(days===1)return'Yesterday';if(days<14)return days+'d ago';return(dt.getMonth()+1)+'/'+dt.getDate()+'/'+String(dt.getFullYear()).slice(-2)}catch{return''}};
     const _todoComplete=(id,note)=>{
       const ts=new Date().toISOString();
       const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};
       if(note)upd.completion_note=note;
       setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,...upd}:x));
-      if(_dbSnap.current.assignedTodos)_dbSnap.current.assignedTodos=_dbSnap.current.assignedTodos.map(x=>x.id===id?{...x,...upd}:x);
+      // Always sync snap so the auto-save effect doesn't later upsert stale (pre-complete) data over the update below.
+      _dbSnap.current.assignedTodos=(_dbSnap.current.assignedTodos||[]).map(x=>x.id===id?{...x,...upd}:x);
       if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));
       nf('Task completed!')
     };
-    const _todoDelete=(id)=>{if(!window.confirm('Delete this task? This cannot be undone.'))return;setAssignedTodos(prev=>prev.filter(x=>x.id!==id));if(_dbSnap.current.assignedTodos)_dbSnap.current.assignedTodos=_dbSnap.current.assignedTodos.filter(x=>x.id!==id);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').delete().eq('id',id).then(r=>{if(r.error)console.error('[DB] todo delete:',r.error.message)}));nf('Task deleted')};
+    const _todoDelete=(id)=>{if(!window.confirm('Delete this task? This cannot be undone.'))return;setAssignedTodos(prev=>prev.filter(x=>x.id!==id));_dbSnap.current.assignedTodos=(_dbSnap.current.assignedTodos||[]).filter(x=>x.id!==id);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').delete().eq('id',id).then(r=>{if(r.error)console.error('[DB] todo delete:',r.error.message)}));nf('Task deleted')};
 
     // Shared data builders
     const{pullTasks,shipTasks,decoTasks}=buildWarehouseData();
@@ -4823,7 +4912,7 @@ export default function App(){
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:600}}>{t.title}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:'Assigned to: '+assignee?.name}{t.so_id?' · '+t.so_id:''}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:'Assigned to: '+assignee?.name}{t.so_id?' · '+t.so_id:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
               </div>
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
@@ -4900,7 +4989,7 @@ export default function App(){
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:600}}>{t.title}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:'Assigned to: '+assignee?.name}{t.so_id?' · '+t.so_id:''}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:'Assigned to: '+assignee?.name}{t.so_id?' · '+t.so_id:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
               </div>
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
@@ -5208,7 +5297,7 @@ export default function App(){
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:700,color:t.priority<=1?'#dc2626':'#1e293b'}}>{t.priority<=1?'! ':''}{t.title}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>From: {creator?.name}{t.so_id?' · '+t.so_id:''}{t.description?' — '+t.description.slice(0,60):''}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>From: {creator?.name}{t.so_id?' · '+t.so_id:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}{t.description?' — '+t.description.slice(0,60):''}</div>
               </div>
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               {t.comments?.length>0&&<span style={{fontSize:10,color:'#3b82f6',fontWeight:600}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
@@ -5359,7 +5448,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -5394,7 +5483,7 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search estimates, customers..." value={estF.search} onChange={e=>setEstF(f=>({...f,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:140}} value={estF.rep} onChange={e=>setEstF(f=>({...f,rep:e.target.value}))}>
-          <option value="all">All Reps</option><option value="_me_">My Estimates</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+          <option value="all">All Reps</option><option value="_me_">My Estimates</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={estF.sort} onChange={e=>setEstF(f=>({...f,sort:e.target.value}))}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="customer">By Customer</option></select>
         {estActiveFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setEstF({status:'open',rep:'all',search:'',sort:'date_desc'})}>✕ Reset</button>}
@@ -5402,21 +5491,21 @@ export default function App(){
         <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button>
       </div>
       <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>ID</th><th>Created</th><th>Customer</th><th>Memo</th><th>Items</th><th style={{textAlign:'right'}}>Total</th><th>Rep</th><th>Status</th><th>SO</th><th>Email</th><th></th></tr></thead><tbody>
-      {fe.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const rep=REPS.find(r=>r.id===e.created_by);const linkedSO=e.status==='converted'?sos.find(s=>s.estimate_id===e.id):null;return(<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>{setEEst(e);setEEstC(c)}}>
-        <td style={{fontWeight:700,color:'#1e40af'}}>{e.id}</td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtCreatedAt(e.created_at)}</td><td>{c?<>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></>:'--'}</td>
-        <td style={{fontSize:12}}>{e.memo}</td><td>{e.items?.length||0}</td>
-        <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>{(()=>{const t=calcOrderTotals(e,c?.tax_rate||0).grand;return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</td>
-        <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></td>
-        <td><span className={`badge ${e.status==='draft'||e.status==='open'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':e.status==='converted'?'badge-purple':'badge-blue'}`}>{e.status}</span></td>
-        <td onClick={ev=>ev.stopPropagation()}>{linkedSO?<span style={{color:'#1e40af',fontWeight:600,fontSize:11,cursor:'pointer',textDecoration:'underline'}} onClick={()=>{const cc=cust.find(x=>x.id===linkedSO.customer_id);setESO(linkedSO);setESOC(cc);setPg('orders')}}>{linkedSO.id}</span>:<span style={{color:'#94a3b8',fontSize:11}}>—</span>}</td>
-        <td><EmailBadge e={e}/></td>
+      {fe.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const rep=REPS.find(r=>r.id===e.created_by);const linkedSO=e.status==='converted'?sos.find(s=>s.estimate_id===e.id):null;const _openEst=()=>{setEEst(e);setEEstC(c)};const RL=({children,style})=><RowLink params={{est:e.id}} onOpen={_openEst} style={style}>{children}</RowLink>;return(<tr key={e.id} style={{cursor:'pointer'}}>
+        <td style={{fontWeight:700,color:'#1e40af'}}><RL>{e.id}</RL></td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}><RL>{fmtCreatedAt(e.created_at)}</RL></td><td><RL>{c?<>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></>:'--'}</RL></td>
+        <td style={{fontSize:12}}><RL>{e.memo||' '}</RL></td><td><RL>{e.items?.length||0}</RL></td>
+        <td style={{textAlign:'right',fontWeight:600,fontSize:12}}><RL>{(()=>{const t=calcOrderTotals(e,c?.tax_rate||0).grand;return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</RL></td>
+        <td><RL><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></RL></td>
+        <td><RL><span className={`badge ${e.status==='draft'||e.status==='open'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':e.status==='converted'?'badge-purple':'badge-blue'}`}>{e.status}</span></RL></td>
+        <td onClick={ev=>ev.stopPropagation()}>{linkedSO?<a href={_buildTabHref({so:linkedSO.id})} style={{color:'#1e40af',fontWeight:600,fontSize:11,cursor:'pointer',textDecoration:'underline'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();const cc=cust.find(x=>x.id===linkedSO.customer_id);setESO(linkedSO);setESOC(cc);setPg('orders')}}>{linkedSO.id}</a>:<span style={{color:'#94a3b8',fontSize:11}}>—</span>}</td>
+        <td><RL><EmailBadge e={e}/></RL></td>
         <td onClick={ev=>ev.stopPropagation()}>{e.status==='approved'&&<button className="btn btn-sm btn-primary" style={{background:'#7c3aed'}} onClick={()=>convertSO(e)}>→ SO</button>}{canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} onClick={()=>deleteEstimate(e.id)}><Icon name="trash" size={10}/></button>}</td>
       </tr>)})}</tbody></table></div></div></>);};
 
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} openPOId={eSOOpenPO} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} openPOId={eSOOpenPO} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -5462,7 +5551,7 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search SOs, customers, SKUs, PO#..." value={soF.search} onChange={e=>setSOF(f=>({...f,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:140}} value={soF.rep} onChange={e=>setSOF(f=>({...f,rep:e.target.value}))}>
-          <option value="all">All Reps</option><option value="_me_">My Orders</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+          <option value="all">All Reps</option><option value="_me_">My Orders</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={soF.sort} onChange={e=>setSOF(f=>({...f,sort:e.target.value}))}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="expected">By Expected Date</option><option value="customer">By Customer</option></select>
         {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setSOF({status:'active',rep:'all',search:'',sort:'date_desc'})}>✕ Clear</button>}
@@ -5482,24 +5571,24 @@ export default function App(){
       // Status badge uses the actual SO status field (what the user set)
       const displayStatus=calcSOStatus(so);
       const statusLabel={booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
-      return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
-      <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}{so.order_type==='booking'&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700,verticalAlign:'middle'}}>B</span>}</td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtCreatedAt(so.created_at)}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}{so.po_number&&<span style={{fontSize:9,marginLeft:6,padding:'1px 5px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700,fontFamily:'monospace'}}>PO# {so.po_number}</span>}</td><td>{so.order_type==='booking'&&so.expected_ship_date?<span>{so.expected_ship_date}<div style={{fontSize:9,color:'#94a3b8'}}>ship date</div></span>:(so.expected_date||'--')}</td>
-      <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></td>
-      <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>{(()=>{const t=calcOrderTotals(so,c?.tax_rate||0).grand;return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</td>
-      <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} ✓</span>:<span style={{fontSize:11,color:'#d97706'}}>—</span>}</td>
-      <td>{itemStatus&&<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,
+      const _openSO=()=>{setESO(so);setESOC(c)};const SL=({children})=><RowLink params={{so:so.id}} onOpen={_openSO}>{children}</RowLink>;return(<tr key={so.id} style={{cursor:'pointer'}}>
+      <td style={{fontWeight:700,color:'#1e40af'}}><SL>{so.id}{so.order_type==='booking'&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700,verticalAlign:'middle'}}>B</span>}</SL></td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}><SL>{fmtCreatedAt(so.created_at)}</SL></td><td><SL>{c?.name||' '} <span className="badge badge-gray">{c?.alpha_tag}</span></SL></td><td style={{fontSize:12}}><SL>{so.memo||' '}{so.po_number&&<span style={{fontSize:9,marginLeft:6,padding:'1px 5px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700,fontFamily:'monospace'}}>PO# {so.po_number}</span>}</SL></td><td><SL>{so.order_type==='booking'&&so.expected_ship_date?<span>{so.expected_ship_date}<div style={{fontSize:9,color:'#94a3b8'}}>ship date</div></span>:(so.expected_date||'--')}</SL></td>
+      <td><SL><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></SL></td>
+      <td style={{textAlign:'right',fontWeight:600,fontSize:12}}><SL>{(()=>{const t=calcOrderTotals(so,c?.tax_rate||0).grand;return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</SL></td>
+      <td><SL>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} ✓</span>:<span style={{fontSize:11,color:'#d97706'}}>—</span>}</SL></td>
+      <td><SL>{itemStatus?<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,
         background:itemStatus==='received'?'#dcfce7':itemStatus==='partial'?'#fef3c7':itemStatus==='on_order'?'#dbeafe':'#fef2f2',
         color:itemStatus==='received'?'#166534':itemStatus==='partial'?'#92400e':itemStatus==='on_order'?'#1e40af':'#dc2626'}}>
-        {itemStatus==='received'?'\u2713 All In':itemStatus==='partial'?fulfilledSz+'/'+totalSz:itemStatus==='on_order'?'On Order':'Needs Items'}</span>}</td>
-      <td>{(()=>{const unread=msgs.filter(m=>m.so_id===so.id&&!(m.read_by||[]).includes(cu.id)).length;const total=msgs.filter(m=>m.so_id===so.id).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'2px 8px',fontSize:10,fontWeight:700}}>{unread} new</span>:total>0?<span style={{fontSize:11,color:'#94a3b8'}}>{total}</span>:null})()}</td>
-      <td>{so._tracking_number?<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,background:'#dcfce7',color:'#166534'}}>Shipped</span>:so._shipstation_order_id?<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,background:'#dbeafe',color:'#1e40af'}}>Submitted</span>:displayStatus==='in_production'&&ssConnected?<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',border:'none',borderRadius:4}} onClick={ev=>{ev.stopPropagation();handleShipToShipStation(so)}} disabled={ssShipping}>Ship</button>:null}</td>
-      <td><span style={{padding:'3px 10px',borderRadius:12,fontSize:11,fontWeight:700,background:SC[displayStatus]?.bg||'#f1f5f9',color:SC[displayStatus]?.c||'#475569'}}>{statusLabel}</span></td>
+        {itemStatus==='received'?'\u2713 All In':itemStatus==='partial'?fulfilledSz+'/'+totalSz:itemStatus==='on_order'?'On Order':'Needs Items'}</span>:' '}</SL></td>
+      <td><SL>{(()=>{const unread=msgs.filter(m=>m.so_id===so.id&&!(m.read_by||[]).includes(cu.id)).length;const total=msgs.filter(m=>m.so_id===so.id).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'2px 8px',fontSize:10,fontWeight:700}}>{unread} new</span>:total>0?<span style={{fontSize:11,color:'#94a3b8'}}>{total}</span>:' '})()}</SL></td>
+      <td>{so._tracking_number?<SL><span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,background:'#dcfce7',color:'#166534'}}>Shipped</span></SL>:so._shipstation_order_id?<SL><span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,background:'#dbeafe',color:'#1e40af'}}>Submitted</span></SL>:displayStatus==='in_production'&&ssConnected?<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',border:'none',borderRadius:4}} onClick={ev=>{ev.stopPropagation();handleShipToShipStation(so)}} disabled={ssShipping}>Ship</button>:null}</td>
+      <td><SL><span style={{padding:'3px 10px',borderRadius:12,fontSize:11,fontWeight:700,background:SC[displayStatus]?.bg||'#f1f5f9',color:SC[displayStatus]?.c||'#475569'}}>{statusLabel}</span></SL></td>
       {canDelete&&<td onClick={ev=>ev.stopPropagation()}><button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',background:'white'}} onClick={()=>deleteSO(so.id)}><Icon name="trash" size={10}/></button></td>}</tr>)})}
     </tbody></table></div></div></>);
   };
   // CUSTOMERS
   function rCust(){
-    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} ests={ests} onSaveSO={savSO} REPS={REPS} prod={prod}
+    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} REPS={REPS} prod={prod}
       onSavePromoProgram={async(prog)=>{await _dbSavePromoProgram(prog);const isFamily=c=>c.id===prog.customer_id||c.parent_id===prog.customer_id;const upd=c=>({...c,promo_programs:[...(c.promo_programs||[]).filter(p=>p.id!==prog.id),prog]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s);nf('Promo program saved')}}
       onDeletePromoProgram={async(id)=>{await _dbDeletePromoProgram(id);const upd=c=>({...c,promo_programs:(c.promo_programs||[]).filter(p=>p.id!==id)});setCust(prev=>prev.map(c=>(c.promo_programs||[]).some(p=>p.id===id)?upd(c):c));setSelC(s=>s&&(s.promo_programs||[]).some(p=>p.id===id)?upd(s):s);nf('Promo program removed')}}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s);nf('Promo period saved')}}
@@ -5583,7 +5672,7 @@ export default function App(){
       nf('Renamed '+renames.length+' alpha tag'+(renames.length===1?'':'s'));
     };
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
-      <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+      <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
       {isA&&<button className="btn btn-secondary" onClick={refreshTaxRates} disabled={!!taxRefresh} title="Look up tax rates from TaxCloud for all active, non-exempt customers missing a rate">{taxRefresh?'Refreshing…':'Refresh Tax Rates'}</button>}
       <button className="btn btn-primary" onClick={()=>setCM({open:true,c:null})}><Icon name="plus" size={14}/> New</button></div>
     {isA&&taxRefresh&&<div style={{padding:'10px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:8,marginBottom:12,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
@@ -5620,16 +5709,16 @@ export default function App(){
       return(<div key={p.id} className="card" style={{marginBottom:10}}>
         <div style={{padding:'12px 16px',display:'flex',alignItems:'center',gap:12}}>
           {kids.length>0?<button onClick={toggle} title={isExpanded?'Collapse subs':'Expand subs'} style={{width:24,height:24,padding:0,border:'1px solid #e2e8f0',borderRadius:4,background:'#fff',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#64748b'}}><Icon name={isExpanded?'chevron-down':'chevron-right'} size={14}/></button>:<div style={{width:24}}/>}
-          <div style={{width:36,height:36,borderRadius:8,background:'#dbeafe',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}} onClick={()=>setSelC(p)}><Icon name="building" size={18}/></div>
-          <div style={{flex:1,cursor:'pointer'}} onClick={()=>setSelC(p)}>
+          <RowLink params={{cust:p.id}} onOpen={()=>setSelC(p)} style={{width:36,height:36,borderRadius:8,background:'#dbeafe',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}><Icon name="building" size={18}/></RowLink>
+          <RowLink params={{cust:p.id}} onOpen={()=>setSelC(p)} style={{flex:1,cursor:'pointer'}}>
             <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:15,fontWeight:700}}>{p.name}</span><span className="badge badge-blue">{p.alpha_tag}</span><span className="badge badge-green">Tier {p.adidas_ua_tier}</span>{kids.length>0&&<span className="badge badge-gray" style={{fontSize:10}}>{kids.length} sub{kids.length===1?'':'s'}</span>}</div>
-            <div style={{fontSize:12,color:'#94a3b8'}}>{(p.contacts||[])[0]?.name&&`${p.contacts[0].name} · `}{p.billing_city&&`${p.billing_city}, ${p.billing_state}`}{p.primary_rep_id&&` · ${REPS.find(r=>r.id===p.primary_rep_id)?.name||''}`}</div></div>
+            <div style={{fontSize:12,color:'#94a3b8'}}>{(p.contacts||[])[0]?.name&&`${p.contacts[0].name} · `}{p.billing_city&&`${p.billing_city}, ${p.billing_state}`}{p.primary_rep_id&&` · ${REPS.find(r=>r.id===p.primary_rep_id)?.name||''}`}</div></RowLink>
           {bal>0&&<div style={{textAlign:'right'}}><div style={{fontSize:16,fontWeight:800,color:'#dc2626'}}>${bal.toLocaleString()}</div></div>}
           <button className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();newE(p)}}><Icon name="file" size={12}/></button>
           <button className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();setCM({open:true,c:p})}}><Icon name="edit" size={12}/></button></div>
-        {kids.length>0&&isExpanded&&<div style={{borderTop:'1px solid #f1f5f9'}}>{kids.map(ch=><div key={ch.id} style={{padding:'8px 16px 8px 64px',display:'flex',alignItems:'center',gap:10,borderBottom:'1px solid #f8fafc',cursor:'pointer'}} onClick={()=>setSelC(ch)}>
+        {kids.length>0&&isExpanded&&<div style={{borderTop:'1px solid #f1f5f9'}}>{kids.map(ch=><RowLink key={ch.id} params={{cust:ch.id}} onOpen={()=>setSelC(ch)} style={{padding:'8px 16px 8px 64px',display:'flex',alignItems:'center',gap:10,borderBottom:'1px solid #f8fafc',cursor:'pointer'}}>
           <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontSize:13,fontWeight:600}}>{ch.name}</span><span className="badge badge-gray">{ch.alpha_tag}</span>{ch.primary_rep_id&&ch.primary_rep_id!==p.primary_rep_id&&<span style={{fontSize:10,color:'#6d28d9',fontWeight:600}}>{REPS.find(r=>r.id===ch.primary_rep_id)?.name||''}</span>}<div style={{flex:1}}/>
-          {(ch._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${ch._ob.toLocaleString()}</span>}</div>)}</div>}
+          {(ch._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${ch._ob.toLocaleString()}</span>}</RowLink>)}</div>}
       </div>)})}
     {/* Customer pagination */}
     {custServerResults&&custServerResults.total>CUST_PAGE_SIZE&&<div style={{display:'flex',justifyContent:'center',alignItems:'center',gap:12,marginTop:12}}>
@@ -5663,7 +5752,7 @@ export default function App(){
   const _pdRef=React.useRef(null);
   if(!_pdRef.current){_pdRef.current=({product,onBack,ctx})=>{
     const{vend,cust,ests,sos,invPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES}=ctx.current;
-    const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());
+    const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());const[salesView,setSalesView]=useState('month');
     const[autoSaved,setAutoSaved]=useState(false);
     // Sync ep with product prop when inventory changes externally (e.g. AdjModal)
     React.useEffect(()=>{if(!editing){setEp({...product})}else{setEp(prev=>({...prev,_inv:product._inv}))}},[product._inv]);
@@ -5700,6 +5789,19 @@ export default function App(){
       return{month:MONTHS[mi],units,revenue,orders}});
     const totalUnits=monthlyData.reduce((a,m)=>a+m.units,0);const totalRev=monthlyData.reduce((a,m)=>a+m.revenue,0);const totalOrders=monthlyData.reduce((a,m)=>a+m.orders,0);
     const maxUnits=Math.max(...monthlyData.map(m=>m.units),1);
+    // Sales volume by size (for the selected year) — also broken out per-month
+    const sizeTotals={};
+    const sizeByMonth={}; // sizeByMonth[size][monthIndex] = units
+    pSOs.forEach(so=>{const dt=parseDt(so.created_at);if(!dt||dt.y!==salesYr)return;
+      so.items?.forEach(it=>{if(it.product_id!==product.id&&it.sku!==product.sku)return;
+        const sz=safeSizes(it);Object.entries(sz).forEach(([k,v2])=>{const q=Number(v2)||0;if(q<=0)return;
+          if(!sizeTotals[k])sizeTotals[k]={units:0,revenue:0};
+          sizeTotals[k].units+=q;sizeTotals[k].revenue+=q*(it.unit_sell||0);
+          if(!sizeByMonth[k])sizeByMonth[k]=Array(12).fill(0);
+          sizeByMonth[k][dt.m]+=q})})});
+    const _szDisplay=SZ_ORD.filter(s=>sizeTotals[s]);Object.keys(sizeTotals).forEach(k=>{if(!_szDisplay.includes(k))_szDisplay.push(k)});
+    const sizeData=_szDisplay.map(s=>({size:s,units:sizeTotals[s].units,revenue:sizeTotals[s].revenue,months:sizeByMonth[s]||Array(12).fill(0)}));
+    const maxSizeUnits=Math.max(...sizeData.map(s=>s.units),1);
     const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));_dbSaveProduct(ep);setEditing(false);nf('Product updated')};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
     const _coreSz=['XS','S','M','L','XL','2XL','3XL','4XL'];
@@ -5770,6 +5872,19 @@ export default function App(){
                 <div><label className="form-label">Category</label><select className="form-select" value={ep.category} onChange={e=>setEp(x=>({...x,category:e.target.value}))}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
                 <div><label className="form-label">NSA Cost</label><input className="form-input" type="number" step="0.01" value={ep.nsa_cost} onChange={e=>setEp(x=>({...x,nsa_cost:parseFloat(e.target.value)||0}))}/></div>
                 <div><label className="form-label">Retail Price</label><input className="form-input" type="number" step="0.01" value={ep.retail_price} onChange={e=>setEp(x=>({...x,retail_price:parseFloat(e.target.value)||0}))}/></div>
+                {(()=>{const curAvail=ep.available_sizes||[];const isFw=(ep.category||'').toLowerCase()==='footwear';const curMode=isFw?'footwear':(curAvail.join(',')==='OSFA'?'osfa':'apparel');
+                  const switchMode=(mode)=>{
+                    if(mode==='footwear')setEp(x=>({...x,category:'Footwear',available_sizes:[...FOOTWEAR_DEFAULT_SIZES]}));
+                    else if(mode==='osfa')setEp(x=>({...x,available_sizes:['OSFA']}));
+                    else{const cat=(ep.category||'').toLowerCase()==='footwear'?'Tees':(ep.category||'Tees');setEp(x=>({...x,category:cat,available_sizes:['S','M','L','XL','2XL']}))}
+                  };
+                  return<div style={{gridColumn:'1/3'}}><label className="form-label">Size Mode</label>
+                    <div style={{display:'flex',gap:6}}>
+                      {[{k:'apparel',l:'👕 Apparel'},{k:'footwear',l:'👟 Footwear'},{k:'osfa',l:'🧢 OSFA'}].map(m=>
+                        <button key={m.k} type="button" onClick={()=>switchMode(m.k)} style={{flex:1,padding:'6px 8px',fontSize:12,fontWeight:700,borderRadius:6,cursor:'pointer',border:'1px solid '+(curMode===m.k?'#0f172a':'#e2e8f0'),background:curMode===m.k?'#0f172a':'white',color:curMode===m.k?'white':'#475569'}}>{m.l}</button>)}
+                    </div>
+                  </div>;
+                })()}
                 <div style={{gridColumn:'1/3'}}><label className="form-label">Available Sizes</label><input className="form-input" value={ep.available_sizes.join(', ')} onChange={e=>setEp(x=>({...x,available_sizes:e.target.value.split(',').map(s=>s.trim()).filter(Boolean)}))}/></div>
               </div>
               <div style={{display:'flex',gap:8,alignItems:'center'}}>
@@ -5830,19 +5945,27 @@ export default function App(){
         </tbody></table></div></div>}
 
       {/* SALES VOLUME TAB */}
-      {tab==='sales'&&<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-        <h3>Sales Volume by Month</h3>
-        <select className="form-select" style={{width:100}} value={salesYr} onChange={e=>setSalesYr(parseInt(e.target.value))}>
-          {(salesYears.length>0?salesYears:[new Date().getFullYear()]).map(y=><option key={y} value={y}>{y}</option>)}
-        </select>
+      {tab==='sales'&&<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        <h3>Sales Volume by {salesView==='size'?'Size':'Month'}</h3>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          <div style={{display:'inline-flex',border:'1px solid #e2e8f0',borderRadius:6,overflow:'hidden'}}>
+            {[['month','By Month'],['size','By Size']].map(([k,lbl])=><button key={k} className="btn btn-sm" style={{borderRadius:0,border:'none',background:salesView===k?'#2563eb':'#fff',color:salesView===k?'#fff':'#64748b',fontWeight:700}} onClick={()=>setSalesView(k)}>{lbl}</button>)}
+          </div>
+          <select className="form-select" style={{width:100}} value={salesYr} onChange={e=>setSalesYr(parseInt(e.target.value))}>
+            {(salesYears.length>0?salesYears:[new Date().getFullYear()]).map(y=><option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
       </div><div className="card-body">
         {/* Summary stats */}
         <div style={{display:'flex',gap:24,marginBottom:20,flexWrap:'wrap'}}>
           <div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Total Units</div><div style={{fontSize:24,fontWeight:800,color:'#1e40af'}}>{totalUnits}</div></div>
           <div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Revenue</div><div style={{fontSize:24,fontWeight:800,color:'#059669'}}>${totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div>
           <div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Line Items</div><div style={{fontSize:24,fontWeight:800,color:'#7c3aed'}}>{totalOrders}</div></div>
-          <div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Avg/Month</div><div style={{fontSize:24,fontWeight:800,color:'#d97706'}}>{totalUnits>0?Math.round(totalUnits/12):0}</div></div>
+          {salesView==='month'
+            ?<div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Avg/Month</div><div style={{fontSize:24,fontWeight:800,color:'#d97706'}}>{totalUnits>0?Math.round(totalUnits/12):0}</div></div>
+            :<div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Sizes Sold</div><div style={{fontSize:24,fontWeight:800,color:'#d97706'}}>{sizeData.length}</div></div>}
         </div>
+        {salesView==='month'?<>
         {/* Bar chart */}
         <div style={{display:'flex',alignItems:'flex-end',gap:4,height:180,marginBottom:16,padding:'0 4px'}}>
           {monthlyData.map((m,i)=>{const h=maxUnits>0?(m.units/maxUnits)*150:0;const isNow=salesYr===new Date().getFullYear()&&i===new Date().getMonth();
@@ -5864,6 +5987,47 @@ export default function App(){
             <td>Total</td><td style={{color:'#1e40af'}}>{totalUnits}</td><td style={{color:'#059669'}}>${totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td><td>{totalOrders}</td>
             <td>{totalUnits>0?'$'+(totalRev/totalUnits).toFixed(2):'—'}</td></tr>
         </tbody></table>
+        </>:<>
+        {/* Size bar chart */}
+        {sizeData.length===0?<div style={{textAlign:'center',color:'#94a3b8',padding:30}}>No sales by size for {salesYr}</div>:<>
+        <div style={{display:'flex',alignItems:'flex-end',gap:4,height:180,marginBottom:16,padding:'0 4px'}}>
+          {sizeData.map((s,i)=>{const h=maxSizeUnits>0?(s.units/maxSizeUnits)*150:0;
+            return<div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+              <span style={{fontSize:10,fontWeight:700,color:s.units>0?'#1e293b':'#cbd5e1'}}>{s.units>0?s.units:''}</span>
+              <div style={{width:'100%',maxWidth:40,height:Math.max(h,2),background:s.units>0?'#2563eb':'#f1f5f9',borderRadius:'4px 4px 0 0',transition:'height 0.3s'}}/>
+              <span style={{fontSize:9,color:'#1e40af',fontWeight:800}}>{s.size}</span>
+            </div>})}
+        </div>
+        {/* Size x Month matrix */}
+        <div style={{overflowX:'auto'}}><table style={{fontSize:12}}><thead><tr>
+          <th style={{textAlign:'left',position:'sticky',left:0,background:'#fff'}}>Month</th>
+          {sizeData.map(s=><th key={s.size} style={{textAlign:'center'}}>{s.size}</th>)}
+          <th style={{textAlign:'center'}}>Total</th>
+        </tr></thead><tbody>
+          {MONTHS.map((mName,mi)=>{const mTot=sizeData.reduce((a,s)=>a+(s.months[mi]||0),0);
+            return<tr key={mi} style={{opacity:mTot===0?0.4:1}}>
+              <td style={{fontWeight:700,position:'sticky',left:0,background:'#fff'}}>{mName} {salesYr}</td>
+              {sizeData.map(s=>{const q=s.months[mi]||0;return<td key={s.size} style={{textAlign:'center',color:q>0?'#1e40af':'#cbd5e1',fontWeight:q>0?700:400}}>{q||'—'}</td>})}
+              <td style={{textAlign:'center',fontWeight:800,color:mTot>0?'#1e40af':'#cbd5e1'}}>{mTot||'—'}</td>
+            </tr>})}
+          <tr style={{fontWeight:800,borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
+            <td style={{position:'sticky',left:0,background:'#f8fafc'}}>Total</td>
+            {sizeData.map(s=><td key={s.size} style={{textAlign:'center',color:'#1e40af'}}>{s.units}</td>)}
+            <td style={{textAlign:'center',color:'#1e40af'}}>{totalUnits}</td>
+          </tr>
+          <tr style={{fontWeight:700,background:'#f8fafc',color:'#64748b',fontSize:11}}>
+            <td style={{position:'sticky',left:0,background:'#f8fafc'}}>% of Total</td>
+            {sizeData.map(s=><td key={s.size} style={{textAlign:'center'}}>{totalUnits>0?((s.units/totalUnits)*100).toFixed(1)+'%':'—'}</td>)}
+            <td style={{textAlign:'center'}}>100%</td>
+          </tr>
+          <tr style={{fontWeight:700,background:'#f8fafc',color:'#059669',fontSize:11}}>
+            <td style={{position:'sticky',left:0,background:'#f8fafc',color:'#64748b'}}>Revenue</td>
+            {sizeData.map(s=><td key={s.size} style={{textAlign:'center'}}>${s.revenue.toLocaleString(undefined,{maximumFractionDigits:0})}</td>)}
+            <td style={{textAlign:'center'}}>${totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+          </tr>
+        </tbody></table></div>
+        </>}
+        </>}
       </div></div>}
 
       {/* ESTIMATES TAB */}
@@ -6025,8 +6189,8 @@ export default function App(){
     <th>Actions</th></tr></thead>
   <tbody>{iD.map(p=>{const ai=adidasInvBulk[p.sku];const b2bTotal=ai?Object.values(ai.sizes||{}).reduce((a,s)=>a+(s.qty||0),0):null;const checked=bulkSel.has(p.id);return<tr key={p.id} style={isA&&bulkMode&&checked?{background:'#eff6ff'}:undefined}>
     {isA&&bulkMode&&<td><input type="checkbox" checked={checked} onChange={()=>toggleOne(p.id)}/></td>}
-    <td><div style={{display:'flex',alignItems:'center',gap:4}}><button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,padding:0,color:favSkus.includes(p.sku)?'#f59e0b':'#d1d5db'}} onClick={()=>toggleFav(p.sku)}>{favSkus.includes(p.sku)?'★':'☆'}</button><a href={`?product=${encodeURIComponent(p.id)}`} onClick={e=>{if(e.metaKey||e.ctrlKey||e.button===1)return;e.preventDefault();setSelP(p);setPg('products')}} style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',textDecoration:'none',cursor:'pointer'}}>{p.sku}</a></div></td>
-    <td style={{fontSize:12}}><a href={`?product=${encodeURIComponent(p.id)}`} onClick={e=>{if(e.metaKey||e.ctrlKey||e.button===1)return;e.preventDefault();setSelP(p);setPg('products')}} style={{color:'inherit',textDecoration:'none',cursor:'pointer'}}>{p.name}</a>{p.is_clearance&&<span style={{marginLeft:4,padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}<br/><span style={{color:'#94a3b8'}}>{p.color}</span>{isA&&bulkMode&&<span style={{marginLeft:6,fontSize:10,color:'#64748b'}}>· {p.category||'No cat'} · {p.color_category||'No color cat'}</span>}</td>
+    <td><div style={{display:'flex',alignItems:'center',gap:4}}><button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,padding:0,color:favSkus.includes(p.sku)?'#f59e0b':'#d1d5db'}} onClick={()=>toggleFav(p.sku)}>{favSkus.includes(p.sku)?'★':'☆'}</button><a href={`?prod=${encodeURIComponent(p.id)}`} onClick={e=>{if(e.metaKey||e.ctrlKey||e.button===1)return;e.preventDefault();setSelP(p);setPg('products')}} style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',textDecoration:'none',cursor:'pointer'}}>{p.sku}</a></div></td>
+    <td style={{fontSize:12}}><a href={`?prod=${encodeURIComponent(p.id)}`} onClick={e=>{if(e.metaKey||e.ctrlKey||e.button===1)return;e.preventDefault();setSelP(p);setPg('products')}} style={{color:'inherit',textDecoration:'none',cursor:'pointer'}}>{p.name}</a>{p.is_clearance&&<span style={{marginLeft:4,padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}<br/><span style={{color:'#94a3b8'}}>{p.color}</span>{isA&&bulkMode&&<span style={{marginLeft:6,fontSize:10,color:'#64748b'}}>· {p.category||'No cat'} · {p.color_category||'No color cat'}</span>}</td>
     <td><div style={{display:'flex',gap:2}}>{[...new Set(p.available_sizes)].filter(sz=>showSz(sz,p._inv?.[sz])).map(sz=>{const v=p._inv?.[sz]||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{minWidth:30,padding:'1px 3px'}}><div className="size-label" style={{fontSize:8}}>{sz}</div><div className="size-qty" style={{fontSize:11}}>{v}</div></div>})}</div></td>
     <td style={{fontWeight:800,fontSize:15,color:p._tQ<=10?'#d97706':'#166534'}}>{p._tQ}</td>
     <td style={{fontWeight:700,fontSize:13,color:b2bTotal!=null?(b2bTotal>0?'#059669':'#dc2626'):'#d1d5db'}}>{b2bTotal!=null?b2bTotal:'—'}</td>
@@ -6140,7 +6304,7 @@ export default function App(){
       nf('PO '+(existingPO?.po_number||'')+' updated');
     } else {
       // Create new PO
-      const poNum='PO-'+invPOCounter+'-NSA';
+      const poNum='PO '+invPOCounter+' NSA';
       const po={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:vendorId,vendor_name:vendor.name,
         items:validItems.map(it=>({product_id:it.product_id,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||[],sizes:{...it.sizes},received:{},nsa_cost:it.nsa_cost||0})),
         status:'ordered',created_at:new Date().toLocaleString(),expected_date:invPOModal.expected_date||'',memo:invPOModal.memo||'',
@@ -6296,6 +6460,7 @@ export default function App(){
     return(<>
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={invPOSearch} onChange={e=>setInvPOSearch(e.target.value)}/></div>
+        <button className="btn" onClick={()=>setAiInvPoWizOpen(true)} style={{background:'linear-gradient(135deg,#7c3aed,#6d28d9)',color:'white',border:'none',fontWeight:700,boxShadow:'0 1px 3px rgba(124,58,237,0.3)'}} title="Build an inventory PO with AI from a paste, image, or sheet">✨ Build with AI</button>
         <button className="btn btn-primary" onClick={()=>setInvPOModal({open:true,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false})}>+ New Inventory PO</button>
       </div>
       {filtered.length===0?<div className="card"><div className="card-body"><div className="empty" style={{padding:30}}>No inventory POs yet. Click "+ New Inventory PO" to create one.</div></div></div>:
@@ -6647,7 +6812,7 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('active_art_timers',activeArtTimers)},[activeArtTimers]);
   const[idleSettings,setIdleSettings]=useState(()=>loadState('idle_settings',{warnMin:5,autoOutMin:10}));
   React.useEffect(()=>{_saveAppState('idle_settings',idleSettings)},[idleSettings]);
-  const[portalSettings,setPortalSettings]=useState(()=>loadState('portal_settings',{followUpDays:7,estFollowUpDays:7,invFollowUpDays:7,disclaimer:'Please check all artwork, quantities, and personalization very closely. Once approved, this will be exactly what is printed.'}));
+  const[portalSettings,setPortalSettings]=useState(()=>loadState('portal_settings',{followUpDays:7,estFollowUpDays:7,invFollowUpDays:7,disclaimer:'Please check all artwork, quantities, and personalization very closely. Once approved, this will be exactly what is printed.',ccFeePct:0.029,paymentNote:''}));
   React.useEffect(()=>{_saveAppState('portal_settings',portalSettings)},[portalSettings]);
 
   // ─── COMPUTED TODOS (shared between desktop dashboard and mobile portal) ───
@@ -8077,7 +8242,7 @@ export default function App(){
         const total=vg.pos.reduce((a,bp)=>a+bp.total_cost,0);
         const totalUnits=vg.pos.reduce((a,bp)=>a+bp.items.reduce((a2,it)=>a2+it.qty,0),0);
         const hitThreshold=total>=vg.threshold;
-        const nextPO='NSA-'+batchCounter;
+        const nextPO='NSA '+batchCounter;
         return<div key={vk} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
           <div className="card-header">
             <div><h2>{vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
@@ -8414,7 +8579,7 @@ export default function App(){
       const bal=inv.total-(inv.paid??0);
       const storedLineItems=inv.line_items||[];
       // Fallback: compute line items from SO when not stored on invoice
-      const soComputedItems=(!storedLineItems.length&&so)?safeItems(so).map(it=>{
+      const soComputedItems=(!storedLineItems.length&&so)?safeItems(so).map((it,_soIdx)=>{
         const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return null;
         const af=safeArt(so);const aqMap={};safeItems(so).forEach(sit=>{const sq2=Object.values(safeSizes(sit)).reduce((a2,v2)=>a2+safeNum(v2),0);safeDecos(sit).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){aqMap[d2.art_file_id]=(aqMap[d2.art_file_id]||0)+sq2}})});
         const decos=safeDecos(it);
@@ -8428,7 +8593,7 @@ export default function App(){
         });
         const decoSell=decoDetails.reduce((a,dd)=>a+dd.sell,0);
         return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell),
-          _unitSell:safeNum(it.unit_sell),_decoSell:decoSell,_decos:decoDetails,_sku:it.sku,_name:it.name,_color:it.color}}).filter(Boolean):[];
+          _unitSell:safeNum(it.unit_sell),_decoSell:decoSell,_decos:decoDetails,_sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,_soIdx)}}).filter(Boolean):[];
       const lineItems=storedLineItems.length>0?storedLineItems:soComputedItems;
       const shipAmt=inv.shipping||0;
       const taxAmt=inv.tax||0;
@@ -8453,6 +8618,60 @@ export default function App(){
       const dd=dueDays(inv.due_date);
       const overdue=dd!==null&&dd<0&&inv.status!=='paid';
       const contacts=(ic?.contacts||[]).filter(c=>c.email);
+
+      const buildInvDocOpts=()=>{
+        const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+        const billToName=inv.billing_name||ic?.name||'—';
+        const billToSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
+        const billAddr=billToSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
+        const shipToName=inv.shipping_name||ic?.name||'—';
+        const shipToOverrideSub=inv.shipping_name?(inv.shipping_address||'').replace(/\n/g,'<br/>')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
+        const shipAddr=shipToOverrideSub||(ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'');
+        const poNum=inv._po_number||so?.po_number;
+        const pRows=[];let pSubTotal=0;
+        const pSoItems=so?safeItems(so):[];const pSoArt=so?safeArt(so):[];
+        const _pAQ2={};pSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ2[d.art_file_id]=(_pAQ2[d.art_file_id]||0)+q2}})});
+        const pIsDeposit=inv.inv_type==='deposit';const pDepPct=pIsDeposit?(inv.deposit_pct||50)/100:1;
+        if(pSoItems.length>0){
+          pSoItems.forEach(it=>{
+            const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
+            const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+            const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*pDepPct*100)/100;pSubTotal+=lineAmt;
+            let itemName=(it.name||'')+(it.color?' - '+it.color:'');
+            if(szStr)itemName+='<br/><span>'+szStr+'</span>';
+            if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
+            pRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
+            safeDecos(it).forEach(d=>{
+              const cq=d.kind==='art'&&d.art_file_id?_pAQ2[d.art_file_id]:qty;const dp2=dP(d,qty,pSoArt,cq);
+              const artF=pSoArt.find(a2=>a2.id===d.art_file_id);
+              const decoLabel=pdfDecoLabel(d,artF);
+              const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*pDepPct*100)/100;pSubTotal+=decoAmt;
+              pRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
+            });
+          });
+        }else{
+          lineItems.forEach(li=>{pSubTotal+=safeNum(li.amount);pRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$(safeNum(li.rate)),style:'text-align:right'},{value:_$(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
+        }
+        return{title:billToName,docNum:inv.id,docType:'INVOICE',
+          headerRight:'<div class="ta">'+_$(inv.total)+'</div><div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
+          infoBoxes:[
+            {label:'Bill To',value:billToName,sub:billAddr},
+            ...(shipAddr?[{label:'Ship To',value:shipToName,sub:shipAddr}]:[]),
+            {label:'Invoice Date',value:inv.date||'—',sub:inv.due_date?'Due: '+inv.due_date:''},
+            {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||''+(poNum?'<br/><strong>PO# '+poNum+'</strong>':'')},
+            {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':inv.inv_type==='full'?'Invoice':'Final Invoice',sub:'Rep: '+(repObj?.name||'—')}
+          ],
+          tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
+            rows:[...pRows,
+              {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(pSubTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
+              ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(shipAmt),style:'text-align:right;border:none'}]}]:[]),
+              ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$(taxAmt),style:'text-align:right;border:none'}]}]:[]),
+              ...(safeNum(inv.credit_amount)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$(safeNum(inv.credit_amount))+'</strong>',style:'text-align:right;border:none'}]}]:[]),
+              {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(inv.total)+'</strong>',style:'text-align:right'}]},
+              ...(inv.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$(inv.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
+              ...(bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$(bal)+'</strong>',style:'text-align:right'}]}]:[]),
+            ]}],footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms};
+      };
 
       return(<>
         {/* Back button + breadcrumb */}
@@ -8505,7 +8724,30 @@ export default function App(){
             {inv.status!=='paid'&&<button className="btn btn-sm" style={{background:'#166534',color:'white',border:'none',fontSize:12,padding:'6px 14px'}}
               onClick={()=>setPayModal({inv:{...inv,_bal:bal},amount:bal,method:'check',ref:''})}>Record Payment</button>}
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
-              onClick={()=>setInvEditModal({inv,memo:inv.memo||'',due_date:inv.due_date||''})}>Edit Invoice</button>
+              onClick={()=>{
+                // Seed billing_custom: true if there's an override that doesn't match any alt billing address on the customer
+                const _parent=ic?.parent_id?cust.find(c=>c.id===ic.parent_id):ic;
+                const _alts=(_parent?.alt_billing_addresses||[]).filter(a=>a.label||a.street);
+                const _matchesAlt=inv.billing_name?_alts.some(a=>(a.label||'')===inv.billing_name):false;
+                const _billingCustom=!!(inv.billing_name||inv.billing_address)&&!_matchesAlt;
+                setInvEditModal({
+                  inv,
+                  customer_id:inv.customer_id||'',
+                  memo:inv.memo||'',
+                  due_date:inv.due_date||'',
+                  billing_name:inv.billing_name||'',
+                  billing_address:inv.billing_address||'',
+                  billing_custom:_billingCustom,
+                  shipping_name:inv.shipping_name||'',
+                  shipping_address:inv.shipping_address||'',
+                  shipping_custom:!!(inv.shipping_name||inv.shipping_address),
+                  shipping:safeNum(inv.shipping),
+                  tax:safeNum(inv.tax),
+                  line_items:(lineItems.length?lineItems:[]).map(li=>({...li,qty:safeNum(li.qty),rate:safeNum(li.rate),amount:safeNum(li.amount)})),
+                  customerSearch:'',
+                  customerSearchOpen:false
+                });
+              }}>Edit Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 const contact=contacts[0];
@@ -8516,59 +8758,17 @@ export default function App(){
               }}>Send Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
-                const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-                const billToName=inv.billing_name||ic?.name||'—';
-                const billToSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
-                const billAddr=billToSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
-                const shipAddr=ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'';
-                const poNum=inv._po_number||so?.po_number;
-                // Build rows with decoration detail from SO items
-                const pRows=[];let pSubTotal=0;
-                const pSoItems=so?safeItems(so):[];const pSoArt=so?safeArt(so):[];
-                const _pAQ2={};pSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ2[d.art_file_id]=(_pAQ2[d.art_file_id]||0)+q2}})});
-                const pIsDeposit=inv.inv_type==='deposit';const pDepPct=pIsDeposit?(inv.deposit_pct||50)/100:1;
-                if(pSoItems.length>0){
-                  pSoItems.forEach(it=>{
-                    const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-                    const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
-                    const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*pDepPct*100)/100;pSubTotal+=lineAmt;
-                    let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-                    if(szStr)itemName+='<br/><span>'+szStr+'</span>';
-                    if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
-                    pRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
-                    safeDecos(it).forEach(d=>{
-                      const cq=d.kind==='art'&&d.art_file_id?_pAQ2[d.art_file_id]:qty;const dp2=dP(d,qty,pSoArt,cq);
-                      const artF=pSoArt.find(a2=>a2.id===d.art_file_id);
-                      const decoLabel=pdfDecoLabel(d,artF);
-                      const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*pDepPct*100)/100;pSubTotal+=decoAmt;
-                      pRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
-                    });
-                  });
-                }else{
-                  lineItems.forEach(li=>{pSubTotal+=safeNum(li.amount);pRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$(safeNum(li.rate)),style:'text-align:right'},{value:_$(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
-                }
-                printDoc({title:billToName,docNum:inv.id,docType:'INVOICE',
-                  headerRight:'<div class="ta">'+_$(inv.total)+'</div><div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
-                  infoBoxes:[
-                    {label:'Bill To',value:billToName,sub:billAddr},
-                    ...(shipAddr?[{label:'Ship To',value:ic?.name||'—',sub:shipAddr}]:[]),
-                    {label:'Invoice Date',value:inv.date||'—',sub:inv.due_date?'Due: '+inv.due_date:''},
-                    {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||''+(poNum?'<br/><strong>PO# '+poNum+'</strong>':'')},
-                    {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':inv.inv_type==='full'?'Invoice':'Final Invoice',sub:'Rep: '+(repObj?.name||'—')}
-                  ],
-                  tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
-                    rows:[...pRows,
-                      {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(pSubTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
-                      ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(shipAmt),style:'text-align:right;border:none'}]}]:[]),
-                      ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$(taxAmt),style:'text-align:right;border:none'}]}]:[]),
-                      ...(safeNum(inv.credit_amount)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$(safeNum(inv.credit_amount))+'</strong>',style:'text-align:right;border:none'}]}]:[]),
-                      {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(inv.total)+'</strong>',style:'text-align:right'}]},
-                      ...(inv.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$(inv.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
-                      ...(bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$(bal)+'</strong>',style:'text-align:right'}]}]:[]),
-                    ]}],footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms});
+                printDoc(buildInvDocOpts());
                 const ph=[...(inv.print_history||[]),{printed_at:new Date().toLocaleString(),printed_by:cu.name||cu.id}];
                 setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,print_history:ph}:i));setViewInvoice(v=>({...v,print_history:ph}));
               }}>Print</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
+              onClick={async()=>{
+                try{
+                  const billToName=inv.billing_name||ic?.name||'';
+                  await downloadDoc(buildInvDocOpts(),'Invoice-'+inv.id+(billToName?'-'+billToName:''));
+                }catch(err){console.warn('PDF download failed:',err)}
+              }}>📥 Download PDF</button>
             {lineItems.length>=2&&inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',background:'#7c3aed',color:'white',border:'none'}}
               onClick={()=>{
                 // If line_items not stored on invoice, populate from computed items before splitting
@@ -8582,7 +8782,7 @@ export default function App(){
 
           {/* Invoice info grid */}
           <div className="card-body" style={{padding:'20px 24px'}}>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:16,marginBottom:20}}>
+            <div style={{display:'grid',gridTemplateColumns:(inv.shipping_name||inv.shipping_address||ic?.shipping_address_line1)?'1fr 1fr 1fr 1fr 1fr':'1fr 1fr 1fr 1fr',gap:16,marginBottom:20}}>
               <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Bill To</div>
                 {inv.billing_name?<><div style={{fontSize:14,fontWeight:700}}>{inv.billing_name}</div><div style={{fontSize:11,color:'#64748b'}}>{inv.billing_address||''}</div><div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>on behalf of {ic?.name}</div></>
                 :<><div style={{fontSize:14,fontWeight:700}}>{ic?.name||'—'}</div>{ic?.alpha_tag&&<div style={{fontSize:11,color:'#64748b'}}>{ic.alpha_tag}</div>}{ic?.billing_address_line1&&<div style={{fontSize:11,color:'#64748b',marginTop:2}}>{ic.billing_address_line1}{ic.billing_city?', '+ic.billing_city:''}{ic.billing_state?' '+ic.billing_state:''}{ic.billing_zip?' '+ic.billing_zip:''}</div>}</>}
@@ -8593,13 +8793,17 @@ export default function App(){
                     {altAddrs2.map((a,i)=><option key={i} value={JSON.stringify(a)}>{a.label||'Alt '+(i+1)}</option>)}
                   </select>})()}
               </div>
+              {(inv.shipping_name||inv.shipping_address||ic?.shipping_address_line1)&&<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Ship To</div>
+                {inv.shipping_name||inv.shipping_address?<><div style={{fontSize:14,fontWeight:700}}>{inv.shipping_name||ic?.name||'—'}</div><div style={{fontSize:11,color:'#64748b',whiteSpace:'pre-line'}}>{inv.shipping_address||''}</div>{inv.shipping_name&&<div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>on behalf of {ic?.name}</div>}</>
+                :<><div style={{fontSize:14,fontWeight:700}}>{ic?.name||'—'}</div>{ic?.shipping_address_line1&&<div style={{fontSize:11,color:'#64748b',marginTop:2}}>{ic.shipping_address_line1}{ic.shipping_city?', '+ic.shipping_city:''}{ic.shipping_state?' '+ic.shipping_state:''}{ic.shipping_zip?' '+ic.shipping_zip:''}</div>}</>}
+              </div>}
               <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Invoice Date</div>
                 <div style={{fontSize:14,fontWeight:600}}>{inv.date||'—'}</div>
                 <div style={{fontSize:11,color:overdue?'#dc2626':'#64748b',fontWeight:overdue?700:400}}>Due: {inv.due_date||'—'}{overdue?' (Overdue)':''}</div>
               </div>
               <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Sales Order</div>
-                <div style={{fontSize:14,fontWeight:600,color:'#7c3aed',cursor:inv.so_id?'pointer':'default',textDecoration:inv.so_id?'underline':'none'}}
-                  onClick={()=>{if(so){setViewInvoice(null);setESO(so);setESOC(ic);setPg('orders')}}}>{inv.so_id||'—'}</div>
+                {inv.so_id?<a href={_buildTabHref({so:inv.so_id})} onClick={e=>{if(e.ctrlKey||e.metaKey||e.shiftKey||e.button===1)return;e.preventDefault();if(so){setViewInvoice(null);setESO(so);setESOC(ic);setPg('orders')}}} style={{fontSize:14,fontWeight:600,color:'#7c3aed',textDecoration:'underline',cursor:'pointer'}}>{inv.so_id}</a>
+                :<div style={{fontSize:14,fontWeight:600,color:'#94a3b8'}}>—</div>}
                 <div style={{fontSize:11,color:'#64748b'}}>{inv.memo||''}</div>
               </div>
               <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Type / Rep</div>
@@ -8795,7 +8999,7 @@ export default function App(){
             const accountedQty=poBlankQty+pickQty;
             const hasActual=blankPOs.length>0||pickQty>0;
             const billedCostFromPOs=blankPOs.reduce((a,pl)=>a+safeNum(pl._bill_cost||0),0);
-            const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(hasActual?accountedQty*safeNum(it.nsa_cost):0);
+            const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(pickQty>0?pickQty*safeNum(it.nsa_cost):0);
             costLines.push({category:'Blanks',sku:it.sku,name:it.name,vendor:D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'—',
               qty,expected:expectedBlank,actual:actualBlank,poCount:blankPOs.length+(pickQty>0?1:0),
               poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
@@ -8842,7 +9046,7 @@ export default function App(){
           if(costLines.length===0)return null;
           const totalExpected=costLines.reduce((a,l)=>a+l.expected,0);
           const totalActual=costLines.reduce((a,l)=>a+l.actual,0);
-          const hasActuals=costLines.some(l=>l.poCount>0);
+          const hasActuals=costLines.some(l=>l.actual>0);
           const variance=totalActual-totalExpected;
           const revenue=inv.total??0;
           const gp=revenue-totalActual;
@@ -8972,24 +9176,169 @@ export default function App(){
           </div></div>})()}
 
         {/* ═══ EDIT INVOICE MODAL ═══ */}
-        {invEditModal&&<div className="modal-overlay" onClick={()=>setInvEditModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:450}}>
-          <div className="modal-header"><h2>Edit Invoice — {invEditModal.inv.id}</h2><button className="modal-close" onClick={()=>setInvEditModal(null)}>x</button></div>
-          <div className="modal-body">
-            <div style={{marginBottom:12}}><label className="form-label">Memo</label>
-              <input className="form-input" value={invEditModal.memo} onChange={e=>setInvEditModal(s=>({...s,memo:e.target.value}))} placeholder="Invoice memo"/></div>
-            <div style={{marginBottom:12}}><label className="form-label">Due Date</label>
-              <input className="form-input" type="date" value={(()=>{const d=invEditModal.due_date;if(!d)return'';const m=d.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?'20'+m[3]+'-'+m[1]+'-'+m[2]:d})()}
-                onChange={e=>{const v=e.target.value;if(!v){setInvEditModal(s=>({...s,due_date:''}));return}const d=new Date(v+'T12:00:00');setInvEditModal(s=>({...s,due_date:d.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'})}))}}/></div>
+        {invEditModal&&(()=>{
+          const em=invEditModal;
+          const emCust=cust.find(c=>c.id===em.customer_id);
+          const custMatches=em.customerSearch?cust.filter(c=>{const q2=em.customerSearch.toLowerCase();return(c.name||'').toLowerCase().includes(q2)||(c.alpha_tag||'').toLowerCase().includes(q2)||(c.id||'').toLowerCase().includes(q2)}).slice(0,10):[];
+          const emSubtotal=em.line_items.reduce((a,l)=>a+safeNum(l.amount),0);
+          const emTotal=Math.round((emSubtotal+safeNum(em.shipping)+safeNum(em.tax)-safeNum(em.inv.credit_amount))*100)/100;
+          const updateLine=(i,patch)=>setInvEditModal(s=>{
+            const next=[...s.line_items];
+            const merged={...next[i],...patch};
+            if(patch.qty!==undefined||patch.rate!==undefined){merged.amount=Math.round(safeNum(merged.qty)*safeNum(merged.rate)*100)/100}
+            next[i]=merged;return{...s,line_items:next};
+          });
+          const addLine=()=>setInvEditModal(s=>({...s,line_items:[...s.line_items,{desc:'',qty:1,rate:0,amount:0,_sku:'',_name:'',_color:''}]}));
+          const rmLine=i=>setInvEditModal(s=>({...s,line_items:s.line_items.filter((_,x)=>x!==i)}));
+          return<div className="modal-overlay" onClick={()=>setInvEditModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:980,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
+          <div className="modal-header"><h2>Edit Invoice — {em.inv.id}</h2><button className="modal-close" onClick={()=>setInvEditModal(null)}>x</button></div>
+          <div className="modal-body" style={{overflow:'auto',flex:1}}>
+            {/* Customer */}
+            <div style={{marginBottom:14,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+              <label className="form-label" style={{fontWeight:700}}>Customer</label>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:em.customerSearchOpen?8:0}}>
+                <div style={{flex:1,fontSize:13}}>{emCust?<><strong>{emCust.name}</strong>{emCust.alpha_tag?<span style={{color:'#64748b'}}> — {emCust.alpha_tag}</span>:null}</>:<span style={{color:'#94a3b8'}}>No customer</span>}</div>
+                <button className="btn btn-sm btn-secondary" onClick={()=>setInvEditModal(s=>({...s,customerSearchOpen:!s.customerSearchOpen,customerSearch:''}))} style={{fontSize:11}}>{em.customerSearchOpen?'Cancel':'Change'}</button>
+              </div>
+              {em.customerSearchOpen&&<div>
+                <input className="form-input" autoFocus placeholder="Search customers by name, alpha tag, or ID..." value={em.customerSearch} onChange={e=>setInvEditModal(s=>({...s,customerSearch:e.target.value}))} style={{fontSize:13}}/>
+                {custMatches.length>0&&<div style={{marginTop:6,maxHeight:200,overflow:'auto',border:'1px solid #e2e8f0',borderRadius:6,background:'white'}}>
+                  {custMatches.map(c=><div key={c.id} onClick={()=>{
+                    // Switching customer clears overrides so the new customer's address shows through.
+                    setInvEditModal(s=>({...s,customer_id:c.id,billing_name:'',billing_address:'',shipping_name:'',shipping_address:'',customerSearchOpen:false,customerSearch:''}));
+                  }} style={{padding:'8px 10px',cursor:'pointer',borderBottom:'1px solid #f1f5f9',fontSize:12}} onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='white'}>
+                    <div style={{fontWeight:600}}>{c.name}{c.alpha_tag?<span style={{color:'#64748b',fontWeight:400}}> — {c.alpha_tag}</span>:null}</div>
+                    <div style={{fontSize:10,color:'#94a3b8'}}>{c.id}</div>
+                  </div>)}
+                </div>}
+                {em.customerSearch&&custMatches.length===0&&<div style={{marginTop:6,fontSize:11,color:'#94a3b8'}}>No matches.</div>}
+              </div>}
+            </div>
+
+            {/* Memo + Due Date + Shipping + Tax */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 140px 120px 120px',gap:10,marginBottom:14}}>
+              <div><label className="form-label">Memo</label>
+                <input className="form-input" value={em.memo} onChange={e=>setInvEditModal(s=>({...s,memo:e.target.value}))} placeholder="Invoice memo"/></div>
+              <div><label className="form-label">Due Date</label>
+                <input className="form-input" type="date" value={(()=>{const d=em.due_date;if(!d)return'';const m=d.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?'20'+m[3]+'-'+m[1]+'-'+m[2]:d})()}
+                  onChange={e=>{const v=e.target.value;if(!v){setInvEditModal(s=>({...s,due_date:''}));return}const d=new Date(v+'T12:00:00');setInvEditModal(s=>({...s,due_date:d.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'})}))}}/></div>
+              <div><label className="form-label">Shipping</label>
+                <input className="form-input" type="number" step="0.01" value={em.shipping} onChange={e=>setInvEditModal(s=>({...s,shipping:e.target.value===''?'':parseFloat(e.target.value)||0}))}/></div>
+              <div><label className="form-label">Tax</label>
+                <input className="form-input" type="number" step="0.01" value={em.tax} onChange={e=>setInvEditModal(s=>({...s,tax:e.target.value===''?'':parseFloat(e.target.value)||0}))}/></div>
+            </div>
+
+            {/* Bill To / Ship To selector */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:14}}>
+              <div style={{padding:12,background:'#fefce8',borderRadius:8,border:'1px solid #fde68a'}}>
+                <label className="form-label" style={{fontWeight:700,marginBottom:6,color:'#92400e'}}>Bill To</label>
+                {(()=>{
+                  const parentC=emCust?.parent_id?cust.find(c=>c.id===emCust.parent_id):emCust;
+                  const altAddrs=(parentC?.alt_billing_addresses||[]).filter(a=>a.label||a.street);
+                  const defaultLabel='Customer default'+(emCust?.billing_address_line1?' — '+emCust.billing_address_line1+(emCust.billing_city?', '+emCust.billing_city:'')+(emCust.billing_state?' '+emCust.billing_state:''):' (no address on file)');
+                  const matchingAlt=em.billing_name&&!em.billing_custom?altAddrs.find(a=>(a.label||'')===em.billing_name):null;
+                  const selValue=em.billing_custom?'__custom__':matchingAlt?JSON.stringify(matchingAlt):'';
+                  return<>
+                    <select className="form-select" value={selValue} onChange={e=>{
+                      const v=e.target.value;
+                      if(v==='__custom__')setInvEditModal(s=>({...s,billing_custom:true,billing_name:s.billing_name||emCust?.name||'',billing_address:s.billing_address||''}));
+                      else if(v==='')setInvEditModal(s=>({...s,billing_custom:false,billing_name:'',billing_address:''}));
+                      else{const a=JSON.parse(v);setInvEditModal(s=>({...s,billing_custom:false,billing_name:a.label||'',billing_address:[a.street,a.city,a.state,a.zip].filter(Boolean).join(', ')}))}
+                    }} style={{fontSize:12}}>
+                      <option value="">{defaultLabel}</option>
+                      {altAddrs.map((a,i)=><option key={i} value={JSON.stringify(a)}>{(a.label||'Alt '+(i+1))+' — '+[a.street,a.city,a.state,a.zip].filter(Boolean).join(', ')}</option>)}
+                      <option value="__custom__">✏️ Custom address...</option>
+                    </select>
+                    {em.billing_custom&&<>
+                      <input className="form-input" placeholder="Bill to name" value={em.billing_name} onChange={e=>setInvEditModal(s=>({...s,billing_name:e.target.value}))} style={{fontSize:12,marginTop:6}}/>
+                      <textarea className="form-input" placeholder="Bill to address (one address per invoice)" value={em.billing_address} onChange={e=>setInvEditModal(s=>({...s,billing_address:e.target.value}))} style={{fontSize:12,marginTop:6,minHeight:50}} rows={3}/>
+                    </>}
+                  </>;
+                })()}
+              </div>
+              <div style={{padding:12,background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0'}}>
+                <label className="form-label" style={{fontWeight:700,marginBottom:6,color:'#065f46'}}>Ship To</label>
+                {(()=>{
+                  const defaultLabel='Customer default'+(emCust?.shipping_address_line1?' — '+emCust.shipping_address_line1+(emCust.shipping_city?', '+emCust.shipping_city:'')+(emCust.shipping_state?' '+emCust.shipping_state:''):' (no address on file)');
+                  const selValue=em.shipping_custom?'__custom__':'';
+                  return<>
+                    <select className="form-select" value={selValue} onChange={e=>{
+                      const v=e.target.value;
+                      if(v==='__custom__')setInvEditModal(s=>({...s,shipping_custom:true,shipping_name:s.shipping_name||emCust?.name||'',shipping_address:s.shipping_address||''}));
+                      else setInvEditModal(s=>({...s,shipping_custom:false,shipping_name:'',shipping_address:''}));
+                    }} style={{fontSize:12}}>
+                      <option value="">{defaultLabel}</option>
+                      <option value="__custom__">✏️ Custom address...</option>
+                    </select>
+                    {em.shipping_custom&&<>
+                      <input className="form-input" placeholder="Ship to name" value={em.shipping_name} onChange={e=>setInvEditModal(s=>({...s,shipping_name:e.target.value}))} style={{fontSize:12,marginTop:6}}/>
+                      <textarea className="form-input" placeholder="Ship to address" value={em.shipping_address} onChange={e=>setInvEditModal(s=>({...s,shipping_address:e.target.value}))} style={{fontSize:12,marginTop:6,minHeight:50}} rows={3}/>
+                    </>}
+                  </>;
+                })()}
+              </div>
+            </div>
+
+            {/* Line items */}
+            <div style={{marginBottom:12}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                <label className="form-label" style={{margin:0,fontWeight:700}}>Line Items</label>
+                <button className="btn btn-sm btn-secondary" onClick={addLine} style={{fontSize:11}}>+ Add Line</button>
+              </div>
+              <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 70px 90px 90px 32px',gap:0,background:'#f1f5f9',padding:'8px 10px',fontSize:10,fontWeight:700,color:'#475569',textTransform:'uppercase'}}>
+                  <div>Description</div><div style={{textAlign:'center'}}>Qty</div><div style={{textAlign:'right'}}>Rate</div><div style={{textAlign:'right'}}>Amount</div><div></div>
+                </div>
+                {em.line_items.length===0&&<div style={{padding:'14px 10px',fontSize:12,color:'#94a3b8',textAlign:'center'}}>No line items. Click "+ Add Line" to add one.</div>}
+                {em.line_items.map((li,i)=><div key={i} style={{display:'grid',gridTemplateColumns:'1fr 70px 90px 90px 32px',gap:6,padding:'8px 10px',alignItems:'center',borderTop:'1px solid #f1f5f9'}}>
+                  <input className="form-input" value={li.desc||''} onChange={e=>updateLine(i,{desc:e.target.value})} style={{fontSize:12}} placeholder="Description"/>
+                  <input className="form-input" type="number" min="0" value={li.qty||0} onChange={e=>updateLine(i,{qty:parseFloat(e.target.value)||0})} style={{fontSize:12,textAlign:'center'}}/>
+                  <input className="form-input" type="number" step="0.01" min="0" value={li.rate||0} onChange={e=>updateLine(i,{rate:parseFloat(e.target.value)||0})} style={{fontSize:12,textAlign:'right'}}/>
+                  <div style={{fontSize:12,textAlign:'right',fontWeight:600,padding:'6px 8px'}}>${safeNum(li.amount).toFixed(2)}</div>
+                  <button onClick={()=>rmLine(i)} title="Remove line" style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:18,padding:0,lineHeight:1}}>×</button>
+                </div>)}
+              </div>
+              {em.inv.so_id&&<div style={{fontSize:11,color:'#64748b',marginTop:6,fontStyle:'italic'}}>Lines removed here become available to invoice again from <strong>{em.inv.so_id}</strong>.</div>}
+            </div>
+
+            {/* Totals preview */}
+            <div style={{display:'flex',justifyContent:'flex-end',padding:12,background:'#f8fafc',borderRadius:8}}>
+              <div style={{minWidth:240}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3}}><span style={{color:'#64748b'}}>Subtotal</span><span style={{fontWeight:600}}>${emSubtotal.toFixed(2)}</span></div>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3}}><span style={{color:'#64748b'}}>Shipping</span><span>${safeNum(em.shipping).toFixed(2)}</span></div>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3}}><span style={{color:'#64748b'}}>Tax</span><span>${safeNum(em.tax).toFixed(2)}</span></div>
+                {safeNum(em.inv.credit_amount)>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3,color:'#065f46'}}><span>Credit</span><span>-${safeNum(em.inv.credit_amount).toFixed(2)}</span></div>}
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:15,fontWeight:800,paddingTop:6,borderTop:'2px solid #cbd5e1',color:'#1e3a5f'}}><span>New Total</span><span>${emTotal.toFixed(2)}</span></div>
+                {Math.abs(emTotal-em.inv.total)>0.01&&<div style={{fontSize:10,color:'#dc2626',textAlign:'right',marginTop:3}}>Was ${safeNum(em.inv.total).toFixed(2)}</div>}
+              </div>
+            </div>
           </div>
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={()=>setInvEditModal(null)}>Cancel</button>
-            <button className="btn btn-primary" onClick={()=>{
-              setInvs(prev=>prev.map(i=>i.id===invEditModal.inv.id?{...i,memo:invEditModal.memo,due_date:invEditModal.due_date,updated_at:new Date().toLocaleString()}:i));
-              setViewInvoice(v=>({...v,memo:invEditModal.memo,due_date:invEditModal.due_date}));
-              setInvEditModal(null);nf('Invoice '+invEditModal.inv.id+' updated');
+            <button className="btn btn-primary" onClick={async()=>{
+              // Strip transient UI fields off line items before persisting
+              const cleanLines=em.line_items.map(li=>{const{...keep}=li;return keep});
+              const updated={...em.inv,
+                customer_id:em.customer_id,
+                memo:em.memo,
+                due_date:em.due_date,
+                billing_name:em.billing_name||null,
+                billing_address:em.billing_address||null,
+                shipping_name:em.shipping_name||null,
+                shipping_address:em.shipping_address||null,
+                shipping:safeNum(em.shipping),
+                tax:safeNum(em.tax),
+                line_items:cleanLines,
+                total:emTotal,
+                updated_at:new Date().toLocaleString()};
+              setInvs(prev=>prev.map(i=>i.id===em.inv.id?updated:i));
+              setViewInvoice(updated);
+              setInvEditModal(null);
+              nf('Invoice '+em.inv.id+' updated');
+              try{await _dbSaveInvoice(updated)}catch(err){console.warn('[invoice save]',err);nf('Saved locally — DB sync failed: '+err.message,'error')}
             }}>Save Changes</button>
           </div>
-        </div></div>}
+        </div></div>})()}
 
         {/* ═══ SEND INVOICE MODAL (from detail page) ═══ */}
         {invSendModalDirect&&(()=>{
@@ -9321,24 +9670,25 @@ export default function App(){
         <tbody>{fi.map(inv=>{
           const repObj=REPS.find(r=>r.id===inv._rep);
           const rowKey=inv._hist?'h:'+(inv.netsuite_internal_id||inv.id):inv.id;
-          return<tr key={rowKey} style={{background:inv._overdue?'#fef2f2':inv._hist?'#fafbfc':undefined,cursor:inv._hist?'default':'pointer',color:inv._hist?'#475569':undefined}} onClick={inv._hist?undefined:()=>setViewInvoice(inv)} title={inv._hist?'NetSuite history — read only':undefined}>
-            <td style={{fontWeight:700,color:inv._hist?'#64748b':'#1e40af',fontSize:12,cursor:inv._hist?'default':'pointer',textDecoration:inv._hist?'none':'underline'}}>{inv.id}{inv._hist&&<span style={{marginLeft:4,fontSize:8,padding:'1px 4px',borderRadius:3,background:'#e2e8f0',color:'#475569',fontWeight:700,letterSpacing:0.5}}>NS</span>}</td>
-            <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtCreatedAt(inv.created_at)}</td>
-            <td style={{fontSize:12}}>{inv._cname}</td>
+          const il=(content)=>inv._hist?content:<RowLink params={{inv:inv.id}} onOpen={()=>setViewInvoice(inv)}>{content}</RowLink>;
+          return<tr key={rowKey} style={{background:inv._overdue?'#fef2f2':inv._hist?'#fafbfc':undefined,cursor:inv._hist?'default':'pointer',color:inv._hist?'#475569':undefined}} title={inv._hist?'NetSuite history — read only':undefined}>
+            <td style={{fontWeight:700,color:inv._hist?'#64748b':'#1e40af',fontSize:12,cursor:inv._hist?'default':'pointer',textDecoration:inv._hist?'none':'underline'}}>{il(inv.id)}{inv._hist&&<span style={{marginLeft:4,fontSize:8,padding:'1px 4px',borderRadius:3,background:'#e2e8f0',color:'#475569',fontWeight:700,letterSpacing:0.5}}>NS</span>}</td>
+            <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{il(fmtCreatedAt(inv.created_at))}</td>
+            <td style={{fontSize:12}}>{il(inv._cname||' ')}</td>
             <td style={{fontSize:11,color:'#7c3aed',cursor:inv.so_id?'pointer':'default',textDecoration:inv.so_id?'underline':'none'}}
               onClick={e=>{e.stopPropagation();if(inv.so_id){const so=sos.find(s=>s.id===inv.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}}>{inv.so_id||'—'}</td>
-            <td style={{fontSize:10,color:'#64748b'}}>{repObj?.name||'—'}</td>
-            <td style={{fontSize:11}}>{inv.date}</td>
-            <td style={{textAlign:'center'}}>{ageBadge(inv._age)}</td>
-            <td style={{fontSize:11,color:inv._overdue?'#dc2626':'#64748b',fontWeight:inv._overdue?700:400}}>{inv.due_date||'—'}{inv._overdue?' ⚠️':''}</td>
-            <td style={{fontWeight:600,textAlign:'right'}}>${inv.total.toLocaleString()}</td>
-            <td style={{color:'#166534',textAlign:'right'}}>${inv.paid.toLocaleString()}{inv.cc_fee>0?<span style={{fontSize:8,color:'#94a3b8'}}> +${inv.cc_fee.toFixed(0)}fee</span>:''}</td>
-            <td style={{fontWeight:700,color:inv._bal>0?'#dc2626':'#166534',textAlign:'right'}}>${inv._bal.toLocaleString()}</td>
-            <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,
+            <td style={{fontSize:10,color:'#64748b'}}>{il(repObj?.name||'—')}</td>
+            <td style={{fontSize:11}}>{il(inv.date||' ')}</td>
+            <td style={{textAlign:'center'}}>{il(ageBadge(inv._age))}</td>
+            <td style={{fontSize:11,color:inv._overdue?'#dc2626':'#64748b',fontWeight:inv._overdue?700:400}}>{il(<>{inv.due_date||'—'}{inv._overdue?' ⚠️':''}</>)}</td>
+            <td style={{fontWeight:600,textAlign:'right'}}>{il('$'+inv.total.toLocaleString())}</td>
+            <td style={{color:'#166534',textAlign:'right'}}>{il(<>${inv.paid.toLocaleString()}{inv.cc_fee>0?<span style={{fontSize:8,color:'#94a3b8'}}> +${inv.cc_fee.toFixed(0)}fee</span>:''}</>)}</td>
+            <td style={{fontWeight:700,color:inv._bal>0?'#dc2626':'#166534',textAlign:'right'}}>{il('$'+inv._bal.toLocaleString())}</td>
+            <td>{il(<><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,
               background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
               color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
               {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
-              {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3,verticalAlign:'middle'}} title="Reported to TaxCloud for filing">TC</span>}</td>
+              {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3,verticalAlign:'middle'}} title="Reported to TaxCloud for filing">TC</span>}</>)}</td>
             <td onClick={e=>e.stopPropagation()}>{inv._hist?<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title="Mark this NetSuite-imported invoice as paid in the portal (sync to NetSuite separately)" onClick={()=>setPayModal({inv:{...inv,_bal:safeNum(inv.total)-safeNum(inv.paid),paid:safeNum(inv.paid)},amount:safeNum(inv.total)-safeNum(inv.paid),method:'check',ref:''})}>💰 Pay</button>}{inv.status==='paid'&&<span style={{fontSize:9,color:'#94a3b8',fontStyle:'italic'}}>—</span>}</>:<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
               onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
               {inv.status==='paid'&&!inv.tc_reported&&inv.tax>0&&<button className="btn btn-sm" style={{fontSize:8,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} title="Report this invoice to TaxCloud for state tax filing" onClick={async()=>{const c=cust.find(x=>x.id===inv.customer_id);if(!c)return;if(!supabase){nf('Supabase not configured','error');return}try{const d=await invokeEdgeFn(supabase,'taxcloud-capture',{action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}});if(d?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:d.total_tax}:i));nf('Reported to TaxCloud — $'+d.total_tax+' tax filed')}else{nf(d?.error||'TaxCloud capture failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>TC File</button>}
@@ -9427,26 +9777,26 @@ export default function App(){
           </div>
           <div className="card-body" style={{padding:0}}>
             <table><thead><tr><th>Invoice</th><th>SO</th><th>Memo</th><th>Date</th><th>Age</th><th>Due</th><th>Total</th><th>Balance</th><th>Status</th><th></th></tr></thead>
-            <tbody>{g.invoices.map(inv=>
-              <tr key={inv._hist?'h:'+(inv.netsuite_internal_id||inv.id):inv.id} style={{background:inv._overdue?'#fef2f2':inv._hist?'#fafbfc':undefined,cursor:inv._hist?'default':'pointer',color:inv._hist?'#475569':undefined}} onClick={inv._hist?undefined:()=>setViewInvoice(inv)} title={inv._hist?'NetSuite history — read only':undefined}>
-                <td style={{fontWeight:700,color:inv._hist?'#64748b':'#1e40af',fontSize:12,cursor:inv._hist?'default':'pointer',textDecoration:inv._hist?'none':'underline'}}>{inv.id}{inv._hist&&<span style={{marginLeft:4,fontSize:8,padding:'1px 4px',borderRadius:3,background:'#e2e8f0',color:'#475569',fontWeight:700,letterSpacing:0.5}}>NS</span>}</td>
+            <tbody>{g.invoices.map(inv=>{const il2=(content)=>inv._hist?content:<RowLink params={{inv:inv.id}} onOpen={()=>setViewInvoice(inv)}>{content}</RowLink>;return(
+              <tr key={inv._hist?'h:'+(inv.netsuite_internal_id||inv.id):inv.id} style={{background:inv._overdue?'#fef2f2':inv._hist?'#fafbfc':undefined,cursor:inv._hist?'default':'pointer',color:inv._hist?'#475569':undefined}} title={inv._hist?'NetSuite history — read only':undefined}>
+                <td style={{fontWeight:700,color:inv._hist?'#64748b':'#1e40af',fontSize:12,cursor:inv._hist?'default':'pointer',textDecoration:inv._hist?'none':'underline'}}>{il2(inv.id)}{inv._hist&&<span style={{marginLeft:4,fontSize:8,padding:'1px 4px',borderRadius:3,background:'#e2e8f0',color:'#475569',fontWeight:700,letterSpacing:0.5}}>NS</span>}</td>
                 <td style={{fontSize:11,color:'#7c3aed',cursor:inv.so_id?'pointer':'default',textDecoration:inv.so_id?'underline':'none'}}
                   onClick={e=>{e.stopPropagation();if(inv.so_id){const so=sos.find(s=>s.id===inv.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}}>{inv.so_id||'—'}</td>
-                <td style={{fontSize:11}}>{inv.memo}</td>
-                <td style={{fontSize:11}}>{inv.date}</td>
-                <td style={{textAlign:'center'}}>{ageBadge(inv._age)}</td>
-                <td style={{fontSize:11,color:inv._overdue?'#dc2626':'#64748b',fontWeight:inv._overdue?700:400}}>{inv.due_date||'—'}{inv._overdue?' ⚠️':''}</td>
-                <td style={{fontWeight:600,textAlign:'right'}}>${inv.total.toLocaleString()}</td>
-                <td style={{fontWeight:700,color:inv._bal>0?'#dc2626':'#166534',textAlign:'right'}}>${inv._bal.toLocaleString()}</td>
-                <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,
+                <td style={{fontSize:11}}>{il2(inv.memo||' ')}</td>
+                <td style={{fontSize:11}}>{il2(inv.date||' ')}</td>
+                <td style={{textAlign:'center'}}>{il2(ageBadge(inv._age))}</td>
+                <td style={{fontSize:11,color:inv._overdue?'#dc2626':'#64748b',fontWeight:inv._overdue?700:400}}>{il2(<>{inv.due_date||'—'}{inv._overdue?' ⚠️':''}</>)}</td>
+                <td style={{fontWeight:600,textAlign:'right'}}>{il2('$'+inv.total.toLocaleString())}</td>
+                <td style={{fontWeight:700,color:inv._bal>0?'#dc2626':'#166534',textAlign:'right'}}>{il2('$'+inv._bal.toLocaleString())}</td>
+                <td>{il2(<><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,
                   background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
                   color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
                   {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
-                  {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3}} title="Reported to TaxCloud">TC</span>}</td>
+                  {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3}} title="Reported to TaxCloud">TC</span>}</>)}</td>
                 <td onClick={e=>e.stopPropagation()}>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title={inv._hist?'Mark this NetSuite invoice paid in portal (sync to NetSuite separately)':undefined}
                   onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
                   {canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} title={inv._hist?'Delete NetSuite invoice':'Delete invoice'} onClick={()=>deleteInvoice(inv.id)}><Icon name="trash" size={10}/></button>}</td>
-              </tr>)}</tbody></table>
+              </tr>)})}</tbody></table>
             {/* Payment history */}
             {g.invoices.some(i=>(i.payments||[]).length>0)&&<div style={{padding:'8px 16px',borderTop:'1px solid #f1f5f9'}}>
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>PAYMENT HISTORY</div>
@@ -9657,7 +10007,7 @@ export default function App(){
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
   const[invDrill,setInvDrill]=useState(null);// {kind:'vendor'|'category',key:string}
-  const[rptRep,setRptRep]=useState(()=>cu?.role==='rep'?cu.id:'all');// default to logged-in rep so they see their own numbers
+  const[rptRep,setRptRep]=useState(()=>(cu?.role==='rep'||cu?.role==='admin')&&cu?.id?cu.id:'all');// default to logged-in rep/admin so they see their own numbers
   const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true,invByCategory:true,invByVendor:true,invTopValue:true,invLowStock:true,invOutOfStock:true,invRecentAdj:true});
   // Historical sales chart UI state — hover tooltip + rep-vs-team mode
   const[histHover,setHistHover]=useState(null);// null | {x,y,label,value,year,scope}
@@ -9686,7 +10036,19 @@ export default function App(){
   const toggleWidget=(k)=>setRptWidgets(w=>({...w,[k]:!w[k]}));
 
   function rReports(){
-    const soCalc=(so)=>{let rev=0,cost=0,units=0;const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});const af=safeArt(so);safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);units+=qty;rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);(it.decorations||[]).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);rev+=eq*dp.sell;cost+=eq*dp.cost});(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost').reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0,units}};
+    // Mirrors OrderEditor `totals` so pipeline numbers match the SO detail page:
+    // qty falls back to est_qty when sizes aren't broken out; cost prefers PO
+    // unit_cost (and deco_pos _bill_cost when billed) over catalog nsa_cost.
+    const _poMeta=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
+    const soCalc=(so)=>{let rev=0,cost=0,units=0;const _aq={};safeItems(so).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q*(d.reversible?2:1)}})});const af=safeArt(so);safeItems(so).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;units+=q;
+    if(it._sizeSells&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)rev+=n*(it._sizeSells[sz]||safeNum(it.unit_sell))})}else{rev+=q*safeNum(it.unit_sell)}
+    let poQty=0,poCost=0;(Array.isArray(it.po_lines)?it.po_lines:[]).forEach(pl=>{if(!pl)return;const u=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);Object.entries(pl).forEach(([k,v])=>{if(k.startsWith('_')||_poMeta.has(k))return;if(typeof v!=='number'||v<=0)return;poQty+=v;poCost+=v*u})});
+    if(poQty>0){cost+=poCost;const uncov=Math.max(0,q-poQty);if(uncov>0){if(it._sizeCosts&&sq>0){const tot=Object.entries(safeSizes(it)).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeCosts[sz]||safeNum(it.nsa_cost)):a},0);const avg=sq>0?tot/sq:safeNum(it.nsa_cost);cost+=uncov*avg}else{cost+=uncov*safeNum(it.nsa_cost)}}}
+    else if(it._sizeCosts&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)cost+=n*(it._sizeCosts[sz]||safeNum(it.nsa_cost))})}
+    else{cost+=q*safeNum(it.nsa_cost)}
+    safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=eq*dp.cost})});
+    (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
+    return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0,units}};
 
     const filtSOs=rptRep==='all'?sos:sos.filter(s=>s.created_by===rptRep);
     const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const so=sos.find(s=>s.id===i.so_id);return so?.created_by===rptRep});
@@ -12984,15 +13346,23 @@ export default function App(){
                 </div>
               </div>
               <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
-                const w=window.open('','_blank','width=400,height=300');
-                w.document.write('<html><head><title>'+pickId+'</title><style>body{font-family:sans-serif;padding:20px}h1{font-size:24px;margin:0}p{margin:4px 0;font-size:14px}</style></head><body>');
-                w.document.write('<div style="display:flex;gap:20px;align-items:flex-start"><img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data='+encodeURIComponent(qrData)+'" width="120" height="120"/><div>');
-                w.document.write('<h1>'+pickId+'</h1><p>'+t.soId+' — '+t.cName+'</p>');
-                if(shipDest!=='in_house'){const destLabel=shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'');w.document.write('<p style="background:#fffbeb;padding:8px;border:2px solid '+(shipDest==='ship_customer'?'#3b82f6':'#d97706')+';border-radius:6px;font-weight:bold;font-size:16px">'+destLabel+'</p>')}
-                w.document.write('<p><strong>'+t.sku+' '+t.name+'</strong></p><p>'+(t.color||'')+' — '+t.needsPull+' units</p>');
-                w.document.write('<p style="font-size:16px;font-weight:bold">'+szKeys.filter(sz=>(t.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+': '+Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0))).join(' &nbsp; ')+'</p>');
-                w.document.write('</div></div></body></html>');w.document.close();w.print();
-              }}>🖨️ Print Pick Label</button>
+                const shipBadge=shipDest==='in_house'?null:{
+                  text:(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'')),
+                  color:shipDest==='ship_customer'?'#3b82f6':'#d97706',
+                  bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'
+                };
+                printQrLabel({
+                  id:pickId,
+                  qrData,
+                  shipBadge,
+                  lines:[
+                    {text:t.soId+' — '+t.cName,cls:'sub'},
+                    {text:'<strong>'+t.sku+' '+t.name+'</strong>'},
+                    {text:(t.color||'')+' — '+t.needsPull+' units'},
+                    {text:szKeys.filter(sz=>(t.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+': '+Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0))).join(' &nbsp; '),cls:'sz'},
+                  ]
+                });
+              }}>🖨️ Print Pick Label (4×6)</button>
             </div>
           </div>
 
@@ -14925,7 +15295,7 @@ export default function App(){
                 if(!showStockPO.vendor_id){nf('Select a vendor','error');return}
                 const validItems=showStockPO.items.filter(it=>it.sku&&Object.values(it.sizes||{}).some(v=>v>0));
                 if(validItems.length===0){nf('Add at least one item with quantities','error');return}
-                const poNum='PO-'+invPOCounter+'-NSA';
+                const poNum='PO '+invPOCounter+' NSA';
                 const newPO={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:showStockPO.vendor_id,vendor_name:showStockPO.vendor_name||D_V.find(v=>v.id===showStockPO.vendor_id)?.name||'',
                   items:validItems.map(it=>({product_id:it.product_id||null,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||Object.keys(it.sizes||{}),sizes:{...it.sizes},received:{},nsa_cost:it.nsa_cost||0})),
                   status:'ordered',created_at:new Date().toLocaleString(),expected_date:'',memo:showStockPO.memo||'',
@@ -15315,9 +15685,8 @@ export default function App(){
               {col?.id==='waiting_for_art'&&j.art_status==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveArtStatus(j,'art_in_progress')}}>Start Working</button>}
               {col?.id==='waiting_for_art'&&j.art_status==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();
                 const so2=sos.find(s=>s.id===j.soId);if(!so2)return;
-                const mf=(j.artFile?.mockup_files||j.artFile?.files||[]);
-                const hasItemMocks=Object.values(j.artFile?.item_mockups||{}).some(arr=>arr&&arr.length>0);
-                if(mf.length===0&&!hasItemMocks){nf('Upload a mockup before sending for approval','error');return}
+                const missing=skusMissingMockups(j,so2);
+                if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
                 const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
                 const updJobs=buildJobs(so2).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null}:jj);
                 const updArt3=safeArt(so2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
@@ -15862,10 +16231,8 @@ export default function App(){
             <button className="btn btn-secondary" onClick={()=>{setESOTab('jobs');setESO(so);setESOC(c2);setPg('orders');setArtMockupModal(null)}}>Open Full Job</button>
             {j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&j.art_status!=='production_files_needed'&&<button className="btn" style={{padding:'8px 16px',background:'linear-gradient(135deg,#f59e0b,#d97706)',color:'white',border:'none',borderRadius:8,fontSize:13,fontWeight:700}} onClick={()=>{
               const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-              const liveAf=safeArt(liveSO).find(f=>f.id===j.art_file_id)||af;
-              const liveMockups=(liveAf?.mockup_files||liveAf?.files||[]);
-              const hasItemMockups=Object.values(liveAf?.item_mockups||{}).some(arr=>arr&&arr.length>0);
-              if(liveMockups.length===0&&!hasItemMockups){nf('Upload a mockup before sending for approval','error');return}
+              const missing=skusMissingMockups(j,liveSO);
+              if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
               const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
               const updJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null}:jj);
               const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
@@ -16199,11 +16566,8 @@ export default function App(){
         const sendForApproval=()=>{
           // Re-fetch latest art file from sos state to avoid stale closure data
           const liveSO2=sos.find(s=>s.id===(j.soId||so.id))||so;
-          const liveAf=j.artFile||safeArt(liveSO2).find(f=>f.id===j.art_file_id)||af;
-          const liveMockups=(liveAf?.mockup_files||liveAf?.files||[]);
-          // Check that mockup files exist (general or per-item)
-          const hasItemMockups=Object.values(liveAf?.item_mockups||{}).some(arr=>arr&&arr.length>0);
-          if(liveMockups.length===0&&!hasItemMockups){nf('Upload a mockup before sending for approval','error');return}
+          const missing=skusMissingMockups(j,liveSO2);
+          if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
           // Move to waiting_approval / needs_approval
           moveArtStatus(j,'waiting_approval');
           const msgs=[...artMessages];
@@ -16720,6 +17084,8 @@ export default function App(){
       {approvalNotifyModal&&(()=>{
         const{job:aj,so:aso,contact:ac,portalUrl:apu,method:am,message:amsg,artMessages:aam}=approvalNotifyModal;
         const doSend=(notifyMethod)=>{
+          const missing=skusMissingMockups(aj,aso);
+          if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
           // 1. Move art status to waiting_approval
           moveArtStatus(aj,'waiting_approval');
           const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Sent artwork for approval'+(notifyMethod!=='none'?' — '+notifyMethod+' notification sent to '+(ac.name||'coach'):''),ts:new Date().toISOString(),is_system:true};
@@ -19132,7 +19498,7 @@ export default function App(){
 
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'review'}))}>← Back</button>
-              <button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
+              <button className="btn btn-primary" style={{background:'#166534'}} onClick={async()=>{
                 // Create new products for items marked "create_product"
                 const createdProducts=[];
                 keeping.forEach((it,pi)=>{
@@ -19192,6 +19558,9 @@ export default function App(){
                 const now=new Date().toLocaleString();
                 const importMemo=imp.memo||('Imported from NetSuite'+(imp.externalDocNum?' #'+imp.externalDocNum:''));
 
+                // Persist BEFORE navigating into the lazy-loaded editor — if the editor chunk
+                // fails to load (stale deploy → 404 → lazyRetry reload), the import data is already
+                // safe in the database and the user can find it on the list view after re-login.
                 if(imp.docType==='so'){
                   const newSO={id:nextSOId(sos),customer_id:imp.custId,memo:importMemo,status:'need_order',
                     created_by:cu.id,created_at:now,updated_at:now,
@@ -19199,9 +19568,9 @@ export default function App(){
                     shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
                     ship_to_id:'default',firm_dates:[],art_files:[],items:newItems,
                     _ns_ref:imp.externalDocNum,_import_source:'netsuite'};
-                  setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c);setPg('orders');
-                  // Explicitly save to DB immediately — don't rely solely on useEffect chain
-                  _dbSaveSO(newSO);
+                  setSOs(prev=>[newSO,...prev]);
+                  try{await _dbSaveSO(newSO)}catch(e){console.error('[Import] SO save failed:',e)}
+                  setESO(newSO);setESOC(c);setPg('orders');
                   nf('✅ Imported SO with '+newItems.length+' items'+(imp.externalDocNum?' (NS #'+imp.externalDocNum+')':''));
                 } else if(imp.docType==='est'){
                   const newEst={id:nextEstId(ests),customer_id:imp.custId,memo:importMemo,status:'open',
@@ -19209,9 +19578,9 @@ export default function App(){
                     default_markup:mk,shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
                     ship_to_id:'default',email_status:null,art_files:[],items:newItems,
                     _ns_ref:imp.externalDocNum,_import_source:'netsuite'};
-                  setEsts(prev=>[newEst,...prev]);setEEst(newEst);setEEstC(c);setPg('estimates');
-                  // Explicitly save to DB immediately
-                  _dbSaveEstimate(newEst);
+                  setEsts(prev=>[newEst,...prev]);
+                  try{await _dbSaveEstimate(newEst)}catch(e){console.error('[Import] Estimate save failed:',e)}
+                  setEEst(newEst);setEEstC(c);setPg('estimates');
                   nf('✅ Imported Estimate with '+newItems.length+' items'+(imp.externalDocNum?' (NS #'+imp.externalDocNum+')':''));
                 } else if(imp.docType==='inv'){
                   const newInv={id:nextInvId(invs),so_id:imp.linkedSoId||null,customer_id:imp.custId,
@@ -19222,9 +19591,9 @@ export default function App(){
                     subtotal:totalRev,tax:imp.pdfParsed?.tax||0,shipping:shipAmt,
                     total:totalRev+(imp.pdfParsed?.tax||0)+shipAmt,
                     _ns_ref:imp.externalDocNum,_import_source:'netsuite'};
-                  setInvs(prev=>[newInv,...prev]);setPg('invoices');
-                  // Explicitly save to DB immediately
-                  _dbSaveInvoice(newInv);
+                  setInvs(prev=>[newInv,...prev]);
+                  try{await _dbSaveInvoice(newInv)}catch(e){console.error('[Import] Invoice save failed:',e)}
+                  setPg('invoices');
                   nf('✅ Imported Invoice with '+newItems.length+' items'+(imp.externalDocNum?' (NS #'+imp.externalDocNum+')':''));
                 } else if(imp.docType==='po'){
                   const poMemo=importMemo+(imp.linkedSoId?'\nLinked SO: '+imp.linkedSoId:'');
@@ -19233,7 +19602,7 @@ export default function App(){
                     if(so){
                       const updated={...so,production_notes:(so.production_notes||'')+(so.production_notes?'\n':'')+nsRef+' | PO imported with '+newItems.length+' items',updated_at:now};
                       setSOs(prev=>prev.map(s=>s.id===so.id?updated:s));
-                      _dbSaveSO(updated);
+                      try{await _dbSaveSO(updated)}catch(e){console.error('[Import] PO link save failed:',e)}
                       nf('✅ PO imported and linked to '+imp.linkedSoId);
                     }
                   } else {
@@ -19243,9 +19612,9 @@ export default function App(){
                       shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
                       ship_to_id:'default',firm_dates:[],art_files:[],items:newItems,
                       _ns_ref:imp.externalDocNum,_import_source:'netsuite',_doc_type:'po'};
-                    setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c);setPg('orders');
-                    // Explicitly save to DB immediately
-                    _dbSaveSO(newSO);
+                    setSOs(prev=>[newSO,...prev]);
+                    try{await _dbSaveSO(newSO)}catch(e){console.error('[Import] PO save failed:',e)}
+                    setESO(newSO);setESOC(c);setPg('orders');
                     nf('✅ PO imported as SO with '+newItems.length+' items');
                   }
                 }
@@ -21845,13 +22214,16 @@ export default function App(){
   const[laborRates,setLaborRates]=useState(()=>loadState('labor_rates',{}));// {personName: hourlyRate}
   React.useEffect(()=>{_saveAppState('labor_rates',laborRates)},[laborRates]);
   const[settingsTab,setSettingsTab]=useState('pricing');
+  const[dvEdit,setDvEdit]=useState(null);// deco vendor id being edited for pricing
+  const[dvTab,setDvTab]=useState('embroidery');
+  const[dvNewName,setDvNewName]=useState('');
   const savSettings=(key,val)=>{
     try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;_lsSet('nsa_settings',JSON.stringify(s));
       if(key==='SP')SP=val;if(key==='EM')EM=val;if(key==='NP')NP=val;if(key==='DTF')DTF=val;
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
-    const tabs=[['company','Company Info'],['pricing','Decoration Pricing'],['deco_vendors','Deco Vendors'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['taxcloud','TaxCloud']];
+    const tabs=[['company','Company Info'],['pricing','Decoration Pricing'],['deco_vendors','Deco Vendors'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['payments','Payments'],['taxcloud','TaxCloud']];
     return(<>
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
         {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${settingsTab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab(k)}>{label}</button>)}
@@ -21970,9 +22342,6 @@ export default function App(){
 
       {/* DECO VENDORS */}
       {settingsTab==='deco_vendors'&&<>{(()=>{
-        const[dvEdit,setDvEdit]=React.useState(null);// vendor id being edited for pricing
-        const[dvTab,setDvTab]=React.useState('embroidery');
-        const[dvNewName,setDvNewName]=React.useState('');
         const saveDV=async(vendor)=>{if(!supabase)return;const{error}=await supabase.from('deco_vendors').upsert(vendor,{onConflict:'id'});if(error)nf('Error saving vendor: '+error.message,'error');else{setDecoVendors(prev=>{const idx=prev.findIndex(v=>v.id===vendor.id);return idx>=0?prev.map(v=>v.id===vendor.id?vendor:v):[...prev,vendor]});nf('Vendor saved')}};
         const saveDVP=async(pricing)=>{if(!supabase)return;const{data,error}=await supabase.from('deco_vendor_pricing').upsert(pricing,{onConflict:'id'}).select();if(error)nf('Error saving pricing: '+error.message,'error');else{const saved=data?.[0]||pricing;setDecoVendorPricing(prev=>{const idx=prev.findIndex(p=>p.id===saved.id||(p.deco_vendor_id===saved.deco_vendor_id&&p.deco_type===saved.deco_type));return idx>=0?prev.map((p,i)=>i===idx?saved:p):[...prev,saved]});nf('Pricing saved')}};
         const editVendor=dvEdit?decoVendors.find(v=>v.id===dvEdit):null;
@@ -22211,6 +22580,61 @@ export default function App(){
         </div></div>
       </>}
 
+      {/* PAYMENTS */}
+      {settingsTab==='payments'&&<>
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>💳 Payment Processing</h3></div><div className="card-body">
+          <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Controls the credit card surcharge and message shown when customers pay invoices through the Coach Portal.</div>
+
+          <div style={{marginBottom:20,maxWidth:520}}>
+            <label className="form-label">Credit Card Processing Fee Surcharge (%)</label>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>Percentage added on top of the invoice balance to cover Stripe processing. Shown to the customer as a separate line item. Default 2.90%.</div>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <input className="form-input" type="number" step="0.01" min="0" max="10" style={{width:100}}
+                value={((portalSettings.ccFeePct??0.029)*100).toFixed(2)}
+                onChange={e=>{const pct=parseFloat(e.target.value);if(isNaN(pct))return;setPortalSettings(p=>({...p,ccFeePct:Math.max(0,Math.min(10,pct))/100}))}}/>
+              <span style={{fontSize:13,color:'#64748b'}}>%</span>
+            </div>
+          </div>
+
+          <div style={{marginBottom:20,maxWidth:520}}>
+            <label className="form-label">Customer Payment Note (optional)</label>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>Shown inside the payment modal above the card fields. Use for instructions like "ACH coming soon" or contact info for large payments.</div>
+            <textarea className="form-input" rows={3} value={portalSettings.paymentNote||''}
+              onChange={e=>setPortalSettings(p=>({...p,paymentNote:e.target.value}))}
+              style={{resize:'vertical',fontSize:12}}
+              placeholder="e.g., For payments over $5,000 please contact your rep to arrange ACH transfer."/>
+          </div>
+
+          <div style={{marginTop:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+            <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:8}}>Preview — what customers will see</div>
+            <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:8,padding:12}}>
+              {portalSettings.paymentNote&&<div style={{padding:'10px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e40af',marginBottom:10,lineHeight:1.4}}>{portalSettings.paymentNote}</div>}
+              <div style={{padding:12,background:'#f8fafc',borderRadius:8,fontSize:12}}>
+                <div style={{display:'flex',justifyContent:'space-between'}}><span>Subtotal:</span><span>$1,000.00</span></div>
+                <div style={{display:'flex',justifyContent:'space-between',color:'#d97706'}}><span>Processing Fee ({(((portalSettings.ccFeePct??0.029)*100)).toFixed(2).replace(/\.?0+$/,'')}%):</span><span>+${(1000*(portalSettings.ccFeePct??0.029)).toFixed(2)}</span></div>
+                <div style={{display:'flex',justifyContent:'space-between',fontWeight:800,borderTop:'2px solid #e2e8f0',paddingTop:6,marginTop:6,fontSize:14}}><span>Total:</span><span>${(1000+1000*(portalSettings.ccFeePct??0.029)).toFixed(2)}</span></div>
+              </div>
+            </div>
+          </div>
+        </div></div>
+
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Stripe Connection</h3></div><div className="card-body">
+          <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>The Stripe publishable key is configured via the <code>REACT_APP_STRIPE_PK</code> environment variable in Netlify. The secret key lives in the <code>stripe-payment</code> Netlify Function.</div>
+          {_stripePk
+            ? <div style={{padding:'10px 14px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,fontSize:12,color:'#166534',display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:16}}>✅</span>
+                <div>
+                  <div style={{fontWeight:700}}>Stripe is configured</div>
+                  <div style={{fontSize:11,color:'#15803d',marginTop:2}}>Key: {_stripePk.slice(0,8)}…{_stripePk.slice(-4)} ({_stripePk.startsWith('pk_live')?'live mode':'test mode'})</div>
+                </div>
+              </div>
+            : <div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,fontSize:12,color:'#991b1b'}}>
+                <div style={{fontWeight:700,marginBottom:4}}>⚠️ Stripe is not configured</div>
+                <div style={{fontSize:11}}>Add <code>REACT_APP_STRIPE_PK</code> in Netlify → Site settings → Environment variables and redeploy.</div>
+              </div>}
+        </div></div>
+      </>}
+
       {/* TAXCLOUD */}
       {settingsTab==='taxcloud'&&<>
         <TaxCloudSettings supabase={supabase} nf={nf} cust={cust} setCust={setCust}/>
@@ -22360,7 +22784,7 @@ export default function App(){
       const c=cust.find(x=>x.id===qr.customer_id);if(!c)return;
       const estId=nextEstId(ests);
       const newEst={id:estId,customer_id:c.id,status:'draft',default_markup:c.custom_multiplier||1.65,
-        shipping_type:'flat',shipping_value:0,items:(qr.items||[]).map((it,i)=>{
+        shipping_type:'pct',shipping_value:5,items:(qr.items||[]).map((it,i)=>{
           const matchProd=it.sku?prod.find(p=>(p.sku||'').toLowerCase()===it.sku.toLowerCase()):null;
           return{sku:matchProd?.sku||it.sku||'',name:matchProd?.name||it.description||'',brand:matchProd?.brand||'',
             color:matchProd?.color||it.color||'',nsa_cost:matchProd?.nsa_cost||0,unit_sell:0,
@@ -22700,7 +23124,7 @@ export default function App(){
             const cloneToEstimate=(source)=>{
               const estId=nextEstId(ests);
               const newEst={id:estId,customer_id:reorderCust,status:'draft',default_markup:c?.custom_multiplier||1.65,
-                shipping_type:source.shipping_type||'flat',shipping_value:source.shipping_value||0,
+                shipping_type:source.shipping_type||'pct',shipping_value:source.shipping_value!=null?source.shipping_value:5,
                 items:(source.items||[]).map(it=>({sku:it.sku||'',name:it.name||'',brand:it.brand||'',color:it.color||'',
                   nsa_cost:it.nsa_cost||0,unit_sell:it.unit_sell||0,sizes:it.sizes||{},no_deco:it.no_deco||false,notes:it.notes||null,
                   decorations:(it.decorations||[]).map(d=>({...d}))})),
@@ -23585,8 +24009,8 @@ export default function App(){
         const ubadge=_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;
         const _isSidebarMention=(m)=>{if((m.tagged_members||[]).includes(cu.id))return true;if(m.text){const t=m.text.toLowerCase();const fn=(cu.name||'').split(' ')[0].toLowerCase();const full=(cu.name||'').toLowerCase();if(fn&&(t.includes('@'+fn)||t.includes('@'+full)))return true}return false};
         const mentionBadge=item.id==='messages'?_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&_isSidebarMention(m)).length:0;
-        return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
-          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</button>})}</nav>
+        return<a key={item.id} href={_newTabHref({pg:item.id})} className={`sidebar-link ${pg===item.id?'active':''}`} style={{textDecoration:'none',color:'inherit'}}
+          onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</a>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><div style={{display:'flex',gap:4}}><button onClick={()=>setMobileMode(true)} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Switch to mobile view">📱 Mobile</button><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
@@ -23622,23 +24046,23 @@ export default function App(){
             const tot=rc.length+re.length+rs.length+rp.length+rpk.length+rpo.length+rj.length+ri.length+rv.length;
             return tot>0&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:60,maxHeight:350,overflow:'auto'}}>
               {rc.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Customers</div>
-                {rc.map(cc=><div key={cc.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setSelC(cc);setPg('customers');setGQ('');setGOpen(false)}}><Icon name="users" size={14}/><span style={{fontWeight:600}}>{cc.name}</span><span className="badge badge-gray">{cc.alpha_tag}</span></div>)}</>}
+                {rc.map(cc=><a key={cc.id} href={_newTabHref({cust:cc.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setSelC(cc);setPg('customers');setGQ('');setGOpen(false)}}><Icon name="users" size={14}/><span style={{fontWeight:600}}>{cc.name}</span><span className="badge badge-gray">{cc.alpha_tag}</span></a>)}</>}
               {re.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Estimates</div>
-                {re.map(e=>{const cc=cust.find(x=>x.id===e.customer_id);return<div key={e.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setEEst(e);setEEstC(cc);setPg('estimates');setGQ('');setGOpen(false)}}><Icon name="dollar" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{e.id}</span><span>{e.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</div>})}</>}
+                {re.map(est=>{const cc=cust.find(x=>x.id===est.customer_id);return<a key={est.id} href={_newTabHref({est:est.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setEEst(est);setEEstC(cc);setPg('estimates');setGQ('');setGOpen(false)}}><Icon name="dollar" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{est.id}</span><span>{est.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</a>})}</>}
               {rs.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Sales Orders</div>
-                {rs.map(so=>{const cc=cust.find(x=>x.id===so.customer_id);return<div key={so.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setESO(so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="box" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{so.id}</span><span>{so.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</div>})}</>}
+                {rs.map(so=>{const cc=cust.find(x=>x.id===so.customer_id);return<a key={so.id} href={_newTabHref({so:so.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setESO(so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="box" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{so.id}</span><span>{so.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</a>})}</>}
               {rp.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Products</div>
-                {rp.map(p=><div key={p.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setSelP(p);setPg('products');setQ('');setGQ('');setGOpen(false)}}><Icon name="package" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span><span>{p.name}</span>{p.color&&<span style={{color:'#64748b',fontSize:11}}>{p.color}</span>}</div>)}</>}
+                {rp.map(p=><a key={p.id} href={_newTabHref({prod:p.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setSelP(p);setPg('products');setQ('');setGQ('');setGOpen(false)}}><Icon name="package" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span><span>{p.name}</span>{p.color&&<span style={{color:'#64748b',fontSize:11}}>{p.color}</span>}</a>)}</>}
               {rpk.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Item Fulfillments</div>
-                {rpk.map(pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return<div key={pk.pick_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setESO(pk.so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></div>})}</>}
+                {rpk.map(pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return<a key={pk.pick_id} href={_newTabHref({so:pk.so_id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setESO(pk.so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></a>})}</>}
               {rpo.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Purchase Orders</div>
-                {rpo.map(po=><div key={po.po_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{if(po.isInvPO){setPOF(f=>({...f,search:po.po_id,status:'all',booking:false}));setPg('purchase_orders')}else if(po.isBatch){setBatchScan(po.po_id);setPg('purchase_orders')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')};setGQ('');setGOpen(false)}}><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.isInvPO&&<span style={{fontSize:9,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>INV</span>}{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status}</span></div>)}</>}
+                {rpo.map(po=>{const poHref=po.so_id?_newTabHref({so:po.so_id}):null;const RowTag=poHref?'a':'div';return<RowTag key={po.po_id} {...(poHref?{href:poHref}:{})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(poHref&&(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1))return;ev.preventDefault&&ev.preventDefault();if(po.isInvPO){setPOF(f=>({...f,search:po.po_id,status:'all',booking:false}));setPg('purchase_orders')}else if(po.isBatch){setBatchScan(po.po_id);setPg('purchase_orders')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')};setGQ('');setGOpen(false)}}><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.isInvPO&&<span style={{fontSize:9,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>INV</span>}{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status}</span></RowTag>})}</>}
               {rj.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Jobs</div>
-                {rj.map(j=><div key={j.id+j.so_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span><span>{j.art_name||j.deco_type}</span><span style={{color:'#64748b'}}>→ {j.so_id}</span></div>)}</>}
+                {rj.map(j=><a key={j.id+j.so_id} href={_newTabHref({so:j.so_id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span><span>{j.art_name||j.deco_type}</span><span style={{color:'#64748b'}}>→ {j.so_id}</span></a>)}</>}
               {ri.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Invoices</div>
-                {ri.map(inv=><div key={inv.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setViewInvoice(inv);setPg('invoices');setGQ('');setGOpen(false)}}><Icon name="file" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span><span>{cust.find(c=>c.id===inv.customer_id)?.name||''}</span><span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='partial'?'badge-amber':'badge-blue'}`}>{inv.status}</span></div>)}</>}
+                {ri.map(inv=><a key={inv.id} href={_newTabHref({inv:inv.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setViewInvoice(inv);setPg('invoices');setGQ('');setGOpen(false)}}><Icon name="file" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span><span>{cust.find(c=>c.id===inv.customer_id)?.name||''}</span><span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='partial'?'badge-amber':'badge-blue'}`}>{inv.status}</span></a>)}</>}
               {rv.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Vendors</div>
-                {rv.map(v=><div key={v.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setSelV(v);setPg('vendors');setGQ('');setGOpen(false)}}><Icon name="building" size={14}/><span style={{fontWeight:600}}>{v.name}</span>{v.rep_name&&<span style={{color:'#64748b',fontSize:11}}>{v.rep_name}</span>}</div>)}</>}
+                {rv.map(v=><a key={v.id} href={_newTabHref({vend:v.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setSelV(v);setPg('vendors');setGQ('');setGOpen(false)}}><Icon name="building" size={14}/><span style={{fontWeight:600}}>{v.name}</span>{v.rep_name&&<span style={{color:'#64748b',fontSize:11}}>{v.rep_name}</span>}</a>)}</>}
               <div style={{padding:'10px 12px',borderTop:'1px solid #e2e8f0',background:'#f8fafc',cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:6}} onClick={()=>{setGSearchQ(gQ.trim());setPg('search');setGOpen(false)}}><Icon name="search" size={12}/>See all results for "{gQ}" <span style={{color:'#94a3b8',fontWeight:400,marginLeft:'auto'}}>Press Enter ↵</span></div>
             </div>})()}
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
@@ -23799,6 +24223,15 @@ export default function App(){
       nf={nf}
       onCreateEstimate={(c,items)=>{newE(c||null,null,items)}}
     /></React.Suspense>}
+    {aiInvPoWizOpen&&<React.Suspense fallback={<LazyFallback/>}><AiInventoryPoWizard
+      open={aiInvPoWizOpen}
+      onClose={()=>setAiInvPoWizOpen(false)}
+      supabase={supabase}
+      products={prod}
+      vendors={vend}
+      nf={nf}
+      onCreatePO={(vendorId,items)=>{setInvPOModal({open:true,vendor_id:vendorId,items,memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false})}}
+    /></React.Suspense>}
     <VendorModal isOpen={vM.open} onClose={()=>setVM({open:false,v:null})} onSave={savV} vendor={vM.v} allVendors={vend}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
@@ -23816,7 +24249,7 @@ export default function App(){
             <input className="form-input" style={{width:'100%'}} value={invPOModal.memo} onChange={e=>setInvPOModal(x=>({...x,memo:e.target.value}))} placeholder="Notes..."/></div>
         </div>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,flexWrap:'wrap',gap:8}}>
-          <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>PO Number: <span style={{color:'#7c3aed',fontSize:13,letterSpacing:1}}>{invPOModal.editId?(invPOs.find(p=>p.id===invPOModal.editId)?.po_number||''):'PO-'+invPOCounter+'-NSA'}</span></div>
+          <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>PO Number: <span style={{color:'#7c3aed',fontSize:13,letterSpacing:1}}>{invPOModal.editId?(invPOs.find(p=>p.id===invPOModal.editId)?.po_number||''):'PO '+invPOCounter+' NSA'}</span></div>
           <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'#4338ca',padding:'4px 8px',background:invPOModal.is_booking?'#e0e7ff':'#f8fafc',border:'1px solid '+(invPOModal.is_booking?'#4338ca':'#e2e8f0'),borderRadius:6,cursor:'pointer'}} title="Mark this as a booking order inventory PO — appears in the Booking Orders report.">
             <input type="checkbox" checked={!!invPOModal.is_booking} onChange={e=>setInvPOModal(x=>({...x,is_booking:e.target.checked}))}/>
             Booking PO
