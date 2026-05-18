@@ -691,7 +691,16 @@ const _dbSaveEstimateInner = async (est) => {
       else console.warn('[DB] estimate saved with core columns only')
     }
     // Delete old children — must delete grandchildren (decorations) BEFORE estimate_items due to FK constraints
-    const oldItemIds=(await supabase.from('estimate_items').select('id').eq('estimate_id',est.id)).data?.map(i=>i.id)||[];
+    const _oldEstResp=await supabase.from('estimate_items').select('id,item_index,sku').eq('estimate_id',est.id);
+    // Fail-closed: if reading existing items errored, refuse to proceed. Otherwise oldItemIds=[] would fail-open
+    // and the unconditional `DELETE FROM estimate_items WHERE estimate_id=...` below would wipe whatever was there.
+    if(_oldEstResp.error){
+      console.error('[DB] SAFETY: Blocking estimate save — failed to read existing items for',est.id,':',_oldEstResp.error.message);
+      if(_dbNotify)_dbNotify('Save blocked — could not verify existing items. Please reload the page.','error');
+      return false;
+    }
+    const _oldEstItems=_oldEstResp.data||[];
+    const oldItemIds=_oldEstItems.map(i=>i.id);
     // Safety check: if client has 0 items but DB has some, abort to prevent data loss
     if((!items||items.length===0)&&oldItemIds.length>0){
       console.error('[DB] SAFETY: Blocking estimate save — client has 0 items but DB has',oldItemIds.length,'for',est.id);
@@ -704,6 +713,23 @@ const _dbSaveEstimateInner = async (est) => {
     if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length){
       const{count:dbDecoCount}=await supabase.from('estimate_item_decorations').select('id',{count:'exact',head:true}).in('estimate_item_id',oldItemIds);
       if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking estimate save — client has 0 decorations but DB has',dbDecoCount,'for',est.id);if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');return false}
+    }
+    // Per-item safety: block save if any single item would lose all its decorations.
+    // Catches the partial-loss case the all-zero check above misses (one item drops decos while others retain them).
+    if(oldItemIds.length&&items?.length){
+      const{data:_oldDecoRows}=await supabase.from('estimate_item_decorations').select('estimate_item_id').in('estimate_item_id',oldItemIds);
+      const _oldDecoByItem=new Map();(_oldDecoRows||[]).forEach(d=>_oldDecoByItem.set(d.estimate_item_id,(_oldDecoByItem.get(d.estimate_item_id)||0)+1));
+      for(const oi of _oldEstItems){
+        const oldN=_oldDecoByItem.get(oi.id)||0;if(oldN===0)continue;
+        const ci=items[oi.item_index];if(!ci)continue;// item removed by user — allowed
+        if(ci.no_deco)continue;
+        if((ci.decorations?.length||0)===0){
+          const label=ci.sku||oi.sku||('item '+oi.item_index);
+          console.error('[DB] SAFETY: Blocking estimate save — '+label+' had',oldN,'decoration(s) in DB but client has 0');
+          if(_dbNotify)_dbNotify('Save blocked — decoration data for '+label+' would be lost. Please reload the page.','error');
+          return false;
+        }
+      }
     }
     if(oldItemIds.length){
       await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',oldItemIds);
@@ -769,6 +795,14 @@ const _dbSaveEstimateInner = async (est) => {
           if(coreErr){decoFailed=true;_failMsg='estimate_item_decorations: '+coreErr.message+(coreErr.details?' ('+coreErr.details+')':'');console.error('[DB] estimate_item_decorations batch failed:',coreErr.message)}
           else console.warn('[DB] estimate decos saved with core columns only')
         }
+        // Post-insert verification: count rows actually persisted; if fewer than expected, mark failed so we retry rather than accept a partial save as canonical.
+        if(!decoFailed){
+          const{count:_verifyCount}=await supabase.from('estimate_item_decorations').select('id',{count:'exact',head:true}).in('estimate_item_id',insertedItems.map(i=>i.id));
+          if((_verifyCount||0)<allDecoRows.length){
+            decoFailed=true;_failMsg=_failMsg||('estimate_item_decorations: only '+(_verifyCount||0)+' of '+allDecoRows.length+' rows persisted');
+            console.error('[DB] SAFETY: estimate deco insert verification failed — expected',allDecoRows.length,'got',_verifyCount);
+          }
+        }
       }
     }
     if(decoFailed){_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,_failMsg||'unknown estimate save error');_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete: '+(_failMsg||'see console'),'error');return false}
@@ -800,17 +834,18 @@ const _dbSaveSOInner = async (so) => {
       else console.warn('[DB] SO saved with core columns only')
     }
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
-    const _oldItemsResp=await supabase.from('so_items').select('id').eq('so_id',so.id);
-    // Fail-closed: if we can't read the current items, refuse to proceed when the client has 0 items.
-    // Without this, a SELECT error returns oldItemIds=[] and the safety check below would fail-open,
-    // letting the subsequent DELETE wipe everything for this SO.
-    if((!items||items.length===0)&&_oldItemsResp.error){
-      console.error('[DB] SAFETY: Blocking SO save — failed to read existing items for',so.id,'and client has none:',_oldItemsResp.error.message);
+    const _oldItemsResp=await supabase.from('so_items').select('id,item_index,sku').eq('so_id',so.id);
+    // Fail-closed: refuse the save whenever reading existing items errored. A SELECT error returns oldItemIds=[],
+    // which would skip the deco/pick/PO deletes' `.in([])` filter but still let the unconditional
+    // `DELETE FROM so_items WHERE so_id=...` below wipe everything. Retrying later (via _dbSaveFailedIds) is safer.
+    if(_oldItemsResp.error){
+      console.error('[DB] SAFETY: Blocking SO save — failed to read existing items for',so.id,':',_oldItemsResp.error.message);
       if(_dbNotify)_dbNotify('Save blocked — could not verify existing items. Please reload the page.','error');
-      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'so_items SELECT errored while client had 0 items: '+_oldItemsResp.error.message});
+      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'so_items SELECT errored: '+_oldItemsResp.error.message});
       return false;
     }
-    const oldItemIds=_oldItemsResp.data?.map(i=>i.id)||[];
+    const _oldSoItems=_oldItemsResp.data||[];
+    const oldItemIds=_oldSoItems.map(i=>i.id);
     // Safety check: if client has 0 items but DB has some, abort to prevent data loss
     // Triggers when state was polluted by a timed-out so_items load and an autosave fires before a fresh load completes
     if((!items||items.length===0)&&oldItemIds.length>0){
@@ -837,6 +872,24 @@ const _dbSaveSOInner = async (so) => {
     if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length){
       const{count:dbDecoCount}=await supabase.from('so_item_decorations').select('id',{count:'exact',head:true}).in('so_item_id',oldItemIds);
       if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking SO save — client has 0 decorations but DB has',dbDecoCount,'for',so.id);if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');return false}
+    }
+    // Per-item safety: block save if any single item would lose all its decorations.
+    // Catches the partial-loss case the all-zero check above misses (one item drops decos while siblings retain them).
+    if(oldItemIds.length&&items?.length){
+      const{data:_oldDecoRows}=await supabase.from('so_item_decorations').select('so_item_id').in('so_item_id',oldItemIds);
+      const _oldDecoByItem=new Map();(_oldDecoRows||[]).forEach(d=>_oldDecoByItem.set(d.so_item_id,(_oldDecoByItem.get(d.so_item_id)||0)+1));
+      for(const oi of _oldSoItems){
+        const oldN=_oldDecoByItem.get(oi.id)||0;if(oldN===0)continue;
+        const ci=items[oi.item_index];if(!ci)continue;// item removed by user — allowed
+        if(ci.no_deco)continue;
+        if((ci.decorations?.length||0)===0){
+          const label=ci.sku||oi.sku||('item '+oi.item_index);
+          console.error('[DB] SAFETY: Blocking SO save — '+label+' had',oldN,'decoration(s) in DB but client has 0');
+          if(_dbNotify)_dbNotify('Save blocked — decoration data for '+label+' would be lost. Please reload the page.','error');
+          if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'per-item deco safety: '+label+' had '+oldN+' deco(s) in DB, client had 0'});
+          return false;
+        }
+      }
     }
     if(oldItemIds.length){
       await supabase.from('so_item_decorations').delete().in('so_item_id',oldItemIds);
@@ -935,6 +988,15 @@ const _dbSaveSOInner = async (so) => {
           const{error:coreErr}=await supabase.from('so_item_decorations').insert(coreRows);
           if(coreErr){saveFailed=true;_failMsg=_failMsg||('so_item_decorations: '+coreErr.message+(coreErr.details?' ('+coreErr.details+')':''));console.error('[DB] so_item_decorations batch failed:',coreErr.message)}
           else console.warn('[DB] so decos saved with core columns only')
+        }
+        // Post-insert verification: count rows actually persisted; if fewer than expected, mark failed so we retry rather than accept a partial save as canonical.
+        if(!saveFailed){
+          const{count:_verifyCount}=await supabase.from('so_item_decorations').select('id',{count:'exact',head:true}).in('so_item_id',insertedItems.map(i=>i.id));
+          if((_verifyCount||0)<allDecoRows.length){
+            saveFailed=true;_failMsg=_failMsg||('so_item_decorations: only '+(_verifyCount||0)+' of '+allDecoRows.length+' rows persisted');
+            console.error('[DB] SAFETY: SO deco insert verification failed — expected',allDecoRows.length,'got',_verifyCount);
+            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allDecoRows.length,got:_verifyCount||0});
+          }
         }
       }
       // Batch insert pick lines
