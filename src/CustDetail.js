@@ -11,6 +11,8 @@ import { StripePaymentModal } from './modals';
 
 function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,REPS,prod,onCopy,onDelete,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[rR,setRR]=useState('thisyear');
+  const[expSOs,setExpSOs]=useState(()=>new Set());
+  const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[showPortal,setShowPortal]=useState(false);
   const[showActions,setShowActions]=useState(false);const[showStatement,setShowStatement]=useState(false);const[stmtEmail,setStmtEmail]=useState('');const[stmtMsg,setStmtMsg]=useState('');
@@ -134,9 +136,15 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const jobArtLabels={needs_art:'Needs Art',waiting_approval:'Wait Approval',art_complete:'Art ✓'};
         const jobProdLabels={hold:'Ready',staging:'In Line',in_process:'In Process',completed:'Done',shipped:'Shipped'};
         const jobItemLabels={need_to_order:'Need Order',partially_received:'Partial',items_received:'Received'};
+        const hasJobChildren=jobs.length>0||true;// show toggle even for "no decorations" rows
+        const isExp=expSOs.has(so.id);
         return<React.Fragment key={so.id}>
           <tr style={{cursor:'pointer',background:'white'}} onClick={()=>onOpenSO&&onOpenSO(so)}>
-            <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td>
+            <td style={{fontWeight:700,color:'#1e40af'}}>
+              {hasJobChildren&&<button onClick={e=>{e.stopPropagation();toggleExpSO(so.id)}} title={isExp?'Hide jobs':'Show jobs'} style={{marginRight:6,padding:0,background:'transparent',border:'none',cursor:'pointer',color:'#64748b',fontSize:10,width:14,display:'inline-block',textAlign:'center'}}>{isExp?'▼':'▶'}</button>}
+              {so.id}
+              {jobs.length>0&&!isExp&&<span style={{marginLeft:6,fontSize:10,color:'#94a3b8',fontWeight:500}}>({jobs.length} {jobs.length===1?'job':'jobs'})</span>}
+            </td>
             <td>{so.memo}</td>
             {isP&&<td><span className="badge badge-gray">{subC?.alpha_tag}</span></td>}
             {isP&&<td style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</td>}
@@ -148,8 +156,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <td style={{textAlign:'right',fontWeight:700,color:'#1e293b'}}>${soGrand.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
             <td style={{color:daysOut!=null&&daysOut<=7?'#dc2626':'#64748b',fontWeight:daysOut!=null&&daysOut<=7?700:400}}>{so.expected_date||'—'}{daysOut!=null&&daysOut>=0&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>({daysOut}d)</span>}</td>
           </tr>
-          {/* Nested jobs under this SO */}
-          {jobs.length>0&&jobs.map(j=><tr key={j.id} style={{background:'#f8fafc',cursor:'pointer'}} onClick={()=>onOpenSO&&onOpenSO(so)}>
+          {/* Nested jobs under this SO — collapsed by default */}
+          {isExp&&jobs.length>0&&jobs.map(j=><tr key={j.id} style={{background:'#f8fafc',cursor:'pointer'}} onClick={()=>onOpenSO&&onOpenSO(so)}>
             <td style={{paddingLeft:28,color:'#64748b',fontSize:11}}>↳ {j.id}</td>
             <td style={{fontSize:11}}>{j.art_name} <span style={{color:'#94a3b8'}}>({j.deco_type?.replace(/_/g,' ')})</span></td>
             {isP&&<td/>}{isP&&<td/>}
@@ -164,7 +172,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <td/>
             <td><span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#64748b'}}>{jobProdLabels[j.prod_status]||j.prod_status}</span></td>
           </tr>)}
-          {jobs.length===0&&<tr style={{background:'#f8fafc'}}><td colSpan={isP?9:7} style={{paddingLeft:28,fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No decorations assigned yet</td></tr>}
+          {isExp&&jobs.length===0&&<tr style={{background:'#f8fafc'}}><td colSpan={isP?9:7} style={{paddingLeft:28,fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No decorations assigned yet</td></tr>}
         </React.Fragment>})}
       </tbody></table>
     </div></div>}

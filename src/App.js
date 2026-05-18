@@ -6343,12 +6343,15 @@ export default function App(){
       </div>
       {filtered.length===0?<div className="card"><div className="card-body"><div className="empty" style={{padding:30}}>No clearance items. Click "+ Add Clearance Item" to mark inventory products for clearance pricing.</div></div></div>:
       <div className="card"><div className="card-body" style={{padding:0}}>
-        <table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th style={{textAlign:'right'}}>NSA Cost</th><th style={{textAlign:'right'}}>Clearance Cost</th><th style={{textAlign:'right'}}>Rep Savings</th><th style={{textAlign:'center'}}>Stock</th><th style={{textAlign:'right'}}>Inv Value</th><th>Actions</th></tr></thead>
+        <table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes (stock)</th><th style={{textAlign:'right'}}>NSA Cost</th><th style={{textAlign:'right'}}>Clearance Cost</th><th style={{textAlign:'right'}}>Rep Savings</th><th style={{textAlign:'center'}}>Stock</th><th style={{textAlign:'right'}}>Inv Value</th><th>Actions</th></tr></thead>
         <tbody>{filtered.map(p=>{const tQ=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const savings=p.nsa_cost-(p.clearance_cost||0);const savPct=p.nsa_cost>0?Math.round(savings/p.nsa_cost*100):0;
+          const openProd=e=>{if(e.metaKey||e.ctrlKey||e.button===1)return;e.preventDefault();setSelP(p);setPg('products')};
+          const sizes=(p.available_sizes||[]).map(sz=>({sz,q:p._inv?.[sz]||0}));
           return<tr key={p.id}>
-            <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</td>
-            <td style={{fontSize:12}}>{p.name}</td>
+            <td style={{fontFamily:'monospace',fontWeight:700}}><a href={`?prod=${encodeURIComponent(p.id)}`} onClick={openProd} style={{color:'#1e40af',textDecoration:'none'}}>{p.sku}</a></td>
+            <td style={{fontSize:12}}><a href={`?prod=${encodeURIComponent(p.id)}`} onClick={openProd} style={{color:'inherit',textDecoration:'none'}}>{p.name}</a></td>
             <td style={{fontSize:11,color:'#64748b'}}>{p.color}</td>
+            <td style={{fontSize:11}}>{sizes.length===0?<span style={{color:'#94a3b8'}}>—</span>:<div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{sizes.map(({sz,q})=><span key={sz} style={{padding:'1px 5px',borderRadius:4,fontSize:10,fontWeight:700,background:q>10?'#dcfce7':q>0?'#fef3c7':'#f1f5f9',color:q>10?'#166534':q>0?'#92400e':'#94a3b8'}}>{sz}:{q}</span>)}</div>}</td>
             <td style={{textAlign:'right',fontSize:12}}>${p.nsa_cost?.toFixed(2)}</td>
             <td style={{textAlign:'right'}}><input className="form-input" type="number" step="0.01" style={{width:80,textAlign:'right',fontWeight:700,color:'#166534'}} value={p.clearance_cost??''} onChange={e=>updateClearanceCost(p.id,parseFloat(e.target.value)||0)}/></td>
             <td style={{textAlign:'right',color:'#166534',fontWeight:600}}>${savings.toFixed(2)} <span style={{fontSize:9}}>({savPct}%)</span></td>
