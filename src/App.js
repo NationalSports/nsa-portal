@@ -16898,11 +16898,16 @@ export default function App(){
                                 </div>
                                 <div style={{display:'flex',flexDirection:'column',gap:3}}>
                                   <span style={{fontSize:9,fontWeight:700,color:'#0369a1'}}>Inks:</span>
-                                  {artJobDetailEditCW.inks.map((ink,ii)=><div key={ii} style={{display:'flex',gap:3,alignItems:'center'}}>
+                                  {artJobDetailEditCW.inks.map((ink,ii)=>{const _hex=pantoneHex(ink);return<div key={ii} style={{display:'flex',gap:3,alignItems:'center'}}>
+                                    <span style={{width:14,height:14,borderRadius:3,background:_hex||'#f1f5f9',border:'1px solid #d1d5db',flexShrink:0}} title={_hex?ink:'No swatch match'}/>
                                     <input className="form-input" value={ink} onChange={e=>{const upd=[...artJobDetailEditCW.inks];upd[ii]=e.target.value;setArtJobDetailEditCW({...artJobDetailEditCW,inks:upd})}} placeholder="Ink color" style={{fontSize:11,padding:'2px 6px',flex:1,minWidth:80}}/>
                                     <button onClick={()=>{const upd=artJobDetailEditCW.inks.filter((_,x)=>x!==ii);setArtJobDetailEditCW({...artJobDetailEditCW,inks:upd.length?upd:['']})}} style={{background:'none',border:'none',color:'#dc2626',fontSize:12,cursor:'pointer',padding:'0 4px',fontWeight:700}}>×</button>
-                                  </div>)}
+                                  </div>})}
                                   <button onClick={()=>setArtJobDetailEditCW({...artJobDetailEditCW,inks:[...artJobDetailEditCW.inks,'']})} style={{background:'none',border:'1px dashed #93c5fd',color:'#0369a1',fontSize:10,fontWeight:700,cursor:'pointer',padding:'2px 6px',borderRadius:3,alignSelf:'flex-start'}}>+ Add ink</button>
+                                  {(()=>{const _onPick=(v)=>{const upd=[...artJobDetailEditCW.inks];const emptyIdx=upd.findIndex(x=>!x||!x.trim());if(emptyIdx>=0)upd[emptyIdx]=v;else upd.push(v);setArtJobDetailEditCW({...artJobDetailEditCW,inks:upd})};
+                                    return isEmb?<ThreadQuickPicks colors={mergeColors(c2,cust,'thread_colors')} onPick={_onPick}/>
+                                    :<PantoneQuickPicks colors={mergeColors(c2,cust,'pantone_colors')} onPick={_onPick}/>;
+                                  })()}
                                 </div>
                                 <div style={{display:'flex',gap:4}}>
                                   <button onClick={_saveCW} style={{background:'#0369a1',border:'none',color:'white',fontSize:10,fontWeight:700,cursor:'pointer',padding:'3px 10px',borderRadius:3}}>Save</button>
