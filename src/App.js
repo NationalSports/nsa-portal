@@ -19110,6 +19110,69 @@ export default function App(){
       return updated;
     };
 
+    // Build the candidate list for the "Match manually" wizard. Returns an array of pickable
+    // targets (open Batch POs + Sales Orders with open PO lines), each with a display label
+    // and an items[] summary used by the per-line mapper.
+    const _buildMatchCandidates=()=>{
+      const out=[];
+      (submittedBatches||[]).forEach(sb=>{
+        const soIds=(sb.source_pos||[]).map(sp=>sp.so_id).filter(Boolean);
+        const customers=Array.from(new Set((sb.source_pos||[]).map(sp=>sp.customer).filter(Boolean)));
+        const items=[];
+        (sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{
+          Object.entries(it.sizes||{}).forEach(([sz,qty])=>{if(qty>0)items.push({sku:it.sku,name:it.name,color:it.color||'',size:sz,qty,unit_cost:it.unit_cost||0,so_id:sp.so_id||''})});
+        }));
+        const totalQty=items.reduce((a,it)=>a+it.qty,0);
+        out.push({kind:'batch',id:sb.id||sb.po_number,label:sb.po_number,sub:`Batch · ${sb.vendor_name||''} · ${customers.join(', ')||'—'}${soIds.length?' · '+soIds.join(', '):''}`,total_units:totalQty,items,raw:sb,so_ids:soIds});
+      });
+      (sos||[]).forEach(so=>{
+        const items=[];
+        (so.items||[]).forEach(it=>(it.po_lines||[]).forEach(po=>{
+          Object.entries(po).forEach(([k,v])=>{
+            // size keys on the po_line object are arbitrary (S/M/L/numeric). Filter out known non-size fields.
+            if(typeof v!=='number'||k==='unit_cost'||k==='qty'||k.startsWith('_'))return;
+            if(v<=0)return;
+            const billedQty=(po.billed||{})[k]||0;
+            const openQty=v-billedQty;
+            if(openQty<=0)return;
+            items.push({sku:it.sku,name:it.name,color:it.color||'',size:k,qty:openQty,unit_cost:po.unit_cost||0,so_id:so.id,item_id:it.id,po_id:po.po_id||'',so_item_idx:(so.items||[]).indexOf(it)});
+          });
+        }));
+        if(!items.length)return;
+        const c=cust.find(cc=>cc.id===so.customer_id);
+        out.push({kind:'so',id:so.id,label:so.id,sub:`Sales Order · ${c?.name||so.customer_name||''}${so.po_number?' · PO '+so.po_number:''}`,total_units:items.reduce((a,it)=>a+it.qty,0),items,raw:so,so_ids:[so.id]});
+      });
+      return out;
+    };
+
+    // Filter the candidate list by a free-text query (matches PO #, SO #, customer, vendor, SKUs).
+    const _filterMatchCandidates=(candidates,query)=>{
+      const q=(query||'').trim().toLowerCase();
+      if(!q)return candidates;
+      return candidates.filter(c=>{
+        if(c.label.toLowerCase().includes(q))return true;
+        if((c.sub||'').toLowerCase().includes(q))return true;
+        if(c.items.some(it=>(it.sku||'').toLowerCase().includes(q)))return true;
+        return false;
+      });
+    };
+
+    // Pre-map bill lines to target items by SKU+size exact match. Returns {billIdx: {target_item_index, allocated_qty}}.
+    // When a SKU+size appears multiple times in target items (e.g. batch spanning multiple SOs), the
+    // first match wins and we mark the row "ambiguous" so the user can adjust the allocation.
+    const _autoMapBillToTarget=(bill,target)=>{
+      const mappings={};
+      if(!target||!Array.isArray(target.items))return mappings;
+      (bill.items||[]).forEach((bl,bi)=>{
+        const sku=(bl.sku||'').toUpperCase();
+        const size=(bl.size||'').toUpperCase();
+        const candidates=target.items.map((it,ti)=>({...it,_idx:ti})).filter(it=>(it.sku||'').toUpperCase()===sku&&(it.size||'').toUpperCase()===size);
+        if(candidates.length===0){mappings[bi]={skipped:true,reason:'no-match'};return}
+        mappings[bi]={target_idx:candidates[0]._idx,allocated_qty:bl.qty,ambiguous:candidates.length>1,candidate_indexes:candidates.map(c=>c._idx)};
+      });
+      return mappings;
+    };
+
     // Apply a decoration bill manually when the user has picked an SO + target po_line (or "create new").
     // target = {soId, mode:'existing', itemIdx, poLineIdx}  OR  {soId, mode:'create', itemIdx, decoType}
     // target = {soId, mode:'existing', decoPoId}  OR  {soId, mode:'create'}
@@ -20451,6 +20514,103 @@ export default function App(){
                         </>}
                       </>:<span style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Will create new deco PO on this SO</span>)}
                     </div>
+                  </div>;
+                })()}
+                {/* Manual match wizard — goods bills, line items parsed, no auto-match */}
+                {bill.kind!=='decoration'&&!poMatch&&bill.items.length>0&&(()=>{
+                  const w=bill._wizard;
+                  const setW=nw=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_wizard:nw}}:p)}));
+                  if(!w||!w.open){
+                    return<div style={{padding:'10px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe',display:'flex',alignItems:'center',gap:10}}>
+                      <span style={{fontSize:12,color:'#3730a3'}}>No PO matched automatically — line items parsed and ready.</span>
+                      <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}}
+                        onClick={()=>setW({open:true,query:bill.po_number||'',target:null,mappings:{}})}>Match manually…</button>
+                    </div>;
+                  }
+                  const candidates=_buildMatchCandidates();
+                  const filtered=_filterMatchCandidates(candidates,w.query);
+                  return<div style={{padding:'12px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                      <div style={{fontSize:12,fontWeight:700,color:'#3730a3'}}>Match manually {w.target?<>· <span style={{color:'#1e40af'}}>{w.target.label}</span> <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:6}} onClick={()=>setW({...w,target:null,mappings:{}})}>change</button></>:'— pick a target'}</div>
+                      <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setW({open:false})}>Cancel</button>
+                    </div>
+                    {!w.target&&<>
+                      <input className="form-input" style={{width:'100%',fontSize:11,padding:'4px 8px',marginBottom:6}} placeholder="Search PO #, SO #, customer, SKU…" value={w.query||''}
+                        onChange={e=>setW({...w,query:e.target.value})}/>
+                      <div style={{maxHeight:220,overflow:'auto',border:'1px solid #c7d2fe',borderRadius:4,background:'#fff'}}>
+                        {filtered.length===0?<div style={{padding:10,fontSize:11,color:'#64748b'}}>No matching POs or Sales Orders.</div>:
+                          filtered.slice(0,200).map(c=><div key={c.kind+'-'+c.id} style={{padding:'6px 10px',borderBottom:'1px solid #eef2ff',cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center'}}
+                            onClick={()=>{const target=c;const mappings=_autoMapBillToTarget(bill,target);setW({...w,target,mappings})}}
+                            onMouseEnter={e=>e.currentTarget.style.background='#f5f3ff'} onMouseLeave={e=>e.currentTarget.style.background='#fff'}>
+                            <div>
+                              <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{c.label} <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:c.kind==='batch'?'#dbeafe':'#fce7f3',color:c.kind==='batch'?'#1e40af':'#9d174d',marginLeft:4}}>{c.kind==='batch'?'BATCH':'SO'}</span></div>
+                              <div style={{fontSize:10,color:'#64748b'}}>{c.sub}</div>
+                            </div>
+                            <div style={{fontSize:10,color:'#475569',fontWeight:600}}>{c.total_units} unit(s) open · {c.items.length} line(s)</div>
+                          </div>)}
+                      </div>
+                    </>}
+                    {w.target&&(()=>{
+                      const target=w.target;const mappings=w.mappings||{};
+                      const setMap=(idx,m)=>setW({...w,mappings:{...mappings,[idx]:m}});
+                      const matched=bill.items.filter((_,i)=>mappings[i]&&!mappings[i].skipped).length;
+                      const total=bill.items.length;
+                      return<>
+                        <div style={{fontSize:10,color:'#475569',marginBottom:6}}>{matched} of {total} bill line(s) mapped. Auto-suggestions in green; pick a different target item or skip per row.</div>
+                        <div style={{maxHeight:260,overflow:'auto',border:'1px solid #c7d2fe',borderRadius:4,background:'#fff'}}>
+                          <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
+                            <thead style={{background:'#f8fafc',position:'sticky',top:0}}><tr>
+                              <th style={{textAlign:'left',padding:'4px 8px'}}>Bill line</th>
+                              <th style={{textAlign:'left',padding:'4px 8px'}}>Map to target item</th>
+                              <th style={{textAlign:'right',padding:'4px 8px'}}>Apply qty</th>
+                              <th style={{textAlign:'left',padding:'4px 8px'}}>Notes</th>
+                            </tr></thead>
+                            <tbody>{bill.items.map((bl,bli)=>{
+                              const m=mappings[bli]||{};
+                              const tgt=m.target_idx!=null?target.items[m.target_idx]:null;
+                              const openQty=tgt?tgt.qty:0;
+                              const over=tgt&&m.allocated_qty>openQty;
+                              return<tr key={bli} style={{borderBottom:'1px solid #f1f5f9',background:m.skipped?'#fef9c3':(tgt?'#f0fdf4':'#fff')}}>
+                                <td style={{padding:'4px 8px',fontFamily:'monospace'}}>{bl.sku} <span style={{color:'#64748b'}}>{bl.size}</span> · {bl.qty} @ ${bl.unit_price.toFixed(2)}</td>
+                                <td style={{padding:'4px 8px'}}>
+                                  <select className="form-input" style={{width:'100%',fontSize:10,padding:'2px 4px'}} value={m.skipped?'__skip':(m.target_idx!=null?String(m.target_idx):'')}
+                                    onChange={e=>{const v=e.target.value;if(v==='__skip')setMap(bli,{skipped:true});else if(v==='')setMap(bli,{});else{const ti=parseInt(v);const it=target.items[ti];setMap(bli,{target_idx:ti,allocated_qty:bl.qty,ambiguous:false})}}}>
+                                    <option value="">— pick —</option>
+                                    <option value="__skip">Skip this line</option>
+                                    {target.items.map((it,ti)=><option key={ti} value={ti}>{it.sku} {it.size} ({it.qty} open){it.so_id?' · '+it.so_id:''}{it.color?' · '+it.color:''}</option>)}
+                                  </select>
+                                </td>
+                                <td style={{padding:'4px 8px',textAlign:'right'}}>
+                                  {!m.skipped&&tgt&&<input className="form-input" type="number" style={{width:60,fontSize:10,padding:'2px 4px',textAlign:'right'}} value={m.allocated_qty||0}
+                                    onChange={e=>setMap(bli,{...m,allocated_qty:parseInt(e.target.value)||0})}/>}
+                                </td>
+                                <td style={{padding:'4px 8px',fontSize:10,color:over?'#dc2626':(m.ambiguous?'#d97706':(m.skipped?'#92400e':'#166534'))}}>
+                                  {m.skipped?'Skipped':over?`Over-receipt (${m.allocated_qty}>${openQty})`:m.ambiguous?'Ambiguous — verify':tgt?'Mapped':(bl.sku||'')+' not on target'}
+                                </td>
+                              </tr>;
+                            })}</tbody>
+                          </table>
+                        </div>
+                        <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
+                          <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>setW({open:false})}>Cancel</button>
+                          <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}}
+                            onClick={()=>{
+                              // Build matchedPO shape compatible with existing apply paths.
+                              let matchedPO,matchedPOSource;
+                              if(target.kind==='batch'){matchedPO=target.raw;matchedPOSource='batch'}
+                              else if(target.kind==='so'){matchedPO={so_id:target.id,po_id:target.raw.po_number||target.id,so:target.raw};matchedPOSource='so_po'}
+                              // Persist per-line mappings on the bill for the (forthcoming) refactored apply.
+                              const lineMappings=Object.entries(w.mappings||{}).map(([bi2,m])=>{
+                                if(m.skipped||m.target_idx==null)return null;
+                                const it=target.items[m.target_idx];
+                                return{bill_idx:parseInt(bi2),target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,so_id:it.so_id||'',allocated_qty:m.allocated_qty||0,unit_cost:it.unit_cost||0};
+                              }).filter(Boolean);
+                              setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,matchedPO,matchedPOSource,_lineMappings:lineMappings,_wizard:{open:false}}}:p)}));
+                              nf('Bill manually matched to '+target.label);
+                            }}>Confirm match</button>
+                        </div>
+                      </>;
+                    })()}
                   </div>;
                 })()}
                 {/* Raw text toggle */}
