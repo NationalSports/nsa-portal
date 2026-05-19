@@ -18750,21 +18750,39 @@ export default function App(){
         });
         const useColumns=colIdx.extension!=null&&(colIdx.qtyShipped!=null||colIdx.qtyOrdered!=null);
 
+        // Build a fast lookup regex from known product SKUs so we recognize whatever the
+        // vendor actually uses (regardless of pattern). Falls back to SKU_RE/_NUMERIC for
+        // SKUs not yet in our catalog (new items, decoration codes, etc).
+        let knownSkuRe=null;
+        try{
+          const knownSkus=Array.from(new Set((prod||[]).map(p=>(p.sku||'').trim().toUpperCase()).filter(s=>s.length>=2)));
+          if(knownSkus.length){
+            knownSkus.sort((a,b)=>b.length-a.length);
+            knownSkuRe=new RegExp('\\b('+knownSkus.map(s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|')+')\\b','i');
+          }
+        }catch(e){/* huge catalogs could blow regex size — fall back to pattern matching */}
+
         for(let i=startIdx;i<endIdx;i++){
           const line=lines[i];
           if(/^UPC\s*NUMBER|^SUPPLIER\s*ITEM|^QUANTITY|^UNIT|^LIST|^DISC|^NET|^EXTENSION|^SIZE|^COLOR/i.test(line))continue;
           // Skip lines that are purely a long barcode/UPC with no other content (avoids false matches)
           if(/^\s*\d{10,}\s*$/.test(line))continue;
-          let skuMatch=line.match(SKU_RE);
-          // Numeric-only fallback for SKUs like "510000". Strip barcode segments that PDF
-          // extraction may have split with spaces (e.g. "8 86918 62306 3") so we don't
-          // grab one of those 5-digit chunks instead of the real item number.
-          if(!skuMatch){
-            const stripped=line.replace(/(?:\b\d{1,2}\s+)?(?:\d{4,6}\s+){1,3}\d{1,2}\b/g,' ');
-            skuMatch=stripped.match(SKU_RE_NUMERIC);
+          let sku='';
+          // 1) Try known-SKU lookup against the product catalog (most reliable)
+          if(knownSkuRe){const km=line.match(knownSkuRe);if(km)sku=km[1].toUpperCase()}
+          // 2) Pattern-based fallbacks for unknown SKUs
+          if(!sku){
+            let skuMatch=line.match(SKU_RE);
+            if(!skuMatch){
+              // Numeric-only fallback for SKUs like "510000". Strip barcode segments that PDF
+              // extraction may have split with spaces (e.g. "8 86918 62306 3") so we don't
+              // grab one of those 5-digit chunks instead of the real item number.
+              const stripped=line.replace(/(?:\b\d{1,2}\s+)?(?:\d{4,6}\s+){1,3}\d{1,2}\b/g,' ');
+              skuMatch=stripped.match(SKU_RE_NUMERIC);
+            }
+            if(skuMatch)sku=skuMatch[1];
           }
-          if(!skuMatch)continue;
-          const sku=skuMatch[1];
+          if(!sku)continue;
           const parts=line.split(/\t+/).map(p=>p.trim());
           // Try named sizes first, then SIZE column, then numeric sizes, then empty
           const sizeMatch=line.match(SZ_RE);
