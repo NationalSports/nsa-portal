@@ -8005,23 +8005,89 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
             </div>:null})()}
 
-          {/* Shipment History */}
-          {shipments.length>0&&<div className="card" style={{marginBottom:16}}>
-            <div className="card-header"><h2>{isDropShipFP?'Billing':'Shipment'} History ({shipments.length})</h2></div>
-            <div className="card-body">
-              {shipments.map((sh,si)=>{const shQty=Object.entries(sh.qty||{}).reduce((a,[,v])=>a+safeNum(v),0);return<div key={si} style={{padding:'10px 12px',border:'1px solid #e2e8f0',borderRadius:6,marginBottom:8,background:si%2===0?'#f8fafc':'#fff'}}>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
-                  <span style={{fontWeight:700,fontSize:13}}>Shipment #{si+1}</span>
-                  <span style={{fontSize:12,color:'#64748b'}}>{sh.date||'No date'}</span>
-                </div>
-                <div style={{display:'flex',gap:8,flexWrap:'wrap',fontSize:12}}>
-                  {Object.entries(sh.qty||{}).filter(([,v])=>v>0).map(([sz,q])=><span key={sz} style={{padding:'2px 8px',background:'#dcfce7',color:'#166534',borderRadius:4,fontWeight:600}}>{sz}: {q}</span>)}
-                  <span style={{fontWeight:700}}>({shQty} units)</span>
-                </div>
-                {sh.memo&&<div style={{fontSize:11,color:'#475569',marginTop:4,fontStyle:'italic'}}>{sh.memo}</div>}
-              </div>})}
-            </div>
-          </div>}
+          {/* Shipment History — walk every line on this PO so multi-SKU POs show every receipt with its SKU/color */}
+          {(()=>{
+            const NON_SZ=['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type','notes'];
+            const allShipments=[];
+            (allLines||[{lineIdx:0}]).forEach(ln=>{
+              const it=soItems?.[ln.lineIdx];if(!it)return;
+              const pl=it.po_lines?.find(p=>p.po_id===po.po_id);if(!pl)return;
+              const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&!NON_SZ.includes(k)&&typeof pl[k]==='number');
+              (pl.shipments||[]).forEach((sh,si)=>{
+                const sizes={};sk.forEach(sz=>{if(sh[sz]>0)sizes[sz]=sh[sz]});
+                const qty=Object.values(sizes).reduce((a,v)=>a+v,0);
+                if(qty===0&&!sh.memo&&!sh.date)return;
+                allShipments.push({lineIdx:ln.lineIdx,poIdx:it.po_lines.indexOf(pl),shipIdx:si,date:sh.date||'',sizes,qty,memo:sh.memo||'',sku:it.sku,name:it.name,color:it.color||'',szKeys:sk,raw:sh});
+              });
+            });
+            // Newest first within each line, but globally sort by date desc with original index as tiebreaker
+            allShipments.sort((a,b)=>{const dA=a.date||'';const dB=b.date||'';if(dA===dB)return a.shipIdx-b.shipIdx;return dB.localeCompare(dA)});
+            if(allShipments.length===0)return null;
+            const fpEdit=poFullPage._editShip||null;// `${lineIdx}-${shipIdx}`
+            const isEditing=key=>fpEdit===key;
+            const writeShipUpdate=(lineIdx,poIdx,newShipmentsBuilder)=>{
+              const it=o.items[lineIdx];if(!it)return;
+              const pl=it.po_lines[poIdx];if(!pl)return;
+              const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&!NON_SZ.includes(k)&&typeof pl[k]==='number');
+              const newShipments=newShipmentsBuilder(pl.shipments||[]);
+              const newReceived={};newShipments.forEach(s=>{sk.forEach(sz=>{if(s[sz])newReceived[sz]=(newReceived[sz]||0)+s[sz]})});
+              const newTotalOpen=sk.reduce((a,sz)=>a+Math.max(0,(pl[sz]||0)-(newReceived[sz]||0)-((pl.cancelled||{})[sz]||0)),0);
+              const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
+              const updatedPO={...pl,received:newReceived,shipments:newShipments,status:newStatus};
+              const updatedItems=o.items.map((it2,i)=>i===lineIdx?{...it2,po_lines:it2.po_lines.map((p,j)=>j===poIdx?updatedPO:p)}:it2);
+              const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+              setO(updated);onSave(updated);
+              // If the active editPO row is this one, refresh its snapshot too
+              setPoFullPage(prev=>prev?{...prev,po:lineIdx===prev.allLines?.[0]?.lineIdx?updatedPO:prev.po,_editShip:null}:prev);
+              return updatedPO;
+            };
+            return<div className="card" style={{marginBottom:16}}>
+              <div className="card-header"><h2>{isDropShipFP?'Billing':'Shipment'} History ({allShipments.length})</h2></div>
+              <div className="card-body">
+                {allShipments.map((sh,gi)=>{const key=sh.lineIdx+'-'+sh.shipIdx;const editing=isEditing(key);return<div key={key} style={{border:'1px solid '+(editing?'#bfdbfe':'#e2e8f0'),borderRadius:6,marginBottom:8,background:editing?'#eff6ff':(gi%2===0?'#f8fafc':'#fff')}}>
+                  <div style={{padding:'10px 12px',display:'flex',alignItems:'center',gap:10,cursor:'pointer',flexWrap:'wrap'}} onClick={()=>setPoFullPage(p=>({...p,_editShip:editing?null:key}))}>
+                    <span style={{fontWeight:700,fontSize:13,color:'#166534',whiteSpace:'nowrap'}}>📦 {sh.date||'No date'}</span>
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:11}}>{sh.sku}</span>
+                    <span style={{fontSize:12,fontWeight:600}}>{sh.name}</span>
+                    {sh.color&&<span style={{fontSize:11,color:'#64748b'}}>{sh.color}</span>}
+                    <div style={{display:'flex',gap:5,flexWrap:'wrap',marginLeft:8}}>
+                      {Object.entries(sh.sizes).map(([sz,q])=><span key={sz} style={{padding:'2px 7px',background:'#dcfce7',color:'#166534',borderRadius:4,fontWeight:700,fontSize:11}}>{sz}:{q}</span>)}
+                    </div>
+                    <span style={{marginLeft:'auto',fontWeight:800,fontSize:13}}>{sh.qty} units</span>
+                    <span style={{fontSize:10,color:'#64748b'}}>{editing?'▲ close':'✏️ edit'}</span>
+                  </div>
+                  {sh.memo&&!editing&&<div style={{padding:'0 12px 8px',fontSize:11,color:'#475569',fontStyle:'italic'}}>{sh.memo}</div>}
+                  {editing&&<div style={{padding:'10px 12px',borderTop:'1px solid #bfdbfe'}}>
+                    <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
+                      <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
+                      <input type="date" id={'fp-sh-date-'+key} className="form-input" style={{width:150,fontSize:12}} defaultValue={sh.date}/>
+                      <span style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:6}}>Quantities:</span>
+                      {sh.szKeys.map(sz=><div key={sz} style={{textAlign:'center'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                        <input id={'fp-sh-'+key+'-'+sz} style={{width:44,textAlign:'center',border:'1px solid #93c5fd',borderRadius:4,padding:'3px 2px',fontSize:13,fontWeight:700,background:'white'}} defaultValue={sh.sizes[sz]||0}/>
+                      </div>)}
+                    </div>
+                    <div style={{display:'flex',gap:6}}>
+                      <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>{
+                        const dateEl=document.getElementById('fp-sh-date-'+key);
+                        const updatedSh={date:dateEl?.value||sh.date};
+                        sh.szKeys.forEach(sz=>{const el=document.getElementById('fp-sh-'+key+'-'+sz);if(el){const v=parseInt(el.value)||0;if(v>0)updatedSh[sz]=v}});
+                        if(sh.raw.memo)updatedSh.memo=sh.raw.memo;
+                        writeShipUpdate(sh.lineIdx,sh.poIdx,prev=>prev.map((s,i)=>i===sh.shipIdx?updatedSh:s));
+                        nf('Shipment updated');
+                      }}>Save</button>
+                      <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{
+                        if(!window.confirm('Delete this shipment? Received quantities will be recalculated.'))return;
+                        writeShipUpdate(sh.lineIdx,sh.poIdx,prev=>prev.filter((_,i)=>i!==sh.shipIdx));
+                        nf('Shipment deleted');
+                      }}><Icon name="trash" size={10}/> Delete</button>
+                      <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setPoFullPage(p=>({...p,_editShip:null}))}>Cancel</button>
+                    </div>
+                  </div>}
+                </div>;})}
+              </div>
+            </div>;
+          })()}
 
           {po.memo&&<div className="card" style={{marginBottom:16}}>
             <div className="card-header"><h2>Notes</h2></div>
