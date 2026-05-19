@@ -14,7 +14,7 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isIm
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -2393,7 +2393,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>})}
         </div>}
         {/* BATCH PO QUEUE INDICATORS */}
-        {isSO&&(()=>{const bpMatches=(batchPOs||[]).filter(bp=>bp.so_id===o.id).flatMap(bp=>bp.items.filter(it=>it.item_idx===idx).map(it=>({...it,bpo_id:bp.id,vendor_name:bp.vendor_name,created_at:bp.created_at})));
+        {isSO&&(()=>{
+          // Match by item_idx OR sku+color. We saw cases where a batch entry's
+          // item_idx pointed at the wrong row (possibly a stale index from before
+          // an item was reordered/deleted) and the BATCH row silently vanished.
+          // Matching on sku+color too — but only when no OTHER row in the order
+          // is already claiming the same batch entry via exact item_idx — keeps
+          // the row visible without producing dupes.
+          const itemSku=item.sku;
+          const itemColor=(item.color||'').toLowerCase().trim();
+          const claimedByIdx=new Set();
+          (batchPOs||[]).filter(bp=>bp.so_id===o.id).forEach(bp=>(bp.items||[]).forEach(it=>{if(it.item_idx!=null)claimedByIdx.add(bp.id+'|'+it.item_idx)}));
+          const bpMatches=(batchPOs||[]).filter(bp=>bp.so_id===o.id).flatMap(bp=>bp.items.filter(it=>{
+            if(it.item_idx===idx)return true;
+            // Already pinned to a different row by exact index — don't double-match
+            if(it.item_idx!=null&&claimedByIdx.has(bp.id+'|'+it.item_idx)&&it.item_idx!==idx)return false;
+            // Fall back to SKU+color
+            return it.sku===itemSku&&(it.color||'').toLowerCase().trim()===itemColor;
+          }).map(it=>({...it,bpo_id:bp.id,vendor_name:bp.vendor_name,created_at:bp.created_at})));
           if(!bpMatches.length)return null;
           return<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
             {bpMatches.map((bm,bi)=>{const bmSzKeys=Object.entries(bm.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
@@ -5276,18 +5293,53 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }}><Icon name="cart" size={14}/> {preexistingPO?'Apply Preexisting PO':'Create PO'} ({poItems.filter((_,vi)=>!poExcluded[vi]).length})</button>}</div>
       </div></div>})()}
 
-      {/* Batch threshold popup — fires after Add-to-Batch when SanMar queue hits its free-ship threshold */}
-      {batchReadyPopup&&<div className="modal-overlay" onClick={()=>setBatchReadyPopup(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:720,maxHeight:'90vh',overflow:'auto'}}>
+      {/* Batch threshold popup — fires after Add-to-Batch when SanMar queue hits its free-ship threshold.
+          Reads live from batchPOs (rather than the popup snapshot) so price edits show immediately. */}
+      {batchReadyPopup&&(()=>{
+        const liveBatches=(batchPOs||[]).filter(bp=>bp.vendor_key===batchReadyPopup.vendorKey);
+        const liveTotal=liveBatches.reduce((a,bp)=>a+(bp.total_cost||0),0);
+        const updateLineCost=(bpId,itemIdx,newCost)=>{
+          const c=Math.max(0,parseFloat(String(newCost).replace(/[$,\s]/g,''))||0);
+          if(onBatchPO)onBatchPO(prev=>(prev||[]).map(bp=>{
+            if(bp.id!==bpId)return bp;
+            const items=(bp.items||[]).map((it,i)=>i===itemIdx?{...it,unit_cost:c}:it);
+            const total_cost=items.reduce((a,it)=>a+(it.qty||0)*(it.unit_cost||0),0);
+            return{...bp,items,total_cost};
+          }));
+          // Sync the matching source PO line on this SO so the order's per-line cost
+          // stays consistent with the batch (only for batches that belong to this SO).
+          const bp=(batchPOs||[]).find(x=>x.id===bpId);
+          if(bp&&bp.so_id===o.id){
+            const targetItem=bp.items?.[itemIdx];
+            const items2=safeItems(o).map(it=>{
+              const pls=(it.po_lines||[]).map(pl=>{
+                if(pl.batch_queue_id===bpId&&(targetItem==null||it.sku===targetItem.sku))return{...pl,unit_cost:c};
+                return pl;
+              });
+              return{...it,po_lines:pls};
+            });
+            const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
+            setO(updated);onSave(updated);
+          }
+        };
+        return<div className="modal-overlay" onClick={()=>setBatchReadyPopup(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:780,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>🎯 {batchReadyPopup.vendorName} Batch Ready</h2><button className="modal-close" onClick={()=>setBatchReadyPopup(null)}>x</button></div>
         <div className="modal-body">
-          <div style={{padding:14,background:'linear-gradient(135deg,#f0fdf4,#dcfce7)',border:'1px solid #86efac',borderRadius:8,marginBottom:14,textAlign:'center'}}>
-            <div style={{fontSize:13,color:'#166534',fontWeight:600,marginBottom:4}}>Free-ship threshold hit</div>
-            <div style={{fontSize:32,fontWeight:900,color:'#15803d'}}>${batchReadyPopup.total.toFixed(2)}</div>
-            <div style={{fontSize:12,color:'#166534'}}>{batchReadyPopup.count} PO{batchReadyPopup.count!==1?'s':''} queued · threshold ${batchReadyPopup.threshold}</div>
+          <div style={{padding:14,background:'linear-gradient(135deg,#f0fdf4,#dcfce7)',border:'1px solid #86efac',borderRadius:8,marginBottom:14,display:'flex',alignItems:'center',justifyContent:'space-between',gap:16}}>
+            <div>
+              <div style={{fontSize:10,color:'#166534',fontWeight:700,textTransform:'uppercase',letterSpacing:0.5}}>Use this PO# when ordering on sanmar.com</div>
+              <div style={{fontSize:24,fontWeight:900,fontFamily:'monospace',color:'#1e40af',letterSpacing:2}}>{nextBatchPONumber||'NSA-####'}</div>
+              <button style={{marginTop:4,fontSize:10,padding:'2px 8px',border:'1px solid #86efac',background:'white',borderRadius:4,cursor:'pointer',color:'#166534',fontWeight:700}} onClick={()=>{navigator.clipboard?.writeText(nextBatchPONumber||'');nf('Copied '+(nextBatchPONumber||''))}}>📋 Copy</button>
+            </div>
+            <div style={{textAlign:'right'}}>
+              <div style={{fontSize:11,color:'#166534',fontWeight:600}}>Free-ship threshold hit</div>
+              <div style={{fontSize:28,fontWeight:900,color:'#15803d'}}>${liveTotal.toFixed(2)}</div>
+              <div style={{fontSize:11,color:'#166534'}}>{liveBatches.length} PO{liveBatches.length!==1?'s':''} queued · threshold ${batchReadyPopup.threshold}</div>
+            </div>
           </div>
-          <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Batch contents · {batchReadyPopup.count} PO{batchReadyPopup.count!==1?'s':''}</div>
+          <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Batch contents · {liveBatches.length} PO{liveBatches.length!==1?'s':''} <span style={{fontWeight:500,textTransform:'none',color:'#94a3b8'}}>(unit costs are editable — changes sync to the SO)</span></div>
           <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',marginBottom:12}}>
-            {batchReadyPopup.batchPOs.map((bp,bi)=>{
+            {liveBatches.map((bp,bi)=>{
               const bpTotal=(bp.items||[]).reduce((a,it)=>a+(it.qty||0)*(it.unit_cost||0),0);
               return<div key={bp.id||bi} style={{borderTop:bi>0?'1px solid #f1f5f9':'none',background:bi%2?'#fafbfc':'white'}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'#f8fafc',borderBottom:'1px solid #f1f5f9'}}>
@@ -5300,14 +5352,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(bp.items||[]).map((it,ii)=>{
                   const szList=Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
                   return<div key={ii} style={{padding:'8px 12px',borderTop:ii>0?'1px solid #f8fafc':'none'}}>
-                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:4}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,gap:8,flexWrap:'wrap'}}>
                       <div style={{fontSize:12,minWidth:0,flex:1}}>
                         <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:6}}>{it.sku}</span>
                         <span style={{fontWeight:600}}>{it.name}</span>
                         {it.color&&<span style={{color:'#64748b'}}> — {it.color}</span>}
                       </div>
-                      <div style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap',marginLeft:8}}>
-                        {it.qty} × ${(it.unit_cost||0).toFixed(2)} = <strong style={{color:'#0f172a'}}>${((it.qty||0)*(it.unit_cost||0)).toFixed(2)}</strong>
+                      <div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>
+                        <span>{it.qty} × $</span>
+                        <input
+                          type="number" step="0.01" min="0"
+                          defaultValue={(it.unit_cost||0).toFixed(2)}
+                          onBlur={e=>{const v=parseFloat(e.target.value)||0;if(Math.abs(v-(it.unit_cost||0))>=0.005)updateLineCost(bp.id,ii,v)}}
+                          onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}}
+                          style={{width:64,textAlign:'right',padding:'2px 6px',border:'1px solid #cbd5e1',borderRadius:4,fontSize:12,fontWeight:700,color:'#0f172a'}}
+                          title="Edit unit cost — saves on blur and updates the source SO PO line"
+                        />
+                        <span>= <strong style={{color:'#0f172a'}}>${((it.qty||0)*(it.unit_cost||0)).toFixed(2)}</strong></span>
                       </div>
                     </div>
                     <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
@@ -5319,18 +5380,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             })}
           </div>
           <p style={{fontSize:12,color:'#64748b',margin:0}}>
-            Review the items above — if anything is missing or wrong, close this popup and edit on the Batch POs page before submitting. Once you're satisfied, preview the SanMar API payload (dry-run) or go to the Batch POs page to submit manually.
+            Use the PO# above when placing the order on sanmar.com. To edit sizes or remove a line, close this popup and use the Batch POs page. Preview the API payload below to see what would be sent once live submit is enabled.
           </p>
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setBatchReadyPopup(null)}>Continue working</button>
           <button className="btn btn-secondary" style={{color:'#6d28d9',borderColor:'#c4b5fd'}} onClick={()=>{
-            // Preview using a placeholder PO number — the real NSA-#### is assigned at submit time on the batch page.
-            setSanMarPreviewBatch({poNumber:'NSA-#### (preview)',batchPOs:batchReadyPopup.batchPOs,vendorName:batchReadyPopup.vendorName});
+            setSanMarPreviewBatch({poNumber:nextBatchPONumber||'NSA-####',batchPOs:liveBatches,vendorName:batchReadyPopup.vendorName});
             setBatchReadyPopup(null);
           }}>🔍 Preview SanMar API Payload</button>
         </div>
-      </div></div>}
+      </div></div>;
+      })()}
 
       {sanmarPreviewBatch&&<SanMarPreviewModal {...sanmarPreviewBatch} onClose={()=>setSanMarPreviewBatch(null)}/>}
 
