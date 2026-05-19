@@ -5277,7 +5277,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div></div>})()}
 
       {/* Batch threshold popup — fires after Add-to-Batch when SanMar queue hits its free-ship threshold */}
-      {batchReadyPopup&&<div className="modal-overlay" onClick={()=>setBatchReadyPopup(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:540}}>
+      {batchReadyPopup&&<div className="modal-overlay" onClick={()=>setBatchReadyPopup(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:720,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>🎯 {batchReadyPopup.vendorName} Batch Ready</h2><button className="modal-close" onClick={()=>setBatchReadyPopup(null)}>x</button></div>
         <div className="modal-body">
           <div style={{padding:14,background:'linear-gradient(135deg,#f0fdf4,#dcfce7)',border:'1px solid #86efac',borderRadius:8,marginBottom:14,textAlign:'center'}}>
@@ -5285,13 +5285,42 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{fontSize:32,fontWeight:900,color:'#15803d'}}>${batchReadyPopup.total.toFixed(2)}</div>
             <div style={{fontSize:12,color:'#166534'}}>{batchReadyPopup.count} PO{batchReadyPopup.count!==1?'s':''} queued · threshold ${batchReadyPopup.threshold}</div>
           </div>
-          <p style={{fontSize:13,color:'#475569',marginBottom:10}}>
-            The {batchReadyPopup.vendorName} batch queue is over the free-ship minimum and can be submitted. You can:
+          <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Batch contents · {batchReadyPopup.count} PO{batchReadyPopup.count!==1?'s':''}</div>
+          <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',marginBottom:12}}>
+            {batchReadyPopup.batchPOs.map((bp,bi)=>{
+              const bpTotal=(bp.items||[]).reduce((a,it)=>a+(it.qty||0)*(it.unit_cost||0),0);
+              return<div key={bp.id||bi} style={{borderTop:bi>0?'1px solid #f1f5f9':'none',background:bi%2?'#fafbfc':'white'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'#f8fafc',borderBottom:'1px solid #f1f5f9'}}>
+                  <div style={{fontSize:12,fontWeight:700}}>
+                    <span style={{fontFamily:'monospace',color:'#1e40af'}}>{bp.po_id||'(no PO#)'}</span>
+                    <span style={{color:'#64748b',marginLeft:8,fontWeight:500}}>· {bp.so_id} · {bp.customer||'—'}</span>
+                  </div>
+                  <div style={{fontSize:12,fontWeight:700,color:'#15803d'}}>${bpTotal.toFixed(2)}</div>
+                </div>
+                {(bp.items||[]).map((it,ii)=>{
+                  const szList=Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
+                  return<div key={ii} style={{padding:'8px 12px',borderTop:ii>0?'1px solid #f8fafc':'none'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:4}}>
+                      <div style={{fontSize:12,minWidth:0,flex:1}}>
+                        <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:6}}>{it.sku}</span>
+                        <span style={{fontWeight:600}}>{it.name}</span>
+                        {it.color&&<span style={{color:'#64748b'}}> — {it.color}</span>}
+                      </div>
+                      <div style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap',marginLeft:8}}>
+                        {it.qty} × ${(it.unit_cost||0).toFixed(2)} = <strong style={{color:'#0f172a'}}>${((it.qty||0)*(it.unit_cost||0)).toFixed(2)}</strong>
+                      </div>
+                    </div>
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                      {szList.map(([sz,v])=><span key={sz} style={{fontSize:10,padding:'2px 6px',background:'#e0e7ff',color:'#3730a3',borderRadius:3,fontWeight:700}}>{sz}:<span style={{color:'#1e40af'}}>{v}</span></span>)}
+                    </div>
+                  </div>;
+                })}
+              </div>;
+            })}
+          </div>
+          <p style={{fontSize:12,color:'#64748b',margin:0}}>
+            Review the items above — if anything is missing or wrong, close this popup and edit on the Batch POs page before submitting. Once you're satisfied, preview the SanMar API payload (dry-run) or go to the Batch POs page to submit manually.
           </p>
-          <ul style={{fontSize:12,color:'#475569',paddingLeft:18,marginBottom:0}}>
-            <li>Open the Batch POs page to assign the NSA-#### number and submit it (current manual flow).</li>
-            <li>Preview the SanMar API payload (dry-run) to verify what would be sent once live submit is enabled.</li>
-          </ul>
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setBatchReadyPopup(null)}>Continue working</button>
