@@ -18730,6 +18730,11 @@ export default function App(){
       const SKU_RE=/\b([A-Z]{1,4}\d{3,6}[A-Z]{0,3}|\d{3,6}[A-Z]{1,4})\b/;
       const SKU_RE_NUMERIC=/\b(\d{5,7})\b/;
       const SZ_RE=/\b(XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|6XL|MT|LT|XLT|OSFA)\b/i;
+      // Long-form size words used on Sports Inc / Augusta invoices. PDF text is often truncated to
+      // 5 chars in the SIZE column (e.g. "MEDIU" instead of "MEDIUM"), but the description line
+      // below typically has the full word — we search both.
+      const SZ_LONG_RE=/\b(EXTRA\s+LARGE|XXLARGE|XLARGE|MEDIUM|MEDIU|LARGE|SMALL|EXTRA)\b/i;
+      const SZ_LONG_MAP={'MEDIUM':'M','MEDIU':'M','LARGE':'L','SMALL':'S','EXTRA LARGE':'XL','EXTRA':'XL','XLARGE':'XL','XXLARGE':'2XL'};
       const NUM_SZ_RE=/\b(\d{1,2}(?:\.\d)?)\b/;
       const itemLines=[];
       const startIdx=itemSectionStart>=0?itemSectionStart:0;
@@ -18784,12 +18789,36 @@ export default function App(){
           }
           if(!sku)continue;
           const parts=line.split(/\t+/).map(p=>p.trim());
-          // Try named sizes first, then SIZE column, then numeric sizes, then empty
-          const sizeMatch=line.match(SZ_RE);
+          // Look at the SKU line + next 2 description lines together — Sports Inc/Augusta
+          // invoices truncate the size in the table to 5 chars ("MEDIU") but spell it out
+          // in full on the description line below.
+          const sizeSearchText=[line,lines[i+1]||'',lines[i+2]||''].join(' ');
           let size='';
-          if(sizeMatch){size=sizeMatch[1].toUpperCase()}
-          else if(colIdx.size!=null&&parts[colIdx.size]){size=parts[colIdx.size].trim().toUpperCase()}
-          else{const nm=line.match(NUM_SZ_RE);if(nm)size=nm[1]}
+          // 1) Long-form size words (handles "MEDIU"/"MEDIUM"/"LARGE"/"SMALL"/"EXTRA LARGE")
+          const longMatch=sizeSearchText.match(SZ_LONG_RE);
+          if(longMatch){
+            const key=longMatch[1].toUpperCase().replace(/\s+/g,' ');
+            size=SZ_LONG_MAP[key]||key;
+          }
+          // 2) Short-form size token on the SKU line itself (S, M, L, XL, 2XL, etc.)
+          if(!size){const sm=line.match(SZ_RE);if(sm)size=sm[1].toUpperCase()}
+          // 3) Explicit SIZE column from tab-delimited header
+          if(!size&&colIdx.size!=null&&parts[colIdx.size]){size=parts[colIdx.size].trim().toUpperCase()}
+          // 4) Numeric size fallback (shoes/youth) — but skip if the only numeric candidate is
+          // actually the quantity from the qty column; otherwise we'd grab qty as size.
+          if(!size){
+            const nm=line.match(NUM_SZ_RE);
+            if(nm){
+              const candidate=nm[1];
+              let isQty=false;
+              if(colIdx.qtyShipped!=null||colIdx.qtyOrdered!=null){
+                const qShip=(parts[colIdx.qtyShipped]||'').replace(/[$,]/g,'').trim();
+                const qOrd=(parts[colIdx.qtyOrdered]||'').replace(/[$,]/g,'').trim();
+                if(candidate===qShip||candidate===qOrd)isQty=true;
+              }
+              if(!isQty)size=candidate;
+            }
+          }
           // Detect half-size suffix (e.g. 10- means 10½) for numeric sizes
           if(/^\d{1,2}$/.test(size)){const hre=new RegExp('\\b'+size+'\\s*[-–](?!\\d)');if(hre.test(line))size+='-'}
           let qty=0,unitPrice=0,extension=0;
