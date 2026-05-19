@@ -18856,18 +18856,32 @@ export default function App(){
           if(qty<=0||extension<=0)continue;
           if(unitPrice>0&&Math.abs(qty*unitPrice-extension)>extension*0.05+0.10)continue;
           let desc='',color='';
-          for(let j=i+1;j<Math.min(i+3,endIdx);j++){
+          for(let j=i+1;j<Math.min(i+4,endIdx);j++){
             const nl=lines[j];
+            if(!nl)continue;
             if(SKU_RE.test(nl))break;
             if(/MERCHANDISE|FREIGHT|DOCUMENT|SI UPCHARGE|REPORT|SI STORE/i.test(nl))break;
             if(!desc&&nl.length>3&&!/^\d[\d\s]*\d$/.test(nl)&&!SKU_RE.test(nl)){
               desc=nl.replace(/\t+/g,' ').trim();
               desc=desc.replace(/^\d[\d ]{10,16}\d\s+/,'').trim();
-              const cm=desc.match(/\b(BLACK|WHITE|RED|BLUE|GREEN|NAVY|GREY|GRAY|MAROON|GOLD|ORANGE|PURPLE|YELLOW|SCARLET|ROYAL|PINK|BROWN|TAN|CREAM|ONIX|CARBON|POWER|TEAM|CUSTOM)\b.*?(\/\s*[A-Z]+)?/i);
-              if(cm)color=cm[0].trim();
+            }
+            // Color: prefer the text AFTER the size word on a description line (handles team
+            // colors like "VEGAS GOLD", "CARDINAL/WHITE" that aren't in a fixed list). Strip
+            // trailing vendor codes like "(BA)" / "(SI)" before capturing.
+            if(!color){
+              const cleaned=nl.replace(/\s*\([A-Z]{1,4}\)\s*$/,'').trim();
+              const afterSize=cleaned.match(/\b(?:EXTRA\s+LARGE|XXLARGE|XLARGE|MEDIUM|MEDIU|LARGE|SMALL|EXTRA|2XL|3XL|4XL|5XL|6XL|XXL|XL|XS|XXS|YXS|YS|YM|YL|YXL|MT|LT|XLT|[SML])\s+([A-Z][A-Z0-9/\- ]{2,40})\s*$/i);
+              if(afterSize){
+                const c=afterSize[1].trim();
+                if(c)color=c.toUpperCase().replace(/\s+/g,' ');
+              }
+            }
+            if(!color){
+              const cm=nl.match(/\b(BLACK|WHITE|RED|BLUE|GREEN|NAVY|GREY|GRAY|MAROON|GOLD|ORANGE|PURPLE|YELLOW|SCARLET|ROYAL|PINK|BROWN|TAN|CREAM|ONIX|CARBON|POWER|TEAM|CUSTOM|VEGAS|CARDINAL|FOREST|KELLY|COLUMBIA|CHARCOAL|BURGUNDY|SILVER|TEAL|HEATHER|GRAPHITE|VEGAS\s+GOLD|TEAM\s+GOLD)\b(?:\s*\/\s*[A-Z]+)?(?:\s+[A-Z]+)?/i);
+              if(cm)color=cm[0].trim().toUpperCase().replace(/\s+/g,' ');
             }
           }
-          if(itemLines.some(it=>it.sku===sku&&it.size===size&&it.qty===qty&&Math.abs(it.unit_price-unitPrice)<0.01&&Math.abs(it.extension-extension)<0.01&&it.desc===desc))continue;
+          if(itemLines.some(it=>it.sku===sku&&it.size===size&&it.qty===qty&&Math.abs(it.unit_price-unitPrice)<0.01&&Math.abs(it.extension-extension)<0.01&&it.desc===desc&&it.color===color))continue;
           itemLines.push({sku,size,qty,unit_price:unitPrice,extension,desc,color});
         }
       }
@@ -19186,17 +19200,33 @@ export default function App(){
       });
     };
 
-    // Pre-map bill lines to target items by SKU+size exact match. Returns {billIdx: {target_item_index, allocated_qty}}.
-    // When a SKU+size appears multiple times in target items (e.g. batch spanning multiple SOs), the
-    // first match wins and we mark the row "ambiguous" so the user can adjust the allocation.
+    // Pre-map bill lines to target items by SKU+size (and color, when present on both sides).
+    // Returns {billIdx: {target_idx, allocated_qty, ambiguous, candidate_indexes}}.
+    // - First tries SKU+size+color (exact, then substring on color since bills often have
+    //   variant color text like "VEGAS GOLD" vs catalog "Vegas Gold/White").
+    // - Falls back to SKU+size if no color hit; ambiguous when multiple targets remain.
     const _autoMapBillToTarget=(bill,target)=>{
       const mappings={};
       if(!target||!Array.isArray(target.items))return mappings;
+      const norm=s=>(s||'').toUpperCase().replace(/[^A-Z0-9/ ]/g,'').replace(/\s+/g,' ').trim();
       (bill.items||[]).forEach((bl,bi)=>{
         const sku=(bl.sku||'').toUpperCase();
         const size=(bl.size||'').toUpperCase();
-        const candidates=target.items.map((it,ti)=>({...it,_idx:ti})).filter(it=>(it.sku||'').toUpperCase()===sku&&(it.size||'').toUpperCase()===size);
-        if(candidates.length===0){mappings[bi]={skipped:true,reason:'no-match'};return}
+        const billColor=norm(bl.color);
+        const indexed=target.items.map((it,ti)=>({...it,_idx:ti}));
+        const sameSkuSize=indexed.filter(it=>(it.sku||'').toUpperCase()===sku&&(it.size||'').toUpperCase()===size);
+        if(sameSkuSize.length===0){mappings[bi]={skipped:true,reason:'no-match'};return}
+        let candidates=sameSkuSize;
+        // If we have a color on the bill AND on target items, narrow by color
+        if(billColor&&sameSkuSize.some(c=>c.color)){
+          const exact=sameSkuSize.filter(c=>norm(c.color)===billColor);
+          if(exact.length>0)candidates=exact;
+          else{
+            // Substring match either direction (handles "VEGAS GOLD" matching catalog "Vegas Gold/White")
+            const partial=sameSkuSize.filter(c=>{const cc=norm(c.color);return cc&&(cc.includes(billColor)||billColor.includes(cc))});
+            if(partial.length>0)candidates=partial;
+          }
+        }
         mappings[bi]={target_idx:candidates[0]._idx,allocated_qty:bl.qty,ambiguous:candidates.length>1,candidate_indexes:candidates.map(c=>c._idx)};
       });
       return mappings;
@@ -20600,7 +20630,7 @@ export default function App(){
                               const openQty=tgt?tgt.qty:0;
                               const over=tgt&&m.allocated_qty>openQty;
                               return<tr key={bli} style={{borderBottom:'1px solid #f1f5f9',background:m.skipped?'#fef9c3':(tgt?'#f0fdf4':'#fff')}}>
-                                <td style={{padding:'4px 8px',fontFamily:'monospace'}}>{bl.sku} <span style={{color:'#64748b'}}>{bl.size}</span> · {bl.qty} @ ${bl.unit_price.toFixed(2)}</td>
+                                <td style={{padding:'4px 8px',fontFamily:'monospace'}}>{bl.sku} <span style={{color:'#64748b'}}>{bl.size}</span>{bl.color?<span style={{color:'#475569'}}> · {bl.color}</span>:null} · {bl.qty} @ ${bl.unit_price.toFixed(2)}</td>
                                 <td style={{padding:'4px 8px'}}>
                                   <select className="form-input" style={{width:'100%',fontSize:10,padding:'2px 4px'}} value={m.skipped?'__skip':(m.target_idx!=null?String(m.target_idx):'')}
                                     onChange={e=>{const v=e.target.value;if(v==='__skip')setMap(bli,{skipped:true});else if(v==='')setMap(bli,{});else{const ti=parseInt(v);const it=target.items[ti];setMap(bli,{target_idx:ti,allocated_qty:bl.qty,ambiguous:false})}}}>
