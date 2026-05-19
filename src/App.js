@@ -18687,6 +18687,7 @@ export default function App(){
           else if(/\bNIKE\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Nike';
           else if(/\bPUMA\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Puma';
           else if(/\bNEW\s*BALANCE\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='New Balance';
+          else if(/\bAUGUSTA\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Momentec';
         }
         if(!bill.supplier&&/^SUPPLIER\b/i.test(line)){
           for(let j=li+1;j<Math.min(li+3,lines.length);j++){
@@ -18694,6 +18695,8 @@ export default function App(){
             if(nl.length>3&&!/^DEPT|^PH|^FX|^FAX|^\d|^SOLD|^SHIP/i.test(nl)){bill.supplier=nl;break}
           }
         }
+        // Supplier alias normalization (PDF supplier text → system vendor name)
+        if(bill.supplier&&/augusta/i.test(bill.supplier))bill.supplier='Momentec';
         // Document number
         {const m=line.match(/(?:SI\s+)?DOCUMENT\s+NUMBER[:\s]+(\d+)/i);if(m&&!bill.doc_number)bill.doc_number=m[1]}
         // Dates
@@ -18721,7 +18724,11 @@ export default function App(){
       }
 
       // ── PASS 2: Extract line items ONLY from item table section ──
-      const SKU_RE=/\b([A-Z]{1,4}\d{3,6})\b/;
+      // Match (a) letter-prefixed (e.g. VOG123), (b) digit-prefixed with letter suffix (e.g. 506CR, 567P).
+      // Pure-digit SKUs (e.g. 510000) are picked up by SKU_RE_NUMERIC as a fallback so we don't
+      // false-match qty/price digits or split barcode segments when a letter-bearing SKU exists.
+      const SKU_RE=/\b([A-Z]{1,4}\d{3,6}[A-Z]{0,3}|\d{3,6}[A-Z]{1,4})\b/;
+      const SKU_RE_NUMERIC=/\b(\d{5,7})\b/;
       const SZ_RE=/\b(XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|6XL|MT|LT|XLT|OSFA)\b/i;
       const NUM_SZ_RE=/\b(\d{1,2}(?:\.\d)?)\b/;
       const itemLines=[];
@@ -18746,7 +18753,16 @@ export default function App(){
         for(let i=startIdx;i<endIdx;i++){
           const line=lines[i];
           if(/^UPC\s*NUMBER|^SUPPLIER\s*ITEM|^QUANTITY|^UNIT|^LIST|^DISC|^NET|^EXTENSION|^SIZE|^COLOR/i.test(line))continue;
-          const skuMatch=line.match(SKU_RE);
+          // Skip lines that are purely a long barcode/UPC with no other content (avoids false matches)
+          if(/^\s*\d{10,}\s*$/.test(line))continue;
+          let skuMatch=line.match(SKU_RE);
+          // Numeric-only fallback for SKUs like "510000". Strip barcode segments that PDF
+          // extraction may have split with spaces (e.g. "8 86918 62306 3") so we don't
+          // grab one of those 5-digit chunks instead of the real item number.
+          if(!skuMatch){
+            const stripped=line.replace(/(?:\b\d{1,2}\s+)?(?:\d{4,6}\s+){1,3}\d{1,2}\b/g,' ');
+            skuMatch=stripped.match(SKU_RE_NUMERIC);
+          }
           if(!skuMatch)continue;
           const sku=skuMatch[1];
           const parts=line.split(/\t+/).map(p=>p.trim());
@@ -20322,8 +20338,11 @@ export default function App(){
                     <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.po_number}
                       onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:rematchBill({...p.parsed,po_number:e.target.value})}:p)}))}/>
                     <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Vendor</label>
-                    <input className="form-input" style={{width:120,fontSize:11,padding:'3px 6px'}} value={bill.vendor||bill.supplier}
+                    <input className="form-input" list={`vendor-options-${bi}`} style={{width:160,fontSize:11,padding:'3px 6px'}} value={bill.vendor||bill.supplier||''}
                       onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,vendor:e.target.value,supplier:e.target.value}}:p)}))}/>
+                    <datalist id={`vendor-options-${bi}`}>
+                      {vend.map(v=><option key={v.id} value={v.name}/>)}
+                    </datalist>
                     <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Tracking</label>
                     <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.tracking}
                       onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,tracking:e.target.value}}:p)}))}/>
