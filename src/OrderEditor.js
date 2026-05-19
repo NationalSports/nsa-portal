@@ -7878,6 +7878,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const decoCostTotal=isDecoPO?poItems.reduce((a,{po:p})=>a+safeNum(p._bill_cost||0),0):0;
       const decoShipTotal=isDecoPO?decoBillDetails.reduce((a,bd)=>a+safeNum(bd.freight||0),0):0;
       const decoGrand=decoCostTotal+decoShipTotal;
+      // Grand totals across every line on this PO (the original code summed only the active line,
+      // so multi-SKU POs displayed only the first line's units in the summary banner).
+      const NON_SZ_PO=['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type','notes'];
+      const allLineSz=poItems.map(({item:it,po:p})=>{
+        const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&!NON_SZ_PO.includes(k)&&typeof p[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+        const rcvd=p.received||{};const cncl=p.cancelled||{};const billed=p.billed||{};
+        const ordered=sk.reduce((a,sz)=>a+(p[sz]||0),0);
+        const received=sk.reduce((a,sz)=>a+(rcvd[sz]||0),0);
+        const cancelled=sk.reduce((a,sz)=>a+(cncl[sz]||0),0);
+        const billedT=sk.reduce((a,sz)=>a+(billed[sz]||0),0);
+        const open=sk.reduce((a,sz)=>a+Math.max(0,(p[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0)),0);
+        return{item:it,po:p,szKeys:sk,ordered,received,cancelled,billedT,open,getRcvd:sz=>rcvd[sz]||0,getCncl:sz=>cncl[sz]||0,getBilled:sz=>billed[sz]||0,getOpen:sz=>Math.max(0,(p[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0))};
+      });
+      const grandOrdered=allLineSz.reduce((a,x)=>a+x.ordered,0);
+      const grandReceived=allLineSz.reduce((a,x)=>a+x.received,0);
+      const grandCancelled=allLineSz.reduce((a,x)=>a+x.cancelled,0);
+      const grandBilled=allLineSz.reduce((a,x)=>a+x.billedT,0);
+      const grandOpen=allLineSz.reduce((a,x)=>a+x.open,0);
       return<div className="po-fullpage">
         <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
@@ -7908,10 +7926,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div><div style={{fontSize:11,opacity:0.7}}>Bills Applied</div><div style={{fontSize:24,fontWeight:800,color:'#4ade80'}}>{decoBillDetails.length}</div></div>
                 <div><div style={{fontSize:11,opacity:0.7}}>PO Total</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>${decoGrand.toFixed(2)}</div></div>
               </>:<>
-                <div><div style={{fontSize:11,opacity:0.7}}>Total Units</div><div style={{fontSize:24,fontWeight:800}}>{totalOrdered}</div></div>
-                {isDropShipFP?<div><div style={{fontSize:11,opacity:0.7}}>Billed</div><div style={{fontSize:24,fontWeight:800,color:totalBilledFP>=totalOrdered?'#4ade80':'#fbbf24'}}>{totalBilledFP}</div></div>
-                :<div><div style={{fontSize:11,opacity:0.7}}>Received</div><div style={{fontSize:24,fontWeight:800,color:'#4ade80'}}>{totalReceived}</div></div>}
-                {!isDropShipFP&&<div><div style={{fontSize:11,opacity:0.7}}>Open</div><div style={{fontSize:24,fontWeight:800,color:totalOpen>0?'#fbbf24':'#4ade80'}}>{totalOpen}</div></div>}
+                <div><div style={{fontSize:11,opacity:0.7}}>Total Units</div><div style={{fontSize:24,fontWeight:800}}>{grandOrdered}</div></div>
+                {isDropShipFP?<div><div style={{fontSize:11,opacity:0.7}}>Billed</div><div style={{fontSize:24,fontWeight:800,color:grandBilled>=grandOrdered?'#4ade80':'#fbbf24'}}>{grandBilled}</div></div>
+                :<div><div style={{fontSize:11,opacity:0.7}}>Received</div><div style={{fontSize:24,fontWeight:800,color:'#4ade80'}}>{grandReceived}</div></div>}
+                {!isDropShipFP&&<div><div style={{fontSize:11,opacity:0.7}}>Open</div><div style={{fontSize:24,fontWeight:800,color:grandOpen>0?'#fbbf24':'#4ade80'}}>{grandOpen}</div></div>}
                 <div><div style={{fontSize:11,opacity:0.7}}>Unit Cost</div><div style={{fontSize:24,fontWeight:800}}>${unitCost.toFixed(2)}</div></div>
                 <div><div style={{fontSize:11,opacity:0.7}}>PO Total</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>${grandTotal.toFixed(2)}</div></div>
               </>}
@@ -7945,7 +7963,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     </tr>})}
                   <tr style={{borderTop:'2px solid #0f172a',fontWeight:800}}>
                     <td colSpan={3} style={{padding:'6px 8px',textAlign:'right'}}>Grand Total</td>
-                    <td style={{padding:'6px 8px',textAlign:'center'}}>{totalOrdered}</td>
+                    <td style={{padding:'6px 8px',textAlign:'center'}}>{grandOrdered}</td>
                     <td></td>
                     <td style={{padding:'6px 8px',textAlign:'right',fontSize:16,color:'#166534'}}>${grandTotal.toFixed(2)}</td>
                   </tr>
@@ -7954,20 +7972,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
           </div>}
 
-          {/* Size Breakdown — hidden for decoration POs */}
+          {/* Size Breakdown — one table per line item (multi-SKU/color POs need each item's own grid) */}
           {!isDecoPO&&<div className="card" style={{marginBottom:16}}>
             <div className="card-header"><h2>Size Breakdown</h2></div>
             <div className="card-body">
-              <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
-                <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th></tr></thead>
-                <tbody>
-                  <tr><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Ordered</td>{szKeys.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700}}>{po[sz]||0}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalOrdered}</td></tr>
-                  {isDropShipFP?<tr style={{color:'#1e40af'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Billed</td>{szKeys.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:((po.billed||{})[sz]||0)>0?'#1e40af':'#d1d5db'}}>{(po.billed||{})[sz]||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalBilledFP}</td></tr>
-                  :<tr style={{color:'#166534'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Received</td>{szKeys.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalReceived}</td></tr>}
-                  {totalCancelled>0&&<tr style={{color:'#dc2626'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Cancelled</td>{szKeys.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:getCncl(sz)>0?'#dc2626':'#d1d5db'}}>{getCncl(sz)||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalCancelled}</td></tr>}
-                  {totalOpen>0&&!isDropShipFP&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Open</td>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalOpen}</td></tr>}
-                </tbody>
-              </table>
+              {allLineSz.map((x,xi)=>{
+                const allSz=x.szKeys;
+                return<div key={xi} style={{marginBottom:xi<allLineSz.length-1?14:0}}>
+                  {allLineSz.length>1&&<div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6,flexWrap:'wrap'}}>
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{x.item.sku}</span>
+                    <span style={{fontWeight:600,fontSize:13}}>{x.item.name}</span>
+                    {x.item.color&&<span className="badge badge-gray">{x.item.color}</span>}
+                    <span style={{marginLeft:'auto',fontSize:11,color:'#64748b'}}>{x.ordered} ordered{!isDropShipFP?' · '+x.received+' rcvd · '+x.open+' open':' · '+x.billedT+' billed'}</span>
+                  </div>}
+                  <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+                    <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{allSz.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th></tr></thead>
+                    <tbody>
+                      <tr><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Ordered</td>{allSz.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700}}>{x.po[sz]||0}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{x.ordered}</td></tr>
+                      {isDropShipFP?<tr style={{color:'#1e40af'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Billed</td>{allSz.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:x.getBilled(sz)>0?'#1e40af':'#d1d5db'}}>{x.getBilled(sz)||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{x.billedT}</td></tr>
+                      :<tr style={{color:'#166534'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Received</td>{allSz.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:x.getRcvd(sz)>0?'#166534':'#d1d5db'}}>{x.getRcvd(sz)||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{x.received}</td></tr>}
+                      {x.cancelled>0&&<tr style={{color:'#dc2626'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Cancelled</td>{allSz.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:x.getCncl(sz)>0?'#dc2626':'#d1d5db'}}>{x.getCncl(sz)||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{x.cancelled}</td></tr>}
+                      {x.open>0&&!isDropShipFP&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Open</td>{allSz.map(sz=>{const op=x.getOpen(sz);return<td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{x.open}</td></tr>}
+                    </tbody>
+                  </table>
+                </div>;
+              })}
             </div>
           </div>}
 
@@ -8010,7 +8039,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const NON_SZ=['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type','notes'];
             const allShipments=[];
             (allLines||[{lineIdx:0}]).forEach(ln=>{
-              const it=soItems?.[ln.lineIdx];if(!it)return;
+              const it=o.items?.[ln.lineIdx];if(!it)return;
               const pl=it.po_lines?.find(p=>p.po_id===po.po_id);if(!pl)return;
               const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&!NON_SZ.includes(k)&&typeof pl[k]==='number');
               (pl.shipments||[]).forEach((sh,si)=>{
