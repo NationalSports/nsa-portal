@@ -4759,15 +4759,21 @@ export default function App(){
   function rDash(){
     // Unread messages for this user — person-specific filtering
     const allUnread=(msgs||[]).filter(m=>!(m.read_by||[]).includes(cu?.id));
-    // Filter messages to person's scope: tagged directly, from their dept, or for their rep's customers
+    const _isAdminRole=cu?.role==='admin'||cu?.role==='super_admin'||cu?.role==='gm';
+    // Filter messages to person's scope: tagged directly, authored, or for their rep's customers.
+    // Admins default to "mine" (matching adminRepFilter); switch the filter to "all" or a specific rep to expand.
     const isMyMsg=(m)=>{
       if((m.tagged_members||[]).includes(cu?.id))return true;// directly tagged
       if(m.author_id===cu?.id)return true;// own messages
-      if(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return true;
       const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);
-      if(!so)return cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
-      const c=cust.find(x=>x.id===so.customer_id);
-      const msgRepId=c?.primary_rep_id||so.created_by;
+      const c=so?cust.find(x=>x.id===so.customer_id):null;
+      const msgRepId=c?.primary_rep_id||so?.created_by||null;
+      if(_isAdminRole){
+        if(adminRepFilter==='all')return true;
+        const targetId=adminRepFilter==='me'?cu.id:adminRepFilter;
+        return msgRepId===targetId;
+      }
+      if(!so)return false;
       if(cu.role==='rep')return msgRepId===cu.id;
       if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(msgRepId)}
       return true;
@@ -4990,7 +4996,10 @@ export default function App(){
             </div>)}
           </div>)})()}
         </div></div>
-      <div className="card"><div className="card-header"><h2>💬 Unread ({unreadMsgs.length}){unreadMentions.length>0&&<span style={{fontSize:12,color:'#d97706',fontWeight:600,marginLeft:8}}>({unreadMentions.length} mention{unreadMentions.length!==1?'s':''})</span>}</h2></div>
+      <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>💬 Unread ({unreadMsgs.length}){unreadMentions.length>0&&<span style={{fontSize:12,color:'#d97706',fontWeight:600,marginLeft:8}}>({unreadMentions.length} mention{unreadMentions.length!==1?'s':''})</span>}</h2>
+        {isAdmin&&<select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+          <option value="me">My Items</option><option value="all">All Reps</option>{REPS.filter(r=>r.id!==cu.id&&(r.role==='rep'||r.role==='admin'||r.role==='gm')).map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}
+        </select>}</div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {myUnread.length===0?<div className="empty" style={{padding:20}}>No unread messages</div>:
           myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);
