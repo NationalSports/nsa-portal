@@ -629,6 +629,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
   };
   const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);const[poEmail,setPoEmail]=useState(null);
+  // Shown after a PO partial/full receive — summary modal with Print/Download label actions for the box that was just received.
+  const[receivedConfirm,setReceivedConfirm]=useState(null);
   // Open the IF (pick) modal aggregating ALL line items that share the same pick_id.
   // Falls back to single-line edit when no pick_id is set (legacy/unsaved picks).
   const openPickModal=(pickId,fallbackLineIdx,fallbackPickIdx)=>{
@@ -7146,6 +7148,39 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div></>}
       </div></div>})()}
 
+    {/* RECEIVED CONFIRMATION MODAL — pops up after a PO partial/full receive with Print + Download label buttons */}
+    {receivedConfirm&&(()=>{
+      const rc=receivedConfirm;
+      const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(rc.poId);
+      const buildLines=()=>{const lines=[];if(rc.custName)lines.push({text:rc.custName,cls:'team'});lines.push({text:rc.soId,cls:'so'});lines.push({text:'RECEIVED — '+rc.date,cls:'sub',style:'color:#166534;font-weight:800;'});rc.items.forEach(it=>{lines.push({text:(it.sku||'')+' '+(it.name||''),cls:'sku'});lines.push({text:(it.color||'')+' — '+it.qty+' units'});lines.push({text:Object.entries(it.sizes).map(([sz,v])=>sz+': '+v).join(' &nbsp; '),cls:'sz'})});if(rc.items.length>1)lines.push({text:'TOTAL: '+rc.totalQty+' units',cls:'sz'});return lines};
+      return<div className="modal-overlay" onClick={()=>setReceivedConfirm(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+        <div className="modal-header"><h2>📦 Received — {rc.poId}</h2>
+          <button className="modal-close" onClick={()=>setReceivedConfirm(null)}>x</button></div>
+        <div className="modal-body">
+          <div style={{padding:'10px 12px',marginBottom:12,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,fontSize:12,color:'#166534'}}>
+            Shipment received on <strong>{rc.poId}</strong> · {rc.date} · <strong>{rc.totalQty}</strong> unit{rc.totalQty===1?'':'s'} across {rc.items.length} item{rc.items.length===1?'':'s'}
+          </div>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>What was just received</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:12}}>
+            {rc.items.map((it,i)=><div key={i} style={{padding:'8px 10px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{it.sku}</span>
+                <span style={{fontWeight:600,fontSize:12}}>{it.name}</span>
+                {it.color&&<span className="badge badge-gray">{it.color}</span>}
+                <span style={{marginLeft:'auto',fontWeight:800,fontSize:13,color:'#166534'}}>{it.qty} units</span>
+              </div>
+              <div style={{marginTop:4,fontFamily:'monospace',fontSize:11,color:'#475569'}}>{Object.entries(it.sizes).map(([sz,v])=>sz+':'+v).join('  ')}</div>
+            </div>)}
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={()=>setReceivedConfirm(null)}>Close</button>
+          <button className="btn btn-secondary" onClick={()=>printQrLabel({id:rc.poId,qrData,shipBadge:null,lines:buildLines()})}>🖨️ Print Label (4×6)</button>
+          <button className="btn btn-primary" onClick={async()=>{try{await downloadQrLabel({id:rc.poId,qrData,shipBadge:null,lines:buildLines()});nf('Label downloaded')}catch(err){nf('Download failed: '+err.message,'error')}}}>⬇️ Download (PDF)</button>
+        </div>
+      </div></div>;
+    })()}
+
     {/* EDIT PICK MODAL — shows every item that shares the pick_id, since one IF can span multiple line items */}
     {editPick&&(()=>{
       const picks=editPick.picks||[];
@@ -7534,7 +7569,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               setO(updated);onSave(updated);
               const activeLnUpdate=updates.find(u=>u.ln.lineIdx===activeLine.lineIdx&&u.ln.poIdx===activeLine.poIdx);
               setEditPO({...editPO,po:activeLnUpdate?activeLnUpdate.updatedPO:editPO.po,_selectedRecvLines:[]});
-              nf('Shipment received on '+po.po_id+(recvLines.length>1?' ('+recvLines.length+' items)':''));
+              // Capture received items for the confirmation modal so the user can print/download a box label.
+              const rcItems=updates.map(({ln,updatedPO})=>{const it=o.items[ln.lineIdx]||{};const rsk=Object.keys(updatedPO).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof updatedPO[k]==='number');const lastShip=updatedPO.shipments[updatedPO.shipments.length-1]||{};const sizes={};rsk.forEach(sz=>{if(lastShip[sz]>0)sizes[sz]=lastShip[sz]});return{sku:it.sku||'',name:it.name||'',color:it.color||'',sizes,qty:Object.values(sizes).reduce((a,v)=>a+v,0)}}).filter(x=>x.qty>0);
+              const rcTotal=rcItems.reduce((a,x)=>a+x.qty,0);
+              setReceivedConfirm({poId:po.po_id,soId:o.id,date,custName:cust?.name||'',items:rcItems,totalQty:rcTotal});
             }}>✓ Receive These Items</button>
             </>}
             {recvLines.length===0&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Select items above to receive</div>}
@@ -8068,7 +8106,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 setO(updated);onSave(updated);
                 const firstUpdate=updates[0];
                 setPoFullPage({...poFullPage,po:firstUpdate?firstUpdate.updatedPO:po,_selectedFpRecvLines:[]});
-                nf('Shipment received on '+po.po_id+(fpRecvLines.length>1?' ('+fpRecvLines.length+' items)':''));
+                const rcItems=updates.map(({ln,updatedPO})=>{const it=o.items[ln.lineIdx]||{};const rsk=Object.keys(updatedPO).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof updatedPO[k]==='number');const lastShip=updatedPO.shipments[updatedPO.shipments.length-1]||{};const sizes={};rsk.forEach(sz=>{if(lastShip[sz]>0)sizes[sz]=lastShip[sz]});return{sku:it.sku||'',name:it.name||'',color:it.color||'',sizes,qty:Object.values(sizes).reduce((a,v)=>a+v,0)}}).filter(x=>x.qty>0);
+                const rcTotal=rcItems.reduce((a,x)=>a+x.qty,0);
+                setReceivedConfirm({poId:po.po_id,soId:o.id,date,custName:cust?.name||'',items:rcItems,totalQty:rcTotal});
               }}>Receive These Items</button>
               </>}
               {fpRecvLines.length===0&&allFpRecvLines.length>1&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Select items above to receive</div>}
