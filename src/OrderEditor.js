@@ -409,7 +409,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         try{
           console.log('[SanMar] Trying PromoStandards inventory for',sku);
           const promoData=await sanmarGetPromoInventory(sku);
-          console.log('[SanMar] PromoStandards response keys:',Object.keys(promoData||{}),'full:',JSON.stringify(promoData).slice(0,800));
+          // Full response dump for diagnostic — past versions kept truncating this
+          // to 800 chars and we never saw what the parser was missing.
+          console.log('[SanMar] PromoStandards response keys:',Object.keys(promoData||{}),'full:',JSON.stringify(promoData));
           // PromoStandards returns inventory in various nested structures
           const invArr=promoData?.ProductVariationInventoryArray?.ProductVariationInventory
             ||promoData?.productVariationInventoryArray?.productVariationInventory
@@ -418,6 +420,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Also check for direct array of items
             ||promoData?.items||promoData?.Inventory||promoData?.inventory||[];
           const variations=Array.isArray(invArr)?invArr:[invArr];
+          console.log('[SanMar] PromoStandards parsed',variations.length,'variations from',Object.keys(promoData||{}).join(','));
           variations.forEach(v=>{
             const sz=normSzName(v?.attributeSize||v?.size||v?.labelSize||'OSFA');
             const color=v?.attributeColor||v?.color||'';
@@ -441,7 +444,41 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(qty>0){sizeQty[sz]=(sizeQty[sz]||0)+qty;invSuccess=true}
           });
         }catch(e){console.warn('[SanMar] PromoStandards inventory error:',e.message)}
-        // Fallback: legacy getInventoryQtyForStyleColorSize
+        // Fallback A: legacy getInventoryQtyForStyleColorSize, called per-size.
+        // Calling once without a size returns SanMar's aggregate (single row, no
+        // per-size breakdown), so we end up with no per-size data. Iterating the
+        // item's known sizes makes the result deterministic regardless of how the
+        // legacy SOAP groups things.
+        if(!invSuccess){
+          const knownSizes=Object.keys(item?.sizes||{}).filter(s=>s);
+          // If item.sizes is empty (e.g. just-added with no qtys), fall back to a
+          // standard SanMar size set so the badges have something to populate.
+          const sizesToTry=knownSizes.length>0?knownSizes:['XS','S','M','L','XL','2XL','3XL','4XL'];
+          console.log('[SanMar] Per-size legacy fallback for',sku,'sizes:',sizesToTry.join(','),'color:',prodColor||'(any)');
+          // Try the item's color first; if every size comes back empty, retry with no color filter.
+          for(const tryColor of [prodColor,'']){
+            const before=Object.keys(sizeQty).length;
+            await Promise.all(sizesToTry.map(async sz=>{
+              try{
+                const invData=await sanmarGetInventory(sku,tryColor,sz);
+                const it0=(invData?.items||[])[0]||invData;
+                if(!it0||it0.errorOccurred==='true'||it0.errorOccured==='true')return;
+                let qty=parseInt(it0.totalQty||it0.qty||it0.quantity||0)||0;
+                if(qty<=0&&it0.warehouseInfo){
+                  const details=it0.warehouseInfo.inventoryDetail||it0.warehouseInfo;
+                  const arr=Array.isArray(details)?details:[details];
+                  arr.forEach(d=>{if(d&&d.quantity)qty+=parseInt(d.quantity)||0});
+                }
+                if(qty>0){sizeQty[normSzName(sz)]=(sizeQty[normSzName(sz)]||0)+qty;invSuccess=true}
+              }catch(e){console.warn('[SanMar] Per-size inventory error',sku,sz,e.message)}
+            }));
+            // If this color pass picked up any new sizes, stop here — don't double-count.
+            if(Object.keys(sizeQty).length>before)break;
+          }
+        }
+        // Fallback B: original aggregate call. Kept as a last resort in case
+        // per-size calls all fail (e.g. for OSFA-only items where the size keys
+        // don't match SanMar's catalog spelling). This is the legacy behavior.
         if(!invSuccess){
           for(const tryColor of [prodColor,'']){
             if(invSuccess)break;
@@ -1126,7 +1163,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};const vNextBySize={};
     color.sizes.forEach(s=>{
-      vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;
+      // Skip qty=0 — see comment at the other call sites: live-search aggregate
+      // inventory often reports 0 for sizes that actually have stock, and seeding
+      // 0s here makes every size badge render "0 sm" until a manual refresh.
+      if(s.qty>0)vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;
       if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail;
     });
     const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
@@ -1187,7 +1227,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};const vNextBySize={};
-    color.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
+    // Only cache sizes with a real inventory hit. SanMar/S&S live-search rows often
+    // come back with qty=0 because the search-time inventory fetch is a single
+    // aggregate call (not per-size); seeding those 0s into the cache makes every
+    // size badge render "0 sm" forever until a per-size refresh happens.
+    color.sizes.forEach(s=>{if(s.qty>0)vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
     const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
     const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
     // Clone source item to preserve decorations, then override SKU/product fields
@@ -1254,7 +1298,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};const vNextBySize={};
-    color.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
+    // Only cache sizes with a real inventory hit. SanMar/S&S live-search rows often
+    // come back with qty=0 because the search-time inventory fetch is a single
+    // aggregate call (not per-size); seeding those 0s into the cache makes every
+    // size badge render "0 sm" forever until a per-size refresh happens.
+    color.sizes.forEach(s=>{if(s.qty>0)vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
     const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
     const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
     const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
