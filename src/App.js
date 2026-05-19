@@ -13393,6 +13393,17 @@ export default function App(){
                       // Atomic per-line DB updates for cross-tab sync
                       pickItems.forEach(pi=>{if(!pi.activePick)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const pq={};pi.szKeys.forEach(sz=>{pq[sz]=qtysForItem[sz]||0});_dbUpdatePickLineStatus(t.soId,pi.itemIdx,pi.activePick.pick_id,'pulled',pq)});
                       pickItems.forEach(pi=>{const qtysForItem=pullQtys[pi.itemIdx]||{};const pulledSizes=pi.szKeys.filter(sz=>(qtysForItem[sz]||0)>0).map(sz=>sz+':'+qtysForItem[sz]).join(' ');const qty=pi.szKeys.reduce((a,sz)=>a+(qtysForItem[sz]||0),0);if(qty>0)addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:pi.sku,name:pi.name,color:pi.color,productId:pi.p?.id||pi.item.product_id,sizes:pulledSizes,qty,by:cu?.id||'warehouse'})});
+                      // Auto-print 4x6 label for the box that was just pulled (only the items+sizes pulled this round)
+                      try{
+                        const pulledItemsForLabel=pickItems.map(pi=>({pi,qtys:pullQtys[pi.itemIdx]||{}})).filter(x=>Object.values(x.qtys).some(v=>v>0));
+                        if(pulledItemsForLabel.length>0){
+                          const labelShipBadge=shipDest==='in_house'?null:{text:(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'')),color:shipDest==='ship_customer'?'#3b82f6':'#d97706',bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'};
+                          const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});lines.push({text:t.soId,cls:'so'});lines.push({text:'PULLED — '+new Date().toLocaleDateString(),cls:'sub',style:'color:#166534;font-weight:800;'});
+                          pulledItemsForLabel.forEach(({pi,qtys})=>{const szList=pi.szKeys.filter(sz=>(qtys[sz]||0)>0);const qty=szList.reduce((a,sz)=>a+(qtys[sz]||0),0);lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+qty+' units'});lines.push({text:szList.map(sz=>sz+': '+qtys[sz]).join(' &nbsp; '),cls:'sz'})});
+                          if(pulledItemsForLabel.length>1)lines.push({text:'TOTAL: '+totPulling2+' units',cls:'sz'});
+                          printQrLabel({id:pickIdToUse,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickIdToUse),shipBadge:labelShipBadge,lines});
+                        }
+                      }catch(e){/* label print is best-effort */}
                       nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totPulling2+' units');setWhPulling(false);setWhViewIF(null);
                     }}>{whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPulling2+' units)':isPartial?'✓ Mark Partial Pull ('+totPulling2+' of '+grandNeed+')':'✓ Mark as Pulled')}</button>
                     {!isFull&&<button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
@@ -13897,6 +13908,9 @@ export default function App(){
                   setWhReceiving(true);
                   const date=document.getElementById('wh-recv-date')?.value||new Date().toISOString().split('T')[0];
                   let anyReceived=false;let totalQtyReceived=0;
+                  // Capture what was JUST received per item so the auto-printed label reflects the contents
+                  // of the box that was just put away — not the entire PO.
+                  const justReceived=[];
 
                   // --- SO PO Lines: group by SO to avoid overwrite race ---
                   if(soPOLines.length>0){
@@ -13912,13 +13926,16 @@ export default function App(){
                         const po=updItems[pl.itemIdx]?.po_lines?.[pl.poLineIdx];if(!po)return;
                         const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof po[k]==='number');
                         const shipment={date};const newReceived={...(po.received||{})};
+                        const rcvSizes={};
                         szKeys.forEach(sz=>{
                           const open=Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0));
                           if(open<=0)return;
                           const qty=getRcvQty(pl.displayIdx,sz,open);
-                          if(qty>0){newReceived[sz]=(newReceived[sz]||0)+qty;shipment[sz]=qty;anyReceived=true;totalQtyReceived+=qty}
+                          if(qty>0){newReceived[sz]=(newReceived[sz]||0)+qty;shipment[sz]=qty;rcvSizes[sz]=qty;anyReceived=true;totalQtyReceived+=qty}
                         });
                         if(Object.keys(shipment).length<=1)return;
+                        const lineItem=updItems[pl.itemIdx]||{};
+                        justReceived.push({sku:lineItem.sku||pl.sku||'',name:lineItem.name||pl.name||'',color:lineItem.color||pl.color||'',sizes:rcvSizes,soId:pl.soId||'',customer:pl.customer||''});
                         const newShipments=[...(po.shipments||[]),shipment];
                         const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-((po.cancelled||{})[sz]||0)),0);
                         const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
@@ -13954,13 +13971,15 @@ export default function App(){
                   // --- Inventory POs ---
                   if(invMatch){
                     const updInvItems=invMatch.items.map((it,ii)=>{
-                      const newRcvd={...(it.received||{})};
+                      const newRcvd={...(it.received||{})};const rcvSizes={};
                       Object.keys(it.sizes).forEach(sz=>{
                         const open=Math.max(0,(it.sizes[sz]||0)-((it.received||{})[sz]||0));
                         if(open<=0)return;
                         const qty=getRcvQty(ii,sz,open);
-                        if(qty>0){newRcvd[sz]=(newRcvd[sz]||0)+qty;anyReceived=true;totalQtyReceived+=qty}
-                      });return{...it,received:newRcvd};
+                        if(qty>0){newRcvd[sz]=(newRcvd[sz]||0)+qty;rcvSizes[sz]=qty;anyReceived=true;totalQtyReceived+=qty}
+                      });
+                      if(Object.keys(rcvSizes).length>0)justReceived.push({sku:it.sku||'',name:it.name||'',color:it.color||'',sizes:rcvSizes,soId:'',customer:''});
+                      return{...it,received:newRcvd};
                     });
                     const allDone=updInvItems.every(it=>Object.keys(it.sizes).every(sz=>((it.received||{})[sz]||0)>=(it.sizes[sz]||0)));
                     setInvPOs(prev=>prev.map(p=>p.po_number===invMatch.po_number?{...p,items:updInvItems,status:allDone?'received':'partial',
@@ -14009,10 +14028,11 @@ export default function App(){
                         w.document.write('<div style="text-align:center;font-size:14px;font-weight:700;color:#22c55e;margin-bottom:6px">RECEIVED — '+new Date().toLocaleDateString()+'</div>');
                         if(vendorName)w.document.write('<div style="text-align:center;font-size:12px;color:#666;margin-bottom:6px">'+vendorName+'</div>');
                         w.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
-                        poItems.forEach(it=>{const szStr=it.szKeys.map(sz=>sz+':'+(it.ordered[sz]||0)).join(' ');const qty=it.szKeys.reduce((a,sz)=>a+(it.ordered[sz]||0),0);
+                        // Show what was JUST received in this box, not the whole PO
+                        (justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered}))).forEach(it=>{const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
                           w.document.write('<tr><td style="font-weight:700">'+it.sku+'</td><td>'+it.name+'</td><td>'+(it.color||'—')+'</td><td style="font-size:10px;font-weight:700">'+szStr+'</td><td style="font-weight:700">'+qty+'</td></tr>')});
                         w.document.write('</tbody></table>');
-                        w.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">TOTAL: '+totalQtyReceived+' units</div>');
+                        w.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">RECEIVED THIS BOX: '+totalQtyReceived+' units</div>');
                         w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Scan QR to open this PO</div>');
                         w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),400);
                       }
