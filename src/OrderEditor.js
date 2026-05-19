@@ -965,8 +965,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(skSize){const c=style.colors[skColor];if(!c.sizes.find(s=>s.sizeName===skSize)){c.sizes.push({sizeName:skSize,qty:0,price:skPrice})}}
             if(skPrice>0&&(style._mtPrice===0||skPrice<style._mtPrice))style._mtPrice=skPrice;
           }
-          // Cleanup internal marker so it doesn't leak into UI state
-          Object.values(style.colors).forEach(c=>{delete c._basePriceFromBaseSize});
+          // Normalize base-size per-size prices to the color's locked base price.
+          // Momentec sometimes omits Offer pricing on individual base-size SKUs, causing
+          // getOfferPrice to fall back to display*0.5 (a guess) — that produces phantom
+          // upcharges on S/M/L/XL that contradict the customerPrice shown in search.
+          // Upcharge sizes (2XL+) keep their per-SKU price.
+          Object.values(style.colors).forEach(c=>{
+            if(c.customerPrice>0){
+              c.sizes.forEach(s=>{
+                if(s.sizeName&&BASE_SIZES.has(s.sizeName.toUpperCase()))s.price=c.customerPrice;
+              });
+            }
+            delete c._basePriceFromBaseSize;
+          });
         }
         // If no child SKUs found, add single color from attributes or default
         if(!Object.keys(style.colors).length){
