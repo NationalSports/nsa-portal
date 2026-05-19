@@ -691,7 +691,16 @@ const _dbSaveEstimateInner = async (est) => {
       else console.warn('[DB] estimate saved with core columns only')
     }
     // Delete old children — must delete grandchildren (decorations) BEFORE estimate_items due to FK constraints
-    const oldItemIds=(await supabase.from('estimate_items').select('id').eq('estimate_id',est.id)).data?.map(i=>i.id)||[];
+    const _oldEstResp=await supabase.from('estimate_items').select('id,item_index,sku').eq('estimate_id',est.id);
+    // Fail-closed: if reading existing items errored, refuse to proceed. Otherwise oldItemIds=[] would fail-open
+    // and the unconditional `DELETE FROM estimate_items WHERE estimate_id=...` below would wipe whatever was there.
+    if(_oldEstResp.error){
+      console.error('[DB] SAFETY: Blocking estimate save — failed to read existing items for',est.id,':',_oldEstResp.error.message);
+      if(_dbNotify)_dbNotify('Save blocked — could not verify existing items. Please reload the page.','error');
+      return false;
+    }
+    const _oldEstItems=_oldEstResp.data||[];
+    const oldItemIds=_oldEstItems.map(i=>i.id);
     // Safety check: if client has 0 items but DB has some, abort to prevent data loss
     if((!items||items.length===0)&&oldItemIds.length>0){
       console.error('[DB] SAFETY: Blocking estimate save — client has 0 items but DB has',oldItemIds.length,'for',est.id);
@@ -704,6 +713,23 @@ const _dbSaveEstimateInner = async (est) => {
     if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length){
       const{count:dbDecoCount}=await supabase.from('estimate_item_decorations').select('id',{count:'exact',head:true}).in('estimate_item_id',oldItemIds);
       if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking estimate save — client has 0 decorations but DB has',dbDecoCount,'for',est.id);if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');return false}
+    }
+    // Per-item safety: block save if any single item would lose all its decorations.
+    // Catches the partial-loss case the all-zero check above misses (one item drops decos while others retain them).
+    if(oldItemIds.length&&items?.length){
+      const{data:_oldDecoRows}=await supabase.from('estimate_item_decorations').select('estimate_item_id').in('estimate_item_id',oldItemIds);
+      const _oldDecoByItem=new Map();(_oldDecoRows||[]).forEach(d=>_oldDecoByItem.set(d.estimate_item_id,(_oldDecoByItem.get(d.estimate_item_id)||0)+1));
+      for(const oi of _oldEstItems){
+        const oldN=_oldDecoByItem.get(oi.id)||0;if(oldN===0)continue;
+        const ci=items[oi.item_index];if(!ci)continue;// item removed by user — allowed
+        if(ci.no_deco)continue;
+        if((ci.decorations?.length||0)===0){
+          const label=ci.sku||oi.sku||('item '+oi.item_index);
+          console.error('[DB] SAFETY: Blocking estimate save — '+label+' had',oldN,'decoration(s) in DB but client has 0');
+          if(_dbNotify)_dbNotify('Save blocked — decoration data for '+label+' would be lost. Please reload the page.','error');
+          return false;
+        }
+      }
     }
     if(oldItemIds.length){
       await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',oldItemIds);
@@ -769,6 +795,14 @@ const _dbSaveEstimateInner = async (est) => {
           if(coreErr){decoFailed=true;_failMsg='estimate_item_decorations: '+coreErr.message+(coreErr.details?' ('+coreErr.details+')':'');console.error('[DB] estimate_item_decorations batch failed:',coreErr.message)}
           else console.warn('[DB] estimate decos saved with core columns only')
         }
+        // Post-insert verification: count rows actually persisted; if fewer than expected, mark failed so we retry rather than accept a partial save as canonical.
+        if(!decoFailed){
+          const{count:_verifyCount}=await supabase.from('estimate_item_decorations').select('id',{count:'exact',head:true}).in('estimate_item_id',insertedItems.map(i=>i.id));
+          if((_verifyCount||0)<allDecoRows.length){
+            decoFailed=true;_failMsg=_failMsg||('estimate_item_decorations: only '+(_verifyCount||0)+' of '+allDecoRows.length+' rows persisted');
+            console.error('[DB] SAFETY: estimate deco insert verification failed — expected',allDecoRows.length,'got',_verifyCount);
+          }
+        }
       }
     }
     if(decoFailed){_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,_failMsg||'unknown estimate save error');_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete: '+(_failMsg||'see console'),'error');return false}
@@ -800,17 +834,18 @@ const _dbSaveSOInner = async (so) => {
       else console.warn('[DB] SO saved with core columns only')
     }
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
-    const _oldItemsResp=await supabase.from('so_items').select('id').eq('so_id',so.id);
-    // Fail-closed: if we can't read the current items, refuse to proceed when the client has 0 items.
-    // Without this, a SELECT error returns oldItemIds=[] and the safety check below would fail-open,
-    // letting the subsequent DELETE wipe everything for this SO.
-    if((!items||items.length===0)&&_oldItemsResp.error){
-      console.error('[DB] SAFETY: Blocking SO save — failed to read existing items for',so.id,'and client has none:',_oldItemsResp.error.message);
+    const _oldItemsResp=await supabase.from('so_items').select('id,item_index,sku').eq('so_id',so.id);
+    // Fail-closed: refuse the save whenever reading existing items errored. A SELECT error returns oldItemIds=[],
+    // which would skip the deco/pick/PO deletes' `.in([])` filter but still let the unconditional
+    // `DELETE FROM so_items WHERE so_id=...` below wipe everything. Retrying later (via _dbSaveFailedIds) is safer.
+    if(_oldItemsResp.error){
+      console.error('[DB] SAFETY: Blocking SO save — failed to read existing items for',so.id,':',_oldItemsResp.error.message);
       if(_dbNotify)_dbNotify('Save blocked — could not verify existing items. Please reload the page.','error');
-      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'so_items SELECT errored while client had 0 items: '+_oldItemsResp.error.message});
+      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'so_items SELECT errored: '+_oldItemsResp.error.message});
       return false;
     }
-    const oldItemIds=_oldItemsResp.data?.map(i=>i.id)||[];
+    const _oldSoItems=_oldItemsResp.data||[];
+    const oldItemIds=_oldSoItems.map(i=>i.id);
     // Safety check: if client has 0 items but DB has some, abort to prevent data loss
     // Triggers when state was polluted by a timed-out so_items load and an autosave fires before a fresh load completes
     if((!items||items.length===0)&&oldItemIds.length>0){
@@ -837,6 +872,24 @@ const _dbSaveSOInner = async (so) => {
     if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length){
       const{count:dbDecoCount}=await supabase.from('so_item_decorations').select('id',{count:'exact',head:true}).in('so_item_id',oldItemIds);
       if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking SO save — client has 0 decorations but DB has',dbDecoCount,'for',so.id);if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');return false}
+    }
+    // Per-item safety: block save if any single item would lose all its decorations.
+    // Catches the partial-loss case the all-zero check above misses (one item drops decos while siblings retain them).
+    if(oldItemIds.length&&items?.length){
+      const{data:_oldDecoRows}=await supabase.from('so_item_decorations').select('so_item_id').in('so_item_id',oldItemIds);
+      const _oldDecoByItem=new Map();(_oldDecoRows||[]).forEach(d=>_oldDecoByItem.set(d.so_item_id,(_oldDecoByItem.get(d.so_item_id)||0)+1));
+      for(const oi of _oldSoItems){
+        const oldN=_oldDecoByItem.get(oi.id)||0;if(oldN===0)continue;
+        const ci=items[oi.item_index];if(!ci)continue;// item removed by user — allowed
+        if(ci.no_deco)continue;
+        if((ci.decorations?.length||0)===0){
+          const label=ci.sku||oi.sku||('item '+oi.item_index);
+          console.error('[DB] SAFETY: Blocking SO save — '+label+' had',oldN,'decoration(s) in DB but client has 0');
+          if(_dbNotify)_dbNotify('Save blocked — decoration data for '+label+' would be lost. Please reload the page.','error');
+          if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'per-item deco safety: '+label+' had '+oldN+' deco(s) in DB, client had 0'});
+          return false;
+        }
+      }
     }
     if(oldItemIds.length){
       await supabase.from('so_item_decorations').delete().in('so_item_id',oldItemIds);
@@ -871,7 +924,7 @@ const _dbSaveSOInner = async (so) => {
     // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition)
     if(art_files?.length){
       let soAfRows=art_files.map(a=>({..._pick(a,_artCols),so_id:so.id}));
-      const{error:afErr}=await supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'});
+      const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
       if(afErr){
         if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
           console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
@@ -935,6 +988,15 @@ const _dbSaveSOInner = async (so) => {
           const{error:coreErr}=await supabase.from('so_item_decorations').insert(coreRows);
           if(coreErr){saveFailed=true;_failMsg=_failMsg||('so_item_decorations: '+coreErr.message+(coreErr.details?' ('+coreErr.details+')':''));console.error('[DB] so_item_decorations batch failed:',coreErr.message)}
           else console.warn('[DB] so decos saved with core columns only')
+        }
+        // Post-insert verification: count rows actually persisted; if fewer than expected, mark failed so we retry rather than accept a partial save as canonical.
+        if(!saveFailed){
+          const{count:_verifyCount}=await supabase.from('so_item_decorations').select('id',{count:'exact',head:true}).in('so_item_id',insertedItems.map(i=>i.id));
+          if((_verifyCount||0)<allDecoRows.length){
+            saveFailed=true;_failMsg=_failMsg||('so_item_decorations: only '+(_verifyCount||0)+' of '+allDecoRows.length+' rows persisted');
+            console.error('[DB] SAFETY: SO deco insert verification failed — expected',allDecoRows.length,'got',_verifyCount);
+            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allDecoRows.length,got:_verifyCount||0});
+          }
         }
       }
       // Batch insert pick lines
@@ -1290,8 +1352,12 @@ _dbDuplicateSkuIds.forEach(id=>{_dbSaveFailedIds.delete(id)});if(_dbDuplicateSku
 const _dbSavePendingIds=new Set();
 // Track recent saves by this client — prevents false "modified by another user" conflicts from own realtime echo
 const _dbRecentSaves={};// {id: timestamp}
-// Legacy compat — keep old _dbSave for team_members and other simple tables
-const _dbSave = (table, data) => { if(supabase && data) return supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
+// Retry a network-flaky upsert/select promise factory. Only retries transport errors (TypeError: Failed to fetch),
+// not real server-side errors. Backoff: 400ms, 1.2s.
+const _isNetErr=(e)=>{const m=(e?.message||e?.error?.message||String(e||'')).toLowerCase();return m.includes('failed to fetch')||m.includes('network')||m.includes('err_ssl')||m.includes('load failed')};
+const _retryNet=async(fn,tries=3)=>{let last;for(let i=0;i<tries;i++){try{const r=await fn();if(r&&r.error&&_isNetErr(r.error)){last={error:r.error};if(i<tries-1){await new Promise(res=>setTimeout(res,400*Math.pow(3,i)));continue}}return r}catch(e){last=e;if(!_isNetErr(e)||i===tries-1)throw e;await new Promise(res=>setTimeout(res,400*Math.pow(3,i)))}}throw last};
+// Legacy compat — keep old _dbSave for team_members and other simple tables. Retries transient network errors.
+const _dbSave = (table, data) => { if(supabase && data) return _retryNet(()=>supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'})).then(r=>{if(r&&r.error)console.error('[DB] save '+table+':', r.error.message)}).catch(e=>{console.error('[DB] save '+table+':', e.message||e)}) };
 // ─── Cloudinary Config ───
 const CLOUDINARY_CLOUD='dwlyljyuz';
 const CLOUDINARY_PRESET='ml_default_nsaportal';
@@ -2357,7 +2423,7 @@ export default function App(){
           if(_dbSaveFailedIds.size){
             setCust(prev=>d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(prev.find(p=>p.id===c.id)||c):c));
           }else{setCust(d.customers)}
-          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,(dupeIds,primaries)=>{dupeIds.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(()=>console.log('[DB] Deleted duplicate product:',id))}catch(e){console.warn('[DB] Failed to delete dupe:',id,e)}});dupeIds.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}});primaries.forEach(p=>_dbSaveProduct(p))})});
+          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,(dupeIds,primaries)=>{dupeIds.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(r=>{if(r?.error)console.warn('[DB] dupe delete failed:',id,r.error.message);else console.log('[DB] Deleted duplicate product:',id)}).catch(e=>console.warn('[DB] dupe delete error:',id,e))}catch(e){console.warn('[DB] Failed to delete dupe:',id,e)}});dupeIds.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}});primaries.forEach(p=>_dbSaveProduct(p))})});
           if(_dbSaveFailedIds.size){
             setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));
             setSOs(prev=>d.sales_orders.map(s=>{if(_dbSaveFailedIds.has(s.id))return prev.find(p=>p.id===s.id)||s;const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));
@@ -2501,7 +2567,7 @@ export default function App(){
         setInvs(invMerge.apply);
         if(d.messages.length)setMsgs(msgMerge.apply);
         setCust(custMerge.apply);
-        if(d.products.length)setProd(prev=>{const base=prodMerge.apply(prev);if(_jsonEq(base,prev))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dupeIds=>{dupeIds.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(()=>console.log('[DB] Deleted duplicate product:',id))}catch(e){}});dupeIds.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}})})});
+        if(d.products.length)setProd(prev=>{const base=prodMerge.apply(prev);if(_jsonEq(base,prev))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,(dupeIds,primaries)=>{dupeIds.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(r=>{if(r?.error)console.warn('[DB] dupe delete failed:',id,r.error.message);else console.log('[DB] Deleted duplicate product:',id)}).catch(e=>console.warn('[DB] dupe delete error:',id,e))}catch(e){}});dupeIds.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}});primaries.forEach(p=>_dbSaveProduct(p))})});
         if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
         if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
         setIssues(prev=>{const v=d.issues||[];return _jsonEq(prev,v)?prev:v});
@@ -2626,7 +2692,7 @@ export default function App(){
         setCust(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
-        if(d.products.length)setProd(prev=>{const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;if(!changed(prev,base))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dupeIds=>{dupeIds.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(()=>console.log('[DB] Deleted duplicate product:',id))}catch(e){}});dupeIds.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}})})});
+        if(d.products.length)setProd(prev=>{const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;if(!changed(prev,base))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,(dupeIds,primaries)=>{dupeIds.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(r=>{if(r?.error)console.warn('[DB] dupe delete failed:',id,r.error.message);else console.log('[DB] Deleted duplicate product:',id)}).catch(e=>console.warn('[DB] dupe delete error:',id,e))}catch(e){}});dupeIds.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}});primaries.forEach(p=>_dbSaveProduct(p))})});
         // Refresh app_state keys (batch POs, inventory POs, etc.)
         const as=d.appState||{};
         if(as.inv_pos)setInvPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_pos)?as.inv_pos:prev);
@@ -3934,8 +4000,8 @@ export default function App(){
       let next=e?p.map(x=>x.id===c.id?c:x):[...p,c];
       // Parent accounts cascade Pantones, thread colors, pricing (tier + markup), and tax (rate + exempt) to all sub-accounts.
       if(!c.parent_id){
-        const inherit={pantone_colors:c.pantone_colors||[],thread_colors:c.thread_colors||[],adidas_ua_tier:c.adidas_ua_tier,catalog_markup:c.catalog_markup,tax_rate:c.tax_rate||0,tax_exempt:!!c.tax_exempt};
-        next=next.map(x=>{if(x.parent_id!==c.id)return x;const differs=JSON.stringify(x.pantone_colors||[])!==JSON.stringify(inherit.pantone_colors)||JSON.stringify(x.thread_colors||[])!==JSON.stringify(inherit.thread_colors)||x.adidas_ua_tier!==inherit.adidas_ua_tier||x.catalog_markup!==inherit.catalog_markup||(x.tax_rate||0)!==inherit.tax_rate||!!x.tax_exempt!==inherit.tax_exempt;if(differs)subCount++;return differs?{...x,...inherit}:x});
+        const inherit={pantone_colors:c.pantone_colors||[],thread_colors:c.thread_colors||[],adidas_ua_tier:c.adidas_ua_tier,catalog_markup:c.catalog_markup,tax_rate:c.tax_rate||0,tax_exempt:!!c.tax_exempt,disable_cc_pay:!!c.disable_cc_pay};
+        next=next.map(x=>{if(x.parent_id!==c.id)return x;const differs=JSON.stringify(x.pantone_colors||[])!==JSON.stringify(inherit.pantone_colors)||JSON.stringify(x.thread_colors||[])!==JSON.stringify(inherit.thread_colors)||x.adidas_ua_tier!==inherit.adidas_ua_tier||x.catalog_markup!==inherit.catalog_markup||(x.tax_rate||0)!==inherit.tax_rate||!!x.tax_exempt!==inherit.tax_exempt||!!x.disable_cc_pay!==inherit.disable_cc_pay;if(differs)subCount++;return differs?{...x,...inherit}:x});
         // Shipping address cascade — push parent's shipping address to each sub. If a sub already had a different
         // address, preserve it as a selectable alternate (in alt_billing_addresses) so it isn't lost.
         const pShip={line1:c.shipping_address_line1||'',line2:c.shipping_address_line2||'',city:c.shipping_city||'',state:c.shipping_state||'',zip:c.shipping_zip||''};
@@ -4643,18 +4709,28 @@ export default function App(){
           desc:'Full order ready',units:totalUnits,shipMethod:'pending',shipPref:'wait_complete'});
       }
     });
-    // Deduplicate pullTasks by SO+SKU+color (handles duplicate items in SO data)
+    // Group pullTasks by SO + pick_id (one warehouse row per IF, even when an IF spans multiple SKUs).
+    // Top-level aggregates (sizes/pulled/szKeys/needsPull) are unions across items, so the list and stats stay meaningful.
+    // Each per-item sub-task is preserved in _subTasks so the detail view can render and pull every item in the IF.
     const dedupPull=[];const pullSeen={};
     pullTasks.forEach(t=>{
-      const key=t.soId+'|'+t.sku+'|'+(t.color||'');
+      const key=t.soId+'|'+(t._pickId||('item-'+t.itemIdx+'|'+t.sku+'|'+(t.color||'')));
+      const sub={item:t.item,itemIdx:t.itemIdx,sku:t.sku,name:t.name,brand:t.brand,color:t.color,
+        sizes:{...t.sizes},pulled:{...t.pulled},szKeys:[...t.szKeys],
+        needsPull:t.needsPull,totalOrdered:t.totalOrdered,totalPulled:t.totalPulled,
+        _activePicks:t._activePicks,noDeco:t.noDeco,shipDest:t.shipDest};
       if(pullSeen[key]){
         const m=pullSeen[key];
-        // Merge sizes and pulled quantities
         t.szKeys.forEach(s=>{m.sizes[s]=(m.sizes[s]||0)+(t.sizes[s]||0);m.pulled[s]=(m.pulled[s]||0)+(t.pulled[s]||0)});
         m.szKeys=[...new Set([...m.szKeys,...t.szKeys])];
         m.totalOrdered+=t.totalOrdered;m.totalPulled+=t.totalPulled;m.needsPull=m.totalOrdered-m.totalPulled;
+        m._subTasks.push(sub);
+        if(!m._skus.includes(t.sku))m._skus.push(t.sku);
+        if(t.urgent)m.urgent=true;
+        if(t.noDeco===false)m.noDeco=false;// any deco item makes the whole IF non-no-deco
       } else {
-        const clone={...t,sizes:{...t.sizes},pulled:{...t.pulled},szKeys:[...t.szKeys]};
+        const clone={...t,sizes:{...t.sizes},pulled:{...t.pulled},szKeys:[...t.szKeys],
+          pickId:t._pickId||null,_skus:[t.sku],_subTasks:[sub]};
         pullSeen[key]=clone;dedupPull.push(clone);
       }
     });
@@ -6281,12 +6357,15 @@ export default function App(){
       </div>
       {filtered.length===0?<div className="card"><div className="card-body"><div className="empty" style={{padding:30}}>No clearance items. Click "+ Add Clearance Item" to mark inventory products for clearance pricing.</div></div></div>:
       <div className="card"><div className="card-body" style={{padding:0}}>
-        <table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th style={{textAlign:'right'}}>NSA Cost</th><th style={{textAlign:'right'}}>Clearance Cost</th><th style={{textAlign:'right'}}>Rep Savings</th><th style={{textAlign:'center'}}>Stock</th><th style={{textAlign:'right'}}>Inv Value</th><th>Actions</th></tr></thead>
+        <table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes (stock)</th><th style={{textAlign:'right'}}>NSA Cost</th><th style={{textAlign:'right'}}>Clearance Cost</th><th style={{textAlign:'right'}}>Rep Savings</th><th style={{textAlign:'center'}}>Stock</th><th style={{textAlign:'right'}}>Inv Value</th><th>Actions</th></tr></thead>
         <tbody>{filtered.map(p=>{const tQ=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const savings=p.nsa_cost-(p.clearance_cost||0);const savPct=p.nsa_cost>0?Math.round(savings/p.nsa_cost*100):0;
+          const openProd=e=>{if(e.metaKey||e.ctrlKey||e.button===1)return;e.preventDefault();setSelP(p);setPg('products')};
+          const sizes=(p.available_sizes||[]).map(sz=>({sz,q:p._inv?.[sz]||0}));
           return<tr key={p.id}>
-            <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</td>
-            <td style={{fontSize:12}}>{p.name}</td>
+            <td style={{fontFamily:'monospace',fontWeight:700}}><a href={`?prod=${encodeURIComponent(p.id)}`} onClick={openProd} style={{color:'#1e40af',textDecoration:'none'}}>{p.sku}</a></td>
+            <td style={{fontSize:12}}><a href={`?prod=${encodeURIComponent(p.id)}`} onClick={openProd} style={{color:'inherit',textDecoration:'none'}}>{p.name}</a></td>
             <td style={{fontSize:11,color:'#64748b'}}>{p.color}</td>
+            <td style={{fontSize:11}}>{sizes.length===0?<span style={{color:'#94a3b8'}}>—</span>:<div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{sizes.map(({sz,q})=><span key={sz} style={{padding:'1px 5px',borderRadius:4,fontSize:10,fontWeight:700,background:q>10?'#dcfce7':q>0?'#fef3c7':'#f1f5f9',color:q>10?'#166534':q>0?'#92400e':'#94a3b8'}}>{sz}:{q}</span>)}</div>}</td>
             <td style={{textAlign:'right',fontSize:12}}>${p.nsa_cost?.toFixed(2)}</td>
             <td style={{textAlign:'right'}}><input className="form-input" type="number" step="0.01" style={{width:80,textAlign:'right',fontWeight:700,color:'#166534'}} value={p.clearance_cost??''} onChange={e=>updateClearanceCost(p.id,parseFloat(e.target.value)||0)}/></td>
             <td style={{textAlign:'right',color:'#166534',fontWeight:600}}>${savings.toFixed(2)} <span style={{fontSize:9}}>({savPct}%)</span></td>
@@ -6847,6 +6926,7 @@ export default function App(){
   const[expandedArtCard,setExpandedArtCard]=useState(null);// key of the art kanban card currently expanded (null = all collapsed)
   const[artJobDetailEditColors,setArtJobDetailEditColors]=useState(null);// editing color string or null
   const[artJobDetailEditSize,setArtJobDetailEditSize]=useState(null);// editing art size string or null
+  const[artJobDetailEditCW,setArtJobDetailEditCW]=useState(null);// editing color way: {artFileId, cwId, garment_color, inks} or null
   // Helper: build product search URL — uses Google Images to find the product
   const _vendorProductUrl=(sku,color,brand)=>'https://www.google.com/search?tbm=isch&q='+encodeURIComponent((sku||'')+' '+(brand||'')+' '+(color||''));
   const[artJobDetailApprovalMsg,setArtJobDetailApprovalMsg]=useState('');// message to include with approval send
@@ -13175,8 +13255,10 @@ export default function App(){
     const filt=(arr)=>arr.filter(t=>{
       if(whRepF!=='all'&&t.so?.created_by!==whRepF)return false;
       if(whSearch){const s=whSearch.toLowerCase();
-        if(!(t.cName||'').toLowerCase().includes(s)&&!(t.sku||'').toLowerCase().includes(s)&&
+        const skuHay=(t._skus||[t.sku]).join(' ');
+        if(!(t.cName||'').toLowerCase().includes(s)&&!skuHay.toLowerCase().includes(s)&&
           !(t.soId||'').toLowerCase().includes(s)&&!(t.desc||'').toLowerCase().includes(s)&&
+          !(t.pickId||'').toLowerCase().includes(s)&&
           !(t.artName||'').toLowerCase().includes(s))return false}
       return true;
     });
@@ -13266,15 +13348,16 @@ export default function App(){
               <div style={{flex:1}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
                   <span style={{fontSize:20,fontWeight:900,color:'#1e40af'}}>{pickId}</span>
-                  <span className={`badge ${activePick?.status==='pulled'?'badge-green':'badge-amber'}`} style={{fontSize:11}}>
-                    {activePick?.status==='pulled'?'✓ Pulled':'Needs Pull'}</span>
+                  <span className={`badge ${firstActivePick?.status==='pulled'?'badge-green':'badge-amber'}`} style={{fontSize:11}}>
+                    {firstActivePick?.status==='pulled'?'✓ Pulled':'Needs Pull'}</span>
+                  {isMulti&&<span style={{fontSize:11,padding:'2px 8px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{subs.length} items</span>}
                   {t.urgent&&<span style={{fontSize:11,padding:'2px 8px',borderRadius:8,background:'#fee2e2',color:'#dc2626',fontWeight:700}}>🔥 Rush — {t.daysOut}d</span>}
                 </div>
                 <div style={{display:'flex',gap:12,fontSize:12,color:'#64748b',flexWrap:'wrap'}}>
-                  <span>SO: <strong style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{setESOTab('items');setESOScrollItem(t.itemIdx);setESO(so);setESOC(c);setPg('orders')}}>{t.soId}</strong></span>
+                  <span>SO: <strong style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{setESOTab('items');setESOScrollItem(subs[0].itemIdx);setESO(so);setESOC(c);setPg('orders')}}>{t.soId}</strong></span>
                   <span>Customer: <strong style={{color:'#0f172a'}}>{t.cName}</strong></span>
                   <span>Rep: {t.rep}</span>
-                  {activePick?.created_at&&<span>Created: {activePick.created_at}</span>}
+                  {firstActivePick?.created_at&&<span>Created: {firstActivePick.created_at}</span>}
                 </div>
               </div>
             </div>
@@ -13436,7 +13519,21 @@ export default function App(){
                 })}
               </div>}
             </div>
-          </div>
+          </div>}
+
+          {/* Pick History — first item's pick lines (representative for the IF) */}
+          {allPicks.length>0&&<div className="card" style={{marginBottom:12}}>
+            <div style={{padding:'12px 18px'}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Pick History{isMulti?' — '+subs[0].sku:''}</div>
+              {(()=>{const allSzKeys=[...new Set(allPicks.flatMap(pk=>Object.keys(pk).filter(k=>SZ_ORD.includes(k)&&pk[k]>0)))].sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));return allPicks.map((pk,pi)=>{const st=pk.status||'pick';
+                return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:4,padding:'4px 8px',borderRadius:4,background:st==='pulled'?'#f0fdf4':'#fffbeb'}}>
+                  <span style={{fontSize:11,fontWeight:700,color:st==='pulled'?'#166534':'#92400e',minWidth:56}}>{pk.pick_id||'PICK'}</span>
+                  {allSzKeys.map(sz=>{const v=pk[sz]||0;return<span key={sz} style={{minWidth:36,textAlign:'center',fontSize:11,fontWeight:v?700:400,color:v?'#0f172a':'#d1d5db'}}>{v||'—'}</span>})}
+                  <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:st==='pulled'?'#dcfce7':'#fef3c7',color:st==='pulled'?'#166534':'#92400e'}}>{st==='pulled'?'✓ Pulled':'Needs Pull'}</span>
+                  {pk.memo&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>{pk.memo}</span>}
+                </div>})})()}
+            </div>
+          </div>}
 
           {/* Ship Destination */}
           <div className="card" style={{marginBottom:12,borderLeft:'3px solid '+(shipDest==='ship_customer'?'#3b82f6':shipDest==='ship_deco'?'#d97706':'#64748b')}}>
@@ -13444,8 +13541,8 @@ export default function App(){
               <div style={{fontSize:12,fontWeight:800,color:shipDest==='ship_customer'?'#1e40af':shipDest==='ship_deco'?'#92400e':'#475569'}}>
                 {shipDest==='ship_customer'?'📦 Ship to Customer':shipDest==='ship_deco'?'🚚 Ship to Decorator':'🏭 In-House Deco'}</div>
               {shipDest==='ship_customer'&&addrs2.length>0&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>{addrs2[0]?.label}</div>}
-              {shipDest==='ship_deco'&&activePick?.deco_vendor&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>Vendor: {activePick.deco_vendor}</div>}
-              {activePick?.memo&&<div style={{marginTop:6,fontSize:12,color:'#64748b'}}>📝 {activePick.memo}</div>}
+              {shipDest==='ship_deco'&&firstActivePick?.deco_vendor&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>Vendor: {firstActivePick.deco_vendor}</div>}
+              {firstActivePick?.memo&&<div style={{marginTop:6,fontSize:12,color:'#64748b'}}>📝 {firstActivePick.memo}</div>}
             </div>
           </div>
 
@@ -13597,7 +13694,7 @@ export default function App(){
 
           {/* Actions */}
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-            <button className="btn btn-secondary" style={{fontSize:12,padding:'8px 16px'}} onClick={()=>{setESOTab('items');setESOScrollItem(t.itemIdx);setESO(so);setESOC(c);setPg('orders')}}>
+            <button className="btn btn-secondary" style={{fontSize:12,padding:'8px 16px'}} onClick={()=>{setESOTab('items');setESOScrollItem(subs[0].itemIdx);setESO(so);setESOC(c);setPg('orders')}}>
               Open Sales Order</button>
           </div>
         </div>})()}
@@ -14058,18 +14155,20 @@ export default function App(){
         {fPull.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No open item fulfillment requests</div>:
         <div className="card"><div className="card-body" style={{padding:0}}>
           <table style={{fontSize:11}}><thead><tr>
-            <th style={{width:20}}></th><th>SO#</th><th>Customer</th><th>SKU</th><th>Item</th>
+            <th style={{width:20}}></th><th>SO#</th><th>IF#</th><th>Customer</th><th>SKU</th><th>Item</th>
             <th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Dest</th><th>Rep</th><th style={{width:60}}></th>
           </tr></thead><tbody>
-          {fPull.map((t,ti)=><tr key={ti} style={{cursor:'pointer',background:t.urgent?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
+          {fPull.map((t,ti)=>{const subs=t._subTasks||[t];const extraSkus=subs.length-1;
+            return<tr key={ti} style={{cursor:'pointer',background:t.urgent?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
             onClick={()=>setWhViewIF(t)}>
             <td>{t.urgent&&<span title={'Due in '+t.daysOut+'d'}>🔥</span>}{t.noDeco&&<span title="No decoration">📦</span>}</td>
             <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}</td>
+            <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#1e40af',whiteSpace:'nowrap'}}>{t.pickId||'—'}{extraSkus>0?<span title={subs.length+' items in this IF'} style={{marginLeft:4,fontSize:9,padding:'1px 5px',borderRadius:10,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>×{subs.length}</span>:null}</td>
             <td style={{fontWeight:600,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cName}</td>
             <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#475569'}}>{t.sku}{t._extraCount>0?<span style={{marginLeft:4,padding:'1px 4px',background:'#dbeafe',color:'#1e40af',borderRadius:3,fontSize:9}}>+{t._extraCount}</span>:null}</td>
             <td style={{fontSize:10,color:'#64748b',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t._extraCount>0?(t.name+' & '+t._extraCount+' more'):(t.name+(t.color?' · '+t.color:''))}</td>
             <td style={{textAlign:'center',fontWeight:800,color:'#d97706'}}>{t.needsPull}</td>
-            <td style={{textAlign:'center'}}>{(()=>{const p=prod.find(pp=>pp.sku===t.sku);if(!p||!p._inv)return<span style={{color:'#cbd5e1'}}>—</span>;
+            <td style={{textAlign:'center'}}>{(()=>{if(subs.length>1)return<span style={{fontSize:9,color:'#94a3b8'}}>multi</span>;const p=prod.find(pp=>pp.sku===subs[0].sku);if(!p||!p._inv)return<span style={{color:'#cbd5e1'}}>—</span>;
               const total=Object.values(p._inv).reduce((a,v)=>a+(typeof v==='number'?v:0),0);
               return<span style={{fontWeight:700,color:total>=t.needsPull?'#166534':total>0?'#d97706':'#dc2626'}}>{total}</span>})()}</td>
             <td><div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
@@ -14082,7 +14181,7 @@ export default function App(){
             <td><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
               onClick={e=>{e.stopPropagation();setWhViewIF(t)}}>
               Pick →</button></td>
-          </tr>)}
+          </tr>})}
           </tbody></table>
         </div></div>}
       </>}
@@ -15572,8 +15671,79 @@ export default function App(){
             </div>
             <div style={{textAlign:'right',flexShrink:0,display:'flex',flexDirection:'column',gap:2,alignItems:'flex-end'}}>
               <div style={{fontSize:10,color:'#94a3b8'}}>{a.at}</div>
-              <button style={{fontSize:9,color:'#64748b',background:'none',border:'1px solid #e2e8f0',borderRadius:4,padding:'1px 6px',cursor:'pointer'}}
-                onClick={e=>{e.stopPropagation();setWhEditActionIdx(origIdx);setWhEditOrigSizes(a.sizes||null)}}>Edit</button>
+              <div style={{display:'flex',gap:4}}>
+                {a.type==='pulled'&&a.pickId&&a.soId&&<button style={{fontSize:9,color:'#1e40af',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:4,padding:'1px 6px',cursor:'pointer',fontWeight:700}}
+                  onClick={e=>{e.stopPropagation();
+                    // Re-open IF: flip every pulled pick_line with this pick_id on this SO back to 'pick' status, restoring the original requested sizes (when known) and inventory.
+                    const so2=sos.find(s=>s.id===a.soId);if(!so2){nf('SO not found','error');return}
+                    if(!window.confirm('Re-open IF '+a.pickId+'? Pulled inventory will be returned and the IF will appear back in the warehouse queue with its original requested quantities.'))return;
+                    const invReturns={};// productId -> {sz:qty}
+                    const updItems=safeItems(so2).map(it2=>{
+                      const picks=it2.pick_lines||[];
+                      const matching=picks.filter(pk=>pk.pick_id===a.pickId&&pk.status==='pulled');
+                      if(!matching.length)return it2;
+                      // Collect inv to return + restore sizes from _orig_sizes when present
+                      const restoreSizes={};
+                      matching.forEach(pk=>{
+                        const origSz=pk._orig_sizes&&Object.keys(pk._orig_sizes).length?pk._orig_sizes:Object.fromEntries(Object.entries(pk).filter(([k,v])=>typeof v==='number'&&v>0&&SZ_ORD.includes(k)));
+                        Object.entries(pk).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&SZ_ORD.includes(k)){const pid=it2.product_id||'';if(!invReturns[pid])invReturns[pid]={};invReturns[pid][k]=(invReturns[pid][k]||0)+v}});
+                        Object.entries(origSz).forEach(([sz,v])=>{restoreSizes[sz]=(restoreSizes[sz]||0)+(v||0)});
+                      });
+                      // If a sibling active pick already exists for this pick_id, fold restored sizes into it. Otherwise revive the first matching pulled line as 'pick'.
+                      let folded=false;
+                      let newPicks=picks.map(pk=>{
+                        if(pk.pick_id===a.pickId&&pk.status!=='pulled'&&!folded){folded=true;const u={...pk};Object.entries(restoreSizes).forEach(([sz,v])=>{u[sz]=(u[sz]||0)+v});return u}
+                        return pk;
+                      });
+                      if(!folded){
+                        // Drop pulled lines except the first, which we convert to 'pick' with restored sizes
+                        let usedRevival=false;
+                        newPicks=newPicks.flatMap(pk=>{
+                          if(pk.pick_id===a.pickId&&pk.status==='pulled'){
+                            if(usedRevival)return[];
+                            usedRevival=true;
+                            const revived={...pk,status:'pick'};delete revived.pulled_at;delete revived._partial;
+                            Object.keys(revived).forEach(k=>{if(SZ_ORD.includes(k)&&typeof revived[k]==='number')revived[k]=0});
+                            Object.entries(restoreSizes).forEach(([sz,v])=>{revived[sz]=v});
+                            return[revived];
+                          }
+                          return[pk];
+                        });
+                      } else {
+                        // Folded into the active pick — drop all pulled lines for this pick_id
+                        newPicks=newPicks.filter(pk=>!(pk.pick_id===a.pickId&&pk.status==='pulled'));
+                      }
+                      return{...it2,pick_lines:newPicks};
+                    });
+                    // Restore inventory (best effort — match by product_id, fall back to sku+color from the action)
+                    setProd(pp=>pp.map(x=>{
+                      const ret=invReturns[x.id]||(a.productId&&x.id===a.productId?invReturns['']:null)||(x.sku===a.sku&&(!a.color||x.color===a.color)?invReturns['']:null);
+                      if(!ret)return x;
+                      const newInv={...(x._inv||{})};Object.entries(ret).forEach(([sz,v])=>{newInv[sz]=(newInv[sz]||0)+v});
+                      return{...x,_inv:newInv};
+                    }));
+                    // Refresh job item_status so deco queues recompute
+                    const updJobs=safeJobs(so2).map(j=>{
+                      let total=0,fulfilled=0;
+                      (j.items||[]).forEach(gi=>{const it=updItems[gi.item_idx];if(!it)return;
+                        Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{total+=v;
+                          const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((b,pk)=>b+safeNum(pk[sz]),0);
+                          const rQ=safePOs(it).reduce((b,pk)=>b+safeNum((pk.received||{})[sz]),0);
+                          fulfilled+=Math.min(v,pQ+rQ);});
+                      });
+                      const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
+                      if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
+                      return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
+                    });
+                    savSO({...so2,items:updItems,jobs:updJobs,updated_at:new Date().toLocaleString()},{skipMerge:true});
+                    // Remove every recent action entry tied to this pick_id+SO so the history stays clean
+                    const nextActions=whRecentActions.filter(x=>!(x.type==='pulled'&&x.pickId===a.pickId&&x.soId===a.soId));
+                    setWhRecentActions(nextActions);_lsSet('nsa_wh_recent',JSON.stringify(nextActions));
+                    nf('🔓 '+a.pickId+' re-opened — back in the pull queue');
+                  }}>🔓 Re-open IF</button>}
+                <button style={{fontSize:9,color:'#64748b',background:'none',border:'1px solid #e2e8f0',borderRadius:4,padding:'1px 6px',cursor:'pointer'}}
+                  onClick={e=>{e.stopPropagation();setWhEditActionIdx(origIdx);setWhEditOrigSizes(a.sizes||null)}}>Edit</button>
+              </div>
             </div>
           </div>}
         </div>})}
@@ -15738,7 +15908,7 @@ export default function App(){
       const af=j.artFile;
       const cardKey=j.id+j.soId+view;
       const isExp=expandedArtCard===cardKey;
-      const openDetails=()=>{setArtJobDetailModal(j);setArtJobDetailMsg('');setArtJobDetailEditColors(null);setArtJobDetailApprovalMsg('')};
+      const openDetails=()=>{setArtJobDetailModal(j);setArtJobDetailMsg('');setArtJobDetailEditColors(null);setArtJobDetailEditCW(null);setArtJobDetailApprovalMsg('')};
       return<div key={cardKey} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
         {/* COMPACT HEADER — always visible. Click toggles expand. */}
         <div style={{padding:'8px 10px',cursor:'pointer',minWidth:0}} onClick={()=>setExpandedArtCard(isExp?null:cardKey)}>
@@ -16467,6 +16637,29 @@ export default function App(){
           setArtJobDetailEditColors(null);
           nf('Colors updated');
         };
+        // Color way editing — lets the artist rename a CW or adjust its ink list (e.g., customer changed Black to White).
+        // Writes to art_files[].color_ways[]; the rest of the UI reads CW labels/inks from that array.
+        const _startEditCW=(artFileId,cw)=>{
+          setArtJobDetailEditCW({artFileId,cwId:cw.id,garment_color:cw.garment_color||'',inks:[...(cw.inks||[''])]});
+        };
+        const _saveCW=()=>{
+          if(!artJobDetailEditCW)return;
+          const{artFileId,cwId,garment_color,inks}=artJobDetailEditCW;
+          const cleanInks=(inks||[]).map(s=>(s||'').trim()).filter(Boolean);
+          const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+          const updArt=safeArt(liveSO).map(a=>{
+            if(a.id!==artFileId)return a;
+            const cws=(a.color_ways||[]).map(c=>c.id===cwId?{...c,garment_color:(garment_color||'').trim(),inks:cleanInks}:c);
+            return{...a,color_ways:cws};
+          });
+          const newSO={...liveSO,art_files:updArt};
+          savSO(newSO);
+          // Refresh j.so too — the modal reads `j.so || sos.find(...)` (line 16387) and the cached j.so
+          // would otherwise still hold the pre-edit color_ways, leaving the chip stale until reopen.
+          setArtJobDetailModal({...j,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)});
+          setArtJobDetailEditCW(null);
+          nf('Color way updated');
+        };
         // Composite key for per-item mockups: SKU + color, so the same SKU in
         // different colors doesn't collapse onto a single entry.
         const _mockKey=(sku,color)=>sku+'|'+(color||'');
@@ -16864,7 +17057,35 @@ export default function App(){
                           <div style={{minWidth:120,paddingTop:2}}>
                             <div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{pos||'—'}</div>
                             {deco.artFile&&<div style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>{deco.artFile.title||deco.artFile.name||'—'}</div>}
-                            {deco.cwLabel&&<div style={{fontSize:10,fontWeight:600,color:'#0369a1',background:'#e0f2fe',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>CW: {deco.cwLabel}</div>}
+                            {deco.colorWayId&&deco.artFile&&(()=>{const _isEditingThisCW=artJobDetailEditCW&&artJobDetailEditCW.cwId===deco.colorWayId&&artJobDetailEditCW.artFileId===deco.artFile.id;
+                              if(!_isEditingThisCW){const _cwObj=(deco.artFile.color_ways||[]).find(c=>c.id===deco.colorWayId);return<div style={{display:'inline-flex',alignItems:'center',gap:4,marginTop:2}}>
+                                <div style={{fontSize:10,fontWeight:600,color:'#0369a1',background:'#e0f2fe',padding:'1px 6px',borderRadius:3}}>CW: {deco.cwLabel||'—'}</div>
+                                {_cwObj&&<button title="Edit color way" onClick={()=>_startEditCW(deco.artFile.id,_cwObj)} style={{background:'none',border:'1px solid #bae6fd',color:'#0369a1',fontSize:9,fontWeight:700,cursor:'pointer',padding:'1px 5px',borderRadius:3}}>✏️</button>}
+                              </div>}
+                              return<div style={{marginTop:2,padding:6,background:'#eff6ff',border:'1px solid #bae6fd',borderRadius:4,display:'flex',flexDirection:'column',gap:4}}>
+                                <div style={{display:'flex',gap:4,alignItems:'center'}}>
+                                  <span style={{fontSize:9,fontWeight:700,color:'#0369a1',minWidth:46}}>Garment:</span>
+                                  <input className="form-input" value={artJobDetailEditCW.garment_color} onChange={e=>setArtJobDetailEditCW({...artJobDetailEditCW,garment_color:e.target.value})} placeholder="e.g. White" style={{fontSize:11,padding:'2px 6px',flex:1,minWidth:80}}/>
+                                </div>
+                                <div style={{display:'flex',flexDirection:'column',gap:3}}>
+                                  <span style={{fontSize:9,fontWeight:700,color:'#0369a1'}}>Inks:</span>
+                                  {artJobDetailEditCW.inks.map((ink,ii)=>{const _hex=pantoneHex(ink);return<div key={ii} style={{display:'flex',gap:3,alignItems:'center'}}>
+                                    <span style={{width:14,height:14,borderRadius:3,background:_hex||'#f1f5f9',border:'1px solid #d1d5db',flexShrink:0}} title={_hex?ink:'No swatch match'}/>
+                                    <input className="form-input" value={ink} onChange={e=>{const upd=[...artJobDetailEditCW.inks];upd[ii]=e.target.value;setArtJobDetailEditCW({...artJobDetailEditCW,inks:upd})}} placeholder="Ink color" style={{fontSize:11,padding:'2px 6px',flex:1,minWidth:80}}/>
+                                    <button onClick={()=>{const upd=artJobDetailEditCW.inks.filter((_,x)=>x!==ii);setArtJobDetailEditCW({...artJobDetailEditCW,inks:upd.length?upd:['']})}} style={{background:'none',border:'none',color:'#dc2626',fontSize:12,cursor:'pointer',padding:'0 4px',fontWeight:700}}>×</button>
+                                  </div>})}
+                                  <button onClick={()=>setArtJobDetailEditCW({...artJobDetailEditCW,inks:[...artJobDetailEditCW.inks,'']})} style={{background:'none',border:'1px dashed #93c5fd',color:'#0369a1',fontSize:10,fontWeight:700,cursor:'pointer',padding:'2px 6px',borderRadius:3,alignSelf:'flex-start'}}>+ Add ink</button>
+                                  {(()=>{const _onPick=(v)=>{const upd=[...artJobDetailEditCW.inks];const emptyIdx=upd.findIndex(x=>!x||!x.trim());if(emptyIdx>=0)upd[emptyIdx]=v;else upd.push(v);setArtJobDetailEditCW({...artJobDetailEditCW,inks:upd})};
+                                    return isEmb?<ThreadQuickPicks colors={mergeColors(c2,cust,'thread_colors')} onPick={_onPick}/>
+                                    :<PantoneQuickPicks colors={mergeColors(c2,cust,'pantone_colors')} onPick={_onPick}/>;
+                                  })()}
+                                </div>
+                                <div style={{display:'flex',gap:4}}>
+                                  <button onClick={_saveCW} style={{background:'#0369a1',border:'none',color:'white',fontSize:10,fontWeight:700,cursor:'pointer',padding:'3px 10px',borderRadius:3}}>Save</button>
+                                  <button onClick={()=>setArtJobDetailEditCW(null)} style={{background:'none',border:'1px solid #cbd5e1',color:'#475569',fontSize:10,fontWeight:700,cursor:'pointer',padding:'3px 10px',borderRadius:3}}>Cancel</button>
+                                </div>
+                              </div>;
+                            })()}
                           </div>
                           <div style={{flex:1,display:'flex',flexWrap:'wrap',gap:4,alignItems:'center'}}>
                             <span style={{fontSize:11,color:'#475569',fontWeight:600}}>{method}</span>
@@ -24160,7 +24381,7 @@ export default function App(){
         return<a key={item.id} href={_newTabHref({pg:item.id})} className={`sidebar-link ${pg===item.id?'active':''}`} style={{textDecoration:'none',color:'inherit'}}
           onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</a>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><div style={{display:'flex',gap:4}}><button onClick={()=>setMobileMode(true)} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Switch to mobile view">📱 Mobile</button><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div></div>
-    <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
+    <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{(eEst&&pg==='estimates')?eEst.id:(eSO&&pg==='orders')?eSO.id:(selC&&pg==='customers')?selC.name:(selV&&pg==='vendors')?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
           <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>{setGQ(e.target.value);if(e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(gQ.length>=2)setGOpen(true)}} onKeyDown={e=>{if(e.key==='Enter'){const q=gQ.trim();if(q.length>=2){setGSearchQ(q);setPg('search');setGOpen(false)}}else if(e.key==='Escape'){setGOpen(false)}}}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
           {gOpen&&gQ.length>=2&&(()=>{const s=gQ.toLowerCase();

@@ -11,6 +11,8 @@ import { StripePaymentModal } from './modals';
 
 function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,REPS,prod,onCopy,onDelete,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[rR,setRR]=useState('thisyear');
+  const[expSOs,setExpSOs]=useState(()=>new Set());
+  const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[showPortal,setShowPortal]=useState(false);
   const[showActions,setShowActions]=useState(false);const[showStatement,setShowStatement]=useState(false);const[stmtEmail,setStmtEmail]=useState('');const[stmtMsg,setStmtMsg]=useState('');
@@ -102,7 +104,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _greet=getBillingContacts(customer,allCustomers)[0]?.name||(customer.contacts||[])[0]?.name||'';setInvEmailMsg('Hi '+_greet+',\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setShowInvEmail(true)}}>📄 Email Invoices ({customer._oi})</button>
       </>}
       <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:11}} onClick={()=>setShowPortal(true)}>🔗 Portal</button>
-      {customer.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const url=window.location.origin+'/?portal='+customer.alpha_tag;navigator.clipboard.writeText(url).then(()=>alert('Copied portal link:\n'+url)).catch(()=>{window.prompt('Copy this portal link:',url)})}}>📋 Copy Portal Link</button>}
+      {customer.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const url=window.location.origin+'/?portal='+customer.alpha_tag;try{navigator.clipboard&&navigator.clipboard.writeText(url)}catch(_){}window.open(url,'_blank','noopener,noreferrer')}}>📋 Open Portal Link</button>}
     </div>
   </div>
   {(customer._ob||0)>0&&<div style={{textAlign:'right'}}><div style={{fontSize:11,color:'#dc2626',fontWeight:600}}>BALANCE</div><div style={{fontSize:24,fontWeight:800,color:'#dc2626'}}>${customer._ob.toLocaleString()}</div></div>}</div></div>
@@ -116,11 +118,14 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
 
   {/* ORDERS TAB — with live SO status */}
   {tab==='activity'&&<>
-    {/* Active SOs with fulfillment progress + nested jobs */}
-    {custSOs.filter(s=>calcSOStatus(s)!=='complete').length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Sales Orders</h2></div><div className="card-body" style={{padding:0}}>
-      <table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th>{isP&&<th>Customer</th>}{isP&&<th>Rep</th>}<th>Status</th><th>Items</th><th>Fulfillment</th><th style={{textAlign:'right'}}>Total</th><th>Expected</th></tr></thead><tbody>
-      {custSOs.filter(s=>calcSOStatus(s)!=='complete').map(so=>{
-        const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
+    {/* Active SOs with fulfillment progress + nested jobs. Booking SOs (still
+        far from their ship date) are split into their own section below so
+        they don't crowd out work-in-flight orders. */}
+    {(()=>{
+      const activeSOs=custSOs.filter(s=>{const st=calcSOStatus(s);return st!=='complete'&&st!=='booking'});
+      const bookingSOs=custSOs.filter(s=>calcSOStatus(s)==='booking');
+      const renderSORow=(so)=>{
+        const st=calcSOStatus(so);const stL={booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         let totalU=0,fulU=0;
         safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
         const pct=totalU>0?Math.round(fulU/totalU*100):0;
@@ -134,9 +139,15 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const jobArtLabels={needs_art:'Needs Art',waiting_approval:'Wait Approval',art_complete:'Art ✓'};
         const jobProdLabels={hold:'Ready',staging:'In Line',in_process:'In Process',completed:'Done',shipped:'Shipped'};
         const jobItemLabels={need_to_order:'Need Order',partially_received:'Partial',items_received:'Received'};
+        const hasJobChildren=jobs.length>0||true;// show toggle even for "no decorations" rows
+        const isExp=expSOs.has(so.id);
         return<React.Fragment key={so.id}>
           <tr style={{cursor:'pointer',background:'white'}} onClick={()=>onOpenSO&&onOpenSO(so)}>
-            <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td>
+            <td style={{fontWeight:700,color:'#1e40af'}}>
+              {hasJobChildren&&<button onClick={e=>{e.stopPropagation();toggleExpSO(so.id)}} title={isExp?'Hide jobs':'Show jobs'} style={{marginRight:6,padding:0,background:'transparent',border:'none',cursor:'pointer',color:'#64748b',fontSize:10,width:14,display:'inline-block',textAlign:'center'}}>{isExp?'▼':'▶'}</button>}
+              {so.id}
+              {jobs.length>0&&!isExp&&<span style={{marginLeft:6,fontSize:10,color:'#94a3b8',fontWeight:500}}>({jobs.length} {jobs.length===1?'job':'jobs'})</span>}
+            </td>
             <td>{so.memo}</td>
             {isP&&<td><span className="badge badge-gray">{subC?.alpha_tag}</span></td>}
             {isP&&<td style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</td>}
@@ -148,8 +159,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <td style={{textAlign:'right',fontWeight:700,color:'#1e293b'}}>${soGrand.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
             <td style={{color:daysOut!=null&&daysOut<=7?'#dc2626':'#64748b',fontWeight:daysOut!=null&&daysOut<=7?700:400}}>{so.expected_date||'—'}{daysOut!=null&&daysOut>=0&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>({daysOut}d)</span>}</td>
           </tr>
-          {/* Nested jobs under this SO */}
-          {jobs.length>0&&jobs.map(j=><tr key={j.id} style={{background:'#f8fafc',cursor:'pointer'}} onClick={()=>onOpenSO&&onOpenSO(so)}>
+          {/* Nested jobs under this SO — collapsed by default */}
+          {isExp&&jobs.length>0&&jobs.map(j=><tr key={j.id} style={{background:'#f8fafc',cursor:'pointer'}} onClick={()=>onOpenSO&&onOpenSO(so)}>
             <td style={{paddingLeft:28,color:'#64748b',fontSize:11}}>↳ {j.id}</td>
             <td style={{fontSize:11}}>{j.art_name} <span style={{color:'#94a3b8'}}>({j.deco_type?.replace(/_/g,' ')})</span></td>
             {isP&&<td/>}{isP&&<td/>}
@@ -164,10 +175,13 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <td/>
             <td><span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#64748b'}}>{jobProdLabels[j.prod_status]||j.prod_status}</span></td>
           </tr>)}
-          {jobs.length===0&&<tr style={{background:'#f8fafc'}}><td colSpan={isP?9:7} style={{paddingLeft:28,fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No decorations assigned yet</td></tr>}
-        </React.Fragment>})}
-      </tbody></table>
-    </div></div>}
+          {isExp&&jobs.length===0&&<tr style={{background:'#f8fafc'}}><td colSpan={isP?9:7} style={{paddingLeft:28,fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No decorations assigned yet</td></tr>}
+        </React.Fragment>};
+      const renderTable=(list)=><table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th>{isP&&<th>Customer</th>}{isP&&<th>Rep</th>}<th>Status</th><th>Items</th><th>Fulfillment</th><th style={{textAlign:'right'}}>Total</th><th>Expected</th></tr></thead><tbody>{list.map(renderSORow)}</tbody></table>;
+      return<>
+        {activeSOs.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Sales Orders</h2></div><div className="card-body" style={{padding:0}}>{renderTable(activeSOs)}</div></div>}
+        {bookingSOs.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header" style={{background:'#eef2ff',borderBottom:'1px solid #c7d2fe'}}><h2 style={{color:'#4338ca'}}>Booking Orders ({bookingSOs.length})</h2><span style={{fontSize:11,color:'#6366f1',marginLeft:8}}>Future ship dates — not yet in production</span></div><div className="card-body" style={{padding:0}}>{renderTable(bookingSOs)}</div></div>}
+      </>})()}
     {/* All transactions — unified: est, SO, inv, IF, PO, payments */}
     {(()=>{
       // Build unified transaction list
