@@ -5164,9 +5164,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div><label className="form-label">Expected Date</label><input className="form-input" type="date" id={'po-date-'+(preexistingPO?'preexisting':autoPoId)}/></div></div>
           <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" id={'po-dropship-'+(preexistingPO?'preexisting':autoPoId)}/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school/decorator, skip warehouse receive</span></label></div>
           {poItems.map((it,vi)=>{const soQ=Object.values(it.sizes).reduce((a,v)=>a+v,0);const excluded=!!poExcluded[vi];const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const rawCost=catP?safeNum(catP.nsa_cost):safeNum(it.nsa_cost);const catCost=isAdidas?Math.floor(rawCost*100)/100:rawCost;
-            // Per-size pricing: vendors like Momentec/SanMar charge upcharges for 2XL+. If the item has a _sizeCosts map
-            // with size-level variation, render a price input per size so the upcharge isn't lost when creating the PO.
-            const sizeCostMap=it._sizeCosts||{};
+            // Per-size pricing: vendors like Momentec/SanMar charge upcharges for 2XL+. Source the per-size cost from the
+            // item's captured _sizeCosts when present, otherwise fall back to live vendor pricing already fetched into
+            // vendorInv (e.g. SanMar getPricing), so catalog-added items still render per-size inputs and capture the upcharge.
+            const liveSizePrice=(vendorInv[it.sku]&&vendorInv[it.sku].price)||{};
+            const sizeCostMap={...liveSizePrice,...(it._sizeCosts||{})};
             const priceForSize=sz=>{const sc=safeNum(sizeCostMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):catCost};
             const distinctPrices=new Set(it.openSizes.map(([sz])=>priceForSize(sz).toFixed(2)));
             const hasSizeUpcharges=distinctPrices.size>1;
