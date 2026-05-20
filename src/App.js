@@ -13372,8 +13372,8 @@ export default function App(){
               <div style={{flex:1}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
                   <span style={{fontSize:20,fontWeight:900,color:'#1e40af'}}>{pickId}</span>
-                  <span className={`badge ${firstActivePick?.status==='pulled'?'badge-green':'badge-amber'}`} style={{fontSize:11}}>
-                    {firstActivePick?.status==='pulled'?'✓ Pulled':'Needs Pull'}</span>
+                  <span className={`badge ${activePick?.status==='pulled'?'badge-green':'badge-amber'}`} style={{fontSize:11}}>
+                    {activePick?.status==='pulled'?'✓ Pulled':'Needs Pull'}</span>
                   {isMulti&&<span style={{fontSize:11,padding:'2px 8px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{subs.length} items</span>}
                   {t.urgent&&<span style={{fontSize:11,padding:'2px 8px',borderRadius:8,background:'#fee2e2',color:'#dc2626',fontWeight:700}}>🔥 Rush — {t.daysOut}d</span>}
                 </div>
@@ -13381,7 +13381,7 @@ export default function App(){
                   <span>SO: <strong style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{setESOTab('items');setESOScrollItem(subs[0].itemIdx);setESO(so);setESOC(c);setPg('orders')}}>{t.soId}</strong></span>
                   <span>Customer: <strong style={{color:'#0f172a'}}>{t.cName}</strong></span>
                   <span>Rep: {t.rep}</span>
-                  {firstActivePick?.created_at&&<span>Created: {firstActivePick.created_at}</span>}
+                  {activePick?.created_at&&<span>Created: {activePick.created_at}</span>}
                 </div>
               </div>
             </div>
@@ -13565,8 +13565,8 @@ export default function App(){
               <div style={{fontSize:12,fontWeight:800,color:shipDest==='ship_customer'?'#1e40af':shipDest==='ship_deco'?'#92400e':'#475569'}}>
                 {shipDest==='ship_customer'?'📦 Ship to Customer':shipDest==='ship_deco'?'🚚 Ship to Decorator':'🏭 In-House Deco'}</div>
               {shipDest==='ship_customer'&&addrs2.length>0&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>{addrs2[0]?.label}</div>}
-              {shipDest==='ship_deco'&&firstActivePick?.deco_vendor&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>Vendor: {firstActivePick.deco_vendor}</div>}
-              {firstActivePick?.memo&&<div style={{marginTop:6,fontSize:12,color:'#64748b'}}>📝 {firstActivePick.memo}</div>}
+              {shipDest==='ship_deco'&&activePick?.deco_vendor&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>Vendor: {activePick.deco_vendor}</div>}
+              {activePick?.memo&&<div style={{marginTop:6,fontSize:12,color:'#64748b'}}>📝 {activePick.memo}</div>}
             </div>
           </div>
 
