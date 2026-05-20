@@ -455,20 +455,35 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // standard SanMar size set so the badges have something to populate.
           const sizesToTry=knownSizes.length>0?knownSizes:['XS','S','M','L','XL','2XL','3XL','4XL'];
           console.log('[SanMar] Per-size legacy fallback for',sku,'sizes:',sizesToTry.join(','),'color:',prodColor||'(any)');
+          let perSizeLogged=false;
           // Try the item's color first; if every size comes back empty, retry with no color filter.
           for(const tryColor of [prodColor,'']){
             const before=Object.keys(sizeQty).length;
             await Promise.all(sizesToTry.map(async sz=>{
               try{
                 const invData=await sanmarGetInventory(sku,tryColor,sz);
-                const it0=(invData?.items||[])[0]||invData;
-                if(!it0||it0.errorOccurred==='true'||it0.errorOccured==='true')return;
-                let qty=parseInt(it0.totalQty||it0.qty||it0.quantity||0)||0;
-                if(qty<=0&&it0.warehouseInfo){
-                  const details=it0.warehouseInfo.inventoryDetail||it0.warehouseInfo;
-                  const arr=Array.isArray(details)?details:[details];
-                  arr.forEach(d=>{if(d&&d.quantity)qty+=parseInt(d.quantity)||0});
-                }
+                // Normalize to a list — the legacy SOAP wraps rows in items/listResponse/return,
+                // or returns a single root-level object. Mirror smLiveSearch's parser exactly
+                // since that path is proven against SanMar's real response shape.
+                let rows=invData?.items||[];
+                if(!rows.length&&invData?.listResponse)rows=Array.isArray(invData.listResponse)?invData.listResponse:[invData.listResponse];
+                if(!rows.length&&invData?.return)rows=Array.isArray(invData.return)?invData.return:[invData.return];
+                if(!rows.length&&invData&&(invData.size||invData.totalQty||invData.qty||invData.warehouseInfo))rows=[invData];
+                rows=rows.filter(it=>it&&it.errorOccurred!=='true'&&it.errorOccured!=='true');
+                if(!perSizeLogged&&rows.length){perSizeLogged=true;console.log('[SanMar] Per-size response sample',sku,sz,':',JSON.stringify(rows[0]).slice(0,500))}
+                let qty=0;
+                rows.forEach(it=>{
+                  let q=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
+                  if(q<=0&&it.warehouseInfo){
+                    const details=it.warehouseInfo.inventoryDetail||it.warehouseInfo;
+                    const arr=Array.isArray(details)?details:[details];
+                    arr.forEach(d=>{if(d&&d.quantity)q+=parseInt(d.quantity)||0});
+                  }
+                  // Last resort: scan any leftover numeric string field (e.g. inventoryQty)
+                  // that isn't a known price/size/identifier — matches smLiveSearch behavior.
+                  if(q<=0){Object.entries(it).forEach(([k,v])=>{if(typeof v==='string'&&!['size','labelSize','color','catalogColor','colorName','style','piecePrice','salePrice','programPrice','casePrice','caseQty','customerPrice','myPrice'].includes(k)){const n=parseInt(v)||0;if(n>0)q+=n}})}
+                  qty+=q;
+                });
                 if(qty>0){sizeQty[normSzName(sz)]=(sizeQty[normSzName(sz)]||0)+qty;invSuccess=true}
               }catch(e){console.warn('[SanMar] Per-size inventory error',sku,sz,e.message)}
             }));
