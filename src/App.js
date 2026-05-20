@@ -1276,6 +1276,11 @@ const _dbDeleteHistInvoice = async (id) => {
 // Save-in-progress guard — prevents poll/realtime from loading partial data during delete-and-reinsert
 let _dbSavingCount=0;let _dbLastSaveAt=0;
 const _dbSavingGuard=async(fn)=>{_dbSavingCount++;try{return await fn()}finally{_dbSavingCount--;_dbLastSaveAt=Date.now()}};
+// After a local batch-queue edit, protect it from being clobbered by an
+// in-flight realtime/poll reload that may still read a stale app_state.batch_pos
+// (the queue is one JSON blob, written separately from the SO save that triggers
+// the reload). Reload sites keep the local queue while within this window.
+let _batchPosDirtyUntil=0;
 // Direct pick_line status update — atomic, bypasses SO delete-and-reinsert for fast cross-tab sync
 const _dbUpdatePickLineStatus=async(soId,itemIdx,pickId,status,pulledQtys)=>{
   if(!supabase)return;
@@ -2401,6 +2406,7 @@ export default function App(){
   // ─── Supabase: load on mount ───
   const _pendingQBTokens=useRef(null);
   const _initialLoadDone=useRef(false);
+  const _batchPosApplied=useRef(JSON.stringify(loadState('batch_pos',[])));// JSON of the last batch_pos value applied from a DB load/reload
   React.useEffect(()=>{
     if(!supabase){setDbLoading(false);_initialLoadDone.current=true;return}
     let cancelled=false;
@@ -2445,7 +2451,7 @@ export default function App(){
           if(d.dismissedNotifsDb?.length){const dbKeys=d.dismissedNotifsDb.map(r=>r.dismiss_key);setDismissedNotifs(prev=>{const merged=[...new Set([...prev,...dbKeys])];_lsSet('nsa_dismissed_notifs',JSON.stringify(merged));return merged})}
           // Load app_state key-value data (batch POs, changelog, etc.)
           const as=d.appState||{};
-          if(as.batch_pos)setBatchPOs(as.batch_pos);
+          if(as.batch_pos){_batchPosApplied.current=JSON.stringify(as.batch_pos);setBatchPOs(as.batch_pos)}
           if(as.submitted_batches)setSubmittedBatches(as.submitted_batches);
           if(as.batch_counter)setBatchCounter(as.batch_counter);
           if(as.change_log)setChangeLog(as.change_log);
@@ -2499,7 +2505,7 @@ export default function App(){
               if(d2.omg_stores.length)setOmgStores(d2.omg_stores);
               setIssues(d2.issues||[]);
               const as2=d2.appState||{};
-              if(as2.batch_pos)setBatchPOs(as2.batch_pos);if(as2.submitted_batches)setSubmittedBatches(as2.submitted_batches);
+              if(as2.batch_pos){_batchPosApplied.current=JSON.stringify(as2.batch_pos);setBatchPOs(as2.batch_pos)}if(as2.submitted_batches)setSubmittedBatches(as2.submitted_batches);
               if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.change_log)setChangeLog(as2.change_log);
               if(as2.so_history)setSOHistory(as2.so_history);if(as2.job_time_logs)setJobTimeLogs(as2.job_time_logs);
               if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:{..._qbDef.mapping,...(as2.qb_config.mapping||{})},syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
@@ -2581,7 +2587,7 @@ export default function App(){
         if(as.inv_adj_log)setInvAdjLog(prev=>_jsonEq(prev,as.inv_adj_log)?prev:as.inv_adj_log);
         if(as.inv_po_counter)setInvPOCounter(prev=>as.inv_po_counter===prev?prev:as.inv_po_counter);
         if(as.submitted_batches)setSubmittedBatches(prev=>_jsonEq(prev,as.submitted_batches)?prev:as.submitted_batches);
-        if(as.batch_pos)setBatchPOs(prev=>_jsonEq(prev,as.batch_pos)?prev:as.batch_pos);
+        if(as.batch_pos)setBatchPOs(prev=>{const inc=as.batch_pos;if(_jsonEq(prev,inc)){_batchPosApplied.current=JSON.stringify(inc);return prev}if(Date.now()<_batchPosDirtyUntil)return prev;_batchPosApplied.current=JSON.stringify(inc);return inc});
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(_jsonEq(prev,ci))return prev;Object.assign(NSA,ci);return ci});
       };
       // Debounce realtime events — coalesce rapid-fire changes into a single reload
@@ -2701,7 +2707,7 @@ export default function App(){
         if(as.inv_adj_log)setInvAdjLog(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_adj_log)?as.inv_adj_log:prev);
         if(as.inv_po_counter)setInvPOCounter(prev=>as.inv_po_counter!==prev?as.inv_po_counter:prev);
         if(as.submitted_batches)setSubmittedBatches(prev=>JSON.stringify(prev)!==JSON.stringify(as.submitted_batches)?as.submitted_batches:prev);
-        if(as.batch_pos)setBatchPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.batch_pos)?as.batch_pos:prev);
+        if(as.batch_pos)setBatchPOs(prev=>{const inc=as.batch_pos;if(_jsonEq(prev,inc)){_batchPosApplied.current=JSON.stringify(inc);return prev}if(Date.now()<_batchPosDirtyUntil)return prev;_batchPosApplied.current=JSON.stringify(inc);return inc});
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(JSON.stringify(prev)===JSON.stringify(ci))return prev;Object.assign(NSA,ci);return ci});
       }catch(e){
         _pollConsecutiveFailures=Math.min(_pollConsecutiveFailures+1,6);
@@ -3283,7 +3289,7 @@ export default function App(){
   // Other keys still cache locally for fast cold-start.
   const _LS_SKIP_APPSTATE=new Set(['change_log','so_history','inv_adj_log']);
   const _saveAppState=(key,val)=>{if(!_LS_SKIP_APPSTATE.has(key))_lsSet('nsa_'+key,JSON.stringify(val));if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSavingGuard(()=>_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}]))};
-  React.useEffect(()=>{_saveAppState('batch_pos',batchPOs)},[batchPOs]);
+  React.useEffect(()=>{const cur=JSON.stringify(batchPOs);if(_batchPosApplied.current!==cur)_batchPosDirtyUntil=Date.now()+12000;_saveAppState('batch_pos',batchPOs)},[batchPOs]);
   React.useEffect(()=>{_saveAppState('submitted_batches',submittedBatches)},[submittedBatches]);
   React.useEffect(()=>{_saveAppState('batch_counter',batchCounter)},[batchCounter]);
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
