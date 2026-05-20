@@ -3587,6 +3587,7 @@ export default function App(){
   // Recently viewed records
   const[recentlyViewed,setRecentlyViewed]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_recent')||'[]')}catch{return[]}});
   const[recentOpen,setRecentOpen]=useState(false);
+  const[actionsMenuOpen,setActionsMenuOpen]=useState(false);
   const addRecent=(kind,id,label,custId)=>{setRecentlyViewed(prev=>{const filtered=prev.filter(r=>!(r.kind===kind&&r.id===id));const next=[{kind,id,label,custId,ts:Date.now()},...filtered].slice(0,10);_lsSet('nsa_recent',JSON.stringify(next));return next})};
   React.useEffect(()=>{if(eSO){const c=cust.find(x=>x.id===eSO.customer_id);addRecent('order',eSO.id,eSO.id+(eSO.memo?' — '+eSO.memo:'')+(c?' ('+( c.alpha_tag||c.name)+')':''),eSO.customer_id)}},[eSO?.id]); // eslint-disable-line
   React.useEffect(()=>{if(eEst){const c=cust.find(x=>x.id===eEst.customer_id);addRecent('estimate',eEst.id,eEst.id+(eEst.memo?' — '+eEst.memo:'')+(c?' ('+(c.alpha_tag||c.name)+')':''),eEst.customer_id)}},[eEst?.id]); // eslint-disable-line
@@ -4145,6 +4146,13 @@ export default function App(){
       items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
     if(Array.isArray(seedItems)&&seedItems.length)items.push(...seedItems);
     const e={id:nextEstId(ests),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
+  // Create a blank Sales Order directly (skipping the estimate stage). Reps still pick a
+  // customer from inside the editor — same default shape as a freshly converted SO.
+  const newSOFn=(c)=>{const mk=c?.catalog_markup||1.65;
+    const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);
+    const defExp=fourWeeks.toISOString().split('T')[0];
+    const so={id:nextSOId(sos),customer_id:c?.id||null,estimate_id:null,memo:'',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,expected_date:defExp,production_notes:'',shipping_type:'pct',shipping_value:5,ship_to_id:'default',firm_dates:[],art_files:[],items:[],order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_alert_days:100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:c?.tax_rate||0,tax_exempt:c?.tax_exempt||false};
+    setESO(so);setESOC(c||null);setPg('orders');return so};
   const convertSO=est=>{const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);const defExp=fourWeeks.toISOString().split('T')[0];
     // Deep clone items+decorations so nested objects (roster, names, art refs) are fully independent
     const clonedItems=safeItems(est).map(it=>{const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];return clone});
@@ -4767,15 +4775,21 @@ export default function App(){
   function rDash(){
     // Unread messages for this user — person-specific filtering
     const allUnread=(msgs||[]).filter(m=>!(m.read_by||[]).includes(cu?.id));
-    // Filter messages to person's scope: tagged directly, from their dept, or for their rep's customers
+    const _isAdminRole=cu?.role==='admin'||cu?.role==='super_admin'||cu?.role==='gm';
+    // Filter messages to person's scope: tagged directly, authored, or for their rep's customers.
+    // Admins default to "mine" (matching adminRepFilter); switch the filter to "all" or a specific rep to expand.
     const isMyMsg=(m)=>{
       if((m.tagged_members||[]).includes(cu?.id))return true;// directly tagged
       if(m.author_id===cu?.id)return true;// own messages
-      if(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return true;
       const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);
-      if(!so)return cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
-      const c=cust.find(x=>x.id===so.customer_id);
-      const msgRepId=c?.primary_rep_id||so.created_by;
+      const c=so?cust.find(x=>x.id===so.customer_id):null;
+      const msgRepId=c?.primary_rep_id||so?.created_by||null;
+      if(_isAdminRole){
+        if(adminRepFilter==='all')return true;
+        const targetId=adminRepFilter==='me'?cu.id:adminRepFilter;
+        return msgRepId===targetId;
+      }
+      if(!so)return false;
       if(cu.role==='rep')return msgRepId===cu.id;
       if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(msgRepId)}
       return true;
@@ -4998,7 +5012,10 @@ export default function App(){
             </div>)}
           </div>)})()}
         </div></div>
-      <div className="card"><div className="card-header"><h2>💬 Unread ({unreadMsgs.length}){unreadMentions.length>0&&<span style={{fontSize:12,color:'#d97706',fontWeight:600,marginLeft:8}}>({unreadMentions.length} mention{unreadMentions.length!==1?'s':''})</span>}</h2></div>
+      <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>💬 Unread ({unreadMsgs.length}){unreadMentions.length>0&&<span style={{fontSize:12,color:'#d97706',fontWeight:600,marginLeft:8}}>({unreadMentions.length} mention{unreadMentions.length!==1?'s':''})</span>}</h2>
+        {isAdmin&&<select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+          <option value="me">My Items</option><option value="all">All Reps</option>{REPS.filter(r=>r.id!==cu.id&&(r.role==='rep'||r.role==='admin'||r.role==='gm')).map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}
+        </select>}</div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {myUnread.length===0?<div className="empty" style={{padding:20}}>No unread messages</div>:
           myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);
@@ -24875,7 +24892,25 @@ export default function App(){
                 <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#f1f5f9',color:'#64748b',textTransform:'uppercase'}}>{r.kind}</span>
               </div>})}
           </div></>}
-          <button className="btn btn-sm" onClick={()=>setScanModalOpen(true)} style={{fontSize:11,background:'#0f172a',border:'1px solid #334155',color:'#22c55e',padding:'4px 8px'}} title="Scan barcode / QR code"><Icon name="scan" size={14}/></button><button className="btn btn-sm" onClick={()=>setIssueModal({open:true,desc:'',priority:'medium'})} style={{fontSize:11,background:'none',border:'1px solid #fca5a5',color:'#dc2626',position:'relative',padding:'4px 8px'}} title="Report an issue"><Icon name="alert" size={14}/>{openIssueCount>0&&<span style={{position:'absolute',top:-4,right:-4,background:'#dc2626',color:'white',borderRadius:10,padding:'0 5px',fontSize:9,minWidth:16,textAlign:'center',lineHeight:'16px'}}>{openIssueCount}</span>}</button><button className="btn btn-sm" onClick={()=>setAiWizOpen(true)} style={{fontSize:11,background:'linear-gradient(135deg,#7c3aed,#6d28d9)',color:'white',border:'none',padding:'4px 10px',fontWeight:700,boxShadow:'0 1px 3px rgba(124,58,237,0.3)'}} title="Build an order with AI from a coach's image, text, or sheet">✨ Build with AI</button><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
+          <button className="btn btn-sm" onClick={()=>setScanModalOpen(true)} style={{fontSize:11,background:'#0f172a',border:'1px solid #334155',color:'#22c55e',padding:'4px 8px'}} title="Scan barcode / QR code"><Icon name="scan" size={14}/></button>
+          <button className="btn btn-sm" onClick={()=>setIssueModal({open:true,desc:'',priority:'medium'})} style={{fontSize:11,background:'none',border:'1px solid #fca5a5',color:'#dc2626',position:'relative',padding:'4px 8px'}} title="Report an issue"><Icon name="alert" size={14}/>{openIssueCount>0&&<span style={{position:'absolute',top:-4,right:-4,background:'#dc2626',color:'white',borderRadius:10,padding:'0 5px',fontSize:9,minWidth:16,textAlign:'center',lineHeight:'16px'}}>{openIssueCount}</span>}</button>
+          <button className="btn btn-sm" onClick={()=>setActionsMenuOpen(o=>!o)} style={{fontSize:11,background:'linear-gradient(135deg,#1e40af,#1e3a8a)',color:'white',border:'none',padding:'4px 12px',fontWeight:700,display:'flex',alignItems:'center',gap:6,boxShadow:'0 1px 3px rgba(30,64,175,0.3)'}} title="Quick actions"><Icon name="plus" size={12}/> Actions <span style={{fontSize:9,marginLeft:2,opacity:0.85}}>▼</span></button>
+          {actionsMenuOpen&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:69}} onClick={()=>setActionsMenuOpen(false)}/>
+          <div style={{position:'absolute',top:'100%',right:0,marginTop:4,width:240,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:70,overflow:'hidden'}}>
+            <div style={{padding:'8px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc',borderBottom:'1px solid #e2e8f0'}}>Quick Actions</div>
+            {[
+              {label:'✨ Build with AI',sub:'Estimate from image / text / sheet',color:'#7c3aed',onClick:()=>setAiWizOpen(true)},
+              {label:'+ New Estimate',sub:'Start a blank estimate',color:'#1e40af',onClick:()=>newE(null)},
+              {label:'+ New Sales Order',sub:'Skip the estimate stage',color:'#1e40af',onClick:()=>newSOFn(null)},
+              {label:'+ New Customer',sub:'Add a customer record',color:'#475569',onClick:()=>setCM({open:true,c:null})},
+              {label:'+ New Product',sub:'Add a product to the catalog',color:'#475569',onClick:()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})},
+              {label:'+ New Vendor',sub:'Add a vendor / supplier',color:'#475569',onClick:()=>setVM({open:true,v:null})},
+            ].map((it,i)=><div key={i} style={{padding:'10px 12px',cursor:'pointer',borderBottom:'1px solid #f1f5f9',display:'flex',flexDirection:'column',gap:2}} onMouseEnter={e=>e.currentTarget.style.background='#f8fafc'} onMouseLeave={e=>e.currentTarget.style.background='transparent'} onClick={()=>{setActionsMenuOpen(false);it.onClick()}}>
+              <span style={{fontSize:13,fontWeight:700,color:it.color}}>{it.label}</span>
+              <span style={{fontSize:10,color:'#94a3b8'}}>{it.sub}</span>
+            </div>)}
+          </div></>}
+        </div></div>
       {dbError&&<div style={{padding:'10px 16px',background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
         <span style={{fontSize:16}}>&#9888;</span><span style={{flex:1}}>{dbError}</span>
         <button onClick={()=>setDbError(null)} style={{background:'none',border:'none',color:'#991b1b',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
