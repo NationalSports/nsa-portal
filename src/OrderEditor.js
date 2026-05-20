@@ -462,6 +462,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             await Promise.all(sizesToTry.map(async sz=>{
               try{
                 const invData=await sanmarGetInventory(sku,tryColor,sz);
+                if(!perSizeLogged){perSizeLogged=true;console.log('[SanMar] RAW per-size response',sku,sz,'=>',JSON.stringify(invData))}
                 // Normalize to a list — the legacy SOAP wraps rows in items/listResponse/return,
                 // or returns a single root-level object. Mirror smLiveSearch's parser exactly
                 // since that path is proven against SanMar's real response shape.
@@ -470,7 +471,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 if(!rows.length&&invData?.return)rows=Array.isArray(invData.return)?invData.return:[invData.return];
                 if(!rows.length&&invData&&(invData.size||invData.totalQty||invData.qty||invData.warehouseInfo))rows=[invData];
                 rows=rows.filter(it=>it&&it.errorOccurred!=='true'&&it.errorOccured!=='true');
-                if(!perSizeLogged&&rows.length){perSizeLogged=true;console.log('[SanMar] Per-size response sample',sku,sz,':',JSON.stringify(rows[0]).slice(0,500))}
                 let qty=0;
                 rows.forEach(it=>{
                   let q=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
