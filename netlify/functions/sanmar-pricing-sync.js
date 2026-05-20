@@ -50,6 +50,54 @@ function extractTag(xml, tag) {
   return vals.length > 0 ? vals[0] : null;
 }
 
+// getSignInPricing returns one record per style/color/size. Capture the
+// per-size price so extended-size upcharges (2XL/3XL+) survive instead of
+// being collapsed to a single number. We split the response into record
+// blocks (each holding a <size> and a price) and map size -> piecePrice
+// (falling back to customerPrice/salePrice). Returns {} when the response
+// has no per-size structure.
+function parseSizeCosts(xml) {
+  var map = {};
+  var blocks = null;
+  // SanMar's wrapper element name varies by service; use whichever repeats
+  // and actually contains a <size>.
+  var wrappers = ['listResponse', 'PriceInfo', 'productPricing', 'return', 'item'];
+  for (var w = 0; w < wrappers.length; w++) {
+    var re = new RegExp('<(?:[\\w]+:)?' + wrappers[w] + '\\b[^>]*>([\\s\\S]*?)</(?:[\\w]+:)?' + wrappers[w] + '>', 'gi');
+    var found = [];
+    var m;
+    while ((m = re.exec(xml)) !== null) found.push(m[1]);
+    if (found.length && found.some(function(b) { return /<(?:[\w]+:)?size\b/i.test(b); })) { blocks = found; break; }
+  }
+  if (!blocks) return map;
+  blocks.forEach(function(b) {
+    var size = extractTag(b, 'size');
+    if (!size) return;
+    var price = null;
+    var keys = ['piecePrice', 'customerPrice', 'salePrice'];
+    for (var k = 0; k < keys.length; k++) {
+      var v = parseFloat(extractTag(b, keys[k]));
+      if (v > 0) { price = v; break; }
+    }
+    if (price == null) return;
+    var key = size.trim();
+    // Keep the lowest price seen for a size (matches the min basis used for nsa_cost).
+    if (map[key] == null || price < map[key]) map[key] = price;
+  });
+  return map;
+}
+
+// Stable stringify (sorted keys) so we can diff a freshly-parsed map against
+// the stored jsonb without false positives from key ordering.
+function stableSC(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  var keys = Object.keys(obj).sort();
+  if (!keys.length) return null;
+  var out = {};
+  keys.forEach(function(k) { out[k] = obj[k]; });
+  return JSON.stringify(out);
+}
+
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json' };
 
@@ -77,7 +125,7 @@ exports.handler = async (event) => {
 
     // 2. Get products for these vendors
     const vendorIds = vendors.map(function(v) { return '"' + v.id + '"'; }).join(',');
-    const pRes = await fetch(sbUrl + '/rest/v1/products?vendor_id=in.(' + vendorIds + ')&select=id,sku,nsa_cost,vendor_id', { headers: sbHeaders });
+    const pRes = await fetch(sbUrl + '/rest/v1/products?vendor_id=in.(' + vendorIds + ')&select=id,sku,nsa_cost,size_costs,vendor_id', { headers: sbHeaders });
     const products = await pRes.json();
     if (!Array.isArray(products) || !products.length) {
       return { statusCode: 200, headers, body: JSON.stringify({ message: 'No SanMar products in database', updated: 0, vendors_found: vendors.length }) };
@@ -124,22 +172,34 @@ exports.handler = async (event) => {
         if (!prices.length) continue;
 
         var newCost = Math.min.apply(null, prices);
+
+        // Build the per-size cost map. Only persist it when sizes actually
+        // differ (an upcharge exists); a flat price needs no map and falls
+        // back to nsa_cost in the app.
+        var sizeCosts = parseSizeCosts(xml);
+        var distinctVals = {};
+        Object.keys(sizeCosts).forEach(function(s) { distinctVals[sizeCosts[s].toFixed(2)] = true; });
+        var nextSizeCosts = Object.keys(distinctVals).length > 1 ? sizeCosts : null;
+        var nextSCStr = stableSC(nextSizeCosts);
+
         var matching = products.filter(function(p) { return p.sku === sku; });
 
         for (var j = 0; j < matching.length; j++) {
           var prod = matching[j];
-          if (Math.abs((prod.nsa_cost || 0) - newCost) > 0.005) {
+          var costChanged = Math.abs((prod.nsa_cost || 0) - newCost) > 0.005;
+          var scChanged = stableSC(prod.size_costs) !== nextSCStr;
+          if (costChanged || scChanged) {
             var uRes = await fetch(sbUrl + '/rest/v1/products?id=eq.' + prod.id, {
               method: 'PATCH',
               headers: Object.assign({}, sbHeaders, { 'Prefer': 'return=minimal' }),
-              body: JSON.stringify({ nsa_cost: newCost })
+              body: JSON.stringify({ nsa_cost: newCost, size_costs: nextSizeCosts })
             });
             if (!uRes.ok) {
               var errTxt = await uRes.text();
               errors.push({ sku: sku, error: errTxt });
             } else {
               updated++;
-              changes.push({ sku: sku, old: prod.nsa_cost, new: newCost });
+              changes.push({ sku: sku, old: prod.nsa_cost, new: newCost, size_costs: nextSizeCosts || undefined });
             }
           }
         }
