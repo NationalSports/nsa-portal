@@ -2551,6 +2551,10 @@ export default function App(){
         if(_dbSavingCount>0){console.log('[DB] Reload deferred — save in progress');_rtTimer=setTimeout(reloadAll,1000);return}
         if(Date.now()-_dbLastSaveAt<1500){console.log('[DB] Reload deferred — save just finished');_rtTimer=setTimeout(reloadAll,1500);return}
         const d=await _dbLoad();if(!d||!d.hasData)return;
+        // If a child-table query (items/decorations) timed out or failed mid-load, this load is
+        // partial — estimates/SOs would come back with empty items. Skip it so the hollowed-out
+        // data never reaches state (which would then trip the "0 items but DB has N" save guard).
+        if(d._decoTimedOut){console.warn('[DB] Realtime reload skipped — a child-table query timed out, preserving local data');return}
         // Preserve local versions of estimates/SOs whose decoration saves failed — don't let DB data overwrite them
         const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
         const _hasProtected=_dbSaveFailedIds.size>0||_dbSavePendingIds.size>0||_recentlyPulledSOs.size>0;
