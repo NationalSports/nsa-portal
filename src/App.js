@@ -19234,9 +19234,10 @@ export default function App(){
           Object.entries(po).forEach(([k,v])=>{
             if(typeof v!=='number'||k==='unit_cost'||k==='qty'||k.startsWith('_'))return;
             if(v<=0)return;
+            // Match-verification needs to see the line even when it's fully billed already, so we
+            // don't filter by open qty here (that filter is for the wizard's target picker).
             const openQty=v-((po.billed||{})[k]||0);
-            if(openQty<=0)return;
-            items.push({sku:it.sku,name:it.name,color:it.color||'',size:k,qty:openQty,unit_cost:po.unit_cost||0,so_id:so.id});
+            items.push({sku:it.sku,name:it.name,color:it.color||'',size:k,qty:openQty,ordered:v,unit_cost:po.unit_cost||0,so_id:so.id});
           });
         }));
         return items;
