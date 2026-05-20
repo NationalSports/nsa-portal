@@ -26,15 +26,20 @@ export function buildSanMarLineItems(batchPOs) {
       // can override via item._sanmar_style if their catalog records it.
       const style = it._sanmar_style || (String(it.sku || '').split(/[\s_]/)[0] || it.sku || '');
       const color = it._sanmar_color || it.color || '';
+      // SanMar upcharges extended sizes (2XL, 3XL+). When per-size costs were
+      // captured at PO time they live on _size_costs; otherwise fall back to
+      // the blended unit_cost so the preview total still reconciles.
+      const sizeCosts = it._size_costs || it._sizeCosts || {};
       Object.entries(it.sizes || {}).forEach(([size, qty]) => {
         if (!qty || qty <= 0) return;
+        const unitPrice = sizeCosts[size] != null ? sizeCosts[size] : (it.unit_cost || 0);
         lines.push({
           lineNumber: lineNumber++,
           style,
           color,
           size,
           quantity: qty,
-          unitPrice: it.unit_cost || 0,
+          unitPrice,
           sourceSO: bp.so_id,
           sourcePO: bp.po_id || '',
           productName: it.name || '',
