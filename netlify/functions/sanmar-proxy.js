@@ -208,10 +208,13 @@ exports.handler = async (event) => {
         // getInventoryLevels Request schema enforces this exact <sequence>:
         // wsVersion, id, password, productID, productIDtype (productIDtype is
         // required). Note the casing — productID (capital D) and productIDtype.
+        // SanMar's PromoStandards `id` is the web-service username (NOT the
+        // numeric customer number used by the legacy SOAP services). We try the
+        // username first and fall back to the customer number on auth failure.
         const { wsVersion, id, password: pwd, productId, productID, productIdType, productIDtype } = parsed;
         const promoParams = {
           wsVersion: wsVersion || '1.2.1',
-          id: id || customerNumber,
+          id: id || username,
           password: pwd || password,
           productID: productID || productId || '',
           productIDtype: productIDtype || productIdType || 'Supplier',
@@ -269,6 +272,32 @@ exports.handler = async (event) => {
   try {
     console.log(`[SanMar] SOAP request: ${action} → ${baseUrl} (customer: ${customerNumber}, user: ${username})`);
     let result = await doRequest(soapBody);
+
+    // PromoStandards returns a 200 with an errorMessage (not a SOAP fault) when
+    // the id/password combo is wrong. The `id` can be either the web-service
+    // username or the numeric customer number depending on the account, so if
+    // the first attempt (username) fails auth, retry once with the other value.
+    if (service === 'promostandards' && result.statusCode === 200) {
+      let errMsg = '';
+      try { errMsg = (JSON.parse(result.body || '{}').errorMessage) || ''; } catch {}
+      if (/auth|credential/i.test(errMsg)) {
+        const parsed = JSON.parse(event.body || '{}');
+        const firstId = parsed.id || username;
+        const altId = firstId === username ? customerNumber : username;
+        console.warn(`[SanMar] PromoStandards auth failed with id="${firstId}", retrying with id="${altId}"`);
+        const altBody = buildPromoStandardsSoapEnvelope(action, {
+          wsVersion: parsed.wsVersion || '1.2.1',
+          id: altId,
+          password: parsed.password || password,
+          productID: parsed.productID || parsed.productId || '',
+          productIDtype: parsed.productIDtype || parsed.productIdType || 'Supplier',
+        });
+        const altResult = await doRequest(altBody);
+        let altErr = '';
+        try { altErr = (JSON.parse(altResult.body || '{}').errorMessage) || ''; } catch {}
+        if (altResult.statusCode === 200 && !/auth|credential/i.test(altErr)) result = altResult;
+      }
+    }
 
     if (result.fault && service === 'inventory') {
       const faultStr = result.parsed.faultString || '';
