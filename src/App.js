@@ -18698,6 +18698,7 @@ export default function App(){
           else if(/\bNIKE\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Nike';
           else if(/\bPUMA\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Puma';
           else if(/\bNEW\s*BALANCE\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='New Balance';
+          else if(/\bAUGUSTA\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Momentec';
         }
         if(!bill.supplier&&/^SUPPLIER\b/i.test(line)){
           for(let j=li+1;j<Math.min(li+3,lines.length);j++){
@@ -18705,6 +18706,8 @@ export default function App(){
             if(nl.length>3&&!/^DEPT|^PH|^FX|^FAX|^\d|^SOLD|^SHIP/i.test(nl)){bill.supplier=nl;break}
           }
         }
+        // Supplier alias normalization (PDF supplier text → system vendor name)
+        if(bill.supplier&&/augusta/i.test(bill.supplier))bill.supplier='Momentec';
         // Document number
         {const m=line.match(/(?:SI\s+)?DOCUMENT\s+NUMBER[:\s]+(\d+)/i);if(m&&!bill.doc_number)bill.doc_number=m[1]}
         // Dates
@@ -18732,8 +18735,17 @@ export default function App(){
       }
 
       // ── PASS 2: Extract line items ONLY from item table section ──
-      const SKU_RE=/\b([A-Z]{1,4}\d{3,6})\b/;
+      // Match (a) letter-prefixed (e.g. VOG123), (b) digit-prefixed with letter suffix (e.g. 506CR, 567P).
+      // Pure-digit SKUs (e.g. 510000) are picked up by SKU_RE_NUMERIC as a fallback so we don't
+      // false-match qty/price digits or split barcode segments when a letter-bearing SKU exists.
+      const SKU_RE=/\b([A-Z]{1,4}\d{3,6}[A-Z]{0,3}|\d{3,6}[A-Z]{1,4})\b/;
+      const SKU_RE_NUMERIC=/\b(\d{5,7})\b/;
       const SZ_RE=/\b(XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|6XL|MT|LT|XLT|OSFA)\b/i;
+      // Long-form size words used on Sports Inc / Augusta invoices. PDF text is often truncated to
+      // 5 chars in the SIZE column (e.g. "MEDIU" instead of "MEDIUM"), but the description line
+      // below typically has the full word — we search both.
+      const SZ_LONG_RE=/\b(EXTRA\s+LARGE|XXLARGE|XLARGE|MEDIUM|MEDIU|LARGE|SMALL|EXTRA)\b/i;
+      const SZ_LONG_MAP={'MEDIUM':'M','MEDIU':'M','LARGE':'L','SMALL':'S','EXTRA LARGE':'XL','EXTRA':'XL','XLARGE':'XL','XXLARGE':'2XL'};
       const NUM_SZ_RE=/\b(\d{1,2}(?:\.\d)?)\b/;
       const itemLines=[];
       const startIdx=itemSectionStart>=0?itemSectionStart:0;
@@ -18754,19 +18766,70 @@ export default function App(){
         });
         const useColumns=colIdx.extension!=null&&(colIdx.qtyShipped!=null||colIdx.qtyOrdered!=null);
 
+        // Build a fast lookup regex from known product SKUs so we recognize whatever the
+        // vendor actually uses (regardless of pattern). Falls back to SKU_RE/_NUMERIC for
+        // SKUs not yet in our catalog (new items, decoration codes, etc).
+        let knownSkuRe=null;
+        try{
+          const knownSkus=Array.from(new Set((prod||[]).map(p=>(p.sku||'').trim().toUpperCase()).filter(s=>s.length>=2)));
+          if(knownSkus.length){
+            knownSkus.sort((a,b)=>b.length-a.length);
+            knownSkuRe=new RegExp('\\b('+knownSkus.map(s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|')+')\\b','i');
+          }
+        }catch(e){/* huge catalogs could blow regex size — fall back to pattern matching */}
+
         for(let i=startIdx;i<endIdx;i++){
           const line=lines[i];
           if(/^UPC\s*NUMBER|^SUPPLIER\s*ITEM|^QUANTITY|^UNIT|^LIST|^DISC|^NET|^EXTENSION|^SIZE|^COLOR/i.test(line))continue;
-          const skuMatch=line.match(SKU_RE);
-          if(!skuMatch)continue;
-          const sku=skuMatch[1];
+          // Skip lines that are purely a long barcode/UPC with no other content (avoids false matches)
+          if(/^\s*\d{10,}\s*$/.test(line))continue;
+          let sku='';
+          // 1) Try known-SKU lookup against the product catalog (most reliable)
+          if(knownSkuRe){const km=line.match(knownSkuRe);if(km)sku=km[1].toUpperCase()}
+          // 2) Pattern-based fallbacks for unknown SKUs
+          if(!sku){
+            let skuMatch=line.match(SKU_RE);
+            if(!skuMatch){
+              // Numeric-only fallback for SKUs like "510000". Strip barcode segments that PDF
+              // extraction may have split with spaces (e.g. "8 86918 62306 3") so we don't
+              // grab one of those 5-digit chunks instead of the real item number.
+              const stripped=line.replace(/(?:\b\d{1,2}\s+)?(?:\d{4,6}\s+){1,3}\d{1,2}\b/g,' ');
+              skuMatch=stripped.match(SKU_RE_NUMERIC);
+            }
+            if(skuMatch)sku=skuMatch[1];
+          }
+          if(!sku)continue;
           const parts=line.split(/\t+/).map(p=>p.trim());
-          // Try named sizes first, then SIZE column, then numeric sizes, then empty
-          const sizeMatch=line.match(SZ_RE);
+          // Look at the SKU line + next 2 description lines together — Sports Inc/Augusta
+          // invoices truncate the size in the table to 5 chars ("MEDIU") but spell it out
+          // in full on the description line below.
+          const sizeSearchText=[line,lines[i+1]||'',lines[i+2]||''].join(' ');
           let size='';
-          if(sizeMatch){size=sizeMatch[1].toUpperCase()}
-          else if(colIdx.size!=null&&parts[colIdx.size]){size=parts[colIdx.size].trim().toUpperCase()}
-          else{const nm=line.match(NUM_SZ_RE);if(nm)size=nm[1]}
+          // 1) Long-form size words (handles "MEDIU"/"MEDIUM"/"LARGE"/"SMALL"/"EXTRA LARGE")
+          const longMatch=sizeSearchText.match(SZ_LONG_RE);
+          if(longMatch){
+            const key=longMatch[1].toUpperCase().replace(/\s+/g,' ');
+            size=SZ_LONG_MAP[key]||key;
+          }
+          // 2) Short-form size token on the SKU line itself (S, M, L, XL, 2XL, etc.)
+          if(!size){const sm=line.match(SZ_RE);if(sm)size=sm[1].toUpperCase()}
+          // 3) Explicit SIZE column from tab-delimited header
+          if(!size&&colIdx.size!=null&&parts[colIdx.size]){size=parts[colIdx.size].trim().toUpperCase()}
+          // 4) Numeric size fallback (shoes/youth) — but skip if the only numeric candidate is
+          // actually the quantity from the qty column; otherwise we'd grab qty as size.
+          if(!size){
+            const nm=line.match(NUM_SZ_RE);
+            if(nm){
+              const candidate=nm[1];
+              let isQty=false;
+              if(colIdx.qtyShipped!=null||colIdx.qtyOrdered!=null){
+                const qShip=(parts[colIdx.qtyShipped]||'').replace(/[$,]/g,'').trim();
+                const qOrd=(parts[colIdx.qtyOrdered]||'').replace(/[$,]/g,'').trim();
+                if(candidate===qShip||candidate===qOrd)isQty=true;
+              }
+              if(!isQty)size=candidate;
+            }
+          }
           // Detect half-size suffix (e.g. 10- means 10½) for numeric sizes
           if(/^\d{1,2}$/.test(size)){const hre=new RegExp('\\b'+size+'\\s*[-–](?!\\d)');if(hre.test(line))size+='-'}
           let qty=0,unitPrice=0,extension=0;
@@ -18804,18 +18867,32 @@ export default function App(){
           if(qty<=0||extension<=0)continue;
           if(unitPrice>0&&Math.abs(qty*unitPrice-extension)>extension*0.05+0.10)continue;
           let desc='',color='';
-          for(let j=i+1;j<Math.min(i+3,endIdx);j++){
+          for(let j=i+1;j<Math.min(i+4,endIdx);j++){
             const nl=lines[j];
+            if(!nl)continue;
             if(SKU_RE.test(nl))break;
             if(/MERCHANDISE|FREIGHT|DOCUMENT|SI UPCHARGE|REPORT|SI STORE/i.test(nl))break;
             if(!desc&&nl.length>3&&!/^\d[\d\s]*\d$/.test(nl)&&!SKU_RE.test(nl)){
               desc=nl.replace(/\t+/g,' ').trim();
               desc=desc.replace(/^\d[\d ]{10,16}\d\s+/,'').trim();
-              const cm=desc.match(/\b(BLACK|WHITE|RED|BLUE|GREEN|NAVY|GREY|GRAY|MAROON|GOLD|ORANGE|PURPLE|YELLOW|SCARLET|ROYAL|PINK|BROWN|TAN|CREAM|ONIX|CARBON|POWER|TEAM|CUSTOM)\b.*?(\/\s*[A-Z]+)?/i);
-              if(cm)color=cm[0].trim();
+            }
+            // Color: prefer the text AFTER the size word on a description line (handles team
+            // colors like "VEGAS GOLD", "CARDINAL/WHITE" that aren't in a fixed list). Strip
+            // trailing vendor codes like "(BA)" / "(SI)" before capturing.
+            if(!color){
+              const cleaned=nl.replace(/\s*\([A-Z]{1,4}\)\s*$/,'').trim();
+              const afterSize=cleaned.match(/\b(?:EXTRA\s+LARGE|XXLARGE|XLARGE|MEDIUM|MEDIU|LARGE|SMALL|EXTRA|2XL|3XL|4XL|5XL|6XL|XXL|XL|XS|XXS|YXS|YS|YM|YL|YXL|MT|LT|XLT|[SML])\s+([A-Z][A-Z0-9/\- ]{2,40})\s*$/i);
+              if(afterSize){
+                const c=afterSize[1].trim();
+                if(c)color=c.toUpperCase().replace(/\s+/g,' ');
+              }
+            }
+            if(!color){
+              const cm=nl.match(/\b(BLACK|WHITE|RED|BLUE|GREEN|NAVY|GREY|GRAY|MAROON|GOLD|ORANGE|PURPLE|YELLOW|SCARLET|ROYAL|PINK|BROWN|TAN|CREAM|ONIX|CARBON|POWER|TEAM|CUSTOM|VEGAS|CARDINAL|FOREST|KELLY|COLUMBIA|CHARCOAL|BURGUNDY|SILVER|TEAL|HEATHER|GRAPHITE|VEGAS\s+GOLD|TEAM\s+GOLD)\b(?:\s*\/\s*[A-Z]+)?(?:\s+[A-Z]+)?/i);
+              if(cm)color=cm[0].trim().toUpperCase().replace(/\s+/g,' ');
             }
           }
-          if(itemLines.some(it=>it.sku===sku&&it.size===size&&it.qty===qty&&Math.abs(it.unit_price-unitPrice)<0.01&&Math.abs(it.extension-extension)<0.01&&it.desc===desc))continue;
+          if(itemLines.some(it=>it.sku===sku&&it.size===size&&it.qty===qty&&Math.abs(it.unit_price-unitPrice)<0.01&&Math.abs(it.extension-extension)<0.01&&it.desc===desc&&it.color===color))continue;
           itemLines.push({sku,size,qty,unit_price:unitPrice,extension,desc,color});
         }
       }
@@ -19087,6 +19164,129 @@ export default function App(){
       return updated;
     };
 
+    // Build the candidate list for the "Match manually" wizard. Returns an array of pickable
+    // targets (open Batch POs + Sales Orders with open PO lines), each with a display label
+    // and an items[] summary used by the per-line mapper.
+    const _buildMatchCandidates=()=>{
+      const out=[];
+      (submittedBatches||[]).forEach(sb=>{
+        const soIds=(sb.source_pos||[]).map(sp=>sp.so_id).filter(Boolean);
+        const customers=Array.from(new Set((sb.source_pos||[]).map(sp=>sp.customer).filter(Boolean)));
+        const items=[];
+        (sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{
+          Object.entries(it.sizes||{}).forEach(([sz,qty])=>{if(qty>0)items.push({sku:it.sku,name:it.name,color:it.color||'',size:sz,qty,unit_cost:it.unit_cost||0,so_id:sp.so_id||''})});
+        }));
+        const totalQty=items.reduce((a,it)=>a+it.qty,0);
+        out.push({kind:'batch',id:sb.id||sb.po_number,label:sb.po_number,sub:`Batch · ${sb.vendor_name||''} · ${customers.join(', ')||'—'}${soIds.length?' · '+soIds.join(', '):''}`,total_units:totalQty,items,raw:sb,so_ids:soIds});
+      });
+      (sos||[]).forEach(so=>{
+        const items=[];
+        (so.items||[]).forEach(it=>(it.po_lines||[]).forEach(po=>{
+          Object.entries(po).forEach(([k,v])=>{
+            // size keys on the po_line object are arbitrary (S/M/L/numeric). Filter out known non-size fields.
+            if(typeof v!=='number'||k==='unit_cost'||k==='qty'||k.startsWith('_'))return;
+            if(v<=0)return;
+            const billedQty=(po.billed||{})[k]||0;
+            const openQty=v-billedQty;
+            if(openQty<=0)return;
+            items.push({sku:it.sku,name:it.name,color:it.color||'',size:k,qty:openQty,unit_cost:po.unit_cost||0,so_id:so.id,item_id:it.id,po_id:po.po_id||'',so_item_idx:(so.items||[]).indexOf(it)});
+          });
+        }));
+        if(!items.length)return;
+        const c=cust.find(cc=>cc.id===so.customer_id);
+        out.push({kind:'so',id:so.id,label:so.id,sub:`Sales Order · ${c?.name||so.customer_name||''}${so.po_number?' · PO '+so.po_number:''}`,total_units:items.reduce((a,it)=>a+it.qty,0),items,raw:so,so_ids:[so.id]});
+      });
+      return out;
+    };
+
+    // Filter the candidate list by a free-text query (matches PO #, SO #, customer, vendor, SKUs).
+    const _filterMatchCandidates=(candidates,query)=>{
+      const q=(query||'').trim().toLowerCase();
+      if(!q)return candidates;
+      return candidates.filter(c=>{
+        if(c.label.toLowerCase().includes(q))return true;
+        if((c.sub||'').toLowerCase().includes(q))return true;
+        if(c.items.some(it=>(it.sku||'').toLowerCase().includes(q)))return true;
+        return false;
+      });
+    };
+
+    // Pre-map bill lines to target items by SKU+size (and color, when present on both sides).
+    // Returns {billIdx: {target_idx, allocated_qty, ambiguous}}.
+    const _autoMapBillToTarget=(bill,target)=>{
+      const mappings={};
+      if(!target||!Array.isArray(target.items))return mappings;
+      (bill.items||[]).forEach((bl,bi)=>{
+        const hit=_matchLineToItems(bl,target.items);
+        if(!hit){mappings[bi]={skipped:true,reason:'no-match'};return}
+        mappings[bi]={target_idx:hit.idx,allocated_qty:bl.qty,ambiguous:hit.ambiguous};
+      });
+      return mappings;
+    };
+
+    // Resolve the available target items for whatever a bill is currently matched to. Returns the
+    // same {sku,size,color,qty,unit_cost,so_id,...} shape used by the wizard, so a single matcher
+    // works for both auto-matched and manually-matched bills.
+    const _targetItemsForBill=(bill)=>{
+      const src=bill.matchedPOSource,m=bill.matchedPO;
+      if(!m)return[];
+      if(src==='batch'){
+        const items=[];
+        (m.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{
+          Object.entries(it.sizes||{}).forEach(([sz,qty])=>{if(qty>0)items.push({sku:it.sku,name:it.name,color:it.color||'',size:sz,qty,unit_cost:it.unit_cost||0,so_id:sp.so_id||''})});
+        }));
+        return items;
+      }
+      if(src==='so_po'){
+        const so=m.so||sos.find(s=>s.id===(m.so_id||m.so?.id));
+        if(!so)return[];
+        const items=[];
+        (so.items||[]).forEach(it=>(it.po_lines||[]).forEach(po=>{
+          Object.entries(po).forEach(([k,v])=>{
+            if(typeof v!=='number'||k==='unit_cost'||k==='qty'||k.startsWith('_'))return;
+            if(v<=0)return;
+            // Match-verification needs to see the line even when it's fully billed already, so we
+            // don't filter by open qty here (that filter is for the wizard's target picker).
+            const openQty=v-((po.billed||{})[k]||0);
+            items.push({sku:it.sku,name:it.name,color:it.color||'',size:k,qty:openQty,ordered:v,unit_cost:po.unit_cost||0,so_id:so.id});
+          });
+        }));
+        return items;
+      }
+      if(src==='inv_po'){
+        const items=[];
+        (m.items||[]).forEach(it=>{
+          const sizes=it.sizes||{};
+          if(Object.keys(sizes).length)Object.entries(sizes).forEach(([sz,qty])=>{if(qty>0)items.push({sku:it.sku,name:it.name,color:it.color||'',size:sz,qty,unit_cost:it.unit_cost||0})});
+          else items.push({sku:it.sku,name:it.name,color:it.color||'',size:'',qty:it.qty||0,unit_cost:it.unit_cost||0});
+        });
+        return items;
+      }
+      return[];
+    };
+
+    // Match a single bill line to a target item by SKU+size, narrowing by color when available.
+    // Returns {item, idx, ambiguous} or null.
+    const _matchLineToItems=(bl,items)=>{
+      if(!items||!items.length)return null;
+      const norm=s=>(s||'').toUpperCase().replace(/[^A-Z0-9/ ]/g,'').replace(/\s+/g,' ').trim();
+      const sku=(bl.sku||'').toUpperCase();
+      const size=(bl.size||'').toUpperCase();
+      const billColor=norm(bl.color);
+      const indexed=items.map((it,ti)=>({...it,_idx:ti}));
+      let sameSkuSize=indexed.filter(it=>(it.sku||'').toUpperCase()===sku&&(it.size||'').toUpperCase()===size);
+      // If bill line has no size (inv PO single-line items), match on SKU alone
+      if(sameSkuSize.length===0&&!size)sameSkuSize=indexed.filter(it=>(it.sku||'').toUpperCase()===sku);
+      if(sameSkuSize.length===0)return null;
+      let candidates=sameSkuSize;
+      if(billColor&&sameSkuSize.some(c=>c.color)){
+        const exact=sameSkuSize.filter(c=>norm(c.color)===billColor);
+        if(exact.length>0)candidates=exact;
+        else{const partial=sameSkuSize.filter(c=>{const cc=norm(c.color);return cc&&(cc.includes(billColor)||billColor.includes(cc))});if(partial.length>0)candidates=partial}
+      }
+      return{item:candidates[0],idx:candidates[0]._idx,ambiguous:candidates.length>1};
+    };
+
     // Apply a decoration bill manually when the user has picked an SO + target po_line (or "create new").
     // target = {soId, mode:'existing', itemIdx, poLineIdx}  OR  {soId, mode:'create', itemIdx, decoType}
     // target = {soId, mode:'existing', decoPoId}  OR  {soId, mode:'create'}
@@ -19160,9 +19360,86 @@ export default function App(){
       }));
     };
 
+    // Apply a bill using the wizard's explicit per-line mappings (SKU+size+color resolved against a
+    // specific SO item / po_line or batch). Used when the bill was matched manually — the bill's
+    // PO-number string won't match the target, so the po_number-based _applyFreightToSOs path can't
+    // be used. Freight is split across SOs proportional to the $ mapped to each. Returns true if applied.
+    const _applyBillByMappings=(bill)=>{
+      const maps=(bill._lineMappings||[]).filter(mp=>mp.allocated_qty>0);
+      if(!maps.length)return false;
+      const billFreight=safeNum(bill.freight||0);
+      // Cost per SO (for proportional freight), using the bill-line cost captured at confirm time.
+      const costBySO={};
+      maps.forEach(mp=>{const c=safeNum(mp.bill_cost||0);costBySO[mp.so_id]=(costBySO[mp.so_id]||0)+c});
+      const soIds=Object.keys(costBySO).filter(Boolean);
+      let totalCost=soIds.reduce((a,sid)=>a+costBySO[sid],0);
+      if(totalCost<=0)totalCost=1;
+      const freightBySO={};let freightApplied=0;
+      soIds.forEach((sid,i)=>{
+        const f=i===soIds.length-1?Math.round((billFreight-freightApplied)*100)/100:Math.round(billFreight*(costBySO[sid]/totalCost)*100)/100;
+        freightBySO[sid]=f;freightApplied+=f;
+      });
+
+      if(bill.matchedPOSource==='so_po'){
+        setSOs(prev=>prev.map(s=>{
+          const soMaps=maps.filter(mp=>mp.so_id===s.id);
+          if(!soMaps.length)return s;
+          const updatedItems=(s.items||[]).map(it=>{
+            const itMaps=soMaps.filter(mp=>(mp.item_id&&mp.item_id===it.id)||(!mp.item_id&&(mp.sku||'').toUpperCase()===(it.sku||'').toUpperCase()));
+            if(!itMaps.length)return it;
+            let lineConsumed=false;
+            return{...it,po_lines:(it.po_lines||[]).map(po=>{
+              // Prefer the po_line the mapping pointed at; if no po_id captured, apply to the first
+              // matching line only (lineConsumed guard) to avoid double-billing across po_lines.
+              const lineMaps=itMaps.filter(mp=>mp.po_id?(po.po_id||'')===mp.po_id:!lineConsumed);
+              if(!lineMaps.length)return po;
+              if(lineMaps.some(mp=>!mp.po_id))lineConsumed=true;
+              const newBilled={...(po.billed||{})};const sizesAdded={};let addedCost=0;
+              lineMaps.forEach(mp=>{newBilled[mp.size]=(newBilled[mp.size]||0)+mp.allocated_qty;sizesAdded[mp.size]=(sizesAdded[mp.size]||0)+mp.allocated_qty;addedCost+=safeNum(mp.bill_cost||0)});
+              const trackNums=[...(po.tracking_numbers||[])];
+              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+              return{...po,billed:newBilled,tracking_numbers:trackNums,
+                _bill_cost:Math.round((safeNum(po._bill_cost||0)+addedCost)*100)/100,
+                _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:sizesAdded,tracking:bill.tracking,cost:Math.round(addedCost*100)/100}]};
+            })};
+          });
+          const updatedSO={...s,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+(freightBySO[s.id]||0))*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
+          _dbSaveSO(updatedSO);
+          return updatedSO;
+        }));
+        return true;
+      }
+
+      if(bill.matchedPOSource==='batch'){
+        const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
+        const billedSizes={};
+        maps.forEach(mp=>{if(mp.size)billedSizes[mp.size]=(billedSizes[mp.size]||0)+mp.allocated_qty});
+        setSubmittedBatches(prev=>prev.map(sb=>{
+          if((sb.id||sb.po_number)!==batchId)return sb;
+          const newBilled={...(sb.billed||{})};
+          Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+          const trackNums=[...(sb.tracking_numbers||[])];
+          if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+          return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
+        }));
+        if(billFreight>0&&soIds.length){
+          setSOs(prev=>prev.map(s=>{
+            if(!freightBySO[s.id])return s;
+            const updatedSO={...s,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+freightBySO[s.id])*100)/100,updated_at:new Date().toLocaleString()};
+            _dbSaveSO(updatedSO);
+            return updatedSO;
+          }));
+        }
+        return true;
+      }
+      return false;
+    };
+
     const applyBillToSO=(bill)=>{
       if(bill._applied)return;
       bill._applied=true;
+      // Manually-matched bills carry explicit per-line mappings — apply those directly.
+      if(bill.kind!=='decoration'&&bill._lineMappings?.length){if(_applyBillByMappings(bill))return;}
       // Decoration bills — route to dedicated apply (total cost → deco PO; freight → outbound)
       if(bill.kind==='decoration'){
         if(bill._manualTarget?.soId){_applyDecorationBillManually(bill);return}
@@ -20333,8 +20610,11 @@ export default function App(){
                     <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.po_number}
                       onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:rematchBill({...p.parsed,po_number:e.target.value})}:p)}))}/>
                     <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Vendor</label>
-                    <input className="form-input" style={{width:120,fontSize:11,padding:'3px 6px'}} value={bill.vendor||bill.supplier}
+                    <input className="form-input" list={`vendor-options-${bi}`} style={{width:160,fontSize:11,padding:'3px 6px'}} value={bill.vendor||bill.supplier||''}
                       onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,vendor:e.target.value,supplier:e.target.value}}:p)}))}/>
+                    <datalist id={`vendor-options-${bi}`}>
+                      {vend.map(v=><option key={v.id} value={v.name}/>)}
+                    </datalist>
                     <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Tracking</label>
                     <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.tracking}
                       onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,tracking:e.target.value}}:p)}))}/>
@@ -20352,18 +20632,27 @@ export default function App(){
                         <td style={{textAlign:'right',fontWeight:600}}>${Number(it.amount||0).toFixed(2)}</td>
                       </tr>)}</tbody>
                     </table>:
-                    <table style={{fontSize:11,marginTop:8,marginBottom:8}}>
-                      <thead><tr><th style={{textAlign:'left'}}>SKU</th><th>Size</th><th>Color</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Unit Price</th><th style={{textAlign:'right'}}>Extension</th><th style={{textAlign:'left',maxWidth:180}}>Description</th></tr></thead>
-                      <tbody>{bill.items.map((it,ii)=><tr key={ii}>
+                    (()=>{
+                    const targetItems=poMatch?_targetItemsForBill(bill):[];
+                    const showMatch=poMatch&&targetItems.length>0;
+                    return<table style={{fontSize:11,marginTop:8,marginBottom:8}}>
+                      <thead><tr><th style={{textAlign:'left'}}>SKU</th><th>Size</th><th>Color</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Unit Price</th><th style={{textAlign:'right'}}>Extension</th>{showMatch&&<th style={{textAlign:'left'}}>Match</th>}<th style={{textAlign:'left',maxWidth:180}}>Description</th></tr></thead>
+                      <tbody>{bill.items.map((it,ii)=>{
+                        const hit=showMatch?_matchLineToItems(it,targetItems):null;
+                        return<tr key={ii}>
                         <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
                         <td style={{textAlign:'center',fontWeight:600}}>{it.size}</td>
                         <td style={{color:'#64748b'}}>{it.color||'—'}</td>
                         <td style={{textAlign:'right',fontWeight:700}}>{it.qty}</td>
                         <td style={{textAlign:'right'}}>${it.unit_price.toFixed(2)}</td>
                         <td style={{textAlign:'right',fontWeight:600}}>${it.extension.toFixed(2)}</td>
+                        {showMatch&&<td style={{fontSize:10}}>{hit
+                          ?<span style={{color:hit.ambiguous?'#d97706':'#166534',fontWeight:600}}>{hit.ambiguous?'⚠':'✓'} {hit.item.size}{hit.item.color?' '+hit.item.color:''}{hit.item.so_id&&hit.item.so_id!==bill.matchedPO?.so_id?' · '+hit.item.so_id:''}{hit.ambiguous?' (verify)':''}</span>
+                          :<span style={{color:'#dc2626',fontWeight:600}}>{'✗'} no match</span>}</td>}
                         <td style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#64748b',fontSize:10}}>{it.desc||'—'}</td>
-                      </tr>)}</tbody>
-                    </table>
+                      </tr>;})}</tbody>
+                    </table>;
+                    })()
                   }
                 </div>}
                 {bill.items.length===0&&<div style={{padding:'12px 14px',fontSize:12,color:'#d97706'}}>No line items detected — totals will be used as a single line</div>}
@@ -20425,6 +20714,106 @@ export default function App(){
                         </>}
                       </>:<span style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Will create new deco PO on this SO</span>)}
                     </div>
+                  </div>;
+                })()}
+                {/* Manual match wizard — goods bills, line items parsed, no auto-match */}
+                {bill.kind!=='decoration'&&!poMatch&&bill.items.length>0&&(()=>{
+                  const w=bill._wizard;
+                  const setW=nw=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_wizard:nw}}:p)}));
+                  if(!w||!w.open){
+                    return<div style={{padding:'10px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe',display:'flex',alignItems:'center',gap:10}}>
+                      <span style={{fontSize:12,color:'#3730a3'}}>No PO matched automatically — line items parsed and ready.</span>
+                      <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}}
+                        onClick={()=>setW({open:true,query:bill.po_number||'',target:null,mappings:{}})}>Match manually…</button>
+                    </div>;
+                  }
+                  const candidates=_buildMatchCandidates();
+                  const filtered=_filterMatchCandidates(candidates,w.query);
+                  return<div style={{padding:'12px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                      <div style={{fontSize:12,fontWeight:700,color:'#3730a3'}}>Match manually {w.target?<>· <span style={{color:'#1e40af'}}>{w.target.label}</span> <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:6}} onClick={()=>setW({...w,target:null,mappings:{}})}>change</button></>:'— pick a target'}</div>
+                      <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setW({open:false})}>Cancel</button>
+                    </div>
+                    {!w.target&&<>
+                      <input className="form-input" style={{width:'100%',fontSize:11,padding:'4px 8px',marginBottom:6}} placeholder="Search PO #, SO #, customer, SKU…" value={w.query||''}
+                        onChange={e=>setW({...w,query:e.target.value})}/>
+                      <div style={{maxHeight:220,overflow:'auto',border:'1px solid #c7d2fe',borderRadius:4,background:'#fff'}}>
+                        {filtered.length===0?<div style={{padding:10,fontSize:11,color:'#64748b'}}>No matching POs or Sales Orders.</div>:
+                          filtered.slice(0,200).map(c=><div key={c.kind+'-'+c.id} style={{padding:'6px 10px',borderBottom:'1px solid #eef2ff',cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center'}}
+                            onClick={()=>{const target=c;const mappings=_autoMapBillToTarget(bill,target);setW({...w,target,mappings})}}
+                            onMouseEnter={e=>e.currentTarget.style.background='#f5f3ff'} onMouseLeave={e=>e.currentTarget.style.background='#fff'}>
+                            <div>
+                              <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{c.label} <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:c.kind==='batch'?'#dbeafe':'#fce7f3',color:c.kind==='batch'?'#1e40af':'#9d174d',marginLeft:4}}>{c.kind==='batch'?'BATCH':'SO'}</span></div>
+                              <div style={{fontSize:10,color:'#64748b'}}>{c.sub}</div>
+                            </div>
+                            <div style={{fontSize:10,color:'#475569',fontWeight:600}}>{c.total_units} unit(s) open · {c.items.length} line(s)</div>
+                          </div>)}
+                      </div>
+                    </>}
+                    {w.target&&(()=>{
+                      const target=w.target;const mappings=w.mappings||{};
+                      const setMap=(idx,m)=>setW({...w,mappings:{...mappings,[idx]:m}});
+                      const matched=bill.items.filter((_,i)=>mappings[i]&&!mappings[i].skipped).length;
+                      const total=bill.items.length;
+                      return<>
+                        <div style={{fontSize:10,color:'#475569',marginBottom:6}}>{matched} of {total} bill line(s) mapped. Auto-suggestions in green; pick a different target item or skip per row.</div>
+                        <div style={{maxHeight:260,overflow:'auto',border:'1px solid #c7d2fe',borderRadius:4,background:'#fff'}}>
+                          <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
+                            <thead style={{background:'#f8fafc',position:'sticky',top:0}}><tr>
+                              <th style={{textAlign:'left',padding:'4px 8px'}}>Bill line</th>
+                              <th style={{textAlign:'left',padding:'4px 8px'}}>Map to target item</th>
+                              <th style={{textAlign:'right',padding:'4px 8px'}}>Apply qty</th>
+                              <th style={{textAlign:'left',padding:'4px 8px'}}>Notes</th>
+                            </tr></thead>
+                            <tbody>{bill.items.map((bl,bli)=>{
+                              const m=mappings[bli]||{};
+                              const tgt=m.target_idx!=null?target.items[m.target_idx]:null;
+                              const openQty=tgt?tgt.qty:0;
+                              const over=tgt&&m.allocated_qty>openQty;
+                              return<tr key={bli} style={{borderBottom:'1px solid #f1f5f9',background:m.skipped?'#fef9c3':(tgt?'#f0fdf4':'#fff')}}>
+                                <td style={{padding:'4px 8px',fontFamily:'monospace'}}>{bl.sku} <span style={{color:'#64748b'}}>{bl.size}</span>{bl.color?<span style={{color:'#475569'}}> · {bl.color}</span>:null} · {bl.qty} @ ${bl.unit_price.toFixed(2)}</td>
+                                <td style={{padding:'4px 8px'}}>
+                                  <select className="form-input" style={{width:'100%',fontSize:10,padding:'2px 4px'}} value={m.skipped?'__skip':(m.target_idx!=null?String(m.target_idx):'')}
+                                    onChange={e=>{const v=e.target.value;if(v==='__skip')setMap(bli,{skipped:true});else if(v==='')setMap(bli,{});else{const ti=parseInt(v);const it=target.items[ti];setMap(bli,{target_idx:ti,allocated_qty:bl.qty,ambiguous:false})}}}>
+                                    <option value="">— pick —</option>
+                                    <option value="__skip">Skip this line</option>
+                                    {target.items.map((it,ti)=><option key={ti} value={ti}>{it.sku} {it.size} ({it.qty} open){it.so_id?' · '+it.so_id:''}{it.color?' · '+it.color:''}</option>)}
+                                  </select>
+                                </td>
+                                <td style={{padding:'4px 8px',textAlign:'right'}}>
+                                  {!m.skipped&&tgt&&<input className="form-input" type="number" style={{width:60,fontSize:10,padding:'2px 4px',textAlign:'right'}} value={m.allocated_qty||0}
+                                    onChange={e=>setMap(bli,{...m,allocated_qty:parseInt(e.target.value)||0})}/>}
+                                </td>
+                                <td style={{padding:'4px 8px',fontSize:10,color:over?'#dc2626':(m.ambiguous?'#d97706':(m.skipped?'#92400e':'#166534'))}}>
+                                  {m.skipped?'Skipped':over?`Over-receipt (${m.allocated_qty}>${openQty})`:m.ambiguous?'Ambiguous — verify':tgt?'Mapped':(bl.sku||'')+' not on target'}
+                                </td>
+                              </tr>;
+                            })}</tbody>
+                          </table>
+                        </div>
+                        <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
+                          <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>setW({open:false})}>Cancel</button>
+                          <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}}
+                            onClick={()=>{
+                              // Build matchedPO shape compatible with existing apply paths.
+                              let matchedPO,matchedPOSource;
+                              if(target.kind==='batch'){matchedPO=target.raw;matchedPOSource='batch'}
+                              else if(target.kind==='so'){matchedPO={so_id:target.id,po_id:target.raw.po_number||target.id,so:target.raw};matchedPOSource='so_po'}
+                              // Persist per-line mappings on the bill so the apply path can target the
+                              // exact SO item / po_line (rather than matching by PO-number string).
+                              const lineMappings=Object.entries(w.mappings||{}).map(([bi2,m])=>{
+                                if(m.skipped||m.target_idx==null)return null;
+                                const it=target.items[m.target_idx];
+                                const bl=bill.items[parseInt(bi2)]||{};
+                                const billCost=safeNum(bl.extension||0)||safeNum(bl.unit_price||0)*(m.allocated_qty||0);
+                                return{bill_idx:parseInt(bi2),target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:m.allocated_qty||0,unit_cost:it.unit_cost||0,bill_cost:Math.round(billCost*100)/100};
+                              }).filter(Boolean);
+                              setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,matchedPO,matchedPOSource,_lineMappings:lineMappings,_wizard:{open:false}}}:p)}));
+                              nf('Bill manually matched to '+target.label);
+                            }}>Confirm match</button>
+                        </div>
+                      </>;
+                    })()}
                   </div>;
                 })()}
                 {/* Raw text toggle */}
