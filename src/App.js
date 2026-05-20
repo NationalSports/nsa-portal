@@ -19349,9 +19349,86 @@ export default function App(){
       }));
     };
 
+    // Apply a bill using the wizard's explicit per-line mappings (SKU+size+color resolved against a
+    // specific SO item / po_line or batch). Used when the bill was matched manually — the bill's
+    // PO-number string won't match the target, so the po_number-based _applyFreightToSOs path can't
+    // be used. Freight is split across SOs proportional to the $ mapped to each. Returns true if applied.
+    const _applyBillByMappings=(bill)=>{
+      const maps=(bill._lineMappings||[]).filter(mp=>mp.allocated_qty>0);
+      if(!maps.length)return false;
+      const billFreight=safeNum(bill.freight||0);
+      // Cost per SO (for proportional freight), using the bill-line cost captured at confirm time.
+      const costBySO={};
+      maps.forEach(mp=>{const c=safeNum(mp.bill_cost||0);costBySO[mp.so_id]=(costBySO[mp.so_id]||0)+c});
+      const soIds=Object.keys(costBySO).filter(Boolean);
+      let totalCost=soIds.reduce((a,sid)=>a+costBySO[sid],0);
+      if(totalCost<=0)totalCost=1;
+      const freightBySO={};let freightApplied=0;
+      soIds.forEach((sid,i)=>{
+        const f=i===soIds.length-1?Math.round((billFreight-freightApplied)*100)/100:Math.round(billFreight*(costBySO[sid]/totalCost)*100)/100;
+        freightBySO[sid]=f;freightApplied+=f;
+      });
+
+      if(bill.matchedPOSource==='so_po'){
+        setSOs(prev=>prev.map(s=>{
+          const soMaps=maps.filter(mp=>mp.so_id===s.id);
+          if(!soMaps.length)return s;
+          const updatedItems=(s.items||[]).map(it=>{
+            const itMaps=soMaps.filter(mp=>(mp.item_id&&mp.item_id===it.id)||(!mp.item_id&&(mp.sku||'').toUpperCase()===(it.sku||'').toUpperCase()));
+            if(!itMaps.length)return it;
+            let lineConsumed=false;
+            return{...it,po_lines:(it.po_lines||[]).map(po=>{
+              // Prefer the po_line the mapping pointed at; if no po_id captured, apply to the first
+              // matching line only (lineConsumed guard) to avoid double-billing across po_lines.
+              const lineMaps=itMaps.filter(mp=>mp.po_id?(po.po_id||'')===mp.po_id:!lineConsumed);
+              if(!lineMaps.length)return po;
+              if(lineMaps.some(mp=>!mp.po_id))lineConsumed=true;
+              const newBilled={...(po.billed||{})};const sizesAdded={};let addedCost=0;
+              lineMaps.forEach(mp=>{newBilled[mp.size]=(newBilled[mp.size]||0)+mp.allocated_qty;sizesAdded[mp.size]=(sizesAdded[mp.size]||0)+mp.allocated_qty;addedCost+=safeNum(mp.bill_cost||0)});
+              const trackNums=[...(po.tracking_numbers||[])];
+              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+              return{...po,billed:newBilled,tracking_numbers:trackNums,
+                _bill_cost:Math.round((safeNum(po._bill_cost||0)+addedCost)*100)/100,
+                _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:sizesAdded,tracking:bill.tracking,cost:Math.round(addedCost*100)/100}]};
+            })};
+          });
+          const updatedSO={...s,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+(freightBySO[s.id]||0))*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
+          _dbSaveSO(updatedSO);
+          return updatedSO;
+        }));
+        return true;
+      }
+
+      if(bill.matchedPOSource==='batch'){
+        const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
+        const billedSizes={};
+        maps.forEach(mp=>{if(mp.size)billedSizes[mp.size]=(billedSizes[mp.size]||0)+mp.allocated_qty});
+        setSubmittedBatches(prev=>prev.map(sb=>{
+          if((sb.id||sb.po_number)!==batchId)return sb;
+          const newBilled={...(sb.billed||{})};
+          Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+          const trackNums=[...(sb.tracking_numbers||[])];
+          if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+          return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
+        }));
+        if(billFreight>0&&soIds.length){
+          setSOs(prev=>prev.map(s=>{
+            if(!freightBySO[s.id])return s;
+            const updatedSO={...s,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+freightBySO[s.id])*100)/100,updated_at:new Date().toLocaleString()};
+            _dbSaveSO(updatedSO);
+            return updatedSO;
+          }));
+        }
+        return true;
+      }
+      return false;
+    };
+
     const applyBillToSO=(bill)=>{
       if(bill._applied)return;
       bill._applied=true;
+      // Manually-matched bills carry explicit per-line mappings — apply those directly.
+      if(bill.kind!=='decoration'&&bill._lineMappings?.length){if(_applyBillByMappings(bill))return;}
       // Decoration bills — route to dedicated apply (total cost → deco PO; freight → outbound)
       if(bill.kind==='decoration'){
         if(bill._manualTarget?.soId){_applyDecorationBillManually(bill);return}
@@ -20711,11 +20788,14 @@ export default function App(){
                               let matchedPO,matchedPOSource;
                               if(target.kind==='batch'){matchedPO=target.raw;matchedPOSource='batch'}
                               else if(target.kind==='so'){matchedPO={so_id:target.id,po_id:target.raw.po_number||target.id,so:target.raw};matchedPOSource='so_po'}
-                              // Persist per-line mappings on the bill for the (forthcoming) refactored apply.
+                              // Persist per-line mappings on the bill so the apply path can target the
+                              // exact SO item / po_line (rather than matching by PO-number string).
                               const lineMappings=Object.entries(w.mappings||{}).map(([bi2,m])=>{
                                 if(m.skipped||m.target_idx==null)return null;
                                 const it=target.items[m.target_idx];
-                                return{bill_idx:parseInt(bi2),target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,so_id:it.so_id||'',allocated_qty:m.allocated_qty||0,unit_cost:it.unit_cost||0};
+                                const bl=bill.items[parseInt(bi2)]||{};
+                                const billCost=safeNum(bl.extension||0)||safeNum(bl.unit_price||0)*(m.allocated_qty||0);
+                                return{bill_idx:parseInt(bi2),target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:m.allocated_qty||0,unit_cost:it.unit_cost||0,bill_cost:Math.round(billCost*100)/100};
                               }).filter(Boolean);
                               setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,matchedPO,matchedPOSource,_lineMappings:lineMappings,_wizard:{open:false}}}:p)}));
                               nf('Bill manually matched to '+target.label);
