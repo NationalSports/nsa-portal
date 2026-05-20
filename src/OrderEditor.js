@@ -10,7 +10,7 @@ import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOSt
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 
@@ -410,7 +410,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         try{
           console.log('[SanMar] Trying PromoStandards inventory for',sku);
           const promoData=await sanmarGetPromoInventory(sku);
-          console.log('[SanMar] PromoStandards response keys:',Object.keys(promoData||{}),'full:',JSON.stringify(promoData).slice(0,800));
+          // Full response dump for diagnostic — past versions kept truncating this
+          // to 800 chars and we never saw what the parser was missing.
+          console.log('[SanMar] PromoStandards response keys:',Object.keys(promoData||{}),'full:',JSON.stringify(promoData));
           // PromoStandards returns inventory in various nested structures
           const invArr=promoData?.ProductVariationInventoryArray?.ProductVariationInventory
             ||promoData?.productVariationInventoryArray?.productVariationInventory
@@ -419,6 +421,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Also check for direct array of items
             ||promoData?.items||promoData?.Inventory||promoData?.inventory||[];
           const variations=Array.isArray(invArr)?invArr:[invArr];
+          console.log('[SanMar] PromoStandards parsed',variations.length,'variations from',Object.keys(promoData||{}).join(','));
           variations.forEach(v=>{
             const sz=normSzName(v?.attributeSize||v?.size||v?.labelSize||'OSFA');
             const color=v?.attributeColor||v?.color||'';
@@ -442,7 +445,56 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(qty>0){sizeQty[sz]=(sizeQty[sz]||0)+qty;invSuccess=true}
           });
         }catch(e){console.warn('[SanMar] PromoStandards inventory error:',e.message)}
-        // Fallback: legacy getInventoryQtyForStyleColorSize
+        // Fallback A: legacy getInventoryQtyForStyleColorSize, called per-size.
+        // Calling once without a size returns SanMar's aggregate (single row, no
+        // per-size breakdown), so we end up with no per-size data. Iterating the
+        // item's known sizes makes the result deterministic regardless of how the
+        // legacy SOAP groups things.
+        if(!invSuccess){
+          const knownSizes=Object.keys(item?.sizes||{}).filter(s=>s);
+          // If item.sizes is empty (e.g. just-added with no qtys), fall back to a
+          // standard SanMar size set so the badges have something to populate.
+          const sizesToTry=knownSizes.length>0?knownSizes:['XS','S','M','L','XL','2XL','3XL','4XL'];
+          console.log('[SanMar] Per-size legacy fallback for',sku,'sizes:',sizesToTry.join(','),'color:',prodColor||'(any)');
+          let perSizeLogged=false;
+          // Try the item's color first; if every size comes back empty, retry with no color filter.
+          for(const tryColor of [prodColor,'']){
+            const before=Object.keys(sizeQty).length;
+            await Promise.all(sizesToTry.map(async sz=>{
+              try{
+                const invData=await sanmarGetInventory(sku,tryColor,sz);
+                if(!perSizeLogged){perSizeLogged=true;console.log('[SanMar] RAW per-size response',sku,sz,'=>',JSON.stringify(invData))}
+                // Normalize to a list — the legacy SOAP wraps rows in items/listResponse/return,
+                // or returns a single root-level object. Mirror smLiveSearch's parser exactly
+                // since that path is proven against SanMar's real response shape.
+                let rows=invData?.items||[];
+                if(!rows.length&&invData?.listResponse)rows=Array.isArray(invData.listResponse)?invData.listResponse:[invData.listResponse];
+                if(!rows.length&&invData?.return)rows=Array.isArray(invData.return)?invData.return:[invData.return];
+                if(!rows.length&&invData&&(invData.size||invData.totalQty||invData.qty||invData.warehouseInfo))rows=[invData];
+                rows=rows.filter(it=>it&&it.errorOccurred!=='true'&&it.errorOccured!=='true');
+                let qty=0;
+                rows.forEach(it=>{
+                  let q=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
+                  if(q<=0&&it.warehouseInfo){
+                    const details=it.warehouseInfo.inventoryDetail||it.warehouseInfo;
+                    const arr=Array.isArray(details)?details:[details];
+                    arr.forEach(d=>{if(d&&d.quantity)q+=parseInt(d.quantity)||0});
+                  }
+                  // Last resort: scan any leftover numeric string field (e.g. inventoryQty)
+                  // that isn't a known price/size/identifier — matches smLiveSearch behavior.
+                  if(q<=0){Object.entries(it).forEach(([k,v])=>{if(typeof v==='string'&&!['size','labelSize','color','catalogColor','colorName','style','piecePrice','salePrice','programPrice','casePrice','caseQty','customerPrice','myPrice'].includes(k)){const n=parseInt(v)||0;if(n>0)q+=n}})}
+                  qty+=q;
+                });
+                if(qty>0){sizeQty[normSzName(sz)]=(sizeQty[normSzName(sz)]||0)+qty;invSuccess=true}
+              }catch(e){console.warn('[SanMar] Per-size inventory error',sku,sz,e.message)}
+            }));
+            // If this color pass picked up any new sizes, stop here — don't double-count.
+            if(Object.keys(sizeQty).length>before)break;
+          }
+        }
+        // Fallback B: original aggregate call. Kept as a last resort in case
+        // per-size calls all fail (e.g. for OSFA-only items where the size keys
+        // don't match SanMar's catalog spelling). This is the legacy behavior.
         if(!invSuccess){
           for(const tryColor of [prodColor,'']){
             if(invSuccess)break;
@@ -630,6 +682,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
   };
   const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);const[poEmail,setPoEmail]=useState(null);
+  // Shown after a PO partial/full receive — summary modal with Print/Download label actions for the box that was just received.
+  const[receivedConfirm,setReceivedConfirm]=useState(null);
+  // Open the IF (pick) modal aggregating ALL line items that share the same pick_id.
+  // Falls back to single-line edit when no pick_id is set (legacy/unsaved picks).
+  const openPickModal=(pickId,fallbackLineIdx,fallbackPickIdx)=>{
+    const picks=[];
+    if(pickId){
+      safeItems(o).forEach((it,li)=>{(it.pick_lines||[]).forEach((pl,pi)=>{if(pl.pick_id===pickId)picks.push({lineIdx:li,pickIdx:pi,pick:{...pl}})})});
+    }
+    if(picks.length===0){
+      const pl=o.items?.[fallbackLineIdx]?.pick_lines?.[fallbackPickIdx];
+      if(!pl)return;
+      picks.push({lineIdx:fallbackLineIdx,pickIdx:fallbackPickIdx,pick:{...pl}});
+    }
+    setEditPick({pickId:pickId||picks[0].pick.pick_id||'',picks});
+  };
   // Helper: effective PO committed qty for a size (ordered minus cancelled)
   const poCommitted=(poLines,sz)=>(poLines||[]).reduce((a,pk)=>{const ordered=pk[sz]||0;const cancelled=(pk.cancelled||{})[sz]||0;return a+(ordered-cancelled)},0);
   const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[editingItemName,setEditingItemName]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});
@@ -1111,7 +1179,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};const vNextBySize={};
     color.sizes.forEach(s=>{
-      vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;
+      // Skip qty=0 — see comment at the other call sites: live-search aggregate
+      // inventory often reports 0 for sizes that actually have stock, and seeding
+      // 0s here makes every size badge render "0 sm" until a manual refresh.
+      if(s.qty>0)vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;
       if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail;
     });
     const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
@@ -1134,8 +1205,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
     newItem._sizeSells=sizeSell;
     sv('items',[...o.items,newItem]);
-    vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
-    setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
+    // Pre-cache only when the live-search returned real per-size qty data; otherwise
+    // let fetchVendorInventory do a per-size lookup so badges actually populate. If
+    // we cached an empty {} here, the auto-fetch effect would short-circuit on it.
+    if(Object.keys(vInv).length>0){
+      vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
+      setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
+    }else{
+      fetchVendorInventory(style.sku,vId,newItem);
+    }
     setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
   };
   // State for expanded style in search results (shows color picker)
@@ -1172,7 +1250,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};const vNextBySize={};
-    color.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
+    // Only cache sizes with a real inventory hit. SanMar/S&S live-search rows often
+    // come back with qty=0 because the search-time inventory fetch is a single
+    // aggregate call (not per-size); seeding those 0s into the cache makes every
+    // size badge render "0 sm" forever until a per-size refresh happens.
+    color.sizes.forEach(s=>{if(s.qty>0)vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
     const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
     const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
     // Clone source item to preserve decorations, then override SKU/product fields
@@ -1192,8 +1274,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
     clone._sizeSells=sizeSell;
     sv('items',[...o.items,clone]);
-    vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
-    setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
+    if(Object.keys(vInv).length>0){
+      vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
+      setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
+    }else{
+      fetchVendorInventory(style.sku,vId,clone);
+    }
     setCopySkuModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
     nf('📋 Copied decorations from '+it.sku+' → '+style.sku);
   };
@@ -1239,7 +1325,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};const vNextBySize={};
-    color.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
+    // Only cache sizes with a real inventory hit. SanMar/S&S live-search rows often
+    // come back with qty=0 because the search-time inventory fetch is a single
+    // aggregate call (not per-size); seeding those 0s into the cache makes every
+    // size badge render "0 sm" forever until a per-size refresh happens.
+    color.sizes.forEach(s=>{if(s.qty>0)vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
     const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
     const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
     const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
@@ -1260,8 +1350,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return next;
     }),updated_at:new Date().toLocaleString()}));
     setDirty(true);
-    vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
-    setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
+    if(Object.keys(vInv).length>0){
+      vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
+      setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
+    }else{
+      // SKU change doesn't trigger the items.length auto-fetch effect, so kick off
+      // a per-size fetch directly so badges populate for the swapped-in SKU.
+      fetchVendorInventory(style.sku,vId,{vendor_id:vId,sku:style.sku,color:color.colorName,sizes:{},available_sizes:availSizes.length?availSizes:fallbackSizes});
+    }
     setCopySkuModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
     nf('🔄 Changed SKU → '+style.sku+' (decorations kept)');
   };
@@ -2277,10 +2373,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div></div>
         {/* SIZES ROW with financials inline */}
         {/* SIZES ROW — qty-only mode for estimates, or full size grid */}
-        {(()=>{const isQtyOnly=isE&&item.qty_only;
-        return<div style={{padding:'10px 18px',display:'flex',alignItems:'center',borderBottom:'1px solid #f1f5f9',...(isSO&&szQty===0&&safeNum(item.est_qty)>0?{border:'2px solid #dc2626',borderRadius:8,background:'#fef2f2'}:{})}}>
+        {(()=>{const isQtyOnly=!!item.qty_only;
+        return<div style={{padding:'10px 18px',display:'flex',alignItems:'center',borderBottom:'1px solid #f1f5f9',...(isSO&&!isQtyOnly&&szQty===0&&safeNum(item.est_qty)>0?{border:'2px solid #dc2626',borderRadius:8,background:'#fef2f2'}:{})}}>
           <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-            <span style={{fontSize:12,fontWeight:600,color:isSO&&szQty===0&&safeNum(item.est_qty)>0?'#dc2626':isAdidasItem(item)?'#059669':'#64748b',width:46}}>{isSO&&szQty===0&&safeNum(item.est_qty)>0?'⚠️ Sizes:':isQtyOnly?'Qty:':isAdidasItem(item)?'ADIDAS':'Sizes:'}</span>
+            <span style={{fontSize:12,fontWeight:600,color:isSO&&!isQtyOnly&&szQty===0&&safeNum(item.est_qty)>0?'#dc2626':isAdidasItem(item)?'#059669':'#64748b',width:46}}>{isSO&&!isQtyOnly&&szQty===0&&safeNum(item.est_qty)>0?'⚠️ Sizes:':isQtyOnly?'Qty:':isAdidasItem(item)?'ADIDAS':'Sizes:'}</span>
             {/* In estimate qty-only mode: show just the total input, no size grid */}
             {isQtyOnly?<>
               <div style={{textAlign:'center',padding:'0 10px'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOTAL QTY</div>
@@ -2305,9 +2401,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <input value={sizingDraft[idx+'_'+sz]??(item.sizes[sz]||'')} onChange={e=>{const k=idx+'_'+sz;const v=e.target.value;setSizingDraft(d=>({...d,[k]:v}))}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraft))return;const v=sizingDraft[k];React.startTransition(()=>{uSz(idx,sz,v);setSizingDraft(d=>{const n={...d};delete n[k];return n})})}} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:((idx+'_'+sz) in sizingDraft?(parseInt(sizingDraft[idx+'_'+sz])||0):(item.sizes[sz]||0))>0?'#0f172a':'#cbd5e1'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
-              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'mt':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#d97706':vi.source==='sm'?'#0891b2':'#7c3aed';const sizeNext=vi.source==='rs'?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'&&vStk>=999?'✓':(vi.source==='rs'&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=srcName+' stock: '+(vStk>=999&&vi.source==='mt'?'Available':vStk.toLocaleString())+((vi.source==='rs'&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):'');return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?(vi.source==='rs'&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
-              {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:8,color:'#059669',minHeight:11}}>...</div>:null;const b2bStk=ai.sizes?.[sz]?.qty;if(b2bStk==null)return<div style={{fontSize:8,color:'transparent',minHeight:11}}>&nbsp;</div>;const need=item.sizes[sz]||0;const color=b2bStk<=0?'#dc2626':(need>0&&b2bStk<need)?'#ca8a04':'#166534';return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:color}} title={'Adidas B2B stock: '+b2bStk+(ai.sizes[sz]?.futureDate?' (restock '+ai.sizes[sz].futureDate+')':'')}>{b2bStk} b2b</div>})()}
-              {item._sizeCosts&&<div style={{fontSize:7,fontWeight:700,minHeight:10,color:'#b45309'}}>{(()=>{const sc=item._sizeCosts[sz];if(!sc||Math.abs(sc-item.nsa_cost)<0.01)return'\u00A0';return'$'+sc.toFixed(2)})()}</div>}
+              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:9,color:'#a78bfa',minHeight:12}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'mt':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#d97706':vi.source==='sm'?'#0891b2':'#7c3aed';const sizeNext=vi.source==='rs'?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'&&vStk>=999?'✓':(vi.source==='rs'&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=srcName+' stock: '+(vStk>=999&&vi.source==='mt'?'Available':vStk.toLocaleString())+((vi.source==='rs'&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):'');return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:vStk<=0?(vi.source==='rs'&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
+              {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:9,color:'#059669',minHeight:12}}>...</div>:null;const b2bStk=ai.sizes?.[sz]?.qty;if(b2bStk==null)return<div style={{fontSize:9,color:'transparent',minHeight:12}}>&nbsp;</div>;const need=item.sizes[sz]||0;const color=b2bStk<=0?'#dc2626':(need>0&&b2bStk<need)?'#ca8a04':'#166534';return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:color}} title={'Adidas B2B stock: '+b2bStk+(ai.sizes[sz]?.futureDate?' (restock '+ai.sizes[sz].futureDate+')':'')}>{b2bStk} b2b</div>})()}
+              {(()=>{
+                // Per-size cost upcharge ($X.XX under larger sizes). Prefer the item's
+                // stored _sizeCosts; fall back to the live vendor pricing map so the
+                // upcharge label persists after reload (the vendor fetch repopulates
+                // vi.price even when _sizeCosts wasn't saved on the item).
+                const vi=vendorInv[item.sku];const costMap=item._sizeCosts||vi?.price;
+                if(!costMap)return null;
+                const sc=costMap[sz];
+                if(!sc||Math.abs(sc-item.nsa_cost)<0.01)return<div style={{fontSize:8,minHeight:11}}>{'\u00A0'}</div>;
+                return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:'#b45309'}}>{'$'+sc.toFixed(2)}</div>;
+              })()}
               </div>)}
             <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>QTY</div>
               <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div>
@@ -2316,7 +2422,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {(()=>{const vi=vendorInv[item.sku];const isSM=isSanMarItem(item);const isSS=isSSItem(item);const isMT=isMomentecItem(item);const isRS=isRichardsonItem(item);
               if(isSS||isSM||isMT||isRS){const lbl=isRS?'RS':isMT?'MT':isSM?'SM':'S&S';const clr=isRS?'#dc2626':isMT?'#d97706':isSM?'#0891b2':'#7c3aed';const bdr=isRS?'#fca5a5':isMT?'#fbbf24':isSM?'#67e8f9':'#c4b5fd';const name=isRS?'Richardson':isMT?'Momentec':isSM?'SanMar':'S&S';return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh '+name+' inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid '+bdr,borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':clr,padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ '+lbl:'↻ '+lbl}</button>}return null})()}
             {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];return<button title={ai?.error?'Error: '+ai.error+' — click to retry':'Refresh Adidas B2B inventory'} onClick={()=>{delete adidasInvCache.current[item.sku];delete adidasInvFetching.current[item.sku];setAdidasInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchAdidasInv(item.sku)}} style={{background:'none',border:'1px solid #6ee7b7',borderRadius:4,cursor:'pointer',color:ai?.error?'#dc2626':'#059669',padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{ai?.loading?'...':ai?.error?'⚠ B2B':'↻ B2B'}</button>})()}
-            {!(isE&&item.qty_only)&&<div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={e=>{if(showSzPicker&&showSzPicker.idx===idx){setShowSzPicker(null)}else{const r=e.currentTarget.getBoundingClientRect();setShowSzPicker({idx,top:r.bottom+4,left:r.left})}}} style={{fontSize:10}}>+ Size</button>
+            {!item.qty_only&&<div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={e=>{if(showSzPicker&&showSzPicker.idx===idx){setShowSzPicker(null)}else{const r=e.currentTarget.getBoundingClientRect();setShowSzPicker({idx,top:r.bottom+4,left:r.left})}}} style={{fontSize:10}}>+ Size</button>
               {showSzPicker&&showSzPicker.idx===idx&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'fixed',top:showSzPicker.top,left:showSzPicker.left,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:260,maxHeight:'70vh',overflowY:'auto'}}>
                 <div style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:2}}>
                   <span style={{fontSize:9,fontWeight:700,color:'#64748b'}}>Click multiple, then Done</span>
@@ -2324,16 +2430,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div>
                 {removable.length>0&&<><div style={{width:'100%',fontSize:9,fontWeight:700,color:'#dc2626',marginBottom:2}}>Remove</div>{removable.map(sz=><button key={'rm-'+sz} className="btn btn-sm" style={{fontSize:10,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',background:'#fef2f2'}} onClick={()=>removeSzFromItem(idx,sz)}>−{sz}</button>)}<div style={{width:'100%',borderTop:'1px solid #e2e8f0',margin:'3px 0'}}/></>}
                 {addable.map(sz=><button key={sz} className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>addSzToItem(idx,sz)}>{sz}</button>)}
-                {isE&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',width:'100%',marginTop:3}} onClick={()=>{uI(idx,'qty_only',true);uI(idx,'est_qty',szQty||0);uI(idx,'sizes',{});setShowSzPicker(null)}}>No Sizes (Qty Only)</button>}
+                <button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',width:'100%',marginTop:3}} onClick={()=>{uI(idx,'qty_only',true);uI(idx,'est_qty',szQty||safeNum(item.est_qty)||0);uI(idx,'sizes',{});setShowSzPicker(null)}}>Custom (No Sizes / Qty Only)</button>
                 </div></>}
             </div>}
           </div>
           {/* Adidas B2B sync details moved to bottom of page */}
           {/* Financial summary — right side of sizes row */}
           <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:12}}>
-            {isSO&&szQty===0&&safeNum(item.est_qty)>0&&<span style={{fontSize:11,color:'#dc2626',fontWeight:700}}>Enter sizes ({item.est_qty} total)</span>}
-            {isE&&item.qty_only&&safeNum(item.est_qty)>0&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>Qty only — sizes can be added later</span>}
-            {isSO&&(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
+            {isSO&&!item.qty_only&&szQty===0&&safeNum(item.est_qty)>0&&<span style={{fontSize:11,color:'#dc2626',fontWeight:700}}>Enter sizes ({item.est_qty} total)</span>}
+            {item.qty_only&&safeNum(item.est_qty)>0&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>Custom — no size breakdown</span>}
+            {isSO&&!item.qty_only&&(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
               const szList=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
               const anyUnassigned=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a2,pk)=>a2+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);return v-picked-po>0});
               if(!anyUnassigned)return<span style={{fontSize:10,color:'#166534',fontStyle:'italic',fontWeight:600}}>✓ All assigned</span>;
@@ -2352,7 +2458,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {isSO&&(item.pick_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
           {safePicks(item).map((pk,pi)=>{const st=pk.status||'pick';
             return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:2}}>
-              <span style={{fontSize:10,fontWeight:700,width:46,color:st==='pulled'?'#166534':'#92400e',cursor:'pointer',textDecoration:'underline'}} onClick={()=>setEditPick({lineIdx:idx,pickIdx:pi,pick:pk})} title="Click to edit">{pk.pick_id||'PICK'}:</span>
+              <span style={{fontSize:10,fontWeight:700,width:46,color:st==='pulled'?'#166534':'#92400e',cursor:'pointer',textDecoration:'underline'}} onClick={()=>openPickModal(pk.pick_id,idx,pi)} title="Click to edit">{pk.pick_id||'PICK'}:</span>
               {szs.map(sz=>{const v=pk[sz]||0;if(!v)return<div key={sz} style={{width:48,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
                 return<div key={sz} style={{width:48,textAlign:'center',fontSize:12,fontWeight:700,padding:'2px 0',borderRadius:3,
                   background:st==='pulled'?'#dcfce7':st==='pick'?'#fef3c7':'#f1f5f9',
@@ -5057,7 +5163,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>}
             <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" checked={preexistingPO} onChange={e=>{setPreexistingPO(e.target.checked);if(!e.target.checked)setPreexistingPOId('')}}/><span style={{fontWeight:600,color:'#d97706'}}>Preexisting PO</span><span style={{fontSize:11,color:'#64748b'}}>— Apply an existing PO number (bypasses sequential numbering)</span></label></div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
-              <div><label className="form-label">PO Number</label>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO7514" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b'}}/>:<input className="form-input" value={autoPoId} readOnly style={{color:'#7c3aed',fontWeight:700}}/>}</div>
+              <div><label className="form-label">PO Number</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO7514" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>:<input className="form-input" value={autoPoId} readOnly style={{color:'#7c3aed',fontWeight:700,flex:1}}/>}<button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPO?preexistingPOId:autoPoId;if(!v)return;navigator.clipboard?.writeText(v).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
               <div><label className="form-label">Deco Type</label><select className="form-select" id={'dpo-type-'+poId} defaultValue="embroidery" onChange={()=>{const ucEl=document.getElementById('dpo-unit-cost');if(ucEl)ucEl.dataset.auto='1';_recalcDpo()}}>
                 <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
               <div><label className="form-label">Expected Return</label><input className="form-input" type="date" id={'dpo-date-'+poId}/></div>
@@ -5159,7 +5265,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <span style={{fontSize:11,color:'#64748b'}}>{poItems.filter((_,vi)=>!poExcluded[vi]).length} of {poItems.length} items</span>
           </div>}
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
-            <div><label className="form-label">PO Number</label>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO2453 OLUF" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b'}}/>:<input className="form-input" value={autoPoId} readOnly style={{color:'#1e40af',fontWeight:700}}/>}</div>
+            <div><label className="form-label">PO Number</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO2453 OLUF" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>:<input className="form-input" value={autoPoId} readOnly style={{color:'#1e40af',fontWeight:700,flex:1}}/>}<button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPO?preexistingPOId:autoPoId;if(!v)return;navigator.clipboard?.writeText(v).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
             <div><label className="form-label">Ship To</label><select className="form-select" defaultValue="warehouse"><option value="warehouse">NSA Warehouse — Emerson</option>{addrs.map(a=><option key={a.id} value={a.id}>{a.label}</option>)}</select></div>
             <div><label className="form-label">Expected Date</label><input className="form-input" type="date" id={'po-date-'+(preexistingPO?'preexisting':autoPoId)}/></div></div>
           <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" id={'po-dropship-'+(preexistingPO?'preexisting':autoPoId)}/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school/decorator, skip warehouse receive</span></label></div>
@@ -7216,10 +7322,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {isSO&&(()=>{
       const allPickIds=[];const allPoIds=[];
       safeItems(o).forEach((it,i)=>{
-        safePicks(it).forEach((pk,pi)=>{if(pk.pick_id&&!allPickIds.find(x=>x.id===pk.pick_id)){
+        safePicks(it).forEach((pk,pi)=>{if(pk.pick_id){
           const qty=Object.entries(pk).reduce((a,[k,v])=>k!=='status'&&k!=='pick_id'&&typeof v==='number'?a+v:a,0);
           const itemTotal=qty*it.unit_sell;
-          allPickIds.push({id:pk.pick_id,status:pk.status||'pick',qty,lineIdx:i,pickIdx:pi,sku:it.sku,name:it.name,color:it.color,total:itemTotal,created_at:pk.created_at,memo:pk.memo})}});
+          const existing=allPickIds.find(x=>x.id===pk.pick_id);
+          if(existing){existing.qty+=qty;existing.total+=itemTotal;existing.skus.push({sku:it.sku,name:it.name,color:it.color});if(pk.status!=='pulled')existing.status='pick';}
+          else allPickIds.push({id:pk.pick_id,status:pk.status||'pick',qty,lineIdx:i,pickIdx:pi,sku:it.sku,name:it.name,color:it.color,total:itemTotal,created_at:pk.created_at,memo:pk.memo,skus:[{sku:it.sku,name:it.name,color:it.color}]})}});
         safePOs(it).forEach((po,pi)=>{if(po.po_id){
           const szKeysP=Object.keys(po).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','notes','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof po[k]==='number');
           const qty=szKeysP.reduce((a,sz)=>a+(po[sz]||0),0);
@@ -7247,15 +7355,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return<div className="card" style={{marginTop:16}}><div className="card-header"><h2>Linked Documents</h2></div><div className="card-body">
         {allPickIds.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Item Fulfillments</div>
           <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:allPoIds.length>0?16:0}}>
-            {allPickIds.map(pk=><div key={pk.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,cursor:'pointer',background:pk.status==='pulled'?'#f0fdf4':'#fffbeb',transition:'box-shadow 0.15s'}} className="hover-card" onClick={()=>{const pickData=o.items[pk.lineIdx]?.pick_lines?.[pk.pickIdx];if(pickData)setEditPick({lineIdx:pk.lineIdx,pickIdx:pk.pickIdx,pick:pickData})}}>
+            {allPickIds.map(pk=><div key={pk.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,cursor:'pointer',background:pk.status==='pulled'?'#f0fdf4':'#fffbeb',transition:'box-shadow 0.15s'}} className="hover-card" onClick={()=>openPickModal(pk.id,pk.lineIdx,pk.pickIdx)}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
                 <Icon name="grid" size={14}/><span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{pk.id}</span>
                 <span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`} style={{fontSize:9}}>{pk.status==='pulled'?'✓ Pulled':'Needs Pull'}</span>
                 <span style={{marginLeft:'auto',fontWeight:700,fontSize:14,color:'#166534'}}>${pk.total.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
               </div>
-              <div style={{display:'flex',gap:12,fontSize:11,color:'#64748b'}}>
-                <span><strong style={{color:'#1e40af'}}>{pk.sku}</strong> {pk.name}</span>
-                <span>{pk.color}</span>
+              <div style={{display:'flex',gap:12,fontSize:11,color:'#64748b',flexWrap:'wrap'}}>
+                {(pk.skus||[{sku:pk.sku,name:pk.name,color:pk.color}]).map((s,si)=><span key={si}><strong style={{color:'#1e40af'}}>{s.sku}</strong> {s.name} <span style={{color:'#94a3b8'}}>{s.color}</span></span>)}
                 <span>{pk.qty} units</span>
                 {pk.created_at&&<span>📅 {pk.created_at}</span>}
               </div>
@@ -7283,62 +7390,111 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div></>}
       </div></div>})()}
 
+    {/* RECEIVED CONFIRMATION MODAL — pops up after a PO partial/full receive with Print + Download label buttons */}
+    {receivedConfirm&&(()=>{
+      const rc=receivedConfirm;
+      const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(rc.poId);
+      const buildLines=()=>{const lines=[];if(rc.custName)lines.push({text:rc.custName,cls:'team'});lines.push({text:rc.soId,cls:'so'});lines.push({text:'RECEIVED — '+rc.date,cls:'sub',style:'color:#166534;font-weight:800;'});rc.items.forEach(it=>{lines.push({text:(it.sku||'')+' '+(it.name||''),cls:'sku'});lines.push({text:(it.color||'')+' — '+it.qty+' units'});lines.push({text:Object.entries(it.sizes).map(([sz,v])=>sz+': '+v).join(' &nbsp; '),cls:'sz'})});if(rc.items.length>1)lines.push({text:'TOTAL: '+rc.totalQty+' units',cls:'sz'});return lines};
+      return<div className="modal-overlay" onClick={()=>setReceivedConfirm(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+        <div className="modal-header"><h2>📦 Received — {rc.poId}</h2>
+          <button className="modal-close" onClick={()=>setReceivedConfirm(null)}>x</button></div>
+        <div className="modal-body">
+          <div style={{padding:'10px 12px',marginBottom:12,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,fontSize:12,color:'#166534'}}>
+            Shipment received on <strong>{rc.poId}</strong> · {rc.date} · <strong>{rc.totalQty}</strong> unit{rc.totalQty===1?'':'s'} across {rc.items.length} item{rc.items.length===1?'':'s'}
+          </div>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>What was just received</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:12}}>
+            {rc.items.map((it,i)=><div key={i} style={{padding:'8px 10px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{it.sku}</span>
+                <span style={{fontWeight:600,fontSize:12}}>{it.name}</span>
+                {it.color&&<span className="badge badge-gray">{it.color}</span>}
+                <span style={{marginLeft:'auto',fontWeight:800,fontSize:13,color:'#166534'}}>{it.qty} units</span>
+              </div>
+              <div style={{marginTop:4,fontFamily:'monospace',fontSize:11,color:'#475569'}}>{Object.entries(it.sizes).map(([sz,v])=>sz+':'+v).join('  ')}</div>
+            </div>)}
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={()=>setReceivedConfirm(null)}>Close</button>
+          <button className="btn btn-secondary" onClick={()=>printQrLabel({id:rc.poId,qrData,shipBadge:null,lines:buildLines()})}>🖨️ Print Label (4×6)</button>
+          <button className="btn btn-primary" onClick={async()=>{try{await downloadQrLabel({id:rc.poId,qrData,shipBadge:null,lines:buildLines()});nf('Label downloaded')}catch(err){nf('Download failed: '+err.message,'error')}}}>⬇️ Download (PDF)</button>
+        </div>
+      </div></div>;
+    })()}
+
     {/* EDIT PICK MODAL — shows every item that shares the pick_id, since one IF can span multiple line items */}
     {editPick&&(()=>{
-      const pk=editPick.pick;const pickIdEdit=pk.pick_id;
-      // Find all line items that have a pick_line with this pick_id (matched picks aren't necessarily at the same index across items)
-      const ifLines=[];o.items.forEach((it,li)=>{(it.pick_lines||[]).forEach((p,pi)=>{if(p.pick_id===pickIdEdit)ifLines.push({lineIdx:li,pickIdx:pi,pick:p,item:it})})});
-      // Fall back to the single editPick entry if no match (defensive)
-      const lines=ifLines.length?ifLines:[{lineIdx:editPick.lineIdx,pickIdx:editPick.pickIdx,pick:pk,item:o.items[editPick.lineIdx]}];
-      // Editable copies in editPick._lines (one per line). Keep the original editPick.pick in sync with the first sub for any legacy code paths.
-      const editLines=editPick._lines||lines.map(l=>({...l,pick:{...l.pick}}));
-      const setEditLines=fn=>setEditPick(prev=>({...prev,_lines:typeof fn==='function'?fn(prev._lines||editLines):fn}));
-      const isMultiPick=editLines.length>1;
-      const firstPk=editLines[0].pick;
-      const status=firstPk.status||'pick';
-      const totalQty=editLines.reduce((a,l)=>a+Object.keys(l.pick).filter(k=>k!=='status'&&k!=='pick_id'&&typeof l.pick[k]==='number').reduce((b,sz)=>b+(l.pick[sz]||0),0),0);
-      const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickIdEdit);
+      const picks=editPick.picks||[];
+      if(picks.length===0)return null;
+      const firstPk=picks[0].pick;
+      const pickId=editPick.pickId||firstPk.pick_id||'Pick';
+      const NON_SZ=['pick_id','status','created_at','memo','ship_dest','ship_addr','deco_vendor','notes'];
+      const itemInfos=picks.map((p,i)=>{
+        const it=o.items[p.lineIdx]||{};const pk=p.pick;
+        const szKeys=Object.keys(pk).filter(k=>!NON_SZ.includes(k)&&typeof pk[k]==='number'&&pk[k]>0);
+        const total=szKeys.reduce((a,sz)=>a+(pk[sz]||0),0);
+        return{idx:i,item:it,pick:pk,szKeys,total,lineIdx:p.lineIdx,pickIdx:p.pickIdx};
+      });
+      const grandTotal=itemInfos.reduce((a,x)=>a+x.total,0);
+      const overallStatus=picks.every(p=>p.pick.status==='pulled')?'pulled':'pick';
+      const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId);
+      // Build shared ship badge from first pick that has ship info
+      const shipPk=picks.map(p=>p.pick).find(pk=>pk.ship_dest&&pk.ship_dest!=='in_house')||firstPk;
+      const buildShipBadge=()=>{
+        if(!shipPk.ship_dest||shipPk.ship_dest==='in_house')return null;
+        const destLabel=shipPk.ship_dest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(shipPk.deco_vendor?' — '+shipPk.deco_vendor:'');
+        const addr=shipPk.ship_dest==='ship_customer'?(addrs.find(a=>a.id===shipPk.ship_addr)||addrs[0])?.label||'':'';
+        return{text:destLabel+(addr?' — '+addr:''),color:shipPk.ship_dest==='ship_customer'?'#3b82f6':'#d97706',bg:shipPk.ship_dest==='ship_customer'?'#eff6ff':'#fffbeb'};
+      };
+      const buildLabelLines=()=>{
+        const lines=[];
+        if(cust?.name)lines.push({text:cust.name,cls:'team'});
+        lines.push({text:o.id,cls:'so'});
+        itemInfos.forEach(info=>{
+          lines.push({text:(info.item.sku||'')+' '+(info.item.name||''),cls:'sku'});
+          lines.push({text:(info.item.color||'')+' — '+info.total+' units'});
+          lines.push({text:info.szKeys.map(sz=>sz+': '+info.pick[sz]).join(' &nbsp; '),cls:'sz'});
+        });
+        if(itemInfos.length>1)lines.push({text:'TOTAL: '+grandTotal+' units',cls:'sz'});
+        return lines;
+      };
       return<div className="modal-overlay" onClick={()=>setEditPick(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640}}>
-      <div className="modal-header"><h2>Pick — {pickIdEdit||'Pick'}{isMultiPick?<span style={{marginLeft:8,fontSize:12,padding:'2px 8px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{editLines.length} items</span>:null}</h2>
+      <div className="modal-header"><h2>Pick — {pickId}{itemInfos.length>1?<span style={{marginLeft:8,fontSize:12,padding:'2px 8px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{itemInfos.length} items</span>:null}</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
-          <span className={`badge ${status==='pulled'?'badge-green':'badge-amber'}`}>{status==='pulled'?'Pulled':'Needs Pull'}</span>
+          <span className={`badge ${overallStatus==='pulled'?'badge-green':'badge-amber'}`}>{overallStatus==='pulled'?'Pulled':'Needs Pull'}</span>
           <button className="modal-close" onClick={()=>setEditPick(null)}>x</button>
         </div></div>
       <div className="modal-body">
-        {/* Ship Destination — shared on the IF */}
-        {firstPk.ship_dest&&firstPk.ship_dest!=='in_house'&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid '+(firstPk.ship_dest==='ship_customer'?'#3b82f6':'#d97706'),background:firstPk.ship_dest==='ship_customer'?'#eff6ff':'#fffbeb'}}>
-          <div style={{fontSize:12,fontWeight:800,color:firstPk.ship_dest==='ship_customer'?'#1e40af':'#92400e'}}>{firstPk.ship_dest==='ship_customer'?'📦 Ship to Customer':'🚚 Ship to Deco'}</div>
-          {firstPk.ship_dest==='ship_customer'&&(()=>{const addr=addrs.find(a=>a.id===firstPk.ship_addr)||addrs[0];return addr?<div style={{fontSize:12,color:'#475569',marginTop:4}}>{addr.label}</div>:null})()}
-          {firstPk.ship_dest==='ship_deco'&&firstPk.deco_vendor&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>Vendor: {firstPk.deco_vendor}</div>}
+        {/* Ship Destination */}
+        {shipPk.ship_dest&&shipPk.ship_dest!=='in_house'&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid '+(shipPk.ship_dest==='ship_customer'?'#3b82f6':'#d97706'),background:shipPk.ship_dest==='ship_customer'?'#eff6ff':'#fffbeb'}}>
+          <div style={{fontSize:12,fontWeight:800,color:shipPk.ship_dest==='ship_customer'?'#1e40af':'#92400e'}}>{shipPk.ship_dest==='ship_customer'?'📦 Ship to Customer':'🚚 Ship to Deco'}</div>
+          {shipPk.ship_dest==='ship_customer'&&(()=>{const addr=addrs.find(a=>a.id===shipPk.ship_addr)||addrs[0];return addr?<div style={{fontSize:12,color:'#475569',marginTop:4}}>{addr.label}</div>:null})()}
+          {shipPk.ship_dest==='ship_deco'&&shipPk.deco_vendor&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>Vendor: {shipPk.deco_vendor}</div>}
         </div>}
         {firstPk.ship_dest==='in_house'&&<div style={{padding:'8px 14px',marginBottom:12,borderRadius:8,border:'1px solid #e2e8f0',background:'#f8fafc'}}>
           <div style={{fontSize:12,fontWeight:700,color:'#475569'}}>🏭 In-House Deco</div>
         </div>}
-        {/* Shared status toggle — applies to every item in the IF */}
+        {/* Status (applies to all items on this IF) */}
         <div style={{marginBottom:12}}><label className="form-label">Status</label>
-          <div style={{display:'flex',gap:6}}>{['pick','pulled'].map(s=><button key={s} className={`btn btn-sm ${status===s?'btn-primary':'btn-secondary'}`} onClick={()=>setEditLines(prev=>prev.map(l=>({...l,pick:{...l.pick,status:s,...(s==='pulled'&&!l.pick.pulled_at?{pulled_at:new Date().toLocaleString()}:{})}})))}>{s==='pulled'?'✓ Pulled':'Needs Pull'}</button>)}</div></div>
-        {/* One section per item in the IF */}
-        {editLines.map((line,li)=>{
-          const lpk=line.pick;const lit=line.item;
-          const szKeys=Object.keys(lpk).filter(k=>k!=='status'&&k!=='pick_id'&&typeof lpk[k]==='number'&&lpk[k]>0);
-          const lTotal=szKeys.reduce((a,sz)=>a+(lpk[sz]||0),0);
-          return<div key={line.lineIdx+'-'+line.pickIdx} style={{marginBottom:12,padding:'10px 12px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0'}}>
-            {lit&&<div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8}}>
-              <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{lit.sku}</span>
-              <span style={{fontWeight:600,fontSize:13}}>{lit.name}</span>
-              {lit.color&&<span className="badge badge-gray">{lit.color}</span>}
-              {isMultiPick&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{li+1} of {editLines.length}</span>}
-            </div>}
-            <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:4}}>Quantities by size</div>
-            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-              {szKeys.map(sz=><div key={sz} style={{textAlign:'center'}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                <input style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={lpk[sz]} onChange={e=>{const v=parseInt(e.target.value)||0;setEditLines(prev=>prev.map((x,xi)=>xi===li?{...x,pick:{...x.pick,[sz]:v}}:x))}}/>
-              </div>)}
-              <div style={{textAlign:'center',borderLeft:'2px solid #e2e8f0',paddingLeft:8}}><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>QTY</div><div style={{fontSize:18,fontWeight:800}}>{lTotal}</div></div>
-            </div>
-          </div>;
-        })}
+          <div style={{display:'flex',gap:6}}>{['pick','pulled'].map(s=><button key={s} className={`btn btn-sm ${overallStatus===s?'btn-primary':'btn-secondary'}`} onClick={()=>setEditPick(p=>({...p,picks:p.picks.map(pp=>({...pp,pick:{...pp.pick,status:s,...(s==='pulled'&&!pp.pick.pulled_at?{pulled_at:new Date().toLocaleString()}:{})}}))}))}>{s==='pulled'?'✓ Pulled':'Needs Pull'}</button>)}</div></div>
+        {/* Per-item product info + quantities */}
+        {itemInfos.map(info=><div key={info.idx} style={{marginBottom:12,padding:10,border:'1px solid #e2e8f0',borderRadius:6,background:'#fafafa'}}>
+          <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}>
+            <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{info.item.sku}</span>
+            <span style={{fontWeight:600,fontSize:13}}>{info.item.name}</span>
+            {info.item.color&&<span className="badge badge-gray">{info.item.color}</span>}
+          </div>
+          <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:6}}>Quantities by size:</div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            {info.szKeys.map(sz=><div key={sz} style={{textAlign:'center'}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+              <input style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={info.pick[sz]} onChange={e=>{const v=parseInt(e.target.value)||0;setEditPick(p=>({...p,picks:p.picks.map((pp,i)=>i===info.idx?{...pp,pick:{...pp.pick,[sz]:v}}:pp)}))}}/>
+            </div>)}
+            <div style={{textAlign:'center',borderLeft:'2px solid #e2e8f0',paddingLeft:8}}><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>QTY</div><div style={{fontSize:18,fontWeight:800}}>{info.total}</div></div>
+          </div>
+        </div>)}
+        {itemInfos.length>1&&<div style={{padding:'6px 10px',marginBottom:12,background:'#eff6ff',borderRadius:6,fontSize:12,fontWeight:700,color:'#1e40af',textAlign:'right'}}>Total: {grandTotal} units across {itemInfos.length} items</div>}
         {/* QR / Print Label */}
         <div style={{padding:12,border:'1px dashed #d1d5db',borderRadius:8,background:'#fafafa'}}>
           <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>📋 Label / QR Code</div>
@@ -7347,62 +7503,37 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <img src={'https://api.qrserver.com/v1/create-qr-code/?size=100x100&data='+encodeURIComponent(qrData)} alt="QR" style={{width:80,height:80,display:'block'}}/>
             </div>
             <div style={{flex:1,fontSize:11}}>
-              <div style={{fontWeight:800,fontSize:14}}>{pickIdEdit}</div>
+              <div style={{fontWeight:800,fontSize:14}}>{pickId}</div>
               <div style={{color:'#64748b'}}>{o.id} — {cust?.name}</div>
-              {editLines.map(line=>{const szKeys=Object.keys(line.pick).filter(k=>k!=='status'&&k!=='pick_id'&&typeof line.pick[k]==='number'&&line.pick[k]>0);const lT=szKeys.reduce((a,sz)=>a+(line.pick[sz]||0),0);
-                return<div key={line.lineIdx+'-'+line.pickIdx} style={{marginTop:4,paddingTop:4,borderTop:isMultiPick?'1px dashed #e2e8f0':'none'}}>
-                  <div style={{fontWeight:600}}>{line.item?.sku} {line.item?.name}</div>
-                  <div>{line.item?.color} — {lT} units</div>
-                  <div style={{marginTop:2}}>{szKeys.map(sz=>sz+':'+line.pick[sz]).join('  ')}</div>
-                </div>;
-              })}
+              {itemInfos.map(info=><div key={info.idx} style={{marginTop:4}}>
+                <div style={{fontWeight:600}}>{info.item.sku} {info.item.name}</div>
+                <div>{info.item.color} — {info.total} units</div>
+                <div style={{color:'#475569'}}>{info.szKeys.map(sz=>sz+':'+info.pick[sz]).join('  ')}</div>
+              </div>)}
+              {itemInfos.length>1&&<div style={{marginTop:4,fontWeight:700}}>Total: {grandTotal} units</div>}
             </div>
           </div>
-          <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
-            let shipBadge=null;
-            if(firstPk.ship_dest&&firstPk.ship_dest!=='in_house'){
-              const destLabel=firstPk.ship_dest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(firstPk.deco_vendor?' — '+firstPk.deco_vendor:'');
-              const addr=firstPk.ship_dest==='ship_customer'?(addrs.find(a=>a.id===firstPk.ship_addr)||addrs[0])?.label||'':'';
-              shipBadge={text:destLabel+(addr?' — '+addr:''),color:firstPk.ship_dest==='ship_customer'?'#3b82f6':'#d97706',bg:firstPk.ship_dest==='ship_customer'?'#eff6ff':'#fffbeb'};
-            }
-            const labelLines=[{text:o.id+' — '+(cust?.name||''),cls:'sub'}];
-            editLines.forEach(line=>{const szKeys=Object.keys(line.pick).filter(k=>k!=='status'&&k!=='pick_id'&&typeof line.pick[k]==='number'&&line.pick[k]>0);const lT=szKeys.reduce((a,sz)=>a+(line.pick[sz]||0),0);
-              labelLines.push({text:'<strong>'+(line.item?.sku||'')+' '+(line.item?.name||'')+'</strong>'});
-              labelLines.push({text:(line.item?.color||'')+' — '+lT+' units'});
-              labelLines.push({text:szKeys.map(sz=>sz+': '+line.pick[sz]).join(' &nbsp; '),cls:'sz'});
-            });
-            printQrLabel({id:pickIdEdit,qrData,shipBadge,lines:labelLines});
-          }}>🖨️ Print Label (4×6)</button>
+          <div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>printQrLabel({id:pickId,qrData,shipBadge:buildShipBadge(),lines:buildLabelLines()})}>🖨️ Print Label (4×6)</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{try{await downloadQrLabel({id:pickId,qrData,shipBadge:buildShipBadge(),lines:buildLabelLines()});nf('Label downloaded')}catch(err){nf('Download failed: '+err.message,'error')}}}>⬇️ Download (PDF)</button>
+          </div>
         </div>
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setEditPick(null)}>Close</button>
         <button className="btn btn-sm" style={{background:'#dc2626',color:'white'}} onClick={()=>{
-          // Delete every pick_line in the IF (across all items)
-          const updatedItems=o.items.map((it,li)=>{
-            const matching=(it.pick_lines||[]).filter(p=>p.pick_id===pickIdEdit);
-            if(!matching.length)return it;
-            matching.forEach(p=>{if(p.status==='pulled')adjustInvForPick(p,it,1)});
-            return{...it,pick_lines:(it.pick_lines||[]).filter(p=>p.pick_id!==pickIdEdit)};
-          });
-          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf(isMultiPick?'IF '+pickIdEdit+' deleted ('+editLines.length+' items)':'Pick deleted');
+          // Reverse inventory for any pulled picks before removing
+          picks.forEach(p=>{const oldPick=o.items[p.lineIdx]?.pick_lines?.[p.pickIdx];const it=o.items[p.lineIdx];if(oldPick&&it&&oldPick.status==='pulled')adjustInvForPick(oldPick,it,1)});
+          const removeMap=new Map();picks.forEach(p=>{if(!removeMap.has(p.lineIdx))removeMap.set(p.lineIdx,new Set());removeMap.get(p.lineIdx).add(p.pickIdx)});
+          const updatedItems=o.items.map((it,i)=>removeMap.has(i)?{...it,pick_lines:(it.pick_lines||[]).filter((_,pi)=>!removeMap.get(i).has(pi))}:it);
+          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick deleted');
         }}><Icon name="trash" size={12}/> Delete</button>
         <button className="btn btn-primary" onClick={()=>{
-          // Save updates across every item in the IF
-          const updatedItems=o.items.map((it,li)=>{
-            const lineEdits=editLines.filter(l=>l.lineIdx===li);
-            if(!lineEdits.length)return it;
-            const newPicks=(it.pick_lines||[]).map((p,pi)=>{
-              const match=lineEdits.find(l=>l.pickIdx===pi&&p.pick_id===pickIdEdit);
-              if(!match)return p;
-              const newPick=match.pick;
-              if(p.status!=='pulled'&&newPick.status==='pulled')adjustInvForPick(newPick,it,-1);
-              else if(p.status==='pulled'&&newPick.status!=='pulled')adjustInvForPick(p,it,1);
-              return newPick;
-            });
-            return{...it,pick_lines:newPicks};
-          });
-          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf(isMultiPick?'IF '+pickIdEdit+' updated ('+editLines.length+' items)':'Pick updated');
+          // Apply inventory adjustments per line based on status transitions
+          picks.forEach(p=>{const oldPick=o.items[p.lineIdx]?.pick_lines?.[p.pickIdx];const it=o.items[p.lineIdx];const newPick=p.pick;if(!oldPick||!it)return;if(oldPick.status!=='pulled'&&newPick.status==='pulled')adjustInvForPick(newPick,it,-1);else if(oldPick.status==='pulled'&&newPick.status!=='pulled')adjustInvForPick(oldPick,it,1)});
+          const writeMap=new Map();picks.forEach(p=>{if(!writeMap.has(p.lineIdx))writeMap.set(p.lineIdx,new Map());writeMap.get(p.lineIdx).set(p.pickIdx,p.pick)});
+          const updatedItems=o.items.map((it,i)=>writeMap.has(i)?{...it,pick_lines:(it.pick_lines||[]).map((pl,pi)=>writeMap.get(i).has(pi)?writeMap.get(i).get(pi):pl)}:it);
+          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick updated');
         }}>Save Changes</button>
       </div>
     </div></div>})()}
@@ -7680,7 +7811,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               setO(updated);onSave(updated);
               const activeLnUpdate=updates.find(u=>u.ln.lineIdx===activeLine.lineIdx&&u.ln.poIdx===activeLine.poIdx);
               setEditPO({...editPO,po:activeLnUpdate?activeLnUpdate.updatedPO:editPO.po,_selectedRecvLines:[]});
-              nf('Shipment received on '+po.po_id+(recvLines.length>1?' ('+recvLines.length+' items)':''));
+              // Capture received items for the confirmation modal so the user can print/download a box label.
+              const rcItems=updates.map(({ln,updatedPO})=>{const it=o.items[ln.lineIdx]||{};const rsk=Object.keys(updatedPO).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof updatedPO[k]==='number');const lastShip=updatedPO.shipments[updatedPO.shipments.length-1]||{};const sizes={};rsk.forEach(sz=>{if(lastShip[sz]>0)sizes[sz]=lastShip[sz]});return{sku:it.sku||'',name:it.name||'',color:it.color||'',sizes,qty:Object.values(sizes).reduce((a,v)=>a+v,0)}}).filter(x=>x.qty>0);
+              const rcTotal=rcItems.reduce((a,x)=>a+x.qty,0);
+              setReceivedConfirm({poId:po.po_id,soId:o.id,date,custName:cust?.name||'',items:rcItems,totalQty:rcTotal});
             }}>✓ Receive These Items</button>
             </>}
             {recvLines.length===0&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Select items above to receive</div>}
@@ -7986,6 +8120,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const decoCostTotal=isDecoPO?poItems.reduce((a,{po:p})=>a+safeNum(p._bill_cost||0),0):0;
       const decoShipTotal=isDecoPO?decoBillDetails.reduce((a,bd)=>a+safeNum(bd.freight||0),0):0;
       const decoGrand=decoCostTotal+decoShipTotal;
+      // Grand totals across every line on this PO (the original code summed only the active line,
+      // so multi-SKU POs displayed only the first line's units in the summary banner).
+      const NON_SZ_PO=['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type','notes'];
+      const allLineSz=poItems.map(({item:it,po:p})=>{
+        const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&!NON_SZ_PO.includes(k)&&typeof p[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+        const rcvd=p.received||{};const cncl=p.cancelled||{};const billed=p.billed||{};
+        const ordered=sk.reduce((a,sz)=>a+(p[sz]||0),0);
+        const received=sk.reduce((a,sz)=>a+(rcvd[sz]||0),0);
+        const cancelled=sk.reduce((a,sz)=>a+(cncl[sz]||0),0);
+        const billedT=sk.reduce((a,sz)=>a+(billed[sz]||0),0);
+        const open=sk.reduce((a,sz)=>a+Math.max(0,(p[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0)),0);
+        return{item:it,po:p,szKeys:sk,ordered,received,cancelled,billedT,open,getRcvd:sz=>rcvd[sz]||0,getCncl:sz=>cncl[sz]||0,getBilled:sz=>billed[sz]||0,getOpen:sz=>Math.max(0,(p[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0))};
+      });
+      const grandOrdered=allLineSz.reduce((a,x)=>a+x.ordered,0);
+      const grandReceived=allLineSz.reduce((a,x)=>a+x.received,0);
+      const grandCancelled=allLineSz.reduce((a,x)=>a+x.cancelled,0);
+      const grandBilled=allLineSz.reduce((a,x)=>a+x.billedT,0);
+      const grandOpen=allLineSz.reduce((a,x)=>a+x.open,0);
       return<div className="po-fullpage">
         <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
@@ -8016,10 +8168,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div><div style={{fontSize:11,opacity:0.7}}>Bills Applied</div><div style={{fontSize:24,fontWeight:800,color:'#4ade80'}}>{decoBillDetails.length}</div></div>
                 <div><div style={{fontSize:11,opacity:0.7}}>PO Total</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>${decoGrand.toFixed(2)}</div></div>
               </>:<>
-                <div><div style={{fontSize:11,opacity:0.7}}>Total Units</div><div style={{fontSize:24,fontWeight:800}}>{totalOrdered}</div></div>
-                {isDropShipFP?<div><div style={{fontSize:11,opacity:0.7}}>Billed</div><div style={{fontSize:24,fontWeight:800,color:totalBilledFP>=totalOrdered?'#4ade80':'#fbbf24'}}>{totalBilledFP}</div></div>
-                :<div><div style={{fontSize:11,opacity:0.7}}>Received</div><div style={{fontSize:24,fontWeight:800,color:'#4ade80'}}>{totalReceived}</div></div>}
-                {!isDropShipFP&&<div><div style={{fontSize:11,opacity:0.7}}>Open</div><div style={{fontSize:24,fontWeight:800,color:totalOpen>0?'#fbbf24':'#4ade80'}}>{totalOpen}</div></div>}
+                <div><div style={{fontSize:11,opacity:0.7}}>Total Units</div><div style={{fontSize:24,fontWeight:800}}>{grandOrdered}</div></div>
+                {isDropShipFP?<div><div style={{fontSize:11,opacity:0.7}}>Billed</div><div style={{fontSize:24,fontWeight:800,color:grandBilled>=grandOrdered?'#4ade80':'#fbbf24'}}>{grandBilled}</div></div>
+                :<div><div style={{fontSize:11,opacity:0.7}}>Received</div><div style={{fontSize:24,fontWeight:800,color:'#4ade80'}}>{grandReceived}</div></div>}
+                {!isDropShipFP&&<div><div style={{fontSize:11,opacity:0.7}}>Open</div><div style={{fontSize:24,fontWeight:800,color:grandOpen>0?'#fbbf24':'#4ade80'}}>{grandOpen}</div></div>}
                 <div><div style={{fontSize:11,opacity:0.7}}>Unit Cost</div><div style={{fontSize:24,fontWeight:800}}>${unitCost.toFixed(2)}</div></div>
                 <div><div style={{fontSize:11,opacity:0.7}}>PO Total</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>${grandTotal.toFixed(2)}</div></div>
               </>}
@@ -8053,7 +8205,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     </tr>})}
                   <tr style={{borderTop:'2px solid #0f172a',fontWeight:800}}>
                     <td colSpan={3} style={{padding:'6px 8px',textAlign:'right'}}>Grand Total</td>
-                    <td style={{padding:'6px 8px',textAlign:'center'}}>{totalOrdered}</td>
+                    <td style={{padding:'6px 8px',textAlign:'center'}}>{grandOrdered}</td>
                     <td></td>
                     <td style={{padding:'6px 8px',textAlign:'right',fontSize:16,color:'#166534'}}>${grandTotal.toFixed(2)}</td>
                   </tr>
@@ -8062,20 +8214,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
           </div>}
 
-          {/* Size Breakdown — hidden for decoration POs */}
+          {/* Size Breakdown — one table per line item (multi-SKU/color POs need each item's own grid) */}
           {!isDecoPO&&<div className="card" style={{marginBottom:16}}>
             <div className="card-header"><h2>Size Breakdown</h2></div>
             <div className="card-body">
-              <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
-                <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th></tr></thead>
-                <tbody>
-                  <tr><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Ordered</td>{szKeys.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700}}>{po[sz]||0}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalOrdered}</td></tr>
-                  {isDropShipFP?<tr style={{color:'#1e40af'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Billed</td>{szKeys.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:((po.billed||{})[sz]||0)>0?'#1e40af':'#d1d5db'}}>{(po.billed||{})[sz]||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalBilledFP}</td></tr>
-                  :<tr style={{color:'#166534'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Received</td>{szKeys.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalReceived}</td></tr>}
-                  {totalCancelled>0&&<tr style={{color:'#dc2626'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Cancelled</td>{szKeys.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:getCncl(sz)>0?'#dc2626':'#d1d5db'}}>{getCncl(sz)||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalCancelled}</td></tr>}
-                  {totalOpen>0&&!isDropShipFP&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Open</td>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalOpen}</td></tr>}
-                </tbody>
-              </table>
+              {allLineSz.map((x,xi)=>{
+                const allSz=x.szKeys;
+                return<div key={xi} style={{marginBottom:xi<allLineSz.length-1?14:0}}>
+                  {allLineSz.length>1&&<div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6,flexWrap:'wrap'}}>
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{x.item.sku}</span>
+                    <span style={{fontWeight:600,fontSize:13}}>{x.item.name}</span>
+                    {x.item.color&&<span className="badge badge-gray">{x.item.color}</span>}
+                    <span style={{marginLeft:'auto',fontSize:11,color:'#64748b'}}>{x.ordered} ordered{!isDropShipFP?' · '+x.received+' rcvd · '+x.open+' open':' · '+x.billedT+' billed'}</span>
+                  </div>}
+                  <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+                    <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{allSz.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th></tr></thead>
+                    <tbody>
+                      <tr><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Ordered</td>{allSz.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700}}>{x.po[sz]||0}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{x.ordered}</td></tr>
+                      {isDropShipFP?<tr style={{color:'#1e40af'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Billed</td>{allSz.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:x.getBilled(sz)>0?'#1e40af':'#d1d5db'}}>{x.getBilled(sz)||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{x.billedT}</td></tr>
+                      :<tr style={{color:'#166534'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Received</td>{allSz.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:x.getRcvd(sz)>0?'#166534':'#d1d5db'}}>{x.getRcvd(sz)||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{x.received}</td></tr>}
+                      {x.cancelled>0&&<tr style={{color:'#dc2626'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Cancelled</td>{allSz.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:x.getCncl(sz)>0?'#dc2626':'#d1d5db'}}>{x.getCncl(sz)||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{x.cancelled}</td></tr>}
+                      {x.open>0&&!isDropShipFP&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Open</td>{allSz.map(sz=>{const op=x.getOpen(sz);return<td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{x.open}</td></tr>}
+                    </tbody>
+                  </table>
+                </div>;
+              })}
             </div>
           </div>}
 
@@ -8113,23 +8276,89 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
             </div>:null})()}
 
-          {/* Shipment History */}
-          {shipments.length>0&&<div className="card" style={{marginBottom:16}}>
-            <div className="card-header"><h2>{isDropShipFP?'Billing':'Shipment'} History ({shipments.length})</h2></div>
-            <div className="card-body">
-              {shipments.map((sh,si)=>{const shQty=Object.entries(sh.qty||{}).reduce((a,[,v])=>a+safeNum(v),0);return<div key={si} style={{padding:'10px 12px',border:'1px solid #e2e8f0',borderRadius:6,marginBottom:8,background:si%2===0?'#f8fafc':'#fff'}}>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
-                  <span style={{fontWeight:700,fontSize:13}}>Shipment #{si+1}</span>
-                  <span style={{fontSize:12,color:'#64748b'}}>{sh.date||'No date'}</span>
-                </div>
-                <div style={{display:'flex',gap:8,flexWrap:'wrap',fontSize:12}}>
-                  {Object.entries(sh.qty||{}).filter(([,v])=>v>0).map(([sz,q])=><span key={sz} style={{padding:'2px 8px',background:'#dcfce7',color:'#166534',borderRadius:4,fontWeight:600}}>{sz}: {q}</span>)}
-                  <span style={{fontWeight:700}}>({shQty} units)</span>
-                </div>
-                {sh.memo&&<div style={{fontSize:11,color:'#475569',marginTop:4,fontStyle:'italic'}}>{sh.memo}</div>}
-              </div>})}
-            </div>
-          </div>}
+          {/* Shipment History — walk every line on this PO so multi-SKU POs show every receipt with its SKU/color */}
+          {(()=>{
+            const NON_SZ=['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type','notes'];
+            const allShipments=[];
+            (allLines||[{lineIdx:0}]).forEach(ln=>{
+              const it=o.items?.[ln.lineIdx];if(!it)return;
+              const pl=it.po_lines?.find(p=>p.po_id===po.po_id);if(!pl)return;
+              const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&!NON_SZ.includes(k)&&typeof pl[k]==='number');
+              (pl.shipments||[]).forEach((sh,si)=>{
+                const sizes={};sk.forEach(sz=>{if(sh[sz]>0)sizes[sz]=sh[sz]});
+                const qty=Object.values(sizes).reduce((a,v)=>a+v,0);
+                if(qty===0&&!sh.memo&&!sh.date)return;
+                allShipments.push({lineIdx:ln.lineIdx,poIdx:it.po_lines.indexOf(pl),shipIdx:si,date:sh.date||'',sizes,qty,memo:sh.memo||'',sku:it.sku,name:it.name,color:it.color||'',szKeys:sk,raw:sh});
+              });
+            });
+            // Newest first within each line, but globally sort by date desc with original index as tiebreaker
+            allShipments.sort((a,b)=>{const dA=a.date||'';const dB=b.date||'';if(dA===dB)return a.shipIdx-b.shipIdx;return dB.localeCompare(dA)});
+            if(allShipments.length===0)return null;
+            const fpEdit=poFullPage._editShip||null;// `${lineIdx}-${shipIdx}`
+            const isEditing=key=>fpEdit===key;
+            const writeShipUpdate=(lineIdx,poIdx,newShipmentsBuilder)=>{
+              const it=o.items[lineIdx];if(!it)return;
+              const pl=it.po_lines[poIdx];if(!pl)return;
+              const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&!NON_SZ.includes(k)&&typeof pl[k]==='number');
+              const newShipments=newShipmentsBuilder(pl.shipments||[]);
+              const newReceived={};newShipments.forEach(s=>{sk.forEach(sz=>{if(s[sz])newReceived[sz]=(newReceived[sz]||0)+s[sz]})});
+              const newTotalOpen=sk.reduce((a,sz)=>a+Math.max(0,(pl[sz]||0)-(newReceived[sz]||0)-((pl.cancelled||{})[sz]||0)),0);
+              const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
+              const updatedPO={...pl,received:newReceived,shipments:newShipments,status:newStatus};
+              const updatedItems=o.items.map((it2,i)=>i===lineIdx?{...it2,po_lines:it2.po_lines.map((p,j)=>j===poIdx?updatedPO:p)}:it2);
+              const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+              setO(updated);onSave(updated);
+              // If the active editPO row is this one, refresh its snapshot too
+              setPoFullPage(prev=>prev?{...prev,po:lineIdx===prev.allLines?.[0]?.lineIdx?updatedPO:prev.po,_editShip:null}:prev);
+              return updatedPO;
+            };
+            return<div className="card" style={{marginBottom:16}}>
+              <div className="card-header"><h2>{isDropShipFP?'Billing':'Shipment'} History ({allShipments.length})</h2></div>
+              <div className="card-body">
+                {allShipments.map((sh,gi)=>{const key=sh.lineIdx+'-'+sh.shipIdx;const editing=isEditing(key);return<div key={key} style={{border:'1px solid '+(editing?'#bfdbfe':'#e2e8f0'),borderRadius:6,marginBottom:8,background:editing?'#eff6ff':(gi%2===0?'#f8fafc':'#fff')}}>
+                  <div style={{padding:'10px 12px',display:'flex',alignItems:'center',gap:10,cursor:'pointer',flexWrap:'wrap'}} onClick={()=>setPoFullPage(p=>({...p,_editShip:editing?null:key}))}>
+                    <span style={{fontWeight:700,fontSize:13,color:'#166534',whiteSpace:'nowrap'}}>📦 {sh.date||'No date'}</span>
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:11}}>{sh.sku}</span>
+                    <span style={{fontSize:12,fontWeight:600}}>{sh.name}</span>
+                    {sh.color&&<span style={{fontSize:11,color:'#64748b'}}>{sh.color}</span>}
+                    <div style={{display:'flex',gap:5,flexWrap:'wrap',marginLeft:8}}>
+                      {Object.entries(sh.sizes).map(([sz,q])=><span key={sz} style={{padding:'2px 7px',background:'#dcfce7',color:'#166534',borderRadius:4,fontWeight:700,fontSize:11}}>{sz}:{q}</span>)}
+                    </div>
+                    <span style={{marginLeft:'auto',fontWeight:800,fontSize:13}}>{sh.qty} units</span>
+                    <span style={{fontSize:10,color:'#64748b'}}>{editing?'▲ close':'✏️ edit'}</span>
+                  </div>
+                  {sh.memo&&!editing&&<div style={{padding:'0 12px 8px',fontSize:11,color:'#475569',fontStyle:'italic'}}>{sh.memo}</div>}
+                  {editing&&<div style={{padding:'10px 12px',borderTop:'1px solid #bfdbfe'}}>
+                    <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
+                      <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
+                      <input type="date" id={'fp-sh-date-'+key} className="form-input" style={{width:150,fontSize:12}} defaultValue={sh.date}/>
+                      <span style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:6}}>Quantities:</span>
+                      {sh.szKeys.map(sz=><div key={sz} style={{textAlign:'center'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                        <input id={'fp-sh-'+key+'-'+sz} style={{width:44,textAlign:'center',border:'1px solid #93c5fd',borderRadius:4,padding:'3px 2px',fontSize:13,fontWeight:700,background:'white'}} defaultValue={sh.sizes[sz]||0}/>
+                      </div>)}
+                    </div>
+                    <div style={{display:'flex',gap:6}}>
+                      <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>{
+                        const dateEl=document.getElementById('fp-sh-date-'+key);
+                        const updatedSh={date:dateEl?.value||sh.date};
+                        sh.szKeys.forEach(sz=>{const el=document.getElementById('fp-sh-'+key+'-'+sz);if(el){const v=parseInt(el.value)||0;if(v>0)updatedSh[sz]=v}});
+                        if(sh.raw.memo)updatedSh.memo=sh.raw.memo;
+                        writeShipUpdate(sh.lineIdx,sh.poIdx,prev=>prev.map((s,i)=>i===sh.shipIdx?updatedSh:s));
+                        nf('Shipment updated');
+                      }}>Save</button>
+                      <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{
+                        if(!window.confirm('Delete this shipment? Received quantities will be recalculated.'))return;
+                        writeShipUpdate(sh.lineIdx,sh.poIdx,prev=>prev.filter((_,i)=>i!==sh.shipIdx));
+                        nf('Shipment deleted');
+                      }}><Icon name="trash" size={10}/> Delete</button>
+                      <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setPoFullPage(p=>({...p,_editShip:null}))}>Cancel</button>
+                    </div>
+                  </div>}
+                </div>;})}
+              </div>
+            </div>;
+          })()}
 
           {po.memo&&<div className="card" style={{marginBottom:16}}>
             <div className="card-header"><h2>Notes</h2></div>
@@ -8214,7 +8443,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 setO(updated);onSave(updated);
                 const firstUpdate=updates[0];
                 setPoFullPage({...poFullPage,po:firstUpdate?firstUpdate.updatedPO:po,_selectedFpRecvLines:[]});
-                nf('Shipment received on '+po.po_id+(fpRecvLines.length>1?' ('+fpRecvLines.length+' items)':''));
+                const rcItems=updates.map(({ln,updatedPO})=>{const it=o.items[ln.lineIdx]||{};const rsk=Object.keys(updatedPO).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof updatedPO[k]==='number');const lastShip=updatedPO.shipments[updatedPO.shipments.length-1]||{};const sizes={};rsk.forEach(sz=>{if(lastShip[sz]>0)sizes[sz]=lastShip[sz]});return{sku:it.sku||'',name:it.name||'',color:it.color||'',sizes,qty:Object.values(sizes).reduce((a,v)=>a+v,0)}}).filter(x=>x.qty>0);
+                const rcTotal=rcItems.reduce((a,x)=>a+x.qty,0);
+                setReceivedConfirm({poId:po.po_id,soId:o.id,date,custName:cust?.name||'',items:rcItems,totalQty:rcTotal});
               }}>Receive These Items</button>
               </>}
               {fpRecvLines.length===0&&allFpRecvLines.length>1&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Select items above to receive</div>}

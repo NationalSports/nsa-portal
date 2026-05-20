@@ -15,7 +15,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
 import { calcOrderTotals } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -13286,7 +13286,24 @@ export default function App(){
           !(t.artName||'').toLowerCase().includes(s))return false}
       return true;
     });
-    const fPull=filt(pullTasks);const fShip=filt(shipTasks);const fDeliver=filt(deliverTasks);
+    const fPullRaw=filt(pullTasks);const fShip=filt(shipTasks);const fDeliver=filt(deliverTasks);
+    // Group pull tasks by (soId, pick_id) so an IF that spans multiple line items
+    // appears as a single warehouse row (and opens a single multi-item detail page).
+    const fPull=(()=>{
+      const out=[];const seen={};
+      fPullRaw.forEach(t=>{
+        const key=t.soId+'|'+(t._pickId||'__'+t.itemIdx);
+        if(seen[key]){
+          const g=seen[key];g._groupTasks.push(t);g.needsPull+=t.needsPull;g.totalOrdered+=t.totalOrdered;g.totalPulled+=(t.totalPulled||0);
+          (t.szKeys||[]).forEach(s=>{g.sizes[s]=(g.sizes[s]||0)+(t.sizes[s]||0);g.pulled[s]=(g.pulled[s]||0)+(t.pulled?.[s]||0);if(!g.szKeys.includes(s))g.szKeys.push(s)});
+          g._extraCount=(g._extraCount||0)+1;
+        }else{
+          const g={...t,sizes:{...t.sizes},pulled:{...(t.pulled||{})},szKeys:[...(t.szKeys||[])],_groupTasks:[t],_extraCount:0};
+          seen[key]=g;out.push(g);
+        }
+      });
+      return out;
+    })();
     const readyForDeco=decoTasks.filter(t=>t.isReady&&(t.prodStatus==='hold'||t.prodStatus==='draft')&&t.prodStatus!=='ready');const fDeco=filt(readyForDeco);
     const openStockPOs=invPOs.filter(p=>p.status!=='received'&&p.status!=='cancelled');
     // Count awaiting pickup shipments for tab badge
@@ -13306,40 +13323,41 @@ export default function App(){
       {whViewIF&&(()=>{
         const t=whViewIF;const so=t.so;
         const c=cust.find(x=>x.id===so.customer_id);
-        // subs: every (item, pick) the warehouse needs to handle in this IF — multi-item IFs share one pick_id.
-        const rawSubs=t._subTasks||[{item:t.item,itemIdx:t.itemIdx,sku:t.sku,name:t.name,brand:t.brand,color:t.color,sizes:t.sizes,pulled:t.pulled,szKeys:t.szKeys,needsPull:t.needsPull,totalOrdered:t.totalOrdered,totalPulled:t.totalPulled,_activePicks:t._activePicks,shipDest:t.shipDest,noDeco:t.noDeco}];
-        const subs=rawSubs.map(sub=>{
-          const curItem=safeItems(so)[sub.itemIdx]||sub.item;
-          const itemPicks=safePicks(curItem);
-          const activePick=t._pickId?itemPicks.find(pk=>pk.pick_id===t._pickId&&pk.status!=='pulled'):itemPicks.find(pk=>pk.status!=='pulled');
-          const szKeysOrdered=(sub.szKeys||Object.keys(sub.sizes||{}).filter(k=>SZ_ORD.includes(k)||(sub.sizes[k]>0))).slice().sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
-          const p2=prod.find(pp=>pp.sku===sub.sku||pp.id===curItem?.product_id);
-          return{...sub,_item:curItem,_activePick:activePick,_szKeys:szKeysOrdered,_p:p2};
+        const pickId=t._pickId||'IF';
+        // Aggregate every order item that has an unpulled pick_line with this pick_id.
+        // Falls back to the legacy single-item shape for picks without an IF number.
+        const pickItems=[];
+        safeItems(so).forEach((it,ii)=>{
+          const ap=safePicks(it).find(pk=>pk.pick_id===pickId&&pk.status!=='pulled');
+          if(!ap)return;
+          const szk=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0)).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+          const sizes={};szk.forEach(s=>{const v=ap[s]||0;if(v>0)sizes[s]=v});
+          const szKeysActive=Object.keys(sizes);
+          const needsPull=Object.values(sizes).reduce((a,v)=>a+v,0);
+          pickItems.push({item:it,itemIdx:ii,activePick:ap,szKeys:szKeysActive,sizes,pulled:{},needsPull,totalOrdered:needsPull,totalPulled:0,sku:it.sku,name:it.name,color:it.color||'',brand:it.brand||'',p:prod.find(pp=>pp.sku===it.sku||pp.id===it.product_id)});
         });
-        const isMulti=subs.length>1;
-        const item=subs[0]._item;const p=subs[0]._p;
-        const allPicks=safePicks(item);
-        const firstActivePick=subs[0]._activePick;
-        const pickId=t._pickId||firstActivePick?.pick_id||'IF';
-        const szKeys=subs[0]._szKeys;// kept for QR/print label backwards-compat
+        if(pickItems.length===0&&t.item){
+          const it=t.item;const ap=t._activePicks?.[0]||safePicks(it).find(pk=>pk.pick_id===pickId);
+          pickItems.push({item:it,itemIdx:t.itemIdx,activePick:ap,szKeys:t.szKeys||[],sizes:t.sizes||{},pulled:t.pulled||{},needsPull:t.needsPull,totalOrdered:t.totalOrdered,totalPulled:t.totalPulled,sku:t.sku,name:t.name,color:t.color||'',brand:t.brand||'',p:prod.find(pp=>pp.sku===t.sku||pp.id===it.product_id)});
+        }
+        const firstPI=pickItems[0];const activePick=firstPI.activePick;
+        const grandNeed=pickItems.reduce((a,pi)=>a+pi.needsPull,0);
+        const grandOrdered=pickItems.reduce((a,pi)=>a+pi.totalOrdered,0);
+        const grandPulled=pickItems.reduce((a,pi)=>a+(pi.totalPulled||0),0);
         const addrs2=c?getAddrs(c,cust):[];
         const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId);
-        const shipDest=firstActivePick?.ship_dest||subs[0].shipDest||'in_house';
+        const shipDest=activePick?.ship_dest||t.shipDest||'in_house';
         const showShipping=shipDest==='ship_customer'||shipDest==='ship_deco';
-        const aggNeedsPull=subs.reduce((a,s)=>a+s.needsPull,0);
-        const aggTotalOrdered=subs.reduce((a,s)=>a+s.totalOrdered,0);
-        const aggTotalPulled=subs.reduce((a,s)=>a+s.totalPulled,0);
-
-        // pullQtys keyed by `${itemIdx}:${sz}` so each item in a multi-item IF tracks its own pull quantities.
-        const buildDefaultPullQtys=()=>{const init={};subs.forEach(s=>{const ap=s._activePick;s._szKeys.forEach(sz=>{init[s.itemIdx+':'+sz]=ap?(ap[sz]||0):0})});return init};
-        const pullQtys=t._pullQtys||buildDefaultPullQtys();
-        const setPullQtys=fn=>setWhViewIF(prev=>{const cur=prev._pullQtys||buildDefaultPullQtys();return{...prev,_pullQtys:typeof fn==='function'?fn(cur):fn}});
-        const pqGet=(idx,sz)=>pullQtys[idx+':'+sz]||0;
-        const totPullingAll=subs.reduce((a,s)=>a+s._szKeys.reduce((b,sz)=>b+pqGet(s.itemIdx,sz),0),0);
-
-        // Local shipping state stored on whViewIF — seed one box containing every item in the IF.
-        const boxes=t._boxes||[{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:subs.map(s=>({sku:s.sku,name:s.name,color:s.color||'',sizes:Object.fromEntries(s._szKeys.map(sz=>[sz,Math.max(0,(s.sizes[sz]||0)-(s.pulled[sz]||0))]))}))}];
+        const defaultPullQtys=()=>Object.fromEntries(pickItems.map(pi=>[pi.itemIdx,Object.fromEntries(pi.szKeys.map(sz=>[sz,pi.activePick?(pi.activePick[sz]||0):0]))]));
+        const pullQtys=t._pullQtys||defaultPullQtys();
+        const setPullQtys=fn=>setWhViewIF(prev=>{const cur=prev._pullQtys||defaultPullQtys();return{...prev,_pullQtys:typeof fn==='function'?fn(cur):fn}});
+        const totalPullingFor=(pi)=>pi.szKeys.reduce((a,sz)=>a+((pullQtys[pi.itemIdx]||{})[sz]||0),0);
+        const grandPulling=pickItems.reduce((a,pi)=>a+totalPullingFor(pi),0);
+        const defaultBoxItems=pickItems.map(pi=>({sku:pi.sku,name:pi.name,color:pi.color||'',sizes:Object.fromEntries(pi.szKeys.map(sz=>[sz,Math.max(0,(pi.item.sizes[sz]||0)-(pi.pulled[sz]||0))]))}));
+        const boxes=t._boxes||[{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:defaultBoxItems}];
         const setBoxes=newBoxes=>setWhViewIF(prev=>({...prev,_boxes:newBoxes}));
+        // Single-item alias retained so the rest of the original page (shipping label section etc.) keeps working
+        const item=firstPI.item;const p=firstPI.p;
 
         return<div style={{maxWidth:900,margin:'0 auto'}}>
           {/* Back button */}
@@ -13369,153 +13387,161 @@ export default function App(){
             </div>
           </div>
 
-          {/* Item details — one section per item in the IF */}
-          {subs.map((sub,si)=>{
-            const subP=sub._p;const subSzKeys=sub._szKeys;
-            return<div key={sub.itemIdx} className="card" style={{marginBottom:12}}>
-              <div style={{padding:'12px 18px'}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8,display:'flex',alignItems:'center',gap:8}}>
-                  Item Details{isMulti&&<span style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>({si+1} of {subs.length})</span>}
-                </div>
-                <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:12}}>
-                  {subP?.image_url&&<img src={subP.image_url} alt="" style={{width:56,height:56,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0'}}/>}
-                  <div>
-                    <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                      <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{sub.sku}</span>
-                      <span style={{fontWeight:700,fontSize:14}}>{sub.name}</span>
-                      {sub.color&&<span className="badge badge-gray">{sub.color}</span>}
-                      {sub.brand&&<span style={{fontSize:11,color:'#64748b'}}>{sub.brand}</span>}
-                    </div>
-                    <div style={{marginTop:4,fontSize:12,color:'#64748b'}}>
-                      Need to pull: <strong style={{color:'#d97706'}}>{sub.needsPull} units</strong>
-                      {' · '}Total ordered: {sub.totalOrdered}{' · '}Already pulled: {sub.totalPulled}
+          {/* Item details — one block per line item on this IF */}
+          <div className="card" style={{marginBottom:12}}>
+            <div style={{padding:'12px 18px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Item Details</div>
+                {pickItems.length>1&&<span style={{fontSize:10,padding:'2px 7px',background:'#dbeafe',color:'#1e40af',borderRadius:10,fontWeight:700}}>{pickItems.length} items on this IF</span>}
+              </div>
+              {pickItems.map((pi,piIdx)=>{
+                const piPull=pullQtys[pi.itemIdx]||{};
+                const piTotPulling=totalPullingFor(pi);
+                return<div key={pi.itemIdx} style={{padding:pickItems.length>1?12:0,border:pickItems.length>1?'1px solid #e2e8f0':'none',borderRadius:8,marginBottom:pickItems.length>1?10:0,background:pickItems.length>1?'#fafafa':'transparent'}}>
+                  <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:12}}>
+                    {pi.p?.image_url&&<img src={pi.p.image_url} alt="" style={{width:56,height:56,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0'}}/>}
+                    <div>
+                      <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                        <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{pi.sku}</span>
+                        <span style={{fontWeight:700,fontSize:14}}>{pi.name}</span>
+                        {pi.color&&<span className="badge badge-gray">{pi.color}</span>}
+                        {pi.brand&&<span style={{fontSize:11,color:'#64748b'}}>{pi.brand}</span>}
+                      </div>
+                      <div style={{marginTop:4,fontSize:12,color:'#64748b'}}>
+                        Need to pull: <strong style={{color:'#d97706'}}>{pi.needsPull} units</strong>
+                        {' · '}Total ordered: {pi.totalOrdered}{' · '}Already pulled: {pi.totalPulled}
+                      </div>
                     </div>
                   </div>
-                </div>
-
-                {/* Sizes grid */}
-                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Sizes to Pull</div>
-                <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
-                  {subSzKeys.map(sz=>{
-                    const ordered=sub.sizes[sz]||0;const pulled=sub.pulled[sz]||0;const need=Math.max(0,ordered-pulled);
-                    const inv=subP?._inv?.[sz]||0;const pq=pqGet(sub.itemIdx,sz);
-                    if(ordered===0)return null;
-                    return<div key={sz} style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:need>0?'2px solid #d97706':'1px solid #e2e8f0',background:need>0?'#fffbeb':'#f0fdf4'}}>
-                      <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:2}}>{sz}</div>
-                      <div style={{fontSize:22,fontWeight:900,color:need>0?'#92400e':'#166534',lineHeight:1}}>{need>0?need:'✓'}</div>
-                      <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>need of {ordered}</div>
-                      {need>0&&<>
-                        <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
-                        <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
-                        <input type="number" min={0} max={need} value={pq} style={{width:40,textAlign:'center',fontSize:14,fontWeight:800,border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 0',color:pq<need?'#dc2626':'#166534'}}
-                          onChange={e=>{const v=Math.max(0,Math.min(need,parseInt(e.target.value)||0));const key=sub.itemIdx+':'+sz;setPullQtys(prev=>({...prev,[key]:v}))}}/>
-                        <div style={{fontSize:8,color:inv<need?'#dc2626':'#94a3b8',marginTop:2}}>{inv} in stock</div>
-                      </>}
-                    </div>})}
-                  {(()=>{const totPullingSub=subSzKeys.reduce((a,sz)=>a+pqGet(sub.itemIdx,sz),0);
-                    return<div style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:'2px solid #e2e8f0',background:'#f8fafc'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Sizes to Pull</div>
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                    {pi.szKeys.map(sz=>{
+                      const ordered=pi.sizes[sz]||0;const pulled=pi.pulled[sz]||0;const need=Math.max(0,ordered-pulled);
+                      const inv=pi.p?._inv?.[sz]||0;const pq=piPull[sz]||0;
+                      if(ordered===0)return null;
+                      return<div key={sz} style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:need>0?'2px solid #d97706':'1px solid #e2e8f0',background:need>0?'#fffbeb':'#f0fdf4'}}>
+                        <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:2}}>{sz}</div>
+                        <div style={{fontSize:22,fontWeight:900,color:need>0?'#92400e':'#166534',lineHeight:1}}>{need>0?need:'✓'}</div>
+                        <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>need of {ordered}</div>
+                        {need>0&&<>
+                          <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
+                          <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
+                          <input type="number" min={0} max={need} value={pq} style={{width:40,textAlign:'center',fontSize:14,fontWeight:800,border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 0',color:pq<need?'#dc2626':'#166534'}}
+                            onChange={e=>{const v=Math.max(0,Math.min(need,parseInt(e.target.value)||0));setPullQtys(prev=>({...prev,[pi.itemIdx]:{...(prev[pi.itemIdx]||{}),[sz]:v}}))}}/>
+                          <div style={{fontSize:8,color:inv<need?'#dc2626':'#94a3b8',marginTop:2}}>{inv} in stock</div>
+                        </>}
+                      </div>})}
+                    <div style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:'2px solid #e2e8f0',background:'#f8fafc'}}>
                       <div style={{fontSize:11,fontWeight:800,color:'#64748b',marginBottom:2}}>QTY</div>
-                      <div style={{fontSize:22,fontWeight:900,color:'#d97706',lineHeight:1}}>{sub.needsPull}</div>
-                      <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>of {sub.totalOrdered}</div>
-                      {sub.needsPull>0&&<>
+                      <div style={{fontSize:22,fontWeight:900,color:'#d97706',lineHeight:1}}>{pi.needsPull}</div>
+                      <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>of {pi.totalOrdered}</div>
+                      {pi.needsPull>0&&<>
                         <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
                         <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
-                        <div style={{fontSize:14,fontWeight:800,color:totPullingSub<sub.needsPull?'#dc2626':'#166534'}}>{totPullingSub}</div>
+                        <div style={{fontSize:14,fontWeight:800,color:piTotPulling<pi.needsPull?'#dc2626':'#166534'}}>{piTotPulling}</div>
                       </>}
-                    </div>})()}
-                </div>
-              </div>
-            </div>;
-          })}
+                    </div>
+                  </div>
+                </div>;
+              })}
+              {pickItems.length>1&&<div style={{padding:'8px 12px',marginTop:4,background:'#eff6ff',borderRadius:6,fontSize:12,fontWeight:700,color:'#1e40af',textAlign:'right'}}>Total: {grandPulling} of {grandNeed} units across {pickItems.length} items</div>}
 
-          {/* Unified Pull Action — applies to every item in the IF */}
-          {aggNeedsPull>0&&<div className="card" style={{marginBottom:12}}>
-            <div style={{padding:'12px 16px',background:'#f0fdf4',borderRadius:8,border:'2px solid #166534'}}>
-              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                {(()=>{const isPartial=totPullingAll>0&&totPullingAll<aggNeedsPull;const isFull=totPullingAll>=aggNeedsPull;
-                  // Shared pull logic. keepOpen=true → record what was pulled, decrement the active pick_line by that amount, leave IF open for the remaining qty.
-                  const applyPull=(keepOpen)=>{
-                    if(whPulling)return;setWhPulling(true);
-                    const pickIdToUse=t._pickId||firstActivePick?.pick_id||('IF-'+Date.now().toString(36).toUpperCase().slice(-4));
-                    const now=new Date().toLocaleString();
-                    const updatedItems=safeItems(so).map((it2,ii)=>{
-                      const sub=subs.find(s=>s.itemIdx===ii);
-                      if(!sub)return it2;
-                      const subActive=sub._activePick;
-                      const subPullQty=sub._szKeys.reduce((a,sz)=>a+pqGet(sub.itemIdx,sz),0);
-                      if(subPullQty<=0)return it2;
-                      const existingPicks=it2.pick_lines||[];
-                      if(keepOpen&&subActive){
-                        // Decrement the active pick line by the pulled qty; append a new pulled pick_line tracking what was pulled.
-                        const remainingPick={...subActive};
-                        sub._szKeys.forEach(sz=>{remainingPick[sz]=Math.max(0,(subActive[sz]||0)-pqGet(sub.itemIdx,sz))});
-                        const pulledChild={pick_id:subActive.pick_id,status:'pulled',pulled_at:now,ship_dest:subActive.ship_dest||sub.shipDest||'in_house',_partial:true,_orig_sizes:Object.fromEntries(sub._szKeys.map(sz=>[sz,subActive[sz]||0]))};
-                        sub._szKeys.forEach(sz=>{pulledChild[sz]=pqGet(sub.itemIdx,sz)});
-                        const newPicks=existingPicks.map(pk=>(pk.pick_id===subActive.pick_id&&pk.status!=='pulled')?remainingPick:pk);
-                        newPicks.push(pulledChild);
-                        return{...it2,pick_lines:newPicks};
-                      }
-                      if(subActive){
-                        // Full close — preserve _orig_sizes so this IF can be Re-opened later from Recent Actions
-                        const newPicks=existingPicks.map(pk=>{
-                          if(pk.pick_id===subActive.pick_id&&pk.status!=='pulled'){
-                            const origSizes=pk._orig_sizes||Object.fromEntries(sub._szKeys.map(sz=>[sz,pk[sz]||0]));
-                            const updated={...pk,status:'pulled',pulled_at:now,_orig_sizes:origSizes};
-                            sub._szKeys.forEach(sz=>{updated[sz]=pqGet(sub.itemIdx,sz)});return updated;
-                          }return pk});
-                        return{...it2,pick_lines:newPicks};
-                      }
-                      const newPick={pick_id:pickIdToUse,status:'pulled',pulled_at:now,ship_dest:sub.shipDest||'in_house'};
-                      sub._szKeys.forEach(sz=>{newPick[sz]=pqGet(sub.itemIdx,sz)});
-                      newPick._orig_sizes={...newPick};delete newPick._orig_sizes.status;delete newPick._orig_sizes.pick_id;delete newPick._orig_sizes.pulled_at;delete newPick._orig_sizes.ship_dest;delete newPick._orig_sizes._orig_sizes;
-                      return{...it2,pick_lines:[...existingPicks,newPick]};
-                    });
-                    const updatedJobs=safeJobs(so).map(j=>{
-                      let total=0,fulfilled=0;
-                      (j.items||[]).forEach(gi=>{const it=updatedItems[gi.item_idx];if(!it)return;
-                        Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-                          total+=v;
-                          const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-                          const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-                          fulfilled+=Math.min(v,pQ+rQ);
-                        });
+              {/* Pull Action Buttons */}
+              {grandNeed>0&&<div style={{marginTop:12,padding:'12px 16px',background:'#f0fdf4',borderRadius:8,border:'2px solid #166534'}}>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  {(()=>{const totPulling2=grandPulling;const isPartial=totPulling2>0&&totPulling2<grandNeed;const isFull=totPulling2>=grandNeed;
+                    return<>
+                    <button className="btn btn-primary" disabled={whPulling||totPulling2===0} style={{fontSize:13,padding:'10px 20px',fontWeight:800,background:'#166534',borderColor:'#166534',opacity:whPulling||totPulling2===0?0.5:1}} onClick={()=>{
+                      if(whPulling)return;setWhPulling(true);
+                      const pickIdToUse=pickId||('IF-'+Date.now().toString(36).toUpperCase().slice(-4));
+                      const byItemIdx={};pickItems.forEach(pi=>{byItemIdx[pi.itemIdx]=pi});
+                      const updatedItems=safeItems(so).map((it2,ii)=>{
+                        const pi=byItemIdx[ii];if(!pi)return it2;
+                        const qtysForItem=pullQtys[ii]||{};
+                        const existingPicks=it2.pick_lines||[];
+                        if(pi.activePick){
+                          const newPicks=existingPicks.map(pk=>{
+                            if(pk.pick_id===pi.activePick.pick_id&&pk.status!=='pulled'){
+                              const updated={...pk,status:'pulled',pulled_at:new Date().toLocaleString()};
+                              pi.szKeys.forEach(sz=>{updated[sz]=qtysForItem[sz]||0});return updated;}return pk});
+                          return{...it2,pick_lines:newPicks};
+                        }
+                        const newPick={pick_id:pickIdToUse,status:'pulled',pulled_at:new Date().toLocaleString(),ship_dest:t.shipDest||'in_house'};
+                        pi.szKeys.forEach(sz=>{newPick[sz]=qtysForItem[sz]||0});
+                        return{...it2,pick_lines:[...existingPicks,newPick]};
                       });
-                      const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-                      if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
-                      return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
-                    });
-                    const updatedSO={...so,items:updatedItems,jobs:updatedJobs,updated_at:now};
-                    subs.forEach(sub=>{const p2=sub._p;if(!p2)return;const newInv={...p2._inv};sub._szKeys.forEach(sz=>{const v=pqGet(sub.itemIdx,sz);if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});setProd(pp=>pp.map(x=>x.id===p2.id?{...x,_inv:newInv}:x))});
-                    if(!keepOpen&&showShipping&&boxes.some(bx=>bx.tracking_number)){
-                      const shipments=[...(updatedSO._shipments||[])];
-                      boxes.filter(bx=>bx.tracking_number).forEach(bx=>{shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'ups',ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,created_by:cu?.id,created_at:now})});
-                      updatedSO._shipments=shipments;
-                    }
-                    _markRecentlyPulled(t.soId);
-                    savSO(updatedSO,{skipMerge:true});
-                    // Direct DB sync only works for status flips on existing rows; partial-keep-open inserts a new row, so rely on the SO save.
-                    if(!keepOpen){subs.forEach(sub=>{if(sub._activePick){const pq2={};sub._szKeys.forEach(sz=>{pq2[sz]=pqGet(sub.itemIdx,sz)});_dbUpdatePickLineStatus(t.soId,sub.itemIdx,sub._activePick.pick_id,'pulled',pq2)}})}
-                    subs.forEach(sub=>{
-                      const subPulledSizes=sub._szKeys.filter(sz=>pqGet(sub.itemIdx,sz)>0).map(sz=>sz+':'+pqGet(sub.itemIdx,sz)).join(' ');
-                      const subQty=sub._szKeys.reduce((a,sz)=>a+pqGet(sub.itemIdx,sz),0);
-                      if(subQty>0)addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:sub.sku,name:sub.name,color:sub.color,productId:sub._p?.id||sub._item?.product_id,sizes:subPulledSizes,qty:subQty,partial:keepOpen?true:undefined,by:cu?.id||'warehouse'});
-                    });
-                    nf('✅ '+pickIdToUse+(keepOpen?' partial pull saved — IF still open':' pulled — '+totPullingAll+' units'));setWhPulling(false);setWhViewIF(null);
-                  };
-                  return<>
-                  <button className="btn btn-primary" disabled={whPulling||totPullingAll===0} style={{fontSize:13,padding:'10px 20px',fontWeight:800,background:'#166534',borderColor:'#166534',opacity:whPulling||totPullingAll===0?0.5:1}} onClick={()=>applyPull(false)}>
-                    {whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPullingAll+' units)':isPartial?'✓ Mark Partial Pull — Close IF ('+totPullingAll+' of '+aggNeedsPull+')':'✓ Mark as Pulled')}</button>
-                  {isPartial&&<button className="btn btn-sm" disabled={whPulling} style={{fontSize:11,background:'#0891b2',color:'white',border:'none',padding:'10px 14px',fontWeight:700,opacity:whPulling?0.5:1}} onClick={()=>applyPull(true)} title="Record this pull but keep the IF open for the remaining units">
-                    💾 Save Partial — Keep IF Open ({totPullingAll}/{aggNeedsPull})</button>}
-                  {!isFull&&<button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
-                    const filled={};subs.forEach(sub=>{sub._szKeys.forEach(sz=>{filled[sub.itemIdx+':'+sz]=Math.max(0,(sub.sizes[sz]||0)-(sub.pulled[sz]||0))})});setPullQtys(filled);
-                  }}>Fill All</button>}
-                  {totPullingAll>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 14px'}} onClick={()=>{
-                    const empty={};subs.forEach(sub=>{sub._szKeys.forEach(sz=>{empty[sub.itemIdx+':'+sz]=0})});setPullQtys(empty);
-                  }}>Clear</button>}
-                </>})()}
-              </div>
-              <div style={{fontSize:10,color:'#64748b',marginTop:6}}>Adjust quantities above. <strong>Mark as Pulled</strong> closes the IF; <strong>Save Partial — Keep IF Open</strong> records what you pulled and leaves the rest open.{isMulti?' All '+subs.length+' items will be marked together.':''}</div>
+                      // Recalculate job item_status after pulling — mirrors PO receive flow so the warehouse "Ready for Deco" tab and job-level todos reflect stock-pull fulfillment.
+                      const updatedJobs=safeJobs(so).map(j=>{
+                        let total=0,fulfilled=0;
+                        (j.items||[]).forEach(gi=>{const it=updatedItems[gi.item_idx];if(!it)return;
+                          Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
+                            total+=v;
+                            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+                            const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+                            fulfilled+=Math.min(v,pQ+rQ);
+                          });
+                        });
+                        const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
+                        if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
+                        return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
+                      });
+                      const updatedSO={...so,items:updatedItems,jobs:updatedJobs,updated_at:new Date().toLocaleString()};
+                      // Inventory adjustments per item product
+                      const prodPatches={};
+                      pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});prodPatches[pi.p.id]=newInv});
+                      if(Object.keys(prodPatches).length>0)setProd(pp=>pp.map(x=>prodPatches[x.id]?{...x,_inv:prodPatches[x.id]}:x));
+                      if(showShipping&&boxes.some(bx=>bx.tracking_number)){
+                        const shipments=[...(updatedSO._shipments||[])];
+                        boxes.filter(bx=>bx.tracking_number).forEach(bx=>{shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'ups',ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,created_by:cu?.id,created_at:new Date().toLocaleString()})});
+                        updatedSO._shipments=shipments;
+                      }
+                      _markRecentlyPulled(t.soId);
+                      savSO(updatedSO,{skipMerge:true});
+                      // Atomic per-line DB updates for cross-tab sync
+                      pickItems.forEach(pi=>{if(!pi.activePick)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const pq={};pi.szKeys.forEach(sz=>{pq[sz]=qtysForItem[sz]||0});_dbUpdatePickLineStatus(t.soId,pi.itemIdx,pi.activePick.pick_id,'pulled',pq)});
+                      pickItems.forEach(pi=>{const qtysForItem=pullQtys[pi.itemIdx]||{};const pulledSizes=pi.szKeys.filter(sz=>(qtysForItem[sz]||0)>0).map(sz=>sz+':'+qtysForItem[sz]).join(' ');const qty=pi.szKeys.reduce((a,sz)=>a+(qtysForItem[sz]||0),0);if(qty>0)addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:pi.sku,name:pi.name,color:pi.color,productId:pi.p?.id||pi.item.product_id,sizes:pulledSizes,qty,by:cu?.id||'warehouse'})});
+                      // Auto-print 4x6 label for the box that was just pulled (only the items+sizes pulled this round)
+                      try{
+                        const pulledItemsForLabel=pickItems.map(pi=>({pi,qtys:pullQtys[pi.itemIdx]||{}})).filter(x=>Object.values(x.qtys).some(v=>v>0));
+                        if(pulledItemsForLabel.length>0){
+                          const labelShipBadge=shipDest==='in_house'?null:{text:(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'')),color:shipDest==='ship_customer'?'#3b82f6':'#d97706',bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'};
+                          const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});lines.push({text:t.soId,cls:'so'});lines.push({text:'PULLED — '+new Date().toLocaleDateString(),cls:'sub',style:'color:#166534;font-weight:800;'});
+                          pulledItemsForLabel.forEach(({pi,qtys})=>{const szList=pi.szKeys.filter(sz=>(qtys[sz]||0)>0);const qty=szList.reduce((a,sz)=>a+(qtys[sz]||0),0);lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+qty+' units'});lines.push({text:szList.map(sz=>sz+': '+qtys[sz]).join(' &nbsp; '),cls:'sz'})});
+                          if(pulledItemsForLabel.length>1)lines.push({text:'TOTAL: '+totPulling2+' units',cls:'sz'});
+                          printQrLabel({id:pickIdToUse,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickIdToUse),shipBadge:labelShipBadge,lines});
+                        }
+                      }catch(e){/* label print is best-effort */}
+                      nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totPulling2+' units');setWhPulling(false);setWhViewIF(null);
+                    }}>{whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPulling2+' units)':isPartial?'✓ Mark Partial Pull ('+totPulling2+' of '+grandNeed+')':'✓ Mark as Pulled')}</button>
+                    {!isFull&&<button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
+                      const filled={};pickItems.forEach(pi=>{filled[pi.itemIdx]=Object.fromEntries(pi.szKeys.map(sz=>[sz,Math.max(0,(pi.sizes[sz]||0)-(pi.pulled[sz]||0))]))});setPullQtys(filled);
+                    }}>Fill All</button>}
+                    {totPulling2>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 14px'}} onClick={()=>{
+                      const empty={};pickItems.forEach(pi=>{empty[pi.itemIdx]=Object.fromEntries(pi.szKeys.map(sz=>[sz,0]))});setPullQtys(empty);
+                    }}>Clear</button>}
+                  </>})()}
+                </div>
+                <div style={{fontSize:10,color:'#64748b',marginTop:6}}>Adjust quantities above then click to confirm. Partial pulls will keep the IF open for remaining units.</div>
+              </div>}
+
+              {/* Pick history — per item on this IF */}
+              {pickItems.some(pi=>safePicks(pi.item).length>0)&&<div style={{marginTop:8}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Pick History</div>
+                {pickItems.map(pi=>{const allPicks=safePicks(pi.item);if(allPicks.length===0)return null;
+                  const allSzKeys=[...new Set(allPicks.flatMap(pk=>Object.keys(pk).filter(k=>SZ_ORD.includes(k)&&pk[k]>0)))].sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+                  return<div key={pi.itemIdx} style={{marginBottom:8}}>
+                    {pickItems.length>1&&<div style={{fontSize:10,fontWeight:700,color:'#475569',marginBottom:3}}>{pi.sku} {pi.name}</div>}
+                    {allPicks.map((pk,pidx)=>{const st=pk.status||'pick';
+                      return<div key={pidx} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:4,padding:'4px 8px',borderRadius:4,background:st==='pulled'?'#f0fdf4':'#fffbeb'}}>
+                        <span style={{fontSize:11,fontWeight:700,color:st==='pulled'?'#166534':'#92400e',minWidth:56}}>{pk.pick_id||'PICK'}</span>
+                        {allSzKeys.map(sz=>{const v=pk[sz]||0;return<span key={sz} style={{minWidth:36,textAlign:'center',fontSize:11,fontWeight:v?700:400,color:v?'#0f172a':'#d1d5db'}}>{v||'—'}</span>})}
+                        <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:st==='pulled'?'#dcfce7':'#fef3c7',color:st==='pulled'?'#166534':'#92400e'}}>{st==='pulled'?'✓ Pulled':'Needs Pull'}</span>
+                        {pk.memo&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>{pk.memo}</span>}
+                      </div>;
+                    })}
+                  </div>;
+                })}
+              </div>}
             </div>
           </div>}
 
@@ -13555,50 +13581,26 @@ export default function App(){
                 <div style={{flex:1,fontSize:12}}>
                   <div style={{fontWeight:800,fontSize:16}}>{pickId}</div>
                   <div style={{color:'#64748b'}}>{t.soId} — {t.cName}</div>
-                  {subs.map(sub=>{const needPerSz=sub._szKeys.filter(sz=>(sub.sizes[sz]||0)-(sub.pulled[sz]||0)>0);
-                    return<div key={sub.itemIdx} style={{marginTop:4,paddingTop:4,borderTop:isMulti?'1px dashed #e2e8f0':'none'}}>
-                      <div style={{fontWeight:600}}>{sub.sku} {sub.name}</div>
-                      <div>{sub.color} — {sub.needsPull} units</div>
-                      <div style={{marginTop:2,fontFamily:'monospace',fontSize:11}}>{needPerSz.map(sz=>sz+':'+(Math.max(0,(sub.sizes[sz]||0)-(sub.pulled[sz]||0)))).join('  ')}</div>
-                    </div>})}
+                  {pickItems.map(pi=><div key={pi.itemIdx} style={{marginTop:4}}>
+                    <div style={{fontWeight:600}}>{pi.sku} {pi.name}</div>
+                    <div>{pi.color} — {pi.needsPull} units</div>
+                    <div style={{fontFamily:'monospace',fontSize:11,color:'#475569'}}>{pi.szKeys.map(sz=>sz+':'+(pi.sizes[sz]||0)).join('  ')}</div>
+                  </div>)}
+                  {pickItems.length>1&&<div style={{marginTop:4,fontWeight:700}}>Total: {grandNeed} units</div>}
                 </div>
               </div>
-              <div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
-                <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{
-                  const shipBadge=shipDest==='in_house'?null:{
-                    text:(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(firstActivePick?.deco_vendor?' — '+firstActivePick.deco_vendor:'')),
-                    color:shipDest==='ship_customer'?'#3b82f6':'#d97706',
-                    bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'
-                  };
-                  const lines=[{text:t.soId+' — '+t.cName,cls:'sub'}];
-                  subs.forEach(sub=>{
-                    lines.push({text:'<strong>'+sub.sku+' '+sub.name+'</strong>'});
-                    lines.push({text:(sub.color||'')+' — '+sub.needsPull+' units'});
-                    lines.push({text:sub._szKeys.filter(sz=>(sub.sizes[sz]||0)-(sub.pulled[sz]||0)>0).map(sz=>sz+': '+Math.max(0,(sub.sizes[sz]||0)-(sub.pulled[sz]||0))).join(' &nbsp; '),cls:'sz'});
-                  });
-                  printQrLabel({id:pickId,qrData,shipBadge,lines});
-                }}>🖨️ Print Pick Label (4×6)</button>
-                <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{
-                  // Full-page walk-around sheet for the warehouse
-                  const w=window.open('','_blank','width=900,height=1100');if(!w)return;
-                  const esc=s=>(s==null?'':String(s)).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-                  const destLabel=shipDest==='ship_customer'?'📦 Ship to Customer':shipDest==='ship_deco'?'🚚 Ship to Decorator':'🏭 In-House Deco';
-                  const addrLine=shipDest==='ship_customer'&&addrs2.length>0?esc(addrs2[0]?.addr||addrs2[0]?.label||''):shipDest==='ship_deco'&&firstActivePick?.deco_vendor?esc(firstActivePick.deco_vendor):'';
-                  let html='<html><head><title>'+esc(pickId)+' — Pick Sheet</title><style>@page{size:letter;margin:0.4in}body{font-family:Arial,sans-serif;margin:0;padding:0;color:#0f172a}h1{font-size:28px;margin:0 0 4px;color:#1e40af;font-family:monospace;letter-spacing:2px}.hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #d97706;padding-bottom:8px;margin-bottom:10px}.hdr .meta{font-size:12px;color:#475569}.hdr .meta strong{color:#0f172a}.dest{display:inline-block;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:700;margin-top:4px}.item{border:2px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:10px;page-break-inside:avoid}.item h2{margin:0 0 6px;font-size:16px}.sku{font-family:monospace;background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:4px;font-weight:800;font-size:13px;margin-right:6px}.color{background:#f1f5f9;padding:1px 6px;border-radius:3px;font-size:11px;color:#475569}.sz-grid{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.sz-cell{min-width:64px;text-align:center;padding:8px 6px;border:2px solid #d97706;border-radius:8px;background:#fffbeb}.sz-cell .lbl{font-size:11px;font-weight:700;color:#475569}.sz-cell .qty{font-size:24px;font-weight:900;color:#92400e;line-height:1}.sz-cell .box{margin-top:6px;border-top:1px solid #d97706;padding-top:6px;font-size:9px;color:#64748b}.sz-cell .pulled-box{height:22px;border:1px solid #94a3b8;border-radius:3px;background:white}.total{text-align:right;font-size:14px;font-weight:900;margin-top:8px;color:#0f172a}.footer{margin-top:14px;padding-top:8px;border-top:1px solid #cbd5e1;font-size:10px;color:#94a3b8;display:flex;justify-content:space-between}.qr{width:96px;height:96px}.sig{margin-top:14px;padding:10px 0;border-top:1px solid #e2e8f0;font-size:11px;color:#64748b}.sig .row{display:flex;gap:24px;margin-top:6px}.sig .line{flex:1;border-bottom:1px solid #0f172a;padding-bottom:14px}</style></head><body>';
-                  html+='<div class="hdr"><div><h1>'+esc(pickId)+'</h1><div class="meta"><strong>SO:</strong> '+esc(t.soId)+' &nbsp;·&nbsp; <strong>'+esc(t.cName)+'</strong> &nbsp;·&nbsp; Rep: '+esc(t.rep||'')+'</div><div class="meta">Created: '+esc(firstActivePick?.created_at||'')+(t.urgent?' &nbsp;·&nbsp; <span style="color:#dc2626;font-weight:700">🔥 RUSH — '+esc(t.daysOut)+'d</span>':'')+'</div><div class="dest" style="background:'+(shipDest==='ship_customer'?'#eff6ff;color:#1e40af':shipDest==='ship_deco'?'#fffbeb;color:#92400e':'#f1f5f9;color:#475569')+'">'+destLabel+(addrLine?' — '+addrLine:'')+'</div></div><img class="qr" src="https://api.qrserver.com/v1/create-qr-code/?size=160x160&data='+encodeURIComponent(qrData)+'"/></div>';
-                  subs.forEach((sub,si)=>{
-                    const needSz=sub._szKeys.filter(sz=>(sub.sizes[sz]||0)-(sub.pulled[sz]||0)>0);
-                    html+='<div class="item"><h2><span class="sku">'+esc(sub.sku)+'</span>'+esc(sub.name)+(sub.color?' <span class="color">'+esc(sub.color)+'</span>':'')+(isMulti?'<span style="float:right;font-size:11px;color:#94a3b8;font-weight:600">'+(si+1)+' of '+subs.length+'</span>':'')+'</h2>';
-                    html+='<div class="sz-grid">';
-                    needSz.forEach(sz=>{const need=Math.max(0,(sub.sizes[sz]||0)-(sub.pulled[sz]||0));html+='<div class="sz-cell"><div class="lbl">'+esc(sz)+'</div><div class="qty">'+need+'</div><div class="box">pulled<div class="pulled-box"></div></div></div>'});
-                    html+='</div><div class="total">Pull total: '+sub.needsPull+' units</div></div>';
-                  });
-                  html+='<div class="sig">Pulled by:<div class="row"><div class="line"></div><div class="line" style="max-width:120px">Date</div></div></div>';
-                  html+='<div class="footer"><span>NSA · '+new Date().toLocaleDateString()+'</span><span>'+esc(pickId)+' · '+(aggNeedsPull)+' units total</span></div>';
-                  html+='</body></html>';
-                  w.document.write(html);w.document.close();setTimeout(()=>{try{w.print()}catch{}},400);
-                }}>📄 Print Sheet (Letter)</button>
-              </div>
+              {(()=>{
+                const shipBadge=shipDest==='in_house'?null:{
+                  text:(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'')),
+                  color:shipDest==='ship_customer'?'#3b82f6':'#d97706',
+                  bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'
+                };
+                const buildLines=()=>{const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});lines.push({text:t.soId,cls:'so'});pickItems.forEach(pi=>{lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+pi.needsPull+' units'});lines.push({text:pi.szKeys.map(sz=>sz+': '+(pi.sizes[sz]||0)).join(' &nbsp; '),cls:'sz'})});if(pickItems.length>1)lines.push({text:'TOTAL: '+grandNeed+' units',cls:'sz'});return lines};
+                return<div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>printQrLabel({id:pickId,qrData,shipBadge,lines:buildLines()})}>🖨️ Print Label (4×6)</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{try{await downloadQrLabel({id:pickId,qrData,shipBadge,lines:buildLines()});nf('Label downloaded')}catch(err){nf('Download failed: '+err.message,'error')}}}>⬇️ Download (PDF)</button>
+                </div>;
+              })()}
             </div>
           </div>
 
@@ -13709,7 +13711,7 @@ export default function App(){
                 </div>})}
 
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginTop:4}} onClick={()=>{
-                setBoxes([...boxes,{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:subs.map(s=>({sku:s.sku,name:s.name,color:s.color||'',sizes:Object.fromEntries(s._szKeys.map(sz=>[sz,0]))}))}])}}>
+                setBoxes([...boxes,{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:pickItems.map(pi=>({sku:pi.sku,name:pi.name,color:pi.color||'',sizes:Object.fromEntries(pi.szKeys.map(sz=>[sz,0]))}))}])}}>
                 + Add Box</button>
             </div>
           </div>}
@@ -14027,6 +14029,9 @@ export default function App(){
                   setWhReceiving(true);
                   const date=document.getElementById('wh-recv-date')?.value||new Date().toISOString().split('T')[0];
                   let anyReceived=false;let totalQtyReceived=0;
+                  // Capture what was JUST received per item so the auto-printed label reflects the contents
+                  // of the box that was just put away — not the entire PO.
+                  const justReceived=[];
 
                   // --- SO PO Lines: group by SO to avoid overwrite race ---
                   if(soPOLines.length>0){
@@ -14042,13 +14047,16 @@ export default function App(){
                         const po=updItems[pl.itemIdx]?.po_lines?.[pl.poLineIdx];if(!po)return;
                         const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof po[k]==='number');
                         const shipment={date};const newReceived={...(po.received||{})};
+                        const rcvSizes={};
                         szKeys.forEach(sz=>{
                           const open=Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0));
                           if(open<=0)return;
                           const qty=getRcvQty(pl.displayIdx,sz,open);
-                          if(qty>0){newReceived[sz]=(newReceived[sz]||0)+qty;shipment[sz]=qty;anyReceived=true;totalQtyReceived+=qty}
+                          if(qty>0){newReceived[sz]=(newReceived[sz]||0)+qty;shipment[sz]=qty;rcvSizes[sz]=qty;anyReceived=true;totalQtyReceived+=qty}
                         });
                         if(Object.keys(shipment).length<=1)return;
+                        const lineItem=updItems[pl.itemIdx]||{};
+                        justReceived.push({sku:lineItem.sku||pl.sku||'',name:lineItem.name||pl.name||'',color:lineItem.color||pl.color||'',sizes:rcvSizes,soId:pl.soId||'',customer:pl.customer||''});
                         const newShipments=[...(po.shipments||[]),shipment];
                         const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-((po.cancelled||{})[sz]||0)),0);
                         const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
@@ -14084,13 +14092,15 @@ export default function App(){
                   // --- Inventory POs ---
                   if(invMatch){
                     const updInvItems=invMatch.items.map((it,ii)=>{
-                      const newRcvd={...(it.received||{})};
+                      const newRcvd={...(it.received||{})};const rcvSizes={};
                       Object.keys(it.sizes).forEach(sz=>{
                         const open=Math.max(0,(it.sizes[sz]||0)-((it.received||{})[sz]||0));
                         if(open<=0)return;
                         const qty=getRcvQty(ii,sz,open);
-                        if(qty>0){newRcvd[sz]=(newRcvd[sz]||0)+qty;anyReceived=true;totalQtyReceived+=qty}
-                      });return{...it,received:newRcvd};
+                        if(qty>0){newRcvd[sz]=(newRcvd[sz]||0)+qty;rcvSizes[sz]=qty;anyReceived=true;totalQtyReceived+=qty}
+                      });
+                      if(Object.keys(rcvSizes).length>0)justReceived.push({sku:it.sku||'',name:it.name||'',color:it.color||'',sizes:rcvSizes,soId:'',customer:''});
+                      return{...it,received:newRcvd};
                     });
                     const allDone=updInvItems.every(it=>Object.keys(it.sizes).every(sz=>((it.received||{})[sz]||0)>=(it.sizes[sz]||0)));
                     setInvPOs(prev=>prev.map(p=>p.po_number===invMatch.po_number?{...p,items:updInvItems,status:allDone?'received':'partial',
@@ -14139,10 +14149,11 @@ export default function App(){
                         w.document.write('<div style="text-align:center;font-size:14px;font-weight:700;color:#22c55e;margin-bottom:6px">RECEIVED — '+new Date().toLocaleDateString()+'</div>');
                         if(vendorName)w.document.write('<div style="text-align:center;font-size:12px;color:#666;margin-bottom:6px">'+vendorName+'</div>');
                         w.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
-                        poItems.forEach(it=>{const szStr=it.szKeys.map(sz=>sz+':'+(it.ordered[sz]||0)).join(' ');const qty=it.szKeys.reduce((a,sz)=>a+(it.ordered[sz]||0),0);
+                        // Show what was JUST received in this box, not the whole PO
+                        (justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered}))).forEach(it=>{const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
                           w.document.write('<tr><td style="font-weight:700">'+it.sku+'</td><td>'+it.name+'</td><td>'+(it.color||'—')+'</td><td style="font-size:10px;font-weight:700">'+szStr+'</td><td style="font-weight:700">'+qty+'</td></tr>')});
                         w.document.write('</tbody></table>');
-                        w.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">TOTAL: '+totalQtyReceived+' units</div>');
+                        w.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">RECEIVED THIS BOX: '+totalQtyReceived+' units</div>');
                         w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Scan QR to open this PO</div>');
                         w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),400);
                       }
@@ -14178,8 +14189,8 @@ export default function App(){
             <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}</td>
             <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#1e40af',whiteSpace:'nowrap'}}>{t.pickId||'—'}{extraSkus>0?<span title={subs.length+' items in this IF'} style={{marginLeft:4,fontSize:9,padding:'1px 5px',borderRadius:10,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>×{subs.length}</span>:null}</td>
             <td style={{fontWeight:600,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cName}</td>
-            <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#475569'}}>{subs[0].sku}{extraSkus>0?<span style={{color:'#94a3b8',fontWeight:600}}> +{extraSkus}</span>:null}</td>
-            <td style={{fontSize:10,color:'#64748b',maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{subs[0].name}{subs[0].color?' · '+subs[0].color:''}{extraSkus>0?' & '+extraSkus+' more':''}</td>
+            <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#475569'}}>{t.sku}{t._extraCount>0?<span style={{marginLeft:4,padding:'1px 4px',background:'#dbeafe',color:'#1e40af',borderRadius:3,fontSize:9}}>+{t._extraCount}</span>:null}</td>
+            <td style={{fontSize:10,color:'#64748b',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t._extraCount>0?(t.name+' & '+t._extraCount+' more'):(t.name+(t.color?' · '+t.color:''))}</td>
             <td style={{textAlign:'center',fontWeight:800,color:'#d97706'}}>{t.needsPull}</td>
             <td style={{textAlign:'center'}}>{(()=>{if(subs.length>1)return<span style={{fontSize:9,color:'#94a3b8'}}>multi</span>;const p=prod.find(pp=>pp.sku===subs[0].sku);if(!p||!p._inv)return<span style={{color:'#cbd5e1'}}>—</span>;
               const total=Object.values(p._inv).reduce((a,v)=>a+(typeof v==='number'?v:0),0);
@@ -18711,6 +18722,7 @@ export default function App(){
           else if(/\bNIKE\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Nike';
           else if(/\bPUMA\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Puma';
           else if(/\bNEW\s*BALANCE\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='New Balance';
+          else if(/\bAUGUSTA\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Momentec';
         }
         if(!bill.supplier&&/^SUPPLIER\b/i.test(line)){
           for(let j=li+1;j<Math.min(li+3,lines.length);j++){
@@ -18718,6 +18730,8 @@ export default function App(){
             if(nl.length>3&&!/^DEPT|^PH|^FX|^FAX|^\d|^SOLD|^SHIP/i.test(nl)){bill.supplier=nl;break}
           }
         }
+        // Supplier alias normalization (PDF supplier text → system vendor name)
+        if(bill.supplier&&/augusta/i.test(bill.supplier))bill.supplier='Momentec';
         // Document number
         {const m=line.match(/(?:SI\s+)?DOCUMENT\s+NUMBER[:\s]+(\d+)/i);if(m&&!bill.doc_number)bill.doc_number=m[1]}
         // Dates
@@ -18745,8 +18759,17 @@ export default function App(){
       }
 
       // ── PASS 2: Extract line items ONLY from item table section ──
-      const SKU_RE=/\b([A-Z]{1,4}\d{3,6})\b/;
+      // Match (a) letter-prefixed (e.g. VOG123), (b) digit-prefixed with letter suffix (e.g. 506CR, 567P).
+      // Pure-digit SKUs (e.g. 510000) are picked up by SKU_RE_NUMERIC as a fallback so we don't
+      // false-match qty/price digits or split barcode segments when a letter-bearing SKU exists.
+      const SKU_RE=/\b([A-Z]{1,4}\d{3,6}[A-Z]{0,3}|\d{3,6}[A-Z]{1,4})\b/;
+      const SKU_RE_NUMERIC=/\b(\d{5,7})\b/;
       const SZ_RE=/\b(XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|6XL|MT|LT|XLT|OSFA)\b/i;
+      // Long-form size words used on Sports Inc / Augusta invoices. PDF text is often truncated to
+      // 5 chars in the SIZE column (e.g. "MEDIU" instead of "MEDIUM"), but the description line
+      // below typically has the full word — we search both.
+      const SZ_LONG_RE=/\b(EXTRA\s+LARGE|XXLARGE|XLARGE|MEDIUM|MEDIU|LARGE|SMALL|EXTRA)\b/i;
+      const SZ_LONG_MAP={'MEDIUM':'M','MEDIU':'M','LARGE':'L','SMALL':'S','EXTRA LARGE':'XL','EXTRA':'XL','XLARGE':'XL','XXLARGE':'2XL'};
       const NUM_SZ_RE=/\b(\d{1,2}(?:\.\d)?)\b/;
       const itemLines=[];
       const startIdx=itemSectionStart>=0?itemSectionStart:0;
@@ -18767,19 +18790,70 @@ export default function App(){
         });
         const useColumns=colIdx.extension!=null&&(colIdx.qtyShipped!=null||colIdx.qtyOrdered!=null);
 
+        // Build a fast lookup regex from known product SKUs so we recognize whatever the
+        // vendor actually uses (regardless of pattern). Falls back to SKU_RE/_NUMERIC for
+        // SKUs not yet in our catalog (new items, decoration codes, etc).
+        let knownSkuRe=null;
+        try{
+          const knownSkus=Array.from(new Set((prod||[]).map(p=>(p.sku||'').trim().toUpperCase()).filter(s=>s.length>=2)));
+          if(knownSkus.length){
+            knownSkus.sort((a,b)=>b.length-a.length);
+            knownSkuRe=new RegExp('\\b('+knownSkus.map(s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|')+')\\b','i');
+          }
+        }catch(e){/* huge catalogs could blow regex size — fall back to pattern matching */}
+
         for(let i=startIdx;i<endIdx;i++){
           const line=lines[i];
           if(/^UPC\s*NUMBER|^SUPPLIER\s*ITEM|^QUANTITY|^UNIT|^LIST|^DISC|^NET|^EXTENSION|^SIZE|^COLOR/i.test(line))continue;
-          const skuMatch=line.match(SKU_RE);
-          if(!skuMatch)continue;
-          const sku=skuMatch[1];
+          // Skip lines that are purely a long barcode/UPC with no other content (avoids false matches)
+          if(/^\s*\d{10,}\s*$/.test(line))continue;
+          let sku='';
+          // 1) Try known-SKU lookup against the product catalog (most reliable)
+          if(knownSkuRe){const km=line.match(knownSkuRe);if(km)sku=km[1].toUpperCase()}
+          // 2) Pattern-based fallbacks for unknown SKUs
+          if(!sku){
+            let skuMatch=line.match(SKU_RE);
+            if(!skuMatch){
+              // Numeric-only fallback for SKUs like "510000". Strip barcode segments that PDF
+              // extraction may have split with spaces (e.g. "8 86918 62306 3") so we don't
+              // grab one of those 5-digit chunks instead of the real item number.
+              const stripped=line.replace(/(?:\b\d{1,2}\s+)?(?:\d{4,6}\s+){1,3}\d{1,2}\b/g,' ');
+              skuMatch=stripped.match(SKU_RE_NUMERIC);
+            }
+            if(skuMatch)sku=skuMatch[1];
+          }
+          if(!sku)continue;
           const parts=line.split(/\t+/).map(p=>p.trim());
-          // Try named sizes first, then SIZE column, then numeric sizes, then empty
-          const sizeMatch=line.match(SZ_RE);
+          // Look at the SKU line + next 2 description lines together — Sports Inc/Augusta
+          // invoices truncate the size in the table to 5 chars ("MEDIU") but spell it out
+          // in full on the description line below.
+          const sizeSearchText=[line,lines[i+1]||'',lines[i+2]||''].join(' ');
           let size='';
-          if(sizeMatch){size=sizeMatch[1].toUpperCase()}
-          else if(colIdx.size!=null&&parts[colIdx.size]){size=parts[colIdx.size].trim().toUpperCase()}
-          else{const nm=line.match(NUM_SZ_RE);if(nm)size=nm[1]}
+          // 1) Long-form size words (handles "MEDIU"/"MEDIUM"/"LARGE"/"SMALL"/"EXTRA LARGE")
+          const longMatch=sizeSearchText.match(SZ_LONG_RE);
+          if(longMatch){
+            const key=longMatch[1].toUpperCase().replace(/\s+/g,' ');
+            size=SZ_LONG_MAP[key]||key;
+          }
+          // 2) Short-form size token on the SKU line itself (S, M, L, XL, 2XL, etc.)
+          if(!size){const sm=line.match(SZ_RE);if(sm)size=sm[1].toUpperCase()}
+          // 3) Explicit SIZE column from tab-delimited header
+          if(!size&&colIdx.size!=null&&parts[colIdx.size]){size=parts[colIdx.size].trim().toUpperCase()}
+          // 4) Numeric size fallback (shoes/youth) — but skip if the only numeric candidate is
+          // actually the quantity from the qty column; otherwise we'd grab qty as size.
+          if(!size){
+            const nm=line.match(NUM_SZ_RE);
+            if(nm){
+              const candidate=nm[1];
+              let isQty=false;
+              if(colIdx.qtyShipped!=null||colIdx.qtyOrdered!=null){
+                const qShip=(parts[colIdx.qtyShipped]||'').replace(/[$,]/g,'').trim();
+                const qOrd=(parts[colIdx.qtyOrdered]||'').replace(/[$,]/g,'').trim();
+                if(candidate===qShip||candidate===qOrd)isQty=true;
+              }
+              if(!isQty)size=candidate;
+            }
+          }
           // Detect half-size suffix (e.g. 10- means 10½) for numeric sizes
           if(/^\d{1,2}$/.test(size)){const hre=new RegExp('\\b'+size+'\\s*[-–](?!\\d)');if(hre.test(line))size+='-'}
           let qty=0,unitPrice=0,extension=0;
@@ -18817,18 +18891,32 @@ export default function App(){
           if(qty<=0||extension<=0)continue;
           if(unitPrice>0&&Math.abs(qty*unitPrice-extension)>extension*0.05+0.10)continue;
           let desc='',color='';
-          for(let j=i+1;j<Math.min(i+3,endIdx);j++){
+          for(let j=i+1;j<Math.min(i+4,endIdx);j++){
             const nl=lines[j];
+            if(!nl)continue;
             if(SKU_RE.test(nl))break;
             if(/MERCHANDISE|FREIGHT|DOCUMENT|SI UPCHARGE|REPORT|SI STORE/i.test(nl))break;
             if(!desc&&nl.length>3&&!/^\d[\d\s]*\d$/.test(nl)&&!SKU_RE.test(nl)){
               desc=nl.replace(/\t+/g,' ').trim();
               desc=desc.replace(/^\d[\d ]{10,16}\d\s+/,'').trim();
-              const cm=desc.match(/\b(BLACK|WHITE|RED|BLUE|GREEN|NAVY|GREY|GRAY|MAROON|GOLD|ORANGE|PURPLE|YELLOW|SCARLET|ROYAL|PINK|BROWN|TAN|CREAM|ONIX|CARBON|POWER|TEAM|CUSTOM)\b.*?(\/\s*[A-Z]+)?/i);
-              if(cm)color=cm[0].trim();
+            }
+            // Color: prefer the text AFTER the size word on a description line (handles team
+            // colors like "VEGAS GOLD", "CARDINAL/WHITE" that aren't in a fixed list). Strip
+            // trailing vendor codes like "(BA)" / "(SI)" before capturing.
+            if(!color){
+              const cleaned=nl.replace(/\s*\([A-Z]{1,4}\)\s*$/,'').trim();
+              const afterSize=cleaned.match(/\b(?:EXTRA\s+LARGE|XXLARGE|XLARGE|MEDIUM|MEDIU|LARGE|SMALL|EXTRA|2XL|3XL|4XL|5XL|6XL|XXL|XL|XS|XXS|YXS|YS|YM|YL|YXL|MT|LT|XLT|[SML])\s+([A-Z][A-Z0-9/\- ]{2,40})\s*$/i);
+              if(afterSize){
+                const c=afterSize[1].trim();
+                if(c)color=c.toUpperCase().replace(/\s+/g,' ');
+              }
+            }
+            if(!color){
+              const cm=nl.match(/\b(BLACK|WHITE|RED|BLUE|GREEN|NAVY|GREY|GRAY|MAROON|GOLD|ORANGE|PURPLE|YELLOW|SCARLET|ROYAL|PINK|BROWN|TAN|CREAM|ONIX|CARBON|POWER|TEAM|CUSTOM|VEGAS|CARDINAL|FOREST|KELLY|COLUMBIA|CHARCOAL|BURGUNDY|SILVER|TEAL|HEATHER|GRAPHITE|VEGAS\s+GOLD|TEAM\s+GOLD)\b(?:\s*\/\s*[A-Z]+)?(?:\s+[A-Z]+)?/i);
+              if(cm)color=cm[0].trim().toUpperCase().replace(/\s+/g,' ');
             }
           }
-          if(itemLines.some(it=>it.sku===sku&&it.size===size&&it.qty===qty&&Math.abs(it.unit_price-unitPrice)<0.01&&Math.abs(it.extension-extension)<0.01&&it.desc===desc))continue;
+          if(itemLines.some(it=>it.sku===sku&&it.size===size&&it.qty===qty&&Math.abs(it.unit_price-unitPrice)<0.01&&Math.abs(it.extension-extension)<0.01&&it.desc===desc&&it.color===color))continue;
           itemLines.push({sku,size,qty,unit_price:unitPrice,extension,desc,color});
         }
       }
@@ -19100,6 +19188,129 @@ export default function App(){
       return updated;
     };
 
+    // Build the candidate list for the "Match manually" wizard. Returns an array of pickable
+    // targets (open Batch POs + Sales Orders with open PO lines), each with a display label
+    // and an items[] summary used by the per-line mapper.
+    const _buildMatchCandidates=()=>{
+      const out=[];
+      (submittedBatches||[]).forEach(sb=>{
+        const soIds=(sb.source_pos||[]).map(sp=>sp.so_id).filter(Boolean);
+        const customers=Array.from(new Set((sb.source_pos||[]).map(sp=>sp.customer).filter(Boolean)));
+        const items=[];
+        (sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{
+          Object.entries(it.sizes||{}).forEach(([sz,qty])=>{if(qty>0)items.push({sku:it.sku,name:it.name,color:it.color||'',size:sz,qty,unit_cost:it.unit_cost||0,so_id:sp.so_id||''})});
+        }));
+        const totalQty=items.reduce((a,it)=>a+it.qty,0);
+        out.push({kind:'batch',id:sb.id||sb.po_number,label:sb.po_number,sub:`Batch · ${sb.vendor_name||''} · ${customers.join(', ')||'—'}${soIds.length?' · '+soIds.join(', '):''}`,total_units:totalQty,items,raw:sb,so_ids:soIds});
+      });
+      (sos||[]).forEach(so=>{
+        const items=[];
+        (so.items||[]).forEach(it=>(it.po_lines||[]).forEach(po=>{
+          Object.entries(po).forEach(([k,v])=>{
+            // size keys on the po_line object are arbitrary (S/M/L/numeric). Filter out known non-size fields.
+            if(typeof v!=='number'||k==='unit_cost'||k==='qty'||k.startsWith('_'))return;
+            if(v<=0)return;
+            const billedQty=(po.billed||{})[k]||0;
+            const openQty=v-billedQty;
+            if(openQty<=0)return;
+            items.push({sku:it.sku,name:it.name,color:it.color||'',size:k,qty:openQty,unit_cost:po.unit_cost||0,so_id:so.id,item_id:it.id,po_id:po.po_id||'',so_item_idx:(so.items||[]).indexOf(it)});
+          });
+        }));
+        if(!items.length)return;
+        const c=cust.find(cc=>cc.id===so.customer_id);
+        out.push({kind:'so',id:so.id,label:so.id,sub:`Sales Order · ${c?.name||so.customer_name||''}${so.po_number?' · PO '+so.po_number:''}`,total_units:items.reduce((a,it)=>a+it.qty,0),items,raw:so,so_ids:[so.id]});
+      });
+      return out;
+    };
+
+    // Filter the candidate list by a free-text query (matches PO #, SO #, customer, vendor, SKUs).
+    const _filterMatchCandidates=(candidates,query)=>{
+      const q=(query||'').trim().toLowerCase();
+      if(!q)return candidates;
+      return candidates.filter(c=>{
+        if(c.label.toLowerCase().includes(q))return true;
+        if((c.sub||'').toLowerCase().includes(q))return true;
+        if(c.items.some(it=>(it.sku||'').toLowerCase().includes(q)))return true;
+        return false;
+      });
+    };
+
+    // Pre-map bill lines to target items by SKU+size (and color, when present on both sides).
+    // Returns {billIdx: {target_idx, allocated_qty, ambiguous}}.
+    const _autoMapBillToTarget=(bill,target)=>{
+      const mappings={};
+      if(!target||!Array.isArray(target.items))return mappings;
+      (bill.items||[]).forEach((bl,bi)=>{
+        const hit=_matchLineToItems(bl,target.items);
+        if(!hit){mappings[bi]={skipped:true,reason:'no-match'};return}
+        mappings[bi]={target_idx:hit.idx,allocated_qty:bl.qty,ambiguous:hit.ambiguous};
+      });
+      return mappings;
+    };
+
+    // Resolve the available target items for whatever a bill is currently matched to. Returns the
+    // same {sku,size,color,qty,unit_cost,so_id,...} shape used by the wizard, so a single matcher
+    // works for both auto-matched and manually-matched bills.
+    const _targetItemsForBill=(bill)=>{
+      const src=bill.matchedPOSource,m=bill.matchedPO;
+      if(!m)return[];
+      if(src==='batch'){
+        const items=[];
+        (m.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{
+          Object.entries(it.sizes||{}).forEach(([sz,qty])=>{if(qty>0)items.push({sku:it.sku,name:it.name,color:it.color||'',size:sz,qty,unit_cost:it.unit_cost||0,so_id:sp.so_id||''})});
+        }));
+        return items;
+      }
+      if(src==='so_po'){
+        const so=m.so||sos.find(s=>s.id===(m.so_id||m.so?.id));
+        if(!so)return[];
+        const items=[];
+        (so.items||[]).forEach(it=>(it.po_lines||[]).forEach(po=>{
+          Object.entries(po).forEach(([k,v])=>{
+            if(typeof v!=='number'||k==='unit_cost'||k==='qty'||k.startsWith('_'))return;
+            if(v<=0)return;
+            // Match-verification needs to see the line even when it's fully billed already, so we
+            // don't filter by open qty here (that filter is for the wizard's target picker).
+            const openQty=v-((po.billed||{})[k]||0);
+            items.push({sku:it.sku,name:it.name,color:it.color||'',size:k,qty:openQty,ordered:v,unit_cost:po.unit_cost||0,so_id:so.id});
+          });
+        }));
+        return items;
+      }
+      if(src==='inv_po'){
+        const items=[];
+        (m.items||[]).forEach(it=>{
+          const sizes=it.sizes||{};
+          if(Object.keys(sizes).length)Object.entries(sizes).forEach(([sz,qty])=>{if(qty>0)items.push({sku:it.sku,name:it.name,color:it.color||'',size:sz,qty,unit_cost:it.unit_cost||0})});
+          else items.push({sku:it.sku,name:it.name,color:it.color||'',size:'',qty:it.qty||0,unit_cost:it.unit_cost||0});
+        });
+        return items;
+      }
+      return[];
+    };
+
+    // Match a single bill line to a target item by SKU+size, narrowing by color when available.
+    // Returns {item, idx, ambiguous} or null.
+    const _matchLineToItems=(bl,items)=>{
+      if(!items||!items.length)return null;
+      const norm=s=>(s||'').toUpperCase().replace(/[^A-Z0-9/ ]/g,'').replace(/\s+/g,' ').trim();
+      const sku=(bl.sku||'').toUpperCase();
+      const size=(bl.size||'').toUpperCase();
+      const billColor=norm(bl.color);
+      const indexed=items.map((it,ti)=>({...it,_idx:ti}));
+      let sameSkuSize=indexed.filter(it=>(it.sku||'').toUpperCase()===sku&&(it.size||'').toUpperCase()===size);
+      // If bill line has no size (inv PO single-line items), match on SKU alone
+      if(sameSkuSize.length===0&&!size)sameSkuSize=indexed.filter(it=>(it.sku||'').toUpperCase()===sku);
+      if(sameSkuSize.length===0)return null;
+      let candidates=sameSkuSize;
+      if(billColor&&sameSkuSize.some(c=>c.color)){
+        const exact=sameSkuSize.filter(c=>norm(c.color)===billColor);
+        if(exact.length>0)candidates=exact;
+        else{const partial=sameSkuSize.filter(c=>{const cc=norm(c.color);return cc&&(cc.includes(billColor)||billColor.includes(cc))});if(partial.length>0)candidates=partial}
+      }
+      return{item:candidates[0],idx:candidates[0]._idx,ambiguous:candidates.length>1};
+    };
+
     // Apply a decoration bill manually when the user has picked an SO + target po_line (or "create new").
     // target = {soId, mode:'existing', itemIdx, poLineIdx}  OR  {soId, mode:'create', itemIdx, decoType}
     // target = {soId, mode:'existing', decoPoId}  OR  {soId, mode:'create'}
@@ -19173,9 +19384,86 @@ export default function App(){
       }));
     };
 
+    // Apply a bill using the wizard's explicit per-line mappings (SKU+size+color resolved against a
+    // specific SO item / po_line or batch). Used when the bill was matched manually — the bill's
+    // PO-number string won't match the target, so the po_number-based _applyFreightToSOs path can't
+    // be used. Freight is split across SOs proportional to the $ mapped to each. Returns true if applied.
+    const _applyBillByMappings=(bill)=>{
+      const maps=(bill._lineMappings||[]).filter(mp=>mp.allocated_qty>0);
+      if(!maps.length)return false;
+      const billFreight=safeNum(bill.freight||0);
+      // Cost per SO (for proportional freight), using the bill-line cost captured at confirm time.
+      const costBySO={};
+      maps.forEach(mp=>{const c=safeNum(mp.bill_cost||0);costBySO[mp.so_id]=(costBySO[mp.so_id]||0)+c});
+      const soIds=Object.keys(costBySO).filter(Boolean);
+      let totalCost=soIds.reduce((a,sid)=>a+costBySO[sid],0);
+      if(totalCost<=0)totalCost=1;
+      const freightBySO={};let freightApplied=0;
+      soIds.forEach((sid,i)=>{
+        const f=i===soIds.length-1?Math.round((billFreight-freightApplied)*100)/100:Math.round(billFreight*(costBySO[sid]/totalCost)*100)/100;
+        freightBySO[sid]=f;freightApplied+=f;
+      });
+
+      if(bill.matchedPOSource==='so_po'){
+        setSOs(prev=>prev.map(s=>{
+          const soMaps=maps.filter(mp=>mp.so_id===s.id);
+          if(!soMaps.length)return s;
+          const updatedItems=(s.items||[]).map(it=>{
+            const itMaps=soMaps.filter(mp=>(mp.item_id&&mp.item_id===it.id)||(!mp.item_id&&(mp.sku||'').toUpperCase()===(it.sku||'').toUpperCase()));
+            if(!itMaps.length)return it;
+            let lineConsumed=false;
+            return{...it,po_lines:(it.po_lines||[]).map(po=>{
+              // Prefer the po_line the mapping pointed at; if no po_id captured, apply to the first
+              // matching line only (lineConsumed guard) to avoid double-billing across po_lines.
+              const lineMaps=itMaps.filter(mp=>mp.po_id?(po.po_id||'')===mp.po_id:!lineConsumed);
+              if(!lineMaps.length)return po;
+              if(lineMaps.some(mp=>!mp.po_id))lineConsumed=true;
+              const newBilled={...(po.billed||{})};const sizesAdded={};let addedCost=0;
+              lineMaps.forEach(mp=>{newBilled[mp.size]=(newBilled[mp.size]||0)+mp.allocated_qty;sizesAdded[mp.size]=(sizesAdded[mp.size]||0)+mp.allocated_qty;addedCost+=safeNum(mp.bill_cost||0)});
+              const trackNums=[...(po.tracking_numbers||[])];
+              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+              return{...po,billed:newBilled,tracking_numbers:trackNums,
+                _bill_cost:Math.round((safeNum(po._bill_cost||0)+addedCost)*100)/100,
+                _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:sizesAdded,tracking:bill.tracking,cost:Math.round(addedCost*100)/100}]};
+            })};
+          });
+          const updatedSO={...s,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+(freightBySO[s.id]||0))*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
+          _dbSaveSO(updatedSO);
+          return updatedSO;
+        }));
+        return true;
+      }
+
+      if(bill.matchedPOSource==='batch'){
+        const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
+        const billedSizes={};
+        maps.forEach(mp=>{if(mp.size)billedSizes[mp.size]=(billedSizes[mp.size]||0)+mp.allocated_qty});
+        setSubmittedBatches(prev=>prev.map(sb=>{
+          if((sb.id||sb.po_number)!==batchId)return sb;
+          const newBilled={...(sb.billed||{})};
+          Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+          const trackNums=[...(sb.tracking_numbers||[])];
+          if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+          return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
+        }));
+        if(billFreight>0&&soIds.length){
+          setSOs(prev=>prev.map(s=>{
+            if(!freightBySO[s.id])return s;
+            const updatedSO={...s,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+freightBySO[s.id])*100)/100,updated_at:new Date().toLocaleString()};
+            _dbSaveSO(updatedSO);
+            return updatedSO;
+          }));
+        }
+        return true;
+      }
+      return false;
+    };
+
     const applyBillToSO=(bill)=>{
       if(bill._applied)return;
       bill._applied=true;
+      // Manually-matched bills carry explicit per-line mappings — apply those directly.
+      if(bill.kind!=='decoration'&&bill._lineMappings?.length){if(_applyBillByMappings(bill))return;}
       // Decoration bills — route to dedicated apply (total cost → deco PO; freight → outbound)
       if(bill.kind==='decoration'){
         if(bill._manualTarget?.soId){_applyDecorationBillManually(bill);return}
@@ -20346,8 +20634,11 @@ export default function App(){
                     <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.po_number}
                       onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:rematchBill({...p.parsed,po_number:e.target.value})}:p)}))}/>
                     <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Vendor</label>
-                    <input className="form-input" style={{width:120,fontSize:11,padding:'3px 6px'}} value={bill.vendor||bill.supplier}
+                    <input className="form-input" list={`vendor-options-${bi}`} style={{width:160,fontSize:11,padding:'3px 6px'}} value={bill.vendor||bill.supplier||''}
                       onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,vendor:e.target.value,supplier:e.target.value}}:p)}))}/>
+                    <datalist id={`vendor-options-${bi}`}>
+                      {vend.map(v=><option key={v.id} value={v.name}/>)}
+                    </datalist>
                     <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Tracking</label>
                     <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.tracking}
                       onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,tracking:e.target.value}}:p)}))}/>
@@ -20365,18 +20656,27 @@ export default function App(){
                         <td style={{textAlign:'right',fontWeight:600}}>${Number(it.amount||0).toFixed(2)}</td>
                       </tr>)}</tbody>
                     </table>:
-                    <table style={{fontSize:11,marginTop:8,marginBottom:8}}>
-                      <thead><tr><th style={{textAlign:'left'}}>SKU</th><th>Size</th><th>Color</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Unit Price</th><th style={{textAlign:'right'}}>Extension</th><th style={{textAlign:'left',maxWidth:180}}>Description</th></tr></thead>
-                      <tbody>{bill.items.map((it,ii)=><tr key={ii}>
+                    (()=>{
+                    const targetItems=poMatch?_targetItemsForBill(bill):[];
+                    const showMatch=poMatch&&targetItems.length>0;
+                    return<table style={{fontSize:11,marginTop:8,marginBottom:8}}>
+                      <thead><tr><th style={{textAlign:'left'}}>SKU</th><th>Size</th><th>Color</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Unit Price</th><th style={{textAlign:'right'}}>Extension</th>{showMatch&&<th style={{textAlign:'left'}}>Match</th>}<th style={{textAlign:'left',maxWidth:180}}>Description</th></tr></thead>
+                      <tbody>{bill.items.map((it,ii)=>{
+                        const hit=showMatch?_matchLineToItems(it,targetItems):null;
+                        return<tr key={ii}>
                         <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
                         <td style={{textAlign:'center',fontWeight:600}}>{it.size}</td>
                         <td style={{color:'#64748b'}}>{it.color||'—'}</td>
                         <td style={{textAlign:'right',fontWeight:700}}>{it.qty}</td>
                         <td style={{textAlign:'right'}}>${it.unit_price.toFixed(2)}</td>
                         <td style={{textAlign:'right',fontWeight:600}}>${it.extension.toFixed(2)}</td>
+                        {showMatch&&<td style={{fontSize:10}}>{hit
+                          ?<span style={{color:hit.ambiguous?'#d97706':'#166534',fontWeight:600}}>{hit.ambiguous?'⚠':'✓'} {hit.item.size}{hit.item.color?' '+hit.item.color:''}{hit.item.so_id&&hit.item.so_id!==bill.matchedPO?.so_id?' · '+hit.item.so_id:''}{hit.ambiguous?' (verify)':''}</span>
+                          :<span style={{color:'#dc2626',fontWeight:600}}>{'✗'} no match</span>}</td>}
                         <td style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#64748b',fontSize:10}}>{it.desc||'—'}</td>
-                      </tr>)}</tbody>
-                    </table>
+                      </tr>;})}</tbody>
+                    </table>;
+                    })()
                   }
                 </div>}
                 {bill.items.length===0&&<div style={{padding:'12px 14px',fontSize:12,color:'#d97706'}}>No line items detected — totals will be used as a single line</div>}
@@ -20438,6 +20738,106 @@ export default function App(){
                         </>}
                       </>:<span style={{fontSize:10,fontWeight:600,marginLeft:8,color:'#9a3412'}}>Will create new deco PO on this SO</span>)}
                     </div>
+                  </div>;
+                })()}
+                {/* Manual match wizard — goods bills, line items parsed, no auto-match */}
+                {bill.kind!=='decoration'&&!poMatch&&bill.items.length>0&&(()=>{
+                  const w=bill._wizard;
+                  const setW=nw=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_wizard:nw}}:p)}));
+                  if(!w||!w.open){
+                    return<div style={{padding:'10px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe',display:'flex',alignItems:'center',gap:10}}>
+                      <span style={{fontSize:12,color:'#3730a3'}}>No PO matched automatically — line items parsed and ready.</span>
+                      <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}}
+                        onClick={()=>setW({open:true,query:bill.po_number||'',target:null,mappings:{}})}>Match manually…</button>
+                    </div>;
+                  }
+                  const candidates=_buildMatchCandidates();
+                  const filtered=_filterMatchCandidates(candidates,w.query);
+                  return<div style={{padding:'12px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                      <div style={{fontSize:12,fontWeight:700,color:'#3730a3'}}>Match manually {w.target?<>· <span style={{color:'#1e40af'}}>{w.target.label}</span> <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:6}} onClick={()=>setW({...w,target:null,mappings:{}})}>change</button></>:'— pick a target'}</div>
+                      <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setW({open:false})}>Cancel</button>
+                    </div>
+                    {!w.target&&<>
+                      <input className="form-input" style={{width:'100%',fontSize:11,padding:'4px 8px',marginBottom:6}} placeholder="Search PO #, SO #, customer, SKU…" value={w.query||''}
+                        onChange={e=>setW({...w,query:e.target.value})}/>
+                      <div style={{maxHeight:220,overflow:'auto',border:'1px solid #c7d2fe',borderRadius:4,background:'#fff'}}>
+                        {filtered.length===0?<div style={{padding:10,fontSize:11,color:'#64748b'}}>No matching POs or Sales Orders.</div>:
+                          filtered.slice(0,200).map(c=><div key={c.kind+'-'+c.id} style={{padding:'6px 10px',borderBottom:'1px solid #eef2ff',cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center'}}
+                            onClick={()=>{const target=c;const mappings=_autoMapBillToTarget(bill,target);setW({...w,target,mappings})}}
+                            onMouseEnter={e=>e.currentTarget.style.background='#f5f3ff'} onMouseLeave={e=>e.currentTarget.style.background='#fff'}>
+                            <div>
+                              <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{c.label} <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:c.kind==='batch'?'#dbeafe':'#fce7f3',color:c.kind==='batch'?'#1e40af':'#9d174d',marginLeft:4}}>{c.kind==='batch'?'BATCH':'SO'}</span></div>
+                              <div style={{fontSize:10,color:'#64748b'}}>{c.sub}</div>
+                            </div>
+                            <div style={{fontSize:10,color:'#475569',fontWeight:600}}>{c.total_units} unit(s) open · {c.items.length} line(s)</div>
+                          </div>)}
+                      </div>
+                    </>}
+                    {w.target&&(()=>{
+                      const target=w.target;const mappings=w.mappings||{};
+                      const setMap=(idx,m)=>setW({...w,mappings:{...mappings,[idx]:m}});
+                      const matched=bill.items.filter((_,i)=>mappings[i]&&!mappings[i].skipped).length;
+                      const total=bill.items.length;
+                      return<>
+                        <div style={{fontSize:10,color:'#475569',marginBottom:6}}>{matched} of {total} bill line(s) mapped. Auto-suggestions in green; pick a different target item or skip per row.</div>
+                        <div style={{maxHeight:260,overflow:'auto',border:'1px solid #c7d2fe',borderRadius:4,background:'#fff'}}>
+                          <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
+                            <thead style={{background:'#f8fafc',position:'sticky',top:0}}><tr>
+                              <th style={{textAlign:'left',padding:'4px 8px'}}>Bill line</th>
+                              <th style={{textAlign:'left',padding:'4px 8px'}}>Map to target item</th>
+                              <th style={{textAlign:'right',padding:'4px 8px'}}>Apply qty</th>
+                              <th style={{textAlign:'left',padding:'4px 8px'}}>Notes</th>
+                            </tr></thead>
+                            <tbody>{bill.items.map((bl,bli)=>{
+                              const m=mappings[bli]||{};
+                              const tgt=m.target_idx!=null?target.items[m.target_idx]:null;
+                              const openQty=tgt?tgt.qty:0;
+                              const over=tgt&&m.allocated_qty>openQty;
+                              return<tr key={bli} style={{borderBottom:'1px solid #f1f5f9',background:m.skipped?'#fef9c3':(tgt?'#f0fdf4':'#fff')}}>
+                                <td style={{padding:'4px 8px',fontFamily:'monospace'}}>{bl.sku} <span style={{color:'#64748b'}}>{bl.size}</span>{bl.color?<span style={{color:'#475569'}}> · {bl.color}</span>:null} · {bl.qty} @ ${bl.unit_price.toFixed(2)}</td>
+                                <td style={{padding:'4px 8px'}}>
+                                  <select className="form-input" style={{width:'100%',fontSize:10,padding:'2px 4px'}} value={m.skipped?'__skip':(m.target_idx!=null?String(m.target_idx):'')}
+                                    onChange={e=>{const v=e.target.value;if(v==='__skip')setMap(bli,{skipped:true});else if(v==='')setMap(bli,{});else{const ti=parseInt(v);const it=target.items[ti];setMap(bli,{target_idx:ti,allocated_qty:bl.qty,ambiguous:false})}}}>
+                                    <option value="">— pick —</option>
+                                    <option value="__skip">Skip this line</option>
+                                    {target.items.map((it,ti)=><option key={ti} value={ti}>{it.sku} {it.size} ({it.qty} open){it.so_id?' · '+it.so_id:''}{it.color?' · '+it.color:''}</option>)}
+                                  </select>
+                                </td>
+                                <td style={{padding:'4px 8px',textAlign:'right'}}>
+                                  {!m.skipped&&tgt&&<input className="form-input" type="number" style={{width:60,fontSize:10,padding:'2px 4px',textAlign:'right'}} value={m.allocated_qty||0}
+                                    onChange={e=>setMap(bli,{...m,allocated_qty:parseInt(e.target.value)||0})}/>}
+                                </td>
+                                <td style={{padding:'4px 8px',fontSize:10,color:over?'#dc2626':(m.ambiguous?'#d97706':(m.skipped?'#92400e':'#166534'))}}>
+                                  {m.skipped?'Skipped':over?`Over-receipt (${m.allocated_qty}>${openQty})`:m.ambiguous?'Ambiguous — verify':tgt?'Mapped':(bl.sku||'')+' not on target'}
+                                </td>
+                              </tr>;
+                            })}</tbody>
+                          </table>
+                        </div>
+                        <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
+                          <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>setW({open:false})}>Cancel</button>
+                          <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}}
+                            onClick={()=>{
+                              // Build matchedPO shape compatible with existing apply paths.
+                              let matchedPO,matchedPOSource;
+                              if(target.kind==='batch'){matchedPO=target.raw;matchedPOSource='batch'}
+                              else if(target.kind==='so'){matchedPO={so_id:target.id,po_id:target.raw.po_number||target.id,so:target.raw};matchedPOSource='so_po'}
+                              // Persist per-line mappings on the bill so the apply path can target the
+                              // exact SO item / po_line (rather than matching by PO-number string).
+                              const lineMappings=Object.entries(w.mappings||{}).map(([bi2,m])=>{
+                                if(m.skipped||m.target_idx==null)return null;
+                                const it=target.items[m.target_idx];
+                                const bl=bill.items[parseInt(bi2)]||{};
+                                const billCost=safeNum(bl.extension||0)||safeNum(bl.unit_price||0)*(m.allocated_qty||0);
+                                return{bill_idx:parseInt(bi2),target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:m.allocated_qty||0,unit_cost:it.unit_cost||0,bill_cost:Math.round(billCost*100)/100};
+                              }).filter(Boolean);
+                              setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,matchedPO,matchedPOSource,_lineMappings:lineMappings,_wizard:{open:false}}}:p)}));
+                              nf('Bill manually matched to '+target.label);
+                            }}>Confirm match</button>
+                        </div>
+                      </>;
+                    })()}
                   </div>;
                 })()}
                 {/* Raw text toggle */}

@@ -1,10 +1,10 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex } from './constants';
+import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks } from './components';
 import { dP, rQ, DTF, mergeColors } from './pricing';
-import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, getBillingContacts, getAthleticDirectorContacts } from './utils';
+import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey } from './utils';
 import { StripePaymentModal } from './modals';
 
 // CUSTOMER DETAIL
@@ -15,7 +15,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[showPortal,setShowPortal]=useState(false);
-  const[showActions,setShowActions]=useState(false);const[showStatement,setShowStatement]=useState(false);const[stmtEmail,setStmtEmail]=useState('');const[stmtMsg,setStmtMsg]=useState('');
+  const[showActions,setShowActions]=useState(false);const[showStatement,setShowStatement]=useState(false);const[stmtEmail,setStmtEmail]=useState('');const[stmtMsg,setStmtMsg]=useState('');const[stmtFrom,setStmtFrom]=useState('accounting');const[stmtSending,setStmtSending]=useState(false);
   const[custArtDetail,setCustArtDetail]=useState(null);
   const[custArtExpanded,setCustArtExpanded]=useState(null);// art id of expanded customer library item
   const[custArtFilter,setCustArtFilter]=useState('all');
@@ -94,7 +94,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <div style={{padding:'8px 14px',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #f1f5f9'}} className="hover-bg" onMouseEnter={e=>e.currentTarget.style.background='#f8fafc'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}
             onClick={()=>onCopy(customer)}><Icon name="copy" size={13}/> Copy Customer</div>
           <div style={{padding:'8px 14px',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #f1f5f9'}} onMouseEnter={e=>e.currentTarget.style.background='#f8fafc'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}
-            onClick={()=>{const accts=getBillingContacts(customer,allCustomers);const acct=accts[0]||(customer.contacts||[])[0];setStmtEmail(accts.length>0?accts.map(a=>a.email).join(', '):(acct?.email||''));setStmtMsg('Hi '+(acct?.name||'')+',\n\nPlease find your current account statement below with all open invoices and aging details.\n\nPlease let us know if you have any questions.\n\nThank you,\nNSA Team');setShowStatement(true)}}><Icon name="file" size={13}/> Send Statement</div>
+            onClick={()=>{const accts=getBillingContacts(customer,allCustomers);const acct=accts[0]||(customer.contacts||[])[0];setStmtEmail(accts.length>0?accts.map(a=>a.email).join(', '):(acct?.email||''));setStmtMsg('Hi '+(acct?.name||'')+',\n\nPlease find your current account statement below with all open invoices and aging details.\n\nPlease let us know if you have any questions.\n\nThank you,\nNSA Team');setStmtFrom(customer.primary_rep_id?'rep':'accounting');setShowStatement(true)}}><Icon name="file" size={13}/> Send Statement</div>
           <div style={{padding:'8px 14px',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',gap:8,color:'#dc2626'}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}
             onClick={()=>onDelete(customer)}><Icon name="trash" size={13}/> Delete Customer</div>
         </div>}
@@ -853,16 +853,78 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             </tbody></table>
           </div>:<div style={{padding:16,textAlign:'center',color:'#94a3b8',fontSize:13}}>No open invoices</div>}
         </div>
+        {/* From */}
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>FROM</div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            {(()=>{const rep=REPS.find(r=>r.id===customer.primary_rep_id);return rep?<label style={{display:'flex',alignItems:'center',gap:6,padding:'6px 10px',border:'1px solid '+(stmtFrom==='rep'?'#2563eb':'#e2e8f0'),background:stmtFrom==='rep'?'#eff6ff':'white',borderRadius:6,cursor:'pointer',fontSize:12}}>
+              <input type="radio" name="stmtFrom" checked={stmtFrom==='rep'} onChange={()=>setStmtFrom('rep')}/>
+              <span><strong>{rep.name}</strong> <span style={{color:'#94a3b8'}}>(primary rep)</span></span>
+            </label>:null})()}
+            <label style={{display:'flex',alignItems:'center',gap:6,padding:'6px 10px',border:'1px solid '+(stmtFrom==='accounting'?'#2563eb':'#e2e8f0'),background:stmtFrom==='accounting'?'#eff6ff':'white',borderRadius:6,cursor:'pointer',fontSize:12}}>
+              <input type="radio" name="stmtFrom" checked={stmtFrom==='accounting'} onChange={()=>setStmtFrom('accounting')}/>
+              <span><strong>Accounting</strong> <span style={{color:'#94a3b8'}}>accounting@nationalsportsapparel.com</span></span>
+            </label>
+          </div>
+        </div>
         {/* Send to */}
         <div style={{marginBottom:10}}>
           <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>SEND TO</div>
           <input className="form-input" value={stmtEmail} onChange={e=>setStmtEmail(e.target.value)} placeholder="Email address" style={{marginBottom:6}}/>
           <textarea className="form-input" rows={4} value={stmtMsg} onChange={e=>setStmtMsg(e.target.value)} style={{fontFamily:'inherit',fontSize:13}}/>
         </div>
+        {!_brevoKey&&<div style={{padding:8,background:'#fef3c7',color:'#92400e',borderRadius:6,fontSize:11,marginTop:4}}>⚠ Brevo API key not configured — set REACT_APP_BREVO_API_KEY to enable real sending.</div>}
       </div>
       <div className="modal-footer">
-        <button className="btn btn-secondary" onClick={()=>setShowStatement(false)}>Cancel</button>
-        <button className="btn btn-primary" onClick={()=>{setShowStatement(false);alert('📧 Statement sent to '+stmtEmail+' with '+openInvs.length+' open invoice(s)! (demo)')}}>📧 Send Statement</button>
+        <button className="btn btn-secondary" onClick={()=>setShowStatement(false)} disabled={stmtSending}>Cancel</button>
+        <button className="btn btn-primary" disabled={stmtSending||!stmtEmail.trim()} onClick={async()=>{
+          const toList=stmtEmail.split(',').map(s=>s.trim()).filter(s=>s&&/@/.test(s));
+          if(toList.length===0){nf('Enter a valid email address','error');return}
+          setStmtSending(true);
+          const portalUrl=customer.alpha_tag?(window.location.origin+'/?portal='+customer.alpha_tag):'';
+          const rep=REPS.find(r=>r.id===customer.primary_rep_id);
+          const repEmail=rep&&cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email)?cu.email:'';
+          const senderEmail=stmtFrom==='rep'&&repEmail?repEmail:'accounting@nationalsportsapparel.com';
+          const senderName=stmtFrom==='rep'&&rep?rep.name+' — National Sports Apparel':'National Sports Apparel Accounting';
+          const replyTo=stmtFrom==='rep'&&repEmail?{email:repEmail,name:rep?.name}:{email:'accounting@nationalsportsapparel.com',name:'NSA Accounting'};
+          // Build invoice rows
+          const _$=n=>'$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+          const invRowsHtml=openInvs.map(inv=>{const bal=(inv.total||0)-(inv.paid||0);const age=inv.date?Math.ceil((now-new Date(inv.date))/(1000*60*60*24)):0;const ageColor=age>60?'#dc2626':age>30?'#d97706':'#64748b';
+            return '<tr>'
+              +'<td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;font-weight:700;color:#1e40af">'+inv.id+'</td>'
+              +'<td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;color:#475569">'+(inv.date||'—')+'</td>'
+              +'<td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;color:#475569;font-size:12px">'+(inv.memo||'—')+'</td>'
+              +'<td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;text-align:right">'+_$(inv.total)+'</td>'
+              +'<td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;text-align:right;color:#166534">'+_$(inv.paid)+'</td>'
+              +'<td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;text-align:right;font-weight:700;color:#dc2626">'+_$(bal)+'</td>'
+              +'<td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;text-align:right;color:'+ageColor+';font-size:12px">'+age+'d</td>'
+              +'</tr>';
+          }).join('');
+          const agingCard=(label,val,bg,color)=>'<td style="padding:10px;background:'+bg+';border-radius:6px;text-align:center;width:25%"><div style="font-size:11px;color:#64748b;margin-bottom:2px">'+label+'</div><div style="font-size:16px;font-weight:700;color:'+color+'">'+_$(val)+'</div></td>';
+          const inner=''
+            +'<div style="white-space:pre-wrap;margin-bottom:16px">'+(stmtMsg||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>'
+            +(portalUrl?'<div style="text-align:center;margin:18px 0"><a href="'+portalUrl+'" style="display:inline-block;padding:12px 28px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:700">View Statement &amp; Invoices in Your Portal</a><div style="font-size:11px;color:#94a3b8;margin-top:6px">Download PDFs, view details, and pay online</div></div>':'')
+            +'<div style="background:#f8fafc;border-radius:8px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center">'
+            +'<div><div style="font-size:16px;font-weight:700">'+customer.name+'</div><div style="font-size:12px;color:#64748b">'+(customer.alpha_tag||'')+' · '+(tl[customer.payment_terms]||'Net 30')+'</div></div>'
+            +'<div style="text-align:right"><div style="font-size:11px;color:#64748b">Total Balance Due</div><div style="font-size:22px;font-weight:800;color:'+(totalDue>0?'#dc2626':'#22c55e')+'">'+_$(totalDue)+'</div></div>'
+            +'</div>'
+            +'<div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:6px">AGING SUMMARY</div>'
+            +'<table style="width:100%;border-collapse:separate;border-spacing:6px;margin-bottom:14px"><tr>'
+            +agingCard('Current',aging.current,'#f0fdf4','#16a34a')
+            +agingCard('31-60 Days',aging.over30,aging.over30>0?'#fef3c7':'#f8fafc',aging.over30>0?'#d97706':'#94a3b8')
+            +agingCard('61-90 Days',aging.over60,aging.over60>0?'#fed7aa':'#f8fafc',aging.over60>0?'#ea580c':'#94a3b8')
+            +agingCard('90+ Days',aging.over90,aging.over90>0?'#fecaca':'#f8fafc',aging.over90>0?'#dc2626':'#94a3b8')
+            +'</tr></table>'
+            +'<div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:6px">OPEN INVOICES ('+openInvs.length+')</div>'
+            +(openInvs.length>0?'<table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;font-size:13px"><thead><tr style="background:#f8fafc"><th style="padding:8px 10px;text-align:left;font-size:11px;color:#475569;font-weight:700">Invoice</th><th style="padding:8px 10px;text-align:left;font-size:11px;color:#475569;font-weight:700">Date</th><th style="padding:8px 10px;text-align:left;font-size:11px;color:#475569;font-weight:700">Memo</th><th style="padding:8px 10px;text-align:right;font-size:11px;color:#475569;font-weight:700">Total</th><th style="padding:8px 10px;text-align:right;font-size:11px;color:#475569;font-weight:700">Paid</th><th style="padding:8px 10px;text-align:right;font-size:11px;color:#475569;font-weight:700">Balance</th><th style="padding:8px 10px;text-align:right;font-size:11px;color:#475569;font-weight:700">Age</th></tr></thead><tbody>'+invRowsHtml+'</tbody></table>':'<div style="padding:16px;text-align:center;color:#94a3b8;font-size:13px">No open invoices</div>')
+            +(portalUrl?'<div style="margin-top:18px;padding:12px;background:#eff6ff;border-radius:6px;font-size:12px;color:#1e40af;text-align:center">Need to download a specific invoice or pay online? Visit <a href="'+portalUrl+'" style="color:#2563eb;font-weight:700">your portal</a>.</div>':'');
+          const html=buildBrandedEmailHtml(inner,NSA);
+          const subject='Account Statement — '+customer.name+(totalDue>0?' — Balance Due '+_$(totalDue):'');
+          const res=await sendBrevoEmail({to:toList.map(e=>({email:e})),subject,htmlContent:html,senderName,senderEmail,replyTo});
+          setStmtSending(false);
+          if(res.ok){nf('Statement sent to '+toList.join(', '));setShowStatement(false)}
+          else{nf('Failed to send statement: '+(res.error||'Unknown error'),'error')}
+        }}>{stmtSending?'Sending…':'📧 Send Statement'}</button>
       </div>
     </div></div>})()}
 

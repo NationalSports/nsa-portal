@@ -63,19 +63,26 @@ function buildFlatArgSoapEnvelope(action, args) {
 </soapenv:Envelope>`;
 }
 
-// Build a SOAP envelope for PromoStandards services (e.g. getInventoryLevels)
-// PromoStandards uses document/literal style with named parameters (no arg0/arg1).
-// The request wrapper element is the capitalized action + "Request"
-// (e.g. getInventoryLevels → GetInventoryLevelsRequest).
-// Namespace: http://www.promostandards.org/WSDL/InventoryService/1.0.0/
+// Build a SOAP envelope for PromoStandards InventoryService (document/literal).
+// Per SanMar's WSDL (Inventory_v1_2_1): targetNamespace is
+// http://www.promostandards.org/WSDL/InventoryService/1.0.0/ with
+// elementFormDefault="qualified", so EVERY element (wrapper + children) is in
+// that one namespace — there is no SharedObjects namespace. The request
+// wrapper element for getInventoryLevels is literally named "Request" (the
+// part element is tns:Request), NOT "GetInventoryLevelsRequest".
+const PROMO_NS = 'http://www.promostandards.org/WSDL/InventoryService/1.0.0/';
+const PROMO_REQUEST_ELEMENTS = {
+  getInventoryLevels: 'Request',
+  getFilterValues: 'GetFilterValuesRequest',
+};
 function buildPromoStandardsSoapEnvelope(action, params) {
+  const wrapper = PROMO_REQUEST_ELEMENTS[action] || (action.charAt(0).toUpperCase() + action.slice(1) + 'Request');
   const paramXml = Object.entries(params)
     .map(([k, v]) => `<ns:${k}>${escapeXml(String(v ?? ''))}</ns:${k}>`)
     .join('\n      ');
-  const wrapper = action.charAt(0).toUpperCase() + action.slice(1) + 'Request';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-                  xmlns:ns="http://www.promostandards.org/WSDL/InventoryService/1.0.0/">
+                  xmlns:ns="${PROMO_NS}">
   <soapenv:Header/>
   <soapenv:Body>
     <ns:${wrapper}>
@@ -198,16 +205,19 @@ exports.handler = async (event) => {
     try {
       const parsed = JSON.parse(event.body);
       if (service === 'promostandards') {
-        // PromoStandards uses document/literal with named params in schema-required
-        // order: wsVersion, id, password, then call-specific params (productId,
-        // productIdType, ...). The XSD enforces <sequence>, so out-of-order
-        // elements get rejected with cvc-complex-type.2.4.a.
-        const { wsVersion, id, password: pwd, ...rest } = parsed;
+        // getInventoryLevels Request schema enforces this exact <sequence>:
+        // wsVersion, id, password, productID, productIDtype (productIDtype is
+        // required). Note the casing — productID (capital D) and productIDtype.
+        // SanMar's PromoStandards `id` is the web-service username (NOT the
+        // numeric customer number used by the legacy SOAP services). We try the
+        // username first and fall back to the customer number on auth failure.
+        const { wsVersion, id, password: pwd, productId, productID, productIdType, productIDtype } = parsed;
         const promoParams = {
           wsVersion: wsVersion || '1.2.1',
-          id: id || customerNumber,
+          id: id || username,
           password: pwd || password,
-          ...rest,
+          productID: productID || productId || '',
+          productIDtype: productIDtype || productIdType || 'Supplier',
         };
         soapBody = buildPromoStandardsSoapEnvelope(action, promoParams);
       } else if (service === 'inventory') {
@@ -263,7 +273,32 @@ exports.handler = async (event) => {
     console.log(`[SanMar] SOAP request: ${action} → ${baseUrl} (customer: ${customerNumber}, user: ${username})`);
     let result = await doRequest(soapBody);
 
-    // If we got a SOAP fault with "dispatch method" error, retry with alternate namespace for inventory
+    // PromoStandards returns a 200 with an errorMessage (not a SOAP fault) when
+    // the id/password combo is wrong. The `id` can be either the web-service
+    // username or the numeric customer number depending on the account, so if
+    // the first attempt (username) fails auth, retry once with the other value.
+    if (service === 'promostandards' && result.statusCode === 200) {
+      let errMsg = '';
+      try { errMsg = (JSON.parse(result.body || '{}').errorMessage) || ''; } catch {}
+      if (/auth|credential/i.test(errMsg)) {
+        const parsed = JSON.parse(event.body || '{}');
+        const firstId = parsed.id || username;
+        const altId = firstId === username ? customerNumber : username;
+        console.warn(`[SanMar] PromoStandards auth failed with id="${firstId}", retrying with id="${altId}"`);
+        const altBody = buildPromoStandardsSoapEnvelope(action, {
+          wsVersion: parsed.wsVersion || '1.2.1',
+          id: altId,
+          password: parsed.password || password,
+          productID: parsed.productID || parsed.productId || '',
+          productIDtype: parsed.productIDtype || parsed.productIdType || 'Supplier',
+        });
+        const altResult = await doRequest(altBody);
+        let altErr = '';
+        try { altErr = (JSON.parse(altResult.body || '{}').errorMessage) || ''; } catch {}
+        if (altResult.statusCode === 200 && !/auth|credential/i.test(altErr)) result = altResult;
+      }
+    }
+
     if (result.fault && service === 'inventory') {
       const faultStr = result.parsed.faultString || '';
       console.warn(`[SanMar] Inventory fault: ${faultStr}, retrying with alternate namespace...`);
