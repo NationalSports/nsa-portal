@@ -2707,7 +2707,7 @@ export default function App(){
         if(as.inv_adj_log)setInvAdjLog(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_adj_log)?as.inv_adj_log:prev);
         if(as.inv_po_counter)setInvPOCounter(prev=>as.inv_po_counter!==prev?as.inv_po_counter:prev);
         if(as.submitted_batches)setSubmittedBatches(prev=>JSON.stringify(prev)!==JSON.stringify(as.submitted_batches)?as.submitted_batches:prev);
-        if(as.batch_pos)setBatchPOs(prev=>{const inc=as.batch_pos;if(_jsonEq(prev,inc)){_batchPosApplied.current=JSON.stringify(inc);return prev}if(Date.now()<_batchPosDirtyUntil)return prev;_batchPosApplied.current=JSON.stringify(inc);return inc});
+        if(as.batch_pos)setBatchPOs(prev=>{const incStr=JSON.stringify(as.batch_pos);if(JSON.stringify(prev)===incStr){_batchPosApplied.current=incStr;return prev}if(Date.now()<_batchPosDirtyUntil)return prev;_batchPosApplied.current=incStr;return as.batch_pos});
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(JSON.stringify(prev)===JSON.stringify(ci))return prev;Object.assign(NSA,ci);return ci});
       }catch(e){
         _pollConsecutiveFailures=Math.min(_pollConsecutiveFailures+1,6);
