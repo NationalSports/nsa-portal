@@ -9,6 +9,8 @@ import * as XLSX from 'xlsx';
 import { BarcodeDetector as BarcodeDetectorPolyfill } from 'barcode-detector';
 import { createWorker } from 'tesseract.js';
 import html2pdf from 'html2pdf.js';
+import { jsPDF } from 'jspdf';
+import { svg2pdf } from 'svg2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
@@ -24410,6 +24412,28 @@ export default function App(){
                   const a=document.createElement('a');a.href=url;a.download=(vecFile?.name||'image').replace(/\.[^.]+$/,'')+'.svg';a.click();URL.revokeObjectURL(url);
                   nf('SVG file downloaded!');
                 }}><Icon name="download" size={14}/> Download SVG</button>
+                <button className="btn btn-secondary" onClick={async()=>{
+                  let holder=null;
+                  try{
+                    const doc=new DOMParser().parseFromString(vecSvg,'image/svg+xml');
+                    if(doc.querySelector('parsererror'))throw new Error('Invalid SVG');
+                    const svgEl=doc.documentElement;
+                    const vb=(svgEl.getAttribute('viewBox')||'').split(/[\s,]+/).map(Number).filter(n=>!isNaN(n));
+                    let w=parseFloat(svgEl.getAttribute('width'))||(vb.length===4?vb[2]:0);
+                    let h=parseFloat(svgEl.getAttribute('height'))||(vb.length===4?vb[3]:0);
+                    if(!w||!h){w=w||1000;h=h||1000;}
+                    // svg2pdf needs the element laid out in the DOM
+                    holder=document.createElement('div');
+                    holder.style.cssText='position:fixed;left:-99999px;top:0;opacity:0;pointer-events:none;';
+                    const live=document.importNode(svgEl,true);
+                    holder.appendChild(live);document.body.appendChild(holder);
+                    const pdf=new jsPDF({orientation:w>=h?'landscape':'portrait',unit:'pt',format:[w,h]});
+                    await svg2pdf(live,pdf,{width:w,height:h});
+                    pdf.save((vecFile?.name||'image').replace(/\.[^.]+$/,'')+'.pdf');
+                    nf('PDF file downloaded!');
+                  }catch(e){nf('Failed to create PDF: '+(e?.message||e),'error');}
+                  finally{if(holder&&holder.parentNode)holder.parentNode.removeChild(holder);}
+                }}><Icon name="download" size={14}/> Download PDF</button>
                 <button className="btn btn-secondary" onClick={()=>{
                   navigator.clipboard.writeText(vecSvg).then(()=>nf('SVG code copied to clipboard!')).catch(()=>nf('Failed to copy','error'));
                 }}><Icon name="copy" size={14}/> Copy SVG</button>
