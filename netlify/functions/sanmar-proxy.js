@@ -63,25 +63,26 @@ function buildFlatArgSoapEnvelope(action, args) {
 </soapenv:Envelope>`;
 }
 
-// Build a SOAP envelope for PromoStandards services (e.g. getInventoryLevels).
-// PromoStandards document/literal: the request wrapper element lives in the
-// service namespace, but every child parameter (wsVersion/id/password/productId)
-// lives in the matching SharedObjects namespace. Sending the children in the
-// service namespace (as we did before) makes the request invalid — SanMar
-// rejected it with "Cannot find the declaration of element ...Request".
-// The wrapper element is the capitalized action + "Request"
-// (e.g. getInventoryLevels → GetInventoryLevelsRequest).
-function buildPromoStandardsSoapEnvelope(action, params, version = '1.0.0') {
-  const svcNs = `http://www.promostandards.org/WSDL/InventoryService/${version}/`;
-  const sharedNs = `${svcNs}SharedObjects/`;
+// Build a SOAP envelope for PromoStandards InventoryService (document/literal).
+// Per SanMar's WSDL (Inventory_v1_2_1): targetNamespace is
+// http://www.promostandards.org/WSDL/InventoryService/1.0.0/ with
+// elementFormDefault="qualified", so EVERY element (wrapper + children) is in
+// that one namespace — there is no SharedObjects namespace. The request
+// wrapper element for getInventoryLevels is literally named "Request" (the
+// part element is tns:Request), NOT "GetInventoryLevelsRequest".
+const PROMO_NS = 'http://www.promostandards.org/WSDL/InventoryService/1.0.0/';
+const PROMO_REQUEST_ELEMENTS = {
+  getInventoryLevels: 'Request',
+  getFilterValues: 'GetFilterValuesRequest',
+};
+function buildPromoStandardsSoapEnvelope(action, params) {
+  const wrapper = PROMO_REQUEST_ELEMENTS[action] || (action.charAt(0).toUpperCase() + action.slice(1) + 'Request');
   const paramXml = Object.entries(params)
-    .map(([k, v]) => `<shar:${k}>${escapeXml(String(v ?? ''))}</shar:${k}>`)
+    .map(([k, v]) => `<ns:${k}>${escapeXml(String(v ?? ''))}</ns:${k}>`)
     .join('\n      ');
-  const wrapper = action.charAt(0).toUpperCase() + action.slice(1) + 'Request';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-                  xmlns:ns="${svcNs}"
-                  xmlns:shar="${sharedNs}">
+                  xmlns:ns="${PROMO_NS}">
   <soapenv:Header/>
   <soapenv:Body>
     <ns:${wrapper}>
@@ -204,16 +205,16 @@ exports.handler = async (event) => {
     try {
       const parsed = JSON.parse(event.body);
       if (service === 'promostandards') {
-        // PromoStandards getInventoryLevels schema enforces a strict <sequence>:
-        // wsVersion, id, password, productId. productIdType is NOT part of this
-        // request element, so we drop it (sending it triggers a schema fault).
-        const { wsVersion, id, password: pwd, productId, productIdType, ...rest } = parsed;
+        // getInventoryLevels Request schema enforces this exact <sequence>:
+        // wsVersion, id, password, productID, productIDtype (productIDtype is
+        // required). Note the casing — productID (capital D) and productIDtype.
+        const { wsVersion, id, password: pwd, productId, productID, productIdType, productIDtype } = parsed;
         const promoParams = {
           wsVersion: wsVersion || '1.2.1',
           id: id || customerNumber,
           password: pwd || password,
-          ...(productId !== undefined ? { productId } : {}),
-          ...rest,
+          productID: productID || productId || '',
+          productIDtype: productIDtype || productIdType || 'Supplier',
         };
         soapBody = buildPromoStandardsSoapEnvelope(action, promoParams);
       } else if (service === 'inventory') {
@@ -269,26 +270,7 @@ exports.handler = async (event) => {
     console.log(`[SanMar] SOAP request: ${action} → ${baseUrl} (customer: ${customerNumber}, user: ${username})`);
     let result = await doRequest(soapBody);
 
-    // PromoStandards: if the 1.x namespace request faults (SanMar may be on the
-    // 2.0.0 binding), retry once with the 2.0.0 namespace + wsVersion.
-    if (result.fault && service === 'promostandards') {
-      console.warn(`[SanMar] PromoStandards fault on 1.x: ${result.parsed.faultString || ''}, retrying with 2.0.0...`);
-      const parsed = JSON.parse(event.body || '{}');
-      const { productId, productIdType, ...rest } = parsed;
-      const v2Params = {
-        wsVersion: '2.0.0',
-        id: parsed.id || customerNumber,
-        password: parsed.password || password,
-        ...(productId !== undefined ? { productId } : {}),
-      };
-      const v2Body = buildPromoStandardsSoapEnvelope(action, v2Params, '2.0.0');
-      result = await doRequest(v2Body);
-      if (result.fault) {
-        console.error(`[SanMar] PromoStandards 2.0.0 retry also failed:`, result.parsed.faultString);
-        return { statusCode: 500, headers,
-          body: JSON.stringify({ error: result.parsed.faultString || 'SOAP Fault', faultCode: result.parsed.faultCode }) };
-      }
-    } else if (result.fault && service === 'inventory') {
+    if (result.fault && service === 'inventory') {
       const faultStr = result.parsed.faultString || '';
       console.warn(`[SanMar] Inventory fault: ${faultStr}, retrying with alternate namespace...`);
       // Try without namespace (bare element)
