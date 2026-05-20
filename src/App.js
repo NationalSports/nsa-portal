@@ -8545,7 +8545,7 @@ export default function App(){
         <div style={{fontSize:11,color:'#94a3b8',marginTop:10}}>The PO number assigned here (e.g. NSA-4501) is used when placing the order online. When the box arrives, scan that PO number to see every SO and item inside.</div>
       </div></div>
       </>}
-      {sanmarPreview&&<SanMarPreviewModal {...sanmarPreview} onClose={()=>setSanMarPreview(null)}/>}
+      {sanmarPreview&&<SanMarPreviewModal {...sanmarPreview} allowSubmit={true} onClose={()=>setSanMarPreview(null)}/>}
     </>);
   };
 
