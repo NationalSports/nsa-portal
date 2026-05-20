@@ -19201,35 +19201,78 @@ export default function App(){
     };
 
     // Pre-map bill lines to target items by SKU+size (and color, when present on both sides).
-    // Returns {billIdx: {target_idx, allocated_qty, ambiguous, candidate_indexes}}.
-    // - First tries SKU+size+color (exact, then substring on color since bills often have
-    //   variant color text like "VEGAS GOLD" vs catalog "Vegas Gold/White").
-    // - Falls back to SKU+size if no color hit; ambiguous when multiple targets remain.
+    // Returns {billIdx: {target_idx, allocated_qty, ambiguous}}.
     const _autoMapBillToTarget=(bill,target)=>{
       const mappings={};
       if(!target||!Array.isArray(target.items))return mappings;
-      const norm=s=>(s||'').toUpperCase().replace(/[^A-Z0-9/ ]/g,'').replace(/\s+/g,' ').trim();
       (bill.items||[]).forEach((bl,bi)=>{
-        const sku=(bl.sku||'').toUpperCase();
-        const size=(bl.size||'').toUpperCase();
-        const billColor=norm(bl.color);
-        const indexed=target.items.map((it,ti)=>({...it,_idx:ti}));
-        const sameSkuSize=indexed.filter(it=>(it.sku||'').toUpperCase()===sku&&(it.size||'').toUpperCase()===size);
-        if(sameSkuSize.length===0){mappings[bi]={skipped:true,reason:'no-match'};return}
-        let candidates=sameSkuSize;
-        // If we have a color on the bill AND on target items, narrow by color
-        if(billColor&&sameSkuSize.some(c=>c.color)){
-          const exact=sameSkuSize.filter(c=>norm(c.color)===billColor);
-          if(exact.length>0)candidates=exact;
-          else{
-            // Substring match either direction (handles "VEGAS GOLD" matching catalog "Vegas Gold/White")
-            const partial=sameSkuSize.filter(c=>{const cc=norm(c.color);return cc&&(cc.includes(billColor)||billColor.includes(cc))});
-            if(partial.length>0)candidates=partial;
-          }
-        }
-        mappings[bi]={target_idx:candidates[0]._idx,allocated_qty:bl.qty,ambiguous:candidates.length>1,candidate_indexes:candidates.map(c=>c._idx)};
+        const hit=_matchLineToItems(bl,target.items);
+        if(!hit){mappings[bi]={skipped:true,reason:'no-match'};return}
+        mappings[bi]={target_idx:hit.idx,allocated_qty:bl.qty,ambiguous:hit.ambiguous};
       });
       return mappings;
+    };
+
+    // Resolve the available target items for whatever a bill is currently matched to. Returns the
+    // same {sku,size,color,qty,unit_cost,so_id,...} shape used by the wizard, so a single matcher
+    // works for both auto-matched and manually-matched bills.
+    const _targetItemsForBill=(bill)=>{
+      const src=bill.matchedPOSource,m=bill.matchedPO;
+      if(!m)return[];
+      if(src==='batch'){
+        const items=[];
+        (m.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{
+          Object.entries(it.sizes||{}).forEach(([sz,qty])=>{if(qty>0)items.push({sku:it.sku,name:it.name,color:it.color||'',size:sz,qty,unit_cost:it.unit_cost||0,so_id:sp.so_id||''})});
+        }));
+        return items;
+      }
+      if(src==='so_po'){
+        const so=m.so||sos.find(s=>s.id===(m.so_id||m.so?.id));
+        if(!so)return[];
+        const items=[];
+        (so.items||[]).forEach(it=>(it.po_lines||[]).forEach(po=>{
+          Object.entries(po).forEach(([k,v])=>{
+            if(typeof v!=='number'||k==='unit_cost'||k==='qty'||k.startsWith('_'))return;
+            if(v<=0)return;
+            const openQty=v-((po.billed||{})[k]||0);
+            if(openQty<=0)return;
+            items.push({sku:it.sku,name:it.name,color:it.color||'',size:k,qty:openQty,unit_cost:po.unit_cost||0,so_id:so.id});
+          });
+        }));
+        return items;
+      }
+      if(src==='inv_po'){
+        const items=[];
+        (m.items||[]).forEach(it=>{
+          const sizes=it.sizes||{};
+          if(Object.keys(sizes).length)Object.entries(sizes).forEach(([sz,qty])=>{if(qty>0)items.push({sku:it.sku,name:it.name,color:it.color||'',size:sz,qty,unit_cost:it.unit_cost||0})});
+          else items.push({sku:it.sku,name:it.name,color:it.color||'',size:'',qty:it.qty||0,unit_cost:it.unit_cost||0});
+        });
+        return items;
+      }
+      return[];
+    };
+
+    // Match a single bill line to a target item by SKU+size, narrowing by color when available.
+    // Returns {item, idx, ambiguous} or null.
+    const _matchLineToItems=(bl,items)=>{
+      if(!items||!items.length)return null;
+      const norm=s=>(s||'').toUpperCase().replace(/[^A-Z0-9/ ]/g,'').replace(/\s+/g,' ').trim();
+      const sku=(bl.sku||'').toUpperCase();
+      const size=(bl.size||'').toUpperCase();
+      const billColor=norm(bl.color);
+      const indexed=items.map((it,ti)=>({...it,_idx:ti}));
+      let sameSkuSize=indexed.filter(it=>(it.sku||'').toUpperCase()===sku&&(it.size||'').toUpperCase()===size);
+      // If bill line has no size (inv PO single-line items), match on SKU alone
+      if(sameSkuSize.length===0&&!size)sameSkuSize=indexed.filter(it=>(it.sku||'').toUpperCase()===sku);
+      if(sameSkuSize.length===0)return null;
+      let candidates=sameSkuSize;
+      if(billColor&&sameSkuSize.some(c=>c.color)){
+        const exact=sameSkuSize.filter(c=>norm(c.color)===billColor);
+        if(exact.length>0)candidates=exact;
+        else{const partial=sameSkuSize.filter(c=>{const cc=norm(c.color);return cc&&(cc.includes(billColor)||billColor.includes(cc))});if(partial.length>0)candidates=partial}
+      }
+      return{item:candidates[0],idx:candidates[0]._idx,ambiguous:candidates.length>1};
     };
 
     // Apply a decoration bill manually when the user has picked an SO + target po_line (or "create new").
@@ -20500,18 +20543,27 @@ export default function App(){
                         <td style={{textAlign:'right',fontWeight:600}}>${Number(it.amount||0).toFixed(2)}</td>
                       </tr>)}</tbody>
                     </table>:
-                    <table style={{fontSize:11,marginTop:8,marginBottom:8}}>
-                      <thead><tr><th style={{textAlign:'left'}}>SKU</th><th>Size</th><th>Color</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Unit Price</th><th style={{textAlign:'right'}}>Extension</th><th style={{textAlign:'left',maxWidth:180}}>Description</th></tr></thead>
-                      <tbody>{bill.items.map((it,ii)=><tr key={ii}>
+                    (()=>{
+                    const targetItems=poMatch?_targetItemsForBill(bill):[];
+                    const showMatch=poMatch&&targetItems.length>0;
+                    return<table style={{fontSize:11,marginTop:8,marginBottom:8}}>
+                      <thead><tr><th style={{textAlign:'left'}}>SKU</th><th>Size</th><th>Color</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Unit Price</th><th style={{textAlign:'right'}}>Extension</th>{showMatch&&<th style={{textAlign:'left'}}>Match</th>}<th style={{textAlign:'left',maxWidth:180}}>Description</th></tr></thead>
+                      <tbody>{bill.items.map((it,ii)=>{
+                        const hit=showMatch?_matchLineToItems(it,targetItems):null;
+                        return<tr key={ii}>
                         <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
                         <td style={{textAlign:'center',fontWeight:600}}>{it.size}</td>
                         <td style={{color:'#64748b'}}>{it.color||'—'}</td>
                         <td style={{textAlign:'right',fontWeight:700}}>{it.qty}</td>
                         <td style={{textAlign:'right'}}>${it.unit_price.toFixed(2)}</td>
                         <td style={{textAlign:'right',fontWeight:600}}>${it.extension.toFixed(2)}</td>
+                        {showMatch&&<td style={{fontSize:10}}>{hit
+                          ?<span style={{color:hit.ambiguous?'#d97706':'#166534',fontWeight:600}}>{hit.ambiguous?'⚠':'✓'} {hit.item.size}{hit.item.color?' '+hit.item.color:''}{hit.item.so_id&&hit.item.so_id!==bill.matchedPO?.so_id?' · '+hit.item.so_id:''}{hit.ambiguous?' (verify)':''}</span>
+                          :<span style={{color:'#dc2626',fontWeight:600}}>{'✗'} no match</span>}</td>}
                         <td style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#64748b',fontSize:10}}>{it.desc||'—'}</td>
-                      </tr>)}</tbody>
-                    </table>
+                      </tr>;})}</tbody>
+                    </table>;
+                    })()
                   }
                 </div>}
                 {bill.items.length===0&&<div style={{padding:'12px 14px',fontSize:12,color:'#d97706'}}>No line items detected — totals will be used as a single line</div>}
