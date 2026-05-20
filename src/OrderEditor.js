@@ -409,7 +409,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         try{
           console.log('[SanMar] Trying PromoStandards inventory for',sku);
           const promoData=await sanmarGetPromoInventory(sku);
-          console.log('[SanMar] PromoStandards response keys:',Object.keys(promoData||{}),'full:',JSON.stringify(promoData).slice(0,800));
+          // Full response dump for diagnostic — past versions kept truncating this
+          // to 800 chars and we never saw what the parser was missing.
+          console.log('[SanMar] PromoStandards response keys:',Object.keys(promoData||{}),'full:',JSON.stringify(promoData));
           // PromoStandards returns inventory in various nested structures
           const invArr=promoData?.ProductVariationInventoryArray?.ProductVariationInventory
             ||promoData?.productVariationInventoryArray?.productVariationInventory
@@ -418,6 +420,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Also check for direct array of items
             ||promoData?.items||promoData?.Inventory||promoData?.inventory||[];
           const variations=Array.isArray(invArr)?invArr:[invArr];
+          console.log('[SanMar] PromoStandards parsed',variations.length,'variations from',Object.keys(promoData||{}).join(','));
           variations.forEach(v=>{
             const sz=normSzName(v?.attributeSize||v?.size||v?.labelSize||'OSFA');
             const color=v?.attributeColor||v?.color||'';
@@ -441,7 +444,56 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(qty>0){sizeQty[sz]=(sizeQty[sz]||0)+qty;invSuccess=true}
           });
         }catch(e){console.warn('[SanMar] PromoStandards inventory error:',e.message)}
-        // Fallback: legacy getInventoryQtyForStyleColorSize
+        // Fallback A: legacy getInventoryQtyForStyleColorSize, called per-size.
+        // Calling once without a size returns SanMar's aggregate (single row, no
+        // per-size breakdown), so we end up with no per-size data. Iterating the
+        // item's known sizes makes the result deterministic regardless of how the
+        // legacy SOAP groups things.
+        if(!invSuccess){
+          const knownSizes=Object.keys(item?.sizes||{}).filter(s=>s);
+          // If item.sizes is empty (e.g. just-added with no qtys), fall back to a
+          // standard SanMar size set so the badges have something to populate.
+          const sizesToTry=knownSizes.length>0?knownSizes:['XS','S','M','L','XL','2XL','3XL','4XL'];
+          console.log('[SanMar] Per-size legacy fallback for',sku,'sizes:',sizesToTry.join(','),'color:',prodColor||'(any)');
+          let perSizeLogged=false;
+          // Try the item's color first; if every size comes back empty, retry with no color filter.
+          for(const tryColor of [prodColor,'']){
+            const before=Object.keys(sizeQty).length;
+            await Promise.all(sizesToTry.map(async sz=>{
+              try{
+                const invData=await sanmarGetInventory(sku,tryColor,sz);
+                if(!perSizeLogged){perSizeLogged=true;console.log('[SanMar] RAW per-size response',sku,sz,'=>',JSON.stringify(invData))}
+                // Normalize to a list — the legacy SOAP wraps rows in items/listResponse/return,
+                // or returns a single root-level object. Mirror smLiveSearch's parser exactly
+                // since that path is proven against SanMar's real response shape.
+                let rows=invData?.items||[];
+                if(!rows.length&&invData?.listResponse)rows=Array.isArray(invData.listResponse)?invData.listResponse:[invData.listResponse];
+                if(!rows.length&&invData?.return)rows=Array.isArray(invData.return)?invData.return:[invData.return];
+                if(!rows.length&&invData&&(invData.size||invData.totalQty||invData.qty||invData.warehouseInfo))rows=[invData];
+                rows=rows.filter(it=>it&&it.errorOccurred!=='true'&&it.errorOccured!=='true');
+                let qty=0;
+                rows.forEach(it=>{
+                  let q=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
+                  if(q<=0&&it.warehouseInfo){
+                    const details=it.warehouseInfo.inventoryDetail||it.warehouseInfo;
+                    const arr=Array.isArray(details)?details:[details];
+                    arr.forEach(d=>{if(d&&d.quantity)q+=parseInt(d.quantity)||0});
+                  }
+                  // Last resort: scan any leftover numeric string field (e.g. inventoryQty)
+                  // that isn't a known price/size/identifier — matches smLiveSearch behavior.
+                  if(q<=0){Object.entries(it).forEach(([k,v])=>{if(typeof v==='string'&&!['size','labelSize','color','catalogColor','colorName','style','piecePrice','salePrice','programPrice','casePrice','caseQty','customerPrice','myPrice'].includes(k)){const n=parseInt(v)||0;if(n>0)q+=n}})}
+                  qty+=q;
+                });
+                if(qty>0){sizeQty[normSzName(sz)]=(sizeQty[normSzName(sz)]||0)+qty;invSuccess=true}
+              }catch(e){console.warn('[SanMar] Per-size inventory error',sku,sz,e.message)}
+            }));
+            // If this color pass picked up any new sizes, stop here — don't double-count.
+            if(Object.keys(sizeQty).length>before)break;
+          }
+        }
+        // Fallback B: original aggregate call. Kept as a last resort in case
+        // per-size calls all fail (e.g. for OSFA-only items where the size keys
+        // don't match SanMar's catalog spelling). This is the legacy behavior.
         if(!invSuccess){
           for(const tryColor of [prodColor,'']){
             if(invSuccess)break;
@@ -1126,7 +1178,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};const vNextBySize={};
     color.sizes.forEach(s=>{
-      vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;
+      // Skip qty=0 — see comment at the other call sites: live-search aggregate
+      // inventory often reports 0 for sizes that actually have stock, and seeding
+      // 0s here makes every size badge render "0 sm" until a manual refresh.
+      if(s.qty>0)vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;
       if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail;
     });
     const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
@@ -1149,8 +1204,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
     newItem._sizeSells=sizeSell;
     sv('items',[...o.items,newItem]);
-    vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
-    setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
+    // Pre-cache only when the live-search returned real per-size qty data; otherwise
+    // let fetchVendorInventory do a per-size lookup so badges actually populate. If
+    // we cached an empty {} here, the auto-fetch effect would short-circuit on it.
+    if(Object.keys(vInv).length>0){
+      vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
+      setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
+    }else{
+      fetchVendorInventory(style.sku,vId,newItem);
+    }
     setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
   };
   // State for expanded style in search results (shows color picker)
@@ -1187,7 +1249,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};const vNextBySize={};
-    color.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
+    // Only cache sizes with a real inventory hit. SanMar/S&S live-search rows often
+    // come back with qty=0 because the search-time inventory fetch is a single
+    // aggregate call (not per-size); seeding those 0s into the cache makes every
+    // size badge render "0 sm" forever until a per-size refresh happens.
+    color.sizes.forEach(s=>{if(s.qty>0)vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
     const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
     const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
     // Clone source item to preserve decorations, then override SKU/product fields
@@ -1207,8 +1273,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
     clone._sizeSells=sizeSell;
     sv('items',[...o.items,clone]);
-    vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
-    setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
+    if(Object.keys(vInv).length>0){
+      vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
+      setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
+    }else{
+      fetchVendorInventory(style.sku,vId,clone);
+    }
     setCopySkuModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
     nf('📋 Copied decorations from '+it.sku+' → '+style.sku);
   };
@@ -1254,7 +1324,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};const vNextBySize={};
-    color.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
+    // Only cache sizes with a real inventory hit. SanMar/S&S live-search rows often
+    // come back with qty=0 because the search-time inventory fetch is a single
+    // aggregate call (not per-size); seeding those 0s into the cache makes every
+    // size badge render "0 sm" forever until a per-size refresh happens.
+    color.sizes.forEach(s=>{if(s.qty>0)vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail});
     const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
     const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
     const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
@@ -1275,8 +1349,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return next;
     }),updated_at:new Date().toLocaleString()}));
     setDirty(true);
-    vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
-    setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
+    if(Object.keys(vInv).length>0){
+      vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
+      setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
+    }else{
+      // SKU change doesn't trigger the items.length auto-fetch effect, so kick off
+      // a per-size fetch directly so badges populate for the swapped-in SKU.
+      fetchVendorInventory(style.sku,vId,{vendor_id:vId,sku:style.sku,color:color.colorName,sizes:{},available_sizes:availSizes.length?availSizes:fallbackSizes});
+    }
     setCopySkuModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
     nf('🔄 Changed SKU → '+style.sku+' (decorations kept)');
   };
@@ -2320,9 +2400,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <input value={sizingDraft[idx+'_'+sz]??(item.sizes[sz]||'')} onChange={e=>{const k=idx+'_'+sz;const v=e.target.value;setSizingDraft(d=>({...d,[k]:v}))}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraft))return;const v=sizingDraft[k];React.startTransition(()=>{uSz(idx,sz,v);setSizingDraft(d=>{const n={...d};delete n[k];return n})})}} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:((idx+'_'+sz) in sizingDraft?(parseInt(sizingDraft[idx+'_'+sz])||0):(item.sizes[sz]||0))>0?'#0f172a':'#cbd5e1'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
-              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'mt':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#d97706':vi.source==='sm'?'#0891b2':'#7c3aed';const sizeNext=vi.source==='rs'?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'&&vStk>=999?'✓':(vi.source==='rs'&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=srcName+' stock: '+(vStk>=999&&vi.source==='mt'?'Available':vStk.toLocaleString())+((vi.source==='rs'&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):'');return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?(vi.source==='rs'&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
-              {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:8,color:'#059669',minHeight:11}}>...</div>:null;const b2bStk=ai.sizes?.[sz]?.qty;if(b2bStk==null)return<div style={{fontSize:8,color:'transparent',minHeight:11}}>&nbsp;</div>;const need=item.sizes[sz]||0;const color=b2bStk<=0?'#dc2626':(need>0&&b2bStk<need)?'#ca8a04':'#166534';return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:color}} title={'Adidas B2B stock: '+b2bStk+(ai.sizes[sz]?.futureDate?' (restock '+ai.sizes[sz].futureDate+')':'')}>{b2bStk} b2b</div>})()}
-              {item._sizeCosts&&<div style={{fontSize:7,fontWeight:700,minHeight:10,color:'#b45309'}}>{(()=>{const sc=item._sizeCosts[sz];if(!sc||Math.abs(sc-item.nsa_cost)<0.01)return'\u00A0';return'$'+sc.toFixed(2)})()}</div>}
+              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:9,color:'#a78bfa',minHeight:12}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'mt':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#d97706':vi.source==='sm'?'#0891b2':'#7c3aed';const sizeNext=vi.source==='rs'?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'&&vStk>=999?'✓':(vi.source==='rs'&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=srcName+' stock: '+(vStk>=999&&vi.source==='mt'?'Available':vStk.toLocaleString())+((vi.source==='rs'&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):'');return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:vStk<=0?(vi.source==='rs'&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
+              {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:9,color:'#059669',minHeight:12}}>...</div>:null;const b2bStk=ai.sizes?.[sz]?.qty;if(b2bStk==null)return<div style={{fontSize:9,color:'transparent',minHeight:12}}>&nbsp;</div>;const need=item.sizes[sz]||0;const color=b2bStk<=0?'#dc2626':(need>0&&b2bStk<need)?'#ca8a04':'#166534';return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:color}} title={'Adidas B2B stock: '+b2bStk+(ai.sizes[sz]?.futureDate?' (restock '+ai.sizes[sz].futureDate+')':'')}>{b2bStk} b2b</div>})()}
+              {(()=>{
+                // Per-size cost upcharge ($X.XX under larger sizes). Prefer the item's
+                // stored _sizeCosts; fall back to the live vendor pricing map so the
+                // upcharge label persists after reload (the vendor fetch repopulates
+                // vi.price even when _sizeCosts wasn't saved on the item).
+                const vi=vendorInv[item.sku];const costMap=item._sizeCosts||vi?.price;
+                if(!costMap)return null;
+                const sc=costMap[sz];
+                if(!sc||Math.abs(sc-item.nsa_cost)<0.01)return<div style={{fontSize:8,minHeight:11}}>{'\u00A0'}</div>;
+                return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:'#b45309'}}>{'$'+sc.toFixed(2)}</div>;
+              })()}
               </div>)}
             <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>QTY</div>
               <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div>
