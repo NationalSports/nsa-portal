@@ -75,7 +75,12 @@ export function buildSanMarPOPayload({ poNumber, batchPOs, shipTo, orderType = '
 // Render the payload as a SOAP envelope for human review. This is the exact
 // XML the proxy would POST to SanMar's PromoStandards PO binding — minus the
 // password, which is injected server-side.
-export function buildSanMarPOSoap(payload, { username, customerNumber, includePassword = false } = {}) {
+// Tokens the Netlify proxy swaps for the real credentials on a live submit, so
+// the browser never holds the SanMar password. Keep in sync with sanmar-proxy.js.
+export const SANMAR_ID_TOKEN = '__SANMAR_ID__';
+export const SANMAR_PASSWORD_TOKEN = '__SANMAR_PASSWORD__';
+
+export function buildSanMarPOSoap(payload, { username, customerNumber, includePassword = false, forSubmit = false } = {}) {
   const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const lines = (payload.PO?.lineItems || []).map(l => `
         <shar:LineItem>
@@ -89,9 +94,8 @@ export function buildSanMarPOSoap(payload, { username, customerNumber, includePa
   const poRef = esc(payload.PO?.orderReference?.poNumber || '');
   const orderType = esc(payload.PO?.orderType || 'Blank');
   const orderDate = esc(payload.PO?.orderDate || '');
-  const id = esc(customerNumber || payload.id || '');
-  const user = esc(username || '');
-  const pwd = includePassword ? '***INJECTED-BY-PROXY***' : '***REDACTED***';
+  const id = forSubmit ? SANMAR_ID_TOKEN : esc(customerNumber || payload.id || '');
+  const pwd = forSubmit ? SANMAR_PASSWORD_TOKEN : (includePassword ? '***INJECTED-BY-PROXY***' : '***REDACTED***');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
                   xmlns:ns="http://www.promostandards.org/WSDL/PurchaseOrderService/1.0.0/"
@@ -112,6 +116,25 @@ export function buildSanMarPOSoap(payload, { username, customerNumber, includePa
         </shar:LineItemArray>
       </ns:PO>
     </ns:SendPORequest>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+}
+
+// Read-only PromoStandards PO operation: lists the order types the supplier
+// accepts. Useful as a zero-risk live connectivity/auth check against the PO
+// binding — it never places an order. Credentials are injected by the proxy.
+export function buildSanMarGetSupportedOrderTypesSoap() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:ns="http://www.promostandards.org/WSDL/PurchaseOrderService/1.0.0/"
+                  xmlns:shar="http://www.promostandards.org/WSDL/PurchaseOrderService/1.0.0/SharedObjects/">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <ns:GetSupportedOrderTypesRequest>
+      <shar:wsVersion>1.0.0</shar:wsVersion>
+      <shar:id>${SANMAR_ID_TOKEN}</shar:id>
+      <shar:password>${SANMAR_PASSWORD_TOKEN}</shar:password>
+    </ns:GetSupportedOrderTypesRequest>
   </soapenv:Body>
 </soapenv:Envelope>`;
 }

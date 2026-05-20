@@ -2,11 +2,14 @@
 // Renders the line items that would be sent + the raw SOAP envelope so a
 // human can verify the payload before we wire up the real network call.
 import React, { useMemo, useState } from 'react';
-import { buildSanMarPOPayload, buildSanMarPOSoap } from './sanmarPO';
+import { buildSanMarPOPayload, buildSanMarPOSoap, buildSanMarGetSupportedOrderTypesSoap } from './sanmarPO';
+import { sanmarPoCall } from './vendorApis';
 
-export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', onClose }) {
+export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', onClose, allowSubmit = false }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'xml'
   const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false); // 'test' | 'submit' | false
+  const [result, setResult] = useState(null); // { kind:'test'|'submit', ok:bool, message, data }
 
   const { payload, soap, lines, totals } = useMemo(() => {
     const p = buildSanMarPOPayload({
@@ -24,6 +27,38 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     navigator.clipboard?.writeText(soap);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  };
+
+  // Read-only connectivity/auth check — never places an order.
+  const testConnection = async () => {
+    setBusy('test'); setResult(null);
+    try {
+      const data = await sanmarPoCall('getSupportedOrderTypes', buildSanMarGetSupportedOrderTypesSoap());
+      setResult({ kind: 'test', ok: true, message: 'PO binding reachable and credentials accepted.', data });
+    } catch (e) {
+      setResult({ kind: 'test', ok: false, message: e.message || 'Connection test failed.' });
+    } finally { setBusy(false); }
+  };
+
+  // LIVE submit — places a real purchase order with SanMar. Gated behind an
+  // explicit confirmation; there is no test mode on production credentials.
+  const submitLive = async () => {
+    const ok = window.confirm(
+      'PLACE A REAL ORDER WITH SANMAR?\n\n' +
+      `PO ${poNumber} · ${totals.totalQty} units · $${totals.totalCost.toFixed(2)}\n\n` +
+      'This sends a live PromoStandards sendPO to SanMar. There is no test mode — ' +
+      'if it succeeds, this is a real, billable order. Only continue if you intend to order.'
+    );
+    if (!ok) return;
+    setBusy('submit'); setResult(null);
+    try {
+      const submitSoap = buildSanMarPOSoap(payload, { forSubmit: true });
+      const data = await sanmarPoCall('sendPO', submitSoap);
+      const txn = data.transactionId || data.TransactionId || (data.PO && data.PO.transactionId) || '';
+      setResult({ kind: 'submit', ok: true, message: 'Order submitted to SanMar' + (txn ? ` — transaction ${txn}` : '.'), data });
+    } catch (e) {
+      setResult({ kind: 'submit', ok: false, message: e.message || 'Submit failed.' });
+    } finally { setBusy(false); }
   };
 
   return (
@@ -94,9 +129,32 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
             </div>
           )}
         </div>
+        {result && (
+          <div style={{ margin: '0 0 4px', padding: 10, borderRadius: 8, fontSize: 12,
+            background: result.ok ? '#f0fdf4' : '#fef2f2',
+            border: '1px solid ' + (result.ok ? '#bbf7d0' : '#fecaca'),
+            color: result.ok ? '#166534' : '#b91c1c' }}>
+            <strong>{result.ok ? '✓ ' : '✕ '}{result.kind === 'test' ? 'Connection test' : 'Live submit'}:</strong> {result.message}
+          </div>
+        )}
         <div className="modal-footer">
-          <span style={{ flex: 1, fontSize: 11, color: '#94a3b8' }}>Live submit will be enabled in a follow-up after payload review.</span>
-          <button className="btn btn-secondary" onClick={onClose}>Close</button>
+          {allowSubmit ? (
+            <>
+              <button className="btn btn-secondary" disabled={!!busy} onClick={testConnection}>
+                {busy === 'test' ? 'Testing…' : '🔌 Test PO Connection'}
+              </button>
+              <span style={{ flex: 1, fontSize: 11, color: '#94a3b8' }}>Test is read-only. Submit places a real order.</span>
+              <button className="btn btn-secondary" onClick={onClose}>Close</button>
+              <button className="btn btn-primary" style={{ background: '#dc2626', borderColor: '#dc2626' }} disabled={!!busy || lines.length === 0} onClick={submitLive}>
+                {busy === 'submit' ? 'Submitting…' : '⚠ Submit Live Order'}
+              </button>
+            </>
+          ) : (
+            <>
+              <span style={{ flex: 1, fontSize: 11, color: '#94a3b8' }}>Live submit will be enabled in a follow-up after payload review.</span>
+              <button className="btn btn-secondary" onClick={onClose}>Close</button>
+            </>
+          )}
         </div>
       </div>
     </div>
