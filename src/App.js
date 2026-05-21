@@ -16602,10 +16602,16 @@ export default function App(){
       {/* ═══ ARTIST JOB DETAIL POPUP — click a Kanban card to open ═══ */}
       {artJobDetailModal&&(()=>{
         const j=artJobDetailModal;
-        const so=j.so||sos.find(s=>s.id===j.soId);
+        const so=sos.find(s=>s.id===(j.soId||j.so?.id))||j.so;
         if(!so)return null;
         const c2=cust.find(x=>x.id===so.customer_id);
-        const allArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
+        const allArtIds=(()=>{const ids=new Set();
+          (j._art_ids||[j.art_file_id].filter(Boolean)).forEach(id=>ids.add(id));
+          (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;
+            safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)});
+          });
+          return[...ids];
+        })();
         const allArtFiles=allArtIds.map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
         const af=j.artFile||allArtFiles[0]||null;
         const additionalArtFiles=allArtFiles.slice(1);
