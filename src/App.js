@@ -600,7 +600,10 @@ const _dbLoad = async (opts={}) => {
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
       const items=invItems.filter(i=>i.invoice_id===inv.id).map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description}));
-      return{...inv,payments,items:items.length?items:undefined}});
+      // Hydration flags so the save can tell a deliberate removal from items/payments that simply never loaded
+      // (a timed-out invoice_items / invoice_payments query). _hydratedPayRefs lets payments be restore-merged by ref.
+      const _hydratedPayRefs=[...new Set(payments.map(p=>p.ref).filter(Boolean))];
+      return{...inv,payments,items:items.length?items:undefined,_itemsHydrated:!_lastLoadTimedOut.has('invoice_items'),_paymentsHydrated:!_lastLoadTimedOut.has('invoice_payments'),_hydratedPayRefs}});
     // NetSuite historical invoices — read-only; reshape invoice_date → date and tag as historical.
     const hist_invoices=d(rHistInvs).map(hi=>({
       id:hi.document_number||hi.id,
@@ -1197,9 +1200,34 @@ const _dbSaveInvoice = async (inv) => {
       const{error:invErr2}=await supabase.from('invoices').upsert(coreRow,{onConflict:'id'});
       if(invErr2){console.error('[DB] invoices upsert failed (core):',invErr2.message);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoices: '+invErr2.message);_persistFailedIds();return false}
     }
+    // Payment preservation: payments are financial records — never let a stale/timed-out client drop one another
+    // user (or this user, before a clean load) recorded. Read the live DB payments and re-inject any ref the client
+    // was never aware of, so only a payment the client loaded and then deleted is actually removed.
+    let _payments=payments;
+    {
+      const{data:_dbPays,error:_dbPayErr}=await supabase.from('invoice_payments').select('*').eq('invoice_id',inv.id);
+      if(_dbPayErr){
+        console.error('[DB] SAFETY: Blocking invoice save — failed to read existing payments for',inv.id,':',_dbPayErr.message);
+        if(_dbNotify)_dbNotify('Save blocked — could not verify existing payments. Please reload the page.','error');
+        _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_payments SELECT errored: '+_dbPayErr.message);_persistFailedIds();return false;
+      }
+      if(_dbPays&&_dbPays.length){
+        const _clientRefs=new Set((payments||[]).map(p=>p.ref).filter(Boolean));
+        const _knownRefs=new Set([..._clientRefs,...(Array.isArray(inv._hydratedPayRefs)?inv._hydratedPayRefs:[])]);
+        const _payHydrated=inv._paymentsHydrated!==false;
+        const _restore=[];
+        _dbPays.forEach(row=>{
+          const ref=row.ref;
+          if(ref&&_clientRefs.has(ref))return;// client still holds it — it re-saves its own copy
+          if(_payHydrated&&ref&&_knownRefs.has(ref))return;// deliberately deleted from a clean load
+          _restore.push({amount:row.amount,method:row.method,ref:row.ref,date:row.date});
+        });
+        if(_restore.length){console.warn('[DB] Restored',_restore.length,'undeleted payment(s) for',inv.id,'(stale/foreign client state)');_payments=[...(payments||[]),..._restore];}
+      }
+    }
     // Sync payments: upsert current, then delete removed (avoids DELETE+INSERT race condition)
-    if(payments?.length){
-      const payRows=payments.map((p,i)=>({invoice_id:inv.id,amount:p.amount,method:p.method,ref:p.ref||('pay_'+i),date:p.date,cc_fee:p.cc_fee}));
+    if(_payments?.length){
+      const payRows=_payments.map((p,i)=>({invoice_id:inv.id,amount:p.amount,method:p.method,ref:p.ref||('pay_'+i),date:p.date,cc_fee:p.cc_fee}));
       const{error:payErr}=await supabase.from('invoice_payments').upsert(payRows,{onConflict:'invoice_id,ref'});
       if(payErr){
         // Fallback: DELETE+INSERT if upsert constraint doesn't exist
@@ -1213,9 +1241,33 @@ const _dbSaveInvoice = async (inv) => {
         if(toDelete.length)await supabase.from('invoice_payments').delete().in('id',toDelete);
       }
     }
-    if(items?.length){
-      await supabase.from('invoice_items').delete().eq('invoice_id',inv.id);
-      await supabase.from('invoice_items').insert(items.map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description,invoice_id:inv.id})));
+    // Invoice items have no stable client id, so they can't be restore-merged like payments. Instead, fail-closed:
+    // block the save if the client would drop items it never loaded (a timed-out invoice_items query yields fewer
+    // items than the DB). A clean load that legitimately removed items still goes through.
+    {
+      const{count:_dbItemCount,error:_dbItemErr}=await supabase.from('invoice_items').select('id',{count:'exact',head:true}).eq('invoice_id',inv.id);
+      if(_dbItemErr){
+        console.error('[DB] SAFETY: Blocking invoice save — failed to read existing items for',inv.id,':',_dbItemErr.message);
+        if(_dbNotify)_dbNotify('Save blocked — could not verify existing invoice items. Please reload the page.','error');
+        _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items COUNT errored: '+_dbItemErr.message);_persistFailedIds();return false;
+      }
+      const _clientItemCount=(items||[]).length;
+      if((_dbItemCount||0)>0&&_clientItemCount<(_dbItemCount||0)&&inv._itemsHydrated===false){
+        console.error('[DB] SAFETY: Blocking invoice save —',_clientItemCount,'client item(s) vs',_dbItemCount,'in DB for',inv.id,'(items not hydrated this session)');
+        if(_dbNotify)_dbNotify('Save blocked — invoice item data would be lost. Please reload the page.','error');
+        _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items hydration safety: client '+_clientItemCount+' < DB '+_dbItemCount);_persistFailedIds();return false;
+      }
+      if(items?.length){
+        await supabase.from('invoice_items').delete().eq('invoice_id',inv.id);
+        const _itemRows=items.map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description,invoice_id:inv.id}));
+        const{error:_itemInsErr}=await supabase.from('invoice_items').insert(_itemRows);
+        if(_itemInsErr){console.error('[DB] invoice_items insert failed:',_itemInsErr.message);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items: '+_itemInsErr.message);_persistFailedIds();return false}
+        const{count:_verifyItemCount}=await supabase.from('invoice_items').select('id',{count:'exact',head:true}).eq('invoice_id',inv.id);
+        if((_verifyItemCount||0)<_itemRows.length){
+          console.error('[DB] SAFETY: invoice item insert verification failed — expected',_itemRows.length,'got',_verifyItemCount);
+          _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items: only '+(_verifyItemCount||0)+' of '+_itemRows.length+' rows persisted');_persistFailedIds();return false;
+        }
+      }
     }
     _dbSaveFailedIds.delete(inv.id);_clearSaveError(inv.id);_persistFailedIds();return true;
   }catch(e){console.error('[DB] save invoice:',e);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,e.message||String(e));_persistFailedIds();return false}});
