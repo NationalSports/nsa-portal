@@ -3496,15 +3496,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Only cross-pollinate art from the parent account; sibling sub-accounts are segmented (e.g. OLu Basketball shouldn't see OLu Football art).
       const custIds2=parentCust2?.parent_id?[parentCust2.parent_id,custId]:[custId];
       const prevArtList=[];
-      const _seenKeys=new Set();
+      const _byKey=new Map();
       const _dedupKey=a=>(a.id||'')+'|'+(a.name||'').toLowerCase().trim()+'|'+(a.deco_type||'')+'|'+(a.art_size||'')+'|'+((a.color_ways||[]).length);
+      // Merge all file buckets across sources so the offered logo always carries every mockup AND production file,
+      // even if one source (e.g. a library copy saved before the seps were uploaded) is missing some.
+      const _fKey=f=>typeof f==='string'?f:(f?.url||'');
+      const _mergeFiles=(a=[],b=[])=>{const seen=new Set((a||[]).map(_fKey));const out=[...(a||[])];(b||[]).forEach(f=>{const k=_fKey(f);if(k&&!seen.has(k)){seen.add(k);out.push(f)}});return out};
+      const _pushArt=(art,meta)=>{const k=_dedupKey(art);
+        if(_byKey.has(k)){const cur=_byKey.get(k);
+          cur.prod_files=_mergeFiles(cur.prod_files,art.prod_files);
+          cur.mockup_files=_mergeFiles(cur.mockup_files,art.mockup_files);
+          cur.files=_mergeFiles(cur.files,art.files);
+          const im={...(cur.item_mockups||{})};Object.entries(art.item_mockups||{}).forEach(([ik,arr])=>{im[ik]=_mergeFiles(im[ik],arr)});cur.item_mockups=im;
+        }else{const entry={...art,prod_files:[...(art.prod_files||[])],mockup_files:[...(art.mockup_files||[])],files:[...(art.files||[])],item_mockups:{...(art.item_mockups||{})},...meta};_byKey.set(k,entry);prevArtList.push(entry)}};
       // Include customer-level art library
-      custIds2.forEach(cid=>{const c=allCustomers.find(cc=>cc.id===cid);(c?.art_files||[]).forEach(art=>{const k=_dedupKey(art);if(!_seenKeys.has(k)){_seenKeys.add(k);prevArtList.push({...art,_so_id:'Library',_so_memo:c.alpha_tag||c.name||''})}})});
+      custIds2.forEach(cid=>{const c=allCustomers.find(cc=>cc.id===cid);(c?.art_files||[]).forEach(art=>_pushArt(art,{_so_id:'Library',_so_memo:c.alpha_tag||c.name||''}))});
       (allOrders||[]).filter(so=>custIds2.includes(so.customer_id)&&so.id!==o.id).forEach(so=>{
-        (so.art_files||[]).forEach(art=>{
-          const k=_dedupKey(art);
-          if(!_seenKeys.has(k)){_seenKeys.add(k);prevArtList.push({...art,_so_id:so.id,_so_memo:so.memo||''})}
-        });
+        (so.art_files||[]).forEach(art=>_pushArt(art,{_so_id:so.id,_so_memo:so.memo||''}));
       });
       return<div className="modal-overlay" onClick={()=>setShowPrevArt(false)}><div className="modal" style={{maxWidth:700}} onClick={e=>e.stopPropagation()}>
         <div className="modal-header"><h2>📂 Previous Artwork</h2><button className="modal-close" onClick={()=>setShowPrevArt(false)}>×</button></div>
@@ -3538,12 +3546,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <div style={{display:'flex',flexDirection:'column',gap:4,alignItems:'flex-end',flexShrink:0}}>
                     {alreadyAdded?<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>Already added</span>:
                     <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>{
-                      const newArt={...art,id:'af'+Date.now(),uploaded:new Date().toLocaleDateString()};
+                      const newArt={...JSON.parse(JSON.stringify(art)),id:'af'+Date.now(),uploaded:new Date().toLocaleDateString()};
                       delete newArt._so_id;delete newArt._so_memo;
                       sv('art_files',[...af,newArt]);
-                      nf('Added "'+art.name+'" from '+art._so_id);
+                      const _pf=(newArt.prod_files||[]).length;
+                      nf('Added "'+art.name+'" from '+art._so_id+(_pf?' — incl. '+_pf+' production file'+(_pf>1?'s':''):''));
                     }}>+ Add</button>}
-                    {mockups.length>0&&<span style={{fontSize:10,color:'#2563eb'}}>{mockups.length} file(s)</span>}
+                    {mockups.length>0&&<span style={{fontSize:10,color:'#2563eb'}}>{mockups.length} mockup(s)</span>}
+                    {(art.prod_files||[]).length>0&&<span style={{fontSize:10,color:'#16a34a',fontWeight:600}}>🏭 {art.prod_files.length} prod file(s)</span>}
                   </div>
                 </div>
               </div>})}
