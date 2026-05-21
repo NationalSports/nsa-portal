@@ -36,6 +36,12 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   const [pc, setPc] = useState({ status: 'idle', rows: [], error: null, applied: false }); // price check
   const [sub, setSub] = useState({ status: 'idle', msg: '', txn: '', raw: '' }); // submission
 
+  // Live submit + price-apply are only enabled when the host wires the callbacks
+  // (the Batch PO Queue page). Other mounts (e.g. the order-editor "batch ready"
+  // popup) render this as a read-only preview so they can't place an unrecorded order.
+  const liveSubmit = typeof onSubmitted === 'function';
+  const canApply = typeof onApplyPrices === 'function';
+
   const basePayload = useMemo(
     () => buildSanMarPOPayload({ poNumber, batchPOs, customerNumber: '' }),
     [batchPOs, poNumber]
@@ -182,18 +188,23 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 900, maxHeight: '90vh', overflow: 'auto' }}>
         <div className="modal-header">
-          <h2>📦 {vendorName} — Submit Purchase Order</h2>
+          <h2>{liveSubmit ? `📦 ${vendorName} — Submit Purchase Order` : `🔍 ${vendorName} PO Preview`}</h2>
           <button className="modal-close" onClick={onClose}>x</button>
         </div>
         <div className="modal-body">
-          {!done && (
+          {!done && liveSubmit && (
             <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
               <strong style={{ color: '#b91c1c' }}>⚠ Live submission.</strong> Clicking <strong>Submit to {vendorName}</strong> below transmits this PO to {vendorName} via the PromoStandards sendPO service. Credentials are injected server-side. Verify the line items and pricing first.
             </div>
           )}
+          {!liveSubmit && (
+            <div style={{ padding: 10, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
+              <strong style={{ color: '#b45309' }}>Preview only.</strong> Nothing is sent from here. To verify pricing and submit the order to {vendorName}, open it from the <strong>Batch PO Queue</strong> page.
+            </div>
+          )}
 
           {/* Price verification */}
-          <PriceCheck pc={pc} onApply={applyPrices} onRecheck={verifyPrices} />
+          <PriceCheck pc={pc} onApply={applyPrices} onRecheck={verifyPrices} canApply={canApply} />
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8, margin: '12px 0' }}>
             <Stat label="PO Number" value={poNumber} mono />
@@ -270,8 +281,8 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
           <span style={{ flex: 1, fontSize: 11, color: '#94a3b8' }}>
             {pc.status === 'loading' ? 'Checking SanMar pricing…' : pc.applied ? 'Prices updated to SanMar live pricing.' : ''}
           </span>
-          <button className="btn btn-secondary" onClick={onClose}>{done ? 'Close' : 'Cancel'}</button>
-          {!done && (
+          <button className="btn btn-secondary" onClick={onClose}>{done ? 'Close' : liveSubmit ? 'Cancel' : 'Close'}</button>
+          {!done && liveSubmit && (
             <button className="btn btn-primary" style={{ background: '#16a34a', borderColor: '#16a34a' }} disabled={submitting || lines.length === 0} onClick={submit}>
               {submitting ? 'Submitting…' : `🚀 Submit to ${vendorName}`}
             </button>
@@ -282,7 +293,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   );
 }
 
-function PriceCheck({ pc, onApply, onRecheck }) {
+function PriceCheck({ pc, onApply, onRecheck, canApply }) {
   if (pc.status === 'loading') {
     return <div style={{ padding: 10, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 12, color: '#64748b' }}>⏳ Verifying line costs against SanMar live program pricing…</div>;
   }
@@ -322,7 +333,7 @@ function PriceCheck({ pc, onApply, onRecheck }) {
           })}
         </tbody>
       </table>
-      <button className="btn btn-sm btn-primary" style={{ marginTop: 8 }} onClick={onApply}>Update {pc.rows.length} price{pc.rows.length !== 1 ? 's' : ''} to SanMar pricing</button>
+      {canApply && <button className="btn btn-sm btn-primary" style={{ marginTop: 8 }} onClick={onApply}>Update {pc.rows.length} price{pc.rows.length !== 1 ? 's' : ''} to SanMar pricing</button>}
     </div>
   );
 }
