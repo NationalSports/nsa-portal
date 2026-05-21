@@ -270,7 +270,7 @@ export const NSA_DEFAULTS={name:'National Sports Apparel',legal:'National Sports
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
 export const NSA={...NSA_DEFAULTS};
 
-export const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',art_complete:'Art Complete'};
+export const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Art Approved — Waiting',art_complete:'Art Complete'};
 export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files'};
 export const ART_FILE_SC={waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'}};
 
