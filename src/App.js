@@ -17403,21 +17403,32 @@ export default function App(){
                 const {files,assignments}=artProdAssignModal;
                 const allAssigned=files.every((_,i)=>assignments[i]);
                 const setAssignment=(idx,aid)=>setArtProdAssignModal(m=>m?{...m,assignments:{...m.assignments,[idx]:aid}}:m);
+                const _artThumb=(a)=>{const cands=[...(a?.mockup_files||a?.files||[]),...Object.values(a?.item_mockups||{}).flat()].filter(Boolean);
+                  for(const f of cands){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f))return u;if(_isPdfUrl(u,f)){const pt=_cloudinaryPdfThumb(u);if(pt)return pt}}
+                  return a?.image_url&&_isImgUrl(a.image_url)?a.image_url:''};
                 return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(15,23,42,0.6)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:20}} onClick={()=>!artJobDetailUploading&&setArtProdAssignModal(null)}>
-                  <div style={{background:'white',borderRadius:12,padding:20,maxWidth:560,width:'100%',maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
+                  <div style={{background:'white',borderRadius:12,padding:20,maxWidth:620,width:'100%',maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
                     <div style={{fontSize:16,fontWeight:800,color:'#1e293b',marginBottom:4}}>Which art does each file belong to?</div>
-                    <div style={{fontSize:12,color:'#64748b',marginBottom:14}}>This job has {allArtFiles.length} art pieces. Pick the right one for each file so it saves to the correct folder.</div>
-                    <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
-                      {files.map((f,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:10,background:'#f8fafc',border:'1px solid '+(assignments[i]?'#bbf7d0':'#e2e8f0'),borderRadius:8}}>
-                        <span style={{fontSize:18}}>📁</span>
-                        <div style={{flex:1,minWidth:0}}>
-                          <div style={{fontSize:12,fontWeight:600,color:'#0f172a',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={f.name}>{f.name}</div>
-                          <div style={{fontSize:10,color:'#94a3b8'}}>{(f.size/1024).toFixed(0)} KB</div>
+                    <div style={{fontSize:12,color:'#64748b',marginBottom:14}}>This job has {allArtFiles.length} art pieces. Tap the matching art for each file so it saves to the correct folder.</div>
+                    <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:16}}>
+                      {files.map((f,i)=><div key={i} style={{padding:10,background:'#f8fafc',border:'1px solid '+(assignments[i]?'#bbf7d0':'#e2e8f0'),borderRadius:8}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                          <span style={{fontSize:18}}>📁</span>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontSize:12,fontWeight:600,color:'#0f172a',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={f.name}>{f.name}</div>
+                            <div style={{fontSize:10,color:'#94a3b8'}}>{(f.size/1024).toFixed(0)} KB</div>
+                          </div>
                         </div>
-                        <select className="form-select" style={{width:200,fontSize:12}} value={assignments[i]||''} onChange={e=>setAssignment(i,e.target.value)}>
-                          <option value="">— Pick art —</option>
-                          {allArtFiles.map(a=><option key={a.id} value={a.id}>{a.name||'Unnamed'}{a.deco_type?' ('+a.deco_type.replace(/_/g,' ')+')':''}</option>)}
-                        </select>
+                        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                          {allArtFiles.map(a=>{const sel=assignments[i]===a.id;const thumb=_artThumb(a);
+                            return<button key={a.id} type="button" onClick={()=>setAssignment(i,a.id)} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:4,padding:6,width:100,background:sel?'#dcfce7':'white',border:'2px solid '+(sel?'#22c55e':'#e2e8f0'),borderRadius:8,cursor:'pointer'}}>
+                              <div style={{width:84,height:84,borderRadius:6,background:'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden'}}>
+                                {thumb?<img src={thumb} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:<span style={{fontSize:26}}>🎨</span>}
+                              </div>
+                              <div style={{fontSize:10,fontWeight:700,color:'#0f172a',textAlign:'center',lineHeight:1.2,maxWidth:88,overflow:'hidden',textOverflow:'ellipsis',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical'}}>{a.name||'Unnamed'}</div>
+                              {a.deco_type&&<div style={{fontSize:9,color:'#64748b'}}>{a.deco_type.replace(/_/g,' ')}</div>}
+                            </button>;})}
+                        </div>
                       </div>)}
                     </div>
                     <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
