@@ -19,6 +19,8 @@ const WSDL_MAP = {
   pricing:        'https://ws.sanmar.com:8080/SanMarWebService/SanMarPricingServicePort',
   promostandards: 'https://ws.sanmar.com:8080/promostandards/InventoryServiceBinding',
   invoice:        'https://ws.sanmar.com:8080/SanMarWebService/InvoicePort',
+  // PromoStandards Purchase Order Service (sendPO / getSupportedOrderTypes).
+  po:             'https://ws.sanmar.com:8080/promostandards/POServiceBinding',
 };
 
 // Build a SOAP envelope for SanMar methods that use complex-type args
@@ -226,6 +228,17 @@ exports.handler = async (event) => {
           customerNumber, username, password,
           parsed.style || '', parsed.color || '', parsed.size || ''
         ]);
+      } else if (service === 'po') {
+        // PromoStandards Purchase Order Service. The client sends a fully-built
+        // SOAP envelope with credential placeholders so secrets never reach the
+        // browser; inject the real id/password here. PromoStandards `id` is the
+        // web-service username (override via SANMAR_PO_ID if SanMar specifies the
+        // numeric customer number instead).
+        const poXml = parsed.xml || '';
+        const poId = process.env.SANMAR_PO_ID || username;
+        soapBody = String(poXml)
+          .split('__SANMAR_PASSWORD__').join(escapeXml(password))
+          .split('__SANMAR_ID__').join(escapeXml(poId));
       } else {
         soapBody = buildSoapEnvelope(action, parsed, customerNumber, username, password);
       }
@@ -242,10 +255,13 @@ exports.handler = async (event) => {
     }
   }
 
+  // PromoStandards PO binding expects a populated SOAPAction; the legacy
+  // SanMar services accept an empty one.
+  const soapAction = service === 'po' ? '"' + action + '"' : '""';
   const doRequest = async (body) => {
     const response = await fetch(baseUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'text/xml;charset=UTF-8', 'SOAPAction': '""' },
+      headers: { 'Content-Type': 'text/xml;charset=UTF-8', 'SOAPAction': soapAction },
       body,
     });
     const xml = await response.text();
