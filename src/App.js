@@ -6868,7 +6868,7 @@ export default function App(){
       nf('🏭 '+j.id+' added to Production Board');
     };
 
-    const ART_STATUSES=[['needs_art','Needs Art'],['art_requested','Art Requested'],['art_in_progress','In Progress'],['waiting_approval','Waiting Approval'],['production_files_needed','Prod Files Needed'],['art_complete','Art Complete']];
+    const ART_STATUSES=[['needs_art','Needs Art'],['art_requested','Art Requested'],['art_in_progress','In Progress'],['waiting_approval','Waiting Approval'],['production_files_needed','Art Approved — Waiting'],['art_complete','Art Complete']];
     const ITEM_STATUSES=[['need_to_order','Need to Order'],['partially_received','Partially Received'],['items_received','Items Received']];
     const chipStyle=(active,sc)=>({fontSize:10,padding:'3px 10px',borderRadius:12,border:'1px solid '+(active?sc?.c||'#2563eb':'#e2e8f0'),
       background:active?(sc?.bg||'#eff6ff'):'white',color:active?(sc?.c||'#2563eb'):'#94a3b8',cursor:'pointer',fontWeight:600,display:'inline-flex',alignItems:'center',gap:4});
