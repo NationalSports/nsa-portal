@@ -839,14 +839,25 @@ const _dbSaveSOInner = async (so) => {
     const finalUpdatedAt=soRow.updated_at;
     const soRowInitial={..._pick(soRow,_soCols)};
     // Try to preserve existing updated_at for the initial upsert (only bump it after children are saved)
-    const{data:existingSO}=await supabase.from('sales_orders').select('updated_at').eq('id',so.id).single();
+    const{data:existingSO,error:existErr}=await supabase.from('sales_orders').select('updated_at').eq('id',so.id).maybeSingle();
     if(existingSO)soRowInitial.updated_at=existingSO.updated_at;
+    // Confident-new only when the lookup succeeded AND returned no row — never on a network/SELECT error,
+    // otherwise we could purge a live order's children below.
+    const _isNewSO=!existErr&&!existingSO;
     let{error:soErr}=await supabase.from('sales_orders').upsert(soRowInitial,{onConflict:'id'});
     if(soErr){
       const coreSoRow={};Object.keys(soRowInitial).forEach(k=>{if(!_soExtraCols.has(k))coreSoRow[k]=soRowInitial[k]});
       const retry=await supabase.from('sales_orders').upsert(coreSoRow,{onConflict:'id'});
       if(retry.error){console.error('[DB] sales_orders upsert failed:',retry.error.message);saveFailed=true;_failMsg='sales_orders: '+retry.error.message}
       else console.warn('[DB] SO saved with core columns only')
+    }
+    // Recycled-number guard: a brand-new SO id can collide with a deleted order whose number was reused.
+    // Any so_jobs/so_art_files still sitting under this id are orphans from that prior order — purge them
+    // before we write this order's real children, so they can't silently re-attach by so_id. (Orphan
+    // items/decorations are already removed by the unconditional so_items delete further below.)
+    if(_isNewSO){
+      await supabase.from('so_jobs').delete().eq('so_id',so.id);
+      await supabase.from('so_art_files').delete().eq('so_id',so.id);
     }
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
     const _oldItemsResp=await supabase.from('so_items').select('id,item_index,sku').eq('so_id',so.id);
@@ -938,14 +949,11 @@ const _dbSaveSOInner = async (so) => {
         const toDelete=(existingJobs||[]).filter(ej=>!currentJobIds.includes(ej.id)).map(ej=>ej.id);
         if(toDelete.length)await supabase.from('so_jobs').delete().eq('so_id',so.id).in('id',toDelete);
       }
-    }else if(Array.isArray(jobs)&&so._jobsHydrated!==false){
-      // All jobs removed (jobs === []). Reconcile by deleting this SO's job rows. This also clears orphaned
-      // jobs left behind under a recycled SO number, which would otherwise re-attach by so_id.
-      // Gated on _jobsHydrated so a timed-out so_jobs load (which also yields []) can't wipe real jobs.
-      await supabase.from('so_jobs').delete().eq('so_id',so.id);
     }
-    // If jobs is undefined/null (not hydrated), leave existing DB jobs untouched to prevent accidental data loss
-    // (e.g. from transient 404 on so_jobs table causing empty reload)
+    // If jobs is empty/undefined, leave existing DB jobs untouched to prevent accidental data loss.
+    // We intentionally do NOT delete jobs just because the in-memory array is empty: syncJobs rebuilds the
+    // jobs list from item decorations, so a transiently-missing decoration would otherwise wipe a submitted
+    // job. Orphaned jobs from a recycled SO number are cleaned at order creation instead (see new-SO purge).
     await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
     // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition)
     if(art_files?.length){

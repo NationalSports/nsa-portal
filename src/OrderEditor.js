@@ -1710,7 +1710,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       delete nj._hasSplitOverrides;
     });
     // Released jobs aren't in newJobs (their items were skipped); preserve them as-is.
-    return[...newJobs,...splitJobs,...releasedJobs];
+    // Gate: a job that was already submitted to art must not fall off the SO just because its item
+    // decoration went missing (e.g. a decoration that was dropped on a bad save). As long as the job's
+    // artwork still exists in the SO's Art Library, keep the job so it stays visible and isn't lost.
+    const _kept=[...newJobs,...splitJobs,...releasedJobs];
+    const _keptIds=new Set(_kept.map(j=>j.id));
+    const _keptKeys=new Set(_kept.map(j=>j.key));
+    const orphanedSubmitted=safeJobs(o).filter(j=>{
+      if(!j||j._released||j.split_from)return false;// already handled above
+      if(_keptIds.has(j.id)||_keptKeys.has(j.key))return false;// already represented by a rebuilt job
+      const artIds=(Array.isArray(j._art_ids)&&j._art_ids.length?j._art_ids:[j.art_file_id]).filter(Boolean);
+      const hasRealArt=artIds.some(aid=>aid&&aid!=='__tbd'&&af.some(a=>a.id===aid));
+      const wasSubmitted=j.art_status&&j.art_status!=='needs_art';
+      return hasRealArt&&wasSubmitted;
+    });
+    return[..._kept,...orphanedSubmitted];
   },[o,af]);// eslint-disable-line
 
   // Auto-sync jobs whenever decorations or items change (does NOT mark dirty — auto-sync is not a user edit)
