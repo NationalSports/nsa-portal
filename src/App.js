@@ -13412,11 +13412,11 @@ export default function App(){
                   <span style={{fontSize:20,fontWeight:900,color:'#1e40af'}}>{pickId}</span>
                   <span className={`badge ${activePick?.status==='pulled'?'badge-green':'badge-amber'}`} style={{fontSize:11}}>
                     {activePick?.status==='pulled'?'✓ Pulled':'Needs Pull'}</span>
-                  {isMulti&&<span style={{fontSize:11,padding:'2px 8px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{subs.length} items</span>}
+                  {pickItems.length>1&&<span style={{fontSize:11,padding:'2px 8px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{pickItems.length} items</span>}
                   {t.urgent&&<span style={{fontSize:11,padding:'2px 8px',borderRadius:8,background:'#fee2e2',color:'#dc2626',fontWeight:700}}>🔥 Rush — {t.daysOut}d</span>}
                 </div>
                 <div style={{display:'flex',gap:12,fontSize:12,color:'#64748b',flexWrap:'wrap'}}>
-                  <span>SO: <strong style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{setESOTab('items');setESOScrollItem(subs[0].itemIdx);setESO(so);setESOC(c);setPg('orders')}}>{t.soId}</strong></span>
+                  <span>SO: <strong style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{setESOTab('items');setESOScrollItem(pickItems[0].itemIdx);setESO(so);setESOC(c);setPg('orders')}}>{t.soId}</strong></span>
                   <span>Customer: <strong style={{color:'#0f172a'}}>{t.cName}</strong></span>
                   <span>Rep: {t.rep}</span>
                   {activePick?.created_at&&<span>Created: {activePick.created_at}</span>}
@@ -13586,7 +13586,7 @@ export default function App(){
           {/* Pick History — first item's pick lines (representative for the IF) */}
           {allPicks.length>0&&<div className="card" style={{marginBottom:12}}>
             <div style={{padding:'12px 18px'}}>
-              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Pick History{isMulti?' — '+subs[0].sku:''}</div>
+              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Pick History{pickItems.length>1?' — '+pickItems[0].sku:''}</div>
               {(()=>{const allSzKeys=[...new Set(allPicks.flatMap(pk=>Object.keys(pk).filter(k=>SZ_ORD.includes(k)&&pk[k]>0)))].sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));return allPicks.map((pk,pi)=>{const st=pk.status||'pick';
                 return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:4,padding:'4px 8px',borderRadius:4,background:st==='pulled'?'#f0fdf4':'#fffbeb'}}>
                   <span style={{fontSize:11,fontWeight:700,color:st==='pulled'?'#166534':'#92400e',minWidth:56}}>{pk.pick_id||'PICK'}</span>
@@ -13756,7 +13756,7 @@ export default function App(){
 
           {/* Actions */}
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-            <button className="btn btn-secondary" style={{fontSize:12,padding:'8px 16px'}} onClick={()=>{setESOTab('items');setESOScrollItem(subs[0].itemIdx);setESO(so);setESOC(c);setPg('orders')}}>
+            <button className="btn btn-secondary" style={{fontSize:12,padding:'8px 16px'}} onClick={()=>{setESOTab('items');setESOScrollItem(pickItems[0].itemIdx);setESO(so);setESOC(c);setPg('orders')}}>
               Open Sales Order</button>
           </div>
         </div>})()}
