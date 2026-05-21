@@ -593,7 +593,9 @@ const _dbLoad = async (opts={}) => {
       // _hydratedPoIds: the set of PO ids present when this SO loaded cleanly. The save uses it to tell a deliberate
       // PO deletion (loaded then removed) from a PO that simply never reached this client (stale/foreign state).
       const _hydratedPoIds=[...new Set(items.flatMap(it=>(it.po_lines||[]).map(p=>p.po_id).filter(Boolean)))];
-      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds}});
+      // _hydratedPickIds: same idea for pick lines, keyed by pick_id.
+      const _hydratedPickIds=[...new Set(items.flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)))];
+      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
@@ -984,6 +986,42 @@ const _dbSaveSOInner = async (so) => {
         }
       }
     }
+    // Pick line preservation: same hazard as PO lines — picks are deleted and rebuilt from in-memory items on every
+    // save, so a stale/timed-out so_item_pick_lines load (or picks another user added) would be silently wiped.
+    // Re-inject any pick the client never deliberately deleted; only intentional removals stick.
+    if(oldItemIds.length){
+      const{data:_dbPickRows,error:_dbPickErr}=await supabase.from('so_item_pick_lines').select('*').in('so_item_id',oldItemIds);
+      if(_dbPickErr){
+        console.error('[DB] SAFETY: Blocking SO save — failed to read existing pick lines for',so.id,':',_dbPickErr.message);
+        if(_dbNotify)_dbNotify('Save blocked — could not verify existing picks. Please reload the page.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'so_item_pick_lines SELECT errored: '+_dbPickErr.message});
+        return false;
+      }
+      if(_dbPickRows&&_dbPickRows.length){
+        const _oldById=new Map(_oldSoItems.map(oi=>[oi.id,oi]));
+        const _clientPickIds=new Set((items||[]).flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)));
+        const _knownPickIds=new Set([..._clientPickIds,...(Array.isArray(so._hydratedPickIds)?so._hydratedPickIds:[])]);
+        const _picksHydrated=so._picksHydrated!==false;
+        let _restored=0,_unrestorable=0;
+        _dbPickRows.forEach(row=>{
+          const pickId=row.pick_id;
+          if(pickId&&_clientPickIds.has(pickId))return;
+          if(_picksHydrated&&pickId&&_knownPickIds.has(pickId))return;
+          const oi=_oldById.get(row.so_item_id);
+          const ci=oi?items[oi.item_index]:null;
+          if(!ci||(oi.sku&&ci.sku&&ci.sku!==oi.sku)){_unrestorable++;return;}
+          const{id:_id,so_item_id:_sid,sizes,...rest}=row;const recovered={...rest,...(sizes||{})};
+          ci.pick_lines=[...(ci.pick_lines||[]),recovered];_restored++;
+        });
+        if(_restored){console.warn('[DB] Restored',_restored,'undeleted pick line(s) for',so.id,'(stale/foreign client state)');if(_dataLossAlert)_dataLossAlert({kind:'picks_restored',soId:so.id,restored:_restored});}
+        if(_unrestorable){
+          console.error('[DB] SAFETY: Blocking SO save —',_unrestorable,'undeleted pick line(s) for',so.id,'could not be matched to current items');
+          if(_dbNotify)_dbNotify('Save blocked — pick data could not be safely preserved. Please reload the page.','error');
+          if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'pick restore: '+_unrestorable+' undeleted pick line(s) unmatched'});
+          return false;
+        }
+      }
+    }
     if(oldItemIds.length){
       await supabase.from('so_item_decorations').delete().in('so_item_id',oldItemIds);
       await supabase.from('so_item_pick_lines').delete().in('so_item_id',oldItemIds);
@@ -1102,6 +1140,15 @@ const _dbSaveSOInner = async (so) => {
       if(allPickRows.length){
         const{error:pickErr}=await supabase.from('so_item_pick_lines').insert(allPickRows);
         if(pickErr){saveFailed=true;_failMsg=_failMsg||('so_item_pick_lines: '+pickErr.message);console.error('[DB] so_item_pick_lines batch failed:',pickErr.message)}
+        // Post-insert verification: confirm rows persisted rather than letting a partial save drop picks silently.
+        if(!saveFailed){
+          const{count:_verifyPickCount}=await supabase.from('so_item_pick_lines').select('id',{count:'exact',head:true}).in('so_item_id',insertedItems.map(i=>i.id));
+          if((_verifyPickCount||0)<allPickRows.length){
+            saveFailed=true;_failMsg=_failMsg||('so_item_pick_lines: only '+(_verifyPickCount||0)+' of '+allPickRows.length+' rows persisted');
+            console.error('[DB] SAFETY: SO pick-line insert verification failed — expected',allPickRows.length,'got',_verifyPickCount);
+            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPickRows.length,got:_verifyPickCount||0});
+          }
+        }
       }
       // Batch insert PO lines
       if(allPoRows.length){
