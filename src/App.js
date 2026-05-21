@@ -590,7 +590,10 @@ const _dbLoad = async (opts={}) => {
         const{id:_,so_id:__,item_index:___,...rest}=item;return{...rest,decorations,pick_lines,po_lines}});
       // _itemsHydrated: true only when so_items loaded cleanly this session. Save guards use it to distinguish a
       // deliberate rep deletion (hydrated→empty) from items vanishing on a timed-out load (never hydrated).
-      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs')}});
+      // _hydratedPoIds: the set of PO ids present when this SO loaded cleanly. The save uses it to tell a deliberate
+      // PO deletion (loaded then removed) from a PO that simply never reached this client (stale/foreign state).
+      const _hydratedPoIds=[...new Set(items.flatMap(it=>(it.po_lines||[]).map(p=>p.po_id).filter(Boolean)))];
+      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
@@ -933,6 +936,54 @@ const _dbSaveSOInner = async (so) => {
         }
       }
     }
+    // PO line preservation: rebuild any purchase-order lines the user did NOT delete.
+    // so_items are deleted and reinserted with fresh ids on every save, so po_lines must be re-supplied from the
+    // in-memory items below. If the client's PO state is stale — a timed-out so_item_po_lines load (the SO-1038 /
+    // "PO 3021/3022 DOHSF vanished" failure) or POs another user/tab added that this client never saw — those rows
+    // would be silently wiped. We read the live DB PO lines and re-inject any the client was never aware of, so
+    // ONLY deliberate deletions (a PO the client loaded and then removed) actually stick.
+    if(oldItemIds.length){
+      const{data:_dbPoRows,error:_dbPoErr}=await supabase.from('so_item_po_lines').select('*').in('so_item_id',oldItemIds);
+      if(_dbPoErr){
+        console.error('[DB] SAFETY: Blocking SO save — failed to read existing PO lines for',so.id,':',_dbPoErr.message);
+        if(_dbNotify)_dbNotify('Save blocked — could not verify existing purchase orders. Please reload the page.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'so_item_po_lines SELECT errored: '+_dbPoErr.message});
+        return false;
+      }
+      if(_dbPoRows&&_dbPoRows.length){
+        const _oldById=new Map(_oldSoItems.map(oi=>[oi.id,oi]));
+        const _clientPoIds=new Set((items||[]).flatMap(it=>(it.po_lines||[]).map(p=>p.po_id).filter(Boolean)));
+        // po_ids the client knew about = ones it currently holds ∪ ones present when it loaded. Removing one of
+        // these is an intentional deletion; a DB po_id in neither set is one this client never saw.
+        const _knownPoIds=new Set([..._clientPoIds,...(Array.isArray(so._hydratedPoIds)?so._hydratedPoIds:[])]);
+        const _posHydrated=so._posHydrated!==false;
+        let _restored=0,_unrestorable=0;
+        _dbPoRows.forEach(row=>{
+          const poId=row.po_id;
+          // Client still holds this PO somewhere — it will re-save its own (possibly edited) copy. Skip to avoid dupes.
+          if(_clientPoIds.has(poId))return;
+          // Deliberately deleted: the client loaded this PO cleanly and chose to drop it. Honor the deletion.
+          if(_posHydrated&&_knownPoIds.has(poId))return;
+          // Otherwise the client never knew about this PO — re-inject it onto its original item so the save preserves it.
+          const oi=_oldById.get(row.so_item_id);
+          const ci=oi?items[oi.item_index]:null;
+          // Guard against attaching to the wrong item if the order's structure changed (item removed/reordered).
+          if(!ci||(oi.sku&&ci.sku&&ci.sku!==oi.sku)){_unrestorable++;return;}
+          const{id:_id,so_item_id:_sid,sizes,...rest}=row;const recovered={...rest,...(sizes||{})};
+          if(recovered._billed&&!recovered.billed){recovered.billed=recovered._billed;delete recovered._billed;}
+          if(recovered._tracking_numbers&&!recovered.tracking_numbers){recovered.tracking_numbers=recovered._tracking_numbers;delete recovered._tracking_numbers;}
+          ci.po_lines=[...(ci.po_lines||[]),recovered];_restored++;
+        });
+        if(_restored){console.warn('[DB] Restored',_restored,'undeleted PO line(s) for',so.id,'(stale/foreign client state)');if(_dataLossAlert)_dataLossAlert({kind:'po_restored',soId:so.id,restored:_restored});}
+        if(_unrestorable){
+          // An undeleted PO couldn't be matched to a current item — block rather than silently lose it.
+          console.error('[DB] SAFETY: Blocking SO save —',_unrestorable,'undeleted PO line(s) for',so.id,'could not be matched to current items');
+          if(_dbNotify)_dbNotify('Save blocked — purchase order data could not be safely preserved. Please reload the page.','error');
+          if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'PO restore: '+_unrestorable+' undeleted PO line(s) unmatched'});
+          return false;
+        }
+      }
+    }
     if(oldItemIds.length){
       await supabase.from('so_item_decorations').delete().in('so_item_id',oldItemIds);
       await supabase.from('so_item_pick_lines').delete().in('so_item_id',oldItemIds);
@@ -1060,6 +1111,16 @@ const _dbSaveSOInner = async (so) => {
           const{error:coreErr}=await supabase.from('so_item_po_lines').insert(corePoRows);
           if(coreErr){saveFailed=true;_failMsg=_failMsg||('so_item_po_lines: '+coreErr.message);console.error('[DB] so_item_po_lines batch failed:',coreErr.message)}
           else console.warn('[DB] PO lines saved without billed/tracking_numbers columns')
+        }
+        // Post-insert verification: confirm rows actually persisted; if fewer than expected, mark failed so we retry
+        // rather than letting a partial save become canonical (and silently drop PO lines).
+        if(!saveFailed){
+          const{count:_verifyPoCount}=await supabase.from('so_item_po_lines').select('id',{count:'exact',head:true}).in('so_item_id',insertedItems.map(i=>i.id));
+          if((_verifyPoCount||0)<allPoRows.length){
+            saveFailed=true;_failMsg=_failMsg||('so_item_po_lines: only '+(_verifyPoCount||0)+' of '+allPoRows.length+' rows persisted');
+            console.error('[DB] SAFETY: SO PO-line insert verification failed — expected',allPoRows.length,'got',_verifyPoCount);
+            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPoRows.length,got:_verifyPoCount||0});
+          }
         }
       }
     }
