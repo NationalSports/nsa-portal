@@ -5177,12 +5177,12 @@ export default function App(){
     });
     // Admin-view todos: filterable by rep selector
     const isAdmin=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
-    const adminTodos=isAdmin?todos.filter(t=>{
-      if(adminRepFilter==='all')return true;
-      if(t.role==='all')return true;
-      const targetId=adminRepFilter==='me'?cu.id:adminRepFilter;
-      return t.repId===targetId;
-    }):myTodos;
+    const adminTodos=isAdmin?(()=>{const _seenAdmin=new Set();return todos.filter(t=>{
+      const _match=adminRepFilter==='all'||t.role==='all'||t.repId===(adminRepFilter==='me'?cu.id:adminRepFilter);
+      if(!_match)return false;
+      // Same action can be pushed once per role (e.g. sales + csr) — collapse to one row on the all-roles admin view.
+      if(_seenAdmin.has(t.dismissKey))return false;_seenAdmin.add(t.dismissKey);return true;
+    })})():myTodos;
     // Get assigned todos for this user (manually created)
     const myAssignedTodos=assignedTodos.filter(t=>t.status==='open'&&(t.assigned_to===cu.id||t.created_by===cu.id));
     const _fmtTodoDate=(d)=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);if(days<1)return'Today';if(days===1)return'Yesterday';if(days<14)return days+'d ago';return(dt.getMonth()+1)+'/'+dt.getDate()+'/'+String(dt.getFullYear()).slice(-2)}catch{return''}};
