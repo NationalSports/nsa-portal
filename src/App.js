@@ -560,7 +560,9 @@ const _dbLoad = async (opts={}) => {
       const items=estItems.filter(i=>i.estimate_id===est.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
         const decorations=estDecos.filter(d=>d.estimate_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,estimate_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
         const{id:_,estimate_id:__,item_index:___,...rest}=item;return{...rest,decorations}});
-      return{...est,items,art_files}});
+      // _itemsHydrated: true only when estimate_items loaded cleanly this session. Lets save guards tell a
+      // deliberate rep deletion (hydrated→empty) apart from items vanishing on a timed-out load (never hydrated).
+      return{...est,items,art_files,_itemsHydrated:!_lastLoadTimedOut.has('estimate_items')}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
       const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,uploaded:a.uploaded}));
@@ -576,7 +578,9 @@ const _dbLoad = async (opts={}) => {
           if(sizes._tracking_numbers&&!recovered.tracking_numbers){recovered.tracking_numbers=sizes._tracking_numbers;delete recovered._tracking_numbers}
           return recovered});
         const{id:_,so_id:__,item_index:___,...rest}=item;return{...rest,decorations,pick_lines,po_lines}});
-      return{...so,items,art_files,firm_dates,jobs}});
+      // _itemsHydrated: true only when so_items loaded cleanly this session. Save guards use it to distinguish a
+      // deliberate rep deletion (hydrated→empty) from items vanishing on a timed-out load (never hydrated).
+      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items')}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
@@ -706,9 +710,13 @@ const _dbSaveEstimateInner = async (est) => {
     const oldItemIds=_oldEstItems.map(i=>i.id);
     // Safety check: if client has 0 items but DB has some, abort to prevent data loss
     if((!items||items.length===0)&&oldItemIds.length>0){
-      console.error('[DB] SAFETY: Blocking estimate save — client has 0 items but DB has',oldItemIds.length,'for',est.id);
-      if(_dbNotify)_dbNotify('Save blocked — '+oldItemIds.length+' item(s) would be lost. Please reload the page.','error');
-      return false;
+      if(est._itemsHydrated){
+        console.warn('[DB] Estimate',est.id,'saving with 0 items (DB had',oldItemIds.length,') — items were hydrated, treating as intentional removal');
+      }else{
+        console.error('[DB] SAFETY: Blocking estimate save — client has 0 items but DB has',oldItemIds.length,'for',est.id,'(items never hydrated this session)');
+        if(_dbNotify)_dbNotify('Save blocked — '+oldItemIds.length+' item(s) would be lost. Please reload the page.','error');
+        return false;
+      }
     }
     // Safety check: if client has 0 decorations but DB has some, abort to prevent data loss
     const clientDecoCount=(items||[]).reduce((a,it)=>a+(it.decorations?.length||0),0);
@@ -852,10 +860,16 @@ const _dbSaveSOInner = async (so) => {
     // Safety check: if client has 0 items but DB has some, abort to prevent data loss
     // Triggers when state was polluted by a timed-out so_items load and an autosave fires before a fresh load completes
     if((!items||items.length===0)&&oldItemIds.length>0){
-      console.error('[DB] SAFETY: Blocking SO save — client has 0 items but DB has',oldItemIds.length,'for',so.id);
-      if(_dbNotify)_dbNotify('Save blocked — '+oldItemIds.length+' item(s) would be lost. Please reload the page.','error');
-      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:oldItemIds.length,newCount:0,reason:'Client save had 0 items while DB had '+oldItemIds.length});
-      return false;
+      if(so._itemsHydrated){
+        // Items loaded cleanly this session and the client now has none — a deliberate removal, not a persistence
+        // glitch. Allow the save through (further guards below still protect orphaned jobs/decorations).
+        console.warn('[DB] SO',so.id,'saving with 0 items (DB had',oldItemIds.length,') — items were hydrated, treating as intentional removal');
+      }else{
+        console.error('[DB] SAFETY: Blocking SO save — client has 0 items but DB has',oldItemIds.length,'for',so.id,'(items never hydrated this session)');
+        if(_dbNotify)_dbNotify('Save blocked — '+oldItemIds.length+' item(s) would be lost. Please reload the page.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:oldItemIds.length,newCount:0,reason:'Client save had 0 items while DB had '+oldItemIds.length+' (items not loaded this session)'});
+        return false;
+      }
     }
     // Extra guard: even if oldItemIds came back empty, refuse the wipe when the SO still has jobs in the DB.
     // Jobs reference so_items by item_idx, so if jobs exist there must have been items — saving empty items
@@ -4095,11 +4109,12 @@ export default function App(){
       if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:sl.id,prevCount:prev.items.length,newCount:0,reason:'Client savSO refused empty items (in-memory prev had items)'});
       return prev;
     }
-    // Snapshot regression: same client save where items count dropped (but not necessarily to 0).
-    // Belt-and-suspenders — guards above catch the worst case; this catches any partial loss too.
-    if(prev&&(prev.items?.length||0)>(sl.items?.length||0)&&(sl.items?.length||0)>0){
+    // Snapshot regression: client save where item count dropped (but not to 0). Only alarm when the previous
+    // state was NOT cleanly hydrated — a drop computed from stale/partially-loaded data is a persistence concern.
+    // When prev was hydrated, a rep removing line items is a normal edit and shouldn't trigger an alert.
+    if(prev&&!prev._itemsHydrated&&(prev.items?.length||0)>(sl.items?.length||0)&&(sl.items?.length||0)>0){
       const lost=prev.items.length-(sl.items?.length||0);
-      if(_dataLossAlert)_dataLossAlert({kind:'lost',soId:sl.id,prevCount:prev.items.length,newCount:sl.items.length,reason:lost+' line item(s) removed from save'});
+      if(_dataLossAlert)_dataLossAlert({kind:'lost',soId:sl.id,prevCount:prev.items.length,newCount:sl.items.length,reason:lost+' line item(s) removed from save (source data not fully loaded)'});
     }
     if(prev){setSOHistory(h=>{const existing=h[sl.id]||[];return{...h,[sl.id]:[{ts:new Date().toLocaleString(),user:cu?.name||'Portal Coach',snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
     // Merge pick_line statuses — preserve 'pulled' status from current state so warehouse pulls aren't lost
