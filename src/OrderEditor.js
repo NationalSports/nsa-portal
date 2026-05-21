@@ -7062,7 +7062,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const mergeItems=_mergeJobItems(allItems);
             const mergeUnits=mergeItems.reduce((a,gi)=>a+safeNum(gi.units),0);
             const mergeFulfilled=mergeItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);
-            const merged={...target,items:mergeItems,total_units:mergeUnits,fulfilled_units:mergeFulfilled,_merged:true};
+            // Merging combines items only — it doesn't submit or finish art. Keep the
+            // least-complete art_status across the merged jobs so a finished job can't
+            // mask others that still need art (which would hide the Submit to Art button).
+            const _artRank={needs_art:0,art_requested:1,art_in_progress:2,waiting_approval:3,production_files_needed:4,art_complete:5};
+            const _mergedArtStatus=sel.reduce((worst,ji)=>{const st=jobs[ji].art_status;return (_artRank[st]??0)<(_artRank[worst]??0)?st:worst;},target.art_status);
+            const merged={...target,items:mergeItems,total_units:mergeUnits,fulfilled_units:mergeFulfilled,art_status:_mergedArtStatus,_merged:true};
             const removeIdxs=new Set(sel.slice(1));const newJobs=jobs.map((j,i)=>i===sel[0]?merged:j).filter((j,i)=>!removeIdxs.has(i));
             const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setMergeMode(null);
             nf('Merged '+sel.length+' jobs into '+target.id);
