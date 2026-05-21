@@ -15828,7 +15828,9 @@ export default function App(){
 
     const artistMembers=REPS.filter(r=>(r.role==='art'||r.role==='artist')&&r.is_active!==false);
 
+    const _isArtistUser=cu?.role==='artist'||cu?.role==='art';
     const filtered=allArtJobs.filter(j=>{
+      if(_isArtistUser&&j.assigned_artist!==cu.id)return false;
       if(artDashView==='artist'&&artFilter!=='all'&&j.assigned_artist!==artFilter)return false;
       if(artDashView==='rep'&&artFilter!=='all'&&j.repId!==artFilter)return false;
       if(artSearch){const s=artSearch.toLowerCase();

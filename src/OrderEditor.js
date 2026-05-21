@@ -4477,7 +4477,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Compute per-item totals — for promo orders, only non-promo items are invoiceable.
       // For non-deposit invoices, the effective qty drops to the remaining-to-invoice
       // qty so the same line can't be billed twice across partial/full/final.
-      const itemTotals=items.map((it,idx)=>{const fullQty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+      const itemTotals=items.map((it,idx)=>{const szQty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const fullQty=szQty>0?szQty:safeNum(it.est_qty);
         const invoiced=invoicedQtyMap.get(soLineKey(it,idx))||0;
         const remaining=Math.max(0,fullQty-invoiced);
         const qty=invType==='deposit'?fullQty:remaining;
@@ -4500,7 +4500,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Prorate shipping & tax against the FULL order subtotal so a partial invoice
       // billing the remaining 5 of 26 units pays its share — not the full shipping
       // line the prior invoice already prorated against.
-      const fullSubtotalByItem=items.map((it)=>{const fq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const rev=fq*safeNum(it.unit_sell);let dr=0;safeDecos(it).forEach(d=>{const dp2=dP(d,fq,safeArt(o),fq);dr+=fq*dp2.sell});if(isPromoOrder&&it.is_promo)return 0;const usesBlended=safeNum(it._promo_partial_qty)>0;const pc=isPromoOrder&&!usesBlended?safeNum(it._promo_credit):0;return Math.max(0,rev+dr-pc)});
+      const fullSubtotalByItem=items.map((it)=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const fq=_sq>0?_sq:safeNum(it.est_qty);const rev=fq*safeNum(it.unit_sell);let dr=0;safeDecos(it).forEach(d=>{const dp2=dP(d,fq,safeArt(o),fq);dr+=fq*dp2.sell});if(isPromoOrder&&it.is_promo)return 0;const usesBlended=safeNum(it._promo_partial_qty)>0;const pc=isPromoOrder&&!usesBlended?safeNum(it._promo_credit):0;return Math.max(0,rev+dr-pc)});
       const fullOrderSub=fullSubtotalByItem.reduce((a,v)=>a+v,0)||1;
       const selFraction=Math.min(1,selTotals.subtotal/fullOrderSub);
       // For promo orders: shipping/tax on promo portion is covered by promo, only charge for non-promo portion
@@ -4692,7 +4692,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const _invDateStr=invDate||new Date().toLocaleDateString('en-CA');
             const termDays=parseInt((cust?.payment_terms||'net30').replace(/\D/g,''))||30;
             const _dueBase=new Date(_invDateStr+'T00:00:00');_dueBase.setDate(_dueBase.getDate()+termDays);const dueDate=_dueBase.toLocaleDateString('en-CA');
-            const lineItems=activeItems.map(idx=>{const it=items[idx];if(!it)return null;const totalQty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+            const lineItems=activeItems.map(idx=>{const it=items[idx];if(!it)return null;const _szQty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const totalQty=_szQty>0?_szQty:safeNum(it.est_qty);
               // Subtract qty already invoiced so the same line can't be billed twice across partial/full/final.
               // Deposits bill a % of the whole order and intentionally use the full qty.
               const alreadyInvoiced=invType==='deposit'?0:(invoicedQtyMap.get(soLineKey(it,idx))||0);
@@ -4716,7 +4716,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               ...(invCredit>0?{credit_amount:Math.round((invType==='deposit'?invCredit*invDepositPct/100:invCredit)*100)/100}:{}),
               ...(depositApplied>0?{deposit_applied:Math.round(depositApplied*100)/100}:{}),
               line_items:lineItems,
-              items:activeItems.map(idx=>{const it=items[idx];return{sku:it.sku,name:it.name,qty:Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0),unit_sell:safeNum(it.unit_sell)}})};
+              items:activeItems.map(idx=>{const it=items[idx];const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{sku:it.sku,name:it.name,qty:_sq>0?_sq:safeNum(it.est_qty),unit_sell:safeNum(it.unit_sell)}})};
             onInv(prev=>[...prev,inv]);
             // Final invoice: mark SO as complete
             if(invType==='final'){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated)}
@@ -7062,7 +7062,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const mergeItems=_mergeJobItems(allItems);
             const mergeUnits=mergeItems.reduce((a,gi)=>a+safeNum(gi.units),0);
             const mergeFulfilled=mergeItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);
-            const merged={...target,items:mergeItems,total_units:mergeUnits,fulfilled_units:mergeFulfilled,_merged:true};
+            // Merging combines items only — it doesn't submit or finish art. Keep the
+            // least-complete art_status across the merged jobs so a finished job can't
+            // mask others that still need art (which would hide the Submit to Art button).
+            const _artRank={needs_art:0,art_requested:1,art_in_progress:2,waiting_approval:3,production_files_needed:4,art_complete:5};
+            const _mergedArtStatus=sel.reduce((worst,ji)=>{const st=jobs[ji].art_status;return (_artRank[st]??0)<(_artRank[worst]??0)?st:worst;},target.art_status);
+            const merged={...target,items:mergeItems,total_units:mergeUnits,fulfilled_units:mergeFulfilled,art_status:_mergedArtStatus,_merged:true};
             const removeIdxs=new Set(sel.slice(1));const newJobs=jobs.map((j,i)=>i===sel[0]?merged:j).filter((j,i)=>!removeIdxs.has(i));
             const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setMergeMode(null);
             nf('Merged '+sel.length+' jobs into '+target.id);
