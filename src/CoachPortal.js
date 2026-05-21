@@ -623,6 +623,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>}
           {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&<div style={{background:'#f0fdf4',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#166534',fontWeight:600}}>✅ You approved this artwork{j.coach_approval_comment&&<div style={{fontWeight:400,marginTop:6,color:'#15803d'}}>Your note: "{j.coach_approval_comment}"</div>}</div>}
           {(j.art_status==='art_requested'&&j.coach_rejected)&&<div style={{background:'#fef2f2',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#dc2626',fontWeight:600}}>🔄 Changes requested — your artist is working on revisions</div>}
+          {(j.art_status==='art_complete'||j.art_status==='production_files_needed'||(j.art_status==='art_requested'&&j.coach_rejected))&&(()=>{
+            const _next=waitingArtJobs.find(w=>!(w.so&&w.so.id===so.id&&w.id===j.id));
+            return<div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
+              {_next&&<button style={{width:'100%',padding:'12px 16px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:14,fontWeight:800,cursor:'pointer'}} onClick={()=>{setSoView(_next.so);setJobView({job:_next,so:_next.so});setComment('')}}>Review next artwork ({waitingArtJobs.length} still need{waitingArtJobs.length===1?'s':''} approval) →</button>}
+              <button style={{width:'100%',padding:'12px 16px',background:'#1e3a5f',color:'white',border:'none',borderRadius:10,fontSize:14,fontWeight:700,cursor:'pointer'}} onClick={()=>{setJobView(null);setSoView(null);setComment('')}}>← Back to all artwork</button>
+            </div>;
+          })()}
           {j.prod_status!=='hold'&&<div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:16}}>
             <div style={{fontSize:10,color:'#64748b',fontWeight:600}}>PRODUCTION STATUS</div>
             <div style={{fontSize:14,fontWeight:700,color:'#1e40af',marginTop:2}}>{prodLabelsP[j.prod_status]||j.prod_status}</div>
