@@ -42,7 +42,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const ccDisabled=!!(customer.disable_cc_pay||(_parentForCC&&_parentForCC.disable_cc_pay));
   // Artwork awaiting coach approval — surface at top of portal
   const waitingArtJobs=allPortalJobs.filter(j=>j.art_status==='waiting_approval');
-  const artLabelsP={needs_art:'Art Needed',art_requested:'Art Requested',art_in_progress:'Art In Progress',waiting_approval:'Awaiting Your Approval',production_files_needed:'Finalizing Files',art_complete:'Approved'};
+  const artLabelsP={needs_art:'Art Needed',art_requested:'Art Requested',art_in_progress:'Art In Progress',waiting_approval:'Awaiting Your Approval',production_files_needed:'Art Approved — Waiting',art_complete:'Approved'};
   const prodLabelsP={hold:'On Hold',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
   const contactEmail=(customer.contacts||[])[0]?.email||'';
 
@@ -368,7 +368,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                     <div style={{fontWeight:600,fontSize:13}}>{j.art_name}</div>
                     <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
                   </div>
-                  <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',color:j.art_status==='art_complete'?'#166534':j.art_status==='waiting_approval'?'#92400e':'#dc2626'}}>{artLabelsP[j.art_status]}</span>
+                  <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:(j.art_status==='art_complete'||j.art_status==='production_files_needed')?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',color:(j.art_status==='art_complete'||j.art_status==='production_files_needed')?'#166534':j.art_status==='waiting_approval'?'#92400e':'#dc2626'}}>{artLabelsP[j.art_status]}</span>
                   <span style={{color:'#94a3b8',fontSize:14}}>›</span>
                 </div>
               </div>})}
@@ -595,7 +595,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   email:rep?.email?{to:[{email:rep.email}],cc:_accCc,subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p>'+commentHtml+'<p>The job is now ready for production file prep.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:{email:rep.email,name:rep.name}}:undefined,
                 });
                 if(!_res.ok){alert('Could not save your approval — please try again or contact your rep.\n\n'+(_res.error||''));return}
-                setComment('');setJobView(null);
+                setComment('');// stay on the job view — it re-renders from live state to show the "approved" banner
               }}>✅ Approve Artwork</button>
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={async()=>{
                 if(!comment.trim()){alert('Please describe what changes you need.');return}
@@ -617,7 +617,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   email:rep?.email?{to:[{email:rep.email}],cc:_accCc,subject:'📝 Art changes requested by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p><div style="margin:12px 0;padding:12px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#991b1b"><div style="font-size:11px;font-weight:700;color:#dc2626;text-transform:uppercase;margin-bottom:4px">Coach\'s feedback</div>'+_safeText+'</div><p>Please revise the artwork and resend it for approval.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:{email:rep.email,name:rep.name}}:undefined,
                 });
                 if(!_res.ok){alert('Could not send your request — please try again or contact your rep.\n\n'+(_res.error||''));return}
-                setComment('');setJobView(null);
+                setComment('');// stay on the job view — it re-renders from live state to show the "changes requested" banner
               }}>❌ Request Changes</button>
             </div>
           </div>}
