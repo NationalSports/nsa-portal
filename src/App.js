@@ -566,16 +566,16 @@ const _dbLoad = async (opts={}) => {
     const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});const _pimg=_pimgMap[p.id];return{...p,image_url:p.image_url||p.image_front_url||(_pimg&&_pimg.front)||'',back_image_url:p.back_image_url||p.image_back_url||(_pimg&&_pimg.back)||'',images:p.images||(_pimg&&_pimg.gallery)||[],_sizeCosts:(p.size_costs&&Object.keys(p.size_costs).length)?p.size_costs:undefined,_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
-      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,uploaded:a.uploaded}));
+      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,uploaded:a.uploaded,_version:a._version}));
       const items=estItems.filter(i=>i.estimate_id===est.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
         const decorations=estDecos.filter(d=>d.estimate_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,estimate_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
         const{id:_,estimate_id:__,item_index:___,...rest}=item;return{...rest,decorations}});
       // _itemsHydrated: true only when estimate_items loaded cleanly this session. Lets save guards tell a
       // deliberate rep deletion (hydrated→empty) apart from items vanishing on a timed-out load (never hydrated).
-      return{...est,items,art_files,_itemsHydrated:!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files')}});
+      return{...est,items,art_files,_itemsHydrated:!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
-      const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,uploaded:a.uploaded}));
+      const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,uploaded:a.uploaded,_version:a._version}));
       const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
       const jobs=soJobs.filter(j=>j.so_id===so.id).map(j=>{const{so_id:_,...rest}=j;return rest});
       const items=soItems.filter(i=>i.so_id===so.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
@@ -595,7 +595,7 @@ const _dbLoad = async (opts={}) => {
       const _hydratedPoIds=[...new Set(items.flatMap(it=>(it.po_lines||[]).map(p=>p.po_id).filter(Boolean)))];
       // _hydratedPickIds: same idea for pick lines, keyed by pick_id.
       const _hydratedPickIds=[...new Set(items.flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)))];
-      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds}});
+      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
@@ -764,29 +764,38 @@ const _dbSaveEstimateInner = async (est) => {
       await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',oldItemIds);
     }
     await supabase.from('estimate_items').delete().eq('estimate_id',est.id);
-    // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition)
+    // Sync art_files: upsert current, delete removed. Optimistic concurrency via the _version trigger — never
+    // overwrite an art row whose DB copy is newer than the client's, and only delete rows the client had loaded.
+    const{data:_dbAf}=await supabase.from('estimate_art_files').select('id,_version').eq('estimate_id',est.id);
+    const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
     if(art_files?.length){
-      let afRows=art_files.map(a=>({..._pick(a,_artCols),estimate_id:est.id}));
-      const{error:afErr}=await supabase.from('estimate_art_files').upsert(afRows,{onConflict:'estimate_id,id'});
-      if(afErr){
-        if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
-          console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
-          const coreRows=afRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
-          const{error:afErr2}=await supabase.from('estimate_art_files').upsert(coreRows,{onConflict:'estimate_id,id'});
-          if(afErr2)console.error('[DB] estimate_art_files upsert failed (core):',afErr2.message,afErr2.details);
-          else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
-        }else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details)}
+      const _freshArt=art_files.filter(a=>{const dbv=_dbAfVerById.get(a.id);return dbv==null||(a._version||0)>=dbv});
+      const _staleSkipped=art_files.length-_freshArt.length;
+      if(_staleSkipped)console.warn('[DB]',_staleSkipped,'art file(s) for',est.id,'left untouched — DB copy is newer (concurrent edit)');
+      if(_freshArt.length){
+        let afRows=_freshArt.map(a=>({..._pick(a,_artCols),estimate_id:est.id}));
+        const{error:afErr}=await supabase.from('estimate_art_files').upsert(afRows,{onConflict:'estimate_id,id'});
+        if(afErr){
+          if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
+            console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
+            const coreRows=afRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
+            const{error:afErr2}=await supabase.from('estimate_art_files').upsert(coreRows,{onConflict:'estimate_id,id'});
+            if(afErr2)console.error('[DB] estimate_art_files upsert failed (core):',afErr2.message,afErr2.details);
+            else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
+          }else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details)}
+        }
+        // Match the DB trigger's version bump so this client's next save isn't mistaken for stale.
+        _freshArt.forEach(a=>{a._version=(a._version||0)+1});
       }
-      const currentAfIds=art_files.map(a=>a.id).filter(Boolean);
-      if(currentAfIds.length){
-        const{data:existingAfs}=await supabase.from('estimate_art_files').select('id').eq('estimate_id',est.id);
-        const toDeleteAf=(existingAfs||[]).filter(ea=>!currentAfIds.includes(ea.id)).map(ea=>ea.id);
-        if(toDeleteAf.length)await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',toDeleteAf);
-      }
+      const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
+      const _knownArtIds=new Set(Array.isArray(est._hydratedArtIds)?est._hydratedArtIds:[]);
+      const toDeleteAf=(_dbAf||[]).filter(ea=>!currentAfIds.has(ea.id)&&_knownArtIds.has(ea.id)).map(ea=>ea.id);
+      if(toDeleteAf.length)await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',toDeleteAf);
     }else if(Array.isArray(art_files)&&est._artHydrated!==false){
-      // User removed every art group (art_files === []). Reconcile by deleting this estimate's art rows.
-      // Gated on _artHydrated so a timed-out estimate_art_files load (which also yields []) can't wipe real data.
-      await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id);
+      // User removed every art group (art_files === []). Delete only the rows the client had loaded; preserve any
+      // added by another user since. Gated on _artHydrated so a timed-out load can't wipe real data.
+      const _knownArtIds=(Array.isArray(est._hydratedArtIds)?est._hydratedArtIds:[]).filter(id=>_dbAfVerById.has(id));
+      if(_knownArtIds.length)await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',_knownArtIds);
     }
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
     if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();if(est._version)est._version=est._version+1;return true}
@@ -1057,30 +1066,42 @@ const _dbSaveSOInner = async (so) => {
     // jobs list from item decorations, so a transiently-missing decoration would otherwise wipe a submitted
     // job. Orphaned jobs from a recycled SO number are cleaned at order creation instead (see new-SO purge).
     await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
-    // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition)
+    // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition).
+    // Optimistic concurrency (via the _version trigger): never overwrite an art row whose DB copy is newer than
+    // the client's — that would clobber an approval/mockup another user set after this client loaded. And only
+    // delete rows the client actually loaded (_hydratedArtIds), so art another user added meanwhile is preserved.
+    const{data:_dbAf}=await supabase.from('so_art_files').select('id,_version').eq('so_id',so.id);
+    const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
     if(art_files?.length){
-      let soAfRows=art_files.map(a=>({..._pick(a,_artCols),so_id:so.id}));
-      const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
-      if(afErr){
-        if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
-          console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
-          const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
-          const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
-          if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr2.message)}
-          else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
-        }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message)}
+      const _freshArt=art_files.filter(a=>{const dbv=_dbAfVerById.get(a.id);return dbv==null||(a._version||0)>=dbv});
+      const _staleSkipped=art_files.length-_freshArt.length;
+      if(_staleSkipped)console.warn('[DB]',_staleSkipped,'art file(s) for',so.id,'left untouched — DB copy is newer (concurrent edit)');
+      if(_freshArt.length){
+        let soAfRows=_freshArt.map(a=>({..._pick(a,_artCols),so_id:so.id}));
+        const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
+        if(afErr){
+          if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
+            console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
+            const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
+            const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
+            if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr2.message)}
+            else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
+          }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message)}
+        }
+        // Match the DB trigger's version bump so this client's next save isn't mistaken for stale. Over-bump is safe
+        // (the >= check still upserts); under-bump would make the client skip its own row.
+        _freshArt.forEach(a=>{a._version=(a._version||0)+1});
       }
-      // Delete art files that no longer exist (scoped to this SO so a shared id can't wipe another order's art)
-      const currentAfIds=art_files.map(a=>a.id).filter(Boolean);
-      if(currentAfIds.length){
-        const{data:existingAfs}=await supabase.from('so_art_files').select('id').eq('so_id',so.id);
-        const toDeleteAf=(existingAfs||[]).filter(ea=>!currentAfIds.includes(ea.id)).map(ea=>ea.id);
-        if(toDeleteAf.length)await supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',toDeleteAf);
-      }
+      // Delete only art the client deliberately removed: it had loaded the row and no longer holds it.
+      const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
+      const _knownArtIds=new Set(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]);
+      const toDeleteAf=(_dbAf||[]).filter(ea=>!currentAfIds.has(ea.id)&&_knownArtIds.has(ea.id)).map(ea=>ea.id);
+      if(toDeleteAf.length)await supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',toDeleteAf);
     }else if(Array.isArray(art_files)&&so._artHydrated!==false){
-      // User removed every art group (art_files === []). Reconcile by deleting this SO's art rows.
-      // Gated on _artHydrated so a timed-out so_art_files load (which also yields []) can't wipe real data.
-      await supabase.from('so_art_files').delete().eq('so_id',so.id);
+      // User removed every art group (art_files === []). Delete only the rows the client had loaded; any art added
+      // by another user since (not in _hydratedArtIds) is preserved. Gated on _artHydrated so a timed-out load can't wipe data.
+      const _knownArtIds=(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]).filter(id=>_dbAfVerById.has(id));
+      if(_knownArtIds.length)await supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',_knownArtIds);
     }
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+fdErr.message)}}
