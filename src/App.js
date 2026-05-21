@@ -562,7 +562,7 @@ const _dbLoad = async (opts={}) => {
         const{id:_,estimate_id:__,item_index:___,...rest}=item;return{...rest,decorations}});
       // _itemsHydrated: true only when estimate_items loaded cleanly this session. Lets save guards tell a
       // deliberate rep deletion (hydrated→empty) apart from items vanishing on a timed-out load (never hydrated).
-      return{...est,items,art_files,_itemsHydrated:!_lastLoadTimedOut.has('estimate_items')}});
+      return{...est,items,art_files,_itemsHydrated:!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files')}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
       const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,uploaded:a.uploaded}));
@@ -580,7 +580,7 @@ const _dbLoad = async (opts={}) => {
         const{id:_,so_id:__,item_index:___,...rest}=item;return{...rest,decorations,pick_lines,po_lines}});
       // _itemsHydrated: true only when so_items loaded cleanly this session. Save guards use it to distinguish a
       // deliberate rep deletion (hydrated→empty) from items vanishing on a timed-out load (never hydrated).
-      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items')}});
+      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs')}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
@@ -763,10 +763,14 @@ const _dbSaveEstimateInner = async (est) => {
       if(currentAfIds.length){
         const{data:existingAfs}=await supabase.from('estimate_art_files').select('id').eq('estimate_id',est.id);
         const toDeleteAf=(existingAfs||[]).filter(ea=>!currentAfIds.includes(ea.id)).map(ea=>ea.id);
-        if(toDeleteAf.length)await supabase.from('estimate_art_files').delete().in('id',toDeleteAf);
+        if(toDeleteAf.length)await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',toDeleteAf);
       }
+    }else if(Array.isArray(art_files)&&est._artHydrated!==false){
+      // User removed every art group (art_files === []). Reconcile by deleting this estimate's art rows.
+      // Gated on _artHydrated so a timed-out estimate_art_files load (which also yields []) can't wipe real data.
+      await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id);
     }
-    // If art_files is empty/undefined, leave existing DB art files untouched to prevent accidental data loss
+    // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
     if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();if(est._version)est._version=est._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
     const allItemRows=items.map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}});
@@ -835,14 +839,25 @@ const _dbSaveSOInner = async (so) => {
     const finalUpdatedAt=soRow.updated_at;
     const soRowInitial={..._pick(soRow,_soCols)};
     // Try to preserve existing updated_at for the initial upsert (only bump it after children are saved)
-    const{data:existingSO}=await supabase.from('sales_orders').select('updated_at').eq('id',so.id).single();
+    const{data:existingSO,error:existErr}=await supabase.from('sales_orders').select('updated_at').eq('id',so.id).maybeSingle();
     if(existingSO)soRowInitial.updated_at=existingSO.updated_at;
+    // Confident-new only when the lookup succeeded AND returned no row — never on a network/SELECT error,
+    // otherwise we could purge a live order's children below.
+    const _isNewSO=!existErr&&!existingSO;
     let{error:soErr}=await supabase.from('sales_orders').upsert(soRowInitial,{onConflict:'id'});
     if(soErr){
       const coreSoRow={};Object.keys(soRowInitial).forEach(k=>{if(!_soExtraCols.has(k))coreSoRow[k]=soRowInitial[k]});
       const retry=await supabase.from('sales_orders').upsert(coreSoRow,{onConflict:'id'});
       if(retry.error){console.error('[DB] sales_orders upsert failed:',retry.error.message);saveFailed=true;_failMsg='sales_orders: '+retry.error.message}
       else console.warn('[DB] SO saved with core columns only')
+    }
+    // Recycled-number guard: a brand-new SO id can collide with a deleted order whose number was reused.
+    // Any so_jobs/so_art_files still sitting under this id are orphans from that prior order — purge them
+    // before we write this order's real children, so they can't silently re-attach by so_id. (Orphan
+    // items/decorations are already removed by the unconditional so_items delete further below.)
+    if(_isNewSO){
+      await supabase.from('so_jobs').delete().eq('so_id',so.id);
+      await supabase.from('so_art_files').delete().eq('so_id',so.id);
     }
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
     const _oldItemsResp=await supabase.from('so_items').select('id,item_index,sku').eq('so_id',so.id);
@@ -927,16 +942,18 @@ const _dbSaveSOInner = async (so) => {
           if(jobErr2){console.error('[DB] so_jobs upsert failed (core):',jobErr2.message,jobErr2.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr2.message)}
         }else{console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr.message)}
       }
-      // Delete jobs that no longer exist
+      // Delete jobs that no longer exist (scoped to this SO so a shared id can't wipe another order's job)
       const currentJobIds=jobs.map(j=>j.id).filter(Boolean);
       if(currentJobIds.length){
         const{data:existingJobs}=await supabase.from('so_jobs').select('id').eq('so_id',so.id);
         const toDelete=(existingJobs||[]).filter(ej=>!currentJobIds.includes(ej.id)).map(ej=>ej.id);
-        if(toDelete.length)await supabase.from('so_jobs').delete().in('id',toDelete);
+        if(toDelete.length)await supabase.from('so_jobs').delete().eq('so_id',so.id).in('id',toDelete);
       }
     }
-    // If jobs is empty/undefined, leave existing DB jobs untouched to prevent accidental data loss
-    // (e.g. from transient 404 on so_jobs table causing empty reload)
+    // If jobs is empty/undefined, leave existing DB jobs untouched to prevent accidental data loss.
+    // We intentionally do NOT delete jobs just because the in-memory array is empty: syncJobs rebuilds the
+    // jobs list from item decorations, so a transiently-missing decoration would otherwise wipe a submitted
+    // job. Orphaned jobs from a recycled SO number are cleaned at order creation instead (see new-SO purge).
     await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
     // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition)
     if(art_files?.length){
@@ -951,15 +968,19 @@ const _dbSaveSOInner = async (so) => {
           else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
         }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message)}
       }
-      // Delete art files that no longer exist
+      // Delete art files that no longer exist (scoped to this SO so a shared id can't wipe another order's art)
       const currentAfIds=art_files.map(a=>a.id).filter(Boolean);
       if(currentAfIds.length){
         const{data:existingAfs}=await supabase.from('so_art_files').select('id').eq('so_id',so.id);
         const toDeleteAf=(existingAfs||[]).filter(ea=>!currentAfIds.includes(ea.id)).map(ea=>ea.id);
-        if(toDeleteAf.length)await supabase.from('so_art_files').delete().in('id',toDeleteAf);
+        if(toDeleteAf.length)await supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',toDeleteAf);
       }
+    }else if(Array.isArray(art_files)&&so._artHydrated!==false){
+      // User removed every art group (art_files === []). Reconcile by deleting this SO's art rows.
+      // Gated on _artHydrated so a timed-out so_art_files load (which also yields []) can't wipe real data.
+      await supabase.from('so_art_files').delete().eq('so_id',so.id);
     }
-    // If art_files is empty/undefined, leave existing DB art files untouched to prevent accidental data loss
+    // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+fdErr.message)}}
     if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}_dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
