@@ -580,7 +580,7 @@ const _dbLoad = async (opts={}) => {
         const{id:_,so_id:__,item_index:___,...rest}=item;return{...rest,decorations,pick_lines,po_lines}});
       // _itemsHydrated: true only when so_items loaded cleanly this session. Save guards use it to distinguish a
       // deliberate rep deletion (hydrated→empty) from items vanishing on a timed-out load (never hydrated).
-      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files')}});
+      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs')}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
@@ -931,15 +931,20 @@ const _dbSaveSOInner = async (so) => {
           if(jobErr2){console.error('[DB] so_jobs upsert failed (core):',jobErr2.message,jobErr2.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr2.message)}
         }else{console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr.message)}
       }
-      // Delete jobs that no longer exist
+      // Delete jobs that no longer exist (scoped to this SO so a shared id can't wipe another order's job)
       const currentJobIds=jobs.map(j=>j.id).filter(Boolean);
       if(currentJobIds.length){
         const{data:existingJobs}=await supabase.from('so_jobs').select('id').eq('so_id',so.id);
         const toDelete=(existingJobs||[]).filter(ej=>!currentJobIds.includes(ej.id)).map(ej=>ej.id);
-        if(toDelete.length)await supabase.from('so_jobs').delete().in('id',toDelete);
+        if(toDelete.length)await supabase.from('so_jobs').delete().eq('so_id',so.id).in('id',toDelete);
       }
+    }else if(Array.isArray(jobs)&&so._jobsHydrated!==false){
+      // All jobs removed (jobs === []). Reconcile by deleting this SO's job rows. This also clears orphaned
+      // jobs left behind under a recycled SO number, which would otherwise re-attach by so_id.
+      // Gated on _jobsHydrated so a timed-out so_jobs load (which also yields []) can't wipe real jobs.
+      await supabase.from('so_jobs').delete().eq('so_id',so.id);
     }
-    // If jobs is empty/undefined, leave existing DB jobs untouched to prevent accidental data loss
+    // If jobs is undefined/null (not hydrated), leave existing DB jobs untouched to prevent accidental data loss
     // (e.g. from transient 404 on so_jobs table causing empty reload)
     await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
     // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition)
