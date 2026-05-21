@@ -85,18 +85,26 @@ const _dedupProducts=(products,onRemove)=>{
   if(onRemove)onRemove(dupeIds,primaries);
   return products.filter(p=>!dupeIds.includes(p.id));
 };
-// Retry wrapper for lazy imports – handles ChunkLoadError after deploys
+// Retry wrapper for lazy imports – handles ChunkLoadError after deploys.
+// A new deploy swaps chunk hashes, so a tab running the old build requests a
+// chunk that no longer exists (Netlify's SPA fallback returns index.html →
+// "Unexpected token '<'"). We reload once to pick up the fresh asset manifest.
+// Uses a timestamped window rather than a sticky flag so recovery works every
+// time a deploy happens, not just once per tab, while still avoiding an
+// infinite reload loop when a chunk is genuinely broken.
 const lazyRetry = (importFn) => React.lazy(() =>
-  importFn().catch(() => {
-    // Chunk likely missing after a new deploy; reload once to get fresh assets
-    const key = 'chunk_reload';
-    if (!sessionStorage.getItem(key)) {
-      sessionStorage.setItem(key, '1');
+  importFn().catch((err) => {
+    const key = 'chunk_reload_at';
+    const last = Number(sessionStorage.getItem(key) || 0);
+    // If we haven't reloaded in the last 10s, this is almost certainly a stale
+    // build hitting a deploy — reload to fetch current assets.
+    if (Date.now() - last > 10000) {
+      sessionStorage.setItem(key, String(Date.now()));
       window.location.reload();
       return new Promise(() => {}); // never resolves; page is reloading
     }
-    sessionStorage.removeItem(key);
-    return importFn(); // second attempt after reload failed – surface the error
+    // Just reloaded and it still failed — the chunk is genuinely broken; surface it.
+    throw err;
   })
 );
 const OrderEditor = lazyRetry(() => import('./OrderEditor'));
