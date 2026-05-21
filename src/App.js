@@ -566,16 +566,16 @@ const _dbLoad = async (opts={}) => {
     const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});const _pimg=_pimgMap[p.id];return{...p,image_url:p.image_url||p.image_front_url||(_pimg&&_pimg.front)||'',back_image_url:p.back_image_url||p.image_back_url||(_pimg&&_pimg.back)||'',images:p.images||(_pimg&&_pimg.gallery)||[],_sizeCosts:(p.size_costs&&Object.keys(p.size_costs).length)?p.size_costs:undefined,_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
-      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,uploaded:a.uploaded}));
+      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,uploaded:a.uploaded,_version:a._version}));
       const items=estItems.filter(i=>i.estimate_id===est.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
         const decorations=estDecos.filter(d=>d.estimate_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,estimate_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
         const{id:_,estimate_id:__,item_index:___,...rest}=item;return{...rest,decorations}});
       // _itemsHydrated: true only when estimate_items loaded cleanly this session. Lets save guards tell a
       // deliberate rep deletion (hydrated→empty) apart from items vanishing on a timed-out load (never hydrated).
-      return{...est,items,art_files,_itemsHydrated:!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files')}});
+      return{...est,items,art_files,_itemsHydrated:!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
-      const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,uploaded:a.uploaded}));
+      const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,uploaded:a.uploaded,_version:a._version}));
       const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
       const jobs=soJobs.filter(j=>j.so_id===so.id).map(j=>{const{so_id:_,...rest}=j;return rest});
       const items=soItems.filter(i=>i.so_id===so.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
@@ -593,12 +593,17 @@ const _dbLoad = async (opts={}) => {
       // _hydratedPoIds: the set of PO ids present when this SO loaded cleanly. The save uses it to tell a deliberate
       // PO deletion (loaded then removed) from a PO that simply never reached this client (stale/foreign state).
       const _hydratedPoIds=[...new Set(items.flatMap(it=>(it.po_lines||[]).map(p=>p.po_id).filter(Boolean)))];
-      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds}});
+      // _hydratedPickIds: same idea for pick lines, keyed by pick_id.
+      const _hydratedPickIds=[...new Set(items.flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)))];
+      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
       const items=invItems.filter(i=>i.invoice_id===inv.id).map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description}));
-      return{...inv,payments,items:items.length?items:undefined}});
+      // Hydration flags so the save can tell a deliberate removal from items/payments that simply never loaded
+      // (a timed-out invoice_items / invoice_payments query). _hydratedPayRefs lets payments be restore-merged by ref.
+      const _hydratedPayRefs=[...new Set(payments.map(p=>p.ref).filter(Boolean))];
+      return{...inv,payments,items:items.length?items:undefined,_itemsHydrated:!_lastLoadTimedOut.has('invoice_items'),_paymentsHydrated:!_lastLoadTimedOut.has('invoice_payments'),_hydratedPayRefs}});
     // NetSuite historical invoices — read-only; reshape invoice_date → date and tag as historical.
     const hist_invoices=d(rHistInvs).map(hi=>({
       id:hi.document_number||hi.id,
@@ -759,29 +764,38 @@ const _dbSaveEstimateInner = async (est) => {
       await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',oldItemIds);
     }
     await supabase.from('estimate_items').delete().eq('estimate_id',est.id);
-    // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition)
+    // Sync art_files: upsert current, delete removed. Optimistic concurrency via the _version trigger — never
+    // overwrite an art row whose DB copy is newer than the client's, and only delete rows the client had loaded.
+    const{data:_dbAf}=await supabase.from('estimate_art_files').select('id,_version').eq('estimate_id',est.id);
+    const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
     if(art_files?.length){
-      let afRows=art_files.map(a=>({..._pick(a,_artCols),estimate_id:est.id}));
-      const{error:afErr}=await supabase.from('estimate_art_files').upsert(afRows,{onConflict:'estimate_id,id'});
-      if(afErr){
-        if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
-          console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
-          const coreRows=afRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
-          const{error:afErr2}=await supabase.from('estimate_art_files').upsert(coreRows,{onConflict:'estimate_id,id'});
-          if(afErr2)console.error('[DB] estimate_art_files upsert failed (core):',afErr2.message,afErr2.details);
-          else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
-        }else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details)}
+      const _freshArt=art_files.filter(a=>{const dbv=_dbAfVerById.get(a.id);return dbv==null||(a._version||0)>=dbv});
+      const _staleSkipped=art_files.length-_freshArt.length;
+      if(_staleSkipped)console.warn('[DB]',_staleSkipped,'art file(s) for',est.id,'left untouched — DB copy is newer (concurrent edit)');
+      if(_freshArt.length){
+        let afRows=_freshArt.map(a=>({..._pick(a,_artCols),estimate_id:est.id}));
+        const{error:afErr}=await supabase.from('estimate_art_files').upsert(afRows,{onConflict:'estimate_id,id'});
+        if(afErr){
+          if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
+            console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
+            const coreRows=afRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
+            const{error:afErr2}=await supabase.from('estimate_art_files').upsert(coreRows,{onConflict:'estimate_id,id'});
+            if(afErr2)console.error('[DB] estimate_art_files upsert failed (core):',afErr2.message,afErr2.details);
+            else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
+          }else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details)}
+        }
+        // Match the DB trigger's version bump so this client's next save isn't mistaken for stale.
+        _freshArt.forEach(a=>{a._version=(a._version||0)+1});
       }
-      const currentAfIds=art_files.map(a=>a.id).filter(Boolean);
-      if(currentAfIds.length){
-        const{data:existingAfs}=await supabase.from('estimate_art_files').select('id').eq('estimate_id',est.id);
-        const toDeleteAf=(existingAfs||[]).filter(ea=>!currentAfIds.includes(ea.id)).map(ea=>ea.id);
-        if(toDeleteAf.length)await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',toDeleteAf);
-      }
+      const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
+      const _knownArtIds=new Set(Array.isArray(est._hydratedArtIds)?est._hydratedArtIds:[]);
+      const toDeleteAf=(_dbAf||[]).filter(ea=>!currentAfIds.has(ea.id)&&_knownArtIds.has(ea.id)).map(ea=>ea.id);
+      if(toDeleteAf.length)await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',toDeleteAf);
     }else if(Array.isArray(art_files)&&est._artHydrated!==false){
-      // User removed every art group (art_files === []). Reconcile by deleting this estimate's art rows.
-      // Gated on _artHydrated so a timed-out estimate_art_files load (which also yields []) can't wipe real data.
-      await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id);
+      // User removed every art group (art_files === []). Delete only the rows the client had loaded; preserve any
+      // added by another user since. Gated on _artHydrated so a timed-out load can't wipe real data.
+      const _knownArtIds=(Array.isArray(est._hydratedArtIds)?est._hydratedArtIds:[]).filter(id=>_dbAfVerById.has(id));
+      if(_knownArtIds.length)await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',_knownArtIds);
     }
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
     if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();if(est._version)est._version=est._version+1;return true}
@@ -984,6 +998,42 @@ const _dbSaveSOInner = async (so) => {
         }
       }
     }
+    // Pick line preservation: same hazard as PO lines — picks are deleted and rebuilt from in-memory items on every
+    // save, so a stale/timed-out so_item_pick_lines load (or picks another user added) would be silently wiped.
+    // Re-inject any pick the client never deliberately deleted; only intentional removals stick.
+    if(oldItemIds.length){
+      const{data:_dbPickRows,error:_dbPickErr}=await supabase.from('so_item_pick_lines').select('*').in('so_item_id',oldItemIds);
+      if(_dbPickErr){
+        console.error('[DB] SAFETY: Blocking SO save — failed to read existing pick lines for',so.id,':',_dbPickErr.message);
+        if(_dbNotify)_dbNotify('Save blocked — could not verify existing picks. Please reload the page.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'so_item_pick_lines SELECT errored: '+_dbPickErr.message});
+        return false;
+      }
+      if(_dbPickRows&&_dbPickRows.length){
+        const _oldById=new Map(_oldSoItems.map(oi=>[oi.id,oi]));
+        const _clientPickIds=new Set((items||[]).flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)));
+        const _knownPickIds=new Set([..._clientPickIds,...(Array.isArray(so._hydratedPickIds)?so._hydratedPickIds:[])]);
+        const _picksHydrated=so._picksHydrated!==false;
+        let _restored=0,_unrestorable=0;
+        _dbPickRows.forEach(row=>{
+          const pickId=row.pick_id;
+          if(pickId&&_clientPickIds.has(pickId))return;
+          if(_picksHydrated&&pickId&&_knownPickIds.has(pickId))return;
+          const oi=_oldById.get(row.so_item_id);
+          const ci=oi?items[oi.item_index]:null;
+          if(!ci||(oi.sku&&ci.sku&&ci.sku!==oi.sku)){_unrestorable++;return;}
+          const{id:_id,so_item_id:_sid,sizes,...rest}=row;const recovered={...rest,...(sizes||{})};
+          ci.pick_lines=[...(ci.pick_lines||[]),recovered];_restored++;
+        });
+        if(_restored){console.warn('[DB] Restored',_restored,'undeleted pick line(s) for',so.id,'(stale/foreign client state)');if(_dataLossAlert)_dataLossAlert({kind:'picks_restored',soId:so.id,restored:_restored});}
+        if(_unrestorable){
+          console.error('[DB] SAFETY: Blocking SO save —',_unrestorable,'undeleted pick line(s) for',so.id,'could not be matched to current items');
+          if(_dbNotify)_dbNotify('Save blocked — pick data could not be safely preserved. Please reload the page.','error');
+          if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'pick restore: '+_unrestorable+' undeleted pick line(s) unmatched'});
+          return false;
+        }
+      }
+    }
     if(oldItemIds.length){
       await supabase.from('so_item_decorations').delete().in('so_item_id',oldItemIds);
       await supabase.from('so_item_pick_lines').delete().in('so_item_id',oldItemIds);
@@ -1016,30 +1066,42 @@ const _dbSaveSOInner = async (so) => {
     // jobs list from item decorations, so a transiently-missing decoration would otherwise wipe a submitted
     // job. Orphaned jobs from a recycled SO number are cleaned at order creation instead (see new-SO purge).
     await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
-    // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition)
+    // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition).
+    // Optimistic concurrency (via the _version trigger): never overwrite an art row whose DB copy is newer than
+    // the client's — that would clobber an approval/mockup another user set after this client loaded. And only
+    // delete rows the client actually loaded (_hydratedArtIds), so art another user added meanwhile is preserved.
+    const{data:_dbAf}=await supabase.from('so_art_files').select('id,_version').eq('so_id',so.id);
+    const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
     if(art_files?.length){
-      let soAfRows=art_files.map(a=>({..._pick(a,_artCols),so_id:so.id}));
-      const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
-      if(afErr){
-        if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
-          console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
-          const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
-          const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
-          if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr2.message)}
-          else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
-        }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message)}
+      const _freshArt=art_files.filter(a=>{const dbv=_dbAfVerById.get(a.id);return dbv==null||(a._version||0)>=dbv});
+      const _staleSkipped=art_files.length-_freshArt.length;
+      if(_staleSkipped)console.warn('[DB]',_staleSkipped,'art file(s) for',so.id,'left untouched — DB copy is newer (concurrent edit)');
+      if(_freshArt.length){
+        let soAfRows=_freshArt.map(a=>({..._pick(a,_artCols),so_id:so.id}));
+        const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
+        if(afErr){
+          if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
+            console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
+            const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
+            const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
+            if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr2.message)}
+            else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
+          }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message)}
+        }
+        // Match the DB trigger's version bump so this client's next save isn't mistaken for stale. Over-bump is safe
+        // (the >= check still upserts); under-bump would make the client skip its own row.
+        _freshArt.forEach(a=>{a._version=(a._version||0)+1});
       }
-      // Delete art files that no longer exist (scoped to this SO so a shared id can't wipe another order's art)
-      const currentAfIds=art_files.map(a=>a.id).filter(Boolean);
-      if(currentAfIds.length){
-        const{data:existingAfs}=await supabase.from('so_art_files').select('id').eq('so_id',so.id);
-        const toDeleteAf=(existingAfs||[]).filter(ea=>!currentAfIds.includes(ea.id)).map(ea=>ea.id);
-        if(toDeleteAf.length)await supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',toDeleteAf);
-      }
+      // Delete only art the client deliberately removed: it had loaded the row and no longer holds it.
+      const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
+      const _knownArtIds=new Set(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]);
+      const toDeleteAf=(_dbAf||[]).filter(ea=>!currentAfIds.has(ea.id)&&_knownArtIds.has(ea.id)).map(ea=>ea.id);
+      if(toDeleteAf.length)await supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',toDeleteAf);
     }else if(Array.isArray(art_files)&&so._artHydrated!==false){
-      // User removed every art group (art_files === []). Reconcile by deleting this SO's art rows.
-      // Gated on _artHydrated so a timed-out so_art_files load (which also yields []) can't wipe real data.
-      await supabase.from('so_art_files').delete().eq('so_id',so.id);
+      // User removed every art group (art_files === []). Delete only the rows the client had loaded; any art added
+      // by another user since (not in _hydratedArtIds) is preserved. Gated on _artHydrated so a timed-out load can't wipe data.
+      const _knownArtIds=(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]).filter(id=>_dbAfVerById.has(id));
+      if(_knownArtIds.length)await supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',_knownArtIds);
     }
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+fdErr.message)}}
@@ -1102,6 +1164,15 @@ const _dbSaveSOInner = async (so) => {
       if(allPickRows.length){
         const{error:pickErr}=await supabase.from('so_item_pick_lines').insert(allPickRows);
         if(pickErr){saveFailed=true;_failMsg=_failMsg||('so_item_pick_lines: '+pickErr.message);console.error('[DB] so_item_pick_lines batch failed:',pickErr.message)}
+        // Post-insert verification: confirm rows persisted rather than letting a partial save drop picks silently.
+        if(!saveFailed){
+          const{count:_verifyPickCount}=await supabase.from('so_item_pick_lines').select('id',{count:'exact',head:true}).in('so_item_id',insertedItems.map(i=>i.id));
+          if((_verifyPickCount||0)<allPickRows.length){
+            saveFailed=true;_failMsg=_failMsg||('so_item_pick_lines: only '+(_verifyPickCount||0)+' of '+allPickRows.length+' rows persisted');
+            console.error('[DB] SAFETY: SO pick-line insert verification failed — expected',allPickRows.length,'got',_verifyPickCount);
+            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPickRows.length,got:_verifyPickCount||0});
+          }
+        }
       }
       // Batch insert PO lines
       if(allPoRows.length){
@@ -1150,9 +1221,34 @@ const _dbSaveInvoice = async (inv) => {
       const{error:invErr2}=await supabase.from('invoices').upsert(coreRow,{onConflict:'id'});
       if(invErr2){console.error('[DB] invoices upsert failed (core):',invErr2.message);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoices: '+invErr2.message);_persistFailedIds();return false}
     }
+    // Payment preservation: payments are financial records — never let a stale/timed-out client drop one another
+    // user (or this user, before a clean load) recorded. Read the live DB payments and re-inject any ref the client
+    // was never aware of, so only a payment the client loaded and then deleted is actually removed.
+    let _payments=payments;
+    {
+      const{data:_dbPays,error:_dbPayErr}=await supabase.from('invoice_payments').select('*').eq('invoice_id',inv.id);
+      if(_dbPayErr){
+        console.error('[DB] SAFETY: Blocking invoice save — failed to read existing payments for',inv.id,':',_dbPayErr.message);
+        if(_dbNotify)_dbNotify('Save blocked — could not verify existing payments. Please reload the page.','error');
+        _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_payments SELECT errored: '+_dbPayErr.message);_persistFailedIds();return false;
+      }
+      if(_dbPays&&_dbPays.length){
+        const _clientRefs=new Set((payments||[]).map(p=>p.ref).filter(Boolean));
+        const _knownRefs=new Set([..._clientRefs,...(Array.isArray(inv._hydratedPayRefs)?inv._hydratedPayRefs:[])]);
+        const _payHydrated=inv._paymentsHydrated!==false;
+        const _restore=[];
+        _dbPays.forEach(row=>{
+          const ref=row.ref;
+          if(ref&&_clientRefs.has(ref))return;// client still holds it — it re-saves its own copy
+          if(_payHydrated&&ref&&_knownRefs.has(ref))return;// deliberately deleted from a clean load
+          _restore.push({amount:row.amount,method:row.method,ref:row.ref,date:row.date});
+        });
+        if(_restore.length){console.warn('[DB] Restored',_restore.length,'undeleted payment(s) for',inv.id,'(stale/foreign client state)');_payments=[...(payments||[]),..._restore];}
+      }
+    }
     // Sync payments: upsert current, then delete removed (avoids DELETE+INSERT race condition)
-    if(payments?.length){
-      const payRows=payments.map((p,i)=>({invoice_id:inv.id,amount:p.amount,method:p.method,ref:p.ref||('pay_'+i),date:p.date,cc_fee:p.cc_fee}));
+    if(_payments?.length){
+      const payRows=_payments.map((p,i)=>({invoice_id:inv.id,amount:p.amount,method:p.method,ref:p.ref||('pay_'+i),date:p.date,cc_fee:p.cc_fee}));
       const{error:payErr}=await supabase.from('invoice_payments').upsert(payRows,{onConflict:'invoice_id,ref'});
       if(payErr){
         // Fallback: DELETE+INSERT if upsert constraint doesn't exist
@@ -1166,9 +1262,33 @@ const _dbSaveInvoice = async (inv) => {
         if(toDelete.length)await supabase.from('invoice_payments').delete().in('id',toDelete);
       }
     }
-    if(items?.length){
-      await supabase.from('invoice_items').delete().eq('invoice_id',inv.id);
-      await supabase.from('invoice_items').insert(items.map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description,invoice_id:inv.id})));
+    // Invoice items have no stable client id, so they can't be restore-merged like payments. Instead, fail-closed:
+    // block the save if the client would drop items it never loaded (a timed-out invoice_items query yields fewer
+    // items than the DB). A clean load that legitimately removed items still goes through.
+    {
+      const{count:_dbItemCount,error:_dbItemErr}=await supabase.from('invoice_items').select('id',{count:'exact',head:true}).eq('invoice_id',inv.id);
+      if(_dbItemErr){
+        console.error('[DB] SAFETY: Blocking invoice save — failed to read existing items for',inv.id,':',_dbItemErr.message);
+        if(_dbNotify)_dbNotify('Save blocked — could not verify existing invoice items. Please reload the page.','error');
+        _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items COUNT errored: '+_dbItemErr.message);_persistFailedIds();return false;
+      }
+      const _clientItemCount=(items||[]).length;
+      if((_dbItemCount||0)>0&&_clientItemCount<(_dbItemCount||0)&&inv._itemsHydrated===false){
+        console.error('[DB] SAFETY: Blocking invoice save —',_clientItemCount,'client item(s) vs',_dbItemCount,'in DB for',inv.id,'(items not hydrated this session)');
+        if(_dbNotify)_dbNotify('Save blocked — invoice item data would be lost. Please reload the page.','error');
+        _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items hydration safety: client '+_clientItemCount+' < DB '+_dbItemCount);_persistFailedIds();return false;
+      }
+      if(items?.length){
+        await supabase.from('invoice_items').delete().eq('invoice_id',inv.id);
+        const _itemRows=items.map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description,invoice_id:inv.id}));
+        const{error:_itemInsErr}=await supabase.from('invoice_items').insert(_itemRows);
+        if(_itemInsErr){console.error('[DB] invoice_items insert failed:',_itemInsErr.message);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items: '+_itemInsErr.message);_persistFailedIds();return false}
+        const{count:_verifyItemCount}=await supabase.from('invoice_items').select('id',{count:'exact',head:true}).eq('invoice_id',inv.id);
+        if((_verifyItemCount||0)<_itemRows.length){
+          console.error('[DB] SAFETY: invoice item insert verification failed — expected',_itemRows.length,'got',_verifyItemCount);
+          _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items: only '+(_verifyItemCount||0)+' of '+_itemRows.length+' rows persisted');_persistFailedIds();return false;
+        }
+      }
     }
     _dbSaveFailedIds.delete(inv.id);_clearSaveError(inv.id);_persistFailedIds();return true;
   }catch(e){console.error('[DB] save invoice:',e);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,e.message||String(e));_persistFailedIds();return false}});
