@@ -44,6 +44,19 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
   catch(e){return{ok:false,error:e.message}}
 };
 
+// Coach-portal writes go through this serverless endpoint instead of the browser
+// Supabase client: the public portal runs as the anon role, which RLS only lets
+// read sales_orders / so_jobs / so_art_files / estimates. The function uses the
+// service-role key to persist the change and send the rep notification.
+export const _portalAction=async(payload)=>{
+  try{
+    const r=await fetch('/.netlify/functions/portal-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)return{ok:false,error:d.error||('HTTP '+r.status)};
+    return{ok:true,...d};
+  }catch(e){return{ok:false,error:e.message}}
+};
+
 // ── Inherited-contact resolution ──
 // Returns contacts of a given role that apply to a customer, including any inherited
 // from the parent customer. Sub-customers automatically pick up the parent's contact for
