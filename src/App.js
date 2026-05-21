@@ -8356,7 +8356,7 @@ export default function App(){
         }
         const totalUnits=poItems.reduce((a,it)=>a+it.qty,0);
         const submittedInfo=batchMatch;
-        const statusBadge=submittedInfo?.status==='received'?'badge-green':'badge-amber';
+        const statusBadge=submittedInfo?.status==='received'?'badge-green':submittedInfo?.status==='submitted'?'badge-blue':'badge-amber';
 
         return<div className="card" style={{marginBottom:16,borderLeft:'4px solid #2563eb'}}>
           {/* PO Header */}
@@ -8370,6 +8370,7 @@ export default function App(){
                 <div style={{fontSize:24,fontWeight:900,fontFamily:'monospace',letterSpacing:2}}>{poId}</div>
                 {vendor&&<div style={{fontSize:12,opacity:0.8}}>{vendor}</div>}
                 {submittedInfo&&<div style={{fontSize:11,opacity:0.6}}>Ordered {submittedInfo.submitted_at} by {submittedInfo.submitted_by}</div>}
+                {submittedInfo?.sanmar_confirmation&&<div style={{fontSize:11,opacity:0.85,fontFamily:'monospace'}}>✓ SanMar confirmation: {submittedInfo.sanmar_confirmation}</div>}
               </div>
               <div style={{textAlign:'right'}}>
                 <div style={{fontSize:24,fontWeight:900}}>{totalUnits}</div>
@@ -8479,14 +8480,14 @@ export default function App(){
         <div className="card-body" style={{padding:0}}>
           <table><thead><tr><th>PO#</th><th>Vendor</th><th>SOs</th><th>Units</th><th>Total</th><th>Ordered</th><th>By</th><th>Status</th><th></th></tr></thead><tbody>
           {submittedBatches.map(sb=><tr key={sb.po_number} style={{cursor:'pointer'}} onClick={()=>setBatchScan(sb.po_number)}>
-            <td style={{fontWeight:800,color:'#1e40af',fontFamily:'monospace'}}>{sb.po_number}</td>
+            <td style={{fontWeight:800,color:'#1e40af',fontFamily:'monospace'}}>{sb.po_number}{sb.sanmar_confirmation&&<div style={{fontSize:9,color:'#16a34a',fontWeight:600}} title="SanMar API confirmation">✓ {sb.sanmar_confirmation}</div>}</td>
             <td>{sb.vendor_name}</td>
             <td style={{fontSize:11}}>{sb.source_pos.map(sp=>sp.so_id).join(', ')}</td>
             <td style={{fontWeight:600}}>{sb.total_units}</td>
             <td style={{fontWeight:700}}>${sb.total_cost.toFixed(2)}</td>
             <td style={{fontSize:11,color:'#64748b'}}>{sb.submitted_at}</td>
             <td style={{fontSize:11}}>{sb.submitted_by?.split(' ')[0]}</td>
-            <td><span className={`badge ${sb.status==='received'?'badge-green':'badge-amber'}`}>{sb.status||'waiting'}</span></td>
+            <td><span className={`badge ${sb.status==='received'?'badge-green':sb.status==='submitted'?'badge-blue':'badge-amber'}`}>{sb.status||'waiting'}</span></td>
             <td style={{textAlign:'right',whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>
               <button className="btn btn-sm" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'2px 6px',fontSize:11}} title={'Delete '+sb.po_number+' (removes the PO and unlinks it from any sales orders)'} onClick={()=>{
                 const warn=sb.status==='received'?`⚠️ ${sb.po_number} is marked Received. Inventory was already credited when it arrived — deleting will NOT reverse those quantities.\n\nDelete anyway?`:`Delete batch PO ${sb.po_number}?\n\nThis removes the PO and unlinks it from any source sales orders. This cannot be undone.`;
@@ -8654,7 +8655,7 @@ export default function App(){
               }}>{'🚀'} Order {nextPO} for {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
             {vk==='sanmar'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
               onClick={()=>setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name})}>
-              🔍 Preview SanMar API Submit (dry-run)
+              📤 Submit to SanMar via API (verify pricing + send)
             </button>}
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
               Contains: {vg.pos.map(bp=>(bp.po_id?bp.po_id+' / ':'')+bp.so_id+' ('+bp.customer+')').join(' · ')}
@@ -8675,7 +8676,46 @@ export default function App(){
         <div style={{fontSize:11,color:'#94a3b8',marginTop:10}}>The PO number assigned here (e.g. NSA-4501) is used when placing the order online. When the box arrives, scan that PO number to see every SO and item inside.</div>
       </div></div>
       </>}
-      {sanmarPreview&&<SanMarPreviewModal {...sanmarPreview} onClose={()=>setSanMarPreview(null)}/>}
+      {sanmarPreview&&<SanMarPreviewModal {...sanmarPreview} onClose={()=>setSanMarPreview(null)}
+        onApplyPrices={(updatedPos)=>{
+          const byId={};updatedPos.forEach(bp=>{byId[bp.id]=bp});
+          setBatchPOs(prev=>prev.map(bp=>byId[bp.id]||bp));
+          setSanMarPreview(p=>p?{...p,batchPOs:updatedPos}:p);
+        }}
+        onSubmitted={(res)=>{
+          const pos=sanmarPreview.batchPOs;const poNum=sanmarPreview.poNumber;const vname=sanmarPreview.vendorName;
+          const total=pos.reduce((a,bp)=>a+bp.total_cost,0);
+          const totalUnits=pos.reduce((a,bp)=>a+bp.items.reduce((s,it)=>s+it.qty,0),0);
+          const now=new Date().toLocaleString();
+          const sb={po_number:poNum,vendor_key:'sanmar',vendor_name:vname,total_cost:total,total_units:totalUnits,
+            submitted_at:now,submitted_by:cu.name,status:'submitted',
+            sanmar_confirmation:res.transactionId||'',sanmar_submitted_at:now,sanmar_response:res.raw||'',
+            source_pos:pos.map(bp=>({so_id:bp.so_id,so_memo:bp.so_memo,customer:bp.customer,items:bp.items,total_cost:bp.total_cost,po_id:bp.po_id||''}))};
+          setSubmittedBatches(prev=>[sb,...prev.filter(b=>b.po_number!==poNum)]);
+          pos.forEach(bp=>{
+            const so=sos.find(s=>s.id===bp.so_id);if(!so)return;
+            let promoted=false;
+            const updatedItems=safeItems(so).map(it=>{
+              const pls=(it.po_lines||[]).map(pl=>{
+                if(pl.batch_queue_id===bp.id){promoted=true;return{...pl,status:'waiting',batch_po_number:poNum,memo:'Batch '+poNum+' — '+vname}}
+                return pl;
+              });
+              return{...it,po_lines:pls};
+            });
+            if(!promoted){
+              bp.items.forEach(bpIt=>{
+                const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
+                const poLine={po_id:poNum,vendor:vname,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
+                Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
+                updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
+              });
+            }
+            savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
+          });
+          setBatchPOs(prev=>prev.filter(p=>p.vendor_key!=='sanmar'));
+          setBatchCounter(ct=>ct+1);
+          nf('✅ '+poNum+' submitted to '+vname+(res.transactionId?(' — confirmation '+res.transactionId):''));
+        }}/>}
     </>);
   };
 
