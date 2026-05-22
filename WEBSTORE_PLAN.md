@@ -121,9 +121,17 @@ CREATE TABLE webstore_order_items (
   unit_fundraise  NUMERIC DEFAULT 0,               -- per-unit fundraise component
   decoration_id   UUID,
   player_name     TEXT,                            -- for personalized items
-  player_number   TEXT
+  player_number   TEXT,                            -- jersey number coach wants to see
+  -- Per-line status, mirrored from the parent SO's job status so the coach
+  -- and player both see live fulfillment state without exposing the full SO.
+  line_status     TEXT DEFAULT 'pending',          -- pending|in_production|shipped|complete|cancelled
+  backordered     BOOLEAN DEFAULT false
 );
 CREATE INDEX idx_webstore_order_items_order ON webstore_order_items(order_id);
+
+-- Stable token emailed to each buyer so they can check status without a login.
+-- One token per webstore_order; lives on the order row.
+ALTER TABLE webstore_orders ADD COLUMN status_token TEXT UNIQUE DEFAULT encode(gen_random_bytes(16),'hex');
 
 -- Read-only view the public storefront uses (no cost columns, no vendor info)
 CREATE VIEW storefront_products AS
@@ -251,6 +259,71 @@ These reuse existing portal components (`OrderEditor`, product picker from `AiIn
 
 ---
 
+## Coach order-tracking portal
+
+The coach gets a **roster-style view of their store's orders** — not the
+internal SO. This extends the existing `CoachPortal.js` (which already renders
+SO/job statuses with the `prodLabelsP` labels and email open-tracking) rather
+than building a new app.
+
+New tab in `CoachPortal` — "Team Store" — visible when the logged-in coach is
+the `coach_user_id` on one or more `webstores` (or the store's club is one of
+the coach's `customers`):
+
+- **Per-player order table**, one row per buyer (grouped from `webstore_orders`
+  + `webstore_order_items` for that store):
+
+  | Player / Buyer | Number | Items | Paid? | Status |
+  |---|---|---|---|---|
+  | Jordan M. (#12) | 12 | Jersey M, Hoodie L | Paid | In Production |
+  | Casey R. (#7)   | 7  | Jersey S          | Unpaid (team tab) | In Line |
+
+  - **Number** = `webstore_order_items.player_number`.
+  - **Status** = `line_status`, kept in sync from the parent SO's job status
+    (see sync note below). Shows the same friendly labels the coach already
+    sees elsewhere (In Line / In Production / Shipped / Done).
+  - **Paid?** = `payment_mode` + `status` (Paid via Stripe, or "Team tab" for
+    unpaid coach orders).
+
+- **Summary header**: total orders, total players ordered, # not yet ordered
+  (if the coach uploaded a roster), fundraise running total.
+- **Filters**: by status, paid/unpaid, by player.
+- Coach actions are read-only on fulfillment (they can't change production
+  status) but can: nudge a player who hasn't ordered (resend store link),
+  export the roster as CSV, and — for unpaid stores — close the store / trigger
+  the SO batch if `so_creation='manual'` and the store grants the coach that
+  permission.
+
+**Status sync (single source of truth):** the SO created by batching is the
+real fulfillment record. A small reconciler (runs inside the existing SO
+status-update path, or a Supabase trigger on `sales_orders` job changes) maps
+the SO/job status back down to every `webstore_order_items.line_status` whose
+`order.so_id` matches. So when staff move the SO to "In Production", every
+linked player line — and thus the coach view and player portal — updates
+automatically. No separate status entry.
+
+## Player order-status portal
+
+When a parent/player checks out, the confirmation email (Brevo, via existing
+`brevo-proxy`) includes a **status link**:
+`/shop/:slug/order/:id?t=<status_token>`.
+
+- Public route, no login — the unguessable `status_token` authorizes read
+  access to that one order (RLS: `SELECT` on `webstore_orders` /
+  `webstore_order_items` allowed when the request's token matches).
+- Shows: items ordered (with size, number, decoration), amount paid (or "on
+  team tab"), and the live per-line `line_status` with the same step labels.
+- A simple status timeline: Ordered → In Production → Shipped → Delivered,
+  plus tracking number once ShipStation returns it (we already pull tracking
+  via `ups-tracking` / ShipStation shipment data).
+- For backordered lines, shows the ETA from `product_eta` ("Arriving ~Jun 12").
+- "Notify me when it ships" is implicit — we email on each status change to the
+  buyer_email on file (reuses the scheduled-email / Brevo plumbing).
+
+Both portals read the **same** `line_status` field, so coach and player never
+disagree, and neither can see cost/vendor data — only the storefront-safe
+columns.
+
 ## Customer-facing storefront
 
 New route tree under `src/storefront/` (lazy-loaded so it doesn't bloat the portal bundle):
@@ -259,7 +332,7 @@ New route tree under `src/storefront/` (lazy-loaded so it doesn't bloat the port
 - `/shop/:slug/p/:sku` — PDP with size grid showing stock state per size
 - `/shop/:slug/cart` — cart
 - `/shop/:slug/checkout` — Stripe Elements (paid) or contact form (unpaid)
-- `/shop/:slug/order/:id?t=<token>` — order status lookup
+- `/shop/:slug/order/:id?t=<status_token>` — player order-status portal (see above)
 
 Subdomain routing: `*.shop.nsasports.com` rewrites in `netlify.toml` map subdomain → `slug` query param so each club can have its own URL while sharing one deploy.
 
@@ -272,11 +345,14 @@ Subdomain routing: `*.shop.nsasports.com` rewrites in `netlify.toml` map subdoma
 3. **Storefront product grid + PDP** reading the `storefront_products` view. No cart yet — just verify inventory + ETA display.
 4. **Cart + unpaid checkout** end-to-end (simpler than paid, gets the data model exercised).
 5. **Manual SO batching** — `webstore-batch-so` function + "Batch now" button.
-6. **Stripe paid checkout** — reuse `stripe-payment.js`.
-7. **Scheduled batching** — `webstore-scheduler` edge function.
-8. **Fundraising** — pricing math + portal rollup + credit-memo disbursement.
-9. **Backorder "notify me"** capture + email when stock lands (hook into existing PO-received flow).
-10. **Subdomain routing + theming.**
+6. **Player order-status portal** — `/shop/:slug/order/:id?t=` route + status email on checkout (Brevo).
+7. **Status reconciler** — SO/job status → `webstore_order_items.line_status` (trigger or hook in existing SO update path).
+8. **Coach "Team Store" tab** in `CoachPortal.js` — per-player roster table reading `line_status`.
+9. **Stripe paid checkout** — reuse `stripe-payment.js`.
+10. **Scheduled batching** — `webstore-scheduler` edge function.
+11. **Fundraising** — pricing math + portal rollup + credit-memo disbursement.
+12. **Backorder "notify me"** capture + email when stock lands (hook into existing PO-received flow).
+13. **Status-change emails** to buyers + subdomain routing + theming.
 
 Each step is independently shippable behind a feature flag on `webstores.status='draft'` — a store stays invisible to the public until staff flips it to `open`.
 
