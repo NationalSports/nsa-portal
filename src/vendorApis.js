@@ -782,9 +782,9 @@ const convertOMGStore = (omgResponse, nsaCustomers) => {
 // ─── SanMar API Integration (via Netlify proxy — SOAP/XML → JSON) ───
 // Requires SANMAR_USERNAME + SANMAR_PASSWORD in Netlify env vars
 // Contact sanmarintegrations@sanmar.com for access
-const sanmarApiCall = async (service, action, params = {}) => {
+const sanmarApiCall = async (service, action, params = {}, extraQs = '') => {
   try {
-    const qs = `service=${encodeURIComponent(service)}&action=${encodeURIComponent(action)}`;
+    const qs = `service=${encodeURIComponent(service)}&action=${encodeURIComponent(action)}${extraQs ? '&' + extraQs : ''}`;
     const proxyUrl = `/.netlify/functions/sanmar-proxy?${qs}`;
     const response = await fetch(proxyUrl, {
       method: 'POST',
@@ -828,11 +828,12 @@ const testSanMarConnection = async () => {
   catch (error) { console.error('[SanMar] Connection test failed:', error); return false; }
 };
 
-// PromoStandards Purchase Order Service — sendPO. ⚠ Places a REAL order with SanMar.
-// payload is the object from buildSanMarPOPayload(); the password is injected
-// server-side by the proxy and must never be sent from the client.
-const sanmarSubmitPO = async (payload) =>
-  await sanmarApiCall('purchaseorder', 'sendPO', payload);
+// SanMar Standard submitPO. payload = { poNum, attention, shipTo, shipAddress1,
+// shipAddress2, shipCity, shipState, shipZip, shipMethod, shipEmail, residence,
+// items:[{style,color,size,quantity}] }. When test:true the proxy routes to
+// SanMar's sandbox host (no real order placed); test:false places a REAL order.
+const sanmarSubmitPO = async (payload, { test = true } = {}) =>
+  await sanmarApiCall('po', 'submitPO', payload, 'env=' + (test ? 'test' : 'prod'));
 
 // ─── S&S Activewear API Integration (via Netlify proxy — REST/JSON) ───
 // Requires SS_ACCOUNT_NUMBER + SS_API_KEY in Netlify env vars

@@ -5706,7 +5706,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} onFinalizeSanmar={finalizeSanmarOrder} onApplySanmarPrices={(updatedPos)=>{const byId={};updatedPos.forEach(bp=>{byId[bp.id]=bp});setBatchPOs(prev=>prev.map(bp=>byId[bp.id]||bp))}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -5763,7 +5763,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} onFinalizeSanmar={finalizeSanmarOrder} onApplySanmarPrices={(updatedPos)=>{const byId={};updatedPos.forEach(bp=>{byId[bp.id]=bp});setBatchPOs(prev=>prev.map(bp=>byId[bp.id]||bp))}} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -8244,6 +8244,43 @@ export default function App(){
       </div></div>
     </>;
   };
+  // Finalize a live SanMar order (called after a successful PROD submitPO from either
+  // the Batch PO page or the sales-order batch-ready wizard): record the submitted
+  // batch, promote queued PO lines to "waiting", clear the queue, advance the counter.
+  const finalizeSanmarOrder=({pos,poNum,vendorName,res})=>{
+    const vname=vendorName||'SanMar';
+    const total=pos.reduce((a,bp)=>a+bp.total_cost,0);
+    const totalUnits=pos.reduce((a,bp)=>a+bp.items.reduce((s,it)=>s+it.qty,0),0);
+    const now=new Date().toLocaleString();
+    const sb={po_number:poNum,vendor_key:'sanmar',vendor_name:vname,total_cost:total,total_units:totalUnits,
+      submitted_at:now,submitted_by:cu.name,status:'submitted',sanmar_env:res?.env||'prod',
+      sanmar_confirmation:res?.transactionId||'',sanmar_submitted_at:now,sanmar_response:res?.message||res?.raw||'',
+      source_pos:pos.map(bp=>({so_id:bp.so_id,so_memo:bp.so_memo,customer:bp.customer,items:bp.items,total_cost:bp.total_cost,po_id:bp.po_id||''}))};
+    setSubmittedBatches(prev=>[sb,...prev.filter(b=>b.po_number!==poNum)]);
+    pos.forEach(bp=>{
+      const so=sos.find(s=>s.id===bp.so_id);if(!so)return;
+      let promoted=false;
+      const updatedItems=safeItems(so).map(it=>{
+        const pls=(it.po_lines||[]).map(pl=>{
+          if(pl.batch_queue_id===bp.id){promoted=true;return{...pl,status:'waiting',batch_po_number:poNum,memo:'Batch '+poNum+' — '+vname}}
+          return pl;
+        });
+        return{...it,po_lines:pls};
+      });
+      if(!promoted){
+        bp.items.forEach(bpIt=>{
+          const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
+          const poLine={po_id:poNum,vendor:vname,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
+          Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
+          updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
+        });
+      }
+      savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
+    });
+    setBatchPOs(prev=>prev.filter(p=>p.vendor_key!=='sanmar'));
+    setBatchCounter(ct=>ct+1);
+    nf('✅ '+poNum+' submitted to '+vname+(res?.transactionId?(' — confirmation '+res.transactionId):''));
+  };
   function rBatchPOs(){
     const byVendor={};
     batchPOs.forEach(bp=>{if(!byVendor[bp.vendor_key])byVendor[bp.vendor_key]={name:bp.vendor_name,threshold:BATCH_VENDORS[bp.vendor_key]?.threshold||200,pos:[]};byVendor[bp.vendor_key].pos.push(bp)});
@@ -8676,45 +8713,14 @@ export default function App(){
         <div style={{fontSize:11,color:'#94a3b8',marginTop:10}}>The PO number assigned here (e.g. NSA-4501) is used when placing the order online. When the box arrives, scan that PO number to see every SO and item inside.</div>
       </div></div>
       </>}
-      {sanmarPreview&&<SanMarPreviewModal {...sanmarPreview} onClose={()=>setSanMarPreview(null)}
+      {sanmarPreview&&<SanMarPreviewModal {...sanmarPreview} shipTo={companyInfo} onClose={()=>setSanMarPreview(null)}
         onApplyPrices={(updatedPos)=>{
           const byId={};updatedPos.forEach(bp=>{byId[bp.id]=bp});
           setBatchPOs(prev=>prev.map(bp=>byId[bp.id]||bp));
           setSanMarPreview(p=>p?{...p,batchPOs:updatedPos}:p);
         }}
         onSubmitted={(res)=>{
-          const pos=sanmarPreview.batchPOs;const poNum=sanmarPreview.poNumber;const vname=sanmarPreview.vendorName;
-          const total=pos.reduce((a,bp)=>a+bp.total_cost,0);
-          const totalUnits=pos.reduce((a,bp)=>a+bp.items.reduce((s,it)=>s+it.qty,0),0);
-          const now=new Date().toLocaleString();
-          const sb={po_number:poNum,vendor_key:'sanmar',vendor_name:vname,total_cost:total,total_units:totalUnits,
-            submitted_at:now,submitted_by:cu.name,status:'submitted',
-            sanmar_confirmation:res.transactionId||'',sanmar_submitted_at:now,sanmar_response:res.raw||'',
-            source_pos:pos.map(bp=>({so_id:bp.so_id,so_memo:bp.so_memo,customer:bp.customer,items:bp.items,total_cost:bp.total_cost,po_id:bp.po_id||''}))};
-          setSubmittedBatches(prev=>[sb,...prev.filter(b=>b.po_number!==poNum)]);
-          pos.forEach(bp=>{
-            const so=sos.find(s=>s.id===bp.so_id);if(!so)return;
-            let promoted=false;
-            const updatedItems=safeItems(so).map(it=>{
-              const pls=(it.po_lines||[]).map(pl=>{
-                if(pl.batch_queue_id===bp.id){promoted=true;return{...pl,status:'waiting',batch_po_number:poNum,memo:'Batch '+poNum+' — '+vname}}
-                return pl;
-              });
-              return{...it,po_lines:pls};
-            });
-            if(!promoted){
-              bp.items.forEach(bpIt=>{
-                const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
-                const poLine={po_id:poNum,vendor:vname,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
-                Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
-                updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
-              });
-            }
-            savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
-          });
-          setBatchPOs(prev=>prev.filter(p=>p.vendor_key!=='sanmar'));
-          setBatchCounter(ct=>ct+1);
-          nf('✅ '+poNum+' submitted to '+vname+(res.transactionId?(' — confirmation '+res.transactionId):''));
+          finalizeSanmarOrder({pos:sanmarPreview.batchPOs,poNum:sanmarPreview.poNumber,vendorName:sanmarPreview.vendorName,res});
         }}/>}
     </>);
   };

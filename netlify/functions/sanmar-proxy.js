@@ -18,9 +18,13 @@ const WSDL_MAP = {
   inventory:      'https://ws.sanmar.com:8080/SanMarWebService/SanMarWebServicePort',
   pricing:        'https://ws.sanmar.com:8080/SanMarWebService/SanMarPricingServicePort',
   promostandards: 'https://ws.sanmar.com:8080/promostandards/InventoryServiceBinding',
-  purchaseorder:  'https://ws.sanmar.com:8080/promostandards/POServiceBinding',
+  po:             'https://ws.sanmar.com:8080/SanMarWebService/SanMarPOServicePort',
   invoice:        'https://ws.sanmar.com:8080/SanMarWebService/InvoicePort',
 };
+
+// SanMar exposes a separate sandbox host for order testing (test-ws.sanmar.com).
+// Callers pass ?env=test to route order submissions there so no real order is placed.
+function toTestHost(url) { return url.replace('://ws.sanmar.com', '://test-ws.sanmar.com'); }
 
 // Build a SOAP envelope for SanMar methods that use complex-type args
 // Product & Pricing services: product params in <arg0>, auth credentials in <arg1>
@@ -93,42 +97,52 @@ function buildPromoStandardsSoapEnvelope(action, params) {
 </soapenv:Envelope>`;
 }
 
-// PromoStandards Purchase Order Service v1.0.0 — SendPO. Mirrors the envelope
-// previewed client-side (src/sanmarPO.js) but injects the password server-side.
-// ⚠ This POSTs a real purchase order to SanMar.
-const PO_NS = 'http://www.promostandards.org/WSDL/PurchaseOrderService/1.0.0/';
-const PO_SHARED_NS = 'http://www.promostandards.org/WSDL/PurchaseOrderService/1.0.0/SharedObjects/';
-function buildSanMarSendPOEnvelope({ wsVersion, id, password, po }) {
-  const lineItems = (po.lineItems || []).map(l => `
-        <shar:LineItem>
-          <shar:lineNumber>${escapeXml(String(l.lineNumber ?? ''))}</shar:lineNumber>
-          <shar:style>${escapeXml(String(l.style ?? ''))}</shar:style>
-          <shar:color>${escapeXml(String(l.color ?? ''))}</shar:color>
-          <shar:size>${escapeXml(String(l.size ?? ''))}</shar:size>
-          <shar:quantity>${escapeXml(String(l.quantity ?? 0))}</shar:quantity>
-          <shar:unitPrice>${escapeXml((Number(l.unitPrice) || 0).toFixed(2))}</shar:unitPrice>
-        </shar:LineItem>`).join('');
-  const poNumber = po.orderReference?.poNumber || '';
+// SanMar Standard submitPO service (SanMarPOServicePort). Each line item carries
+// style/color/size/quantity (inventoryKey + sizeIndex optional). Auth goes in
+// arg1; the password is injected server-side. ⚠ Against the production endpoint
+// this places a REAL order — callers gate this behind a Test/Live toggle.
+// NOTE: SanMar uses commas as a delimiter in order files, so commas are stripped
+// from every field per their integration guide.
+function noComma(s) { return String(s ?? '').replace(/,/g, ' '); }
+function buildSanMarSubmitPOEnvelope(po, customerNumber, username, password) {
+  const f = v => escapeXml(noComma(v));
+  const details = (po.items || []).map(it => `
+        <webServicePoDetailList>
+          <inventoryKey>${f(it.inventoryKey || '')}</inventoryKey>
+          <sizeIndex>${f(it.sizeIndex || '')}</sizeIndex>
+          <style>${f(it.style || '')}</style>
+          <color>${f(it.color || '')}</color>
+          <size>${f(it.size || '')}</size>
+          <quantity>${f(it.quantity ?? 0)}</quantity>
+          <whseNo></whseNo>
+        </webServicePoDetailList>`).join('');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-                  xmlns:ns="${PO_NS}"
-                  xmlns:shar="${PO_SHARED_NS}">
+                  xmlns:web="http://webservice.integration.sanmar.com/">
   <soapenv:Header/>
   <soapenv:Body>
-    <ns:SendPORequest>
-      <shar:wsVersion>${escapeXml(wsVersion || '1.0.0')}</shar:wsVersion>
-      <shar:id>${escapeXml(String(id ?? ''))}</shar:id>
-      <shar:password>${escapeXml(String(password ?? ''))}</shar:password>
-      <ns:PO>
-        <shar:orderType>${escapeXml(po.orderType || 'Blank')}</shar:orderType>
-        <shar:orderReference>
-          <shar:poNumber>${escapeXml(String(poNumber))}</shar:poNumber>
-        </shar:orderReference>
-        <shar:orderDate>${escapeXml(po.orderDate || new Date().toISOString().slice(0, 10))}</shar:orderDate>
-        <shar:LineItemArray>${lineItems}
-        </shar:LineItemArray>
-      </ns:PO>
-    </ns:SendPORequest>
+    <web:submitPO>
+      <arg0>
+        <attention>${f(po.attention || '')}</attention>
+        <notes></notes>
+        <poNum>${f(po.poNum || '')}</poNum>
+        <shipTo>${f(po.shipTo || '')}</shipTo>
+        <shipAddress1>${f(po.shipAddress1 || '')}</shipAddress1>
+        <shipAddress2>${f(po.shipAddress2 || '')}</shipAddress2>
+        <shipCity>${f(po.shipCity || '')}</shipCity>
+        <shipState>${f(po.shipState || '')}</shipState>
+        <shipZip>${f(po.shipZip || '')}</shipZip>
+        <shipMethod>${f(po.shipMethod || 'UPS')}</shipMethod>
+        <shipEmail>${f(po.shipEmail || '')}</shipEmail>
+        <residence>${f(po.residence || 'N')}</residence>
+        <department></department>${details}
+      </arg0>
+      <arg1>
+        <sanMarCustomerNumber>${escapeXml(customerNumber)}</sanMarCustomerNumber>
+        <sanMarUserName>${escapeXml(username)}</sanMarUserName>
+        <sanMarUserPassword>${escapeXml(password)}</sanMarUserPassword>
+      </arg1>
+    </web:submitPO>
   </soapenv:Body>
 </soapenv:Envelope>`;
 }
@@ -231,11 +245,14 @@ exports.handler = async (event) => {
 
   const service = event.queryStringParameters?.service || 'product';
   const action = event.queryStringParameters?.action || '';
-  const baseUrl = WSDL_MAP[service];
+  const useTest = event.queryStringParameters?.env === 'test';
+  let baseUrl = WSDL_MAP[service];
   if (!baseUrl) {
     return { statusCode: 400, headers,
       body: JSON.stringify({ error: `Unknown service "${service}". Use: ${Object.keys(WSDL_MAP).join(', ')}` }) };
   }
+  // Order submissions can target SanMar's sandbox host for safe format validation.
+  if (useTest && service === 'po') baseUrl = toTestHost(baseUrl);
   if (!action) {
     return { statusCode: 400, headers,
       body: JSON.stringify({ error: 'Missing "action" query parameter (e.g. getProductInfoByStyleColorSize)' }) };
@@ -261,15 +278,9 @@ exports.handler = async (event) => {
           productIDtype: productIDtype || productIdType || 'Supplier',
         };
         soapBody = buildPromoStandardsSoapEnvelope(action, promoParams);
-      } else if (service === 'purchaseorder') {
-        // sendPO — client sends the buildSanMarPOPayload() object (no password).
-        // PromoStandards `id` is the web-service username for SanMar's PO binding.
-        soapBody = buildSanMarSendPOEnvelope({
-          wsVersion: parsed.wsVersion || '1.0.0',
-          id: parsed.id || username,
-          password,
-          po: parsed.PO || parsed.po || {},
-        });
+      } else if (service === 'po') {
+        // submitPO — client sends { poNum, ship*, items:[{style,color,size,quantity}] }.
+        soapBody = buildSanMarSubmitPOEnvelope(parsed, customerNumber, username, password);
       } else if (service === 'inventory') {
         // Inventory service uses flat string args: arg0=custNum, arg1=user, arg2=pass, arg3=style, arg4=color, arg5=size
         soapBody = buildFlatArgSoapEnvelope(action, [
@@ -318,13 +329,13 @@ exports.handler = async (event) => {
     }
     // For PO submission, attach the raw XML so the client can confirm/debug the
     // first real order (PromoStandards sendPO responses vary in shape per supplier).
-    if (opts.includeRaw && parsed && typeof parsed === 'object') parsed._rawXml = xml.slice(0, 4000);
+    if (opts.includeRaw && parsed && typeof parsed === 'object' && !Array.isArray(parsed)) parsed._rawXml = xml.slice(0, 4000);
     return { statusCode: 200, headers, body: JSON.stringify(parsed) };
   };
 
   try {
     console.log(`[SanMar] SOAP request: ${action} → ${baseUrl} (customer: ${customerNumber}, user: ${username})`);
-    let result = await doRequest(soapBody, { includeRaw: service === 'purchaseorder' });
+    let result = await doRequest(soapBody, { includeRaw: service === 'po' });
 
     // PromoStandards returns a 200 with an errorMessage (not a SOAP fault) when
     // the id/password combo is wrong. The `id` can be either the web-service

@@ -29,12 +29,13 @@ function deepFind(obj, names) {
   return null;
 }
 
-export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', onClose, onApplyPrices, onSubmitted }) {
+export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', shipTo, onClose, onApplyPrices, onSubmitted }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'xml'
   const [copied, setCopied] = useState(false);
   const [overrides, setOverrides] = useState({}); // lineNumber -> new unitPrice
   const [pc, setPc] = useState({ status: 'idle', rows: [], error: null, applied: false }); // price check
-  const [sub, setSub] = useState({ status: 'idle', msg: '', txn: '', raw: '' }); // submission
+  const [sub, setSub] = useState({ status: 'idle', msg: '', raw: '', finalized: false }); // submission
+  const [env, setEnv] = useState('test'); // 'test' (SanMar sandbox) | 'prod' (real order)
 
   // Live submit + price-apply are only enabled when the host wires the callbacks
   // (the Batch PO Queue page). Other mounts (e.g. the order-editor "batch ready"
@@ -140,39 +141,47 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   }
 
   async function submit() {
+    const isTest = env === 'test';
     const ok = window.confirm(
-      `Place a REAL purchase order with ${vendorName}?\n\n` +
-      `${poNumber}\n${totals.lineCount} lines · ${totals.totalQty} units · $${totals.totalCost.toFixed(2)}\n\n` +
-      `This transmits the order to ${vendorName} and cannot be undone here.`
+      isTest
+        ? `Send a TEST order to SanMar's sandbox?\n\n${poNumber} · ${totals.totalQty} units\n\nNo real order is placed — SanMar reviews the format only.`
+        : `Place a REAL, billable purchase order with ${vendorName}?\n\n${poNumber} · ${totals.lineCount} lines · ${totals.totalQty} units · $${totals.totalCost.toFixed(2)}\n\nThis cannot be undone here.`
     );
     if (!ok) return;
-    setSub({ status: 'submitting', msg: '', txn: '', raw: '' });
+    setSub({ status: 'submitting', msg: '', raw: '', finalized: false });
     try {
-      const payload = { ...basePayload, PO: { ...basePayload.PO, lineItems: lines } };
-      delete payload._summary;
-      const res = await sanmarSubmitPO(payload);
-      const txn = deepFind(res, ['transactionId', 'transactionID', 'purchaseOrderNumber']);
-      const errMsg = deepFind(res, ['errorMessage', 'description']);
-      const sev = deepFind(res, ['severity']);
+      const payload = {
+        poNum: poNumber,
+        attention: poNumber,
+        shipTo: shipTo?.name || '',
+        shipAddress1: shipTo?.addr || '',
+        shipAddress2: shipTo?.addr2 || '',
+        shipCity: shipTo?.city || '',
+        shipState: shipTo?.state || '',
+        shipZip: shipTo?.zip || '',
+        shipEmail: shipTo?.email || '',
+        shipMethod: 'UPS',
+        residence: 'N',
+        items: lines.map(l => ({ style: l.style, color: l.color, size: l.size, quantity: l.quantity })),
+      };
+      const res = await sanmarSubmitPO(payload, { test: isTest });
+      const errOcc = String(deepFind(res, ['errorOccurred', 'errorOccured']) ?? '').toLowerCase();
+      const msg = deepFind(res, ['message']);
       const raw = (res && res._rawXml) || JSON.stringify(res, null, 2);
-      if (txn && (!sev || String(sev).toLowerCase() !== 'error')) {
-        setSub({ status: 'success', msg: `${vendorName} accepted the order.`, txn: String(txn), raw });
-        if (onSubmitted) onSubmitted({ transactionId: String(txn), raw });
-      } else if (errMsg) {
-        setSub({ status: 'error', msg: String(errMsg), txn: '', raw });
+      const accepted = errOcc === 'false' || (errOcc !== 'true' && /success/i.test(msg || ''));
+      if (accepted) {
+        if (isTest) {
+          setSub({ status: 'success', msg: `Test order accepted (${msg || 'OK'}). Email this test PO (${poNumber}) to sanmarintegrations@sanmar.com to verify, then switch to Live.`, raw, finalized: false });
+        } else {
+          setSub({ status: 'success', msg: msg || `${vendorName} accepted the order.`, raw, finalized: true });
+          if (onSubmitted) onSubmitted({ transactionId: '', raw, env: 'prod', message: msg || '' });
+        }
       } else {
-        // 200 with no clear confirmation/error field — let the user verify the raw
-        // response before we log the order as placed.
-        setSub({ status: 'review', msg: `${vendorName} returned no standard confirmation field. Review the response below before logging this as ordered.`, txn: '', raw });
+        setSub({ status: 'error', msg: msg || 'Submission failed', raw, finalized: false });
       }
     } catch (e) {
-      setSub({ status: 'error', msg: e.message || 'Submission failed', txn: '', raw: '' });
+      setSub({ status: 'error', msg: e.message || 'Submission failed', raw: '', finalized: false });
     }
-  }
-
-  function logAnyway() {
-    if (onSubmitted) onSubmitted({ transactionId: '', raw: sub.raw });
-    setSub(p => ({ ...p, status: 'success', msg: 'Logged as ordered. Verify in your SanMar account.' }));
   }
 
   const copyXml = () => {
@@ -182,7 +191,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   };
 
   const submitting = sub.status === 'submitting';
-  const done = sub.status === 'success';
+  const done = sub.status === 'success' && sub.finalized; // a real (prod) order was placed
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -192,9 +201,14 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
           <button className="modal-close" onClick={onClose}>x</button>
         </div>
         <div className="modal-body">
-          {!done && liveSubmit && (
+          {!done && liveSubmit && env === 'test' && (
+            <div style={{ padding: 10, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
+              <strong style={{ color: '#1d4ed8' }}>🧪 Test mode.</strong> Submits to SanMar's sandbox (test-ws.sanmar.com) via the submitPO service. <strong>No real order is placed.</strong> Use this to validate the format, then switch to Live.
+            </div>
+          )}
+          {!done && liveSubmit && env === 'prod' && (
             <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
-              <strong style={{ color: '#b91c1c' }}>⚠ Live submission.</strong> Clicking <strong>Submit to {vendorName}</strong> below transmits this PO to {vendorName} via the PromoStandards sendPO service. Credentials are injected server-side. Verify the line items and pricing first.
+              <strong style={{ color: '#b91c1c' }}>⚠ Live mode.</strong> Clicking <strong>Submit LIVE to {vendorName}</strong> places a REAL, billable order via the submitPO service. Credentials are injected server-side. Verify line items and pricing first.
             </div>
           )}
           {!liveSubmit && (
@@ -268,23 +282,27 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
               background: sub.status === 'error' ? '#fef2f2' : sub.status === 'success' ? '#f0fdf4' : '#fffbeb',
               border: '1px solid ' + (sub.status === 'error' ? '#fecaca' : sub.status === 'success' ? '#bbf7d0' : '#fde68a') }}>
               {sub.status === 'submitting' && <span>⏳ Submitting to {vendorName}…</span>}
-              {sub.status === 'success' && <div><strong style={{ color: '#166534' }}>✓ {sub.msg}</strong>{sub.txn && <div style={{ marginTop: 4, fontFamily: 'monospace' }}>Confirmation: <strong>{sub.txn}</strong></div>}</div>}
+              {sub.status === 'success' && <div><strong style={{ color: '#166534' }}>✓ {sub.msg}</strong></div>}
               {sub.status === 'error' && <div><strong style={{ color: '#b91c1c' }}>✕ Submission failed</strong><div style={{ marginTop: 4 }}>{sub.msg}</div></div>}
-              {sub.status === 'review' && <div><strong style={{ color: '#b45309' }}>⚠ {sub.msg}</strong><button className="btn btn-sm" style={{ marginLeft: 8, background: '#d97706', color: 'white', border: 'none' }} onClick={logAnyway}>Log as ordered anyway</button></div>}
-              {sub.raw && (sub.status === 'error' || sub.status === 'review') && (
+              {sub.raw && sub.status === 'error' && (
                 <pre style={{ marginTop: 8, background: '#0f172a', color: '#fca5a5', padding: 10, borderRadius: 6, fontSize: 10, overflow: 'auto', maxHeight: 200 }}>{sub.raw}</pre>
               )}
             </div>
           )}
         </div>
         <div className="modal-footer">
-          <span style={{ flex: 1, fontSize: 11, color: '#94a3b8' }}>
-            {pc.status === 'loading' ? 'Checking SanMar pricing…' : pc.applied ? 'Prices updated to SanMar live pricing.' : ''}
-          </span>
+          {liveSubmit && !done && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginRight: 'auto' }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: '#64748b' }}>Mode:</span>
+              <button onClick={() => setEnv('test')} style={segBtn(env === 'test', '#2563eb')}>Test</button>
+              <button onClick={() => setEnv('prod')} style={segBtn(env === 'prod', '#dc2626')}>Live</button>
+            </div>
+          )}
+          {!liveSubmit && <span style={{ flex: 1, fontSize: 11, color: '#94a3b8' }}>Preview only — submit from the Batch PO Queue page.</span>}
           <button className="btn btn-secondary" onClick={onClose}>{done ? 'Close' : liveSubmit ? 'Cancel' : 'Close'}</button>
           {!done && liveSubmit && (
-            <button className="btn btn-primary" style={{ background: '#16a34a', borderColor: '#16a34a' }} disabled={submitting || lines.length === 0} onClick={submit}>
-              {submitting ? 'Submitting…' : `🚀 Submit to ${vendorName}`}
+            <button className="btn btn-primary" style={{ background: env === 'test' ? '#2563eb' : '#16a34a', borderColor: env === 'test' ? '#2563eb' : '#16a34a' }} disabled={submitting || lines.length === 0} onClick={submit}>
+              {submitting ? 'Submitting…' : env === 'test' ? '🧪 Send Test to SanMar' : `🚀 Submit LIVE to ${vendorName}`}
             </button>
           )}
         </div>
@@ -340,6 +358,15 @@ function PriceCheck({ pc, onApply, onRecheck, canApply }) {
 
 const th = { padding: '6px 8px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: '#475569', borderBottom: '1px solid #e2e8f0' };
 const td = { padding: '6px 8px', fontSize: 12 };
+
+function segBtn(active, activeColor) {
+  return {
+    padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer',
+    border: '1px solid ' + (active ? activeColor : '#cbd5e1'),
+    background: active ? activeColor : 'white',
+    color: active ? 'white' : '#64748b',
+  };
+}
 
 function Stat({ label, value, mono }) {
   return (

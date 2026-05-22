@@ -14,7 +14,7 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isIm
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,nextBatchPONumber,onFinalizeSanmar,onApplySanmarPrices,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -5586,20 +5586,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             })}
           </div>
           <p style={{fontSize:12,color:'#64748b',margin:0}}>
-            Use the PO# above when placing the order on sanmar.com. To edit sizes or remove a line, close this popup and use the Batch POs page. Preview the API payload below to see what would be sent once live submit is enabled.
+            Use the PO# above when placing the order on sanmar.com, or click below to verify pricing and submit the order to SanMar directly. To edit sizes or remove a line, close this popup and use the Batch POs page.
           </p>
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setBatchReadyPopup(null)}>Continue working</button>
-          <button className="btn btn-secondary" style={{color:'#6d28d9',borderColor:'#c4b5fd'}} onClick={()=>{
+          <button className="btn btn-primary" style={{background:'#6d28d9',borderColor:'#6d28d9'}} onClick={()=>{
             setSanMarPreviewBatch({poNumber:nextBatchPONumber||'NSA-####',batchPOs:liveBatches,vendorName:batchReadyPopup.vendorName});
             setBatchReadyPopup(null);
-          }}>🔍 Preview SanMar API Payload</button>
+          }}>📤 Verify & Submit to SanMar</button>
         </div>
       </div></div>;
       })()}
 
-      {sanmarPreviewBatch&&<SanMarPreviewModal {...sanmarPreviewBatch} onClose={()=>setSanMarPreviewBatch(null)}/>}
+      {sanmarPreviewBatch&&<SanMarPreviewModal {...sanmarPreviewBatch} shipTo={companyInfoProp}
+        onClose={()=>setSanMarPreviewBatch(null)}
+        onApplyPrices={onApplySanmarPrices?(updatedPos)=>{onApplySanmarPrices(updatedPos);setSanMarPreviewBatch(p=>p?{...p,batchPOs:updatedPos}:p)}:undefined}
+        onSubmitted={onFinalizeSanmar?(res)=>{onFinalizeSanmar({pos:sanmarPreviewBatch.batchPOs,poNum:sanmarPreviewBatch.poNumber,vendorName:sanmarPreviewBatch.vendorName,res})}:undefined}/>}
 
         {showPick&&<div className="modal-overlay" onClick={()=>{setShowPick(false);setPickSel({})}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
       <div className="modal-header"><h2>{typeof showPick==='object'?'IF — '+pickId:'Create IF — Select Items'}</h2><button className="modal-close" onClick={()=>{setShowPick(false);setPickSel({})}}>x</button></div>
