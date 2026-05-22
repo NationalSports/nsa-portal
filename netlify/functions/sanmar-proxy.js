@@ -234,10 +234,10 @@ function parseElement(xml) {
 
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json' };
-  const username = process.env.SANMAR_USERNAME;
-  const password = process.env.SANMAR_PASSWORD;
+  let username = process.env.SANMAR_USERNAME;
+  let password = process.env.SANMAR_PASSWORD;
   // Customer number is often just the numeric part (e.g. "300767" from "300767-prod")
-  const customerNumber = process.env.SANMAR_CUSTOMER_NUMBER || username?.replace(/-.*$/, '') || username;
+  let customerNumber = process.env.SANMAR_CUSTOMER_NUMBER || username?.replace(/-.*$/, '') || username;
   if (!username || !password) {
     return { statusCode: 500, headers,
       body: JSON.stringify({ error: 'SANMAR_USERNAME and SANMAR_PASSWORD not configured in environment variables' }) };
@@ -246,6 +246,14 @@ exports.handler = async (event) => {
   const service = event.queryStringParameters?.service || 'product';
   const action = event.queryStringParameters?.action || '';
   const useTest = event.queryStringParameters?.env === 'test';
+  // SanMar's sandbox (test-ws) is a separate account and rejects production
+  // credentials. If dedicated test creds are configured, use them for test
+  // submissions; otherwise fall back to prod creds (which only work against prod).
+  if (useTest && process.env.SANMAR_TEST_USERNAME && process.env.SANMAR_TEST_PASSWORD) {
+    username = process.env.SANMAR_TEST_USERNAME;
+    password = process.env.SANMAR_TEST_PASSWORD;
+    customerNumber = process.env.SANMAR_TEST_CUSTOMER_NUMBER || username?.replace(/-.*$/, '') || username;
+  }
   let baseUrl = WSDL_MAP[service];
   if (!baseUrl) {
     return { statusCode: 400, headers,

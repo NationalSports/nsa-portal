@@ -177,7 +177,11 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
           if (onSubmitted) onSubmitted({ transactionId: '', raw, env: 'prod', message: msg || '' });
         }
       } else {
-        setSub({ status: 'error', msg: msg || 'Submission failed', raw, finalized: false });
+        const authFail = /authenticat|credential|user.*fail/i.test(msg || '');
+        const hint = isTest && authFail
+          ? ' — SanMar\'s sandbox (test-ws) uses a separate account that won\'t accept your production login. Ask SanMar for test/integration credentials (set as SANMAR_TEST_* env vars), or switch to Live, since the order format is now validated.'
+          : '';
+        setSub({ status: 'error', msg: (msg || 'Submission failed') + hint, raw, finalized: false });
       }
     } catch (e) {
       setSub({ status: 'error', msg: e.message || 'Submission failed', raw: '', finalized: false });
