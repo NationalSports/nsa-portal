@@ -429,6 +429,34 @@ Each step is independently shippable behind a feature flag on `webstores.status=
   -- 'individual' (one buyer, usually paid) | 'bulk' (coach/team, invoiced later)
   ```
 
-## Open questions still to resolve before step 1
+- **Invoicing bulk orders:** **rep-triggered, on demand.** Bulk/unpaid lines
+  accumulate on the club's tab; the SO can be created (batched) independently of
+  billing. A rep clicks **"Invoice club"** on the store-detail screen whenever
+  they choose — once, or in stages — and that generates the invoice for the
+  outstanding bulk total via the existing customer-invoice flow (migrations
+  007/008). Nothing auto-charges at batch or at store close.
 
-1. When a bulk/invoiced order batches into an SO, do we charge the club's existing customer record right then, or accumulate on a tab until staff close the store and invoice the total?
+## Storefront look & theming
+
+Per-store branding is **template-driven**, not hand-built per club. There is
+**one** storefront React app (`src/storefront/`) with a single, well-designed
+layout that reads each store's branding fields at runtime:
+
+- `webstores.logo_url`, `primary_color`, `hero_blurb` (already in the schema)
+  drive the header, accent color, and landing copy.
+- Add a few more presentational columns as needed: `banner_url`, `accent_color`,
+  `theme` (e.g. `'classic' | 'bold' | 'minimal'` — a small set of layout presets
+  the rep picks from a dropdown).
+
+So a rep spins up a new club store by filling in name, logo, colors, and picking
+a theme preset — no code, no per-store design work. Every store shares the same
+tested, responsive, accessible components; only the skin changes. This keeps all
+stores consistent to maintain and lets us improve the storefront once for
+everyone.
+
+Recommendation: I (Claude) build the **template + 2–3 theme presets** once, wired
+to those branding columns. That's the right division of labor — code is a
+build-once asset, whereas designing each club store by hand would be repetitive
+manual work better handled by the rep filling in branding fields. If you later
+want richer per-store visuals (custom hero images, section ordering), we extend
+the preset system rather than forking the app.
