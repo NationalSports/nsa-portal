@@ -1647,10 +1647,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       jobMap[jobKey]=job;
     });
     // Build map of existing NON-split jobs keyed by job key AND by art_file_id (skip splits so they don't collide)
-    const existingJobMap={};const existingByArtId={};const existingById={};
-    safeJobs(o).forEach(j=>{if(!j.split_from){existingJobMap[j.key||j.id]=j;const jArtIds=j._art_ids||[j.art_file_id].filter(Boolean);jArtIds.forEach(aid=>{existingByArtId[aid]=existingByArtId[aid]||j});existingById[j.id]=j}});
+    const existingJobMap={};const existingByArtId={};
+    safeJobs(o).forEach(j=>{if(!j.split_from){existingJobMap[j.key||j.id]=j;const jArtIds=j._art_ids||[j.art_file_id].filter(Boolean);jArtIds.forEach(aid=>{existingByArtId[aid]=existingByArtId[aid]||j})}});
     const soNum=o.id?.replace('SO-','')||'0';
+    // Guard against duplicate job ids. A collision makes two jobs share an id, and
+    // id-based lookups (e.g. dashboard "Review Mockup" todos) then resolve to the
+    // wrong job. _reserved holds every id an existing job legitimately owns so freshly
+    // minted ids never steal one; _usedIds tracks ids handed out this pass so a
+    // preserved id that's already taken (pre-existing corruption) gets re-minted.
+    const _reserved=new Set(safeJobs(o).map(j=>j.id).filter(Boolean));
+    const _usedIds=new Set();
     let jIdx=1;
+    const _nextJobId=()=>{let id;do{id='JOB-'+soNum+'-'+String(jIdx).padStart(2,'0');jIdx++}while(_reserved.has(id)||_usedIds.has(id));_usedIds.add(id);return id};
     const newJobs=Object.values(jobMap).map(j=>{
       // Try matching by key first, then by art_file_id as fallback to prevent data loss on key changes
       const existing=existingJobMap[j.key]||(j.art_file_id?existingByArtId[j.art_file_id]:null);
@@ -1659,8 +1667,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const artFile=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);
       const hasProdFiles=!artFile||(artFile.prod_files||[]).length>0;
       // Jobs stay in 'hold' (Ready for Prod) until warehouse manually moves them to production
-      const id=existing?.id||('JOB-'+soNum+'-'+String(jIdx).padStart(2,'0'));
-      jIdx++;
+      let id=existing?.id;
+      if(!id||_usedIds.has(id))id=_nextJobId();else _usedIds.add(id);
       return{
         id,key:j.key,art_file_id:j.art_file_id,art_name:existing?._name_locked?(existing.art_name||j.art_name):j.art_name,deco_type:j.deco_type,
         positions:[...j.positions].filter(Boolean).join(', '),items:j.items,
