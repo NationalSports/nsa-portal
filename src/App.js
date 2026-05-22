@@ -3144,6 +3144,7 @@ export default function App(){
       const lostText=(prevCount!=null&&newCount!=null)?(prevCount-newCount)+' of '+prevCount+' item(s)':(prevCount!=null?prevCount+' item(s)':'item(s)');
       const detail=(kind==='blocked'?'Save blocked: ':'Items removed: ')+lostText+(reason?' — '+reason:'');
       logChange(kind==='blocked'?'save_blocked':'data_loss','SO',soId,detail);
+      if(kind==='blocked')return; // blocked saves are logged but not emailed — no data is lost, so they're informational only
       const dedupeKey=kind+':'+soId;const last=_alertDedupeRef.current[dedupeKey]||0;const now=Date.now();
       if(now-last<5*60*1000)return; // already emailed within 5 min
       _alertDedupeRef.current[dedupeKey]=now;
