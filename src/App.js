@@ -17687,7 +17687,11 @@ export default function App(){
                   </div>
                 </div>;
               })()}
-              {mockupArtPicker&&(()=>{
+            </div>
+            :null}
+            {/* Mockup art picker — must render regardless of art_status so per-item mockup
+                drops on multi-art SKUs (which call setMockupArtPicker) actually surface. */}
+            {mockupArtPicker&&(()=>{
                 const {files,sku,color,arts}=mockupArtPicker;
                 return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(15,23,42,0.6)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:20}} onClick={()=>!artJobDetailUploading&&setMockupArtPicker(null)}>
                   <div style={{background:'white',borderRadius:12,padding:20,maxWidth:480,width:'100%'}} onClick={e=>e.stopPropagation()}>
@@ -17706,8 +17710,6 @@ export default function App(){
                   </div>
                 </div>;
               })()}
-            </div>
-            :null}
 
             {/* ─── Messages between Artist and Rep ─── */}
             <div style={{padding:'16px 20px'}}>
