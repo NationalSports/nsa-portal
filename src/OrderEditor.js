@@ -1566,6 +1566,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Each item may produce multiple entries if it has decorations with different deco types
     const itemSigs=[];
     safeItems(o).forEach((it,ii)=>{
+      // Deco types this item is sending to an outside decorator (item-level outside-deco
+      // PO lines or SO-level deco POs that cover this item). The in-house team doesn't
+      // produce those, so they must not generate a production job.
+      const outsideDecoTypes=new Set();
+      (it.po_lines||[]).forEach(pl=>{if(pl&&pl.po_type==='outside_deco'&&pl.deco_type)outsideDecoTypes.add(pl.deco_type)});
+      (o.deco_pos||[]).forEach(dp=>{if((dp.item_idxs||[]).includes(ii)&&dp.deco_type)outsideDecoTypes.add(dp.deco_type)});
       // First, classify each decoration by its resolved deco type
       const decosByType={};
       safeDecos(it).forEach((d,di)=>{
@@ -1573,11 +1579,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(d.kind==='art'){
           const artF=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
           const dt=artF?.deco_type||d.deco_type||'screen_print';
+          if(outsideDecoTypes.has(dt))return;// handled by outside decorator — no in-house job
           const part=d.art_file_id?'art_'+d.art_file_id+'@'+safeStr(d.position):'unassigned@'+safeStr(d.position);
           if(!decosByType[dt])decosByType[dt]=[];
           decosByType[dt].push({part,d,di});
         } else if(d.kind==='numbers'){
           const dt=d.num_method||'heat_transfer';
+          if(outsideDecoTypes.has(dt))return;// handled by outside decorator — no in-house job
           const part='numbers_'+dt+'@'+safeStr(d.position);
           if(!decosByType[dt])decosByType[dt]=[];
           decosByType[dt].push({part,d,di});
@@ -7682,7 +7690,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po.po_id);
 
       return<div className="modal-overlay" onClick={()=>setEditPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:750,maxHeight:'90vh',overflow:'auto'}}>
-        <div className="modal-header"><h2>PO — {po.po_id||'PO'}{po.batch_po_number&&<span style={{fontSize:12,fontWeight:600,color:'#7c3aed',marginLeft:10}}>· part of {po.batch_po_number}</span>}</h2>
+        <div className="modal-header"><h2>PO — {po.po_id||'PO'}<button className="btn btn-sm btn-secondary" title="Copy PO number" style={{fontSize:10,padding:'2px 8px',marginLeft:8,verticalAlign:'middle'}} onClick={()=>{navigator.clipboard?.writeText(po.po_id||'').then(()=>nf('Copied '+(po.po_id||'PO number'))).catch(()=>nf('Copy failed','error'))}}>📋 Copy</button>{po.batch_po_number&&<span style={{fontSize:12,fontWeight:600,color:'#7c3aed',marginLeft:10}}>· part of {po.batch_po_number}</span>}</h2>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
             {po.status==='queued'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#fef3c7',color:'#b45309'}}>Queued in batch</span>}
             {po.batch_po_number&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#f5f3ff',color:'#7c3aed',fontFamily:'monospace'}}>Batch: {po.batch_po_number}</span>}
