@@ -3520,22 +3520,22 @@ export default function App(){
       // "Items need ordering" tasks — auto-complete when SO is no longer need_order
       if(t.so_id&&t.title&&/items need ordering/i.test(t.title)){
         const so=sos.find(s=>s.id===t.so_id);
-        if(so&&calcSOStatus(so)!=='need_order'){changed=true;return{...t,status:'completed',completed_at:now,completed_by:'system',completion_note:'Auto-completed: items have been ordered',updated_at:now}}
+        if(so&&calcSOStatus(so)!=='need_order'){changed=true;return{...t,status:'completed',completed_at:now,completed_by:null,completion_note:'Auto-completed: items have been ordered',updated_at:now}}
       }
       // "Deposit required" tasks — auto-complete when estimate is converted to SO
       if(t.title&&/deposit required/i.test(t.title)){
         const estId=t.title.match(/(EST-\d+|E-\d+)/i)?.[1];
-        if(estId){const est=ests.find(e=>e.id===estId);if(est&&est.status==='converted'){changed=true;return{...t,status:'completed',completed_at:now,completed_by:'system',completion_note:'Auto-completed: estimate converted to SO',updated_at:now}}}
+        if(estId){const est=ests.find(e=>e.id===estId);if(est&&est.status==='converted'){changed=true;return{...t,status:'completed',completed_at:now,completed_by:null,completion_note:'Auto-completed: estimate converted to SO',updated_at:now}}}
       }
       // "Coach approved estimate" tasks — auto-complete when estimate is converted
       if(t.title&&/coach approved estimate/i.test(t.title)){
         const estId=t.title.match(/(EST-\d+|E-\d+)/i)?.[1];
-        if(estId){const est=ests.find(e=>e.id===estId);if(est&&est.status==='converted'){changed=true;return{...t,status:'completed',completed_at:now,completed_by:'system',completion_note:'Auto-completed: estimate converted to SO',updated_at:now}}}
+        if(estId){const est=ests.find(e=>e.id===estId);if(est&&est.status==='converted'){changed=true;return{...t,status:'completed',completed_at:now,completed_by:null,completion_note:'Auto-completed: estimate converted to SO',updated_at:now}}}
       }
       // "Confirm booking order" tasks — auto-complete when booking is confirmed
       if(t.so_id&&t.title&&/confirm booking/i.test(t.title)){
         const so=sos.find(s=>s.id===t.so_id);
-        if(so&&so.booking_confirmed){changed=true;return{...t,status:'completed',completed_at:now,completed_by:'system',completion_note:'Auto-completed: booking confirmed',updated_at:now}}
+        if(so&&so.booking_confirmed){changed=true;return{...t,status:'completed',completed_at:now,completed_by:null,completion_note:'Auto-completed: booking confirmed',updated_at:now}}
       }
       return t;
     }));
