@@ -13584,6 +13584,7 @@ export default function App(){
   _pdCtx.current={vend,cust,ests,sos,invPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES,isA};
   // Ship package modal: {grp, soMap:{soId:so}, boxes:[{items:[{sku,name,color,sizes:{}}],tracking_number:'',carrier:'',weight:5,notes:''}]}
   const[shipModal,setShipModal]=useState(null);
+  const[shipExpanded,setShipExpanded]=useState({});// key->bool; Ready-to-Ship cards start collapsed
   const[manualShipModal,setManualShipModal]=useState(null);
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
   const[decoCardFilter,setDecoCardFilter]=useState(null);// null|'ready'|'in_process'|'waiting'
@@ -14571,9 +14572,13 @@ export default function App(){
             {Object.values(byCustomer).map((grp,gi)=>{
               // Check what's already been shipped for these SOs
               const existingShipments=Object.values(grp.soMap).reduce((a,so)=>a.concat(so._shipments||[]),[]);
+              const grpKey=grp.cName+'|'+(grp.shipMethod||'pending');
+              const expanded=!!shipExpanded[grpKey];
               return<div key={gi} className="card" style={{borderLeft:'3px solid #166534'}}>
               <div style={{padding:'10px 14px'}}>
-                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:expanded?8:0,cursor:'pointer'}}
+                  onClick={()=>setShipExpanded(p=>({...p,[grpKey]:!p[grpKey]}))}>
+                  <span style={{fontSize:11,color:'#64748b',width:12,display:'inline-block'}}>{expanded?'▾':'▸'}</span>
                   <span style={{fontSize:14,fontWeight:800}}>{grp.cName}</span>
                   <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,
                     background:grp.shipMethod==='ship_customer'?'#dbeafe':grp.shipMethod==='rep_delivery'?'#dcfce7':grp.shipMethod==='customer_pickup'?'#fef3c7':'#fef2f2',
@@ -14584,6 +14589,7 @@ export default function App(){
                   <span style={{marginLeft:'auto',fontSize:12,fontWeight:800,color:'#166534'}}>{grp.totalUnits} units</span>
                   <span style={{fontSize:10,color:'#64748b'}}>{grp.items.length} item{grp.items.length!==1?'s':''}</span>
                 </div>
+                {expanded&&<>
                 {/* Detailed item list per SO */}
                 {[...grp.soIds].map(soId=>{const so=grp.soMap[soId];if(!so)return null;
                   return<div key={soId} style={{marginBottom:6}}>
@@ -14706,6 +14712,7 @@ export default function App(){
                       nf('📦 Packing list opened for '+grp.cName);
                     }}>🖨️ Pack Slip</button>
                 </div>
+                </>}
               </div>
             </div>})}
           </div>})()}
