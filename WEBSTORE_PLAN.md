@@ -59,10 +59,11 @@ CREATE TABLE webstores (
   so_creation     TEXT NOT NULL DEFAULT 'manual',  -- manual|on_close|daily|weekly
   so_next_run_at  TIMESTAMPTZ,                     -- set by scheduler
 
-  -- Fundraising
-  fundraise_enabled BOOLEAN DEFAULT false,
-  fundraise_pct     NUMERIC DEFAULT 0,             -- e.g. 0.15 → 15% markup
-  fundraise_flat    NUMERIC DEFAULT 0,             -- or flat $ per item
+  -- Fundraising (optional per store)
+  fundraise_enabled       BOOLEAN DEFAULT false,
+  fundraise_pct           NUMERIC DEFAULT 0,       -- e.g. 0.15 → 15% markup
+  fundraise_flat          NUMERIC DEFAULT 0,       -- or flat $ per item
+  fundraise_show_parents  BOOLEAN DEFAULT false,   -- show "$X supports the team" at checkout
 
   -- Branding
   logo_url        TEXT,
@@ -393,14 +394,41 @@ Each step is independently shippable behind a feature flag on `webstores.status=
 - **Roster:** opt-in per store. When uploaded, drives the coach's "not yet
   ordered" tracking; stores without one just show who has ordered.
 - **Coach permissions:** read-only. No batching, no closing, no status edits —
-  all staff-only. Coach can nudge non-orderers and export CSV.
+  all staff-only (we batch SOs and close stores). Coach can nudge non-orderers
+  and export CSV.
 - **Buyer vs. player:** buyer is often a parent; checkout always captures a
   player name per line item (number optional), so coach roster + SO pick lines
   carry the player identity even when the payer is someone else.
+- **Catalog curation:** the **rep picks the SKUs** for each store (no
+  auto-include of past products). The store-detail "Catalog" tab is a rep tool;
+  coaches don't edit it.
+- **Fundraising:** **optional per store** (`fundraise_enabled=false` by
+  default). When a rep turns it on, set the percent/flat markup. A second
+  per-store toggle `fundraise_show_parents` controls whether parents see the
+  "$X supports the team" line at checkout (default off — markup is just baked
+  into the price). Stores can run with no fundraising at all.
+- **Shipping:** **ship only** for v1 — every order collects a ship address and
+  goes through ShipStation. No in-store pickup option. (`webstore_orders.ship_method`
+  stays in the schema for a future pickup mode but is always `'ship'` now.)
+- **Order types — both supported, can coexist in one store:**
+  1. **Individual paid orders** — a parent/player checks out and **pays by card**
+     (Stripe). Each is its own `webstore_orders` row, `payment_mode='paid'`,
+     `order_kind='individual'`.
+  2. **Bulk / invoice-later orders** — a coach (or staff on their behalf) places
+     a larger order with **no card charge**; it's invoiced to the club afterward.
+     `payment_mode='unpaid'`, `order_kind='bulk'`.
+
+  A single store can offer both at once via `webstores.payment_mode='either'`:
+  the storefront lets a parent pay individually, while the coach/staff path can
+  drop a bulk order onto the team invoice. Both kinds **batch into the same SO**
+  (so fulfillment is one job); the paid lines are already settled, the bulk
+  lines carry to the club invoice. New column:
+
+  ```sql
+  ALTER TABLE webstore_orders ADD COLUMN order_kind TEXT NOT NULL DEFAULT 'individual';
+  -- 'individual' (one buyer, usually paid) | 'bulk' (coach/team, invoiced later)
+  ```
 
 ## Open questions still to resolve before step 1
 
-1. Do unpaid (coach) orders charge the team's existing customer record at SO time, or accumulate on a tab until the coach closes the store?
-2. Should fundraising markup be visible to parents ("$5 of this purchase supports the team") or invisible?
-3. Are catalogs club-specific (each store curates its own SKUs) or should we default-include the club's previously ordered products?
-4. Pickup vs. ship per store, or always offer both?
+1. When a bulk/invoiced order batches into an SO, do we charge the club's existing customer record right then, or accumulate on a tab until staff close the store and invoice the total?
