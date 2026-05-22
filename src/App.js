@@ -16196,7 +16196,7 @@ export default function App(){
     const _isArtistUser=cu?.role==='artist'||cu?.role==='art';
     const filtered=allArtJobs.filter(j=>{
       if(_isArtistUser&&j.assigned_artist!==cu.id)return false;
-      if(artDashView==='artist'&&artFilter!=='all'&&j.assigned_artist!==artFilter)return false;
+      if(artDashView==='artist'&&artFilter!=='all'&&(j.assigned_artist||'')!==artFilter)return false;
       if(artDashView==='rep'&&artFilter!=='all'&&j.repId!==artFilter)return false;
       if(artSearch){const s=artSearch.toLowerCase();
         if(!(j.customer||'').toLowerCase().includes(s)&&!(j.art_name||'').toLowerCase().includes(s)&&
