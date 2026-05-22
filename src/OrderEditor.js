@@ -2546,22 +2546,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const totalBlld=szKeysAll.reduce((a,sz)=>a+((blld[sz]||0)),0);
             const totalCncl=szKeysAll.reduce((a,sz)=>a+(cncl[sz]||0),0);
             const totalOpen=szKeysAll.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0)),0);
-            const st=isDS?(totalBlld>=totalOrd&&totalOrd>0?'shipped':totalBlld>0?'partial':'waiting'):(totalOpen<=0&&totalRcvd>0?'received':totalRcvd>0?'partial':'waiting');
+            const st=isDS?(totalBlld>=totalOrd&&totalOrd>0?'shipped':totalBlld>0?'partial':'waiting'):(totalOpen<=0&&totalRcvd>0?'received':totalRcvd>0?'partial':totalBlld>0?'in_transit':'waiting');
             return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:2}}>
-              <span style={{fontSize:10,fontWeight:700,width:46,color:st==='received'||st==='shipped'?'#166534':st==='partial'?'#b45309':'#92400e',cursor:'pointer',textDecoration:'underline'}} onClick={()=>{
+              <span style={{fontSize:10,fontWeight:700,width:46,color:st==='received'||st==='shipped'?'#166534':st==='in_transit'?'#1e40af':st==='partial'?'#b45309':'#92400e',cursor:'pointer',textDecoration:'underline'}} onClick={()=>{
                 // Find all items on this PO
                 const poId=po.po_id;const lines=[];
                 safeItems(o).forEach((it2,i2)=>{safePOs(it2).forEach((po2,pi2)=>{if(po2.po_id===poId)lines.push({lineIdx:i2,poIdx:pi2})})});
                 setEditPO({lineIdx:idx,poIdx:pi,po,allLines:lines.length>0?lines:[{lineIdx:idx,poIdx:pi}]});
               }} title="Click to edit">{po.po_id||'PO'}:</span>
               {szs.map(sz=>{const v=po[sz]||0;const r=isDS?(blld[sz]||0):(rcvd[sz]||0);const cn=cncl[sz]||0;if(!v)return<div key={sz} style={{width:48,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
-                const szSt=cn>=v?'cancelled':r>=(v-cn)?(isDS?'shipped':'received'):r>0?'partial':'waiting';
+                const szSt=cn>=v?'cancelled':r>=(v-cn)?(isDS?'shipped':'received'):r>0?'partial':(!isDS&&(blld[sz]||0)>0)?'in_transit':'waiting';
                 return<div key={sz} style={{width:48,textAlign:'center',fontSize:12,fontWeight:700,padding:'2px 0',borderRadius:3,
-                  background:szSt==='cancelled'?'#fef2f2':szSt==='received'||szSt==='shipped'?'#dcfce7':szSt==='partial'?'#fef3c7':'#fef3c7',
-                  color:szSt==='cancelled'?'#dc2626':szSt==='received'||szSt==='shipped'?'#166534':szSt==='partial'?'#b45309':'#92400e'}}>{szSt==='cancelled'?'✕':szSt==='partial'?r+'/'+(v-cn):v-cn}</div>})}
+                  background:szSt==='cancelled'?'#fef2f2':szSt==='received'||szSt==='shipped'?'#dcfce7':szSt==='in_transit'?'#dbeafe':szSt==='partial'?'#fef3c7':'#fef3c7',
+                  color:szSt==='cancelled'?'#dc2626':szSt==='received'||szSt==='shipped'?'#166534':szSt==='in_transit'?'#1e40af':szSt==='partial'?'#b45309':'#92400e'}}>{szSt==='cancelled'?'✕':szSt==='partial'?r+'/'+(v-cn):v-cn}</div>})}
               <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,
-                background:st==='received'||st==='shipped'?'#dcfce7':st==='partial'?'#fff7ed':'#fef3c7',
-                color:st==='received'||st==='shipped'?'#166534':st==='partial'?'#b45309':'#92400e'}}>{st==='shipped'?'✓ Shipped':st==='received'?'✓ Received':st==='partial'?(isDS?totalBlld+'/'+(totalOrd-totalCncl)+' Billed':totalRcvd+'/'+(totalOrd-totalCncl)+' Rcvd'):'Waiting'}</span>
+                background:st==='received'||st==='shipped'?'#dcfce7':st==='in_transit'?'#dbeafe':st==='partial'?'#fff7ed':'#fef3c7',
+                color:st==='received'||st==='shipped'?'#166534':st==='in_transit'?'#1e40af':st==='partial'?'#b45309':'#92400e'}}>{st==='shipped'?'✓ Shipped':st==='received'?'✓ Received':st==='in_transit'?'In Transit':st==='partial'?(isDS?totalBlld+'/'+(totalOrd-totalCncl)+' Billed':totalRcvd+'/'+(totalOrd-totalCncl)+' Rcvd'):'Waiting'}</span>
               {isDS&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
             </div>})}
         </div>}
