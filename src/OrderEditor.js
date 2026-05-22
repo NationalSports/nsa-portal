@@ -252,6 +252,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   },[products,vendorList]);
   // Helper to get vendor image for an item (used in itemDetails builders)
   const _vImg=(it,field)=>{const k=(it?.sku||'')+'|'+(it?.color||'').toLowerCase();const c=vendorImgs[k];return field==='front'?c?.front||'':c?.back||''};
+  // Resolve the best front-image URL for a line item (same priority as itemDetails)
+  const _itemImg=(it)=>{const prd=products.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||_vImg(it,'front')||''};
+  // Copy a line item's product image to the clipboard so the rep can paste it to the customer.
+  // Tries the actual image first; falls back to copying the URL when the browser/host blocks it (CORS, no ClipboardItem).
+  const copyItemImage=async(it)=>{
+    const url=_itemImg(it);
+    if(!url){nf('No image available for this item','error');return}
+    const copyUrl=()=>{navigator.clipboard?.writeText(url).then(()=>nf('📋 Image link copied — paste it to share')).catch(()=>{window.prompt('Copy image link:',url)})};
+    if(!navigator.clipboard||!window.ClipboardItem){copyUrl();return}
+    try{
+      const resp=await fetch(url,{mode:'cors'});
+      if(!resp.ok)throw new Error('fetch failed');
+      let blob=await resp.blob();
+      if(blob.type!=='image/png'){
+        blob=await new Promise((resolve,reject)=>{
+          const img=new Image();img.crossOrigin='anonymous';
+          img.onload=()=>{const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;c.getContext('2d').drawImage(img,0,0);c.toBlob(b=>b?resolve(b):reject(new Error('toBlob failed')),'image/png')};
+          img.onerror=()=>reject(new Error('img load failed'));
+          img.src=URL.createObjectURL(blob);
+        });
+      }
+      await navigator.clipboard.write([new window.ClipboardItem({'image/png':blob})]);
+      nf('🖼️ Image copied — paste it into your email or text');
+    }catch(e){copyUrl()}
+  };
 
   const fetchVendorInventory=useCallback(async(sku,vendorId,item)=>{
     const itemRef=item||{vendor_id:vendorId,sku};
@@ -2914,6 +2939,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {/* Single item-level reversible toggle — applies to every deco on this garment (art + numbers + names) */}
             {(()=>{const itemRev=safeDecos(item).some(d=>d.reversible);return safeDecos(item).length>0?<label style={{fontSize:11,display:'flex',alignItems:'center',gap:3,padding:'2px 6px',background:itemRev?'#ecfeff':'#f1f5f9',borderRadius:4,cursor:'pointer',border:'1px solid '+(itemRev?'#67e8f9':'#e2e8f0')}}><input type="checkbox" checked={itemRev} onChange={e=>{setItemReversible(idx,e.target.checked);nf(e.target.checked?'Reversible ON — applies to all decos on this item':'Reversible OFF')}}/> 🔄 Reversible (×2)</label>:null})()}
             <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:item.notes!=null?'#fef9c3':'white',borderColor:item.notes!=null?'#fde047':'#d1d5db',color:item.notes!=null?'#854d0e':'#475569'}} onClick={()=>uI(idx,'notes',item.notes==null?'':null)}>📝 {item.notes!=null?'Notes ✓':'+ Notes'}</button>
+            {_itemImg(item)&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} title="Copy the product image to send to the customer" onClick={()=>copyItemImage(item)}>🖼️ Copy image</button>}
             {safeDecos(item).length===0&&!item.no_deco&&qty>0&&<span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>⚠️ No deco assigned</span>}
           </div>
           {item.notes!=null&&<div style={{display:'flex',gap:6,alignItems:'flex-start',marginTop:6,padding:'6px 10px',background:'#fefce8',borderRadius:6,border:'1px solid #fde047'}}>
