@@ -116,7 +116,7 @@ const SalesHistory = lazyRetry(() => import('./SalesHistory'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, resolveSkuAcrossVendors } from './vendorApis';
 // ── Loading fallback for lazy components ──
 const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
 
@@ -20223,6 +20223,26 @@ export default function App(){
                   }catch(e){console.warn('[Import] Server-side SKU fallback failed:',e)}
                 }
 
+                // Vendor API fallback: items still unmatched (not an Adidas/catalog SKU) get
+                // looked up across SanMar / S&S / Momentec to auto-fill name/brand/color.
+                // They stay flagged as custom so the rep still confirms before import.
+                const vendorUnmatched=pdfItems.filter(it=>!it.catMatch&&!it.is_decoration&&it.sku);
+                if(vendorUnmatched.length>0){
+                  await Promise.all(vendorUnmatched.map(async it=>{
+                    try{
+                      const hit=await resolveSkuAcrossVendors(it.sku);
+                      if(hit){
+                        it._vendorSource=hit.vendor;
+                        if(hit.name)it.name=hit.name;
+                        if(hit.brand)it.brand=hit.brand;
+                        if(hit.color&&!it.color)it.color=hit.color;
+                        if(hit.rate>0&&!(it.rate>0))it.rate=hit.rate;
+                        it.issues=['Found via '+hit.vendor+' API — review, then create product or import as custom'];
+                      }
+                    }catch(e){/* vendor lookup is best-effort */}
+                  }));
+                }
+
                 // Separate decorations from products — drop decorations entirely (rep adds separately)
                 const products=pdfItems.filter(it=>!it.is_decoration);
 
@@ -20298,7 +20318,7 @@ export default function App(){
           <tbody>{imp.parsed.map((it,i)=><tr key={i} style={{background:it.catMatch?'#f0fdf4':it.is_custom?'#fffbeb':'#fef2f2'}}>
             <td style={{textAlign:'center'}}><input type="checkbox" checked={!it._skip} onChange={e=>updItem(i,'_skip',!e.target.checked)}/></td>
             <td style={{fontFamily:'monospace',fontWeight:700,color:it.catMatch?'#166534':'#dc2626'}}>{it.sku}</td>
-            <td>{it.catMatch?<span>✅ {it.name.slice(0,35)}</span>:<span>⚠️ {it.name.slice(0,35)}</span>}</td>
+            <td>{it.catMatch?<span>✅ {it.name.slice(0,35)}</span>:<span>⚠️ {it.name.slice(0,35)}{it._vendorSource&&<span style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#0369a1',background:'#e0f2fe',borderRadius:4,padding:'1px 4px'}}>via {it._vendorSource}</span>}</span>}</td>
             <td><input className="form-input" list="impBrandList" value={it.brand||''} onChange={e=>updItem(i,'brand',e.target.value)} placeholder="—" style={{fontSize:10,padding:'2px 4px',width:100,border:it.brand?'1px solid #e2e8f0':'1px solid #fca5a5'}}/></td>
             <td><input className="form-input" value={it.color||''} onChange={e=>updItem(i,'color',e.target.value)} placeholder="—" style={{fontSize:10,padding:'2px 4px',width:90,border:it.color?'1px solid #e2e8f0':'1px solid #fca5a5'}}/></td>
             <td style={{textAlign:'right'}}>${it.rate?.toFixed(2)}</td>
@@ -20314,6 +20334,7 @@ export default function App(){
           {unmatched.map((it,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 0',fontSize:11}}>
             <span style={{fontFamily:'monospace',fontWeight:700,color:'#92400e'}}>{it.sku}</span>
             <span style={{color:'#78350f'}}>{it.name?.slice(0,40)}</span>
+            {it._vendorSource&&<span style={{fontSize:9,fontWeight:700,color:'#0369a1',background:'#e0f2fe',borderRadius:4,padding:'1px 4px'}}>via {it._vendorSource}</span>}
             <span style={{fontSize:10,color:'#a16207'}}>Qty: {it.totalQty}</span>
           </div>)}
         </div>:null})()}
