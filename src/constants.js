@@ -324,6 +324,9 @@ export let CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Foot
 export const COLOR_CATEGORIES=['Black','White','Red','Navy','Royal','Dark Green','Cardinal','Maroon','Light Grey','Dark Grey','Vegas Gold','Athletic Gold','Orange'];
 
 export const EXTRA_SIZES=['XXS','XS','3XL','4XL','5XL','6XL','LT','XLT','2XLT','3XLT','OSFA'];
+// Full apparel size pool for the "+ Size" picker — includes the standard S–2XL so a sized item that's
+// missing a core size (e.g. imported with only S/M/L) can have XL/2XL added back, not just the extra sizes.
+export const APPAREL_SIZES=['XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','LT','XLT','2XLT','3XLT','OSFA'];
 // Footwear sizes — men's whole + half from 4.5 to 17
 export const FOOTWEAR_SIZES=['4.5','5','5.5','6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','12.5','13','13.5','14','14.5','15','15.5','16','16.5','17'];
 export const FOOTWEAR_DEFAULT_SIZES=['8','8.5','9','9.5','10','10.5','11','11.5','12'];
