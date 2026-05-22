@@ -120,8 +120,8 @@ CREATE TABLE webstore_order_items (
   unit_price      NUMERIC NOT NULL,
   unit_fundraise  NUMERIC DEFAULT 0,               -- per-unit fundraise component
   decoration_id   UUID,
-  player_name     TEXT,                            -- for personalized items
-  player_number   TEXT,                            -- jersey number coach wants to see
+  player_name     TEXT NOT NULL,                   -- captured per line; buyer is often a parent ordering for a player
+  player_number   TEXT,                            -- jersey number coach wants to see (optional)
   -- Per-line status, mirrored from the parent SO's job status so the coach
   -- and player both see live fulfillment state without exposing the full SO.
   line_status     TEXT DEFAULT 'pending',          -- pending|in_production|shipped|complete|cancelled
@@ -285,14 +285,39 @@ the coach's `customers`):
   - **Paid?** = `payment_mode` + `status` (Paid via Stripe, or "Team tab" for
     unpaid coach orders).
 
-- **Summary header**: total orders, total players ordered, # not yet ordered
-  (if the coach uploaded a roster), fundraise running total.
+- **Summary header**: total orders, total players ordered, fundraise running
+  total, and — when a roster has been uploaded for the store (see below) — a
+  **"# not yet ordered"** count plus the list of players still missing.
 - **Filters**: by status, paid/unpaid, by player.
-- Coach actions are read-only on fulfillment (they can't change production
-  status) but can: nudge a player who hasn't ordered (resend store link),
-  export the roster as CSV, and — for unpaid stores — close the store / trigger
-  the SO batch if `so_creation='manual'` and the store grants the coach that
-  permission.
+- **Coach is read-only.** They cannot change production status, batch orders,
+  or close the store — that is all staff-only. The coach view exists purely to
+  watch. The only outbound action a coach can take is **nudging players who
+  haven't ordered** (resend the store link) and exporting the roster as CSV.
+
+### Optional roster (per store)
+
+Roster upload is **opt-in per store** — a store works fine without one. When a
+coach (or staff) uploads a roster, the "not yet ordered" tracking turns on;
+otherwise the coach view simply shows who *has* ordered and omits that count.
+
+New table:
+
+```sql
+CREATE TABLE webstore_roster (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id    UUID NOT NULL REFERENCES webstores(id) ON DELETE CASCADE,
+  player_name TEXT NOT NULL,
+  player_number TEXT,
+  parent_email TEXT,            -- optional, used for "nudge" reminders
+  ordered     BOOLEAN DEFAULT false,  -- flipped true once a matching order lands
+  UNIQUE (store_id, player_name, player_number)
+);
+```
+
+A roster row is matched to an order by `player_name` (+ number when present) on
+any `webstore_order_items` for the store; the match flips `ordered=true`. The
+"not yet ordered" list is just `webstore_roster WHERE ordered=false`. Upload is
+a CSV (name, number, parent email) in the portal store-detail screen.
 
 **Status sync (single source of truth):** the SO created by batching is the
 real fulfillment record. A small reconciler (runs inside the existing SO
@@ -331,7 +356,12 @@ New route tree under `src/storefront/` (lazy-loaded so it doesn't bloat the port
 - `/shop/:slug` — landing + product grid (uses `storefront_products` view)
 - `/shop/:slug/p/:sku` — PDP with size grid showing stock state per size
 - `/shop/:slug/cart` — cart
-- `/shop/:slug/checkout` — Stripe Elements (paid) or contact form (unpaid)
+- `/shop/:slug/checkout` — Stripe Elements (paid) or contact form (unpaid).
+  The buyer is often a **parent**, so the cart/checkout always captures a
+  **player name** (and optional number) **per line item** — distinct from the
+  buyer's own name/email. One parent can order for multiple players in a single
+  checkout; each cart line carries its own `player_name` / `player_number`,
+  which is what surfaces in the coach roster view and on the SO pick line.
 - `/shop/:slug/order/:id?t=<status_token>` — player order-status portal (see above)
 
 Subdomain routing: `*.shop.nsasports.com` rewrites in `netlify.toml` map subdomain → `slug` query param so each club can have its own URL while sharing one deploy.
@@ -347,7 +377,7 @@ Subdomain routing: `*.shop.nsasports.com` rewrites in `netlify.toml` map subdoma
 5. **Manual SO batching** — `webstore-batch-so` function + "Batch now" button.
 6. **Player order-status portal** — `/shop/:slug/order/:id?t=` route + status email on checkout (Brevo).
 7. **Status reconciler** — SO/job status → `webstore_order_items.line_status` (trigger or hook in existing SO update path).
-8. **Coach "Team Store" tab** in `CoachPortal.js` — per-player roster table reading `line_status`.
+8. **Coach "Team Store" tab** in `CoachPortal.js` — per-player order table reading `line_status` (read-only); optional `webstore_roster` CSV upload + "not yet ordered" tracking + nudge.
 9. **Stripe paid checkout** — reuse `stripe-payment.js`.
 10. **Scheduled batching** — `webstore-scheduler` edge function.
 11. **Fundraising** — pricing math + portal rollup + credit-memo disbursement.
@@ -358,7 +388,17 @@ Each step is independently shippable behind a feature flag on `webstores.status=
 
 ---
 
-## Open questions to resolve before step 1
+## Decisions made
+
+- **Roster:** opt-in per store. When uploaded, drives the coach's "not yet
+  ordered" tracking; stores without one just show who has ordered.
+- **Coach permissions:** read-only. No batching, no closing, no status edits —
+  all staff-only. Coach can nudge non-orderers and export CSV.
+- **Buyer vs. player:** buyer is often a parent; checkout always captures a
+  player name per line item (number optional), so coach roster + SO pick lines
+  carry the player identity even when the payer is someone else.
+
+## Open questions still to resolve before step 1
 
 1. Do unpaid (coach) orders charge the team's existing customer record at SO time, or accumulate on a tab until the coach closes the store?
 2. Should fundraising markup be visible to parents ("$5 of this purchase supports the team") or invisible?
