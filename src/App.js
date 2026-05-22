@@ -4201,9 +4201,9 @@ export default function App(){
   const DEFAULT_ACCESS_BY_ROLE=useMemo(()=>({
     super_admin:Array.from(RESTRICTED_PAGES),
     admin:Array.from(RESTRICTED_PAGES),
-    rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history'],
-    csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history'],
-    accounting:['dashboard','invoices','customers','reports','qb'],
+    rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','import'],
+    csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import'],
+    accounting:['dashboard','invoices','customers','reports','qb','import'],
     warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
     prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
     prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','reports'],
@@ -19952,11 +19952,23 @@ export default function App(){
       nf(success+' bill(s) pushed to QB'+(failed?' ('+failed+' failed)':''));
     };
 
+    // Import sub-tabs visible per role. Admins see everything; reps and CSRs
+    // see only the NetSuite order import; accounting also gets supplier bills.
+    const IMPORT_TABS_BY_ROLE={
+      super_admin:['orders','customers','vendors','products','inventory','bills'],
+      admin:['orders','customers','vendors','products','inventory','bills'],
+      rep:['orders'],
+      csr:['orders'],
+      accounting:['orders','bills'],
+    };
+    const allowedImpTabs=IMPORT_TABS_BY_ROLE[cu?.role]||['orders'];
+    const visibleImpTab=allowedImpTabs.includes(impTab)?impTab:allowedImpTabs[0];
+
     return(<>
       {/* Import type tabs */}
       <div style={{display:'flex',gap:4,marginBottom:16}}>
-        {[['orders','📋 Orders / NetSuite'],['customers','👥 Customers'],['vendors','🏭 Vendors'],['products','📦 Products'],['inventory','📊 Inventory'],['bills','📄 Supplier Bills']].map(([id,label])=>
-          <button key={id} className={`btn btn-sm ${impTab===id?'btn-primary':'btn-secondary'}`}
+        {[['orders','📋 Orders / NetSuite'],['customers','👥 Customers'],['vendors','🏭 Vendors'],['products','📦 Products'],['inventory','📊 Inventory'],['bills','📄 Supplier Bills']].filter(([id])=>allowedImpTabs.includes(id)).map(([id,label])=>
+          <button key={id} className={`btn btn-sm ${visibleImpTab===id?'btn-primary':'btn-secondary'}`}
             onClick={()=>{setImpTab(id);resetBulk();if(id==='inventory')setInvUpload({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false})}}>{label}</button>)}
       </div>
 
@@ -22926,9 +22938,9 @@ export default function App(){
     const DEFAULT_ACCESS={
       super_admin:ALL_PAGES.map(p=>p.id),
       admin:ALL_PAGES.map(p=>p.id),
-      rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history'],
-      csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history'],
-      accounting:['dashboard','invoices','customers','reports','qb'],
+      rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','import'],
+      csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import'],
+      accounting:['dashboard','invoices','customers','reports','qb','import'],
       warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
       prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
       prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','reports'],
