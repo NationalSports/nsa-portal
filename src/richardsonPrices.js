@@ -4,13 +4,13 @@
 //
 // To refresh: replace the entries below with the latest Level 4 column values
 // from Richardson's dealer price list. The feed style groups variants under a
-// shared prefix (e.g. feed "PTS20" includes both PTS20M and PTS20S catalog
+// shared prefix (e.g. feed "112" covers 112, 112T, 112PT and other catalog
 // models), so getRichardsonLevel4Price does prefix matching and picks the
 // lowest matching price as the "from $X.XX" anchor.
 
 const RICHARDSON_LEVEL4_PRICES = {
   // Stock Headwear — Pulse / R-series
-  'PTS20M': 7.44, 'PTS20S': 7.65, 'PTS30S': 8.08, 'PTS50S': 8.50, 'PTS65': 9.14,
+  'PTS30S': 8.08, 'PTS50S': 8.50, 'PTS65': 9.14,
   'R15': 2.51, 'R18': 3.40, 'R20': 3.83, 'R22': 3.61,
   'R45': 3.83, 'R55': 3.83, 'R65S': 3.40, 'R75S': 3.61,
 
@@ -71,8 +71,8 @@ const RICHARDSON_LEVEL4_PRICES = {
 };
 
 // Returns the Level 4 wholesale price for a Richardson feed style.
-// Feed styles sometimes wrap multiple catalog models (e.g. "PTS20" covers
-// PTS20M + PTS20S), so exact-match falls back to prefix match (lowest price
+// Feed styles sometimes wrap multiple catalog models (e.g. "112" covers
+// 112 + 112T + 112PT), so exact-match falls back to prefix match (lowest price
 // wins — the "from $X.XX" semantic) and finally to longest-prefix-of-style.
 export const getRichardsonLevel4Price = (style) => {
   if (!style) return 0;
