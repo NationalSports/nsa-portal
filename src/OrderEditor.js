@@ -252,6 +252,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   },[products,vendorList]);
   // Helper to get vendor image for an item (used in itemDetails builders)
   const _vImg=(it,field)=>{const k=(it?.sku||'')+'|'+(it?.color||'').toLowerCase();const c=vendorImgs[k];return field==='front'?c?.front||'':c?.back||''};
+  // Resolve the best front-image URL for a line item (same priority as itemDetails)
+  const _itemImg=(it)=>{const prd=products.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||_vImg(it,'front')||''};
+  // Copy a line item's product image to the clipboard so the rep can paste it to the customer.
+  // Tries the actual image first; falls back to copying the URL when the browser/host blocks it (CORS, no ClipboardItem).
+  const copyItemImage=async(it)=>{
+    const url=_itemImg(it);
+    if(!url){nf('No image available for this item','error');return}
+    const copyUrl=()=>{navigator.clipboard?.writeText(url).then(()=>nf('📋 Image link copied — paste it to share')).catch(()=>{window.prompt('Copy image link:',url)})};
+    if(!navigator.clipboard||!window.ClipboardItem){copyUrl();return}
+    try{
+      const resp=await fetch(url,{mode:'cors'});
+      if(!resp.ok)throw new Error('fetch failed');
+      let blob=await resp.blob();
+      if(blob.type!=='image/png'){
+        blob=await new Promise((resolve,reject)=>{
+          const img=new Image();img.crossOrigin='anonymous';
+          img.onload=()=>{const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;c.getContext('2d').drawImage(img,0,0);c.toBlob(b=>b?resolve(b):reject(new Error('toBlob failed')),'image/png')};
+          img.onerror=()=>reject(new Error('img load failed'));
+          img.src=URL.createObjectURL(blob);
+        });
+      }
+      await navigator.clipboard.write([new window.ClipboardItem({'image/png':blob})]);
+      nf('🖼️ Image copied — paste it into your email or text');
+    }catch(e){copyUrl()}
+  };
 
   const fetchVendorInventory=useCallback(async(sku,vendorId,item)=>{
     const itemRef=item||{vendor_id:vendorId,sku};
@@ -2431,6 +2456,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     </>})()}
                   <button onClick={()=>{setEditingItemName(idx);setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#0f766e',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f0fdfa'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>✏️</span> Edit name</button>
                   <button onClick={()=>{copyI(idx);setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#2563eb',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={14}/> Copy item</button>
+                  {_itemImg(item)&&<button onClick={()=>{copyItemImage(item);setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#0369a1',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f0f9ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>🖼️</span> Copy image</button>}
                   <button onClick={()=>{const canReplace=safePicks(item).length===0&&safePOs(item).length===0;setCopySkuModal({itemIdx:idx,search:'',mode:canReplace?'replace':'copy'});setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#7c3aed',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f5f3ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:10,fontWeight:800}}>SKU</span> Change SKU</button>
                   <div style={{height:1,background:'#e2e8f0',margin:'4px 0'}}/>
                   <button onClick={()=>{rmI(idx);setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="trash" size={14}/> Delete item</button>
