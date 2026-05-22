@@ -204,11 +204,16 @@ const sendBrevoSms=async({to,content,sender})=>{
 };
 
 // ─── Brevo Email Open Tracking ───
+// Brevo's statistics/events endpoint is aggressively rate-limited. When we get a 429,
+// pause all open-checks for a cooldown window so we stop hammering the API.
+let _brevoBackoffUntil=0;
 // Check Brevo events API for email opens by messageId
 const checkBrevoEmailOpens=async(messageId)=>{
   if(!_brevoKey||!messageId)return null;
+  if(Date.now()<_brevoBackoffUntil)return null;
   try{
     const r=await fetch('https://api.brevo.com/v3/smtp/statistics/events?messageId='+encodeURIComponent(messageId)+'&event=opened&limit=1',{headers:{'accept':'application/json','api-key':_brevoKey}});
+    if(r.status===429){_brevoBackoffUntil=Date.now()+600000;return null}// rate-limited: back off 10 min
     if(!r.ok)return null;const d=await r.json();
     if(d.events&&d.events.length>0){const ev=d.events[0];return{opened_at:ev.date,email:ev.email||null}}
     return null;
@@ -2973,10 +2978,16 @@ export default function App(){
 
 
   // ─── Brevo email open tracking: poll for opens on recently sent documents ───
+  // Read current docs through refs so the poll interval is created ONCE (empty deps).
+  // Previously this depended on [ests,sos,invs], so every save re-fired an immediate
+  // burst of up to 15 sequential Brevo calls — flooding the rate-limited events API with 429s.
+  const _brevoDocsRef=React.useRef({ests,sos,invs});
+  _brevoDocsRef.current={ests,sos,invs};
   React.useEffect(()=>{
     if(!_brevoKey)return;
     const checkOpens=async()=>{
       if(!_initialLoadDone.current)return;
+      const{ests,sos,invs}=_brevoDocsRef.current;
       // Check estimates with pending email_status='sent' and a messageId
       const pendingEsts=ests.filter(e=>e.email_status==='sent'&&(e.sent_history||[]).some(h=>h.messageId));
       for(const est of pendingEsts.slice(0,5)){
@@ -3005,7 +3016,7 @@ export default function App(){
     const timer=setInterval(checkOpens,60000);// check every 60s
     checkOpens();// initial check
     return()=>clearInterval(timer);
-  },[ests,sos,invs]); // eslint-disable-line react-hooks/exhaustive-deps
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
