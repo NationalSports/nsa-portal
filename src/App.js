@@ -278,7 +278,7 @@ const _POLL_MAX_INTERVAL=120000;// 2min max backoff
 const _getPollInterval=()=>Math.min(_POLL_BASE_INTERVAL*Math.pow(2,_pollConsecutiveFailures),_POLL_MAX_INTERVAL);
 // Tiered polling: core tables every 60s, full sync (including cold tables) every 5th cycle (~5 min)
 let _pollCycle=0;
-const _FULL_SYNC_EVERY=5;// every 5th poll = ~5 minutes
+const _FULL_SYNC_EVERY=10;// every 10th poll = ~10 minutes (cold tables change rarely; realtime covers the rest)
 let _fetchErrorLoggedAt=0;// throttle fetch error logging to once per 30s
 const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
@@ -472,7 +472,7 @@ function AdidasB2BRow({sku, brand, displaySizes, inv}) {
 }
 
 const _dbLoad = async (opts={}) => {
-  const {coreOnly=false} = opts;
+  const {coreOnly=false, histInvoices=false} = opts;
   if (!supabase) return null;
   if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
@@ -532,8 +532,10 @@ const _dbLoad = async (opts={}) => {
       ()=>coreOnly?_skip():_safeQuery('quote_request_items',{order:'sort_order'}),
       ()=>coreOnly?_skip():_safeQuery('dismissed_todos'),
       ()=>coreOnly?_skip():_safeQuery('dismissed_notifs'),
-      // NetSuite invoice history — read-only sales record separate from portal 'invoices'.
-      ()=>_safeQuery('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000}),
+      // NetSuite invoice history — read-only sales record separate from portal 'invoices'. This can be ~20k rows;
+      // only fetch it when explicitly requested (initial load). Polls and realtime reloads never applied it to
+      // state (setHistInvs runs only on initial load), so fetching it there was wasted DB load.
+      ()=>histInvoices?_safeQuery('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000}):_skip(),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -773,10 +775,10 @@ const _dbSaveEstimateInner = async (est) => {
         }
       }
     }
-    if(oldItemIds.length){
-      await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',oldItemIds);
-    }
-    await supabase.from('estimate_items').delete().eq('estimate_id',est.id);
+    // DATA-LOSS FIX: do NOT delete old item/decoration rows here. We insert the new rows first and only
+    // remove the old ones once the insert is verified (see "Commit/rollback the swap" below). estimate_items
+    // has no unique (estimate_id,item_index) constraint, so new+old rows can briefly coexist. This closes the
+    // window where a committed delete followed by a timed-out insert left the estimate permanently empty.
     // Sync art_files: upsert current, delete removed. Optimistic concurrency via the _version trigger — never
     // overwrite an art row whose DB copy is newer than the client's, and only delete rows the client had loaded.
     const{data:_dbAf}=await supabase.from('estimate_art_files').select('id,_version').eq('estimate_id',est.id);
@@ -811,7 +813,14 @@ const _dbSaveEstimateInner = async (est) => {
       if(_knownArtIds.length)await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',_knownArtIds);
     }
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
-    if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();if(est._version)est._version=est._version+1;return true}
+    if(!items?.length){
+      // Intentional removal of all items (already validated by the hydration guard above). Since we no longer
+      // delete upfront, remove the old rows here.
+      if(oldItemIds.length){
+        await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',oldItemIds);
+        await supabase.from('estimate_items').delete().in('id',oldItemIds);
+      }
+      _dbSaveFailedIds.delete(est.id);_persistFailedIds();if(est._version)est._version=est._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
     const allItemRows=items.map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}});
     let{data:insertedItems,error:itemErr}=await supabase.from('estimate_items').insert(allItemRows).select('id');
@@ -857,6 +866,23 @@ const _dbSaveEstimateInner = async (est) => {
             decoFailed=true;_failMsg=_failMsg||('estimate_item_decorations: only '+(_verifyCount||0)+' of '+allDecoRows.length+' rows persisted');
             console.error('[DB] SAFETY: estimate deco insert verification failed — expected',allDecoRows.length,'got',_verifyCount);
           }
+        }
+      }
+    }
+    // Commit/rollback the swap: new rows were inserted alongside the old ones (we no longer delete upfront).
+    if(insertedItems?.length){
+      if(!decoFailed){
+        // New items + decorations verified — now safe to remove the old rows (delete by id so the new rows survive).
+        if(oldItemIds.length){
+          await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',oldItemIds);
+          await supabase.from('estimate_items').delete().in('id',oldItemIds);
+        }
+      }else{
+        // New rows did not fully persist — roll them back so the old data stays canonical and the retry starts clean.
+        const _newIds=insertedItems.map(i=>i.id).filter(Boolean);
+        if(_newIds.length){
+          await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',_newIds);
+          await supabase.from('estimate_items').delete().in('id',_newIds);
         }
       }
     }
@@ -1047,12 +1073,10 @@ const _dbSaveSOInner = async (so) => {
         }
       }
     }
-    if(oldItemIds.length){
-      await supabase.from('so_item_decorations').delete().in('so_item_id',oldItemIds);
-      await supabase.from('so_item_pick_lines').delete().in('so_item_id',oldItemIds);
-      await supabase.from('so_item_po_lines').delete().in('so_item_id',oldItemIds);
-    }
-    await supabase.from('so_items').delete().eq('so_id',so.id);
+    // DATA-LOSS FIX: do NOT delete old item rows (or their decorations/picks/POs) here. We insert the new rows
+    // first and only remove the old ones once the insert is verified (see "Commit/rollback the swap" below).
+    // so_items has no unique (so_id,item_index) constraint, so new+old rows can briefly coexist. This closes the
+    // window where a committed delete followed by a timed-out insert left the order permanently empty.
     // Sync jobs: upsert current jobs, delete removed ones (avoids DELETE+INSERT race condition)
     if(jobs?.length){
       // Deduplicate jobs by id to prevent "ON CONFLICT DO UPDATE cannot affect row a second time" error
@@ -1118,7 +1142,17 @@ const _dbSaveSOInner = async (so) => {
     }
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+fdErr.message)}}
-    if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}_dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
+    if(!items?.length){
+      if(saveFailed){_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
+      // Intentional removal of all items (validated by the safety guards above). Since we no longer delete
+      // upfront, remove the old item rows and their children here.
+      if(oldItemIds.length){
+        await supabase.from('so_item_decorations').delete().in('so_item_id',oldItemIds);
+        await supabase.from('so_item_pick_lines').delete().in('so_item_id',oldItemIds);
+        await supabase.from('so_item_po_lines').delete().in('so_item_id',oldItemIds);
+        await supabase.from('so_items').delete().in('id',oldItemIds);
+      }
+      _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
     const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}});
     let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id');
@@ -1205,6 +1239,27 @@ const _dbSaveSOInner = async (so) => {
             console.error('[DB] SAFETY: SO PO-line insert verification failed — expected',allPoRows.length,'got',_verifyPoCount);
             if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPoRows.length,got:_verifyPoCount||0});
           }
+        }
+      }
+    }
+    // Commit/rollback the swap: new rows were inserted alongside the old ones (we no longer delete upfront).
+    if(insertedItems?.length){
+      if(!saveFailed){
+        // New items + children verified — now safe to remove the old rows (delete by id so the new rows survive).
+        if(oldItemIds.length){
+          await supabase.from('so_item_decorations').delete().in('so_item_id',oldItemIds);
+          await supabase.from('so_item_pick_lines').delete().in('so_item_id',oldItemIds);
+          await supabase.from('so_item_po_lines').delete().in('so_item_id',oldItemIds);
+          await supabase.from('so_items').delete().in('id',oldItemIds);
+        }
+      }else{
+        // New rows did not fully persist — roll them back so the old data stays canonical and the retry starts clean.
+        const _newIds=insertedItems.map(i=>i.id).filter(Boolean);
+        if(_newIds.length){
+          await supabase.from('so_item_decorations').delete().in('so_item_id',_newIds);
+          await supabase.from('so_item_pick_lines').delete().in('so_item_id',_newIds);
+          await supabase.from('so_item_po_lines').delete().in('so_item_id',_newIds);
+          await supabase.from('so_items').delete().in('id',_newIds);
         }
       }
     }
@@ -2655,7 +2710,7 @@ export default function App(){
       try{
         let _loadTimerId;
         const _loadTimeout=new Promise(resolve=>{_loadTimerId=setTimeout(()=>{console.error('[DB] Overall load timed out after 45s');resolve(null)},45000)});
-        const d=await Promise.race([_dbLoad().then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        const d=await Promise.race([_dbLoad({histInvoices:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
         if(cancelled)return;
         if(!d){
           // Supabase connected but query failed — do NOT allow writes that could overwrite real data
@@ -2735,7 +2790,7 @@ export default function App(){
             // Another browser is actively seeding (lock <30s old) — wait and reload
             console.log('[DB] Another browser is seeding — waiting to reload');
             await new Promise(r=>setTimeout(r,5000));
-            const d2=await _dbLoad();
+            const d2=await _dbLoad({histInvoices:true});
             if(d2?.hasData){
               _dbSnap.current={ests:d2.estimates,sos:d2.sales_orders,invs:d2.invoices,msgs:d2.messages,cust:d2.customers,prod:d2.products,vend:d2.vendors,team:d2.team,omg:d2.omg_stores,issues:d2.issues,assignedTodos:d2.assignedTodos||[]};
               setREPS(d2.team.length?d2.team:DEFAULT_REPS);setCust(d2.customers);
