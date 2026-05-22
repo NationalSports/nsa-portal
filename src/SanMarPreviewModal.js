@@ -177,11 +177,16 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
           if (onSubmitted) onSubmitted({ transactionId: '', raw, env: 'prod', message: msg || '' });
         }
       } else {
-        const authFail = /authenticat|credential|user.*fail/i.test(msg || '');
-        const hint = isTest && authFail
-          ? ' — SanMar\'s sandbox (test-ws) uses a separate account that won\'t accept your production login. Ask SanMar for test/integration credentials (set as SANMAR_TEST_* env vars), or switch to Live, since the order format is now validated.'
-          : '';
-        setSub({ status: 'error', msg: (msg || 'Submission failed') + hint, raw, finalized: false });
+        const m = msg || '';
+        let hint = '';
+        if (/FTP.*folder|folder does not exist/i.test(m)) {
+          hint = ' — Your SanMar credentials authenticated and the order format is correct, but PO submission is not yet enabled on your SanMar account. Email sanmarintegrations@sanmar.com and ask them to provision the integration (FTP "In") folder for your customer number, then resubmit. No code change is needed.';
+        } else if (/authenticat|credential|user.*fail/i.test(m)) {
+          hint = isTest
+            ? ' — SanMar\'s sandbox (test-ws) uses a separate account that won\'t accept your production login. Ask SanMar for test/integration credentials (set as SANMAR_TEST_* env vars), or switch to Live, since the order format is now validated.'
+            : '';
+        }
+        setSub({ status: 'error', msg: m + hint, raw, finalized: false });
       }
     } catch (e) {
       setSub({ status: 'error', msg: e.message || 'Submission failed', raw: '', finalized: false });
