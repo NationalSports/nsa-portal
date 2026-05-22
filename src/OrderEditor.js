@@ -1566,12 +1566,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Each item may produce multiple entries if it has decorations with different deco types
     const itemSigs=[];
     safeItems(o).forEach((it,ii)=>{
-      // Deco types this item is sending to an outside decorator (item-level outside-deco
-      // PO lines or SO-level deco POs that cover this item). The in-house team doesn't
-      // produce those, so they must not generate a production job.
-      const outsideDecoTypes=new Set();
-      (it.po_lines||[]).forEach(pl=>{if(pl&&pl.po_type==='outside_deco'&&pl.deco_type)outsideDecoTypes.add(pl.deco_type)});
-      (o.deco_pos||[]).forEach(dp=>{if((dp.item_idxs||[]).includes(ii)&&dp.deco_type)outsideDecoTypes.add(dp.deco_type)});
+      // Item sent to an outside decorator — via an item-level outside-deco PO line or an
+      // SO-level deco PO covering this item. The in-house team doesn't produce decoration
+      // for these items, so they must not generate any production job.
+      const sentOutside=(it.po_lines||[]).some(pl=>pl&&pl.po_type==='outside_deco')
+        ||(o.deco_pos||[]).some(dp=>(dp.item_idxs||[]).includes(ii));
+      if(sentOutside)return;
       // First, classify each decoration by its resolved deco type
       const decosByType={};
       safeDecos(it).forEach((d,di)=>{
@@ -1579,13 +1579,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(d.kind==='art'){
           const artF=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
           const dt=artF?.deco_type||d.deco_type||'screen_print';
-          if(outsideDecoTypes.has(dt))return;// handled by outside decorator — no in-house job
           const part=d.art_file_id?'art_'+d.art_file_id+'@'+safeStr(d.position):'unassigned@'+safeStr(d.position);
           if(!decosByType[dt])decosByType[dt]=[];
           decosByType[dt].push({part,d,di});
         } else if(d.kind==='numbers'){
           const dt=d.num_method||'heat_transfer';
-          if(outsideDecoTypes.has(dt))return;// handled by outside decorator — no in-house job
           const part='numbers_'+dt+'@'+safeStr(d.position);
           if(!decosByType[dt])decosByType[dt]=[];
           decosByType[dt].push({part,d,di});
@@ -8171,6 +8169,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{display:'flex',alignItems:'center',gap:12}}>
                 <button className="btn btn-secondary btn-sm" onClick={()=>setPoFullPage(null)}>&larr; Back</button>
                 <h1 style={{margin:0,fontSize:22}}>{dp.po_id}</h1>
+                <button className="btn btn-sm" style={{background:'#fee2e2',color:'#b91c1c',border:'1px solid #fecaca',fontWeight:700}} onClick={()=>{
+                  if(!window.confirm('Delete decoration PO '+(dp.po_id||'')+'? This removes it from '+(soId||'this order')+' and unlinks the covered items. This cannot be undone.'))return;
+                  const updated={...o,deco_pos:(o.deco_pos||[]).filter(x=>dp.id?x.id!==dp.id:x.po_id!==dp.po_id),updated_at:new Date().toLocaleString()};
+                  setO(updated);onSave(updated);setPoFullPage(null);nf('Deleted '+(dp.po_id||'decoration PO'));
+                }}>🗑 Delete PO</button>
                 <span className={`badge ${dp.status==='billed'||dp.status==='received'?'badge-green':dp.status==='ordered'?'badge-blue':'badge-gray'}`} style={{fontSize:11}}>{(dp.status||'waiting').replace(/^./,c=>c.toUpperCase())}</span>
                 <span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>
                 {dp.preexisting&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>Preexisting</span>}
