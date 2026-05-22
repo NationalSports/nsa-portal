@@ -104,6 +104,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
   const[expandedArt,setExpandedArt]=useState({});// Track expanded art groups by id (default collapsed)
+  const[collapsedNames,setCollapsedNames]=useState({});// Track collapsed Names decos by `idx-di`
   // In-progress size-cell edits, keyed `idx+'_'+sz`. Lets the user type intermediate values
   // (e.g. clear "8" then type "13") without the per-keystroke "Cannot reduce below X" guard firing.
   // Validation runs in uSz on blur instead — see input at the size grid below.
@@ -2844,9 +2845,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const nCt=Object.values(nd).flat().filter(v=>v&&v.trim()).length;
               const nameQtyOverride=safeNum(deco.name_qty)||0;
               const effectiveNameQty=nCt||nameQtyOverride;
+              const nKey=idx+'-'+di;const nCollapsed=!!collapsedNames[nKey];
+              const importNamesCsv=text=>{const lines=text.split('\n').filter(l=>l.trim());const nn={...nd};let ct=0;
+                lines.forEach(line=>{if(line.toLowerCase().startsWith('size'))return;const parts=line.split(',').map(s=>s.trim());const sz=parts[0];const name=parts.length>=3?parts[2]:parts[1]||'';
+                  if(sz&&name&&item.sizes[sz]>0){if(!nn[sz])nn[sz]=Array(item.sizes[sz]||0).fill('');const ei=nn[sz].findIndex(v=>!v);if(ei>=0){nn[sz][ei]=name;ct++}}});
+                uD(idx,di,'names',nn);nf(ct+' names imported')};
               return(<div key={di} style={decoCardStyle}>
-              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
-                <span style={{fontSize:18}}>🏷️</span><span style={{fontWeight:700,fontSize:13}}>Names</span>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:nCollapsed?0:6}}>
+                <span onClick={()=>setCollapsedNames(p=>({...p,[nKey]:!p[nKey]}))} style={{cursor:'pointer',fontSize:11,color:'#92400e',transition:'transform 0.2s',transform:nCollapsed?'rotate(-90deg)':'rotate(0deg)'}}>▼</span>
+                <span style={{fontSize:18}}>🏷️</span><span style={{fontWeight:700,fontSize:13,cursor:'pointer'}} onClick={()=>setCollapsedNames(p=>({...p,[nKey]:!p[nKey]}))}>Names</span>
                 <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Color:</span>
                 <input className="form-input" style={{width:90,fontSize:12,padding:'2px 6px'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
@@ -2857,19 +2864,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {nCt===0&&<span style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:11,color:'#64748b'}}>Qty: <input type="number" min="0" style={{width:48,border:'1px solid #d1d5db',borderRadius:3,padding:'2px 4px',fontSize:12,fontWeight:600,textAlign:'center'}} value={deco.name_qty||''} placeholder="—" onChange={e=>uD(idx,di,'name_qty',parseInt(e.target.value)||0)}/></span>}
                   <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
                 </div></div>
-              <div style={{padding:10,background:'#fffbeb',borderRadius:6,border:'1px dashed #f59e0b'}}
+              {!nCollapsed&&<div style={{padding:10,background:'#fffbeb',borderRadius:6,border:'1px dashed #f59e0b'}}
                 onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6'}}
                 onDragLeave={e=>{e.currentTarget.style.borderColor='#f59e0b'}}
                 onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#f59e0b';
                   const f=e.dataTransfer.files[0];if(!f)return;const reader=new FileReader();
-                  reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());const nn={...nd};let ct=0;
-                    lines.forEach(line=>{if(line.toLowerCase().startsWith('size'))return;const parts=line.split(',').map(s=>s.trim());const sz=parts[0];const name=parts.length>=3?parts[2]:parts[1]||'';
-                      if(sz&&name&&item.sizes[sz]>0){if(!nn[sz])nn[sz]=Array(item.sizes[sz]||0).fill('');const ei=nn[sz].findIndex(v=>!v);if(ei>=0){nn[sz][ei]=name;ct++}}});
-                    uD(idx,di,'names',nn);nf(ct+' names imported')};reader.readAsText(f)}}>
+                  reader.onload=ev=>importNamesCsv(ev.target.result);reader.readAsText(f)}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
                   <span style={{fontSize:11,fontWeight:600,color:'#92400e'}}>Drag CSV or enter names</span>
                   <div style={{display:'flex',gap:4}}>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{let csv='Size,Number,Name\n';sQ2.forEach(([sz,sq])=>{for(let i=0;i<sq;i++)csv+=sz+',,\n'});const b=new Blob([csv],{type:'text/csv'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download='name_template_'+item.sku+'.csv';a.click();URL.revokeObjectURL(u)}}>📥 Template</button>
+                    <label className="btn btn-sm btn-secondary" style={{fontSize:9,cursor:'pointer',margin:0}}>📤 Upload<input type="file" accept=".csv,text/csv" style={{display:'none'}} onChange={e=>{const f=e.target.files[0];if(!f)return;const reader=new FileReader();reader.onload=ev=>importNamesCsv(ev.target.result);reader.readAsText(f);e.target.value=''}}/></label>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,color:'#dc2626'}} onClick={()=>{uD(idx,di,'names',{});nf('Cleared')}}>Clear</button></div></div>
                 {sQ2.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>Add sizes first</div>:
                 <div style={{display:'flex',flexDirection:'column',gap:2}}>
@@ -2877,7 +2882,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <span style={{width:50,fontSize:12,fontWeight:700,color:'#92400e'}}>{sz} ({sq})</span>
                     {Array.from({length:sq}).map((_,si)=><input key={si} style={{width:100,border:'1px solid #d1d5db',borderRadius:3,padding:'3px 6px',fontSize:12,background:sn[si]?'#fef3c7':'white'}} value={sn[si]||''} placeholder="Name" onChange={e=>{const nn2={...nd};const ar=[...(nn2[sz]||Array(sq).fill(''))];ar[si]=e.target.value;nn2[sz]=ar;uD(idx,di,'names',nn2)}}/>)}
                   </div>})}</div>}
-              </div></div>)}
+              </div>}</div>)}
             return null})}
           <div style={{display:'flex',justifyContent:'space-between',padding:'6px 12px',background:'#f0f9ff',borderRadius:6,marginTop:4,alignItems:'center',flexWrap:'wrap',gap:8}}>
             <div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
