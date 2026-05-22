@@ -4955,7 +4955,9 @@ export default function App(){
           szKeys.forEach(s=>{const v=pk[s]||0;if(v>0){pickSizes[s]=v;if(!pickSzKeys.includes(s))pickSzKeys.push(s)}});
           const pickTotal=Object.values(pickSizes).reduce((a,v)=>a+v,0);
           if(pickTotal>0){
-            pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
+            const openFrom=pk.created_at||so.created_at;
+            const openDays=openFrom?Math.max(0,Math.floor((new Date()-new Date(openFrom))/(1000*60*60*24))):null;
+            pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,openDays,
               sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
               sizes:pickSizes,pulled:{},needsPull:pickTotal,totalOrdered:pickTotal,totalPulled:0,szKeys:pickSzKeys,
               noDeco:item.no_deco||!item.decorations?.length,
@@ -9246,6 +9248,7 @@ export default function App(){
                   inv,
                   customer_id:inv.customer_id||'',
                   memo:inv.memo||'',
+                  date:inv.date||'',
                   due_date:inv.due_date||'',
                   billing_name:inv.billing_name||'',
                   billing_address:inv.billing_address||'',
@@ -9266,7 +9269,14 @@ export default function App(){
                 const portalUrl=ic?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+ic.alpha_tag:'';
                 const msg='Hi '+(contact?.name||'Coach')+',\n\nPlease find the attached invoice '+inv.id+' for $'+inv.total.toFixed(2)+'. Payment is due by '+(inv.due_date||'—')+'.'+(portalUrl?'\n\nYou can also view your invoice through your portal:\n'+portalUrl:'')+'\n\nThank you,\nNSA Team';
                 const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: https://nsa-portal.netlify.app/?portal='+(ic?.alpha_tag||'');
-                setInvSendModalDirect({inv,email:contact?.email||'',customEmail:'',msg,sendTo:contact?.email||'',smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7});
+                // Build recipient list: customer's own contacts + inherited billing contacts from parent accounts
+                const ownContacts=(ic?.contacts||[]).filter(ct=>ct.email);
+                const inheritedBilling=getBillingContacts(ic,cust).filter(a=>a._inherited_from&&a.email&&!ownContacts.find(o=>o.email===a.email));
+                const sendContacts=[...ownContacts.map(ct=>({email:ct.email,name:ct.name||'',role:ct.role||'',phone:ct.phone||''})),...inheritedBilling.map(a=>({email:a.email,name:a.name||'',role:a.role||'',_inherited_from:a._inherited_from}))];
+                const billingEmails=new Set(getBillingContacts(ic,cust).map(b=>b.email));
+                const checked={};sendContacts.forEach(ct=>{checked[ct.email]=billingEmails.has(ct.email)});
+                if(Object.values(checked).every(v=>!v)&&sendContacts.length>0)checked[sendContacts[0].email]=true;
+                setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7});
               }}>Send Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
@@ -9727,10 +9737,13 @@ export default function App(){
               </div>}
             </div>
 
-            {/* Memo + Due Date + Shipping + Tax */}
-            <div style={{display:'grid',gridTemplateColumns:'1fr 140px 120px 120px',gap:10,marginBottom:14}}>
+            {/* Memo + Invoice Date + Due Date + Shipping + Tax */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 140px 140px 120px 120px',gap:10,marginBottom:14}}>
               <div><label className="form-label">Memo</label>
                 <input className="form-input" value={em.memo} onChange={e=>setInvEditModal(s=>({...s,memo:e.target.value}))} placeholder="Invoice memo"/></div>
+              <div><label className="form-label">Invoice Date</label>
+                <input className="form-input" type="date" value={(()=>{const d=em.date;if(!d)return'';const m=d.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(m){const yr=m[3].length===2?'20'+m[3]:m[3];return yr+'-'+m[1].padStart(2,'0')+'-'+m[2].padStart(2,'0')}return /^\d{4}-\d{2}-\d{2}/.test(d)?d.slice(0,10):''})()}
+                  onChange={e=>{const v=e.target.value;setInvEditModal(s=>({...s,date:v||''}))}}/></div>
               <div><label className="form-label">Due Date</label>
                 <input className="form-input" type="date" value={(()=>{const d=em.due_date;if(!d)return'';const m=d.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?'20'+m[3]+'-'+m[1]+'-'+m[2]:d})()}
                   onChange={e=>{const v=e.target.value;if(!v){setInvEditModal(s=>({...s,due_date:''}));return}const d=new Date(v+'T12:00:00');setInvEditModal(s=>({...s,due_date:d.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'})}))}}/></div>
@@ -9833,6 +9846,7 @@ export default function App(){
               const updated={...em.inv,
                 customer_id:em.customer_id,
                 memo:em.memo,
+                date:em.date,
                 due_date:em.due_date,
                 billing_name:em.billing_name||null,
                 billing_address:em.billing_address||null,
@@ -9855,18 +9869,34 @@ export default function App(){
         {/* ═══ SEND INVOICE MODAL (from detail page) ═══ */}
         {invSendModalDirect&&(()=>{
           const si=invSendModalDirect;
-          const siContacts=contacts;
-          const resolvedEmail=si.sendTo==='__custom__'?si.customEmail:si.sendTo;
+          const siRecipients=[...Object.entries(si.checked||{}).filter(([,v])=>v).map(([k])=>k),...(si.customEmails||[])];
           return<div className="modal-overlay" onClick={()=>setInvSendModalDirect(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
             <div className="modal-header"><h2>Send Invoice — {si.inv.id}</h2><button className="modal-close" onClick={()=>setInvSendModalDirect(null)}>x</button></div>
             <div className="modal-body">
               <div style={{marginBottom:12}}><label className="form-label">Send To</label>
-                <select className="form-input" value={si.sendTo} onChange={e=>{setInvSendModalDirect(s=>({...s,sendTo:e.target.value,customEmail:e.target.value==='__custom__'?s.customEmail:''}))}}>
-                  {siContacts.map(c=><option key={c.email} value={c.email}>{c.name||'Contact'} — {c.email}{c.role?' ('+c.role+')':''}</option>)}
-                  {siContacts.length===0&&<option value="" disabled>No contacts with email</option>}
-                  <option value="__custom__">Enter a different email...</option>
-                </select>
-                {si.sendTo==='__custom__'&&<input className="form-input" type="email" placeholder="Enter email address" value={si.customEmail} onChange={e=>setInvSendModalDirect(s=>({...s,customEmail:e.target.value}))} style={{marginTop:8}}/>}
+                <div style={{display:'flex',flexDirection:'column',gap:2,marginBottom:6}}>
+                  {(si.sendContacts||[]).length===0&&(si.customEmails||[]).length===0&&<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No contacts with email on file — add one below.</div>}
+                  {(si.sendContacts||[]).map(ct=>{
+                    const sel=!!si.checked[ct.email];
+                    return<label key={ct.email} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 6px',borderRadius:4,background:sel?'#eff6ff':'transparent',fontSize:12,cursor:'pointer'}}>
+                      <input type="checkbox" checked={sel} onChange={e=>setInvSendModalDirect(s=>({...s,checked:{...s.checked,[ct.email]:e.target.checked}}))} style={{accentColor:'#2563eb'}}/>
+                      <span style={{fontWeight:sel?600:400,color:sel?'#1e40af':'#1e293b'}}>{ct.name||'Contact'}</span>
+                      <span style={{color:'#64748b'}}>{ct.email}</span>
+                      {ct.role&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:(ct.role||'').toLowerCase()==='billing'?'#ede9fe':'#f1f5f9',color:(ct.role||'').toLowerCase()==='billing'?'#6d28d9':'#64748b',fontWeight:600}}>{ct.role}</span>}
+                      {ct._inherited_from&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:600}}>from {ct._inherited_from}</span>}
+                    </label>;
+                  })}
+                  {(si.customEmails||[]).map(em=><label key={em} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 6px',borderRadius:4,background:'#eff6ff',fontSize:12}}>
+                    <input type="checkbox" checked readOnly style={{accentColor:'#2563eb'}}/>
+                    <span style={{color:'#1e40af',fontWeight:600}}>{em}</span>
+                    <span style={{fontSize:9,fontStyle:'italic',color:'#94a3b8'}}>(added)</span>
+                    <button onClick={()=>setInvSendModalDirect(s=>({...s,customEmails:s.customEmails.filter(e=>e!==em)}))} style={{marginLeft:'auto',background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:14,padding:0,lineHeight:1}}>×</button>
+                  </label>)}
+                </div>
+                <div style={{display:'flex',gap:6}}>
+                  <input type="email" placeholder="+ Add another email…" value={si.customEmail||''} onChange={e=>setInvSendModalDirect(s=>({...s,customEmail:e.target.value}))} onKeyDown={e=>{if(e.key==='Enter'&&(si.customEmail||'').includes('@')){e.preventDefault();const em=si.customEmail.trim();if(em)setInvSendModalDirect(s=>({...s,customEmails:s.customEmails.includes(em)?s.customEmails:[...s.customEmails,em],customEmail:''}))}}} className="form-input" style={{fontSize:11,padding:'4px 6px',flex:1}}/>
+                  <button className="btn btn-sm btn-secondary" disabled={!(si.customEmail||'').includes('@')} onClick={()=>{const em=(si.customEmail||'').trim();if(em)setInvSendModalDirect(s=>({...s,customEmails:s.customEmails.includes(em)?s.customEmails:[...s.customEmails,em],customEmail:''}))}} style={{fontSize:10,whiteSpace:'nowrap'}}>+ Add</button>
+                </div>
               </div>
               <div style={{marginBottom:12}}><label className="form-label">Message</label>
                 <textarea className="form-input" rows={6} value={si.msg} onChange={e=>setInvSendModalDirect(s=>({...s,msg:e.target.value}))} style={{lineHeight:1.5}}/></div>
@@ -9904,9 +9934,10 @@ export default function App(){
             </div>
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={()=>setInvSendModalDirect(null)}>Cancel</button>
-              <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={!resolvedEmail} onClick={async()=>{
+              <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={siRecipients.length===0} onClick={async()=>{
                 setInvSendModalDirect(null);
-                const toEmail=resolvedEmail;
+                const toEmails=siRecipients;
+                const toEmail=toEmails[0];
                 const siInv=si.inv;const siSo=sos.find(s=>s.id===siInv.so_id);const siCust=cust.find(c=>c.id===siInv.customer_id);
                 const _$si=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
                 const siBillName=siInv.billing_name||siCust?.name||'—';
@@ -9983,17 +10014,17 @@ export default function App(){
                   +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':''),companyInfo);
                 const _invFrom=(cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email))?cu.email:'noreply@nationalsportsapparel.com';
                 const _invSubj='National Sports Invoice - '+siInv.id+(siInv.memo?' - "'+siInv.memo+'"':'');
-                const res=await sendBrevoEmail({to:[{email:toEmail,name:toEmail}],subject:_invSubj,
+                const res=await sendBrevoEmail({to:toEmails.map(em=>({email:em,name:em})),subject:_invSubj,
                   htmlContent:emailHtml,senderName:cu.name||'National Sports Apparel',senderEmail:_invFrom,replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
                   attachment:brevoAttachments.length>0?brevoAttachments:undefined});
-                if(res.ok){nf('Invoice '+siInv.id+' sent to '+toEmail)}else{nf('Failed to send: '+(res.error||'Unknown error'),'error')}
+                if(res.ok){nf('Invoice '+siInv.id+' sent to '+(toEmails.length>1?toEmails.length+' recipients':toEmail))}else{nf('Failed to send: '+(res.error||'Unknown error'),'error')}
                 // Send SMS if enabled
                 if(si.smsEnabled&&si.smsPhone&&_brevoKey){
                   const smsRes=await sendBrevoSms({to:si.smsPhone,content:(si.smsMsg||'').substring(0,160)});
                   if(smsRes.ok){nf('Text sent to '+si.smsPhone)}else{nf('SMS failed: '+(smsRes.error||'Unknown'),'error')}
                 }
                 const fuAt=si.followUpDays?new Date(Date.now()+si.followUpDays*86400000).toISOString():null;
-                const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'invoice',methods:['email',...(si.smsEnabled?['sms']:[])],to:toEmail,messageId:res.messageId||null};
+                const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'invoice',methods:['email',...(si.smsEnabled?['sms']:[])],to:toEmails.join(', '),messageId:res.messageId||null};
                 setInvs(prev=>prev.map(i=>i.id===si.inv.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString(),follow_up_at:fuAt,sent_history:[...(i.sent_history||[]),histEntry]}:i));
               }}>Send Invoice</button>
             </div>
@@ -13599,6 +13630,7 @@ export default function App(){
   _pdCtx.current={vend,cust,ests,sos,invPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES,isA};
   // Ship package modal: {grp, soMap:{soId:so}, boxes:[{items:[{sku,name,color,sizes:{}}],tracking_number:'',carrier:'',weight:5,notes:''}]}
   const[shipModal,setShipModal]=useState(null);
+  const[shipExpanded,setShipExpanded]=useState({});// key->bool; Ready-to-Ship cards start collapsed
   const[manualShipModal,setManualShipModal]=useState(null);
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
   const[decoCardFilter,setDecoCardFilter]=useState(null);// null|'ready'|'in_process'|'waiting'
@@ -14512,7 +14544,7 @@ export default function App(){
         <div className="card"><div className="card-body" style={{padding:0}}>
           <table style={{fontSize:11}}><thead><tr>
             <th style={{width:20}}></th><th>SO#</th><th>IF#</th><th>Customer</th><th>SKU</th><th>Item</th>
-            <th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Dest</th><th>Rep</th><th style={{width:60}}></th>
+            <th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Dest</th><th>Rep</th><th style={{textAlign:'center'}}>Days Open</th><th style={{width:60}}></th>
           </tr></thead><tbody>
           {fPull.map((t,ti)=>{const subs=t._subTasks||[t];const extraSkus=subs.length-1;
             return<tr key={ti} style={{cursor:'pointer',background:t.urgent?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
@@ -14534,6 +14566,7 @@ export default function App(){
             </div></td>
             <td>{(()=>{const d=t.shipDest;const labels={in_house:'🏭 In-House',ship_customer:'📦 Customer',ship_deco:'🚚 Deco'};return<span style={{fontSize:9,padding:'2px 5px',borderRadius:4,fontWeight:600,background:d==='ship_customer'?'#dbeafe':d==='ship_deco'?'#fef3c7':'#f1f5f9',color:d==='ship_customer'?'#1e40af':d==='ship_deco'?'#92400e':'#64748b'}}>{labels[d]||'🏭 In-House'}</span>})()}</td>
             <td style={{fontSize:10,color:'#94a3b8'}}>{t.rep}</td>
+            <td style={{textAlign:'center'}}>{t.openDays!=null?<span style={{fontSize:10,fontWeight:700,color:t.openDays>=14?'#dc2626':t.openDays>=7?'#d97706':'#64748b'}}>{t.openDays}d</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
             <td><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
               onClick={e=>{e.stopPropagation();setWhViewIF(t)}}>
               Pick →</button></td>
@@ -14586,9 +14619,13 @@ export default function App(){
             {Object.values(byCustomer).map((grp,gi)=>{
               // Check what's already been shipped for these SOs
               const existingShipments=Object.values(grp.soMap).reduce((a,so)=>a.concat(so._shipments||[]),[]);
+              const grpKey=grp.cName+'|'+(grp.shipMethod||'pending');
+              const expanded=!!shipExpanded[grpKey];
               return<div key={gi} className="card" style={{borderLeft:'3px solid #166534'}}>
               <div style={{padding:'10px 14px'}}>
-                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:expanded?8:0,cursor:'pointer'}}
+                  onClick={()=>setShipExpanded(p=>({...p,[grpKey]:!p[grpKey]}))}>
+                  <span style={{fontSize:11,color:'#64748b',width:12,display:'inline-block'}}>{expanded?'▾':'▸'}</span>
                   <span style={{fontSize:14,fontWeight:800}}>{grp.cName}</span>
                   <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,
                     background:grp.shipMethod==='ship_customer'?'#dbeafe':grp.shipMethod==='rep_delivery'?'#dcfce7':grp.shipMethod==='customer_pickup'?'#fef3c7':'#fef2f2',
@@ -14599,6 +14636,7 @@ export default function App(){
                   <span style={{marginLeft:'auto',fontSize:12,fontWeight:800,color:'#166534'}}>{grp.totalUnits} units</span>
                   <span style={{fontSize:10,color:'#64748b'}}>{grp.items.length} item{grp.items.length!==1?'s':''}</span>
                 </div>
+                {expanded&&<>
                 {/* Detailed item list per SO */}
                 {[...grp.soIds].map(soId=>{const so=grp.soMap[soId];if(!so)return null;
                   return<div key={soId} style={{marginBottom:6}}>
@@ -14721,6 +14759,7 @@ export default function App(){
                       nf('📦 Packing list opened for '+grp.cName);
                     }}>🖨️ Pack Slip</button>
                 </div>
+                </>}
               </div>
             </div>})}
           </div>})()}
