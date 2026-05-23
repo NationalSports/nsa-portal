@@ -247,7 +247,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }catch(e){console.warn('[MT] Image fetch error for',sku,e.message)}
       }
       const result={front,back};
-      vendorImgCache.current[cacheKey]=result;
+      // Don't cache an empty result — a failed/blocked fetch should be retryable on the next request.
+      if(front||back)vendorImgCache.current[cacheKey]=result;
       setVendorImgs(prev=>({...prev,[cacheKey]:result}));
     }catch(e){console.warn('[Vendor] Image fetch failed for',sku,e)}
     finally{delete vendorImgFetching.current[cacheKey]}

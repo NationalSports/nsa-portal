@@ -199,7 +199,8 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
     try {
       const dataUrl = canvas.toDataURL({format: 'png', multiplier: 2});
       const blob = await (await fetch(dataUrl)).blob();
-      const fname = 'mock-' + (garment.sku || 'item') + '-' + (garment.color || 'default') + '-' + side + '.png';
+      const safe = s => (s || '').toString().replace(/[\/\\?%*:|"<>\s]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+      const fname = 'mock-' + (safe(garment.sku) || 'item') + '-' + (safe(garment.color) || 'default') + '-' + side + '.png';
       const fileObj = new File([blob], fname, {type: 'image/png'});
       const url = await fileUpload(fileObj, 'nsa-mockups');
       const entry = {url, name: fname, sku: garment.sku};
@@ -234,8 +235,8 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
           </div>
 
           {garments.length > 1 && <div style={{display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12}}>
-            {garments.map((g, i) => <button key={g.key} className={`btn btn-sm ${i === gi ? 'btn-primary' : 'btn-secondary'}`} style={{fontSize: 11}}
-              onClick={() => setGi(i)}>{g.color || g.sku}{(mocks[g.key] || []).length > 0 && <span style={{marginLeft: 4}}>✓</span>}</button>)}
+            {garments.map((g, i) => <button key={g.key} title={[g.name, g.color].filter(Boolean).join(' — ')} className={`btn btn-sm ${i === gi ? 'btn-primary' : 'btn-secondary'}`} style={{fontSize: 11}}
+              onClick={() => setGi(i)}>{(g.sku || g.name || 'Item')}{g.color ? ' · ' + g.color : ''}{(mocks[g.key] || []).length > 0 && <span style={{marginLeft: 4}}>✓</span>}</button>)}
           </div>}
 
           <div style={{display: 'grid', gridTemplateColumns: '300px 1fr', gap: 16}}>
