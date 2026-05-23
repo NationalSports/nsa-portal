@@ -30,6 +30,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
     existingFiles: l.existingFiles || [],
     preview: l.preview || null,
     source: null,
+    page: 1,
     hasExisting: (l.existingFiles || []).length > 0 || !!l.preview,
   })));
   const [mocks, setMocks] = useState(() => ({...(initialMocks || {})}));
@@ -95,6 +96,15 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
     obj._isArt = true;
   };
 
+  // Rasterize a Cloudinary vector doc (.ai/.eps/.pdf) to PNG, selecting a specific page/artboard.
+  const vecThumb = (u, pg) => {
+    if (!u) return u;
+    const t = u.replace('/raw/upload/', '/image/upload/').replace('/video/upload/', '/image/upload/');
+    return t.replace('/image/upload/', '/image/upload/pg_' + (pg || 1) + ',f_png/');
+  };
+
+  const clearLayer = lid => { if (!canvas) return; canvas.getObjects().filter(o => o._isArt && o._layerId === lid).forEach(o => canvas.remove(o)); };
+
   const placeStandIn = layer => {
     if (!canvas) return;
     const label = (layer.name || layer.position || 'ART').toUpperCase();
@@ -105,6 +115,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
 
   const placeLayer = layer => {
     if (!canvas) return;
+    clearLayer(layer.artFileId);
     const preview = layer.preview;
     if (!preview) { placeStandIn(layer); return; }
     if (preview.svgString) {
@@ -118,7 +129,18 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
       }).catch(() => addImg(preview.url, layer));
       return;
     }
-    addImg(preview.url, layer);
+    const url = preview.vectorSrc ? vecThumb(preview.vectorSrc, layer.page || 1) : preview.url;
+    addImg(url, layer);
+  };
+
+  const setLayerPage = (idx, delta) => {
+    setLayers(prev => prev.map((l, i) => {
+      if (i !== idx) return l;
+      const page = Math.max(1, (l.page || 1) + delta);
+      const nl = {...l, page};
+      if (canvas && canvas.getObjects().some(o => o._isArt && o._layerId === l.artFileId)) setTimeout(() => placeLayer(nl), 0);
+      return nl;
+    }));
   };
 
   const addImg = (url, layer) => {
@@ -152,8 +174,8 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
       let preview = null;
       if (isSvg) { const svgString = await file.text(); preview = {url, svgString}; }
       else if (isImg) { preview = {url}; }
-      else if (isVectorDoc) { const png = _cloudinaryPdfThumb(url); if (png) preview = {url: png}; }
-      setLayers(prev => prev.map((l, i) => i === idx ? {...l, source, preview, hasExisting: l.hasExisting} : l));
+      else if (isVectorDoc) { const png = _cloudinaryPdfThumb(url); if (png) preview = {url: png, vectorSrc: url}; }
+      setLayers(prev => prev.map((l, i) => i === idx ? {...l, source, preview, page: 1, hasExisting: l.hasExisting} : l));
       nf && nf(file.name + ' attached' + (preview ? (isVectorDoc ? ' — generating a preview to place' : '') : ' (a stand-in will be placed on the mock)'));
     } catch (e) {
       nf && nf('Upload failed: ' + e.message, 'error');
@@ -227,6 +249,13 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
                 </div> : l.hasExisting ? <div style={{fontSize: 10, color: '#166534', display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6}}>
                   <Icon name="check" size={12} /> Using art on file{l.existingFiles[0] ? ': ' + l.existingFiles[0].name : ''}{!l.preview && <span style={{color: '#d97706'}}> (stand-in)</span>}
                 </div> : <div style={{fontSize: 10, color: '#94a3b8', marginBottom: 6}}>No file yet</div>}
+                {l.preview && l.preview.vectorSrc && <div style={{display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6, fontSize: 10, color: '#475569'}}>
+                  <span style={{fontWeight: 700}}>Page</span>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize: 11, padding: '0 7px', lineHeight: 1.6}} disabled={busy || (l.page || 1) <= 1} onClick={() => setLayerPage(idx, -1)}>◀</button>
+                  <span style={{minWidth: 12, textAlign: 'center', fontWeight: 700}}>{l.page || 1}</span>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize: 11, padding: '0 7px', lineHeight: 1.6}} disabled={busy} onClick={() => setLayerPage(idx, 1)}>▶</button>
+                  <span style={{color: '#94a3b8'}}>wrong art? try a page</span>
+                </div>}
                 <div style={{display: 'flex', gap: 4}}>
                   <button className="btn btn-sm btn-secondary" style={{fontSize: 10}} disabled={busy}
                     onClick={() => { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.png,.jpg,.jpeg,.svg,.ai,.eps,.pdf'; inp.onchange = () => { if (inp.files[0]) uploadLayerFile(idx, inp.files[0]); }; inp.click(); }}>

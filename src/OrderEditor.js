@@ -7159,7 +7159,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {g.quickMock&&<div style={{marginBottom:8,padding:10,background:'#f0fdf4',borderRadius:6,border:'1px solid #bbf7d0'}}>
               <div style={{fontSize:10,color:'#166534',marginBottom:6}}>Build a mockup per garment color and send it straight to the coach for approval. Your source art stays on each artwork — the artist still makes separation files after approval.</div>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
-                <button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>setMockBuilder({gi})}>{qmCount>0?'Edit Mockups':'⚡ Build Mockups'}</button>
+                <button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
+                  const seenImg=new Set();
+                  g.items.filter(it=>!it._excluded).forEach(it=>{const full=safeItems(o)[it.item_idx];if(!full)return;const k=(full.sku||'')+'|'+(full.color||'');if(seenImg.has(k))return;seenImg.add(k);fetchVendorImage(full.sku,full.color,full.vendor_id,full)});
+                  setMockBuilder({gi});
+                }}>{qmCount>0?'Edit Mockups':'⚡ Build Mockups'}</button>
                 {(()=>{const colors=[...new Set(g.items.filter(it=>!it._excluded).map(it=>it.sku+'|'+(it.color||'')))].length;return<span style={{fontSize:11,color:qmCount>0?'#166534':'#d97706',fontWeight:700}}>{qmCount}/{colors} color{colors===1?'':'s'} mocked{qmCount===0?' — none yet':''}</span>})()}
               </div>
             </div>}
@@ -7219,7 +7223,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const cand=[art?.preview_url,...(art?.mockup_files||[]),..._onfile].find(_renderable);
               let preview=cand?{url:(typeof cand==='string'?cand:cand.url)}:null;
               // No directly-renderable art on file — rasterize an on-file .ai/.eps/.pdf to PNG via Cloudinary.
-              if(!preview){const conv=[..._onfile,...(art?.mockup_files||[])].map(f=>typeof f==='string'?f:f?.url).find(u=>u&&u.includes('cloudinary.com')&&/\.(ai|eps|pdf)(\?|$)/i.test(u));if(conv){const png=_cloudinaryPdfThumb(conv);if(png)preview={url:png}}}
+              if(!preview){const conv=[..._onfile,...(art?.mockup_files||[])].map(f=>typeof f==='string'?f:f?.url).find(u=>u&&u.includes('cloudinary.com')&&/\.(ai|eps|pdf)(\?|$)/i.test(u));if(conv){const png=_cloudinaryPdfThumb(conv);if(png)preview={url:png,vectorSrc:conv}}}
               locations.push({artFileId:aid,name:art?.name||it.art_name||DECO_LABELS_W[g.deco_type]||g.name,position:d.position||'',existingFiles:_onfile,preview});
             });});
           return<QuickMockBuilder garments={garments} locations={locations} initialMocks={g.qmMocks} initialFiles={g.qmFiles} nf={nf}
