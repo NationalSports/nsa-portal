@@ -7204,16 +7204,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           rel.forEach(it=>{const key=it.sku+'|'+(it.color||'');if(seenG.has(key))return;seenG.add(key);const full=safeItems(o)[it.item_idx];garments.push({key,sku:it.sku,color:it.color||'',name:it.name||'',frontUrl:_itemImg(full),backUrl:_back(full)})});
           const locations=[];const seenL=new Set();
           const _renderable=f=>{const u=typeof f==='string'?f:(f?.url||'');return !!u&&(_isImgUrl(u)||/\.svg(\?|$)/i.test(u))};
-          rel.forEach(it=>{const aid=it.art_file_id;const lk=(aid||'')+'|'+(it.position||'');if(seenL.has(lk))return;seenL.add(lk);
-            const art=aid?safeArt(o).find(a=>a.id===aid):null;
-            // Source art a rep already attached lives in prod_files (Art Library uploads) and files.
-            const _onfile=(art?[...(art.files||[]),...(art.prod_files||[])]:[]).filter(f=>typeof f==='string'||f?.url);
-            const existingFiles=_onfile;
-            const cand=[art?.preview_url,...(art?.mockup_files||[]),..._onfile].find(_renderable);
-            let preview=cand?{url:(typeof cand==='string'?cand:cand.url)}:null;
-            // No directly-renderable art on file — rasterize an on-file .ai/.eps/.pdf to PNG via Cloudinary.
-            if(!preview){const conv=[..._onfile,...(art?.mockup_files||[])].map(f=>typeof f==='string'?f:f?.url).find(u=>u&&u.includes('cloudinary.com')&&/\.(ai|eps|pdf)(\?|$)/i.test(u));if(conv){const png=_cloudinaryPdfThumb(conv);if(png)preview={url:png}}}
-            locations.push({artFileId:aid,name:it.art_name||DECO_LABELS_W[g.deco_type]||g.name,position:it.position||'',existingFiles,preview});});
+          // One location per distinct artwork on the included items. An item can carry several
+          // art decorations (e.g. front + back), so scan the items' decorations rather than the
+          // group's single art reference — otherwise a second piece of art wouldn't show up.
+          rel.forEach(it=>{const full=safeItems(o)[it.item_idx];if(!full)return;
+            safeDecos(full).forEach(d=>{
+              if(d.kind!=='art'||!d.art_file_id||d.art_file_id==='__tbd')return;
+              const aid=d.art_file_id;if(seenL.has(aid))return;
+              const art=safeArt(o).find(a=>a.id===aid);
+              if(art&&art.deco_type&&art.deco_type!==g.deco_type)return;// keep this job's deco type only
+              seenL.add(aid);
+              // Source art a rep already attached lives in prod_files (Art Library uploads) and files.
+              const _onfile=(art?[...(art.files||[]),...(art.prod_files||[])]:[]).filter(f=>typeof f==='string'||f?.url);
+              const cand=[art?.preview_url,...(art?.mockup_files||[]),..._onfile].find(_renderable);
+              let preview=cand?{url:(typeof cand==='string'?cand:cand.url)}:null;
+              // No directly-renderable art on file — rasterize an on-file .ai/.eps/.pdf to PNG via Cloudinary.
+              if(!preview){const conv=[..._onfile,...(art?.mockup_files||[])].map(f=>typeof f==='string'?f:f?.url).find(u=>u&&u.includes('cloudinary.com')&&/\.(ai|eps|pdf)(\?|$)/i.test(u));if(conv){const png=_cloudinaryPdfThumb(conv);if(png)preview={url:png}}}
+              locations.push({artFileId:aid,name:art?.name||it.art_name||DECO_LABELS_W[g.deco_type]||g.name,position:d.position||'',existingFiles:_onfile,preview});
+            });});
           return<QuickMockBuilder garments={garments} locations={locations} initialMocks={g.qmMocks} initialFiles={g.qmFiles} nf={nf}
             onClose={()=>setMockBuilder(null)}
             onSave={({mocksByGarment,filesByLocation})=>{const gs=[...jobWizard.groups];gs[mockBuilder.gi]={...gs[mockBuilder.gi],qmMocks:mocksByGarment,qmFiles:filesByLocation};setJobWizard({...jobWizard,groups:gs});setMockBuilder(null);nf('Mockups attached — release the job to send to the coach')}}/>;
