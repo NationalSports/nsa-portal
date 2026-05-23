@@ -7208,7 +7208,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const art=aid?safeArt(o).find(a=>a.id===aid):null;
             const existingFiles=art?(art.files||[]):[];
             const cand=[art?.preview_url,...(art?.files||[]),...(art?.mockup_files||[])].find(_renderable);
-            const preview=cand?{url:(typeof cand==='string'?cand:cand.url)}:null;
+            let preview=cand?{url:(typeof cand==='string'?cand:cand.url)}:null;
+            // No directly-renderable art on file — rasterize an on-file .ai/.eps/.pdf to PNG via Cloudinary.
+            if(!preview){const conv=[...(art?.files||[]),...(art?.mockup_files||[])].map(f=>typeof f==='string'?f:f?.url).find(u=>u&&u.includes('cloudinary.com')&&/\.(ai|eps|pdf)(\?|$)/i.test(u));if(conv){const png=_cloudinaryPdfThumb(conv);if(png)preview={url:png}}}
             locations.push({artFileId:aid,name:it.art_name||DECO_LABELS_W[g.deco_type]||g.name,position:it.position||'',existingFiles,preview});});
           return<QuickMockBuilder garments={garments} locations={locations} initialMocks={g.qmMocks} initialFiles={g.qmFiles} nf={nf}
             onClose={()=>setMockBuilder(null)}

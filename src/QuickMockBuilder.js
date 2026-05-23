@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import * as fabric from 'fabric';
 import { Icon } from './components';
-import { fileUpload } from './utils';
+import { fileUpload, _cloudinaryPdfThumb } from './utils';
 
 // Quick Mock Builder
 // Lets a rep build mockups themselves (skipping the artist on the mockup phase) by
@@ -95,16 +95,18 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
     obj._isArt = true;
   };
 
+  const placeStandIn = layer => {
+    if (!canvas) return;
+    const label = (layer.name || layer.position || 'ART').toUpperCase();
+    const txt = new fabric.FabricText(label, {left: 230, top: 250, fontSize: 24, fontWeight: 'bold', fill: 'rgba(0,0,0,0.65)', textAlign: 'center', backgroundColor: 'rgba(255,255,255,0.7)'});
+    styleArt(txt); txt._layerId = layer.artFileId;
+    canvas.add(txt); canvas.setActiveObject(txt); canvas.renderAll();
+  };
+
   const placeLayer = layer => {
     if (!canvas) return;
     const preview = layer.preview;
-    if (!preview) {
-      const label = (layer.name || layer.position || 'ART').toUpperCase();
-      const txt = new fabric.FabricText(label, {left: 230, top: 250, fontSize: 24, fontWeight: 'bold', fill: 'rgba(0,0,0,0.65)', textAlign: 'center', backgroundColor: 'rgba(255,255,255,0.7)'});
-      styleArt(txt); txt._layerId = layer.artFileId;
-      canvas.add(txt); canvas.setActiveObject(txt); canvas.renderAll();
-      return;
-    }
+    if (!preview) { placeStandIn(layer); return; }
     if (preview.svgString) {
       fabric.loadSVGFromString(preview.svgString).then(result => {
         if (!result || !result.objects || !result.objects.length) return;
@@ -113,27 +115,27 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
         group.set({left: 230, top: 250, scaleX: scale, scaleY: scale});
         styleArt(group); group._layerId = layer.artFileId;
         canvas.add(group); canvas.setActiveObject(group); canvas.renderAll();
-      }).catch(() => addImg(preview.url, layer.artFileId));
+      }).catch(() => addImg(preview.url, layer));
       return;
     }
-    addImg(preview.url, layer.artFileId);
+    addImg(preview.url, layer);
   };
 
-  const addImg = (url, layerId) => {
+  const addImg = (url, layer) => {
     // Proxy through image-proxy so cross-origin art can be drawn to (and exported from) the canvas.
-    const tryLoad = src => {
+    const tryLoad = () => {
       const el = new Image(); el.crossOrigin = 'anonymous';
       el.onload = () => {
         const img = new fabric.FabricImage(el);
         const scale = 150 / img.width;
         img.set({left: 230, top: 250, scaleX: scale, scaleY: scale});
-        styleArt(img); img._layerId = layerId;
+        styleArt(img); img._layerId = layer.artFileId;
         canvas.add(img); canvas.setActiveObject(img); canvas.renderAll();
       };
       return el;
     };
-    const proxied = tryLoad('');
-    proxied.onerror = () => { const direct = tryLoad(''); direct.onerror = () => nf && nf('Could not render that art on the mock — try a PNG/SVG', 'error'); direct.src = url; };
+    const proxied = tryLoad();
+    proxied.onerror = () => { const direct = tryLoad(); direct.onerror = () => { nf && nf('Could not render that art — placed a stand-in you can position', 'error'); placeStandIn(layer); }; direct.src = url; };
     proxied.src = /^data:/.test(url) ? url : ('/.netlify/functions/image-proxy?url=' + encodeURIComponent(url));
   };
 
@@ -141,6 +143,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
     const ext = (file.name.split('.').pop() || '').toLowerCase();
     const isImg = ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext);
     const isSvg = ext === 'svg';
+    const isVectorDoc = ['ai', 'eps', 'pdf'].includes(ext);
     setBusy(true);
     try {
       nf && nf('Uploading ' + file.name + '...');
@@ -149,8 +152,9 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
       let preview = null;
       if (isSvg) { const svgString = await file.text(); preview = {url, svgString}; }
       else if (isImg) { preview = {url}; }
+      else if (isVectorDoc) { const png = _cloudinaryPdfThumb(url); if (png) preview = {url: png}; }
       setLayers(prev => prev.map((l, i) => i === idx ? {...l, source, preview, hasExisting: l.hasExisting} : l));
-      nf && nf(file.name + ' attached' + (preview ? '' : ' (AI/PDF — a stand-in will be placed on the mock)'));
+      nf && nf(file.name + ' attached' + (preview ? (isVectorDoc ? ' — generating a preview to place' : '') : ' (a stand-in will be placed on the mock)'));
     } catch (e) {
       nf && nf('Upload failed: ' + e.message, 'error');
     } finally { setBusy(false); }
