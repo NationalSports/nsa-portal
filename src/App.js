@@ -8265,8 +8265,10 @@ export default function App(){
             </div>}
 
             {/* Bottom action bar */}
-            <div style={{padding:16,display:'flex',gap:8,borderTop:'1px solid #e2e8f0',background:'#f8fafc'}}>
+            <div style={{padding:16,display:'flex',gap:8,borderTop:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap'}}>
               <button className="btn btn-primary" style={{background:'#d97706',borderColor:'#d97706'}} onClick={printProdPDF}>Print Production PDF</button>
+              {(j.prod_status==='hold'||j.prod_status==='ready'||!j.prod_status)&&<button className="btn btn-primary" style={{background:'#16a34a',borderColor:'#16a34a'}} onClick={()=>moveJobStatus(j,'staging')}>➡️ Move to In Line</button>}
+              {(j.prod_status==='staging'||j.prod_status==='in_process')&&<button className="btn btn-secondary" onClick={()=>{setAssignModal({job:j,soId:j.soId,targetStatus:j.prod_status});setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||''})}}>👤 {j.assigned_to?'Reassign':'Assign'} Decorator / Machine</button>}
               <button className="btn btn-secondary" onClick={()=>{setReturnToPage({page:pg,jobData:{...j}});setESOTab('jobs');setESO(so);setESOC(c);setPg('orders');setProdJobModal(null)}}>Open Full Job</button>
               <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setProdJobModal(null);setProdJobLightbox(false)}}>Close</button>
             </div>
