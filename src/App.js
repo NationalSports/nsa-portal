@@ -19915,10 +19915,112 @@ export default function App(){
       }
     };
 
-    // Push bills to Portal (apply to SOs)
-    const pushBillsToPortal=()=>{
+    // True if a bill with this doc number was already applied to the Portal — checks the
+    // applied state on POs/batches (authoritative) plus pushed bill history as a fallback.
+    const _docAlreadyApplied=(doc)=>{
+      const d=(doc||'').trim().toLowerCase();
+      if(!d)return false;
+      if(submittedBatches.some(sb=>(sb.bill_doc_number||'').trim().toLowerCase()===d))return true;
+      const inDetails=arr=>(arr||[]).some(dt=>(dt.doc||'').trim().toLowerCase()===d);
+      for(const so of sos){
+        for(const it of (so.items||[]))for(const po of (it.po_lines||[]))if(inDetails(po._bill_details))return true;
+        for(const dp of (so.deco_pos||[]))if(inDetails(dp._bill_details))return true;
+      }
+      if(savedBills.some(sb=>sb.portalStatus==='success'&&(sb.parsed?.doc_number||'').trim().toLowerCase()===d))return true;
+      return false;
+    };
+
+    // Returns over-billing problems: cases where billed qty (already applied + this bill)
+    // would exceed the ordered qty on a PO line/batch. Mirrors the apply paths so the
+    // numbers match what would actually be written.
+    const _billOverBillingErrors=(p)=>{
+      const errs=[];
+      const maps=(p._lineMappings||[]).filter(m=>safeNum(m.allocated_qty)>0);
+      if(maps.length){
+        const groups={};
+        maps.forEach(m=>{
+          const size=m.size;const add=safeNum(m.allocated_qty);
+          if(m.target_kind==='batch'){
+            const sb=submittedBatches.find(b=>(b.id||b.po_number)===m.target_id);
+            if(!sb)return;
+            let ordered=0;(sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[size])}));
+            const key='b|'+(sb.id||sb.po_number)+'|'+size;
+            (groups[key]||(groups[key]={ordered,billed:safeNum((sb.billed||{})[size]),add:0,label:(sb.po_number||'Batch')+' size '+size})).add+=add;
+          }else{
+            const so=sos.find(s=>s.id===m.so_id);if(!so)return;
+            let poRef=null,item=null;
+            for(const it of (so.items||[])){
+              if(m.item_id?it.id!==m.item_id:(it.sku||'').toUpperCase()!==(m.sku||'').toUpperCase())continue;
+              const po=(it.po_lines||[]).find(pl=>m.po_id?(pl.po_id||'')===m.po_id:true);
+              if(po){poRef=po;item=it;break}
+            }
+            if(!poRef)return;
+            const key='s|'+so.id+'|'+(item.id||item.sku)+'|'+(poRef.po_id||'')+'|'+size;
+            (groups[key]||(groups[key]={ordered:safeNum(poRef[size]),billed:safeNum((poRef.billed||{})[size]),add:0,label:(m.sku||item.sku)+' '+size+' on '+(poRef.po_id||so.id)})).add+=add;
+          }
+        });
+        Object.values(groups).forEach(g=>{if(g.billed+g.add>g.ordered)errs.push(g.label+': billing '+(g.billed+g.add)+' exceeds '+g.ordered+' ordered')});
+        return errs;
+      }
+      // Auto-matched bills (no explicit mappings) apply their line items by size.
+      const addBySize=()=>{const o={};(p.items||[]).forEach(it=>{if(it.size&&it.qty)o[it.size]=(o[it.size]||0)+safeNum(it.qty)});return o};
+      if(p.matchedPOSource==='batch'&&p.matchedPO){
+        const sb=submittedBatches.find(b=>(b.id||b.po_number)===(p.matchedPO.id||p.matchedPO.po_number))||p.matchedPO;
+        Object.entries(addBySize()).forEach(([size,add])=>{
+          let ordered=0;(sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[size])}));
+          const billed=safeNum((sb.billed||{})[size]);
+          if(billed+add>ordered)errs.push((sb.po_number||'Batch')+' size '+size+': billing '+(billed+add)+' exceeds '+ordered+' ordered');
+        });
+      }else if(p.matchedPOSource==='inv_po'&&p.matchedPO){
+        const po=invPOs.find(x=>x.id===p.matchedPO.id)||p.matchedPO;
+        Object.entries(addBySize()).forEach(([size,add])=>{
+          let ordered=0;(po.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[size])});
+          const billed=safeNum((po.billed||{})[size]);
+          if(billed+add>ordered)errs.push((po.po_number||'PO')+' size '+size+': billing '+(billed+add)+' exceeds '+ordered+' ordered');
+        });
+      }else if(p.matchedPOSource==='so_po'&&p.matchedPO&&safeNum(p.freight)>0){
+        // Auto so_po only writes billed qty when freight is present (via _applyFreightToSOs),
+        // adding the full per-SKU billed qty to each matching po_line.
+        const so=sos.find(s=>s.id===(p.matchedPO.so_id||p.matchedPO.so?.id));
+        if(so){
+          const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
+          const addBySku={};(p.items||[]).forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();(addBySku[sk]=addBySku[sk]||{})[it.size]=(addBySku[sk][it.size]||0)+safeNum(it.qty)}});
+          (so.items||[]).forEach(it=>{
+            const adds=addBySku[(it.sku||'').toUpperCase()];if(!adds)return;
+            (it.po_lines||[]).forEach(po=>{
+              const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
+              if(pid!==poLc&&!pid.startsWith(poLc))return;
+              Object.entries(adds).forEach(([size,add])=>{
+                const ordered=safeNum(po[size]);const billed=safeNum((po.billed||{})[size]);
+                if(billed+add>ordered)errs.push(it.sku+' '+size+' on '+(po.po_id||so.id)+': billing '+(billed+add)+' exceeds '+ordered+' ordered');
+              });
+            });
+          });
+        }
+      }
+      return errs;
+    };
+
+    // Blocking problems for a bill about to be pushed (duplicate doc# + PO over-billing).
+    const _validateBillForPush=(p)=>{
+      const errs=[];
+      if(_docAlreadyApplied(p.doc_number))errs.push('Already pushed to the Portal (duplicate doc #'+(p.doc_number||'').trim()+')');
+      errs.push(..._billOverBillingErrors(p));
+      return errs;
+    };
+
+    // Push bills to Portal (apply to SOs). force=true skips the duplicate/over-billing gate.
+    const pushBillsToPortal=(force)=>{
       const selected=billImport.parsed.filter(_billIsReadyToPush);
       if(!selected.length){nf('No matched bills selected to push','error');return}
+      if(force!==true){
+        const problems=[];
+        selected.forEach(b=>{const errs=_validateBillForPush(b.parsed);if(errs.length)problems.push((b.parsed.doc_number?'Doc #'+b.parsed.doc_number:(b.file||'Bill'))+':\n  • '+errs.join('\n  • '))});
+        if(problems.length){
+          const ok=window.confirm('Cannot push — problem(s) found:\n\n'+problems.join('\n\n')+'\n\nPush anyway (override)?');
+          if(!ok){nf('Push cancelled — '+problems.length+' bill(s) have problems','error');return}
+        }
+      }
       let applied=0;
       selected.forEach(b=>{
         try{
@@ -20984,7 +21086,7 @@ export default function App(){
             <button className="btn btn-secondary" onClick={()=>setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}>← Upload More</button>
             <span style={{fontSize:14,fontWeight:700,flex:1}}>{billImport.parsed.length} Bill(s) Parsed</span>
             <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={billImport.uploading||!billImport.parsed.some(_billIsReadyToPush)}
-              onClick={pushBillsToPortal}>
+              onClick={()=>pushBillsToPortal()}>
               Push {billImport.parsed.filter(_billIsReadyToPush).length} to Portal
             </button>
             <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} disabled={billImport.uploading||!billImport.parsed.some(b=>b.selected&&!b.qbStatus)}
