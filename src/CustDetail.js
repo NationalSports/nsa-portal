@@ -546,18 +546,31 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const uCustArt=(i,k,v)=>{saveCustArt(ownArt.map((a,x)=>x===i?{...a,[k]:v}:a))};
     const rmCustArt=(i)=>{saveCustArt(ownArt.filter((_,x)=>x!==i))};
     // Build unified list with source tags + compute usage
-    const unified=allArt.map(art=>{
+    const unifiedAll=allArt.map(art=>{
       const st=art.status==='uploaded'?'needs_approval':art.status||'waiting_for_art';
-      const mockups=(art.mockup_files||art.files||[]).filter(f=>f);
-      const firstMockup=mockups[0];const imgUrl=firstMockup?(typeof firstMockup==='string'?firstMockup:firstMockup.url):'';
+      // Mockups can live in mockup_files or, for rep-built quick mocks, in item_mockups (keyed by sku|color).
+      const itemMocks=Object.values(art.item_mockups||{}).flat().filter(f=>f);
+      const mockups=[...(art.mockup_files||[]),...itemMocks].filter(f=>f);
+      const dispFiles=mockups.length?mockups:(art.files||[]).filter(f=>f);
+      // Thumbnail: first renderable image across preview, mockups, then files.
+      const imgUrl=[art.preview_url,...mockups,...(art.files||[])].map(f=>typeof f==='string'?f:(f?.url||'')).find(u=>u&&_isImgUrl(u))||'';
       const usedOnSOs=[];if(art._src==='so'||art._src==='est'){custSOs.forEach(so=>{(so.art_files||[]).forEach(a=>{if(a.name===art.name&&a.deco_type===art.deco_type){const items=[];(so.items||[]).forEach(it=>{(it.decorations||[]).forEach(d=>{if(d.art_file_id===a.id)items.push({sku:it.sku,name:it.name,position:d.position,deco_type:d.deco_type||a.deco_type})})});usedOnSOs.push({so_id:so.id,memo:so.memo,status:so.status,items})}})})}
       const allMockups=[];const seen=new Set();
       const grpKey=(art.name||'').toLowerCase()+'||'+(art.deco_type||'');
-      artGroups[grpKey]?.instances.forEach(inst=>{(inst.mockup_files||inst.files||[]).filter(f=>f).forEach(f=>{const url=typeof f==='string'?f:(f?.url||'');if(url&&!seen.has(url)){seen.add(url);allMockups.push({file:f,url,src:inst._srcLabel})}})});
+      artGroups[grpKey]?.instances.forEach(inst=>{[...(inst.mockup_files||[]),...Object.values(inst.item_mockups||{}).flat(),...(inst.files||[])].filter(f=>f).forEach(f=>{const url=typeof f==='string'?f:(f?.url||'');if(url&&!seen.has(url)){seen.add(url);allMockups.push({file:f,url,src:inst._srcLabel})}})});
       // Find index in ownArt for editable items
       const ownIdx=art._src==='library'?ownArt.findIndex(a=>a.id===art.id):-1;
-      return{...art,_st:st,_mockups:mockups,_imgUrl:imgUrl,_usedOnSOs:usedOnSOs,_allMockups:allMockups,_ownIdx:ownIdx};
+      return{...art,_st:st,_mockups:dispFiles,_imgUrl:imgUrl,_usedOnSOs:usedOnSOs,_allMockups:allMockups,_ownIdx:ownIdx};
     }).filter(a=>a._src==='library'||a._st!=='waiting_for_art');
+    // Collapse to one card per logo (name+deco_type) — a logo reused across multiple SOs shows once.
+    const _stRank={needs_approval:3,approved:2,waiting_for_art:1};
+    const _byLogo={};unifiedAll.forEach(a=>{const k=(a.name||'').toLowerCase()+'||'+(a.deco_type||'');(_byLogo[k]=_byLogo[k]||[]).push(a)});
+    const unified=Object.values(_byLogo).map(insts=>{
+      const rep={...[...insts].sort((x,y)=>(_stRank[y._st]||0)-(_stRank[x._st]||0))[0]};
+      rep._usedOnSOs=insts.reduce((m,x)=>(x._usedOnSOs||[]).length>m.length?x._usedOnSOs:m,[]);
+      rep._imgUrl=insts.map(x=>x._imgUrl).find(u=>u&&_isImgUrl(u))||rep._imgUrl||(rep._allMockups[0]?.url)||'';
+      return rep;
+    });
     // Status counts for filter tabs
     const counts={all:unified.length,waiting_for_art:0,needs_approval:0,approved:0};
     unified.forEach(a=>{if(counts[a._st]!=null)counts[a._st]++});
