@@ -7206,11 +7206,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const _renderable=f=>{const u=typeof f==='string'?f:(f?.url||'');return !!u&&(_isImgUrl(u)||/\.svg(\?|$)/i.test(u))};
           rel.forEach(it=>{const aid=it.art_file_id;const lk=(aid||'')+'|'+(it.position||'');if(seenL.has(lk))return;seenL.add(lk);
             const art=aid?safeArt(o).find(a=>a.id===aid):null;
-            const existingFiles=art?(art.files||[]):[];
-            const cand=[art?.preview_url,...(art?.files||[]),...(art?.mockup_files||[])].find(_renderable);
+            // Source art a rep already attached lives in prod_files (Art Library uploads) and files.
+            const _onfile=(art?[...(art.files||[]),...(art.prod_files||[])]:[]).filter(f=>typeof f==='string'||f?.url);
+            const existingFiles=_onfile;
+            const cand=[art?.preview_url,...(art?.mockup_files||[]),..._onfile].find(_renderable);
             let preview=cand?{url:(typeof cand==='string'?cand:cand.url)}:null;
             // No directly-renderable art on file — rasterize an on-file .ai/.eps/.pdf to PNG via Cloudinary.
-            if(!preview){const conv=[...(art?.files||[]),...(art?.mockup_files||[])].map(f=>typeof f==='string'?f:f?.url).find(u=>u&&u.includes('cloudinary.com')&&/\.(ai|eps|pdf)(\?|$)/i.test(u));if(conv){const png=_cloudinaryPdfThumb(conv);if(png)preview={url:png}}}
+            if(!preview){const conv=[..._onfile,...(art?.mockup_files||[])].map(f=>typeof f==='string'?f:f?.url).find(u=>u&&u.includes('cloudinary.com')&&/\.(ai|eps|pdf)(\?|$)/i.test(u));if(conv){const png=_cloudinaryPdfThumb(conv);if(png)preview={url:png}}}
             locations.push({artFileId:aid,name:it.art_name||DECO_LABELS_W[g.deco_type]||g.name,position:it.position||'',existingFiles,preview});});
           return<QuickMockBuilder garments={garments} locations={locations} initialMocks={g.qmMocks} initialFiles={g.qmFiles} nf={nf}
             onClose={()=>setMockBuilder(null)}
