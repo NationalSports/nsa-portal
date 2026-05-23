@@ -7203,7 +7203,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const garments=[];const seenG=new Set();
           rel.forEach(it=>{const key=it.sku+'|'+(it.color||'');if(seenG.has(key))return;seenG.add(key);const full=safeItems(o)[it.item_idx];garments.push({key,sku:it.sku,color:it.color||'',name:it.name||'',frontUrl:_itemImg(full),backUrl:_back(full)})});
           const locations=[];const seenL=new Set();
-          rel.forEach(it=>{const aid=it.art_file_id;const lk=(aid||'')+'|'+(it.position||'');if(seenL.has(lk))return;seenL.add(lk);locations.push({artFileId:aid,name:it.art_name||DECO_LABELS_W[g.deco_type]||g.name,position:it.position||''})});
+          const _renderable=f=>{const u=typeof f==='string'?f:(f?.url||'');return !!u&&(_isImgUrl(u)||/\.svg(\?|$)/i.test(u))};
+          rel.forEach(it=>{const aid=it.art_file_id;const lk=(aid||'')+'|'+(it.position||'');if(seenL.has(lk))return;seenL.add(lk);
+            const art=aid?safeArt(o).find(a=>a.id===aid):null;
+            const existingFiles=art?(art.files||[]):[];
+            const cand=[art?.preview_url,...(art?.files||[]),...(art?.mockup_files||[])].find(_renderable);
+            const preview=cand?{url:(typeof cand==='string'?cand:cand.url)}:null;
+            locations.push({artFileId:aid,name:it.art_name||DECO_LABELS_W[g.deco_type]||g.name,position:it.position||'',existingFiles,preview});});
           return<QuickMockBuilder garments={garments} locations={locations} initialMocks={g.qmMocks} initialFiles={g.qmFiles} nf={nf}
             onClose={()=>setMockBuilder(null)}
             onSave={({mocksByGarment,filesByLocation})=>{const gs=[...jobWizard.groups];gs[mockBuilder.gi]={...gs[mockBuilder.gi],qmMocks:mocksByGarment,qmFiles:filesByLocation};setJobWizard({...jobWizard,groups:gs});setMockBuilder(null);nf('Mockups attached — release the job to send to the coach')}}/>;
