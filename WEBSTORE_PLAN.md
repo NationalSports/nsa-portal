@@ -55,6 +55,12 @@ CREATE TABLE webstores (
   payment_mode    TEXT NOT NULL DEFAULT 'paid',    -- paid|unpaid|either
   require_login   BOOLEAN DEFAULT false,           -- public or club-members-only
 
+  -- Jersey number selection
+  number_enabled  BOOLEAN DEFAULT false,           -- let players pick a number at all
+  number_unique   BOOLEAN DEFAULT true,            -- if on, a number taken by one player is blocked for others
+  number_min      INT DEFAULT 0,
+  number_max      INT DEFAULT 99,
+
   -- Order batching
   so_creation     TEXT NOT NULL DEFAULT 'manual',  -- manual|on_close|daily|weekly
   so_next_run_at  TIMESTAMPTZ,                     -- set by scheduler
@@ -78,15 +84,30 @@ CREATE TABLE webstores (
 CREATE TABLE webstore_products (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   store_id      UUID NOT NULL REFERENCES webstores(id) ON DELETE CASCADE,
-  sku           TEXT NOT NULL,                     -- joins to products.sku
-  display_name  TEXT,                              -- override of products.description
-  retail_price  NUMERIC NOT NULL,                  -- store-level price (incl. fundraise markup baked in or applied at cart)
+  kind          TEXT NOT NULL DEFAULT 'single',    -- 'single' | 'bundle'
+  sku           TEXT,                              -- joins to products.sku (null for a bundle)
+  display_name  TEXT,                              -- override of products.description; bundle's name for kind='bundle'
+  retail_price  NUMERIC NOT NULL,                  -- single price; for a bundle this is the ONE package price
   decoration_id UUID,                              -- optional preset deco for this product in this store
   sort_order    INT DEFAULT 0,
   active        BOOLEAN DEFAULT true,
   UNIQUE (store_id, sku, decoration_id)
 );
 CREATE INDEX idx_webstore_products_store ON webstore_products(store_id);
+
+-- Components of a bundle/package (e.g. "2 jerseys, 2 shorts, socks, backpack").
+-- Each component points at a real product SKU and can require its own size pick.
+CREATE TABLE webstore_bundle_items (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  bundle_id       UUID NOT NULL REFERENCES webstore_products(id) ON DELETE CASCADE,
+  sku             TEXT NOT NULL,                   -- the component product
+  qty             INT NOT NULL DEFAULT 1,          -- e.g. 2 jerseys
+  size_required   BOOLEAN DEFAULT true,            -- false for one-size items (socks, backpack)
+  decoration_id   UUID,                            -- component-level deco (e.g. number on jerseys)
+  takes_number    BOOLEAN DEFAULT false,           -- this component carries the player's chosen number
+  sort_order      INT DEFAULT 0
+);
+CREATE INDEX idx_webstore_bundle_items_bundle ON webstore_bundle_items(bundle_id);
 
 -- Customer-facing orders. One row per checkout (whether paid or unpaid).
 -- A nightly/manual job rolls multiple of these into a single sales_order.
@@ -118,11 +139,17 @@ CREATE TABLE webstore_order_items (
   sku             TEXT NOT NULL,
   size            TEXT,
   qty             INT NOT NULL,
-  unit_price      NUMERIC NOT NULL,
+  unit_price      NUMERIC NOT NULL,                -- $0 for bundle components; the bundle line carries the package price
   unit_fundraise  NUMERIC DEFAULT 0,               -- per-unit fundraise component
   decoration_id   UUID,
   player_name     TEXT NOT NULL,                   -- captured per line; buyer is often a parent ordering for a player
   player_number   TEXT,                            -- jersey number coach wants to see (optional)
+  -- Bundle linkage: all components a player picked for one package share a
+  -- bundle_ref and point at the catalog bundle via bundle_product_id. The
+  -- priced "package" line and its sized components stay grouped this way.
+  bundle_ref        UUID,                          -- groups the components of one purchased package
+  bundle_product_id UUID REFERENCES webstore_products(id),
+  is_bundle_parent  BOOLEAN DEFAULT false,         -- true on the single priced line; components are $0
   -- Per-line status, mirrored from the parent SO's job status so the coach
   -- and player both see live fulfillment state without exposing the full SO.
   line_status     TEXT DEFAULT 'pending',          -- pending|in_production|shipped|complete|cancelled
@@ -133,6 +160,20 @@ CREATE INDEX idx_webstore_order_items_order ON webstore_order_items(order_id);
 -- Stable token emailed to each buyer so they can check status without a login.
 -- One token per webstore_order; lives on the order row.
 ALTER TABLE webstore_orders ADD COLUMN status_token TEXT UNIQUE DEFAULT encode(gen_random_bytes(16),'hex');
+
+-- Jersey number claims. When webstores.number_unique is on, this enforces that
+-- a number can only be taken once per store. Inserted inside the checkout
+-- transaction; a UNIQUE violation means "someone just took it — pick another".
+CREATE TABLE webstore_number_claims (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id      UUID NOT NULL REFERENCES webstores(id) ON DELETE CASCADE,
+  player_number TEXT NOT NULL,
+  order_id      UUID REFERENCES webstore_orders(id) ON DELETE CASCADE,
+  player_name   TEXT,
+  claimed_at    TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (store_id, player_number)   -- the guard; only created/enforced for number_unique stores
+);
+CREATE INDEX idx_webstore_number_claims_store ON webstore_number_claims(store_id);
 
 -- Read-only view the public storefront uses (no cost columns, no vendor info)
 CREATE VIEW storefront_products AS
@@ -199,6 +240,62 @@ else                              → "Sold out — notify me"  (email capture)
 Backorder orders are accepted and flagged `backordered=true` on the
 `webstore_order_items` row; they batch into the SO with a special line note so
 fulfillment doesn't try to pick before the PO lands.
+
+---
+
+## Bundles / packages (group items with per-item sizing)
+
+Many team stores sell a **package** at one price — e.g. "2 jerseys + 2 shorts +
+socks + backpack." The buyer pays the single bundle price, but **sizes each
+component independently** (jersey L, shorts M, socks one-size).
+
+**Modeling:**
+
+- A bundle is a `webstore_products` row with `kind='bundle'` and a single
+  `retail_price` (the package price). Its components live in
+  `webstore_bundle_items`, each pointing at a real product SKU with a `qty`,
+  `size_required` flag, optional component decoration, and a `takes_number`
+  flag (which components carry the player's jersey number).
+- **On the storefront**, adding a bundle to the cart opens a configurator: one
+  size selector per `size_required` component (and per unit when `qty > 1` — two
+  jerseys can be different sizes), the number picker once (if enabled), and
+  player name. One-size components (socks, backpack) skip the size step.
+- **In the cart/order**, the bundle expands into `webstore_order_items`:
+  - one **bundle-parent line** (`is_bundle_parent=true`, carries the package
+    `unit_price`),
+  - one **component line per item/unit** (`unit_price=0`, with its own `size`),
+  - all sharing a `bundle_ref` and `bundle_product_id`.
+- **Stock/ETA** is checked per component SKU+size, same logic as singles. If any
+  component is out, the bundle shows the worst-case state ("Arriving ~Jun 12"
+  for the slowest component) but stays orderable as backorder.
+- **Batching** sends each component to the SO as its own pick line (with the
+  bundle name + player in the note), so production sees real garments to make,
+  while revenue/fundraise attaches to the parent line. The package therefore
+  fulfills correctly without a fake "bundle SKU" in inventory.
+
+## Jersey numbers (optional, with uniqueness)
+
+Per-store toggles on `webstores`:
+
+- `number_enabled` — turn number selection on/off for the whole store.
+- `number_unique` — when on, a number claimed by one player is **blocked for
+  everyone else** in that store; when off, duplicates are allowed.
+- `number_min` / `number_max` — the allowed range (default 0–99).
+
+**How uniqueness is enforced (no race conditions):**
+
+- The storefront shows live availability by reading `webstore_number_claims` for
+  the store — taken numbers render greyed-out in the picker.
+- At checkout, the claim is inserted **inside the same transaction** as the
+  order. The `UNIQUE (store_id, player_number)` constraint is the real guard: if
+  two parents grab #10 at the same instant, the second insert fails and that
+  checkout is told "number just taken — pick another," rather than relying on
+  the UI alone.
+- The chosen number is written to `player_number` on every line that has a
+  `takes_number` component (and on single-item jersey lines), so it flows to the
+  coach roster, the SO pick line, and the decoration.
+- If a store has `number_unique=false`, we skip the claim insert entirely and
+  duplicates are fine.
 
 ---
 
@@ -355,7 +452,8 @@ columns.
 New route tree under `src/storefront/` (lazy-loaded so it doesn't bloat the portal bundle):
 
 - `/shop/:slug` — landing + product grid (uses `storefront_products` view)
-- `/shop/:slug/p/:sku` — PDP with size grid showing stock state per size
+- `/shop/:slug/p/:sku` — PDP for a single item (size grid + stock state per size)
+- `/shop/:slug/b/:bundleId` — bundle configurator (per-component size pickers, number, player name)
 - `/shop/:slug/cart` — cart
 - `/shop/:slug/checkout` — Stripe Elements (paid) or contact form (unpaid).
   The buyer is often a **parent**, so the cart/checkout always captures a
@@ -374,16 +472,18 @@ Subdomain routing: `*.shop.nsasports.com` rewrites in `netlify.toml` map subdoma
 1. **Schema + RLS** (migration 011). Validate column names against live DB during this step (`po_lines`, `products.size_stock`, etc.).
 2. **Portal "Webstores" admin screens** (read-only first: list + detail showing catalog).
 3. **Storefront product grid + PDP** reading the `storefront_products` view. No cart yet — just verify inventory + ETA display.
-4. **Cart + unpaid checkout** end-to-end (simpler than paid, gets the data model exercised).
-5. **Manual SO batching** — `webstore-batch-so` function + "Batch now" button.
-6. **Player order-status portal** — `/shop/:slug/order/:id?t=` route + status email on checkout (Brevo).
-7. **Status reconciler** — SO/job status → `webstore_order_items.line_status` (trigger or hook in existing SO update path).
-8. **Coach "Team Store" tab** in `CoachPortal.js` — per-player order table reading `line_status` (read-only); optional `webstore_roster` CSV upload + "not yet ordered" tracking + nudge.
-9. **Stripe paid checkout** — reuse `stripe-payment.js`.
-10. **Scheduled batching** — `webstore-scheduler` edge function.
-11. **Fundraising** — pricing math + portal rollup + credit-memo disbursement.
-12. **Backorder "notify me"** capture + email when stock lands (hook into existing PO-received flow).
-13. **Status-change emails** to buyers + subdomain routing + theming.
+4. **Bundles** — rep builds packages (`webstore_bundle_items`) in the Catalog tab; storefront bundle configurator with per-component sizing.
+5. **Jersey numbers** — store toggles + number picker with live availability and the `webstore_number_claims` uniqueness guard.
+6. **Cart + unpaid checkout** end-to-end (handles singles + bundles + number claim in one transaction).
+7. **Manual SO batching** — `webstore-batch-so` function + "Batch now" button (expands bundle components into pick lines).
+8. **Player order-status portal** — `/shop/:slug/order/:id?t=` route + status email on checkout (Brevo).
+9. **Status reconciler** — SO/job status → `webstore_order_items.line_status` (trigger or hook in existing SO update path).
+10. **Coach "Team Store" tab** in `CoachPortal.js` — per-player order table reading `line_status` (read-only); optional `webstore_roster` CSV upload + "not yet ordered" tracking + nudge.
+11. **Stripe paid checkout** — reuse `stripe-payment.js`.
+12. **Scheduled batching** — `webstore-scheduler` edge function.
+13. **Fundraising** — pricing math + portal rollup + credit-memo disbursement.
+14. **Backorder "notify me"** capture + email when stock lands (hook into existing PO-received flow).
+15. **Status-change emails** to buyers + subdomain routing + theming.
 
 Each step is independently shippable behind a feature flag on `webstores.status='draft'` — a store stays invisible to the public until staff flips it to `open`.
 
@@ -402,6 +502,13 @@ Each step is independently shippable behind a feature flag on `webstores.status=
 - **Catalog curation:** the **rep picks the SKUs** for each store (no
   auto-include of past products). The store-detail "Catalog" tab is a rep tool;
   coaches don't edit it.
+- **Bundles/packages:** supported. A package is one priced catalog item made of
+  multiple component SKUs; the buyer sizes each component independently and the
+  package fulfills as separate pick lines. Reps build bundles in the Catalog tab.
+- **Jersey numbers:** optional per store (`number_enabled`). When uniqueness is
+  on (`number_unique`), a number is one-per-store, enforced by a DB unique
+  constraint on claims (not just UI), with taken numbers greyed out live. Both
+  the toggle and uniqueness are per-store settings.
 - **Fundraising:** **optional per store** (`fundraise_enabled=false` by
   default). When a rep turns it on, set the percent/flat markup. A second
   per-store toggle `fundraise_show_parents` controls whether parents see the
