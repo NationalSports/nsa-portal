@@ -177,7 +177,8 @@ function Card({ store, theme, p }) {
       <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 6, flex: 1 }}>
         <span style={{ alignSelf: 'flex-start', fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6, background: b.bg, color: b.color }}>{b.text}</span>
         <div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.3 }}>{p.name}</div>
-        <div style={{ marginTop: 'auto', fontWeight: 800, fontSize: 16, color: theme.primary }}>{money(p.retail_price)}</div>
+        <div style={{ marginTop: 'auto', fontWeight: 800, fontSize: 16, color: theme.primary }}>{money(p.display_price != null ? p.display_price : p.retail_price)}</div>
+        {store.fundraise_show_parents && Number(p.fundraise_amount) > 0 && <div style={{ fontSize: 11, color: '#166534', fontWeight: 600 }}>{money(p.fundraise_amount)} supports the team</div>}
       </div>
     </div>
   );
@@ -208,7 +209,8 @@ function ProductPage({ store, theme, product: p, isOpen }) {
         <div>
           <h1 style={{ fontSize: 26, fontWeight: 800, margin: '0 0 6px' }}>{p.name}</h1>
           <div style={{ fontSize: 13, color: '#64748b', marginBottom: 12 }}>{[p.color, p.category].filter(Boolean).join(' · ')}</div>
-          <div style={{ fontSize: 26, fontWeight: 900, color: theme.primary, marginBottom: 16 }}>{money(p.retail_price)}</div>
+          <div style={{ fontSize: 26, fontWeight: 900, color: theme.primary, marginBottom: store.fundraise_show_parents && Number(p.fundraise_amount) > 0 ? 4 : 16 }}>{money(p.display_price != null ? p.display_price : p.retail_price)}</div>
+          {store.fundraise_show_parents && Number(p.fundraise_amount) > 0 && <div style={{ fontSize: 13, color: '#166534', fontWeight: 600, marginBottom: 16 }}>Includes {money(p.fundraise_amount)} that supports the team</div>}
 
           <StockLine onHand={onHand} incoming={incoming} eta={p.earliest_eta} onOrder={p.on_order_qty} />
 
@@ -249,7 +251,8 @@ function BundlePage({ store, theme, product: p, components, isOpen }) {
         <div>
           <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 6, background: '#dbeafe', color: '#1e40af' }}>PACKAGE</span>
           <h1 style={{ fontSize: 26, fontWeight: 800, margin: '10px 0 6px' }}>{p.name}</h1>
-          <div style={{ fontSize: 26, fontWeight: 900, color: theme.primary, marginBottom: 6 }}>{money(p.retail_price)}</div>
+          <div style={{ fontSize: 26, fontWeight: 900, color: theme.primary, marginBottom: 6 }}>{money(p.display_price != null ? p.display_price : p.retail_price)}</div>
+          {store.fundraise_show_parents && Number(p.fundraise_amount) > 0 && <div style={{ fontSize: 13, color: '#166534', fontWeight: 600, marginBottom: 6 }}>Includes {money(p.fundraise_amount)} that supports the team</div>}
           <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16 }}>One price — choose a size for each item below.</div>
 
           {components.length === 0 ? <Centered>This package has no items configured yet.</Centered> :

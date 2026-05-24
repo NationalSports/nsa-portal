@@ -111,15 +111,15 @@ function Webstores({ cust = [], REPS = [] }) {
     flash('Store created'); return { data };
   }, [sel, flash]);
 
-  const addSingle = useCallback(async (product) => {
-    const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: product.retail_price || 0, active: true, sort_order: (detail?.catalog?.length || 0) };
+  const addSingle = useCallback(async ({ product, price, fundraise }) => {
+    const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, active: true, sort_order: (detail?.catalog?.length || 0) };
     const { error } = await supabase.from('webstore_products').insert(row);
     if (error) { flash('Error: ' + error.message); return; }
     flash('Added ' + (product.name || product.sku)); loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
 
-  const createBundle = useCallback(async ({ name, price, components }) => {
-    const { data: bundle, error } = await supabase.from('webstore_products').insert({ store_id: sel.id, kind: 'bundle', display_name: name, retail_price: price, active: true, sort_order: (detail?.catalog?.length || 0) }).select().single();
+  const createBundle = useCallback(async ({ name, price, fundraise, components }) => {
+    const { data: bundle, error } = await supabase.from('webstore_products').insert({ store_id: sel.id, kind: 'bundle', display_name: name, retail_price: price, fundraise_amount: Number(fundraise) || 0, active: true, sort_order: (detail?.catalog?.length || 0) }).select().single();
     if (error) { flash('Error: ' + error.message); return; }
     if (components.length) {
       const rows = components.map((c, i) => ({ bundle_id: bundle.id, product_id: c.product_id, sku: c.sku, qty: c.qty || 1, size_required: c.size_required !== false, takes_number: !!c.takes_number, sort_order: i }));
@@ -205,7 +205,6 @@ function ListView({ stores, custName, repName, onOpen, onNew }) {
                 <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>{custName(s.customer_id)} · Rep: {repName(s.rep_id)}</div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
                   <Chip label={s.payment_mode === 'either' ? 'Paid + Invoice' : s.payment_mode === 'unpaid' ? 'Invoice only' : 'Card only'} />
-                  {s.fundraise_enabled && <Chip label="Fundraising" tone="green" />}
                   {s.number_enabled && <Chip label={s.number_unique ? 'Unique #s' : 'Numbers'} tone="blue" />}
                   <Chip label={'/shop/' + s.slug} tone="gray" />
                 </div>
@@ -224,22 +223,55 @@ function Chip({ label, tone = 'slate' }) {
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 6, background: t.bg, color: t.fg, fontFamily: tone === 'gray' ? 'monospace' : 'inherit' }}>{label}</span>;
 }
 
+// Type-ahead club picker — the customer list is ~2k rows, so a dropdown is
+// unusable. Filters the in-memory parents list as you type.
+function CustomerPicker({ customers, value, onChange }) {
+  const selected = customers.find((c) => c.id === value);
+  const [q, setQ] = useState('');
+  const [open, setOpen] = useState(false);
+  const matches = q.trim().length < 1 ? [] : customers.filter((c) => (c.name || '').toLowerCase().includes(q.toLowerCase())).slice(0, 30);
+  if (selected && !open) {
+    return <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div className="form-input" style={{ flex: 1, display: 'flex', alignItems: 'center', background: '#f8fafc' }}>{selected.name}</div>
+      <button className="btn btn-sm btn-secondary" onClick={() => { onChange(''); setQ(''); setOpen(true); }}>Change</button>
+    </div>;
+  }
+  return (
+    <div style={{ position: 'relative' }}>
+      <input className="form-input" autoFocus={open} value={q} onChange={(e) => { setQ(e.target.value); setOpen(true); }} placeholder="Search clubs by name…" onFocus={() => setOpen(true)} />
+      {open && matches.length > 0 && (
+        <div style={{ position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, marginTop: 4, maxHeight: 260, overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}>
+          {matches.map((c) => <div key={c.id} onClick={() => { onChange(c.id); setOpen(false); setQ(''); }} style={{ padding: '8px 12px', cursor: 'pointer', fontSize: 13, borderBottom: '1px solid #f1f5f9' }}>{c.name}</div>)}
+        </div>
+      )}
+      {open && q.trim().length >= 1 && matches.length === 0 && <div style={{ position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, marginTop: 4, padding: '8px 12px', fontSize: 12, color: '#94a3b8' }}>No matches.</div>}
+    </div>
+  );
+}
+
 // ── Store create / edit form ─────────────────────────────────────────
 const BLANK = {
   name: '', slug: '', customer_id: '', rep_id: '', status: 'draft',
+  open_at: '', close_at: '',
   payment_mode: 'paid', require_login: false,
+  ship_home_enabled: true, deliver_club_enabled: true,
+  director_name: '', director_email: '', director_phone: '',
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
   so_creation: 'manual',
-  fundraise_enabled: false, fundraise_pct: 0, fundraise_flat: 0, fundraise_show_parents: false,
+  fundraise_enabled: false, fundraise_show_parents: false,
   theme: 'classic', primary_color: '#0f172a', accent_color: '#2563eb', logo_url: '', banner_url: '', hero_blurb: '',
 };
+// Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
+const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
 function StoreForm({ store, cust, REPS, onCancel, onSave }) {
-  const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}) }));
+  const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), open_at: dateOnly(store?.open_at), close_at: dateOnly(store?.close_at) }));
   const [slugTouched, setSlugTouched] = useState(!!store);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const setName = (v) => setF((p) => ({ ...p, name: v, slug: slugTouched ? p.slug : slugify(v) }));
+  // Sales reps only (not all employees).
+  const salesReps = (REPS || []).filter((r) => r.role === 'rep' && r.is_active !== false);
 
   const submit = async () => {
     setError('');
@@ -249,12 +281,12 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
     // Only send known columns (strip view-only / id fields if editing).
     const payload = { ...BLANK, ...f };
     delete payload.id; delete payload.created_at; delete payload.updated_at;
-    payload.fundraise_pct = Number(payload.fundraise_pct) || 0;
-    payload.fundraise_flat = Number(payload.fundraise_flat) || 0;
     payload.number_min = Number(payload.number_min) || 0;
     payload.number_max = Number(payload.number_max) || 99;
     payload.customer_id = payload.customer_id || null;
     payload.rep_id = payload.rep_id || null;
+    payload.open_at = payload.open_at || null;
+    payload.close_at = payload.close_at || null;
     const r = await onSave(payload);
     setBusy(false);
     if (r?.error) setError(r.error.message || 'Save failed.');
@@ -270,9 +302,22 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
       <Section title="Basics">
         <Row label="Store name"><input className="form-input" value={f.name} onChange={(e) => setName(e.target.value)} placeholder="Tartan FC Team Store" /></Row>
         <Row label="URL slug"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ color: '#94a3b8', fontSize: 13, fontFamily: 'monospace' }}>/shop/</span><input className="form-input" value={f.slug} onChange={(e) => { setSlugTouched(true); set('slug', slugify(e.target.value)); }} placeholder="tartan-fc" /></div></Row>
-        <Row label="Club (customer)"><select className="form-select" value={f.customer_id || ''} onChange={(e) => set('customer_id', e.target.value)}><option value="">—</option>{parents.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Row>
-        <Row label="Rep"><select className="form-select" value={f.rep_id || ''} onChange={(e) => set('rep_id', e.target.value)}><option value="">—</option>{REPS.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
+        <Row label="Club (customer)"><CustomerPicker customers={parents} value={f.customer_id} onChange={(id) => set('customer_id', id)} /></Row>
+        <Row label="Rep"><select className="form-select" value={f.rep_id || ''} onChange={(e) => set('rep_id', e.target.value)}><option value="">—</option>{salesReps.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Row>
         <Row label="Status"><select className="form-select" value={f.status} onChange={(e) => set('status', e.target.value)}>{['draft', 'open', 'closed', 'archived'].map((s) => <option key={s} value={s}>{s}</option>)}</select></Row>
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Row label="Open date"><input className="form-input" type="date" value={f.open_at || ''} onChange={(e) => set('open_at', e.target.value)} /></Row>
+          <Row label="Close date"><input className="form-input" type="date" value={f.close_at || ''} onChange={(e) => set('close_at', e.target.value)} /></Row>
+        </div>
+      </Section>
+
+      <Section title="Club director (portal access)">
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>The director/coach uses this email to access their store-tracking portal.</div>
+        <Row label="Director name"><input className="form-input" value={f.director_name || ''} onChange={(e) => set('director_name', e.target.value)} /></Row>
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Row label="Director email"><input className="form-input" type="email" value={f.director_email || ''} onChange={(e) => set('director_email', e.target.value)} /></Row>
+          <Row label="Director phone"><input className="form-input" value={f.director_phone || ''} onChange={(e) => set('director_phone', e.target.value)} /></Row>
+        </div>
       </Section>
 
       <Section title="Ordering & payment">
@@ -283,10 +328,16 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
         <Toggle label="Require login (club members only)" checked={f.require_login} onChange={(v) => set('require_login', v)} />
       </Section>
 
+      <Section title="Delivery options">
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Shoppers choose one at checkout.</div>
+        <Toggle label="Ship to home (collects each buyer's home address)" checked={f.ship_home_enabled} onChange={(v) => set('ship_home_enabled', v)} />
+        <Toggle label="Deliver to club (ships to the club's default address)" checked={f.deliver_club_enabled} onChange={(v) => set('deliver_club_enabled', v)} />
+      </Section>
+
       <Section title="Jersey numbers">
         <Toggle label="Let players choose a number" checked={f.number_enabled} onChange={(v) => set('number_enabled', v)} />
         {f.number_enabled && <>
-          <Toggle label="Numbers must be unique (block once taken)" checked={f.number_unique} onChange={(v) => set('number_unique', v)} />
+          <Toggle label="Unique numbers required — a player can only pick a number nobody else has taken" checked={f.number_unique} onChange={(v) => set('number_unique', v)} />
           <div style={{ display: 'flex', gap: 12 }}>
             <Row label="Min #"><input className="form-input" type="number" value={f.number_min} onChange={(e) => set('number_min', e.target.value)} /></Row>
             <Row label="Max #"><input className="form-input" type="number" value={f.number_max} onChange={(e) => set('number_max', e.target.value)} /></Row>
@@ -295,14 +346,8 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
       </Section>
 
       <Section title="Fundraising">
-        <Toggle label="Enable fundraising markup" checked={f.fundraise_enabled} onChange={(v) => set('fundraise_enabled', v)} />
-        {f.fundraise_enabled && <>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <Row label="Percent (e.g. 0.15 = 15%)"><input className="form-input" type="number" step="0.01" value={f.fundraise_pct} onChange={(e) => set('fundraise_pct', e.target.value)} /></Row>
-            <Row label="Or flat $/item"><input className="form-input" type="number" step="0.01" value={f.fundraise_flat} onChange={(e) => set('fundraise_flat', e.target.value)} /></Row>
-          </div>
-          <Toggle label='Show "$X supports the team" to parents' checked={f.fundraise_show_parents} onChange={(v) => set('fundraise_show_parents', v)} />
-        </>}
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Fundraising is set <b>per product/package</b> in the Catalog tab (price X + fundraising Y on top). This toggle just controls whether shoppers see that breakdown.</div>
+        <Toggle label='Show "$X supports the team" to shoppers' checked={f.fundraise_show_parents} onChange={(v) => set('fundraise_show_parents', v)} />
       </Section>
 
       <Section title="Branding">
@@ -381,7 +426,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
             <Stat label="Orders" value={orders.length} />
             <Stat label="Players" value={playerCount} />
             <Stat label="Sales" value={money(totalSales)} />
-            {s.fundraise_enabled && <Stat label="Fundraising" value={money(fundraiseTotal)} tone="#166534" />}
+            {fundraiseTotal > 0 && <Stat label="Fundraising" value={money(fundraiseTotal)} tone="#166534" />}
           </div>
         </div>
       </div></div>
@@ -416,21 +461,23 @@ function stockText(stock) {
 // ── Catalog tab with editing ─────────────────────────────────────────
 function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBundle, onRemove }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
+  const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   return (
     <>
       <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        <button className="btn btn-sm btn-primary" onClick={() => setMode(mode === 'single' ? null : 'single')}>+ Add product</button>
-        <button className="btn btn-sm btn-secondary" onClick={() => setMode(mode === 'bundle' ? null : 'bundle')}>+ Create package</button>
+        <button className="btn btn-sm btn-primary" onClick={() => { setMode(mode === 'single' ? null : 'single'); setPending(null); }}>+ Add product</button>
+        <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'bundle' ? null : 'bundle'); setPending(null); }}>+ Create package</button>
       </div>
 
-      {mode === 'single' && <ProductSearch label="Add a product to this store" onPick={(p) => { onAddSingle(p); setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'single' && !pending && <ProductSearch label="Add a product to this store" onPick={(p) => setPending(p)} onClose={() => setMode(null)} />}
+      {mode === 'single' && pending && <SinglePriceEditor product={pending} onCancel={() => setPending(null)} onAdd={(opts) => { onAddSingle(opts); setMode(null); setPending(null); }} />}
       {mode === 'bundle' && <BundleBuilder onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
 
       {catalog.length === 0 ? <Empty msg="No products in this store's catalog yet. Add one above." /> : (
         <div className="card"><div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
-              <th style={th}>Product</th><th style={th}>Type</th><th style={th}>Price</th><th style={th}>Stock / ETA</th><th style={th}></th>
+              <th style={th}>Product</th><th style={th}>Type</th><th style={th}>Price</th><th style={th}>Fundraising</th><th style={th}>Shopper pays</th><th style={th}>Stock / ETA</th><th style={th}></th>
             </tr></thead>
             <tbody>
               {catalog.map((p) => {
@@ -438,6 +485,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBund
                 const st = stockText(stock);
                 const comps = p.kind === 'bundle' ? bundleItems.filter((b) => b.bundle_id === p.id) : [];
                 const label = p.display_name || stock?.name || p.sku || '(unnamed)';
+                const fund = Number(p.fundraise_amount) || 0;
                 return (
                   <tr key={p.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                     <td style={td}>
@@ -449,6 +497,8 @@ function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBund
                     </td>
                     <td style={td}>{p.kind === 'bundle' ? <Chip label="Bundle" tone="blue" /> : <Chip label="Single" />}</td>
                     <td style={td}>{money(p.retail_price)}</td>
+                    <td style={td}>{fund > 0 ? <span style={{ color: '#166534', fontWeight: 600 }}>+{money(fund)}</span> : '—'}</td>
+                    <td style={{ ...td, fontWeight: 700 }}>{money((Number(p.retail_price) || 0) + fund)}</td>
                     <td style={{ ...td, color: st.color, fontWeight: 600 }}>{p.kind === 'bundle' ? '—' : st.text}</td>
                     <td style={{ ...td, textAlign: 'right' }}><button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => onRemove(p.id, label)}>Remove</button></td>
                   </tr>
@@ -459,6 +509,28 @@ function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBund
         </div></div>
       )}
     </>
+  );
+}
+
+// After a product is picked, set its base price (X) and fundraising add-on (Y).
+function SinglePriceEditor({ product, onAdd, onCancel }) {
+  const [price, setPrice] = useState(product.retail_price || 0);
+  const [fundraise, setFundraise] = useState(0);
+  const total = (Number(price) || 0) + (Number(fundraise) || 0);
+  return (
+    <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 16 }}>
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{product.name}</div>
+      <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 12 }}>{[product.sku, product.color].filter(Boolean).join(' · ')}</div>
+      <div style={{ display: 'flex', gap: 12 }}>
+        <Row label="Price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Row>
+        <Row label="Fundraising on top (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} /></Row>
+        <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700 }}>{money(total)}</div></Row>
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
+        <button className="btn btn-primary" onClick={() => onAdd({ product, price, fundraise })}>Add to store</button>
+        <button className="btn btn-secondary" onClick={onCancel}>Back</button>
+      </div>
+    </div></div>
   );
 }
 
@@ -499,18 +571,22 @@ function ProductSearch({ label, onPick, onClose, compact }) {
 function BundleBuilder({ onCreate, onClose }) {
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
+  const [fundraise, setFundraise] = useState('');
   const [components, setComponents] = useState([]);
   const [picking, setPicking] = useState(false);
   const addComp = (p) => { setComponents((c) => [...c, { product_id: p.id, sku: p.sku, name: p.name, qty: 1, size_required: true, takes_number: false }]); setPicking(false); };
   const upd = (i, k, v) => setComponents((c) => c.map((x, idx) => (idx === i ? { ...x, [k]: v } : x)));
   const rm = (i) => setComponents((c) => c.filter((_, idx) => idx !== i));
   const valid = name.trim() && Number(price) > 0 && components.length > 0;
+  const total = (Number(price) || 0) + (Number(fundraise) || 0);
   return (
     <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}><div style={{ fontWeight: 700 }}>Create a package</div><button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 18 }}>×</button></div>
-      <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 4 }}>
         <Row label="Package name"><input className="form-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Player Kit" /></Row>
-        <Row label="Package price"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="120.00" /></Row>
+        <Row label="Package price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="120.00" /></Row>
+        <Row label="Fundraising on top (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} placeholder="0.00" /></Row>
+        <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700 }}>{money(total)}</div></Row>
       </div>
       <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 6 }}>Items in this package</div>
       {components.map((c, i) => (
@@ -524,7 +600,7 @@ function BundleBuilder({ onCreate, onClose }) {
       ))}
       {picking ? <ProductSearch label="Add an item to the package" onPick={addComp} onClose={() => setPicking(false)} /> :
         <button className="btn btn-sm btn-secondary" style={{ marginTop: 8 }} onClick={() => setPicking(true)}>+ Add item</button>}
-      <div style={{ marginTop: 14 }}><button className="btn btn-primary" disabled={!valid} onClick={() => onCreate({ name: name.trim(), price: Number(price), components })}>Create package</button></div>
+      <div style={{ marginTop: 14 }}><button className="btn btn-primary" disabled={!valid} onClick={() => onCreate({ name: name.trim(), price: Number(price), fundraise: Number(fundraise) || 0, components })}>Create package</button></div>
     </div></div>
   );
 }
@@ -588,15 +664,18 @@ function RosterTab({ roster, notOrdered }) {
 }
 
 function SettingsTab({ store: s }) {
+  const dlv = [s.ship_home_enabled !== false ? 'Ship to home' : null, s.deliver_club_enabled !== false ? 'Deliver to club' : null].filter(Boolean).join(' · ') || 'None';
   const rows = [
     ['Slug', '/shop/' + s.slug],
     ['Status', (s.status || 'draft').toUpperCase()],
+    ['Open → Close', `${s.open_at ? String(s.open_at).slice(0, 10) : '—'} → ${s.close_at ? String(s.close_at).slice(0, 10) : '—'}`],
+    ['Director', [s.director_name, s.director_email, s.director_phone].filter(Boolean).join(' · ') || '—'],
     ['Payment mode', s.payment_mode === 'either' ? 'Card + invoice-later' : s.payment_mode === 'unpaid' ? 'Invoice only' : 'Card only'],
     ['Login required', s.require_login ? 'Yes (club members only)' : 'No (public)'],
-    ['Shipping', 'Ship (ShipStation)'],
-    ['Numbers', s.number_enabled ? `Enabled (${s.number_min}–${s.number_max}${s.number_unique ? ', unique' : ''})` : 'Off'],
+    ['Delivery', dlv],
+    ['Numbers', s.number_enabled ? `Enabled (${s.number_min}–${s.number_max}${s.number_unique ? ', unique required' : ''})` : 'Off'],
     ['SO creation', s.so_creation],
-    ['Fundraising', s.fundraise_enabled ? `On (${s.fundraise_pct ? s.fundraise_pct * 100 + '%' : money(s.fundraise_flat) + '/item'}${s.fundraise_show_parents ? ', shown to parents' : ''})` : 'Off'],
+    ['Fundraising', `Per-item${s.fundraise_show_parents ? ', shown to shoppers' : ', hidden from shoppers'}`],
     ['Theme', s.theme || 'classic'],
   ];
   return (
