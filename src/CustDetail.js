@@ -731,28 +731,25 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const cwColors=(art.color_ways&&art.color_ways.length)
       ? [...new Set(art.color_ways.map(c=>c.garment_color||c.color||'').filter(Boolean))]
       : [...new Set(custSOs.flatMap(so=>(so.items||[]).filter(it=>(it.decorations||[]).some(d=>{const af=(so.art_files||[]).find(a=>a.id===d.art_file_id);return af&&_logoMatch(af)})).map(it=>it.color)).filter(Boolean))];
-    // Tag a mock to a color way and push it to the matching order items (item_mockups by sku|color).
+    // Tag a mock with a color way wherever this file is attached on the artwork.
     const applyMockToCW=(mock,cwColor)=>{
       if(!onSaveSO||!cwColor)return;
       const url=urlOf(mock);
-      const tagged={...(typeof mock==='string'?{url:mock,name:fileDisplayName(mock)}:mock),color_way:cwColor};
+      const tag=f=>{if(urlOf(f)!==url)return f;return{...(typeof f==='string'?{url:f,name:fileDisplayName(f)}:f),color_way:cwColor}};
       custSOs.forEach(so=>{
-        const matchAfIds=(so.art_files||[]).filter(_logoMatch).map(a=>a.id);
-        if(!matchAfIds.length)return;
-        const keys=new Set();
-        (so.items||[]).forEach(it=>{(it.decorations||[]).forEach(d=>{if(matchAfIds.includes(d.art_file_id)&&(it.color||'').toLowerCase()===cwColor.toLowerCase())keys.add((it.sku||'')+'|'+(it.color||''))})});
-        let changed=false;
+        let soChanged=false;
         const updArt=(so.art_files||[]).map(a=>{
-          if(!matchAfIds.includes(a.id))return a;
-          const im={...(a.item_mockups||{})};
-          keys.forEach(k=>{const cur=im[k]||[];if(!cur.some(f=>urlOf(f)===url)){im[k]=[...cur,tagged];changed=true}});
-          const mf=(a.mockup_files||[]).map(f=>{if(urlOf(f)!==url)return f;changed=true;return{...(typeof f==='string'?{url:f,name:fileDisplayName(f)}:f),color_way:cwColor}});
-          return{...a,item_mockups:im,mockup_files:mf};
+          if(!_logoMatch(a))return a;
+          const has=(a.mockup_files||[]).some(f=>urlOf(f)===url)||Object.values(a.item_mockups||{}).flat().some(f=>urlOf(f)===url);
+          if(!has)return a;
+          soChanged=true;
+          const im={...(a.item_mockups||{})};Object.keys(im).forEach(k=>{im[k]=(im[k]||[]).map(tag)});
+          return{...a,mockup_files:(a.mockup_files||[]).map(tag),item_mockups:im};
         });
-        if(changed)onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
+        if(soChanged)onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
       });
       setCustArtDetail(d=>d?{...d,_allMockups:(d._allMockups||[]).map(x=>x.url===url?{...x,file:{...(typeof x.file==='string'?{url:x.file}:(x.file||{url})),color_way:cwColor}}:x)}:d);
-      nf&&nf('Mock applied to '+cwColor+(' — pushed to matching items'));
+      nf&&nf('Mock tagged as '+cwColor);
     };
     return<div className="modal-overlay" onClick={()=>setCustArtDetail(null)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header"><h2>{art.name||'Untitled'}</h2><button className="modal-close" onClick={()=>setCustArtDetail(null)}>x</button></div>
