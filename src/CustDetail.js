@@ -726,6 +726,34 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       nf&&nf(added.length+' mockup'+(added.length>1?'s':'')+' added');
     };
     const pickMock=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*,.pdf';inp.multiple=true;inp.onchange=()=>addMockToArt(inp.files);inp.click()};
+    // Color ways for this artwork — from the art's color_ways, else distinct colors of items that use it.
+    const _logoMatch=a=>(a.name||'').toLowerCase()===(art.name||'').toLowerCase()&&(a.deco_type||'')===(art.deco_type||'');
+    const cwColors=(art.color_ways&&art.color_ways.length)
+      ? [...new Set(art.color_ways.map(c=>c.garment_color||c.color||'').filter(Boolean))]
+      : [...new Set(custSOs.flatMap(so=>(so.items||[]).filter(it=>(it.decorations||[]).some(d=>{const af=(so.art_files||[]).find(a=>a.id===d.art_file_id);return af&&_logoMatch(af)})).map(it=>it.color)).filter(Boolean))];
+    // Tag a mock to a color way and push it to the matching order items (item_mockups by sku|color).
+    const applyMockToCW=(mock,cwColor)=>{
+      if(!onSaveSO||!cwColor)return;
+      const url=urlOf(mock);
+      const tagged={...(typeof mock==='string'?{url:mock,name:fileDisplayName(mock)}:mock),color_way:cwColor};
+      custSOs.forEach(so=>{
+        const matchAfIds=(so.art_files||[]).filter(_logoMatch).map(a=>a.id);
+        if(!matchAfIds.length)return;
+        const keys=new Set();
+        (so.items||[]).forEach(it=>{(it.decorations||[]).forEach(d=>{if(matchAfIds.includes(d.art_file_id)&&(it.color||'').toLowerCase()===cwColor.toLowerCase())keys.add((it.sku||'')+'|'+(it.color||''))})});
+        let changed=false;
+        const updArt=(so.art_files||[]).map(a=>{
+          if(!matchAfIds.includes(a.id))return a;
+          const im={...(a.item_mockups||{})};
+          keys.forEach(k=>{const cur=im[k]||[];if(!cur.some(f=>urlOf(f)===url)){im[k]=[...cur,tagged];changed=true}});
+          const mf=(a.mockup_files||[]).map(f=>{if(urlOf(f)!==url)return f;changed=true;return{...(typeof f==='string'?{url:f,name:fileDisplayName(f)}:f),color_way:cwColor}});
+          return{...a,item_mockups:im,mockup_files:mf};
+        });
+        if(changed)onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
+      });
+      setCustArtDetail(d=>d?{...d,_allMockups:(d._allMockups||[]).map(x=>x.url===url?{...x,file:{...(typeof x.file==='string'?{url:x.file}:(x.file||{url})),color_way:cwColor}}:x)}:d);
+      nf&&nf('Mock applied to '+cwColor+(' — pushed to matching items'));
+    };
     return<div className="modal-overlay" onClick={()=>setCustArtDetail(null)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header"><h2>{art.name||'Untitled'}</h2><button className="modal-close" onClick={()=>setCustArtDetail(null)}>x</button></div>
       <div className="modal-body">
@@ -749,7 +777,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               {_isImgUrl(url)?<img src={url} alt="" style={{width:'100%',height:120,objectFit:'contain',display:'block',background:'#f8fafc'}}/>
               :_isPdfUrl(url)?<div style={{height:120,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}>{_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt="" style={{maxHeight:100,objectFit:'contain'}} onError={e=>{e.target.style.display='none'}}/>:<span style={{fontSize:32}}>PDF</span>}</div>
               :<div style={{height:120,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc',fontSize:28}}>📄</div>}
-              <div style={{padding:'4px 6px',fontSize:9,color:'#64748b',borderTop:'1px solid #f1f5f9'}}>{fileDisplayName(m.file||url)}<br/><span style={{color:'#94a3b8'}}>{m.src}</span></div>
+              <div style={{padding:'4px 6px',fontSize:9,color:'#64748b',borderTop:'1px solid #f1f5f9'}}>{fileDisplayName(m.file||url)}{(m.file&&m.file.color_way)&&<span style={{marginLeft:4,padding:'1px 5px',background:'#dbeafe',color:'#1e40af',borderRadius:8,fontWeight:700}}>{m.file.color_way}</span>}<br/><span style={{color:'#94a3b8'}}>{m.src}</span></div>
+              {onSaveSO&&cwColors.length>0&&<select onClick={e=>e.stopPropagation()} value="" onChange={e=>{e.stopPropagation();const v=e.target.value;if(v)applyMockToCW(m.file||url,v)}} style={{width:'100%',fontSize:9,borderTop:'1px solid #f1f5f9',border:'none',borderTopWidth:1,borderTopStyle:'solid',borderTopColor:'#f1f5f9',padding:'4px',cursor:'pointer',color:'#1e40af',background:'#f8fafc',fontWeight:600}}>
+                <option value="">Apply to color…</option>
+                {cwColors.map(c=><option key={c} value={c}>{c}</option>)}
+              </select>}
             </div>})}
           </div>}
         </div>
