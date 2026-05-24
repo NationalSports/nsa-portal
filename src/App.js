@@ -4977,8 +4977,9 @@ export default function App(){
             const deliverDate=pref==='deliver_on_date'?so.deliver_on_date:null;
             const deliverDaysOut=deliverDate?Math.ceil((new Date(deliverDate)-new Date())/(1000*60*60*24)):null;
             const holdUntil=!deliverDateOk;
-            deliverTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
-              deliverDate,deliverDaysOut,holdUntil,
+            const dkey='nd|'+ii;
+            if(!(so.delivered||{})[dkey])deliverTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
+              deliverDate,deliverDaysOut,holdUntil,itemIdx:ii,_dkey:dkey,itemIdxs:[ii],
               desc:item.sku+' · '+item.name,units:totalOrdered,shipPref:pref});
           } else if(pref!=='rep_delivery'&&pref!=='wait_complete'&&shipDateOk){
             shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
@@ -5014,8 +5015,9 @@ export default function App(){
               const deliverDate=shipPref==='deliver_on_date'?so.deliver_on_date:null;
               const deliverDaysOut=deliverDate?Math.ceil((new Date(deliverDate)-new Date())/(1000*60*60*24)):null;
               const holdUntil=!deliverDateReady;
-              deliverTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
-                deliverDate,deliverDaysOut,holdUntil,
+              const dkey='job|'+j.id;
+              if(!(so.delivered||{})[dkey])deliverTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
+                deliverDate,deliverDaysOut,holdUntil,_dkey:dkey,itemIdxs:[...new Set((j.items||[]).map(gi=>gi.item_idx))],
                 desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,shipPref});
             } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
               shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
@@ -8265,8 +8267,10 @@ export default function App(){
             </div>}
 
             {/* Bottom action bar */}
-            <div style={{padding:16,display:'flex',gap:8,borderTop:'1px solid #e2e8f0',background:'#f8fafc'}}>
+            <div style={{padding:16,display:'flex',gap:8,borderTop:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap'}}>
               <button className="btn btn-primary" style={{background:'#d97706',borderColor:'#d97706'}} onClick={printProdPDF}>Print Production PDF</button>
+              {(j.prod_status==='hold'||j.prod_status==='ready'||!j.prod_status)&&<button className="btn btn-primary" style={{background:'#16a34a',borderColor:'#16a34a'}} onClick={()=>moveJobStatus(j,'staging')}>➡️ Move to In Line</button>}
+              {(j.prod_status==='staging'||j.prod_status==='in_process')&&<button className="btn btn-secondary" onClick={()=>{setAssignModal({job:j,soId:j.soId,targetStatus:j.prod_status});setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||''})}}>👤 {j.assigned_to?'Reassign':'Assign'} Decorator / Machine</button>}
               <button className="btn btn-secondary" onClick={()=>{setReturnToPage({page:pg,jobData:{...j}});setESOTab('jobs');setESO(so);setESOC(c);setPg('orders');setProdJobModal(null)}}>Open Full Job</button>
               <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setProdJobModal(null);setProdJobLightbox(false)}}>Close</button>
             </div>
@@ -13632,6 +13636,7 @@ export default function App(){
   const[shipModal,setShipModal]=useState(null);
   const[shipExpanded,setShipExpanded]=useState({});// key->bool; Ready-to-Ship cards start collapsed
   const[manualShipModal,setManualShipModal]=useState(null);
+  const[deliverModal,setDeliverModal]=useState(null);// deliver task whose item list / mark-delivered popup is open
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
   const[decoCardFilter,setDecoCardFilter]=useState(null);// null|'ready'|'in_process'|'waiting'
   const[decoPersonF,setDecoPersonF]=useState('all');// filter by assigned decorator name
@@ -15681,21 +15686,20 @@ export default function App(){
           <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>No deliveries ready</div>
           <div style={{fontSize:12}}>Orders with Ship Preference set to <strong>🚚 Deliver</strong> will appear here once production is complete.</div>
         </div></div>
-        :<div style={{display:'flex',flexDirection:'column',gap:8}}>
-          {[...fDeliver].sort((a,b)=>{
-            const aHold=a.holdUntil&&a.deliverDaysOut!=null&&a.deliverDaysOut>0?1:0;
-            const bHold=b.holdUntil&&b.deliverDaysOut!=null&&b.deliverDaysOut>0?1:0;
-            if(aHold!==bHold)return aHold-bHold;
-            return (a.deliverDaysOut??a.daysOut??0)-(b.deliverDaysOut??b.daysOut??0);
-          }).map((t,ti)=>{
+        :(()=>{
+          const sorted=[...fDeliver].sort((a,b)=>(a.deliverDaysOut??a.daysOut??0)-(b.deliverDaysOut??b.daysOut??0));
+          const isFuture=t=>t.holdUntil&&t.deliverDaysOut!=null&&t.deliverDaysOut>0;
+          const ready=sorted.filter(t=>!isFuture(t));
+          const future=sorted.filter(isFuture);
+          const card=(t,key,dim)=>{
             const c=cust.find(x=>x.id===t.so.customer_id);
             const addr=c?getAddrs(c,cust)?.[0]:null;
             const onHold=t.holdUntil&&t.deliverDaysOut!=null&&t.deliverDaysOut>0;
             const deliverToday=t.deliverDaysOut===0;
             const deliverPast=t.deliverDaysOut!=null&&t.deliverDaysOut<0;
             const borderColor=deliverToday?'#16a34a':'#d97706';
-            return<div key={ti} className="card" style={{borderLeft:'6px solid '+borderColor,cursor:'pointer'}}
-              onClick={()=>{setESO(t.so);setESOC(c);setPg('orders')}}>
+            return<div key={key} className="card" style={{borderLeft:'6px solid '+borderColor,cursor:'pointer',opacity:dim?0.72:1}}
+              onClick={()=>setDeliverModal(t)}>
               <div style={{padding:'12px 16px',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
                 <div style={{flex:1,minWidth:200}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}>
@@ -15717,9 +15721,67 @@ export default function App(){
                 <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                   onClick={e=>{e.stopPropagation();printSOPackingList(t.so,null,t)}}>📦 Packing List</button>
               </div>
-            </div>})}
-        </div>}
+            </div>;
+          };
+          return<div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {ready.map((t,ti)=>card(t,'r'+ti,false))}
+            {future.length>0&&<div style={{marginTop:ready.length?14:0,fontSize:11,fontWeight:800,color:'#94a3b8',textTransform:'uppercase',letterSpacing:1,padding:'2px 2px'}}>📅 Scheduled / upcoming ({future.length})</div>}
+            {future.map((t,ti)=>card(t,'f'+ti,true))}
+          </div>;
+        })()}
       </>}
+
+      {/* ── DELIVER DETAIL / MARK-DELIVERED MODAL ── */}
+      {deliverModal&&(()=>{
+        const t=deliverModal;const so=t.so;
+        const c=cust.find(x=>x.id===so.customer_id);
+        const addr=c?getAddrs(c,cust)?.[0]:null;
+        const idxs=(t.itemIdxs&&t.itemIdxs.length)?t.itemIdxs:(t.itemIdx!=null?[t.itemIdx]:[]);
+        const items=idxs.map(i=>safeItems(so)[i]).filter(Boolean);
+        const sortSz=(a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b));
+        return<div className="modal-overlay" onClick={()=>setDeliverModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640,maxHeight:'90vh',overflow:'auto'}}>
+          <div className="modal-header" style={{background:'linear-gradient(135deg,#b45309,#d97706)',color:'white'}}>
+            <h2 style={{margin:0,color:'white'}}>🚚 Deliver — {t.cName}</h2>
+            <button className="modal-close" onClick={()=>setDeliverModal(null)} style={{color:'white'}}>×</button>
+          </div>
+          <div className="modal-body" style={{padding:16}}>
+            <div style={{display:'flex',gap:12,flexWrap:'wrap',marginBottom:10,fontSize:12,color:'#475569'}}>
+              <div><strong style={{color:'#1e40af'}}>{t.soId}</strong></div>
+              {t.deliverDate&&<div>Deliver: <strong>{t.deliverDate}</strong></div>}
+              <div>Rep: <strong>{t.rep}</strong></div>
+              <div><strong>{t.units}</strong> units</div>
+            </div>
+            {addr&&<div style={{fontSize:12,color:'#64748b',marginBottom:12}}>📍 {addr.addr}</div>}
+            <div style={{fontSize:13,fontWeight:800,color:'#0f172a',marginBottom:8}}>Items to deliver</div>
+            {items.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>{t.desc}</div>:
+              <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                {items.map((it,i)=>{
+                  const ent=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>sortSz(a[0],b[0]));
+                  const tot=ent.reduce((a,[,v])=>a+safeNum(v),0);
+                  return<div key={i} style={{border:'1px solid #e2e8f0',borderRadius:8,padding:'10px 12px'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
+                      <div><span style={{fontFamily:'monospace',fontWeight:700,fontSize:12}}>{it.sku||''}</span> <span style={{fontWeight:700,fontSize:13}}>{it.name||''}</span>{it.color?<span style={{fontSize:12,color:'#64748b'}}> · {it.color}</span>:null}</div>
+                      <div style={{fontWeight:800,fontSize:13,color:'#166534'}}>{tot} pcs</div>
+                    </div>
+                    {ent.length>0&&<div style={{marginTop:6,display:'flex',gap:6,flexWrap:'wrap'}}>{ent.map(([sz,v])=><span key={sz} style={{fontSize:11,background:'#f1f5f9',borderRadius:6,padding:'2px 8px',fontWeight:700}}>{sz}: {v}</span>)}</div>}
+                  </div>;
+                })}
+              </div>}
+          </div>
+          <div className="modal-footer" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            <button className="btn btn-sm" style={{background:'#166534',color:'white',border:'none',fontWeight:700}} onClick={()=>printSOPackingList(t.so,null,t)}>📦 Packing List</button>
+            <button className="btn btn-sm btn-primary" style={{background:'#d97706',borderColor:'#d97706',fontWeight:700}} onClick={()=>{
+              const upd={...so,delivered:{...(so.delivered||{}),[t._dkey]:{at:new Date().toISOString(),by:cu?.id||'warehouse'}}};
+              savSO(upd);
+              addWhAction({type:'delivered',soId:t.soId,customer:t.cName,sku:items.map(it=>it.sku).filter(Boolean).join(', '),name:t.desc,qty:t.units,by:cu?.id||'warehouse'});
+              nf('✅ '+t.soId+' — '+t.cName+' marked delivered');
+              setDeliverModal(null);
+            }}>✓ Mark Delivered</button>
+            <button className="btn btn-sm btn-secondary" onClick={()=>{setESO(t.so);setESOC(c);setPg('orders');setDeliverModal(null)}}>Open Order</button>
+            <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setDeliverModal(null)}>Close</button>
+          </div>
+        </div></div>;
+      })()}
 
       {/* ── AWAITING PICKUP TAB ── */}
       {whTab==='pickup'&&<>
