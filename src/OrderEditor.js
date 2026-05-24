@@ -3572,7 +3572,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // even if one source (e.g. a library copy saved before the seps were uploaded) is missing some.
       const _fKey=f=>typeof f==='string'?f:(f?.url||'');
       const _mergeFiles=(a=[],b=[])=>{const seen=new Set((a||[]).map(_fKey));const out=[...(a||[])];(b||[]).forEach(f=>{const k=_fKey(f);if(k&&!seen.has(k)){seen.add(k);out.push(f)}});return out};
-      const _pushArt=(art,meta)=>{const k=_dedupKey(art);
+      const _pushArt=(art,meta)=>{if(art.archived)return;const k=_dedupKey(art);
         if(_byKey.has(k)){const cur=_byKey.get(k);
           cur.prod_files=_mergeFiles(cur.prod_files,art.prod_files);
           cur.mockup_files=_mergeFiles(cur.mockup_files,art.mockup_files);

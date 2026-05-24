@@ -569,17 +569,25 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const rep={...[...insts].sort((x,y)=>(_stRank[y._st]||0)-(_stRank[x._st]||0))[0]};
       rep._usedOnSOs=insts.reduce((m,x)=>(x._usedOnSOs||[]).length>m.length?x._usedOnSOs:m,[]);
       rep._imgUrl=insts.map(x=>x._imgUrl).find(u=>u&&_isImgUrl(u))||rep._imgUrl||(rep._allMockups[0]?.url)||'';
+      rep._archived=insts.length>0&&insts.every(x=>x.archived);
       return rep;
     });
-    // Status counts for filter tabs
-    const counts={all:unified.length,waiting_for_art:0,needs_approval:0,approved:0};
-    unified.forEach(a=>{if(counts[a._st]!=null)counts[a._st]++});
-    const filtered=custArtFilter==='all'?unified:unified.filter(a=>a._st===custArtFilter);
+    // Archive/unarchive a logo across every order it's on plus the customer library copy.
+    const archiveLogo=(art,arch)=>{
+      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
+      custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt&&!!a.archived!==arch){changed=true;return{...a,archived:arch}}return a});if(changed&&onSaveSO)onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
+      if((ownArt||[]).some(a=>(a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt&&!!a.archived!==arch))saveCustArt(ownArt.map(a=>(a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt?{...a,archived:arch}:a));
+      nf&&nf((arch?'Archived ':'Unarchived ')+'"'+(art.name||'art')+'"');
+    };
+    // Status counts for filter tabs (archived excluded from the normal tabs)
+    const counts={all:0,waiting_for_art:0,needs_approval:0,approved:0,archived:0};
+    unified.forEach(a=>{if(a._archived){counts.archived++}else{counts.all++;if(counts[a._st]!=null)counts[a._st]++}});
+    const filtered=custArtFilter==='archived'?unified.filter(a=>a._archived):unified.filter(a=>!a._archived&&(custArtFilter==='all'||a._st===custArtFilter));
     return<div className="card"><div className="card-header"><h2>Artwork Library</h2><button className="btn btn-sm btn-primary" onClick={addCustArt}><Icon name="plus" size={12}/> Add Art</button></div>
       <div className="card-body">
       {/* Status filter tabs */}
       <div style={{display:'flex',gap:0,marginBottom:12,borderBottom:'2px solid #e2e8f0'}}>
-        {[['all','All'],['waiting_for_art','Waiting for Art'],['needs_approval','Needs Approval'],['approved','Approved']].map(([k,label])=>{const ct=counts[k];const active=custArtFilter===k;
+        {[['all','All'],['waiting_for_art','Waiting for Art'],['needs_approval','Needs Approval'],['approved','Approved'],['archived','Archived']].map(([k,label])=>{const ct=counts[k];const active=custArtFilter===k;
           return<button key={k} onClick={()=>setCustArtFilter(k)} style={{padding:'8px 16px',fontSize:12,fontWeight:active?700:500,color:active?k==='approved'?'#166534':k==='needs_approval'?'#92400e':k==='waiting_for_art'?'#64748b':'#1e3a5f':'#94a3b8',
             background:active?k==='approved'?'#dcfce7':k==='needs_approval'?'#fef3c7':k==='waiting_for_art'?'#f1f5f9':'white':'transparent',
             border:'none',borderBottom:active?'2px solid '+(k==='approved'?'#22c55e':k==='needs_approval'?'#f59e0b':k==='waiting_for_art'?'#94a3b8':'#2563eb'):'2px solid transparent',
@@ -601,6 +609,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               </div>
               <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:3}}>
                 <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:(ART_FILE_SC[art._st]||ART_FILE_SC.waiting_for_art).bg,color:(ART_FILE_SC[art._st]||ART_FILE_SC.waiting_for_art).c}}>{(art._st).replace(/_/g,' ')}</span>
+                <button title={art._archived?'Restore to the active library':'Archive — keep in system but hide from the library and previous-art pickers'} onClick={e=>{e.stopPropagation();archiveLogo(art,!art._archived)}} style={{fontSize:9,padding:'2px 8px',borderRadius:4,border:'1px solid #cbd5e1',background:'white',color:'#64748b',cursor:'pointer',fontWeight:600}}>{art._archived?'Unarchive':'Archive'}</button>
                 <div style={{display:'flex',gap:6}}>
                   {art._mockups.length>0&&<span style={{fontSize:10,color:'#2563eb'}}>{art._mockups.length} file(s)</span>}
                   {art._usedOnSOs.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{art._usedOnSOs.length} order(s)</span>}
