@@ -1,6 +1,40 @@
 /* eslint-disable */
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
+import { cloudUpload } from './utils';
+
+// Reusable image uploader → Cloudinary, returns a secure URL via onChange.
+function ImageUpload({ value, fallback, onChange, label = 'Product image' }) {
+  const ref = useRef();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const shown = value || fallback;
+  const pick = async (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    if (!file.type.startsWith('image/')) { setErr('Please choose an image file.'); return; }
+    setBusy(true); setErr('');
+    try { const url = await cloudUpload(file, 'nsa-webstores'); onChange(url); }
+    catch (x) { setErr(x.message || 'Upload failed.'); }
+    setBusy(false);
+  };
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <label className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: 12, color: '#64748b' }}>{label}</label>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ width: 64, height: 64, borderRadius: 8, background: '#f1f5f9', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          {shown ? <img src={shown} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 10, color: '#cbd5e1' }}>none</span>}
+        </div>
+        <div>
+          <input ref={ref} type="file" accept="image/*" style={{ display: 'none' }} onChange={pick} />
+          <button type="button" className="btn btn-sm btn-secondary" disabled={busy} onClick={() => ref.current?.click()}>{busy ? 'Uploading…' : value ? 'Replace image' : 'Upload image'}</button>
+          {value && <button type="button" className="btn btn-sm btn-secondary" style={{ marginLeft: 6, color: '#b91c1c' }} onClick={() => onChange(null)}>Remove</button>}
+          {!value && fallback && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Using stock photo — upload to override.</div>}
+          {err && <div style={{ fontSize: 11, color: '#b91c1c', marginTop: 4 }}>{err}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Webstores admin (steps 2/4/5): list + detail, store create/edit, and
@@ -111,15 +145,21 @@ function Webstores({ cust = [], REPS = [] }) {
     flash('Store created'); return { data };
   }, [sel, flash]);
 
-  const addSingle = useCallback(async ({ product, price, fundraise }) => {
-    const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, active: true, sort_order: (detail?.catalog?.length || 0) };
+  const addSingle = useCallback(async ({ product, price, fundraise, image_url }) => {
+    const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, active: true, sort_order: (detail?.catalog?.length || 0) };
     const { error } = await supabase.from('webstore_products').insert(row);
     if (error) { flash('Error: ' + error.message); return; }
     flash('Added ' + (product.name || product.sku)); loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
 
-  const createBundle = useCallback(async ({ name, price, fundraise, components }) => {
-    const { data: bundle, error } = await supabase.from('webstore_products').insert({ store_id: sel.id, kind: 'bundle', display_name: name, retail_price: price, fundraise_amount: Number(fundraise) || 0, active: true, sort_order: (detail?.catalog?.length || 0) }).select().single();
+  const updateImage = useCallback(async (id, url) => {
+    const { error } = await supabase.from('webstore_products').update({ image_url: url || null }).eq('id', id);
+    if (error) { flash('Error: ' + error.message); return; }
+    flash(url ? 'Image updated' : 'Image removed'); loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
+  const createBundle = useCallback(async ({ name, price, fundraise, image_url, components }) => {
+    const { data: bundle, error } = await supabase.from('webstore_products').insert({ store_id: sel.id, kind: 'bundle', display_name: name, retail_price: price, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, active: true, sort_order: (detail?.catalog?.length || 0) }).select().single();
     if (error) { flash('Error: ' + error.message); return; }
     if (components.length) {
       const rows = components.map((c, i) => ({ bundle_id: bundle.id, product_id: c.product_id, sku: c.sku, qty: c.qty || 1, size_required: c.size_required !== false, takes_number: !!c.takes_number, sort_order: i }));
@@ -160,7 +200,7 @@ function Webstores({ cust = [], REPS = [] }) {
           custName={custName} repName={repName}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)}
-          onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} />
+          onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} />
       )}
@@ -385,7 +425,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onAddSingle, onCreateBundle, onRemove }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onAddSingle, onCreateBundle, onRemove, onUpdateImage }) {
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
   const catalog = detail?.catalog || [];
@@ -437,7 +477,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
 
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} />}
+          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} />}
           {tab === 'roster' && <RosterTab roster={roster} notOrdered={notOrdered} />}
           {tab === 'settings' && <SettingsTab store={s} />}
@@ -459,7 +499,7 @@ function stockText(stock) {
 }
 
 // ── Catalog tab with editing ─────────────────────────────────────────
-function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBundle, onRemove }) {
+function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBundle, onRemove, onUpdateImage }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   return (
@@ -477,7 +517,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBund
         <div className="card"><div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
-              <th style={th}>Product</th><th style={th}>Type</th><th style={th}>Price</th><th style={th}>Fundraising</th><th style={th}>Shopper pays</th><th style={th}>Stock / ETA</th><th style={th}></th>
+              <th style={th}>Image</th><th style={th}>Product</th><th style={th}>Type</th><th style={th}>Price</th><th style={th}>Fundraising</th><th style={th}>Shopper pays</th><th style={th}>Stock / ETA</th><th style={th}></th>
             </tr></thead>
             <tbody>
               {catalog.map((p) => {
@@ -488,6 +528,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBund
                 const fund = Number(p.fundraise_amount) || 0;
                 return (
                   <tr key={p.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                    <td style={td}><RowImage row={p} stockImg={stock?.image_front_url} onUpdateImage={onUpdateImage} /></td>
                     <td style={td}>
                       <div style={{ fontWeight: 600 }}>{label}</div>
                       <div style={{ fontSize: 11, color: '#94a3b8' }}>{[p.sku, stock?.color, stock?.category].filter(Boolean).join(' · ')}</div>
@@ -512,22 +553,47 @@ function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBund
   );
 }
 
-// After a product is picked, set its base price (X) and fundraising add-on (Y).
+// Compact per-row image control for the catalog table.
+function RowImage({ row, stockImg, onUpdateImage }) {
+  const ref = useRef();
+  const [busy, setBusy] = useState(false);
+  const shown = row.image_url || stockImg;
+  const pick = async (e) => {
+    const file = e.target.files?.[0]; if (!file || !file.type.startsWith('image/')) return;
+    setBusy(true);
+    try { const url = await cloudUpload(file, 'nsa-webstores'); await onUpdateImage(row.id, url); } catch (x) { /* surfaced via toast in handler */ }
+    setBusy(false);
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+      <div style={{ width: 44, height: 44, borderRadius: 6, background: '#f1f5f9', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {shown ? <img src={shown} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>none</span>}
+      </div>
+      <input ref={ref} type="file" accept="image/*" style={{ display: 'none' }} onChange={pick} />
+      <button onClick={() => ref.current?.click()} disabled={busy} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 10, padding: 0 }}>{busy ? '…' : row.image_url ? 'change' : 'upload'}</button>
+      {row.image_url && <button onClick={() => onUpdateImage(row.id, null)} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 10, padding: 0 }}>remove</button>}
+    </div>
+  );
+}
+
+// After a product is picked, set its base price (X), fundraising add-on (Y), and image.
 function SinglePriceEditor({ product, onAdd, onCancel }) {
   const [price, setPrice] = useState(product.retail_price || 0);
   const [fundraise, setFundraise] = useState(0);
+  const [image, setImage] = useState(null);
   const total = (Number(price) || 0) + (Number(fundraise) || 0);
   return (
     <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 16 }}>
       <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{product.name}</div>
       <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 12 }}>{[product.sku, product.color].filter(Boolean).join(' · ')}</div>
+      <ImageUpload value={image} fallback={product.image_front_url} onChange={setImage} />
       <div style={{ display: 'flex', gap: 12 }}>
         <Row label="Price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Row>
         <Row label="Fundraising on top (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} /></Row>
         <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700 }}>{money(total)}</div></Row>
       </div>
       <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
-        <button className="btn btn-primary" onClick={() => onAdd({ product, price, fundraise })}>Add to store</button>
+        <button className="btn btn-primary" onClick={() => onAdd({ product, price, fundraise, image_url: image })}>Add to store</button>
         <button className="btn btn-secondary" onClick={onCancel}>Back</button>
       </div>
     </div></div>
@@ -572,6 +638,7 @@ function BundleBuilder({ onCreate, onClose }) {
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
   const [fundraise, setFundraise] = useState('');
+  const [image, setImage] = useState(null);
   const [components, setComponents] = useState([]);
   const [picking, setPicking] = useState(false);
   const addComp = (p) => { setComponents((c) => [...c, { product_id: p.id, sku: p.sku, name: p.name, qty: 1, size_required: true, takes_number: false }]); setPicking(false); };
@@ -588,6 +655,7 @@ function BundleBuilder({ onCreate, onClose }) {
         <Row label="Fundraising on top (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} placeholder="0.00" /></Row>
         <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700 }}>{money(total)}</div></Row>
       </div>
+      <ImageUpload value={image} onChange={setImage} label="Package image" />
       <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 6 }}>Items in this package</div>
       {components.map((c, i) => (
         <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid #f1f5f9', fontSize: 13, flexWrap: 'wrap' }}>
@@ -600,7 +668,7 @@ function BundleBuilder({ onCreate, onClose }) {
       ))}
       {picking ? <ProductSearch label="Add an item to the package" onPick={addComp} onClose={() => setPicking(false)} /> :
         <button className="btn btn-sm btn-secondary" style={{ marginTop: 8 }} onClick={() => setPicking(true)}>+ Add item</button>}
-      <div style={{ marginTop: 14 }}><button className="btn btn-primary" disabled={!valid} onClick={() => onCreate({ name: name.trim(), price: Number(price), fundraise: Number(fundraise) || 0, components })}>Create package</button></div>
+      <div style={{ marginTop: 14 }}><button className="btn btn-primary" disabled={!valid} onClick={() => onCreate({ name: name.trim(), price: Number(price), fundraise: Number(fundraise) || 0, image_url: image, components })}>Create package</button></div>
     </div></div>
   );
 }
