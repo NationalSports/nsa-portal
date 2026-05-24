@@ -25,7 +25,7 @@ const nameWithBrand=(name,brand)=>{
   return b+' '+n;
 };
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -38,6 +38,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // index point at the wrong job or nothing. We capture the selected job's stable
   // id here so the detail-view lookup can recover when the index goes stale.
   const selJobIdRef=useRef(null);
+  // Always-current jobs snapshot so the navigate-to-job resolver below can read the
+  // post-sync job list (with healed/distinct ids and correct art_file_ids) rather
+  // than the possibly-stale array captured when the dashboard fired the navigation.
+  const _navJobsRef=useRef(o);_navJobsRef.current=o;
   React.useEffect(()=>{
     if(selJob!=null){
       const _j=safeJobs(o)[selJob];
@@ -69,6 +73,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     React.useEffect(()=>{if(initTab)setTab(initTab)},[initTab]);
     React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
     React.useEffect(()=>{if(scrollToJob!=null){setTab('jobs');setSelJob(scrollToJob);setTimeout(()=>{const el=document.getElementById('so-job-'+scrollToJob);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)}},[scrollToJob]);
+    // Resolve a navigate-to-job request by stable identifier against THIS editor's own
+    // (post-sync) job list. The dashboard can't reliably compute the index because its
+    // copy of so.jobs may be stale or have duplicate ids; here we match on art_file_id
+    // first (unique per art), then key, then id. Deferred so auto-sync has committed.
+    React.useEffect(()=>{if(!scrollToJobRef)return;setTab('jobs');const _go=()=>{const _j=safeJobs(_navJobsRef.current);const a=scrollToJobRef;let idx=a.artId?_j.findIndex(x=>x.art_file_id===a.artId||(x._art_ids||[]).includes(a.artId)):-1;if(idx<0&&a.key)idx=_j.findIndex(x=>x.key===a.key);if(idx<0&&a.id)idx=_j.findIndex(x=>x.id===a.id);if(idx>=0){setSelJob(idx);const el=document.getElementById('so-job-'+idx);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}}onScrollJobConsumed&&onScrollJobConsumed()};setTimeout(_go,250)},[scrollToJobRef]);// eslint-disable-line
     React.useEffect(()=>{if(openPOId){
       // Check SO-level deco_pos first — decoration POs are cost buckets, not per-item line items.
       const decoPO=(o.deco_pos||[]).find(dp=>dp.po_id===openPOId);
@@ -1678,10 +1687,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       jobMap[jobKey]=job;
     });
     // Build map of existing NON-split jobs keyed by job key AND by art_file_id (skip splits so they don't collide)
-    const existingJobMap={};const existingByArtId={};const existingById={};
-    safeJobs(o).forEach(j=>{if(!j.split_from){existingJobMap[j.key||j.id]=j;const jArtIds=j._art_ids||[j.art_file_id].filter(Boolean);jArtIds.forEach(aid=>{existingByArtId[aid]=existingByArtId[aid]||j});existingById[j.id]=j}});
+    const existingJobMap={};const existingByArtId={};
+    safeJobs(o).forEach(j=>{if(!j.split_from){existingJobMap[j.key||j.id]=j;const jArtIds=j._art_ids||[j.art_file_id].filter(Boolean);jArtIds.forEach(aid=>{existingByArtId[aid]=existingByArtId[aid]||j})}});
     const soNum=o.id?.replace('SO-','')||'0';
+    // Guard against duplicate job ids. A collision makes two jobs share an id, and
+    // id-based lookups (e.g. dashboard "Review Mockup" todos) then resolve to the
+    // wrong job. _reserved holds every id an existing job legitimately owns so freshly
+    // minted ids never steal one; _usedIds tracks ids handed out this pass so a
+    // preserved id that's already taken (pre-existing corruption) gets re-minted.
+    const _reserved=new Set(safeJobs(o).map(j=>j.id).filter(Boolean));
+    const _usedIds=new Set();
     let jIdx=1;
+    const _nextJobId=()=>{let id;do{id='JOB-'+soNum+'-'+String(jIdx).padStart(2,'0');jIdx++}while(_reserved.has(id)||_usedIds.has(id));_usedIds.add(id);return id};
     const newJobs=Object.values(jobMap).map(j=>{
       // Try matching by key first, then by art_file_id as fallback to prevent data loss on key changes
       const existing=existingJobMap[j.key]||(j.art_file_id?existingByArtId[j.art_file_id]:null);
@@ -1690,8 +1707,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const artFile=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);
       const hasProdFiles=!artFile||(artFile.prod_files||[]).length>0;
       // Jobs stay in 'hold' (Ready for Prod) until warehouse manually moves them to production
-      const id=existing?.id||('JOB-'+soNum+'-'+String(jIdx).padStart(2,'0'));
-      jIdx++;
+      let id=existing?.id;
+      if(!id||_usedIds.has(id))id=_nextJobId();else _usedIds.add(id);
       return{
         id,key:j.key,art_file_id:j.art_file_id,art_name:existing?._name_locked?(existing.art_name||j.art_name):j.art_name,deco_type:j.deco_type,
         positions:[...j.positions].filter(Boolean).join(', '),items:j.items,
