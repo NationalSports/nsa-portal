@@ -153,7 +153,9 @@ const buildJobs = (o) => {
         artIds.push(d.art_file_id);
         const af = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
         if (af) { artNames.push(af.name || 'Unnamed'); decoTypes.push(af.deco_type || 'screen_print');
-          const st = af.status === 'approved' ? (af.prod_files?.length ? 'art_complete' : 'production_files_needed') : af.status === 'needs_approval' ? 'waiting_approval' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art';
+          const _prodReady = (af.prod_files?.length || 0) > 0 || ((af.deco_type || '') === 'embroidery' && (af.files || []).some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); }));
+          const _prodNeededSt = (af.deco_type || '') === 'dtf' ? 'order_dtf_transfers' : (af.deco_type || '') === 'embroidery' ? 'upload_emb_files' : 'production_files_needed';
+          const st = af.status === 'approved' ? (_prodReady ? 'art_complete' : _prodNeededSt) : af.status === 'needs_approval' ? 'waiting_approval' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art';
           if (st !== 'art_complete') worstArtSt = st;
         } else { artNames.push('Unnamed'); decoTypes.push('screen_print'); worstArtSt = 'needs_art'; }
       } else if (d.kind === 'numbers') {
@@ -178,7 +180,14 @@ const buildJobs = (o) => {
 const isJobReady = (j, o) => {
   if (j.art_status !== 'art_complete') return false;
   const artIds = j._art_ids || [j.art_file_id].filter(Boolean);
-  for (const aid of artIds) { const af = safeArr(o?.art_files).find(f => f.id === aid); if (af && (af.prod_files || []).length === 0) return false; }
+  for (const aid of artIds) {
+    const af = safeArr(o?.art_files).find(f => f.id === aid);
+    if (!af) continue;
+    if ((af.prod_files || []).length > 0) continue;
+    // A .dst attached to the embroidery art counts as the production file.
+    if ((af.deco_type || '') === 'embroidery' && (af.files || []).some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); })) continue;
+    return false;
+  }
   let totalSz = 0, fulfilledSz = 0;
   (j.items || []).forEach(gi => {
     const it = safeItems(o)[gi.item_idx]; if (!it) return;
