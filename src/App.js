@@ -15686,20 +15686,19 @@ export default function App(){
           <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>No deliveries ready</div>
           <div style={{fontSize:12}}>Orders with Ship Preference set to <strong>🚚 Deliver</strong> will appear here once production is complete.</div>
         </div></div>
-        :<div style={{display:'flex',flexDirection:'column',gap:8}}>
-          {[...fDeliver].sort((a,b)=>{
-            const aHold=a.holdUntil&&a.deliverDaysOut!=null&&a.deliverDaysOut>0?1:0;
-            const bHold=b.holdUntil&&b.deliverDaysOut!=null&&b.deliverDaysOut>0?1:0;
-            if(aHold!==bHold)return aHold-bHold;
-            return (a.deliverDaysOut??a.daysOut??0)-(b.deliverDaysOut??b.daysOut??0);
-          }).map((t,ti)=>{
+        :(()=>{
+          const sorted=[...fDeliver].sort((a,b)=>(a.deliverDaysOut??a.daysOut??0)-(b.deliverDaysOut??b.daysOut??0));
+          const isFuture=t=>t.holdUntil&&t.deliverDaysOut!=null&&t.deliverDaysOut>0;
+          const ready=sorted.filter(t=>!isFuture(t));
+          const future=sorted.filter(isFuture);
+          const card=(t,key,dim)=>{
             const c=cust.find(x=>x.id===t.so.customer_id);
             const addr=c?getAddrs(c,cust)?.[0]:null;
             const onHold=t.holdUntil&&t.deliverDaysOut!=null&&t.deliverDaysOut>0;
             const deliverToday=t.deliverDaysOut===0;
             const deliverPast=t.deliverDaysOut!=null&&t.deliverDaysOut<0;
             const borderColor=deliverToday?'#16a34a':'#d97706';
-            return<div key={ti} className="card" style={{borderLeft:'6px solid '+borderColor,cursor:'pointer'}}
+            return<div key={key} className="card" style={{borderLeft:'6px solid '+borderColor,cursor:'pointer',opacity:dim?0.72:1}}
               onClick={()=>setDeliverModal(t)}>
               <div style={{padding:'12px 16px',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
                 <div style={{flex:1,minWidth:200}}>
@@ -15722,8 +15721,14 @@ export default function App(){
                 <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                   onClick={e=>{e.stopPropagation();printSOPackingList(t.so,null,t)}}>📦 Packing List</button>
               </div>
-            </div>})}
-        </div>}
+            </div>;
+          };
+          return<div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {ready.map((t,ti)=>card(t,'r'+ti,false))}
+            {future.length>0&&<div style={{marginTop:ready.length?14:0,fontSize:11,fontWeight:800,color:'#94a3b8',textTransform:'uppercase',letterSpacing:1,padding:'2px 2px'}}>📅 Scheduled / upcoming ({future.length})</div>}
+            {future.map((t,ti)=>card(t,'f'+ti,true))}
+          </div>;
+        })()}
       </>}
 
       {/* ── DELIVER DETAIL / MARK-DELIVERED MODAL ── */}
