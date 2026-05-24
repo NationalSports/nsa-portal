@@ -1,6 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
-import { SZ_ORD, pantoneHex, NSA } from './constants';
+import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP } from './pricing';
@@ -581,7 +581,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
                 const jArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
                 const coachComment=comment.trim();
-                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed',coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||undefined}:jj),art_files:safeArt(liveSO).map(a=>jArtIds.includes(a.id)?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
+                const _apDeco=(safeArt(liveSO).find(a=>jArtIds.includes(a.id))?.deco_type)||j.deco_type;const _apSt=prodFilesStatusFor(_apDeco);
+                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||undefined}:jj),art_files:safeArt(liveSO).map(a=>jArtIds.includes(a.id)?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 // Email the assigned rep
                 const rep=REPS.find(r=>r.id===liveSO.created_by);
@@ -589,7 +590,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
                 // Persist via the serverless endpoint — the public portal's anon role can't write under RLS
                 const _res=await _portalAction({
-                  jobs:[{so_id:liveSO.id,id:j.id,art_status:'production_files_needed',coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||null}],
+                  jobs:[{so_id:liveSO.id,id:j.id,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||null}],
                   artFiles:jArtIds.map(aid=>({so_id:liveSO.id,id:aid,status:'approved'})),
                   touchSO:liveSO.id,
                   email:rep?.email?{to:[{email:rep.email}],cc:_accCc,subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p>'+commentHtml+'<p>The job is now ready for production file prep.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:{email:rep.email,name:rep.name}}:undefined,

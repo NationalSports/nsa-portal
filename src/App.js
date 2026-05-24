@@ -13,7 +13,7 @@ import { jsPDF } from 'jspdf';
 import { svg2pdf } from 'svg2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
@@ -5047,9 +5047,9 @@ export default function App(){
         if(j.art_status==='waiting_approval'){
           if(!j.sent_to_coach_at){todos.push({type:'art',priority:1,msg:'🎨 Mockup ready for review: '+j.art_name,detail:tag+' · '+so.id+' · Artist uploaded proof — review & send to coach',so,jobId:j.id,repId:_repId,action:'Review Mockup',role:'sales',date:j.updated_at||so.updated_at})}
           else{const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
-        if(j.coach_approved_at&&(j.art_status==='production_files_needed'||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago')+_coachNote,so,jobId:j.id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
+        if(j.coach_approved_at&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago')+_coachNote,so,jobId:j.id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
         // Production-files step is rep/CSR-owned for embroidery (upload DST + PDF) and DTF (order transfer films) — not the artist.
-        if(j.art_status==='production_files_needed'){
+        if(PROD_FILES_STATUSES.includes(j.art_status)){
           const _pdAf=safeArt(so).find(f=>f.id===j.art_file_id);const _pdDeco=_pdAf?.deco_type||j.deco_type;
           if(_pdDeco==='embroidery')['sales','csr'].forEach(_role=>todos.push({type:'prod_files',priority:2,msg:'🧵 Upload production files: '+j.art_name,detail:tag+' · '+so.id+' · Embroidery — add DST + PDF for the printer',so,jobId:j.id,repId:_repId,action:'Upload Files',role:_role,date:j.coach_approved_at||j.updated_at||so.updated_at}));
           else if(_pdDeco==='dtf')['sales','csr'].forEach(_role=>todos.push({type:'order_dtf',priority:2,msg:'🎞️ Order DTF films: '+j.art_name,detail:tag+' · '+so.id+' · DTF — order transfer films, then mark Films Ordered',so,jobId:j.id,repId:_repId,action:'Order Films',role:_role,date:j.coach_approved_at||j.updated_at||so.updated_at}));
@@ -7063,7 +7063,7 @@ export default function App(){
       nf('🏭 '+j.id+' added to Production Board');
     };
 
-    const ART_STATUSES=[['needs_art','Needs Art'],['art_requested','Art Requested'],['art_in_progress','In Progress'],['waiting_approval','Waiting Approval'],['production_files_needed','Art Approved — Waiting'],['art_complete','Art Complete']];
+    const ART_STATUSES=[['needs_art','Needs Art'],['art_requested','Art Requested'],['art_in_progress','In Progress'],['waiting_approval','Waiting Approval'],['production_files_needed','Art Approved — Waiting'],['order_dtf_transfers','Order DTF Transfers'],['upload_emb_files','Upload EMB Files'],['art_complete','Art Complete']];
     const ITEM_STATUSES=[['need_to_order','Need to Order'],['partially_received','Partially Received'],['items_received','Items Received']];
     const chipStyle=(active,sc)=>({fontSize:10,padding:'3px 10px',borderRadius:12,border:'1px solid '+(active?sc?.c||'#2563eb':'#e2e8f0'),
       background:active?(sc?.bg||'#eff6ff'):'white',color:active?(sc?.c||'#2563eb'):'#94a3b8',cursor:'pointer',fontWeight:600,display:'inline-flex',alignItems:'center',gap:4});
@@ -7237,7 +7237,7 @@ export default function App(){
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){
           if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
-        if(j.coach_approved_at&&(j.art_status==='production_files_needed'||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
+        if(j.coach_approved_at&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
         if(j.art_status==='art_requested'&&j.coach_rejected){todos.push({type:'art_rejected',priority:1,msg:'Coach rejected art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review feedback',role:'sales',date:j.updated_at||so.updated_at})}
         if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split',role:'production',date:j.updated_at||so.updated_at});
         if(j.item_status==='items_received'&&j.prod_status!=='completed'&&!j.split_from){
@@ -16062,7 +16062,7 @@ export default function App(){
         if(j.art_status!=='art_complete')return;
         const af=safeArt(so).find(f=>f.id===j.art_file_id);
         if(af&&(af.prod_files||[]).length===0){
-          allArtJobs.push({...j,art_status:'production_files_needed',_overrideStatus:true,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
+          allArtJobs.push({...j,art_status:prodFilesStatusFor(af.deco_type),_overrideStatus:true,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
             rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
             expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
             artFile:af});
@@ -16089,20 +16089,20 @@ export default function App(){
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
       if(newStatus==='art_complete'){
         const af=safeArt(so).find(f=>f.id===j.art_file_id);
-        if(af&&(af.prod_files||[]).length===0){nf('Upload production files first','error');return}
+        if(af&&!artProdFilesReady(af)){nf('Upload production files first','error');return}
       }
       const currentJobs=buildJobs(so);
       const updatedJobs=currentJobs.map(jj=>{
         if(jj.id!==j.id)return jj;
         const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
-        if((newStatus==='art_complete'||newStatus==='production_files_needed')&&upd.art_requests){
+        if((newStatus==='art_complete'||PROD_FILES_STATUSES.includes(newStatus))&&upd.art_requests){
           upd.art_requests=upd.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r);
         }
         return upd;
       });
       let updArt=safeArt(so);
       if(j.art_file_id){
-        const afSt=newStatus==='waiting_approval'?'needs_approval':newStatus==='production_files_needed'||newStatus==='art_complete'?'approved':null;
+        const afSt=newStatus==='waiting_approval'?'needs_approval':PROD_FILES_STATUSES.includes(newStatus)||newStatus==='art_complete'?'approved':null;
         if(afSt)updArt=updArt.map(a=>a.id===j.art_file_id?{...a,status:afSt}:a);
       }
       savSO({...so,art_files:updArt,jobs:updatedJobs});
@@ -16145,7 +16145,7 @@ export default function App(){
       // Job-level art_status takes priority for dashboard column placement
       if(j.art_status==='art_requested'||j.art_status==='art_in_progress')return'waiting_for_art';
       if(j.art_status==='waiting_approval')return'needs_approval';
-      if(j.art_status==='production_files_needed')return'approved';
+      if(PROD_FILES_STATUSES.includes(j.art_status))return'approved';
       if(j.art_status==='art_complete')return'art_complete';
       // Fallback to art file status — but recalled jobs always go to waiting_for_art
       const wasRecalled=(j.art_requests||[]).some(r=>r.status==='recalled')&&!(j.art_requests||[]).some(r=>r.status==='requested'||r.status==='in_progress');
@@ -16154,7 +16154,7 @@ export default function App(){
     };
     // Embroidery/DTF jobs that have been approved are owned by the rep/CSR (upload DST+PDF or order films),
     // not the artist — drop them off the artist board once they reach the production-files step.
-    const _repOwnsProdStep=(j)=>j.art_status==='production_files_needed'&&['embroidery','dtf'].includes(j.artFile?.deco_type||j.deco_type);
+    const _repOwnsProdStep=(j)=>j.art_status==='order_dtf_transfers'||j.art_status==='upload_emb_files'||(j.art_status==='production_files_needed'&&['embroidery','dtf'].includes(j.artFile?.deco_type||j.deco_type));
     const artistJobs=filtered.filter(j=>j.art_status!=='art_complete'&&!j.art_hidden&&!_repOwnsProdStep(j));
     // In Production: art complete but decoration not finished yet
     const inProductionJobs=filtered.filter(j=>j.art_status==='art_complete'&&!['completed','shipped'].includes(j.prod_status)&&!j.art_hidden);
@@ -16812,7 +16812,7 @@ export default function App(){
           <div className="modal-footer">
             {j.art_status!=='art_complete'&&<button className="btn btn-secondary" onClick={()=>setArtEditModal({job:j,instructions:(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1].instructions||'':'',notes:j.rep_notes||''})}>Edit Request</button>}
             <button className="btn btn-secondary" onClick={()=>{setESOTab('jobs');setESO(so);setESOC(c2);setPg('orders');setArtMockupModal(null)}}>Open Full Job</button>
-            {j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&j.art_status!=='production_files_needed'&&<button className="btn" style={{padding:'8px 16px',background:'linear-gradient(135deg,#f59e0b,#d97706)',color:'white',border:'none',borderRadius:8,fontSize:13,fontWeight:700}} onClick={()=>{
+            {j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&!PROD_FILES_STATUSES.includes(j.art_status)&&<button className="btn" style={{padding:'8px 16px',background:'linear-gradient(135deg,#f59e0b,#d97706)',color:'white',border:'none',borderRadius:8,fontSize:13,fontWeight:700}} onClick={()=>{
               const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
               const missing=skusMissingMockups(j,liveSO);
               if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
@@ -17594,7 +17594,7 @@ export default function App(){
             </div>}
 
             {/* ─── Upload Zone: switches between art mockups and production files ─── */}
-            {j.art_status==='production_files_needed'?<div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
+            {PROD_FILES_STATUSES.includes(j.art_status)?<div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
               <div style={{padding:'10px 14px',background:'linear-gradient(135deg,#dcfce7,#f0fdf4)',borderRadius:8,border:'2px solid #86efac',marginBottom:12}}>
                 <div style={{fontSize:13,fontWeight:700,color:'#166534'}}>✅ Art Approved — Upload Production Files</div>
                 <div style={{fontSize:11,color:'#15803d',marginTop:2}}>Mockups have been approved. Upload final production files (DST, AI, EPS, etc.) for this job.</div>
@@ -17731,12 +17731,12 @@ export default function App(){
 
           {/* Footer actions */}
           <div className="modal-footer" style={{flexDirection:'column',gap:8}}>
-            {j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&j.art_status!=='production_files_needed'&&<div style={{width:'100%'}}>
+            {j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&!PROD_FILES_STATUSES.includes(j.art_status)&&<div style={{width:'100%'}}>
               <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Include a message with your submission (optional):</div>
               <textarea className="form-input" rows={2} placeholder="e.g. Changed font to match brand guidelines, adjusted colors per spec..." value={artJobDetailApprovalMsg} onChange={e=>setArtJobDetailApprovalMsg(e.target.value)} style={{fontSize:12,resize:'vertical',marginBottom:8,width:'100%',boxSizing:'border-box'}}/>
             </div>}
             <div style={{display:'flex',gap:8,flexWrap:'wrap',width:'100%'}}>
-              {j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&j.art_status!=='production_files_needed'&&
+              {j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&!PROD_FILES_STATUSES.includes(j.art_status)&&
                 <button className="btn" style={{padding:'8px 20px',background:'linear-gradient(135deg,#f59e0b,#d97706)',color:'white',border:'none',borderRadius:8,fontSize:13,fontWeight:700}} onClick={sendForApproval}>📤 Send to Rep for Approval</button>}
               <button className="btn btn-secondary" onClick={()=>{setESOTab('jobs');setESO(so);setESOC(c2);setPg('orders');setArtJobDetailModal(null)}}>Open SO</button>
               <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setArtJobDetailModal(null)}>Close</button>
