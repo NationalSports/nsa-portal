@@ -711,6 +711,21 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       setCustArtDetail(d=>d?{...d,_allMockups:(d._allMockups||[]).filter(x=>x.url!==url),mockup_files:(d.mockup_files||[]).filter(f=>urlOf(f)!==url),files:(d.files||[]).filter(f=>urlOf(f)!==url)}:d);
       nf&&nf('File removed from '+(art.name||'artwork'));
     };
+    // Upload a new mockup and attach it to this artwork's record on its source order.
+    const addMockToArt=async(fileList)=>{
+      const soId=art._so_id||(usedOnSOs[0]&&usedOnSOs[0].so_id);
+      const so=custSOs.find(s=>s.id===soId);
+      if(!so||!onSaveSO){nf&&nf('No order found to attach the mockup to','error');return}
+      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
+      const added=[];
+      for(const f of Array.from(fileList||[])){nf&&nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');added.push({url,name:f.name})}catch(e){nf&&nf('Upload failed: '+e.message,'error')}}
+      if(!added.length)return;
+      const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);return match?{...a,mockup_files:[...(a.mockup_files||[]),...added]}:a});
+      onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
+      setCustArtDetail(d=>d?{...d,_allMockups:[...(d._allMockups||[]),...added.map(m=>({file:m,url:m.url,src:so.id+(so.memo?' — '+so.memo:'')}))]}:d);
+      nf&&nf(added.length+' mockup'+(added.length>1?'s':'')+' added');
+    };
+    const pickMock=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*,.pdf';inp.multiple=true;inp.onchange=()=>addMockToArt(inp.files);inp.click()};
     return<div className="modal-overlay" onClick={()=>setCustArtDetail(null)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header"><h2>{art.name||'Untitled'}</h2><button className="modal-close" onClick={()=>setCustArtDetail(null)}>x</button></div>
       <div className="modal-body">
@@ -723,9 +738,12 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <div><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Status</span><div><span style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,background:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).bg,color:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).c}}>{(art.status||'waiting_for_art').replace(/_/g,' ')}</span></div></div>
         </div>
         {/* All mockup versions */}
-        {mockups.length>0&&<div style={{marginBottom:16}}>
-          <div style={{fontSize:12,fontWeight:700,color:'#1e40af',marginBottom:8}}>Mockup Files ({mockups.length})</div>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:8}}>
+        <div style={{marginBottom:16}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>Mockup Files ({mockups.length})</div>
+            {onSaveSO&&<button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={pickMock}><Icon name="plus" size={11}/> Add Mockup</button>}
+          </div>
+          {mockups.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:8}}>
             {mockups.map((m,mi)=>{const url=m.url;return<div key={mi} style={{borderRadius:8,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',cursor:'pointer',position:'relative'}} onClick={()=>openFile(m.file||url)}>
               {onSaveSO&&<button title="Remove this file from the artwork" onClick={e=>{e.stopPropagation();removeMockFromArt(url)}} style={{position:'absolute',top:4,right:4,zIndex:2,width:22,height:22,borderRadius:11,border:'none',background:'rgba(220,38,38,0.92)',color:'white',cursor:'pointer',fontSize:13,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
               {_isImgUrl(url)?<img src={url} alt="" style={{width:'100%',height:120,objectFit:'contain',display:'block',background:'#f8fafc'}}/>
@@ -733,8 +751,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               :<div style={{height:120,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc',fontSize:28}}>📄</div>}
               <div style={{padding:'4px 6px',fontSize:9,color:'#64748b',borderTop:'1px solid #f1f5f9'}}>{fileDisplayName(m.file||url)}<br/><span style={{color:'#94a3b8'}}>{m.src}</span></div>
             </div>})}
-          </div>
-        </div>}
+          </div>}
+        </div>
         {/* Jobs / orders that used this art */}
         {usedOnSOs.length>0&&<div>
           <div style={{fontSize:12,fontWeight:700,color:'#1e40af',marginBottom:8}}>Used on {usedOnSOs.length} Order(s)</div>
