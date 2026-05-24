@@ -36,6 +36,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
   const [mocks, setMocks] = useState(() => ({...(initialMocks || {})}));
   const [imgOverride, setImgOverride] = useState({});
   const [busy, setBusy] = useState(false);
+  const [imgLoading, setImgLoading] = useState(false);
 
   const garment = garments[gi] || {};
   const baseUrl = side === 'back' ? garment.backUrl : garment.frontUrl;
@@ -61,11 +62,12 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
     document.addEventListener('keydown', delHandler);
 
     if (!garmentUrl) {
-      c.add(new fabric.FabricText('No garment image — upload one below', {left: 230, top: 280, fontSize: 14, fill: '#94a3b8', originX: 'center', originY: 'center', selectable: false}));
-      c.renderAll();
+      setImgLoading(false);
     } else {
+      setImgLoading(true);
       const place = imgEl => {
         if (disposed) return;
+        setImgLoading(false);
         const garImg = new fabric.FabricImage(imgEl, {selectable: false, evented: false});
         const scale = Math.min(460 / garImg.width, 560 / garImg.height);
         garImg.set({scaleX: scale, scaleY: scale, left: (460 - garImg.width * scale) / 2, top: (560 - garImg.height * scale) / 2});
@@ -77,7 +79,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
       imgEl.onerror = () => {
         const direct = new Image(); direct.crossOrigin = 'anonymous';
         direct.onload = () => place(direct);
-        direct.onerror = () => { if (!disposed) { c.add(new fabric.FabricText('Could not load garment image', {left: 230, top: 280, fontSize: 13, fill: '#ef4444', originX: 'center', originY: 'center', selectable: false})); c.renderAll(); } };
+        direct.onerror = () => { if (!disposed) { setImgLoading(false); c.add(new fabric.FabricText('Could not load garment image', {left: 230, top: 280, fontSize: 13, fill: '#ef4444', originX: 'center', originY: 'center', selectable: false})); c.renderAll(); } };
         direct.src = garmentUrl;
       };
       imgEl.src = proxyUrl;
@@ -294,8 +296,16 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
                   <Icon name="save" size={11} /> Save Mock for {garment.color || garment.sku}
                 </button>
               </div>
-              <div style={{display: 'flex', justifyContent: 'center', background: '#f8fafc', borderRadius: 8, padding: 12}}>
+              <div style={{display: 'flex', justifyContent: 'center', background: '#f8fafc', borderRadius: 8, padding: 12, position: 'relative'}}>
                 <div ref={wrapRef} />
+                {(imgLoading || (!garmentUrl && garment.pending)) && <div style={{position: 'absolute', inset: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, background: 'rgba(248,250,252,0.85)', borderRadius: 8, pointerEvents: 'none'}}>
+                  <Icon name="loader" size={26} style={{animation: 'spin 1s linear infinite', color: '#7c3aed'}} />
+                  <span style={{fontSize: 12, color: '#6d28d9', fontWeight: 600}}>Loading product image…</span>
+                </div>}
+                {!garmentUrl && !garment.pending && !imgLoading && <div style={{position: 'absolute', inset: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, pointerEvents: 'none'}}>
+                  <Icon name="image" size={28} style={{color: '#cbd5e1'}} />
+                  <span style={{fontSize: 12, color: '#94a3b8', fontWeight: 600}}>No product image — upload one</span>
+                </div>}
               </div>
               <div style={{fontSize: 10, color: '#94a3b8', marginTop: 6, textAlign: 'center'}}>Click art to select. Drag to move, corners to resize. Press Delete to remove.</div>
             </div>
