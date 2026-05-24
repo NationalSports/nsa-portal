@@ -85,6 +85,21 @@ const _dedupProducts=(products,onRemove)=>{
   if(onRemove)onRemove(dupeIds,primaries);
   return products.filter(p=>!dupeIds.includes(p.id));
 };
+// Shared DB-cleanup for deduped products. Duplicates are usually still referenced by
+// so_items, so the DELETE fails with a FK 409 and the dupe survives in the DB. Without a
+// guard we'd re-issue the failing delete (and re-save every primary) on every realtime
+// reload — each write rebroadcasts, the dupe reloads, dedup runs again → an infinite loop
+// that floods Supabase with 409/429s and starves real writes (e.g. mockup uploads). So we
+// attempt cleanup at most once per id; repeat reloads with the same dupes become no-ops.
+const _dupeCleanupAttempted=new Set();
+const _cleanupDuplicateProducts=(dupeIds,primaries)=>{
+  const fresh=dupeIds.filter(id=>id&&!_dupeCleanupAttempted.has(id));
+  if(fresh.length===0)return;
+  fresh.forEach(id=>_dupeCleanupAttempted.add(id));
+  fresh.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(r=>{if(r?.error)console.warn('[DB] dupe delete failed:',id,r.error.message);else console.log('[DB] Deleted duplicate product:',id)}).catch(e=>console.warn('[DB] dupe delete error:',id,e))}catch(e){console.warn('[DB] Failed to delete dupe:',id,e)}});
+  fresh.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}});
+  (primaries||[]).forEach(p=>_dbSaveProduct(p));
+};
 // Retry wrapper for lazy imports – handles ChunkLoadError after deploys.
 // A new deploy swaps chunk hashes, so a tab running the old build requests a
 // chunk that no longer exists (Netlify's SPA fallback returns index.html →
@@ -204,11 +219,16 @@ const sendBrevoSms=async({to,content,sender})=>{
 };
 
 // ─── Brevo Email Open Tracking ───
+// Brevo's statistics/events endpoint is aggressively rate-limited. When we get a 429,
+// pause all open-checks for a cooldown window so we stop hammering the API.
+let _brevoBackoffUntil=0;
 // Check Brevo events API for email opens by messageId
 const checkBrevoEmailOpens=async(messageId)=>{
   if(!_brevoKey||!messageId)return null;
+  if(Date.now()<_brevoBackoffUntil)return null;
   try{
     const r=await fetch('https://api.brevo.com/v3/smtp/statistics/events?messageId='+encodeURIComponent(messageId)+'&event=opened&limit=1',{headers:{'accept':'application/json','api-key':_brevoKey}});
+    if(r.status===429){_brevoBackoffUntil=Date.now()+600000;return null}// rate-limited: back off 10 min
     if(!r.ok)return null;const d=await r.json();
     if(d.events&&d.events.length>0){const ev=d.events[0];return{opened_at:ev.date,email:ev.email||null}}
     return null;
@@ -273,7 +293,7 @@ const _POLL_MAX_INTERVAL=120000;// 2min max backoff
 const _getPollInterval=()=>Math.min(_POLL_BASE_INTERVAL*Math.pow(2,_pollConsecutiveFailures),_POLL_MAX_INTERVAL);
 // Tiered polling: core tables every 60s, full sync (including cold tables) every 5th cycle (~5 min)
 let _pollCycle=0;
-const _FULL_SYNC_EVERY=5;// every 5th poll = ~5 minutes
+const _FULL_SYNC_EVERY=10;// every 10th poll = ~10 minutes (cold tables change rarely; realtime covers the rest)
 let _fetchErrorLoggedAt=0;// throttle fetch error logging to once per 30s
 const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
@@ -467,7 +487,7 @@ function AdidasB2BRow({sku, brand, displaySizes, inv}) {
 }
 
 const _dbLoad = async (opts={}) => {
-  const {coreOnly=false} = opts;
+  const {coreOnly=false, histInvoices=false} = opts;
   if (!supabase) return null;
   if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
@@ -527,8 +547,10 @@ const _dbLoad = async (opts={}) => {
       ()=>coreOnly?_skip():_safeQuery('quote_request_items',{order:'sort_order'}),
       ()=>coreOnly?_skip():_safeQuery('dismissed_todos'),
       ()=>coreOnly?_skip():_safeQuery('dismissed_notifs'),
-      // NetSuite invoice history — read-only sales record separate from portal 'invoices'.
-      ()=>_safeQuery('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000}),
+      // NetSuite invoice history — read-only sales record separate from portal 'invoices'. This can be ~20k rows;
+      // only fetch it when explicitly requested (initial load). Polls and realtime reloads never applied it to
+      // state (setHistInvs runs only on initial load), so fetching it there was wasted DB load.
+      ()=>histInvoices?_safeQuery('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000}):_skip(),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -768,10 +790,10 @@ const _dbSaveEstimateInner = async (est) => {
         }
       }
     }
-    if(oldItemIds.length){
-      await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',oldItemIds);
-    }
-    await supabase.from('estimate_items').delete().eq('estimate_id',est.id);
+    // DATA-LOSS FIX: do NOT delete old item/decoration rows here. We insert the new rows first and only
+    // remove the old ones once the insert is verified (see "Commit/rollback the swap" below). estimate_items
+    // has no unique (estimate_id,item_index) constraint, so new+old rows can briefly coexist. This closes the
+    // window where a committed delete followed by a timed-out insert left the estimate permanently empty.
     // Sync art_files: upsert current, delete removed. Optimistic concurrency via the _version trigger — never
     // overwrite an art row whose DB copy is newer than the client's, and only delete rows the client had loaded.
     const{data:_dbAf}=await supabase.from('estimate_art_files').select('id,_version').eq('estimate_id',est.id);
@@ -806,7 +828,14 @@ const _dbSaveEstimateInner = async (est) => {
       if(_knownArtIds.length)await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id).in('id',_knownArtIds);
     }
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
-    if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();if(est._version)est._version=est._version+1;return true}
+    if(!items?.length){
+      // Intentional removal of all items (already validated by the hydration guard above). Since we no longer
+      // delete upfront, remove the old rows here.
+      if(oldItemIds.length){
+        await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',oldItemIds);
+        await supabase.from('estimate_items').delete().in('id',oldItemIds);
+      }
+      _dbSaveFailedIds.delete(est.id);_persistFailedIds();if(est._version)est._version=est._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
     const allItemRows=items.map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}});
     let{data:insertedItems,error:itemErr}=await supabase.from('estimate_items').insert(allItemRows).select('id');
@@ -852,6 +881,23 @@ const _dbSaveEstimateInner = async (est) => {
             decoFailed=true;_failMsg=_failMsg||('estimate_item_decorations: only '+(_verifyCount||0)+' of '+allDecoRows.length+' rows persisted');
             console.error('[DB] SAFETY: estimate deco insert verification failed — expected',allDecoRows.length,'got',_verifyCount);
           }
+        }
+      }
+    }
+    // Commit/rollback the swap: new rows were inserted alongside the old ones (we no longer delete upfront).
+    if(insertedItems?.length){
+      if(!decoFailed){
+        // New items + decorations verified — now safe to remove the old rows (delete by id so the new rows survive).
+        if(oldItemIds.length){
+          await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',oldItemIds);
+          await supabase.from('estimate_items').delete().in('id',oldItemIds);
+        }
+      }else{
+        // New rows did not fully persist — roll them back so the old data stays canonical and the retry starts clean.
+        const _newIds=insertedItems.map(i=>i.id).filter(Boolean);
+        if(_newIds.length){
+          await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',_newIds);
+          await supabase.from('estimate_items').delete().in('id',_newIds);
         }
       }
     }
@@ -1042,12 +1088,10 @@ const _dbSaveSOInner = async (so) => {
         }
       }
     }
-    if(oldItemIds.length){
-      await supabase.from('so_item_decorations').delete().in('so_item_id',oldItemIds);
-      await supabase.from('so_item_pick_lines').delete().in('so_item_id',oldItemIds);
-      await supabase.from('so_item_po_lines').delete().in('so_item_id',oldItemIds);
-    }
-    await supabase.from('so_items').delete().eq('so_id',so.id);
+    // DATA-LOSS FIX: do NOT delete old item rows (or their decorations/picks/POs) here. We insert the new rows
+    // first and only remove the old ones once the insert is verified (see "Commit/rollback the swap" below).
+    // so_items has no unique (so_id,item_index) constraint, so new+old rows can briefly coexist. This closes the
+    // window where a committed delete followed by a timed-out insert left the order permanently empty.
     // Sync jobs: upsert current jobs, delete removed ones (avoids DELETE+INSERT race condition)
     if(jobs?.length){
       // Deduplicate jobs by id to prevent "ON CONFLICT DO UPDATE cannot affect row a second time" error
@@ -1113,7 +1157,17 @@ const _dbSaveSOInner = async (so) => {
     }
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+fdErr.message)}}
-    if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}_dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
+    if(!items?.length){
+      if(saveFailed){_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
+      // Intentional removal of all items (validated by the safety guards above). Since we no longer delete
+      // upfront, remove the old item rows and their children here.
+      if(oldItemIds.length){
+        await supabase.from('so_item_decorations').delete().in('so_item_id',oldItemIds);
+        await supabase.from('so_item_pick_lines').delete().in('so_item_id',oldItemIds);
+        await supabase.from('so_item_po_lines').delete().in('so_item_id',oldItemIds);
+        await supabase.from('so_items').delete().in('id',oldItemIds);
+      }
+      _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
     const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}});
     let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id');
@@ -1200,6 +1254,27 @@ const _dbSaveSOInner = async (so) => {
             console.error('[DB] SAFETY: SO PO-line insert verification failed — expected',allPoRows.length,'got',_verifyPoCount);
             if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPoRows.length,got:_verifyPoCount||0});
           }
+        }
+      }
+    }
+    // Commit/rollback the swap: new rows were inserted alongside the old ones (we no longer delete upfront).
+    if(insertedItems?.length){
+      if(!saveFailed){
+        // New items + children verified — now safe to remove the old rows (delete by id so the new rows survive).
+        if(oldItemIds.length){
+          await supabase.from('so_item_decorations').delete().in('so_item_id',oldItemIds);
+          await supabase.from('so_item_pick_lines').delete().in('so_item_id',oldItemIds);
+          await supabase.from('so_item_po_lines').delete().in('so_item_id',oldItemIds);
+          await supabase.from('so_items').delete().in('id',oldItemIds);
+        }
+      }else{
+        // New rows did not fully persist — roll them back so the old data stays canonical and the retry starts clean.
+        const _newIds=insertedItems.map(i=>i.id).filter(Boolean);
+        if(_newIds.length){
+          await supabase.from('so_item_decorations').delete().in('so_item_id',_newIds);
+          await supabase.from('so_item_pick_lines').delete().in('so_item_id',_newIds);
+          await supabase.from('so_item_po_lines').delete().in('so_item_id',_newIds);
+          await supabase.from('so_items').delete().in('id',_newIds);
         }
       }
     }
@@ -2064,7 +2139,7 @@ const _decoVendorPrice=(pricingList,vendorId,decoType,params={})=>{
 };
 // _v bumps when default values change so cached localStorage from older versions is ignored.
 let SP={_v:2,bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},{min:48,max:71},{min:72,max:107},{min:108,max:143},{min:144,max:215},{min:216,max:499},{min:500,max:99999}],pr:{0:[50,60,70,null,null],1:[3.33,4.33,5.33,6,null],2:[2.33,3,4,4.67,5.33],3:[2.13,2.83,3.17,4,5],4:[1.97,2.57,2.83,3.33,4],5:[1.83,2.33,2.63,3,3.5],6:[1.67,2.13,2.47,2.67,3.17],7:[1.5,2,2.33,2.5,2.83],8:[1.4,1.9,2.07,2.2,2.67],9:[1.27,1.83,1.93,2.07,2.5]},mk:1.5,ub:0.15};
-let EM={_v:2,sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[8,8.5,8,7.5],[9,8.5,8,8],[10,9.5,9,9],[12,12.5,12,10]],mk:1.6};
+let EM={_v:3,sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[4.8,5.1,4.8,4.5],[5.4,5.1,4.8,4.8],[6,5.7,5.4,5.4],[7.2,7.5,7.2,6]],mk:1.6};
 let NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};let DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
 // Load settings overrides from localStorage. SP/EM honored only when _v matches current schema.
 try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP&&_s.SP._v===SP._v)SP=_s.SP;if(_s.EM&&_s.EM._v===EM._v)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.CATEGORIES)CATEGORIES=_s.CATEGORIES;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
@@ -2650,7 +2725,7 @@ export default function App(){
       try{
         let _loadTimerId;
         const _loadTimeout=new Promise(resolve=>{_loadTimerId=setTimeout(()=>{console.error('[DB] Overall load timed out after 45s');resolve(null)},45000)});
-        const d=await Promise.race([_dbLoad().then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        const d=await Promise.race([_dbLoad({histInvoices:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
         if(cancelled)return;
         if(!d){
           // Supabase connected but query failed — do NOT allow writes that could overwrite real data
@@ -2667,7 +2742,7 @@ export default function App(){
           if(_dbSaveFailedIds.size){
             setCust(prev=>d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(prev.find(p=>p.id===c.id)||c):c));
           }else{setCust(d.customers)}
-          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,(dupeIds,primaries)=>{dupeIds.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(r=>{if(r?.error)console.warn('[DB] dupe delete failed:',id,r.error.message);else console.log('[DB] Deleted duplicate product:',id)}).catch(e=>console.warn('[DB] dupe delete error:',id,e))}catch(e){console.warn('[DB] Failed to delete dupe:',id,e)}});dupeIds.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}});primaries.forEach(p=>_dbSaveProduct(p))})});
+          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,_cleanupDuplicateProducts)});
           if(_dbSaveFailedIds.size){
             setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));
             setSOs(prev=>d.sales_orders.map(s=>{if(_dbSaveFailedIds.has(s.id))return prev.find(p=>p.id===s.id)||s;const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));
@@ -2730,7 +2805,7 @@ export default function App(){
             // Another browser is actively seeding (lock <30s old) — wait and reload
             console.log('[DB] Another browser is seeding — waiting to reload');
             await new Promise(r=>setTimeout(r,5000));
-            const d2=await _dbLoad();
+            const d2=await _dbLoad({histInvoices:true});
             if(d2?.hasData){
               _dbSnap.current={ests:d2.estimates,sos:d2.sales_orders,invs:d2.invoices,msgs:d2.messages,cust:d2.customers,prod:d2.products,vend:d2.vendors,team:d2.team,omg:d2.omg_stores,issues:d2.issues,assignedTodos:d2.assignedTodos||[]};
               setREPS(d2.team.length?d2.team:DEFAULT_REPS);setCust(d2.customers);
@@ -2815,7 +2890,7 @@ export default function App(){
         setInvs(invMerge.apply);
         if(d.messages.length)setMsgs(msgMerge.apply);
         setCust(custMerge.apply);
-        if(d.products.length)setProd(prev=>{const base=prodMerge.apply(prev);if(_jsonEq(base,prev))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,(dupeIds,primaries)=>{dupeIds.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(r=>{if(r?.error)console.warn('[DB] dupe delete failed:',id,r.error.message);else console.log('[DB] Deleted duplicate product:',id)}).catch(e=>console.warn('[DB] dupe delete error:',id,e))}catch(e){}});dupeIds.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}});primaries.forEach(p=>_dbSaveProduct(p))})});
+        if(d.products.length)setProd(prev=>{const base=prodMerge.apply(prev);if(_jsonEq(base,prev))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,_cleanupDuplicateProducts)});
         if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
         if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
         setIssues(prev=>{const v=d.issues||[];return _jsonEq(prev,v)?prev:v});
@@ -2940,7 +3015,7 @@ export default function App(){
         setCust(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
-        if(d.products.length)setProd(prev=>{const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;if(!changed(prev,base))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,(dupeIds,primaries)=>{dupeIds.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(r=>{if(r?.error)console.warn('[DB] dupe delete failed:',id,r.error.message);else console.log('[DB] Deleted duplicate product:',id)}).catch(e=>console.warn('[DB] dupe delete error:',id,e))}catch(e){}});dupeIds.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}});primaries.forEach(p=>_dbSaveProduct(p))})});
+        if(d.products.length)setProd(prev=>{const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;if(!changed(prev,base))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,_cleanupDuplicateProducts)});
         // Refresh app_state keys (batch POs, inventory POs, etc.)
         const as=d.appState||{};
         if(as.inv_pos)setInvPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_pos)?as.inv_pos:prev);
@@ -2973,10 +3048,16 @@ export default function App(){
 
 
   // ─── Brevo email open tracking: poll for opens on recently sent documents ───
+  // Read current docs through refs so the poll interval is created ONCE (empty deps).
+  // Previously this depended on [ests,sos,invs], so every save re-fired an immediate
+  // burst of up to 15 sequential Brevo calls — flooding the rate-limited events API with 429s.
+  const _brevoDocsRef=React.useRef({ests,sos,invs});
+  _brevoDocsRef.current={ests,sos,invs};
   React.useEffect(()=>{
     if(!_brevoKey)return;
     const checkOpens=async()=>{
       if(!_initialLoadDone.current)return;
+      const{ests,sos,invs}=_brevoDocsRef.current;
       // Check estimates with pending email_status='sent' and a messageId
       const pendingEsts=ests.filter(e=>e.email_status==='sent'&&(e.sent_history||[]).some(h=>h.messageId));
       for(const est of pendingEsts.slice(0,5)){
@@ -3005,7 +3086,7 @@ export default function App(){
     const timer=setInterval(checkOpens,60000);// check every 60s
     checkOpens();// initial check
     return()=>clearInterval(timer);
-  },[ests,sos,invs]); // eslint-disable-line react-hooks/exhaustive-deps
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
@@ -3144,6 +3225,7 @@ export default function App(){
       const lostText=(prevCount!=null&&newCount!=null)?(prevCount-newCount)+' of '+prevCount+' item(s)':(prevCount!=null?prevCount+' item(s)':'item(s)');
       const detail=(kind==='blocked'?'Save blocked: ':'Items removed: ')+lostText+(reason?' — '+reason:'');
       logChange(kind==='blocked'?'save_blocked':'data_loss','SO',soId,detail);
+      if(kind==='blocked')return; // blocked saves are logged but not emailed — no data is lost, so they're informational only
       const dedupeKey=kind+':'+soId;const last=_alertDedupeRef.current[dedupeKey]||0;const now=Date.now();
       if(now-last<5*60*1000)return; // already emailed within 5 min
       _alertDedupeRef.current[dedupeKey]=now;
@@ -3504,22 +3586,22 @@ export default function App(){
       // "Items need ordering" tasks — auto-complete when SO is no longer need_order
       if(t.so_id&&t.title&&/items need ordering/i.test(t.title)){
         const so=sos.find(s=>s.id===t.so_id);
-        if(so&&calcSOStatus(so)!=='need_order'){changed=true;return{...t,status:'completed',completed_at:now,completed_by:'system',completion_note:'Auto-completed: items have been ordered',updated_at:now}}
+        if(so&&calcSOStatus(so)!=='need_order'){changed=true;return{...t,status:'completed',completed_at:now,completed_by:null,completion_note:'Auto-completed: items have been ordered',updated_at:now}}
       }
       // "Deposit required" tasks — auto-complete when estimate is converted to SO
       if(t.title&&/deposit required/i.test(t.title)){
         const estId=t.title.match(/(EST-\d+|E-\d+)/i)?.[1];
-        if(estId){const est=ests.find(e=>e.id===estId);if(est&&est.status==='converted'){changed=true;return{...t,status:'completed',completed_at:now,completed_by:'system',completion_note:'Auto-completed: estimate converted to SO',updated_at:now}}}
+        if(estId){const est=ests.find(e=>e.id===estId);if(est&&est.status==='converted'){changed=true;return{...t,status:'completed',completed_at:now,completed_by:null,completion_note:'Auto-completed: estimate converted to SO',updated_at:now}}}
       }
       // "Coach approved estimate" tasks — auto-complete when estimate is converted
       if(t.title&&/coach approved estimate/i.test(t.title)){
         const estId=t.title.match(/(EST-\d+|E-\d+)/i)?.[1];
-        if(estId){const est=ests.find(e=>e.id===estId);if(est&&est.status==='converted'){changed=true;return{...t,status:'completed',completed_at:now,completed_by:'system',completion_note:'Auto-completed: estimate converted to SO',updated_at:now}}}
+        if(estId){const est=ests.find(e=>e.id===estId);if(est&&est.status==='converted'){changed=true;return{...t,status:'completed',completed_at:now,completed_by:null,completion_note:'Auto-completed: estimate converted to SO',updated_at:now}}}
       }
       // "Confirm booking order" tasks — auto-complete when booking is confirmed
       if(t.so_id&&t.title&&/confirm booking/i.test(t.title)){
         const so=sos.find(s=>s.id===t.so_id);
-        if(so&&so.booking_confirmed){changed=true;return{...t,status:'completed',completed_at:now,completed_by:'system',completion_note:'Auto-completed: booking confirmed',updated_at:now}}
+        if(so&&so.booking_confirmed){changed=true;return{...t,status:'completed',completed_at:now,completed_by:null,completion_note:'Auto-completed: booking confirmed',updated_at:now}}
       }
       return t;
     }));
@@ -3800,7 +3882,7 @@ export default function App(){
   // Keep selC/selV/selP in sync with their source arrays after saves/reloads
   React.useEffect(()=>{if(selC){const u=cust.find(c=>c.id===selC.id);if(u&&u!==selC)setSelC(u);else if(!u)setSelC(null)}},[cust]); // eslint-disable-line
   React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u)}},[prod]); // eslint-disable-line
-  const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);const[eSOOpenPO,setESOOpenPO]=useState(null);
+  const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);const[eSOScrollJobRef,setESOScrollJobRef]=useState(null);const[eSOOpenPO,setESOOpenPO]=useState(null);
   // Sync eSO from sos when external updates occur (e.g., coach approval via portal)
   // Only sync if actual content changed (not just updated_at formatting differences from DB poll)
   const _eSOSnapRef=React.useRef(null);
@@ -4200,9 +4282,9 @@ export default function App(){
   const DEFAULT_ACCESS_BY_ROLE=useMemo(()=>({
     super_admin:Array.from(RESTRICTED_PAGES),
     admin:Array.from(RESTRICTED_PAGES),
-    rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history'],
-    csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history'],
-    accounting:['dashboard','invoices','customers','reports','qb'],
+    rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','import'],
+    csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import'],
+    accounting:['dashboard','invoices','customers','reports','qb','import'],
     warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
     prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
     prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','reports'],
@@ -4873,7 +4955,9 @@ export default function App(){
           szKeys.forEach(s=>{const v=pk[s]||0;if(v>0){pickSizes[s]=v;if(!pickSzKeys.includes(s))pickSzKeys.push(s)}});
           const pickTotal=Object.values(pickSizes).reduce((a,v)=>a+v,0);
           if(pickTotal>0){
-            pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
+            const openFrom=pk.created_at||so.created_at;
+            const openDays=openFrom?Math.max(0,Math.floor((new Date()-new Date(openFrom))/(1000*60*60*24))):null;
+            pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,openDays,
               sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
               sizes:pickSizes,pulled:{},needsPull:pickTotal,totalOrdered:pickTotal,totalPulled:0,szKeys:pickSzKeys,
               noDeco:item.no_deco||!item.decorations?.length,
@@ -5045,26 +5129,26 @@ export default function App(){
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){
-          if(!j.sent_to_coach_at){todos.push({type:'art',priority:1,msg:'🎨 Mockup ready for review: '+j.art_name,detail:tag+' · '+so.id+' · Artist uploaded proof — review & send to coach',so,jobId:j.id,repId:_repId,action:'Review Mockup',role:'sales',date:j.updated_at||so.updated_at})}
-          else{const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
-        if(j.coach_approved_at&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago')+_coachNote,so,jobId:j.id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
+          if(!j.sent_to_coach_at){todos.push({type:'art',priority:1,msg:'🎨 Mockup ready for review: '+j.art_name,detail:tag+' · '+so.id+' · Artist uploaded proof — review & send to coach',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Review Mockup',role:'sales',date:j.updated_at||so.updated_at})}
+          else{const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
+        if(j.coach_approved_at&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago')+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
         // Production-files step is rep/CSR-owned for embroidery (upload DST + PDF) and DTF (order transfer films) — not the artist.
         if(PROD_FILES_STATUSES.includes(j.art_status)){
           const _pdAf=safeArt(so).find(f=>f.id===j.art_file_id);const _pdDeco=_pdAf?.deco_type||j.deco_type;
-          if(_pdDeco==='embroidery')['sales','csr'].forEach(_role=>todos.push({type:'prod_files',priority:2,msg:'🧵 Upload production files: '+j.art_name,detail:tag+' · '+so.id+' · Embroidery — add DST + PDF for the printer',so,jobId:j.id,repId:_repId,action:'Upload Files',role:_role,date:j.coach_approved_at||j.updated_at||so.updated_at}));
-          else if(_pdDeco==='dtf')['sales','csr'].forEach(_role=>todos.push({type:'order_dtf',priority:2,msg:'🎞️ Order DTF films: '+j.art_name,detail:tag+' · '+so.id+' · DTF — order transfer films, then mark Films Ordered',so,jobId:j.id,repId:_repId,action:'Order Films',role:_role,date:j.coach_approved_at||j.updated_at||so.updated_at}));
+          if(_pdDeco==='embroidery')['sales','csr'].forEach(_role=>todos.push({type:'prod_files',priority:2,msg:'🧵 Upload production files: '+j.art_name,detail:tag+' · '+so.id+' · Embroidery — add DST + PDF for the printer',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Upload Files',role:_role,date:j.coach_approved_at||j.updated_at||so.updated_at}));
+          else if(_pdDeco==='dtf')['sales','csr'].forEach(_role=>todos.push({type:'order_dtf',priority:2,msg:'🎞️ Order DTF films: '+j.art_name,detail:tag+' · '+so.id+' · DTF — order transfer films, then mark Films Ordered',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Order Films',role:_role,date:j.coach_approved_at||j.updated_at||so.updated_at}));
         }
-        if(j.art_status==='art_requested'&&j.coach_rejected){const lastRej=(j.rejections||[]).slice(-1)[0];todos.push({type:'art_rejected',priority:1,msg:'❌ Coach rejected art: '+j.art_name,detail:tag+' · '+so.id+(lastRej?' · "'+lastRej.reason.slice(0,60)+(lastRej.reason.length>60?'...':'')+'"':''),so,jobId:j.id,action:'Review feedback',role:'sales',date:lastRej?.rejected_at||j.updated_at||so.updated_at})}
+        if(j.art_status==='art_requested'&&j.coach_rejected){const lastRej=(j.rejections||[]).slice(-1)[0];todos.push({type:'art_rejected',priority:1,msg:'❌ Coach rejected art: '+j.art_name,detail:tag+' · '+so.id+(lastRej?' · "'+lastRej.reason.slice(0,60)+(lastRej.reason.length>60?'...':'')+'"':''),so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review feedback',role:'sales',date:lastRej?.rejected_at||j.updated_at||so.updated_at})}
         const ready=isJobReady(j,so);const onBoard=safeJobs(so).some(ej=>ej.id===j.id);
         if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'✂️ Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split',role:'production',date:j.updated_at||so.updated_at});
         // Notify rep when all items received for a job
         if(j.item_status==='items_received'&&j.prod_status!=='completed'&&!j.split_from){
           const needsArt=j.art_status!=='art_complete';
-          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'📦 All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id+' · Art: '+(j.art_status||'needs_art').replace(/_/g,' '),so,jobId:j.id,action:'Review art',role:'sales',date:j.items_received_at||j.updated_at||so.updated_at})}
-          else{todos.push({type:'items_received',priority:3,msg:'📦 All items received: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units ready',so,jobId:j.id,action:'View',role:'sales',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at})}
+          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'📦 All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id+' · Art: '+(j.art_status||'needs_art').replace(/_/g,' '),so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:j.items_received_at||j.updated_at||so.updated_at})}
+          else{todos.push({type:'items_received',priority:3,msg:'📦 All items received: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units ready',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at})}
         }
         // Notify rep when a job is completed (decoration done)
-        if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'🏭 Job completed: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — ready to ship',so,jobId:j.id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
+        if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'🏭 Job completed: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — ready to ship',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
       });
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'📌 Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
@@ -5246,7 +5330,7 @@ export default function App(){
           {actionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'All clear!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
           (()=>{const capped=actionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
             {groups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
-            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
               <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
               {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
               {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>}
@@ -5277,7 +5361,7 @@ export default function App(){
     </div>
     {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.msg+'||'+t.detail));return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
       <div className="card-body" style={{padding:0,maxHeight:260,overflow:'auto'}}>
-        {visNotifs.map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+        {visNotifs.map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
           <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
           <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.msg+'||'+t.detail)}}>✓</button>
           <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
@@ -5335,7 +5419,7 @@ export default function App(){
           {myActionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'Nothing pending!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
           (()=>{const capped=myActionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
             {groups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
-            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
               <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId&&cu.role!=='rep'?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
               {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
               {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||cu.role==='rep')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>}
@@ -5360,7 +5444,7 @@ export default function App(){
     {(()=>{const completedTaskNotifs=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);const allNotifs=[...myNotifs.map(t=>({...t,_key:'sys-'+t.msg})),...completedTaskNotifs.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24));return{_key:'task-'+t.id,msg:'✅ Task completed: '+t.title,detail:(completedBy?.name||'Unknown')+(t.completion_note?' — '+t.completion_note:'')+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),action:'View',isTaskComplete:true,todoId:t.id}})];
     const visNotifs=allNotifs.filter(t=>!dismissedNotifs.includes(t.msg+'||'+t.detail));return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
       <div className="card-body" style={{padding:0,maxHeight:260,overflow:'auto'}}>
-        {visNotifs.map((t,i)=><div key={t._key||i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+        {visNotifs.map((t,i)=><div key={t._key||i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
           <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
           <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.msg+'||'+t.detail)}}>✓</button>
           <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
@@ -5897,7 +5981,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -7236,16 +7320,16 @@ export default function App(){
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){
-          if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
-        if(j.coach_approved_at&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
-        if(j.art_status==='art_requested'&&j.coach_rejected){todos.push({type:'art_rejected',priority:1,msg:'Coach rejected art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review feedback',role:'sales',date:j.updated_at||so.updated_at})}
+          if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
+        if(j.coach_approved_at&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
+        if(j.art_status==='art_requested'&&j.coach_rejected){todos.push({type:'art_rejected',priority:1,msg:'Coach rejected art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review feedback',role:'sales',date:j.updated_at||so.updated_at})}
         if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split',role:'production',date:j.updated_at||so.updated_at});
         if(j.item_status==='items_received'&&j.prod_status!=='completed'&&!j.split_from){
           const needsArt=j.art_status!=='art_complete';
-          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales',date:j.items_received_at||j.updated_at||so.updated_at})}
-          else{todos.push({type:'items_received',priority:3,msg:'All items received: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'View',role:'sales',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at})}
+          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:j.items_received_at||j.updated_at||so.updated_at})}
+          else{todos.push({type:'items_received',priority:3,msg:'All items received: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at})}
         }
-        if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'Job completed: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
+        if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'Job completed: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
       });
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
@@ -9164,6 +9248,7 @@ export default function App(){
                   inv,
                   customer_id:inv.customer_id||'',
                   memo:inv.memo||'',
+                  date:inv.date||'',
                   due_date:inv.due_date||'',
                   billing_name:inv.billing_name||'',
                   billing_address:inv.billing_address||'',
@@ -9184,7 +9269,14 @@ export default function App(){
                 const portalUrl=ic?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+ic.alpha_tag:'';
                 const msg='Hi '+(contact?.name||'Coach')+',\n\nPlease find the attached invoice '+inv.id+' for $'+inv.total.toFixed(2)+'. Payment is due by '+(inv.due_date||'—')+'.'+(portalUrl?'\n\nYou can also view your invoice through your portal:\n'+portalUrl:'')+'\n\nThank you,\nNSA Team';
                 const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: https://nsa-portal.netlify.app/?portal='+(ic?.alpha_tag||'');
-                setInvSendModalDirect({inv,email:contact?.email||'',customEmail:'',msg,sendTo:contact?.email||'',smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7});
+                // Build recipient list: customer's own contacts + inherited billing contacts from parent accounts
+                const ownContacts=(ic?.contacts||[]).filter(ct=>ct.email);
+                const inheritedBilling=getBillingContacts(ic,cust).filter(a=>a._inherited_from&&a.email&&!ownContacts.find(o=>o.email===a.email));
+                const sendContacts=[...ownContacts.map(ct=>({email:ct.email,name:ct.name||'',role:ct.role||'',phone:ct.phone||''})),...inheritedBilling.map(a=>({email:a.email,name:a.name||'',role:a.role||'',_inherited_from:a._inherited_from}))];
+                const billingEmails=new Set(getBillingContacts(ic,cust).map(b=>b.email));
+                const checked={};sendContacts.forEach(ct=>{checked[ct.email]=billingEmails.has(ct.email)});
+                if(Object.values(checked).every(v=>!v)&&sendContacts.length>0)checked[sendContacts[0].email]=true;
+                setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7});
               }}>Send Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
@@ -9645,10 +9737,13 @@ export default function App(){
               </div>}
             </div>
 
-            {/* Memo + Due Date + Shipping + Tax */}
-            <div style={{display:'grid',gridTemplateColumns:'1fr 140px 120px 120px',gap:10,marginBottom:14}}>
+            {/* Memo + Invoice Date + Due Date + Shipping + Tax */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 140px 140px 120px 120px',gap:10,marginBottom:14}}>
               <div><label className="form-label">Memo</label>
                 <input className="form-input" value={em.memo} onChange={e=>setInvEditModal(s=>({...s,memo:e.target.value}))} placeholder="Invoice memo"/></div>
+              <div><label className="form-label">Invoice Date</label>
+                <input className="form-input" type="date" value={(()=>{const d=em.date;if(!d)return'';const m=d.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(m){const yr=m[3].length===2?'20'+m[3]:m[3];return yr+'-'+m[1].padStart(2,'0')+'-'+m[2].padStart(2,'0')}return /^\d{4}-\d{2}-\d{2}/.test(d)?d.slice(0,10):''})()}
+                  onChange={e=>{const v=e.target.value;setInvEditModal(s=>({...s,date:v||''}))}}/></div>
               <div><label className="form-label">Due Date</label>
                 <input className="form-input" type="date" value={(()=>{const d=em.due_date;if(!d)return'';const m=d.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?'20'+m[3]+'-'+m[1]+'-'+m[2]:d})()}
                   onChange={e=>{const v=e.target.value;if(!v){setInvEditModal(s=>({...s,due_date:''}));return}const d=new Date(v+'T12:00:00');setInvEditModal(s=>({...s,due_date:d.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'})}))}}/></div>
@@ -9751,6 +9846,7 @@ export default function App(){
               const updated={...em.inv,
                 customer_id:em.customer_id,
                 memo:em.memo,
+                date:em.date,
                 due_date:em.due_date,
                 billing_name:em.billing_name||null,
                 billing_address:em.billing_address||null,
@@ -9773,18 +9869,34 @@ export default function App(){
         {/* ═══ SEND INVOICE MODAL (from detail page) ═══ */}
         {invSendModalDirect&&(()=>{
           const si=invSendModalDirect;
-          const siContacts=contacts;
-          const resolvedEmail=si.sendTo==='__custom__'?si.customEmail:si.sendTo;
+          const siRecipients=[...Object.entries(si.checked||{}).filter(([,v])=>v).map(([k])=>k),...(si.customEmails||[])];
           return<div className="modal-overlay" onClick={()=>setInvSendModalDirect(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
             <div className="modal-header"><h2>Send Invoice — {si.inv.id}</h2><button className="modal-close" onClick={()=>setInvSendModalDirect(null)}>x</button></div>
             <div className="modal-body">
               <div style={{marginBottom:12}}><label className="form-label">Send To</label>
-                <select className="form-input" value={si.sendTo} onChange={e=>{setInvSendModalDirect(s=>({...s,sendTo:e.target.value,customEmail:e.target.value==='__custom__'?s.customEmail:''}))}}>
-                  {siContacts.map(c=><option key={c.email} value={c.email}>{c.name||'Contact'} — {c.email}{c.role?' ('+c.role+')':''}</option>)}
-                  {siContacts.length===0&&<option value="" disabled>No contacts with email</option>}
-                  <option value="__custom__">Enter a different email...</option>
-                </select>
-                {si.sendTo==='__custom__'&&<input className="form-input" type="email" placeholder="Enter email address" value={si.customEmail} onChange={e=>setInvSendModalDirect(s=>({...s,customEmail:e.target.value}))} style={{marginTop:8}}/>}
+                <div style={{display:'flex',flexDirection:'column',gap:2,marginBottom:6}}>
+                  {(si.sendContacts||[]).length===0&&(si.customEmails||[]).length===0&&<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No contacts with email on file — add one below.</div>}
+                  {(si.sendContacts||[]).map(ct=>{
+                    const sel=!!si.checked[ct.email];
+                    return<label key={ct.email} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 6px',borderRadius:4,background:sel?'#eff6ff':'transparent',fontSize:12,cursor:'pointer'}}>
+                      <input type="checkbox" checked={sel} onChange={e=>setInvSendModalDirect(s=>({...s,checked:{...s.checked,[ct.email]:e.target.checked}}))} style={{accentColor:'#2563eb'}}/>
+                      <span style={{fontWeight:sel?600:400,color:sel?'#1e40af':'#1e293b'}}>{ct.name||'Contact'}</span>
+                      <span style={{color:'#64748b'}}>{ct.email}</span>
+                      {ct.role&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:(ct.role||'').toLowerCase()==='billing'?'#ede9fe':'#f1f5f9',color:(ct.role||'').toLowerCase()==='billing'?'#6d28d9':'#64748b',fontWeight:600}}>{ct.role}</span>}
+                      {ct._inherited_from&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:600}}>from {ct._inherited_from}</span>}
+                    </label>;
+                  })}
+                  {(si.customEmails||[]).map(em=><label key={em} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 6px',borderRadius:4,background:'#eff6ff',fontSize:12}}>
+                    <input type="checkbox" checked readOnly style={{accentColor:'#2563eb'}}/>
+                    <span style={{color:'#1e40af',fontWeight:600}}>{em}</span>
+                    <span style={{fontSize:9,fontStyle:'italic',color:'#94a3b8'}}>(added)</span>
+                    <button onClick={()=>setInvSendModalDirect(s=>({...s,customEmails:s.customEmails.filter(e=>e!==em)}))} style={{marginLeft:'auto',background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:14,padding:0,lineHeight:1}}>×</button>
+                  </label>)}
+                </div>
+                <div style={{display:'flex',gap:6}}>
+                  <input type="email" placeholder="+ Add another email…" value={si.customEmail||''} onChange={e=>setInvSendModalDirect(s=>({...s,customEmail:e.target.value}))} onKeyDown={e=>{if(e.key==='Enter'&&(si.customEmail||'').includes('@')){e.preventDefault();const em=si.customEmail.trim();if(em)setInvSendModalDirect(s=>({...s,customEmails:s.customEmails.includes(em)?s.customEmails:[...s.customEmails,em],customEmail:''}))}}} className="form-input" style={{fontSize:11,padding:'4px 6px',flex:1}}/>
+                  <button className="btn btn-sm btn-secondary" disabled={!(si.customEmail||'').includes('@')} onClick={()=>{const em=(si.customEmail||'').trim();if(em)setInvSendModalDirect(s=>({...s,customEmails:s.customEmails.includes(em)?s.customEmails:[...s.customEmails,em],customEmail:''}))}} style={{fontSize:10,whiteSpace:'nowrap'}}>+ Add</button>
+                </div>
               </div>
               <div style={{marginBottom:12}}><label className="form-label">Message</label>
                 <textarea className="form-input" rows={6} value={si.msg} onChange={e=>setInvSendModalDirect(s=>({...s,msg:e.target.value}))} style={{lineHeight:1.5}}/></div>
@@ -9822,9 +9934,10 @@ export default function App(){
             </div>
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={()=>setInvSendModalDirect(null)}>Cancel</button>
-              <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={!resolvedEmail} onClick={async()=>{
+              <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={siRecipients.length===0} onClick={async()=>{
                 setInvSendModalDirect(null);
-                const toEmail=resolvedEmail;
+                const toEmails=siRecipients;
+                const toEmail=toEmails[0];
                 const siInv=si.inv;const siSo=sos.find(s=>s.id===siInv.so_id);const siCust=cust.find(c=>c.id===siInv.customer_id);
                 const _$si=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
                 const siBillName=siInv.billing_name||siCust?.name||'—';
@@ -9901,17 +10014,17 @@ export default function App(){
                   +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':''),companyInfo);
                 const _invFrom=(cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email))?cu.email:'noreply@nationalsportsapparel.com';
                 const _invSubj='National Sports Invoice - '+siInv.id+(siInv.memo?' - "'+siInv.memo+'"':'');
-                const res=await sendBrevoEmail({to:[{email:toEmail,name:toEmail}],subject:_invSubj,
+                const res=await sendBrevoEmail({to:toEmails.map(em=>({email:em,name:em})),subject:_invSubj,
                   htmlContent:emailHtml,senderName:cu.name||'National Sports Apparel',senderEmail:_invFrom,replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
                   attachment:brevoAttachments.length>0?brevoAttachments:undefined});
-                if(res.ok){nf('Invoice '+siInv.id+' sent to '+toEmail)}else{nf('Failed to send: '+(res.error||'Unknown error'),'error')}
+                if(res.ok){nf('Invoice '+siInv.id+' sent to '+(toEmails.length>1?toEmails.length+' recipients':toEmail))}else{nf('Failed to send: '+(res.error||'Unknown error'),'error')}
                 // Send SMS if enabled
                 if(si.smsEnabled&&si.smsPhone&&_brevoKey){
                   const smsRes=await sendBrevoSms({to:si.smsPhone,content:(si.smsMsg||'').substring(0,160)});
                   if(smsRes.ok){nf('Text sent to '+si.smsPhone)}else{nf('SMS failed: '+(smsRes.error||'Unknown'),'error')}
                 }
                 const fuAt=si.followUpDays?new Date(Date.now()+si.followUpDays*86400000).toISOString():null;
-                const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'invoice',methods:['email',...(si.smsEnabled?['sms']:[])],to:toEmail,messageId:res.messageId||null};
+                const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'invoice',methods:['email',...(si.smsEnabled?['sms']:[])],to:toEmails.join(', '),messageId:res.messageId||null};
                 setInvs(prev=>prev.map(i=>i.id===si.inv.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString(),follow_up_at:fuAt,sent_history:[...(i.sent_history||[]),histEntry]}:i));
               }}>Send Invoice</button>
             </div>
@@ -13517,6 +13630,7 @@ export default function App(){
   _pdCtx.current={vend,cust,ests,sos,invPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES,isA};
   // Ship package modal: {grp, soMap:{soId:so}, boxes:[{items:[{sku,name,color,sizes:{}}],tracking_number:'',carrier:'',weight:5,notes:''}]}
   const[shipModal,setShipModal]=useState(null);
+  const[shipExpanded,setShipExpanded]=useState({});// key->bool; Ready-to-Ship cards start collapsed
   const[manualShipModal,setManualShipModal]=useState(null);
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
   const[decoCardFilter,setDecoCardFilter]=useState(null);// null|'ready'|'in_process'|'waiting'
@@ -14430,7 +14544,7 @@ export default function App(){
         <div className="card"><div className="card-body" style={{padding:0}}>
           <table style={{fontSize:11}}><thead><tr>
             <th style={{width:20}}></th><th>SO#</th><th>IF#</th><th>Customer</th><th>SKU</th><th>Item</th>
-            <th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Dest</th><th>Rep</th><th style={{width:60}}></th>
+            <th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Dest</th><th>Rep</th><th style={{textAlign:'center'}}>Days Open</th><th style={{width:60}}></th>
           </tr></thead><tbody>
           {fPull.map((t,ti)=>{const subs=t._subTasks||[t];const extraSkus=subs.length-1;
             return<tr key={ti} style={{cursor:'pointer',background:t.urgent?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
@@ -14452,6 +14566,7 @@ export default function App(){
             </div></td>
             <td>{(()=>{const d=t.shipDest;const labels={in_house:'🏭 In-House',ship_customer:'📦 Customer',ship_deco:'🚚 Deco'};return<span style={{fontSize:9,padding:'2px 5px',borderRadius:4,fontWeight:600,background:d==='ship_customer'?'#dbeafe':d==='ship_deco'?'#fef3c7':'#f1f5f9',color:d==='ship_customer'?'#1e40af':d==='ship_deco'?'#92400e':'#64748b'}}>{labels[d]||'🏭 In-House'}</span>})()}</td>
             <td style={{fontSize:10,color:'#94a3b8'}}>{t.rep}</td>
+            <td style={{textAlign:'center'}}>{t.openDays!=null?<span style={{fontSize:10,fontWeight:700,color:t.openDays>=14?'#dc2626':t.openDays>=7?'#d97706':'#64748b'}}>{t.openDays}d</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
             <td><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
               onClick={e=>{e.stopPropagation();setWhViewIF(t)}}>
               Pick →</button></td>
@@ -14504,9 +14619,13 @@ export default function App(){
             {Object.values(byCustomer).map((grp,gi)=>{
               // Check what's already been shipped for these SOs
               const existingShipments=Object.values(grp.soMap).reduce((a,so)=>a.concat(so._shipments||[]),[]);
+              const grpKey=grp.cName+'|'+(grp.shipMethod||'pending');
+              const expanded=!!shipExpanded[grpKey];
               return<div key={gi} className="card" style={{borderLeft:'3px solid #166534'}}>
               <div style={{padding:'10px 14px'}}>
-                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:expanded?8:0,cursor:'pointer'}}
+                  onClick={()=>setShipExpanded(p=>({...p,[grpKey]:!p[grpKey]}))}>
+                  <span style={{fontSize:11,color:'#64748b',width:12,display:'inline-block'}}>{expanded?'▾':'▸'}</span>
                   <span style={{fontSize:14,fontWeight:800}}>{grp.cName}</span>
                   <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,
                     background:grp.shipMethod==='ship_customer'?'#dbeafe':grp.shipMethod==='rep_delivery'?'#dcfce7':grp.shipMethod==='customer_pickup'?'#fef3c7':'#fef2f2',
@@ -14517,6 +14636,7 @@ export default function App(){
                   <span style={{marginLeft:'auto',fontSize:12,fontWeight:800,color:'#166534'}}>{grp.totalUnits} units</span>
                   <span style={{fontSize:10,color:'#64748b'}}>{grp.items.length} item{grp.items.length!==1?'s':''}</span>
                 </div>
+                {expanded&&<>
                 {/* Detailed item list per SO */}
                 {[...grp.soIds].map(soId=>{const so=grp.soMap[soId];if(!so)return null;
                   return<div key={soId} style={{marginBottom:6}}>
@@ -14639,6 +14759,7 @@ export default function App(){
                       nf('📦 Packing list opened for '+grp.cName);
                     }}>🖨️ Pack Slip</button>
                 </div>
+                </>}
               </div>
             </div>})}
           </div>})()}
@@ -16075,7 +16196,7 @@ export default function App(){
     const _isArtistUser=cu?.role==='artist'||cu?.role==='art';
     const filtered=allArtJobs.filter(j=>{
       if(_isArtistUser&&j.assigned_artist!==cu.id)return false;
-      if(artDashView==='artist'&&artFilter!=='all'&&j.assigned_artist!==artFilter)return false;
+      if(artDashView==='artist'&&artFilter!=='all'&&(j.assigned_artist||'')!==artFilter)return false;
       if(artDashView==='rep'&&artFilter!=='all'&&j.repId!==artFilter)return false;
       if(artSearch){const s=artSearch.toLowerCase();
         if(!(j.customer||'').toLowerCase().includes(s)&&!(j.art_name||'').toLowerCase().includes(s)&&
@@ -16557,11 +16678,11 @@ export default function App(){
         const _mockKey=(sku,color)=>sku+'|'+(color||'');
         // Read with fallback to the legacy plain-SKU key so existing data still renders.
         const _getMocks=(artF,sku,color)=>{const m=artF?.item_mockups||{};const v=m[_mockKey(sku,color)];return v&&v.length>0?v:(m[sku]||[]);};
-        const handleMockupUploadForItem=async(files,sku,color)=>{
+        const handleMockupUploadForItem=async(files,sku,color,targetArtId)=>{
           if(!files||files.length===0)return;
           setArtJobDetailUploading(true);
           try{
-            const artId=resolveItemArtId(sku);
+            const artId=targetArtId||resolveItemArtId(sku);
             const mk=_mockKey(sku,color);
             const uploaded=[];
             for(const f of files){
@@ -16689,15 +16810,11 @@ export default function App(){
                   const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                   const repFallbackColors=colorList.length>0?colorList:(af?.color_ways||[]).length>0?(af.color_ways[0].inks||[]).filter(c=>c&&c.trim()):[];
                   const effectiveArtDecos=artDecos.length>0?artDecos:repPosList.length>0?repPosList.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:'',cwLabel:''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''}]:[];
-                  // Per-item mockup for this item — look up in the item's actual art file (not just the job's primary art)
-                  const itemArtId=resolveItemArtId(gi.sku);
-                  const itemArtFile=itemArtId?safeArt(so).find(a=>a.id===itemArtId):af;
-                  const repItemMocks=_getMocks(itemArtFile,gi.sku,gi.color);
-                  const repPrimary=repItemMocks[0]||null;
-                  const repExtraMocks=repItemMocks.slice(1);
                   // Production files for this item's art
                   const repItemPFs=artDecos.filter(d=>d.artFile).flatMap(d=>(d.artFile?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f)})));
-                  const _openFilePicker=()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>handleMockupUploadForItem(Array.from(inp.files),gi.sku,gi.color);inp.click()};
+                  // Unique arts on this item — one labeled mockup drop zone per art (side by side).
+                  const _repItemArts=[...new Map(artDecos.filter(d=>d.artFile&&d.artFile.id).map(d=>[d.artFile.id,d.artFile])).values()];
+                  const _repArts=_repItemArts.length>0?_repItemArts:(af?[af]:[]);
                   return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?16:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'white'}}>
                     {/* Item header */}
                     <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
@@ -16719,37 +16836,40 @@ export default function App(){
                         <div style={{fontSize:9,color:'#64748b',fontWeight:600,textTransform:'uppercase'}}>units</div>
                       </div>
                     </div>
-                    {/* Per-item mockup — always rendered so each item has its own upload zone */}
+                    {/* Per-item mockup — one labeled drop zone per art on this item (side by side) */}
                     <div style={{padding:12,borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
                       <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',marginBottom:6}}>🖼️ Mockup</div>
-                      {repPrimary?(()=>{const url=typeof repPrimary==='string'?repPrimary:(repPrimary?.url||'');const name=fileDisplayName(repPrimary);return<div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
-                        <div style={{flex:1,borderRadius:8,border:'2px solid #7c3aed',overflow:'hidden',background:'white',maxWidth:480}}>
-                          {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:300,objectFit:'contain',display:'block',cursor:'pointer',background:'white'}} onClick={()=>openFile(url)}/>
-                          :_isPdfUrl(url)?<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}><span style={{fontSize:32}}>PDF</span><div style={{fontSize:11,color:'#1e40af',marginTop:4}}>{name}</div></div>
-                          :<div style={{padding:16,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}><span style={{fontSize:20}}>📄</span><div style={{fontSize:11,color:'#1e40af',marginTop:2}}>{name}</div></div>}
-                          <div style={{padding:'4px 10px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:6}}>
-                            <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}{repExtraMocks.length>0?' (+'+repExtraMocks.length+' more)':''}</span>
-                            <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
-                            <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:14,padding:'0 4px',lineHeight:1,fontWeight:700}} onClick={()=>{if(window.confirm('Remove this mockup for '+gi.sku+'?'))handleMockupDeleteForItem(url,gi.sku)}} title="Remove mockup">×</button>
+                      {_repArts.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
+                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repArts.map(a=>{
+                        const mocks=_getMocks(a,gi.sku,gi.color);const primary=mocks[0]||null;const extra=mocks.slice(1);
+                        const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
+                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)handleMockupUploadForItem(files,gi.sku,gi.color,a.id)};
+                        const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
+                        return<div key={a.id} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
+                          <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':'2px dashed #a78bfa',background:primary?'white':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:primary?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
+                            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';if(!primary)e.currentTarget.style.background='#ede9fe'}}
+                            onDragLeave={e=>{e.currentTarget.style.borderColor=primary?'#7c3aed':'#a78bfa';if(!primary)e.currentTarget.style.background='#faf5ff'}}
+                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor=primary?'#7c3aed':'#a78bfa';if(!primary)e.currentTarget.style.background='#faf5ff';doUpload(Array.from(e.dataTransfer.files))}}
+                            onClick={primary?undefined:pick}>
+                            {primary&&<div style={{position:'absolute',top:4,left:4,background:'#7c3aed',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}}>MOCKUP</div>}
+                            {artJobDetailUploading?<div style={{margin:'auto',fontSize:11,color:'#7c3aed',fontWeight:600}}>Uploading...</div>
+                             :primary?<>
+                               {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:240,objectFit:'contain',background:'white',cursor:'pointer',display:'block'}} onClick={()=>openFile(url)}/>
+                                :<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}><div style={{fontSize:30}}>{_isPdfUrl(url)?'PDF':'📄'}</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{name}</div></div>}
+                               <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4}}>
+                                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}{extra.length>0?' (+'+extra.length+')':''}</span>
+                                 <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
+                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} onClick={()=>{if(window.confirm('Remove this mockup for '+gi.sku+'?'))handleMockupDeleteForItem(url,gi.sku)}} title="Remove">×</button>
+                               </div>
+                               <div style={{padding:'4px 8px',borderTop:'1px solid #f1f5f9',textAlign:'center',fontSize:10,color:'#7c3aed',fontWeight:600,cursor:'pointer'}} onClick={pick}>+ Add / replace</div>
+                             </>
+                             :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div></div>}
                           </div>
-                        </div>
-                        <div style={{width:120,padding:8,textAlign:'center',borderRadius:6,border:'1px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer',fontSize:10,alignSelf:'stretch',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center'}}
-                          onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed'}}
-                          onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa'}}
-                          onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';if(!artJobDetailUploading)handleMockupUploadForItem(Array.from(e.dataTransfer.files),gi.sku,gi.color)}}
-                          onClick={()=>{if(!artJobDetailUploading)_openFilePicker()}}>
-                          {artJobDetailUploading?<div style={{color:'#7c3aed',fontWeight:600}}>Uploading...</div>
-                          :<><div style={{fontSize:18,marginBottom:2}}>📎</div><div style={{color:'#7c3aed',fontWeight:600}}>+ Add More</div></>}
-                        </div>
-                      </div>;})()
-                      :<div style={{padding:16,textAlign:'center',borderRadius:8,border:'2px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer'}}
-                        onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#ede9fe'}}
-                        onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff'}}
-                        onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff';if(!artJobDetailUploading)handleMockupUploadForItem(Array.from(e.dataTransfer.files),gi.sku,gi.color)}}
-                        onClick={()=>{if(!artJobDetailUploading)_openFilePicker()}}>
-                        {artJobDetailUploading?<div style={{fontSize:11,color:'#7c3aed',fontWeight:600}}>Uploading...</div>
-                        :<><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup for {gi.sku} here or click to upload</div></>}
-                      </div>}
+                          <div style={{marginTop:6,textAlign:'center'}}>
+                            <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{a.name||'Unnamed art'}</div>
+                            <div style={{fontSize:9,color:'#64748b'}}>{(a.deco_type||'').replace(/_/g,' ')}{a.art_size?' · '+a.art_size:''}</div>
+                          </div>
+                        </div>;})}</div>}
                     </div>
                     {/* Decoration spec */}
                     {effectiveArtDecos.length>0&&<div style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:'#f8fafc'}}>
@@ -17155,8 +17275,10 @@ export default function App(){
 
         // Kick off per-item mockup upload: auto-route to the art used by the SKU's decorations.
         // If the SKU uses multiple arts (multi-art decoration), open a picker so the artist tags which art the mockup shows.
-        const startMockupUpload=(files,sku,color)=>{
+        const startMockupUpload=(files,sku,color,targetArtId)=>{
           if(!files||files.length===0)return;
+          // When the drop happened on an art-specific zone we already know the target art — skip the picker.
+          if(targetArtId){handleItemMockupUpload(files,sku,color,targetArtId);return;}
           const skuItem=(j.items||[]).find(gi=>gi.sku===sku);
           const itIdx=skuItem?.item_idx;
           const decos=itIdx!=null?safeDecos(safeItems(so)[itIdx]||{}):[];
@@ -17240,8 +17362,6 @@ export default function App(){
               {/* Per-item grouped cards */}
               {itemDetails.map((gi,gii)=>{
                 const itemMocks=_getMocks(af,gi.sku,gi.color);
-                const primaryUrl=itemMocks[0]||null;
-                const extraMocks=itemMocks.slice(1);
                 // Per-item decoration data
                 const _gk=gi.sku+'|'+gi.color;
                 const _decos=_perItemDecos[_gk]||[];
@@ -17282,52 +17402,44 @@ export default function App(){
                       <div style={{fontSize:9,color:'#64748b',fontWeight:600,textTransform:'uppercase'}}>units</div>
                     </div>
                   </div>
-                  {/* Mockup display + upload zone */}
+                  {/* Mockup display + upload zone — one labeled drop zone per art on this item (side by side) */}
                   <div style={{padding:10}}>
-                    {primaryUrl?(()=>{const url=typeof primaryUrl==='string'?primaryUrl:(primaryUrl?.url||'');const name=fileDisplayName(primaryUrl);
-                      return<div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
-                        <div style={{flex:1,borderRadius:8,border:'2px solid #7c3aed',overflow:'hidden',background:'white',position:'relative'}}>
-                          <div style={{position:'absolute',top:4,left:4,background:'#7c3aed',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}}>MOCKUP</div>
-                          {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:340,objectFit:'contain',display:'block',cursor:'pointer',background:'white'}} onClick={()=>openFile(url)}/>
-                          :_isPdfUrl(url)?<div style={{position:'relative',cursor:'pointer'}} onClick={()=>openFile(url)}>
-                            {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:340,objectFit:'contain',display:'block',background:'white'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
-                            <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:24,gap:4}}>
-                              <span style={{fontSize:32}}>PDF</span><span style={{fontSize:11,color:'#1e40af'}}>{name}</span></div></div>
-                          :<div style={{display:'flex',alignItems:'center',gap:6,padding:'14px 16px',cursor:'pointer'}} onClick={()=>openFile(url)}>
-                            <span style={{fontSize:20}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                          <div style={{padding:'4px 8px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4}}>
-                            <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{name}</span>
-                            <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
-                            <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1}} onClick={()=>{if(window.confirm('Remove this mockup?'))handleItemMockupDelete(url,gi.sku,gi.color)}} title="Remove">×</button>
+                    {(()=>{
+                      const _itemArts=[...new Map(_artDecos.filter(d=>d.artFile&&d.artFile.id).map(d=>[d.artFile.id,d.artFile])).values()];
+                      const _arts=_itemArts.length>0?_itemArts:(af?[af]:[]);
+                      if(_arts.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
+                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_arts.map(a=>{
+                        const mocks=_getMocks(a,gi.sku,gi.color);const primary=mocks[0]||null;const extra=mocks.slice(1);
+                        const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
+                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)startMockupUpload(files,gi.sku,gi.color,a.id)};
+                        const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
+                        return<div key={a.id} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
+                          <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':'2px dashed #a78bfa',background:primary?'white':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:primary?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
+                            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';if(!primary)e.currentTarget.style.background='#ede9fe'}}
+                            onDragLeave={e=>{e.currentTarget.style.borderColor=primary?'#7c3aed':'#a78bfa';if(!primary)e.currentTarget.style.background='#faf5ff'}}
+                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor=primary?'#7c3aed':'#a78bfa';if(!primary)e.currentTarget.style.background='#faf5ff';doUpload(Array.from(e.dataTransfer.files))}}
+                            onClick={primary?undefined:pick}>
+                            {primary&&<div style={{position:'absolute',top:4,left:4,background:'#7c3aed',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}}>MOCKUP</div>}
+                            {artJobDetailUploading?<div style={{margin:'auto',fontSize:11,color:'#7c3aed',fontWeight:600}}>Uploading...</div>
+                             :primary?<>
+                               {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:280,objectFit:'contain',background:'white',cursor:'pointer',display:'block'}} onClick={()=>openFile(url)}/>
+                                :_isPdfUrl(url)?<div style={{cursor:'pointer'}} onClick={()=>openFile(url)}>{_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:280,objectFit:'contain',background:'white',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='block'}}/>:null}<div style={{display:_cloudinaryPdfThumb(url)?'none':'block',padding:20,textAlign:'center'}}><div style={{fontSize:30}}>PDF</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{name}</div></div></div>
+                                :<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}><div style={{fontSize:30}}>📄</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{name}</div></div>}
+                               <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4}}>
+                                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}{extra.length>0?' (+'+extra.length+')':''}</span>
+                                 <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
+                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} onClick={()=>{if(window.confirm('Remove this mockup?'))handleItemMockupDelete(url,gi.sku,gi.color)}} title="Remove">×</button>
+                               </div>
+                               <div style={{padding:'4px 8px',borderTop:'1px solid #f1f5f9',textAlign:'center',fontSize:10,color:'#7c3aed',fontWeight:600,cursor:'pointer'}} onClick={pick}>+ Add / replace</div>
+                             </>
+                             :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div></div>}
                           </div>
-                        </div>
-                        {/* Extra mockups + upload zone for more */}
-                        <div style={{width:130,display:'flex',flexDirection:'column',gap:6}}>
-                          {extraMocks.map((f,i)=>{const eu=typeof f==='string'?f:(f?.url||'');const en=fileDisplayName(f);
-                            return<div key={i} style={{borderRadius:6,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',position:'relative'}}>
-                              {_isImgUrl(eu)?<img src={eu} alt={en} style={{width:'100%',maxHeight:90,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(eu)}/>
-                              :<div style={{padding:8,textAlign:'center',cursor:'pointer',fontSize:10,color:'#1e40af',fontWeight:600}} onClick={()=>openFile(eu)}>{en}</div>}
-                              <div style={{padding:'2px 4px',borderTop:'1px solid #f1f5f9',display:'flex',gap:2,justifyContent:'center'}}>
-                                <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:11,padding:0}} onClick={()=>{if(window.confirm('Remove?'))handleItemMockupDelete(eu,gi.sku,gi.color)}}>×</button>
-                              </div>
-                            </div>})}
-                          <div style={{padding:8,textAlign:'center',borderRadius:6,border:'1px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer',fontSize:10}}
-                            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed'}}
-                            onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa'}}
-                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';if(!artJobDetailUploading)startMockupUpload(Array.from(e.dataTransfer.files),gi.sku,gi.color)}}
-                            onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>startMockupUpload(Array.from(inp.files),gi.sku,gi.color);inp.click()}}>
-                            <div style={{color:'#7c3aed',fontWeight:600}}>+ Add More</div>
+                          <div style={{marginTop:6,textAlign:'center'}}>
+                            <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{a.name||'Unnamed art'}</div>
+                            <div style={{fontSize:9,color:'#64748b'}}>{(a.deco_type||'').replace(/_/g,' ')}{a.art_size?' · '+a.art_size:''}</div>
                           </div>
-                        </div>
-                      </div>})()
-                    :<div style={{padding:16,textAlign:'center',borderRadius:8,border:'2px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer'}}
-                      onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#ede9fe'}}
-                      onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff'}}
-                      onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff';if(!artJobDetailUploading)startMockupUpload(Array.from(e.dataTransfer.files),gi.sku,gi.color)}}
-                      onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>startMockupUpload(Array.from(inp.files),gi.sku,gi.color);inp.click()}}>
-                      {artJobDetailUploading?<div style={{fontSize:11,color:'#7c3aed',fontWeight:600}}>Uploading...</div>
-                      :<><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup for {gi.sku} here or click to upload</div></>}
-                    </div>}
+                        </div>;})}</div>;
+                    })()}
                   </div>
                   {/* ─── Copy Mockup From Another Item ─── */}
                   {_copyFromOthers.length>0&&<div style={{padding:'6px 14px',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',background:'#fdfcff'}}><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Copy mock from:</span>{_copyFromOthers.map((oi,oii)=><button key={oii} className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#ede9fe',color:'#7c3aed',border:'1px solid #ddd6fe',borderRadius:4,fontWeight:700,cursor:'pointer'}} onClick={()=>_copyMockup(oi.sku,oi.color,gi.sku,gi.color)}>{oi.sku}{oi.color?' ('+oi.color+')':''}</button>)}</div>}
@@ -17671,7 +17783,11 @@ export default function App(){
                   </div>
                 </div>;
               })()}
-              {mockupArtPicker&&(()=>{
+            </div>
+            :null}
+            {/* Mockup art picker — must render regardless of art_status so per-item mockup
+                drops on multi-art SKUs (which call setMockupArtPicker) actually surface. */}
+            {mockupArtPicker&&(()=>{
                 const {files,sku,color,arts}=mockupArtPicker;
                 return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(15,23,42,0.6)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:20}} onClick={()=>!artJobDetailUploading&&setMockupArtPicker(null)}>
                   <div style={{background:'white',borderRadius:12,padding:20,maxWidth:480,width:'100%'}} onClick={e=>e.stopPropagation()}>
@@ -17690,8 +17806,6 @@ export default function App(){
                   </div>
                 </div>;
               })()}
-            </div>
-            :null}
 
             {/* ─── Messages between Artist and Rep ─── */}
             <div style={{padding:'16px 20px'}}>
@@ -19801,10 +19915,112 @@ export default function App(){
       }
     };
 
-    // Push bills to Portal (apply to SOs)
-    const pushBillsToPortal=()=>{
+    // True if a bill with this doc number was already applied to the Portal — checks the
+    // applied state on POs/batches (authoritative) plus pushed bill history as a fallback.
+    const _docAlreadyApplied=(doc)=>{
+      const d=(doc||'').trim().toLowerCase();
+      if(!d)return false;
+      if(submittedBatches.some(sb=>(sb.bill_doc_number||'').trim().toLowerCase()===d))return true;
+      const inDetails=arr=>(arr||[]).some(dt=>(dt.doc||'').trim().toLowerCase()===d);
+      for(const so of sos){
+        for(const it of (so.items||[]))for(const po of (it.po_lines||[]))if(inDetails(po._bill_details))return true;
+        for(const dp of (so.deco_pos||[]))if(inDetails(dp._bill_details))return true;
+      }
+      if(savedBills.some(sb=>sb.portalStatus==='success'&&(sb.parsed?.doc_number||'').trim().toLowerCase()===d))return true;
+      return false;
+    };
+
+    // Returns over-billing problems: cases where billed qty (already applied + this bill)
+    // would exceed the ordered qty on a PO line/batch. Mirrors the apply paths so the
+    // numbers match what would actually be written.
+    const _billOverBillingErrors=(p)=>{
+      const errs=[];
+      const maps=(p._lineMappings||[]).filter(m=>safeNum(m.allocated_qty)>0);
+      if(maps.length){
+        const groups={};
+        maps.forEach(m=>{
+          const size=m.size;const add=safeNum(m.allocated_qty);
+          if(m.target_kind==='batch'){
+            const sb=submittedBatches.find(b=>(b.id||b.po_number)===m.target_id);
+            if(!sb)return;
+            let ordered=0;(sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[size])}));
+            const key='b|'+(sb.id||sb.po_number)+'|'+size;
+            (groups[key]||(groups[key]={ordered,billed:safeNum((sb.billed||{})[size]),add:0,label:(sb.po_number||'Batch')+' size '+size})).add+=add;
+          }else{
+            const so=sos.find(s=>s.id===m.so_id);if(!so)return;
+            let poRef=null,item=null;
+            for(const it of (so.items||[])){
+              if(m.item_id?it.id!==m.item_id:(it.sku||'').toUpperCase()!==(m.sku||'').toUpperCase())continue;
+              const po=(it.po_lines||[]).find(pl=>m.po_id?(pl.po_id||'')===m.po_id:true);
+              if(po){poRef=po;item=it;break}
+            }
+            if(!poRef)return;
+            const key='s|'+so.id+'|'+(item.id||item.sku)+'|'+(poRef.po_id||'')+'|'+size;
+            (groups[key]||(groups[key]={ordered:safeNum(poRef[size]),billed:safeNum((poRef.billed||{})[size]),add:0,label:(m.sku||item.sku)+' '+size+' on '+(poRef.po_id||so.id)})).add+=add;
+          }
+        });
+        Object.values(groups).forEach(g=>{if(g.billed+g.add>g.ordered)errs.push(g.label+': billing '+(g.billed+g.add)+' exceeds '+g.ordered+' ordered')});
+        return errs;
+      }
+      // Auto-matched bills (no explicit mappings) apply their line items by size.
+      const addBySize=()=>{const o={};(p.items||[]).forEach(it=>{if(it.size&&it.qty)o[it.size]=(o[it.size]||0)+safeNum(it.qty)});return o};
+      if(p.matchedPOSource==='batch'&&p.matchedPO){
+        const sb=submittedBatches.find(b=>(b.id||b.po_number)===(p.matchedPO.id||p.matchedPO.po_number))||p.matchedPO;
+        Object.entries(addBySize()).forEach(([size,add])=>{
+          let ordered=0;(sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[size])}));
+          const billed=safeNum((sb.billed||{})[size]);
+          if(billed+add>ordered)errs.push((sb.po_number||'Batch')+' size '+size+': billing '+(billed+add)+' exceeds '+ordered+' ordered');
+        });
+      }else if(p.matchedPOSource==='inv_po'&&p.matchedPO){
+        const po=invPOs.find(x=>x.id===p.matchedPO.id)||p.matchedPO;
+        Object.entries(addBySize()).forEach(([size,add])=>{
+          let ordered=0;(po.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[size])});
+          const billed=safeNum((po.billed||{})[size]);
+          if(billed+add>ordered)errs.push((po.po_number||'PO')+' size '+size+': billing '+(billed+add)+' exceeds '+ordered+' ordered');
+        });
+      }else if(p.matchedPOSource==='so_po'&&p.matchedPO&&safeNum(p.freight)>0){
+        // Auto so_po only writes billed qty when freight is present (via _applyFreightToSOs),
+        // adding the full per-SKU billed qty to each matching po_line.
+        const so=sos.find(s=>s.id===(p.matchedPO.so_id||p.matchedPO.so?.id));
+        if(so){
+          const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
+          const addBySku={};(p.items||[]).forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();(addBySku[sk]=addBySku[sk]||{})[it.size]=(addBySku[sk][it.size]||0)+safeNum(it.qty)}});
+          (so.items||[]).forEach(it=>{
+            const adds=addBySku[(it.sku||'').toUpperCase()];if(!adds)return;
+            (it.po_lines||[]).forEach(po=>{
+              const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
+              if(pid!==poLc&&!pid.startsWith(poLc))return;
+              Object.entries(adds).forEach(([size,add])=>{
+                const ordered=safeNum(po[size]);const billed=safeNum((po.billed||{})[size]);
+                if(billed+add>ordered)errs.push(it.sku+' '+size+' on '+(po.po_id||so.id)+': billing '+(billed+add)+' exceeds '+ordered+' ordered');
+              });
+            });
+          });
+        }
+      }
+      return errs;
+    };
+
+    // Blocking problems for a bill about to be pushed (duplicate doc# + PO over-billing).
+    const _validateBillForPush=(p)=>{
+      const errs=[];
+      if(_docAlreadyApplied(p.doc_number))errs.push('Already pushed to the Portal (duplicate doc #'+(p.doc_number||'').trim()+')');
+      errs.push(..._billOverBillingErrors(p));
+      return errs;
+    };
+
+    // Push bills to Portal (apply to SOs). force=true skips the duplicate/over-billing gate.
+    const pushBillsToPortal=(force)=>{
       const selected=billImport.parsed.filter(_billIsReadyToPush);
       if(!selected.length){nf('No matched bills selected to push','error');return}
+      if(force!==true){
+        const problems=[];
+        selected.forEach(b=>{const errs=_validateBillForPush(b.parsed);if(errs.length)problems.push((b.parsed.doc_number?'Doc #'+b.parsed.doc_number:(b.file||'Bill'))+':\n  • '+errs.join('\n  • '))});
+        if(problems.length){
+          const ok=window.confirm('Cannot push — problem(s) found:\n\n'+problems.join('\n\n')+'\n\nPush anyway (override)?');
+          if(!ok){nf('Push cancelled — '+problems.length+' bill(s) have problems','error');return}
+        }
+      }
       let applied=0;
       selected.forEach(b=>{
         try{
@@ -19951,11 +20167,23 @@ export default function App(){
       nf(success+' bill(s) pushed to QB'+(failed?' ('+failed+' failed)':''));
     };
 
+    // Import sub-tabs visible per role. Admins see everything; reps and CSRs
+    // see only the NetSuite order import; accounting also gets supplier bills.
+    const IMPORT_TABS_BY_ROLE={
+      super_admin:['orders','customers','vendors','products','inventory','bills'],
+      admin:['orders','customers','vendors','products','inventory','bills'],
+      rep:['orders'],
+      csr:['orders'],
+      accounting:['orders','bills'],
+    };
+    const allowedImpTabs=IMPORT_TABS_BY_ROLE[cu?.role]||['orders'];
+    const visibleImpTab=allowedImpTabs.includes(impTab)?impTab:allowedImpTabs[0];
+
     return(<>
       {/* Import type tabs */}
       <div style={{display:'flex',gap:4,marginBottom:16}}>
-        {[['orders','📋 Orders / NetSuite'],['customers','👥 Customers'],['vendors','🏭 Vendors'],['products','📦 Products'],['inventory','📊 Inventory'],['bills','📄 Supplier Bills']].map(([id,label])=>
-          <button key={id} className={`btn btn-sm ${impTab===id?'btn-primary':'btn-secondary'}`}
+        {[['orders','📋 Orders / NetSuite'],['customers','👥 Customers'],['vendors','🏭 Vendors'],['products','📦 Products'],['inventory','📊 Inventory'],['bills','📄 Supplier Bills']].filter(([id])=>allowedImpTabs.includes(id)).map(([id,label])=>
+          <button key={id} className={`btn btn-sm ${visibleImpTab===id?'btn-primary':'btn-secondary'}`}
             onClick={()=>{setImpTab(id);resetBulk();if(id==='inventory')setInvUpload({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false})}}>{label}</button>)}
       </div>
 
@@ -20858,7 +21086,7 @@ export default function App(){
             <button className="btn btn-secondary" onClick={()=>setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}>← Upload More</button>
             <span style={{fontSize:14,fontWeight:700,flex:1}}>{billImport.parsed.length} Bill(s) Parsed</span>
             <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={billImport.uploading||!billImport.parsed.some(_billIsReadyToPush)}
-              onClick={pushBillsToPortal}>
+              onClick={()=>pushBillsToPortal()}>
               Push {billImport.parsed.filter(_billIsReadyToPush).length} to Portal
             </button>
             <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} disabled={billImport.uploading||!billImport.parsed.some(b=>b.selected&&!b.qbStatus)}
@@ -22925,9 +23153,9 @@ export default function App(){
     const DEFAULT_ACCESS={
       super_admin:ALL_PAGES.map(p=>p.id),
       admin:ALL_PAGES.map(p=>p.id),
-      rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history'],
-      csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history'],
-      accounting:['dashboard','invoices','customers','reports','qb'],
+      rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','import'],
+      csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import'],
+      accounting:['dashboard','invoices','customers','reports','qb','import'],
       warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
       prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
       prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','reports'],
