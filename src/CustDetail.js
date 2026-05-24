@@ -681,6 +681,27 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {custArtDetail&&(()=>{const art=custArtDetail;const allMockups=art._allMockups||[];const usedOnSOs=art._usedOnSOs||[];
     // If no precomputed data, compute it
     const mockups=allMockups.length>0?allMockups:(art.mockup_files||art.files||[]).filter(f=>f).map(f=>({file:f,url:typeof f==='string'?f:(f?.url||''),src:art._srcLabel||''}));
+    // Remove a file from this artwork everywhere it's attached (mockups/files/prod/item_mockups)
+    // across every sales order that uses this logo, then persist each changed order.
+    const urlOf=f=>typeof f==='string'?f:(f?.url||'');
+    const removeMockFromArt=(url)=>{
+      if(!url||!onSaveSO)return;
+      if(!window.confirm('Remove this file from "'+(art.name||'this artwork')+'" on all orders that use it? This cannot be undone.'))return;
+      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
+      const filt=arr=>(arr||[]).filter(f=>urlOf(f)!==url);
+      custSOs.forEach(so=>{let changed=false;
+        const updArt=(so.art_files||[]).map(a=>{
+          if((a.name||'').toLowerCase()!==nm||(a.deco_type||'')!==dt)return a;
+          const mf=filt(a.mockup_files),fl=filt(a.files),pf=filt(a.prod_files);
+          const im={...(a.item_mockups||{})};let imCh=false;Object.keys(im).forEach(k=>{const nv=filt(im[k]);if(nv.length!==(im[k]||[]).length)imCh=true;im[k]=nv});
+          if(mf.length!==(a.mockup_files||[]).length||fl.length!==(a.files||[]).length||pf.length!==(a.prod_files||[]).length||imCh){changed=true;return{...a,mockup_files:mf,files:fl,prod_files:pf,item_mockups:im}}
+          return a;
+        });
+        if(changed)onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
+      });
+      setCustArtDetail(d=>d?{...d,_allMockups:(d._allMockups||[]).filter(x=>x.url!==url),mockup_files:(d.mockup_files||[]).filter(f=>urlOf(f)!==url),files:(d.files||[]).filter(f=>urlOf(f)!==url)}:d);
+      nf&&nf('File removed from '+(art.name||'artwork'));
+    };
     return<div className="modal-overlay" onClick={()=>setCustArtDetail(null)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header"><h2>{art.name||'Untitled'}</h2><button className="modal-close" onClick={()=>setCustArtDetail(null)}>x</button></div>
       <div className="modal-body">
@@ -696,7 +717,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {mockups.length>0&&<div style={{marginBottom:16}}>
           <div style={{fontSize:12,fontWeight:700,color:'#1e40af',marginBottom:8}}>Mockup Files ({mockups.length})</div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:8}}>
-            {mockups.map((m,mi)=>{const url=m.url;return<div key={mi} style={{borderRadius:8,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>openFile(m.file||url)}>
+            {mockups.map((m,mi)=>{const url=m.url;return<div key={mi} style={{borderRadius:8,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',cursor:'pointer',position:'relative'}} onClick={()=>openFile(m.file||url)}>
+              {onSaveSO&&<button title="Remove this file from the artwork" onClick={e=>{e.stopPropagation();removeMockFromArt(url)}} style={{position:'absolute',top:4,right:4,zIndex:2,width:22,height:22,borderRadius:11,border:'none',background:'rgba(220,38,38,0.92)',color:'white',cursor:'pointer',fontSize:13,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
               {_isImgUrl(url)?<img src={url} alt="" style={{width:'100%',height:120,objectFit:'contain',display:'block',background:'#f8fafc'}}/>
               :_isPdfUrl(url)?<div style={{height:120,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}>{_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt="" style={{maxHeight:100,objectFit:'contain'}} onError={e=>{e.target.style.display='none'}}/>:<span style={{fontSize:32}}>PDF</span>}</div>
               :<div style={{height:120,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc',fontSize:28}}>📄</div>}
