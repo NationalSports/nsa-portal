@@ -2,6 +2,67 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
 import { cloudUpload } from './utils';
+import { shipStationCall } from './vendorApis';
+
+// Print an HTML doc via a popup window (packing lists / player reports).
+function printHtml(html) {
+  const w = window.open('', '_blank');
+  if (!w) { alert('Pop-up blocked — allow pop-ups to print.'); return; }
+  w.document.write(html); w.document.close(); w.focus();
+  setTimeout(() => { try { w.print(); } catch {} }, 350);
+}
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+// One packing slip / player report per order. Doubles as the pull sheet.
+function buildPackingLists(store, label, groups) {
+  const slips = groups.map(({ order, items }) => {
+    const a = order.ship_address || {};
+    const shipTo = store.delivery_mode === 'deliver_club'
+      ? 'Deliver to club'
+      : [a.name || order.buyer_name, a.street1, a.street2, [a.city, a.state, a.zip].filter(Boolean).join(', ')].filter(Boolean).map(esc).join('<br>');
+    const rows = items.filter((i) => !i.is_bundle_parent).map((i) => `<tr><td>${esc(i.sku || '')}</td><td>${esc(i.size || '')}</td><td>${esc(i.player_number || '')}</td><td>${esc(i.player_name || '')}</td><td style="text-align:center">${i.qty || 1}</td></tr>`).join('');
+    const player = [...new Set(items.map((i) => i.player_name).filter(Boolean))].join(', ') || order.buyer_name || '';
+    return `<div class="slip">
+      <div class="hd"><div><div class="t">${esc(store.name)}</div><div class="s">Packing list · ${esc(label)}</div></div>
+      <div class="pay">${order.payment_mode === 'paid' ? 'PAID' : 'TEAM TAB'}</div></div>
+      <div class="meta"><div><b>Player:</b> ${esc(player)}</div><div><b>Buyer:</b> ${esc(order.buyer_name || '')} · ${esc(order.buyer_email || '')}</div>
+      <div><b>Ship to:</b><br>${shipTo}</div></div>
+      <table><thead><tr><th>SKU</th><th>Size</th><th>#</th><th>Name</th><th>Qty</th></tr></thead><tbody>${rows}</tbody></table>
+    </div>`;
+  }).join('');
+  return `<!doctype html><html><head><title>Packing lists — ${esc(store.name)}</title><style>
+    body{font-family:Arial,sans-serif;margin:0;color:#0b1220}
+    .slip{padding:24px 28px;page-break-after:always;box-sizing:border-box}
+    .hd{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #0b1f3a;padding-bottom:8px}
+    .t{font-size:22px;font-weight:800}.s{font-size:12px;color:#64748b}
+    .pay{font-weight:800;font-size:12px;border:2px solid #0b1f3a;padding:4px 10px;border-radius:6px}
+    .meta{margin:14px 0;font-size:13px;line-height:1.7}
+    table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+    th{text-align:left;border-bottom:1px solid #cbd5e1;padding:6px;color:#64748b;font-size:11px;text-transform:uppercase}
+    td{padding:6px;border-bottom:1px solid #f1f5f9}
+    @media print{.slip{padding:18px}}
+  </style></head><body>${slips || '<div class="slip">No orders.</div>'}</body></html>`;
+}
+
+// Convert a webstore order to a ShipStation order (ship-to-home label).
+function webstoreToShipStation(order, items, store) {
+  const a = order.ship_address || {};
+  return {
+    orderNumber: 'WS-' + String(order.id).slice(0, 8), orderKey: 'ws-' + order.id,
+    orderDate: order.created_at, orderStatus: 'awaiting_shipment',
+    customerEmail: order.buyer_email || '',
+    billTo: { name: order.buyer_name || a.name || 'Customer' },
+    shipTo: { name: a.name || order.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: order.buyer_phone || '', residential: true },
+    items: items.filter((i) => !i.is_bundle_parent).map((i) => ({
+      sku: i.sku || '', name: [i.sku, i.size && ('Size ' + i.size), i.player_number && ('#' + i.player_number), i.player_name].filter(Boolean).join(' · '),
+      quantity: i.qty || 1, unitPrice: Number(i.unit_price) || 0,
+      options: [i.size && { name: 'Size', value: i.size }, i.player_number && { name: 'Number', value: String(i.player_number) }, i.player_name && { name: 'Name', value: i.player_name }].filter(Boolean),
+    })),
+    amountPaid: order.payment_mode === 'paid' ? (Number(order.total) || 0) : 0,
+    carrierCode: null, serviceCode: null, packageCode: null, confirmation: 'none',
+    advancedOptions: { source: 'NSA Webstore', customField1: store.name, customField2: order.so_id || '' },
+  };
+}
 
 // Reusable image uploader → Cloudinary, returns a secure URL via onChange.
 function ImageUpload({ value, fallback, onChange, label = 'Product image' }) {
@@ -1209,6 +1270,22 @@ function AddNumberSet({ onAdd, onClose }) {
 function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems = [], orders = [], orderItems = [], transfers = [] }) {
   const [sos, setSos] = useState(null);
   const [err, setErr] = useState('');
+  const [ssMsg, setSsMsg] = useState({}); // soId -> status message
+  const shipHome = store.delivery_mode !== 'deliver_club';
+  // Webstore orders + items belonging to one batched SO.
+  const batchGroups = (soId) => {
+    const linked = orders.filter((o) => o.so_id === soId);
+    return linked.map((o) => ({ order: o, items: orderItems.filter((i) => i.order_id === o.id) }));
+  };
+  const printPacking = (soId, soLabel) => printHtml(buildPackingLists(store, soLabel, batchGroups(soId)));
+  const sendToShipStation = async (soId) => {
+    const groups = batchGroups(soId).filter((g) => (g.order.ship_method || store.delivery_mode) !== 'deliver_club' && g.order.ship_address);
+    if (!groups.length) { setSsMsg((m) => ({ ...m, [soId]: 'No ship-to-home orders with addresses.' })); return; }
+    setSsMsg((m) => ({ ...m, [soId]: `Sending ${groups.length}…` }));
+    let ok = 0, fail = 0;
+    for (const g of groups) { try { await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(webstoreToShipStation(g.order, g.items, store)) }); ok++; } catch { fail++; } }
+    setSsMsg((m) => ({ ...m, [soId]: `Sent ${ok} to ShipStation${fail ? `, ${fail} failed` : ''}. Bulk-print labels in ShipStation.` }));
+  };
   const maps = buildTransferMaps(catalog, bundleItems);
   const transferLabel = (code) => { const t = transfers.find((x) => x.code === code); if (t) return t.label; const [d, s, c] = code.split('|'); return s ? `#${d} · ${s} · ${c}` : code; };
   // Transfers needed for one SO = usage across the webstore orders linked to it.
@@ -1278,6 +1355,11 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
               <div>
                 <div style={{ fontSize: 16, fontWeight: 800, fontFamily: 'monospace', color: '#1e40af', cursor: 'pointer' }} onClick={() => onOpenSO && onOpenSO(o.id)}>{o.id} ↗</div>
                 <div style={{ fontSize: 12, color: '#64748b' }}>{o.memo}</div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                  <button className="btn btn-sm btn-secondary" onClick={() => printPacking(o.id, o.id)}>🖨️ Packing lists</button>
+                  {shipHome && <button className="btn btn-sm btn-secondary" onClick={() => sendToShipStation(o.id)}>📦 Send home orders to ShipStation</button>}
+                </div>
+                {ssMsg[o.id] && <div style={{ fontSize: 11, color: '#1e40af', marginTop: 4 }}>{ssMsg[o.id]}</div>}
               </div>
               <div style={{ display: 'flex', gap: 14, textAlign: 'right' }}>
                 <Stat label="Ordered" value={totalOrdered} />
