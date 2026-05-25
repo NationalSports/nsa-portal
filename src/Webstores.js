@@ -50,7 +50,7 @@ function webstoreToShipStation(order, items, store) {
   return {
     orderNumber: 'WS-' + String(order.id).slice(0, 8), orderKey: 'ws-' + order.id,
     orderDate: order.created_at, orderStatus: 'awaiting_shipment',
-    customerEmail: order.buyer_email || '',
+    customerUsername: store.name, customerEmail: order.buyer_email || '',
     billTo: { name: order.buyer_name || a.name || 'Customer' },
     shipTo: { name: a.name || order.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: order.buyer_phone || '', residential: true },
     items: items.filter((i) => !i.is_bundle_parent).map((i) => ({
@@ -60,7 +60,10 @@ function webstoreToShipStation(order, items, store) {
     })),
     amountPaid: order.payment_mode === 'paid' ? (Number(order.total) || 0) : 0,
     carrierCode: null, serviceCode: null, packageCode: null, confirmation: 'none',
-    advancedOptions: { source: 'NSA Webstore', customField1: store.name, customField2: order.so_id || '' },
+    advancedOptions: {
+      source: 'NSA Webstore', customField1: store.name, customField2: order.so_id || '',
+      ...(store.shipstation_store_id ? { storeId: Number(store.shipstation_store_id) || undefined } : {}),
+    },
   };
 }
 
@@ -480,6 +483,7 @@ const BLANK = {
   open_at: '', close_at: '',
   payment_mode: 'paid', require_login: false,
   delivery_mode: 'ship_home',
+  shipstation_store_id: '', shipstation_tag_id: '',
   director_name: '', director_email: '', director_phone: '',
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
   so_creation: 'manual',
@@ -559,6 +563,11 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
           <option value="ship_home">Ship to home — collect each buyer's home address</option>
           <option value="deliver_club">Deliver to club — ships to the club's default address</option>
         </select></Row>
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Row label="ShipStation Store ID (optional)"><input className="form-input" value={f.shipstation_store_id || ''} onChange={(e) => set('shipstation_store_id', e.target.value)} placeholder="e.g. 123456" /></Row>
+          <Row label="ShipStation Tag ID (optional)"><input className="form-input" value={f.shipstation_tag_id || ''} onChange={(e) => set('shipstation_tag_id', e.target.value)} placeholder="team tag id" /></Row>
+        </div>
+        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: -4 }}>Ship-to-home orders pushed to ShipStation route into that Store and get tagged (create a tag named after the team in ShipStation, paste its id). The team name is also set as the order's customer.</div>
       </Section>
 
       <Section title="Jersey numbers">
@@ -1283,7 +1292,14 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     if (!groups.length) { setSsMsg((m) => ({ ...m, [soId]: 'No ship-to-home orders with addresses.' })); return; }
     setSsMsg((m) => ({ ...m, [soId]: `Sending ${groups.length}…` }));
     let ok = 0, fail = 0;
-    for (const g of groups) { try { await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(webstoreToShipStation(g.order, g.items, store)) }); ok++; } catch { fail++; } }
+    const tagId = Number(store.shipstation_tag_id) || null;
+    for (const g of groups) {
+      try {
+        const res = await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(webstoreToShipStation(g.order, g.items, store)) });
+        if (tagId && res && res.orderId) { try { await shipStationCall('/orders/addtag', { method: 'POST', body: JSON.stringify({ orderId: res.orderId, tagId }) }); } catch {} }
+        ok++;
+      } catch { fail++; }
+    }
     setSsMsg((m) => ({ ...m, [soId]: `Sent ${ok} to ShipStation${fail ? `, ${fail} failed` : ''}. Bulk-print labels in ShipStation.` }));
   };
   const maps = buildTransferMaps(catalog, bundleItems);
