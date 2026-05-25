@@ -15,6 +15,8 @@ const saveCart = (slug, items) => { try { localStorage.setItem(cartKey(slug), JS
 const lineUnit = (l) => (Number(l.unit_price) || 0) + (Number(l.fundraise) || 0) + (Number(l.name_extra) || 0);
 const cartCount = (items) => items.reduce((a, l) => a + (l.qty || 1), 0);
 const cartTotal = (items) => items.reduce((a, l) => a + lineUnit(l) * (l.qty || 1), 0);
+const shipFee = (store) => store && store.delivery_mode === 'ship_home' ? (Number(store.flat_shipping) || 0) : 0;
+const grandTotal = (store, items) => cartTotal(items) + shipFee(store);
 
 // ─────────────────────────────────────────────────────────────────────
 // Public club storefront — /shop/<slug>
@@ -456,8 +458,9 @@ function CartPage({ store, theme, cart, onUpdate }) {
           <div style={{ fontWeight: 800 }}>{money(lineUnit(l))}</div>
         </div>
       ))}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 20 }}>
-        <div style={{ fontSize: 20, fontWeight: 900 }}>Total: {money(cartTotal(cart))}</div>
+      {shipFee(store) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16, fontSize: 13, color: '#475569' }}><span>Shipping (flat)</span><span>{money(shipFee(store))}</span></div>}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: shipFee(store) > 0 ? 8 : 20 }}>
+        <div style={{ fontSize: 20, fontWeight: 900 }}>Total: {money(grandTotal(store, cart))}</div>
         <button onClick={() => navTo('/shop/' + store.slug + '/checkout')} style={{ ...cta(theme), width: 'auto', padding: '14px 40px' }}>Checkout</button>
       </div>
     </div>
@@ -468,12 +471,13 @@ function CartPage({ store, theme, cart, onUpdate }) {
 async function placeOrder({ store, cart, buyer, ship, payMode, stripePiId }) {
   const subtotal = cart.reduce((a, l) => a + (Number(l.unit_price) || 0) * (l.qty || 1), 0);
   const fundraise = cart.reduce((a, l) => a + ((Number(l.fundraise) || 0) + (Number(l.name_extra) || 0)) * (l.qty || 1), 0);
-  const total = cartTotal(cart);
+  const shipping = shipFee(store);
+  const total = cartTotal(cart) + shipping;
   const { data: order, error } = await supabase.from('webstore_orders').insert({
     store_id: store.id, status: payMode === 'paid' ? 'paid' : 'unpaid', payment_mode: payMode, order_kind: 'individual',
     buyer_name: buyer.name, buyer_email: buyer.email, buyer_phone: buyer.phone || null,
     ship_address: store.delivery_mode === 'ship_home' ? ship : null, ship_method: store.delivery_mode,
-    subtotal, fundraise_amt: fundraise, total, stripe_pi_id: stripePiId || null,
+    subtotal, fundraise_amt: fundraise, shipping_fee: shipping, total, stripe_pi_id: stripePiId || null,
   }).select().single();
   if (error) return { error };
 
@@ -529,7 +533,7 @@ function CheckoutPage({ store, theme, cart, onClear }) {
     setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
     setBusy(true);
     try {
-      const res = await fetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create_intent', amount_cents: Math.round(cartTotal(cart) * 100), customer_name: buyer.name, customer_email: buyer.email, invoice_id: store.slug, invoice_memo: store.name + ' webstore' }) });
+      const res = await fetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create_intent', amount_cents: Math.round(grandTotal(store, cart) * 100), customer_name: buyer.name, customer_email: buyer.email, invoice_id: store.slug, invoice_memo: store.name + ' webstore' }) });
       const data = await res.json();
       if (data.clientSecret) setClientSecret(data.clientSecret);
       else setErr(data.error || 'Could not start payment.');
@@ -560,8 +564,9 @@ function CheckoutPage({ store, theme, cart, onClear }) {
         </div></>
       ) : <div style={{ background: '#eff6ff', color: '#1e40af', padding: '10px 14px', borderRadius: 8, fontSize: 13, margin: '12px 0' }}>Orders for this store are <b>delivered to the club</b> — no shipping address needed.</div>}
 
-      <div style={{ borderTop: '1px solid #eef1f5', margin: '18px 0', paddingTop: 14, display: 'flex', justifyContent: 'space-between', fontSize: 20, fontWeight: 900 }}>
-        <span>Total</span><span>{money(cartTotal(cart))}</span>
+      {shipFee(store) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: 14 }}><span>Shipping (flat)</span><span>{money(shipFee(store))}</span></div>}
+      <div style={{ borderTop: '1px solid #eef1f5', margin: shipFee(store) > 0 ? '10px 0 0' : '18px 0', paddingTop: 14, display: 'flex', justifyContent: 'space-between', fontSize: 20, fontWeight: 900 }}>
+        <span>Total</span><span>{money(grandTotal(store, cart))}</span>
       </div>
 
       {store.payment_mode === 'either' && (

@@ -24,7 +24,7 @@ async function createWebstoreLabel(order, items, store) {
     testLabel: false,
   };
   const res = await shipStationCall('/orders/createlabelfororder', { method: 'POST', body: JSON.stringify(payload) });
-  return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode };
+  return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode, cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null };
 }
 
 // Render base64 PDF labels into one printable window.
@@ -512,7 +512,7 @@ const BLANK = {
   open_at: '', close_at: '',
   payment_mode: 'paid', require_login: false,
   delivery_mode: 'ship_home',
-  shipstation_store_id: '', shipstation_tag_id: '', shipstation_carrier: 'fedex', shipstation_service: '', label_weight_lbs: 1,
+  shipstation_store_id: '', shipstation_tag_id: '', shipstation_carrier: 'fedex', shipstation_service: '', label_weight_lbs: 1, flat_shipping: 0,
   director_name: '', director_email: '', director_phone: '',
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
   so_creation: 'manual',
@@ -546,6 +546,7 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
     payload.open_at = payload.open_at || null;
     payload.close_at = payload.close_at || null;
     payload.label_weight_lbs = Number(payload.label_weight_lbs) || 1;
+    payload.flat_shipping = Number(payload.flat_shipping) || 0;
     const r = await onSave(payload);
     setBusy(false);
     if (r?.error) setError(r.error.message || 'Save failed.');
@@ -593,6 +594,7 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
           <option value="ship_home">Ship to home — collect each buyer's home address</option>
           <option value="deliver_club">Deliver to club — ships to the club's default address</option>
         </select></Row>
+        {f.delivery_mode === 'ship_home' && <Row label="Flat shipping charged to buyer ($)"><input className="form-input" type="number" step="0.01" min={0} value={f.flat_shipping} onChange={(e) => set('flat_shipping', e.target.value)} placeholder="0.00" /></Row>}
         <div style={{ display: 'flex', gap: 12 }}>
           <Row label="ShipStation Store ID (optional)"><input className="form-input" value={f.shipstation_store_id || ''} onChange={(e) => set('shipstation_store_id', e.target.value)} placeholder="e.g. 123456" /></Row>
           <Row label="ShipStation Tag ID (optional)"><input className="form-input" value={f.shipstation_tag_id || ''} onChange={(e) => set('shipstation_tag_id', e.target.value)} placeholder="team tag id" /></Row>
@@ -1120,6 +1122,9 @@ function AnalyticsTab({ orders, orderItems, stockByWp }) {
   const nameBySku = {}; Object.values(stockByWp).forEach((s) => { if (s.sku) nameBySku[s.sku] = s.name; });
   const revenue = orders.reduce((a, o) => a + (Number(o.total) || 0), 0);
   const fundraise = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+  const shipCollected = orders.reduce((a, o) => a + (Number(o.shipping_fee) || 0), 0);
+  const shipCost = orders.reduce((a, o) => a + (Number(o.label_cost) || 0), 0);
+  const shipNet = shipCollected - shipCost;
   const paid = orders.filter((o) => o.payment_mode === 'paid');
   const lines = orderItems.filter((i) => !i.is_bundle_parent);
   const units = lines.reduce((a, i) => a + (i.qty || 1), 0);
@@ -1139,7 +1144,8 @@ function AnalyticsTab({ orders, orderItems, stockByWp }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12 }}>
-        {[['Revenue', money(revenue)], ['Fundraising', money(fundraise), '#166534'], ['Orders', orders.length], ['Units', units], ['Avg order', money(revenue / orders.length)], ['Paid / Team tab', `${paid.length} / ${orders.length - paid.length}`]].map(([l, v, c]) => (
+        {[['Revenue', money(revenue)], ['Fundraising', money(fundraise), '#166534'], ['Orders', orders.length], ['Units', units], ['Avg order', money(revenue / orders.length)], ['Paid / Team tab', `${paid.length} / ${orders.length - paid.length}`],
+          ...(shipCollected || shipCost ? [['Shipping collected', money(shipCollected)], ['Label cost (actual)', money(shipCost), '#b45309'], ['Shipping net', money(shipNet), shipNet >= 0 ? '#166534' : '#b91c1c']] : [])].map(([l, v, c]) => (
           <div key={l} className="card"><div style={{ padding: 14 }}><div style={{ fontSize: 22, fontWeight: 800, color: c || '#1e293b' }}>{v}</div><div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>{l}</div></div></div>
         ))}
       </div>
@@ -1349,9 +1355,9 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     const labels = []; let fail = 0;
     for (const g of groups) {
       try {
-        const { labelData, trackingNumber, carrier } = await createWebstoreLabel(g.order, g.items, store);
+        const { labelData, trackingNumber, carrier, cost } = await createWebstoreLabel(g.order, g.items, store);
         if (labelData) labels.push(labelData);
-        if (trackingNumber) { try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber, carrier }).eq('id', g.order.id); } catch {} }
+        if (trackingNumber || cost != null) { try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber, carrier, label_cost: cost }).eq('id', g.order.id); } catch {} }
       } catch { fail++; }
     }
     if (labels.length) printLabels(labels);
