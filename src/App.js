@@ -13192,9 +13192,12 @@ export default function App(){
                   const img=p.image_url||'';if(!img)return;if(!preview)preview=img;
                   item_mockups[p.sku+'|'+(p.color||'')]=[img];
                 });
+                // The OMG store mockups are the customer-approved proof, so the
+                // art file starts approved — the job lands in the art board's
+                // "needs files" stage, skipping the art-request/approval cycle.
                 return{id:'af_omg_'+idx,name:g,deco_type:sampleDeco?.type||'screen_print',
                   ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],item_mockups,preview_url:preview,prod_files:[],
-                  notes:'From OMG store '+s.store_name,status:'pending',uploaded:new Date().toLocaleDateString()};
+                  notes:'From OMG store '+s.store_name+' — mockup is the approved proof',status:'approved',approved_at:new Date().toISOString(),uploaded:new Date().toLocaleDateString()};
               });
               // Build SO items from imported products
               const soItems=(s.products||[]).map(p=>{
