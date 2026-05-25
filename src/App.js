@@ -1290,6 +1290,43 @@ const _dbSaveSOInner = async (so) => {
   }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
+// Lightweight save for art-file-only edits (add/remove/tag a mockup or production file). Syncs ONLY so_art_files —
+// never deletes/reinserts items, decorations, or PO lines — so a simple file change can't trip the order-save
+// data-loss guards or partially re-persist line items. Mirrors the art_files sync in _dbSaveSOInner.
+const _dbSaveArtFilesInner = async (so) => {
+  if(!supabase)return false;
+  return _dbSavingGuard(async()=>{try{
+    const art_files=so.art_files;
+    if(!Array.isArray(art_files))return true;// nothing hydrated to sync
+    const{data:_dbAf,error:_dbAfErr}=await _retryNet(()=>supabase.from('so_art_files').select('id,_version').eq('so_id',so.id));
+    if(_dbAfErr){console.error('[DB] so_art_files read failed:',_dbAfErr.message);if(_dbNotify)_dbNotify('Could not save artwork file change: '+_dbAfErr.message,'error');return false}
+    const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
+    if(art_files.length){
+      const _freshArt=art_files.filter(a=>{const dbv=_dbAfVerById.get(a.id);return dbv==null||(a._version||0)>=dbv});
+      if(_freshArt.length){
+        const soAfRows=_freshArt.map(a=>({..._pick(a,_artCols),so_id:so.id}));
+        const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
+        if(afErr){
+          if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
+            const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
+            const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
+            if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+afErr2.message,'error');return false}
+          }else{console.error('[DB] so_art_files upsert failed:',afErr.message);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+afErr.message,'error');return false}
+        }
+        _freshArt.forEach(a=>{a._version=(a._version||0)+1});
+      }
+      const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
+      const _knownArtIds=new Set(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]);
+      const toDeleteAf=(_dbAf||[]).filter(ea=>!currentAfIds.has(ea.id)&&_knownArtIds.has(ea.id)).map(ea=>ea.id);
+      if(toDeleteAf.length)await _retryNet(()=>supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',toDeleteAf));
+    }else if(so._artHydrated!==false){
+      const _knownArtIds=(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]).filter(id=>_dbAfVerById.has(id));
+      if(_knownArtIds.length)await _retryNet(()=>supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',_knownArtIds));
+    }
+    return true;
+  }catch(e){console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
+};
+const _dbSaveArtFiles = (so) => _queuedEntitySave(so.id, so, _dbSaveArtFilesInner);
 const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','shipping_name','shipping_address'];
 const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','shipping_name','shipping_address']);
 const _dbSaveInvoice = async (inv) => {
@@ -4452,6 +4489,21 @@ export default function App(){
     // Invoices are created explicitly via the Create Invoice modal — no auto-generation on status change.
     return sl;
   };
+  // Lightweight art-file-only update for the artwork library (add/remove/tag a mockup or production file).
+  // Persists ONLY so_art_files — never re-persists items/decorations/PO lines — so a file change can't trip the
+  // order-save data-loss guards or partially re-save line items when this SO's items aren't hydrated in the view.
+  const savArtFiles=(so)=>{
+    const upd=so.updated_at||new Date().toLocaleString();
+    const prev=sos.find(x=>x.id===so.id);
+    const merged=prev?{...prev,art_files:so.art_files,updated_at:upd}:{...so,updated_at:upd};
+    setSOs(p=>{const ex=p.find(x=>x.id===merged.id);return ex?p.map(x=>x.id===merged.id?merged:x):[...p,merged]});
+    // Keep the diff-snapshot in sync so the [sos] effect sees no change for this SO and won't also fire a full
+    // _dbSaveSO. We persist the art files ourselves via the lightweight path below.
+    const snap=_dbSnap.current?.sos;
+    if(Array.isArray(snap)&&snap.some(x=>x.id===merged.id))_dbSnap.current.sos=snap.map(x=>x.id===merged.id?merged:x);
+    _dbSaveArtFiles(merged);
+    return merged;
+  };
   const savI=(pid,inv,deltas,reason,adjType)=>{
     const p=prod.find(x=>x.id===pid);
     if(deltas&&p){
@@ -6064,7 +6116,7 @@ export default function App(){
   };
   // CUSTOMERS
   function rCust(){
-    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} REPS={REPS} prod={prod}
+    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} onSaveArtFiles={savArtFiles} REPS={REPS} prod={prod}
       onSavePromoProgram={async(prog)=>{await _dbSavePromoProgram(prog);const isFamily=c=>c.id===prog.customer_id||c.parent_id===prog.customer_id;const upd=c=>({...c,promo_programs:[...(c.promo_programs||[]).filter(p=>p.id!==prog.id),prog]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s);nf('Promo program saved')}}
       onDeletePromoProgram={async(id)=>{await _dbDeletePromoProgram(id);const upd=c=>({...c,promo_programs:(c.promo_programs||[]).filter(p=>p.id!==id)});setCust(prev=>prev.map(c=>(c.promo_programs||[]).some(p=>p.id===id)?upd(c):c));setSelC(s=>s&&(s.promo_programs||[]).some(p=>p.id===id)?upd(s):s);nf('Promo program removed')}}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s);nf('Promo period saved')}}

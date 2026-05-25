@@ -9,7 +9,7 @@ import { StripePaymentModal } from './modals';
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,REPS,prod,onCopy,onDelete,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveArtFiles,REPS,prod,onCopy,onDelete,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[rR,setRR]=useState('thisyear');
   const[expSOs,setExpSOs]=useState(()=>new Set());
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
@@ -690,13 +690,16 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     </div>})()}
   {/* ART DETAIL MODAL */}
   {custArtDetail&&(()=>{const art=custArtDetail;const allMockups=art._allMockups||[];const usedOnSOs=art._usedOnSOs||[];
+    // Persist file add/remove/tag via the lightweight art-files-only save so we don't re-persist
+    // the whole order (items/POs) — which trips data-loss guards when items aren't hydrated here.
+    const saveArt=onSaveArtFiles||onSaveSO;
     // If no precomputed data, compute it
     const mockups=allMockups.length>0?allMockups:(art.mockup_files||art.files||[]).filter(f=>f).map(f=>({file:f,url:typeof f==='string'?f:(f?.url||''),src:art._srcLabel||''}));
     // Remove a file from this artwork everywhere it's attached (mockups/files/prod/item_mockups)
     // across every sales order that uses this logo, then persist each changed order.
     const urlOf=f=>typeof f==='string'?f:(f?.url||'');
     const removeMockFromArt=(url)=>{
-      if(!url||!onSaveSO)return;
+      if(!url||!saveArt)return;
       if(!window.confirm('Remove this file from "'+(art.name||'this artwork')+'" on all orders that use it? This cannot be undone.'))return;
       const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
       const filt=arr=>(arr||[]).filter(f=>urlOf(f)!==url);
@@ -708,7 +711,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           if(mf.length!==(a.mockup_files||[]).length||fl.length!==(a.files||[]).length||pf.length!==(a.prod_files||[]).length||imCh){changed=true;return{...a,mockup_files:mf,files:fl,prod_files:pf,item_mockups:im}}
           return a;
         });
-        if(changed)onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
+        if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
       });
       setCustArtDetail(d=>d?{...d,_allMockups:(d._allMockups||[]).filter(x=>x.url!==url),_allProd:(d._allProd||[]).filter(x=>x.url!==url),mockup_files:(d.mockup_files||[]).filter(f=>urlOf(f)!==url),files:(d.files||[]).filter(f=>urlOf(f)!==url),prod_files:(d.prod_files||[]).filter(f=>urlOf(f)!==url)}:d);
       nf&&nf('File removed from '+(art.name||'artwork'));
@@ -717,13 +720,13 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const addMockToArt=async(fileList)=>{
       const soId=art._so_id||(usedOnSOs[0]&&usedOnSOs[0].so_id);
       const so=custSOs.find(s=>s.id===soId);
-      if(!so||!onSaveSO){nf&&nf('No order found to attach the mockup to','error');return}
+      if(!so||!saveArt){nf&&nf('No order found to attach the mockup to','error');return}
       const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
       const added=[];
       for(const f of Array.from(fileList||[])){nf&&nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');added.push({url,name:f.name})}catch(e){nf&&nf('Upload failed: '+e.message,'error')}}
       if(!added.length)return;
       const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);return match?{...a,mockup_files:[...(a.mockup_files||[]),...added]}:a});
-      onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
+      saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
       setCustArtDetail(d=>d?{...d,_allMockups:[...(d._allMockups||[]),...added.map(m=>({file:m,url:m.url,src:so.id+(so.memo?' — '+so.memo:'')}))]}:d);
       nf&&nf(added.length+' mockup'+(added.length>1?'s':'')+' added');
     };
@@ -732,13 +735,13 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const addProdToArt=async(fileList)=>{
       const soId=art._so_id||(usedOnSOs[0]&&usedOnSOs[0].so_id);
       const so=custSOs.find(s=>s.id===soId);
-      if(!so||!onSaveSO){nf&&nf('No order found to attach the file to','error');return}
+      if(!so||!saveArt){nf&&nf('No order found to attach the file to','error');return}
       const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
       const added=[];
       for(const f of Array.from(fileList||[])){nf&&nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');added.push({url,name:f.name})}catch(e){nf&&nf('Upload failed: '+e.message,'error')}}
       if(!added.length)return;
       const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);return match?{...a,prod_files:[...(a.prod_files||[]),...added]}:a});
-      onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
+      saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
       setCustArtDetail(d=>d?{...d,_allProd:[...(d._allProd||[]),...added.map(m=>({file:m,url:m.url,src:so.id+(so.memo?' — '+so.memo:'')}))]}:d);
       nf&&nf(added.length+' production file'+(added.length>1?'s':'')+' added');
     };
@@ -751,7 +754,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       : [...new Set(custSOs.flatMap(so=>(so.items||[]).filter(it=>(it.decorations||[]).some(d=>{const af=(so.art_files||[]).find(a=>a.id===d.art_file_id);return af&&_logoMatch(af)})).map(it=>it.color)).filter(Boolean))];
     // Tag a mock with a color way wherever this file is attached on the artwork.
     const applyMockToCW=(mock,cwColor)=>{
-      if(!onSaveSO||!cwColor)return;
+      if(!saveArt||!cwColor)return;
       const url=urlOf(mock);
       const tag=f=>{if(urlOf(f)!==url)return f;return{...(typeof f==='string'?{url:f,name:fileDisplayName(f)}:f),color_way:cwColor}};
       custSOs.forEach(so=>{
@@ -764,7 +767,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           const im={...(a.item_mockups||{})};Object.keys(im).forEach(k=>{im[k]=(im[k]||[]).map(tag)});
           return{...a,mockup_files:(a.mockup_files||[]).map(tag),item_mockups:im};
         });
-        if(soChanged)onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
+        if(soChanged)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
       });
       setCustArtDetail(d=>d?{...d,_allMockups:(d._allMockups||[]).map(x=>x.url===url?{...x,file:{...(typeof x.file==='string'?{url:x.file}:(x.file||{url})),color_way:cwColor}}:x)}:d);
       nf&&nf('Mock tagged as '+cwColor);
@@ -784,7 +787,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         <div style={{marginBottom:16}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
             <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>Mockup Files ({mockups.length})</div>
-            {onSaveSO&&<button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={pickMock}><Icon name="plus" size={11}/> Add Mockup</button>}
+            {saveArt&&<button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={pickMock}><Icon name="plus" size={11}/> Add Mockup</button>}
           </div>
           {mockups.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:8}}>
             {mockups.map((m,mi)=>{const url=m.url;return<div key={mi} style={{borderRadius:8,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',cursor:'pointer',position:'relative'}} onClick={()=>openFile(m.file||url)}>
@@ -799,22 +802,37 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               </select>}
             </div>})}
           </div>}
+          {saveArt&&<div style={{marginTop:8,border:'2px dashed #bfdbfe',borderRadius:6,padding:10,textAlign:'center',cursor:'pointer',background:'#eff6ff'}}
+            onClick={pickMock}
+            onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#dbeafe';e.currentTarget.style.borderColor='#3b82f6'}}
+            onDragLeave={e=>{e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe'}}
+            onDrop={e=>{e.preventDefault();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe';if(e.dataTransfer.files&&e.dataTransfer.files.length)addMockToArt(e.dataTransfer.files)}}>
+            <div style={{fontSize:11,color:'#2563eb',fontWeight:600}}>Drop mockup files or click to browse</div>
+            <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>Images or PDF</div></div>}
         </div>
         {/* Production files (internal) */}
         <div style={{marginBottom:16}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
             <div style={{fontSize:12,fontWeight:700,color:'#d97706'}}>Production Files ({prodFiles.length}) <span style={{fontSize:10,fontWeight:500,color:'#94a3b8'}}>Internal only</span></div>
-            {onSaveSO&&<button className="btn btn-sm" style={{fontSize:11,background:'#f59e0b',color:'white',border:'none'}} onClick={pickProd}><Icon name="plus" size={11}/> Add Production File</button>}
+            {saveArt&&<button className="btn btn-sm" style={{fontSize:11,background:'#f59e0b',color:'white',border:'none'}} onClick={pickProd}><Icon name="plus" size={11}/> Add Production File</button>}
           </div>
-          {prodFiles.length>0?<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:8}}>
+          {prodFiles.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:8}}>
             {prodFiles.map((m,mi)=>{const url=m.url;return<div key={mi} style={{borderRadius:8,border:'1px solid #fde68a',overflow:'hidden',background:'#fffbeb',cursor:'pointer',position:'relative'}} onClick={()=>openFile(m.file||url)}>
-              {onSaveSO&&<button title="Remove this file from the artwork" onClick={e=>{e.stopPropagation();removeMockFromArt(url)}} style={{position:'absolute',top:4,right:4,zIndex:2,width:22,height:22,borderRadius:11,border:'none',background:'rgba(220,38,38,0.92)',color:'white',cursor:'pointer',fontSize:13,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
+              {saveArt&&<button title="Remove this file from the artwork" onClick={e=>{e.stopPropagation();removeMockFromArt(url)}} style={{position:'absolute',top:4,right:4,zIndex:2,width:22,height:22,borderRadius:11,border:'none',background:'rgba(220,38,38,0.92)',color:'white',cursor:'pointer',fontSize:13,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
               {_isImgUrl(url)?<img src={url} alt="" style={{width:'100%',height:120,objectFit:'contain',display:'block',background:'#fff'}}/>
               :_isPdfUrl(url)?<div style={{height:120,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',background:'#fff'}}>{_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt="" style={{maxHeight:100,objectFit:'contain'}} onError={e=>{e.target.style.display='none'}}/>:<span style={{fontSize:32}}>PDF</span>}</div>
               :<div style={{height:120,display:'flex',alignItems:'center',justifyContent:'center',background:'#fff',fontSize:28}}>📄</div>}
               <div style={{padding:'4px 6px',fontSize:9,color:'#64748b',borderTop:'1px solid #fef3c7'}}>{fileDisplayName(m.file||url)}<br/><span style={{color:'#94a3b8'}}>{m.src}</span></div>
             </div>})}
-          </div>:<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No production files attached</div>}
+          </div>}
+          {prodFiles.length===0&&!saveArt&&<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No production files attached</div>}
+          {saveArt&&<div style={{marginTop:8,border:'2px dashed #fde68a',borderRadius:6,padding:10,textAlign:'center',cursor:'pointer',background:'#fffbeb'}}
+            onClick={pickProd}
+            onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#fef3c7';e.currentTarget.style.borderColor='#f59e0b'}}
+            onDragLeave={e=>{e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a'}}
+            onDrop={e=>{e.preventDefault();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';if(e.dataTransfer.files&&e.dataTransfer.files.length)addProdToArt(e.dataTransfer.files)}}>
+            <div style={{fontSize:11,color:'#d97706',fontWeight:600}}>Drop production files or click to browse</div>
+            <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>DST, AI seps, PDF, PNG, JPG</div></div>}
         </div>
         {/* Jobs / orders that used this art */}
         {usedOnSOs.length>0&&<div>
