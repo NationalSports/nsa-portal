@@ -171,6 +171,100 @@ The client write/hydration engine is well-defended. Notable mechanisms:
 
 ---
 
+## Full line-by-line code audit — `App.js` + `OrderEditor.js`
+
+Both files were read end to end (App.js 1–25,966; OrderEditor.js 1–8,965).
+Findings below are *in addition* to the engine review above. Items marked
+**(verified)** were re-read and confirmed by hand.
+
+### P1 — fulfillment / financial integrity
+
+- **Batch "Confirm Received" records the wrong quantity** — `App.js:8718`
+  **(verified)**. The received-qty inputs are rendered with id `rcv-<i>-<size>`
+  where `i` indexes the *filtered* PO items (`:8667`), but read back with
+  `document.getElementById('rcv-'+allPOLines.indexOf(ml)+'-'+k)` — the *global*
+  index across all PO lines. For any multi-line / batch PO the two index spaces
+  diverge, the lookup returns `null`, and the code falls back to `rcv[k]=v` —
+  **the full ordered quantity**. So receiving a batch silently writes "received =
+  everything ordered" regardless of what was counted, then `savSO` persists it.
+  Corrupts fulfillment/short-ship tracking. (Single-line POs happen to line up;
+  the invoice-PO receive at `:25793/:25808` uses a consistent scheme and is fine.)
+
+- **"Apply Credit" can be spent more than once** — `OrderEditor.js:2236`
+  **(verified)**. Applying a customer credit only stamps `credit_applied` /
+  `credit_amount` on the order; it never decrements the customer's credit ledger
+  (`customer_credits` / `customer_credit_usage`). The same balance can be applied
+  to multiple orders. (The promo path *does* record usage — this path doesn't.)
+  Recommend verifying whether consumption is recorded at invoicing; on its face
+  it is not.
+
+- **Final invoice closes the SO even if the invoice didn't save** —
+  `OrderEditor.js:4869–4871` **(verified)**. `onInv(prev=>[...prev,inv])` then,
+  for a final invoice, `onSave({...o,status:'complete'})` — neither result is
+  checked. A failed invoice insert can leave a *completed* SO with no invoice
+  (unbilled work), with no rollback.
+
+- **Editor reports itself "saved" on a failed write** — `OrderEditor.js:718`
+  **(verified)**, and the pervasive `setO(x); onSave(x); setDirty(false)` pattern
+  throughout the editor (e.g. `1884, 1992, 2084, 5939, 6361, 7166, 8108, 8790`).
+  `onSave`'s result is never checked and `setDirty(false)` runs unconditionally,
+  so the editor's own unsaved-changes guard (and 30s autosave) treat a failed
+  save as success. **Backstop:** the App-level `_dbSaveFailedIds` tracker still
+  catches `_dbSaveSO`/`_dbSaveInvoice` failures and raises the global banner —
+  so it is not *total* silent loss, but the editor's local state lies.
+
+### P2 — fragile inputs, money model, mutation
+
+- **Money & quantities read straight from uncontrolled DOM inputs** —
+  `OrderEditor.js:5340–5573` (PO / deco-PO create), `7943, 8000, 8723, 8768,
+  8837` (receive / cancel / shipment edit), `App.js:8836` (batch-PO edit). These
+  use `defaultValue` + `document.getElementById(...).value` read at save time.
+  If React re-renders/remounts the node mid-edit (a background poll/realtime
+  update), typed-but-unsaved numbers silently revert to the default. These feed
+  cost, commission, and inventory math.
+- **CC surcharge inflates `invoice.total`** — `App.js:9109`. Each card payment
+  does `newTotal = inv.total + fee`; two card payments double-add the fee, and
+  commission/GP reporting reads `inv.total`. Surcharge should be tracked
+  separately.
+- **In-place mutation that can desync the snapshot diff** — `App.js:1072/1109`
+  **(verified)** (SO PO/pick restore reassigns `ci.po_lines`/`ci.pick_lines` on
+  possibly-live state objects; rare restore path only), `App.js:13338` (OMG
+  cost-lookup mutates `p.cost` on live products), `OrderEditor.js:8268`
+  (delete-PO mutates an item inside a shallow copy).
+- **Ship-modal merge drops sizes** — `App.js:15164/15202`. Merging into an
+  existing box rebuilds `sizes` from only the incoming `ai.sizes`, dropping any
+  size already in the box but absent from the new add → undercounts box units.
+- **UPS auto-pickup loop overwrites from a stale SO snapshot** —
+  `App.js:13660–13663, 14838`. The loop calls `savSO({...shp.so,...})` from a
+  base captured at loop build; multiple shipments on one SO each overwrite from
+  the same base, so only the last pickup flag survives. (The receive flow groups
+  by SO to avoid this; the pickup loops don't.)
+- **`Date.now()`-based IDs can collide** — `OrderEditor.js:3934` (batch PO),
+  `5604` (messages). Rapid successive creates in the same millisecond collide;
+  deco/Topstar POs add `Math.random()`, these don't.
+- **Inventory CSV zeroes stock on non-numeric cells** — `App.js:18883`. A
+  non-empty, non-numeric cell (e.g. "N/A") parses to `0` and is written,
+  overwriting real on-hand with zero.
+- **Vendor import looks successful but persists nothing** — `App.js:18753–18771`
+  (read-only by design; misleading to the user).
+- **Promo/credit usage writes are fire-and-forget after the period save** —
+  `App.js:4577, 4592`; `OrderEditor.js:2202–2295`. Optimistic in-memory update
+  with no rollback if the usage insert fails → promo/credit balance can drift.
+- **OMG store financial fields may not persist** — `App.js:13244–13374`. The
+  `_omg_shipping/_tax/grand_total/...` fields written here are saved only if they
+  are in the `omg_stores` column allowlist used by `_dbSave`; worth confirming
+  they aren't dropped by the `_pick` filter.
+
+### Confirmed clean (large portions)
+The invoice detail/modals, reports & analytics, commissions, QB sync,
+bill-apply (freight proration with remainder handling), sales tools, team
+management, and the warehouse receive (grouped-by-SO) paths are well-guarded:
+money uses `safeNum` + `Math.round(x*100)/100`, state changes auto-persist via
+the `_diffSave` effects, and the async art/email saves correctly branch on the
+result before clearing state.
+
+---
+
 ## P2 — Performance advisors (live DB)
 
 - **67 unused indexes** — write overhead; candidates for removal once confirmed
