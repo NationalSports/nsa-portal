@@ -293,6 +293,33 @@ export const downloadQrLabel=async({id,qrData,lines,shipBadge})=>{
     document.body.removeChild(container);
   }
 };
+// Download a full-page (letter) PDF pick ticket for an item fulfillment, laid
+// out like a packing slip via buildDocHtml/downloadDoc. The 4x6 thermal label
+// stays on printQrLabel/downloadQrLabel; this is the "Download (PDF)" sheet.
+// The QR is fetched and inlined as a data URL so html2canvas doesn't get
+// blocked by api.qrserver.com's CORS headers.
+export const downloadQrSheet=async({id,qrData,title,subtitle,shipBadge,items,totalUnits})=>{
+  const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=4&data='+encodeURIComponent(qrData||id||'');
+  let qrSrc=qrUrl;
+  try{
+    const resp=await fetch(qrUrl);
+    if(resp.ok){const blob=await resp.blob();qrSrc=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(blob)})}
+  }catch(e){/* fall back to direct URL */}
+  const headerRight='<img src="'+qrSrc+'" alt="'+(id||'')+'" style="width:130px;height:130px;display:block;margin:0 0 6px auto;background:#fff;padding:4px;image-rendering:pixelated"/>'+(totalUnits!=null?'<div class="ta" style="font-size:22px">'+totalUnits+' Units</div>':'');
+  const infoBoxes=[];
+  if(title)infoBoxes.push({label:'Customer / Team',value:title,sub:subtitle||''});
+  if(shipBadge&&shipBadge.text)infoBoxes.push({label:'Ship To',value:shipBadge.text});
+  else infoBoxes.push({label:'Fulfillment',value:'In-House Deco'});
+  const rows=(items||[]).map(it=>({cells:[it.sku||'',it.name||'',it.color||'—',it.sizes||'',it.units!=null?it.units:'']}));
+  const opts={
+    title:title||id,docNum:id,docType:'PICK TICKET',showPricing:false,
+    headerRight,
+    infoBoxes,
+    tables:[{title:'Items to Pull',headers:['SKU','Item','Color','Sizes','Qty'],aligns:['left','left','left','left','center'],rows}],
+    footer:'Item Fulfillment — Warehouse Pick Ticket'
+  };
+  return downloadDoc(opts,String(id||'pick-ticket'));
+};
 // Auto-download the document as a PDF file. Renders the same HTML used for
 // printing/email attachments via html2pdf, with flex→table CSS overrides so
 // html2canvas lays it out correctly.
