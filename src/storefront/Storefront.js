@@ -219,7 +219,11 @@ function Placeholder({ theme, label }) {
 function ProductPage({ store, theme, product: p, isOpen }) {
   const [size, setSize] = useState(null);
   const [img, setImg] = useState('front');
+  const [num, setNum] = useState('');
+  const [pname, setPname] = useState('');
   if (!p) return <Splash>Product not found.</Splash>;
+  const nameUp = Number(p.name_upcharge) || 0;
+  const total = priceOf(p) + (p.takes_name && pname.trim() ? nameUp : 0);
   const sizes = Array.isArray(p.available_sizes) ? p.available_sizes : [];
   const onHand = effOnHand(p);
   const incoming = isIncoming(p);
@@ -256,6 +260,20 @@ function ProductPage({ store, theme, product: p, isOpen }) {
             </div>
           </div>}
 
+          {(p.takes_number || p.takes_name) && (
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', margin: '4px 0 18px' }}>
+              {p.takes_number && <div>
+                <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220', marginBottom: 6 }}>Number</div>
+                <input value={num} onChange={(e) => setNum(e.target.value.replace(/[^0-9]/g, '').slice(0, 3))} placeholder="#" inputMode="numeric" style={fieldStyle(theme, 80)} />
+              </div>}
+              {p.takes_name && <div>
+                <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220', marginBottom: 6 }}>Name {nameUp > 0 ? `(+${money(nameUp)})` : ''}</div>
+                <input value={pname} onChange={(e) => setPname(e.target.value.slice(0, 20))} placeholder="Last name" style={fieldStyle(theme, 220)} />
+              </div>}
+            </div>
+          )}
+
+          {p.takes_name && nameUp > 0 && pname.trim() ? <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 10 }}>Total: {money(total)}</div> : null}
           <button disabled style={{ ...cta(theme), opacity: 0.5, cursor: 'not-allowed', marginTop: 8 }}>{isOpen ? 'Add to cart — coming soon' : 'Store not open yet'}</button>
           <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 12 }}>Cart &amp; checkout are being built — this is a preview of the product page.</div>
         </div>
@@ -267,7 +285,10 @@ function ProductPage({ store, theme, product: p, isOpen }) {
 // ── Package ──────────────────────────────────────────────────────────
 function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpen }) {
   const [picks, setPicks] = useState({}); // component id -> selected size
+  const [nums, setNums] = useState({});   // component id -> jersey number
+  const [names, setNames] = useState({}); // component id -> custom name
   if (!p) return <Splash>Package not found.</Splash>;
+  const nameExtra = components.reduce((a, c) => a + ((c.takes_name && (names[c.id] || '').trim()) ? (Number(c.name_upcharge) || 0) : 0), 0);
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   const compName = (c) => compInfo[c.product_id]?.name || c.sku || 'Item';
   const compImg = (c) => compInfo[c.product_id]?.image_front_url;
@@ -314,19 +335,34 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpe
                       {!c.size_required && <div style={{ fontSize: 12, color: '#94a3b8' }}>One size</div>}
                     </div>
                   </div>
-                  {c.size_required && sizes.length > 0 && (
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10, marginLeft: compImg(c) ? 60 : 0 }}>
-                      {sizes.map((sz) => {
-                        const seld = picks[c.id] === sz;
-                        return <button key={sz} onClick={() => setPicks((x) => ({ ...x, [c.id]: sz }))} style={sizeBtn(theme, seld)}>{sz}</button>;
-                      })}
-                    </div>
-                  )}
+                  <div style={{ marginLeft: compImg(c) ? 60 : 0 }}>
+                    {c.size_required && sizes.length > 0 && (
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                        {sizes.map((sz) => {
+                          const seld = picks[c.id] === sz;
+                          return <button key={sz} onClick={() => setPicks((x) => ({ ...x, [c.id]: sz }))} style={sizeBtn(theme, seld)}>{sz}</button>;
+                        })}
+                      </div>
+                    )}
+                    {(c.takes_number || c.takes_name) && (
+                      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10 }}>
+                        {c.takes_number && <div>
+                          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#64748b', marginBottom: 4 }}>Number</div>
+                          <input value={nums[c.id] || ''} onChange={(e) => setNums((x) => ({ ...x, [c.id]: e.target.value.replace(/[^0-9]/g, '').slice(0, 3) }))} placeholder="#" inputMode="numeric" style={fieldStyle(theme, 70)} />
+                        </div>}
+                        {c.takes_name && <div>
+                          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#64748b', marginBottom: 4 }}>Name {Number(c.name_upcharge) > 0 ? `(+${money(c.name_upcharge)})` : ''}</div>
+                          <input value={names[c.id] || ''} onChange={(e) => setNames((x) => ({ ...x, [c.id]: e.target.value.slice(0, 20) }))} placeholder="Last name" style={fieldStyle(theme, 180)} />
+                        </div>}
+                      </div>
+                    )}
+                  </div>
                 </div>
               );
             })}
 
-          <button disabled style={{ ...cta(theme), opacity: 0.5, cursor: 'not-allowed', marginTop: 20 }}>{isOpen ? 'Add package — coming soon' : 'Store not open yet'}</button>
+          {nameExtra > 0 && <div style={{ fontSize: 14, fontWeight: 700, marginTop: 16 }}>Total with personalization: {money(priceOf(p) + nameExtra)}</div>}
+          <button disabled style={{ ...cta(theme), opacity: 0.5, cursor: 'not-allowed', marginTop: 16 }}>{isOpen ? 'Add package — coming soon' : 'Store not open yet'}</button>
         </div>
       </div>
     </div>
@@ -350,6 +386,7 @@ function Footer({ theme }) {
 const sizeBtn = (t, sel) => ({ minWidth: 52, padding: '12px 14px', borderRadius: t.radius, border: `2px solid ${sel ? t.accent : '#e2e8f0'}`, background: sel ? t.accent : '#fff', color: sel ? '#fff' : '#0b1220', fontWeight: 800, fontSize: 14 });
 const thumbBtn = (t, sel) => ({ padding: '8px 18px', borderRadius: t.radius, border: `2px solid ${sel ? t.accent : '#e2e8f0'}`, background: sel ? t.accent : '#fff', color: sel ? '#fff' : '#475569', fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, cursor: 'pointer' });
 const cta = (t) => ({ width: '100%', padding: '16px 20px', borderRadius: t.radius, border: 'none', background: t.accent, color: '#fff', fontWeight: 900, fontSize: 15, letterSpacing: 1, textTransform: 'uppercase' });
+const fieldStyle = (t, w) => ({ width: w, padding: '11px 12px', borderRadius: t.radius, border: '2px solid #e2e8f0', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', boxSizing: 'border-box' });
 
 // Darken/lighten a hex color by pct (−100..100) for hero gradients.
 function shade(hex, pct) {

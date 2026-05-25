@@ -145,8 +145,8 @@ function Webstores({ cust = [], REPS = [], onCreateSO }) {
     flash('Store created'); return { data };
   }, [sel, flash]);
 
-  const addSingle = useCallback(async ({ product, price, fundraise, image_url }) => {
-    const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, active: true, sort_order: (detail?.catalog?.length || 0) };
+  const addSingle = useCallback(async ({ product, price, fundraise, image_url, takes_number, takes_name, name_upcharge }) => {
+    const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, takes_number: !!takes_number, takes_name: !!takes_name, name_upcharge: Number(name_upcharge) || 0, active: true, sort_order: (detail?.catalog?.length || 0) };
     const { error } = await supabase.from('webstore_products').insert(row);
     if (error) { flash('Error: ' + error.message); return; }
     flash('Added ' + (product.name || product.sku)); loadDetail(sel);
@@ -162,7 +162,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO }) {
     const { data: bundle, error } = await supabase.from('webstore_products').insert({ store_id: sel.id, kind: 'bundle', display_name: name, retail_price: price, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, active: true, sort_order: (detail?.catalog?.length || 0) }).select().single();
     if (error) { flash('Error: ' + error.message); return; }
     if (components.length) {
-      const rows = components.map((c, i) => ({ bundle_id: bundle.id, product_id: c.product_id, sku: c.sku, qty: c.qty || 1, size_required: c.size_required !== false, takes_number: !!c.takes_number, sort_order: i }));
+      const rows = components.map((c, i) => ({ bundle_id: bundle.id, product_id: c.product_id, sku: c.sku, qty: c.qty || 1, size_required: c.size_required !== false, takes_number: !!c.takes_number, takes_name: !!c.takes_name, name_upcharge: Number(c.name_upcharge) || 0, sort_order: i }));
       const { error: e2 } = await supabase.from('webstore_bundle_items').insert(rows);
       if (e2) { flash('Bundle created but items failed: ' + e2.message); loadDetail(sel); return; }
     }
@@ -731,6 +731,9 @@ function SinglePriceEditor({ product, onAdd, onCancel }) {
   const [price, setPrice] = useState(product.retail_price || 0);
   const [fundraise, setFundraise] = useState(0);
   const [image, setImage] = useState(null);
+  const [takesNumber, setTakesNumber] = useState(false);
+  const [takesName, setTakesName] = useState(false);
+  const [nameUpcharge, setNameUpcharge] = useState(0);
   const total = (Number(price) || 0) + (Number(fundraise) || 0);
   return (
     <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 16 }}>
@@ -742,8 +745,13 @@ function SinglePriceEditor({ product, onAdd, onCancel }) {
         <Row label="Fundraising on top (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} /></Row>
         <Row label="Shopper pays"><div className="form-input" style={{ background: '#f8fafc', fontWeight: 700 }}>{money(total)}</div></Row>
       </div>
-      <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
-        <button className="btn btn-primary" onClick={() => onAdd({ product, price, fundraise, image_url: image })}>Add to store</button>
+      <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
+        <Toggle label="Player adds a number" checked={takesNumber} onChange={setTakesNumber} />
+        <Toggle label="Player adds a name" checked={takesName} onChange={setTakesName} />
+        {takesName && <label style={{ fontSize: 13 }}>Name upcharge +$<input className="form-input" style={{ width: 80, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={nameUpcharge} onChange={(e) => setNameUpcharge(e.target.value)} /></label>}
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+        <button className="btn btn-primary" onClick={() => onAdd({ product, price, fundraise, image_url: image, takes_number: takesNumber, takes_name: takesName, name_upcharge: nameUpcharge })}>Add to store</button>
         <button className="btn btn-secondary" onClick={onCancel}>Back</button>
       </div>
     </div></div>
@@ -792,7 +800,7 @@ function BundleBuilder({ storeItems = [], onCreate, onClose }) {
   const [components, setComponents] = useState([]);
   const [picking, setPicking] = useState(false);
   // ProductSearch returns {id,sku,name}; store items already carry {product_id,sku,name}.
-  const addComp = (p) => { setComponents((c) => [...c, { product_id: p.product_id || p.id, sku: p.sku, name: p.name, qty: 1, size_required: true, takes_number: false }]); setPicking(false); };
+  const addComp = (p) => { setComponents((c) => [...c, { product_id: p.product_id || p.id, sku: p.sku, name: p.name, qty: 1, size_required: true, takes_number: false, takes_name: false, name_upcharge: 0 }]); setPicking(false); };
   const addedKeys = new Set(components.map((c) => c.product_id));
   const upd = (i, k, v) => setComponents((c) => c.map((x, idx) => (idx === i ? { ...x, [k]: v } : x)));
   const rm = (i) => setComponents((c) => c.filter((_, idx) => idx !== i));
@@ -810,11 +818,13 @@ function BundleBuilder({ storeItems = [], onCreate, onClose }) {
       <ImageUpload value={image} onChange={setImage} label="Package image" />
       <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 6 }}>Items in this package</div>
       {components.map((c, i) => (
-        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid #f1f5f9', fontSize: 13, flexWrap: 'wrap' }}>
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #f1f5f9', fontSize: 13, flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 140 }}><b>{c.name}</b> <span style={{ color: '#94a3b8' }}>{c.sku}</span></div>
           <label style={{ fontSize: 12 }}>Qty <input type="number" min={1} value={c.qty} onChange={(e) => upd(i, 'qty', Number(e.target.value) || 1)} style={{ width: 50, marginLeft: 4 }} /></label>
           <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={c.size_required} onChange={(e) => upd(i, 'size_required', e.target.checked)} />needs size</label>
-          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={c.takes_number} onChange={(e) => upd(i, 'takes_number', e.target.checked)} />carries #</label>
+          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={c.takes_number} onChange={(e) => upd(i, 'takes_number', e.target.checked)} />add number</label>
+          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={c.takes_name} onChange={(e) => upd(i, 'takes_name', e.target.checked)} />add name</label>
+          {c.takes_name && <label style={{ fontSize: 12 }}>name +$<input type="number" step="0.01" min={0} value={c.name_upcharge} onChange={(e) => upd(i, 'name_upcharge', Number(e.target.value) || 0)} style={{ width: 60, marginLeft: 2 }} /></label>}
           <button onClick={() => rm(i)} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer' }}>remove</button>
         </div>
       ))}
