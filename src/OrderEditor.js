@@ -7900,7 +7900,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
                 {szKeys.filter(sz=>getOpen(sz)>0||getCncl(sz)>0).map(sz=>{const maxCancel=Math.max(0,(po[sz]||0)-getRcvd(sz));return<div key={sz} style={{textAlign:'center'}}>
                   <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                  <input id={'po-cancel-'+sz} type="number" min={0} max={maxCancel} style={{width:42,textAlign:'center',border:'1px solid #f59e0b',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getCncl(sz)}/>
+                  <input id={'po-cancel-'+sz} style={{width:42,textAlign:'center',border:'1px solid #f59e0b',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getCncl(sz)}/>
                   <div style={{fontSize:9,color:'#64748b'}}>{getOpen(sz)} open · max {maxCancel}</div>
                 </div>})}
               </div>
@@ -8725,7 +8725,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:12}}>
                 {szKeys.filter(sz=>getOpen(sz)>0||getCncl(sz)>0).map(sz=>{const maxCancel=Math.max(0,(po[sz]||0)-getRcvd(sz));return<div key={sz} style={{textAlign:'center'}}>
                   <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                  <input id={'po-fp-cancel-'+sz} type="number" min={0} max={maxCancel} style={{width:48,textAlign:'center',border:'1px solid #f59e0b',borderRadius:4,padding:'5px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getCncl(sz)}/>
+                  <input id={'po-fp-cancel-'+sz} style={{width:48,textAlign:'center',border:'1px solid #f59e0b',borderRadius:4,padding:'5px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getCncl(sz)}/>
                   <div style={{fontSize:9,color:'#64748b'}}>{getOpen(sz)} open · max {maxCancel}</div>
                 </div>})}
               </div>
