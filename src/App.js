@@ -100,6 +100,17 @@ const _cleanupDuplicateProducts=(dupeIds,primaries)=>{
   fresh.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}});
   (primaries||[]).forEach(p=>_dbSaveProduct(p));
 };
+// True when an error is a failed dynamic-import (a chunk that no longer exists
+// because a newer deploy replaced the hashed asset). These are recoverable only
+// by a fresh page load — React.lazy permanently caches the rejected import.
+const isChunkLoadError = (err) => {
+  if (!err) return false;
+  const msg = err.message || '';
+  return err.name === 'ChunkLoadError'
+    || /Loading chunk [\w-]+ failed/i.test(msg)
+    || /Loading CSS chunk/i.test(msg)
+    || /failed to fetch dynamically imported module/i.test(msg);
+};
 // Retry wrapper for lazy imports – handles ChunkLoadError after deploys.
 // A new deploy swaps chunk hashes, so a tab running the old build requests a
 // chunk that no longer exists (Netlify's SPA fallback returns index.html →
@@ -111,14 +122,15 @@ const lazyRetry = (importFn) => React.lazy(() =>
   importFn().catch((err) => {
     const key = 'chunk_reload_at';
     const last = Number(sessionStorage.getItem(key) || 0);
-    // If we haven't reloaded in the last 10s, this is almost certainly a stale
-    // build hitting a deploy — reload to fetch current assets.
-    if (Date.now() - last > 10000) {
+    // If this is a stale build hitting a deploy and we haven't reloaded in the
+    // last 10s, reload to fetch current assets. Non-chunk errors (a real runtime
+    // failure inside the module) fall through to the boundary instead of looping.
+    if (isChunkLoadError(err) && Date.now() - last > 10000) {
       sessionStorage.setItem(key, String(Date.now()));
       window.location.reload();
       return new Promise(() => {}); // never resolves; page is reloading
     }
-    // Just reloaded and it still failed — the chunk is genuinely broken; surface it.
+    // Just reloaded and it still failed (or not a chunk error) — surface it.
     throw err;
   })
 );
@@ -139,8 +151,25 @@ const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyCo
 class ComponentErrorBoundary extends React.Component{
   constructor(props){super(props);this.state={hasError:false,error:null}}
   static getDerivedStateFromError(error){return{hasError:true,error}}
-  componentDidCatch(error,info){console.error('[NSA Component Error]',this.props.name||'Unknown',error,info)}
-  render(){if(this.state.hasError){return<div style={{padding:24,margin:16,background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:8}}>
+  componentDidCatch(error,info){
+    console.error('[NSA Component Error]',this.props.name||'Unknown',error,info);
+    // A chunk error means this tab is running an old build whose chunks a newer
+    // deploy has replaced. Resetting state can't recover (React.lazy caches the
+    // rejected import) — only a fresh load can. Auto-reload once, sharing
+    // lazyRetry's 10s guard so we never loop.
+    if(isChunkLoadError(error)){
+      const key='chunk_reload_at';
+      const last=Number(sessionStorage.getItem(key)||0);
+      if(Date.now()-last>10000){sessionStorage.setItem(key,String(Date.now()));window.location.reload()}
+    }
+  }
+  render(){if(this.state.hasError){
+    if(isChunkLoadError(this.state.error)){return<div style={{padding:24,margin:16,background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:8}}>
+      <div style={{fontWeight:700,color:'#1d4ed8',marginBottom:8}}>A new version is available</div>
+      <div style={{fontSize:12,color:'#1e40af',marginBottom:12}}>The app was updated since you loaded this page. Reload to get the latest version.</div>
+      <button className="btn btn-sm btn-primary" onClick={()=>window.location.reload()}>Reload</button>
+    </div>}
+    return<div style={{padding:24,margin:16,background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:8}}>
     <div style={{fontWeight:700,color:'#dc2626',marginBottom:8}}>Something went wrong{this.props.name?' in '+this.props.name:''}</div>
     <div style={{fontSize:12,color:'#991b1b',marginBottom:12}}>{this.state.error?.message||'Unknown error'}</div>
     <button className="btn btn-sm btn-secondary" onClick={()=>this.setState({hasError:false,error:null})}>Try Again</button>
