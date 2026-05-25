@@ -687,7 +687,7 @@ const _dbLoad = async (opts={}) => {
     // Messages: attach read_by array and parse tagged_members
     const messages=msgRaw.map(m=>{const tm=m.tagged_members;const mapped={...m,text:m.body||m.text,ts:m.created_at||m.ts};delete mapped.body;return{...mapped,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
-    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>{const noDeco=p.deco_type==='no_deco';const dt=noDeco?[]:(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||''}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,no_deco:noDeco,art_ready:!!p.art_ready,_artwork:p._artwork||[]}})}));
+    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>{const noDeco=p.deco_type==='no_deco';const dt=noDeco?[]:(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const ci=(p.art_cust_ids||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||'',...(ci[i]?{_cust_art_id:ci[i]}:{})}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,no_deco:noDeco,art_ready:!!p.art_ready,_artwork:p._artwork||[]}})}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     // True if any SO/estimate child-row query timed out — used to skip polls and warn on initial load
@@ -737,7 +737,7 @@ const _dbSeed = async (d) => {
   // Seed OMG stores
   if(d.omg_stores?.length){
     await supabase.from('omg_stores').upsert(d.omg_stores.map(s=>_pick(s,_omgStoreCols)),{onConflict:'id'});
-    const allProds=[];d.omg_stores.forEach(s=>(s.products||[]).forEach(p=>allProds.push({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes,image_url:p.image_url||'',manufacturer:p.manufacturer||'',art_ready:!!p.art_ready})));
+    const allProds=[];d.omg_stores.forEach(s=>(s.products||[]).forEach(p=>allProds.push({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes,image_url:p.image_url||'',manufacturer:p.manufacturer||'',art_ready:!!p.art_ready,art_cust_ids:(p.decorations||[]).map(d=>d._cust_art_id||'').join('|')})));
     if(allProds.length) await supabase.from('omg_store_products').upsert(allProds,{onConflict:'store_id,sku'});
   }
 };
@@ -3207,7 +3207,7 @@ export default function App(){
     const oldProds=JSON.stringify((old?.products||[]).map(p=>p.sku+p.cost+(p.decorations||[]).map(d=>d.type+':'+d.art_group).join('|')+p.vendor_id).sort());
     const newProds=JSON.stringify((s.products||[]).map(p=>p.sku+p.cost+(p.decorations||[]).map(d=>d.type+':'+d.art_group).join('|')+p.vendor_id).sort());
     if(oldProds!==newProds&&(s.products||[]).length>0){
-      const prods=(s.products||[]).map(p=>({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.no_deco?'no_deco':((p.decorations||[]).map(d=>d.type).join('|')||''),deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',vendor_id:p.vendor_id||'',art_group:(p.decorations||[]).map(d=>d.art_group).join('|')||'',_cost_source:p._cost_source||'',art_ready:!!p.art_ready}));
+      const prods=(s.products||[]).map(p=>({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.no_deco?'no_deco':((p.decorations||[]).map(d=>d.type).join('|')||''),deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',vendor_id:p.vendor_id||'',art_group:(p.decorations||[]).map(d=>d.art_group).join('|')||'',art_cust_ids:(p.decorations||[]).map(d=>d._cust_art_id||'').join('|'),_cost_source:p._cost_source||'',art_ready:!!p.art_ready}));
       // Delete old products and insert fresh (handles SKU changes)
       if(supabase){supabase.from('omg_store_products').delete().eq('store_id',s.id).then(()=>{supabase.from('omg_store_products').insert(prods).then(r=>{if(r.error)console.error('[DB] omg products save:',r.error.message)})})}
     }
@@ -13151,6 +13151,10 @@ export default function App(){
     // Store detail view
     if(omgSel){
       const s=omgSel;const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
+      // Customer art library (this account + parent), de-duped by id — used to
+      // assign existing logos to store products instead of inventing new ones.
+      const custArt=(()=>{if(!c)return[];const ids=c.parent_id?[c.parent_id,c.id]:[c.id];const seen=new Map();ids.forEach(cid=>{const cc=cust.find(x=>x.id===cid);(cc?.art_files||[]).forEach(a=>{if(a&&a.id&&!seen.has(a.id))seen.set(a.id,a)})});return[...seen.values()]})();
+      const custArtById=Object.fromEntries(custArt.map(a=>[a.id,a]));
       const totalCost=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
       const totalRetail=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
       const storeFees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);
@@ -13182,28 +13186,36 @@ export default function App(){
               const needArt=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);
               if(needArt.length){nf(`${needArt.length} item(s) need an art group or "No Deco": ${needArt.slice(0,6).map(p=>p.sku).join(', ')}${needArt.length>6?'…':''}`,'error');return;}
               // Build art files from unique art_group labels across all decorations
-              const artGroups=[...new Set((s.products||[]).flatMap(p=>(p.decorations||[]).map(d=>d.art_group)).filter(Boolean))];
-              const artFiles=artGroups.map((g,idx)=>{
-                const sampleDeco=(s.products||[]).flatMap(p=>(p.decorations||[]).filter(d=>d.art_group===g))[0];
-                // Carry each grouped SKU's OMG mockup onto the art file, keyed by
-                // sku|color, so the art and production views show the right mock
-                // per item even when several SKUs share one logo/art group.
-                const groupProds=(s.products||[]).filter(p=>(p.decorations||[]).some(d=>d.art_group===g));
-                const item_mockups={};let preview='';
-                groupProds.forEach(p=>{
-                  const img=p.image_url||'';if(!img)return;if(!preview)preview=img;
-                  item_mockups[p.sku+'|'+(p.color||'')]=[img];
-                });
-                // The OMG store mockups are the customer-approved proof, so the
-                // art file starts approved — the job lands in the art board's
-                // "needs files" stage, skipping the art-request/approval cycle.
-                // When the rep marked the group "on file" (logo already in our
-                // system), drop in the standard on-file production marker so the
-                // job is computed as art-complete and skips straight to production.
+              // Each distinct art is either a customer-library logo (keyed by its
+              // saved art id) or a new named group. Build one art file per identity.
+              const artKeyOf=d=>d._cust_art_id?'lib:'+d._cust_art_id:(d.art_group?'name:'+d.art_group:null);
+              const artKeys=[];const seenArtKey=new Set();
+              (s.products||[]).forEach(p=>(p.decorations||[]).forEach(d=>{const k=artKeyOf(d);if(k&&!seenArtKey.has(k)){seenArtKey.add(k);artKeys.push({key:k,deco:d})}}));
+              const artKeyToId={};
+              const artFiles=artKeys.map(({key,deco},idx)=>{
+                const id='af_omg_'+idx;artKeyToId[key]=id;
+                const groupProds=(s.products||[]).filter(p=>(p.decorations||[]).some(d=>artKeyOf(d)===key));
+                // OMG mockup per SKU in this group, keyed sku|color.
+                const omgMocks={};let preview='';
+                groupProds.forEach(p=>{const img=p.image_url||'';if(!img)return;if(!preview)preview=img;omgMocks[p.sku+'|'+(p.color||'')]=[img]});
+                const src=deco._cust_art_id?custArtById[deco._cust_art_id]:null;
+                if(src){
+                  // Apply the customer's saved logo — its files, color ways, and
+                  // approval/production status come with it (so a fully-prepped
+                  // logo lands art-complete) — then layer in the OMG mockups.
+                  const copy=JSON.parse(JSON.stringify(src));
+                  const item_mockups={...(copy.item_mockups||{})};
+                  Object.entries(omgMocks).forEach(([k2,v])=>{if(!item_mockups[k2])item_mockups[k2]=v});
+                  return{...copy,id,item_mockups,preview_url:copy.preview_url||preview,uploaded:new Date().toLocaleDateString(),
+                    notes:(copy.notes?copy.notes+' · ':'')+'Applied from customer library — OMG store '+s.store_name};
+                }
+                // New logo: the OMG mockup is the approved proof, so the art file
+                // starts approved and the job lands in the "needs files" stage.
+                // "On file" adds the standard production marker → art-complete.
                 const ready=groupProds.length>0&&groupProds.every(p=>p.art_ready);
                 const prod_files=ready?[{name:'Existing art on file',on_file:true,at:new Date().toISOString(),by:cu?.name||'Rep'}]:[];
-                return{id:'af_omg_'+idx,name:g,deco_type:sampleDeco?.type||'screen_print',
-                  ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],item_mockups,preview_url:preview,prod_files,
+                return{id,name:deco.art_group,deco_type:deco.type||'screen_print',
+                  ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],item_mockups:omgMocks,preview_url:preview,prod_files,
                   notes:'From OMG store '+s.store_name+(ready?' — logo on file, art ready':' — mockup is the approved proof'),status:'approved',approved_at:new Date().toISOString(),uploaded:new Date().toLocaleDateString()};
               });
               // Build SO items from imported products
@@ -13221,7 +13233,7 @@ export default function App(){
                   available_sizes:Object.keys(p.sizes||{}),
                   _colorImage:p.image_url||'',
                   no_deco:p.no_deco||decos.length===0,
-                  decorations:decos.map((d,di)=>{const artFileId=d.art_group?artFiles.find(af=>af.name===d.art_group)?.id||null:null;return{kind:'art',position:positions[di]||'Position '+(di+1),type:d.type,art_file_id:artFileId,sell_override:0,sell_each:0,cost_each:0}}),
+                  decorations:decos.map((d,di)=>{const k=artKeyOf(d);const artFileId=k?artKeyToId[k]||null:null;return{kind:'art',position:positions[di]||'Position '+(di+1),type:d.type||(d._cust_art_id&&custArtById[d._cust_art_id]?.deco_type)||'screen_print',art_file_id:artFileId,sell_override:0,sell_each:0,cost_each:0}}),
                   pick_lines:[],po_lines:[],
                 };
               });
@@ -13476,10 +13488,15 @@ export default function App(){
                 <div style={{display:'flex',flexDirection:'column',gap:2}}>
                   {(p.decorations||[]).map((d,di)=>{const [label,bg,fg]=d.type==='screen_print'?['SP','#dbeafe','#1e40af']:d.type==='embroidery'?['EMB','#ede9fe','#6d28d9']:['HTV','#fef3c7','#92400e'];
                     return <div key={di} style={{display:'flex',alignItems:'center',gap:2}}>
-                      <span style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:800,background:bg,color:fg,border:`2px solid ${fg}`}}>{d.art_group||label}</span>
+                      <span title={d._cust_art_id?'From customer art library':''} style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:800,background:bg,color:fg,border:`2px solid ${fg}`}}>{d._cust_art_id?'📁 ':''}{d.art_group||label}</span>
                       <button onClick={()=>updateDecos((p.decorations||[]).filter((_,j)=>j!==di))} style={{fontSize:12,color:'#94a3b8',cursor:'pointer',border:'none',background:'none',padding:'0 2px',lineHeight:1}}>&times;</button>
                     </div>})}
-                  <div style={{display:'flex',gap:2}}>
+                  <div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
+                    {custArt.length>0&&<select value="" title="Apply a logo already on this customer" onChange={e=>{if(!e.target.value)return;const a=custArtById[e.target.value];if(a)updateDecos([...(p.decorations||[]),{type:a.deco_type||'screen_print',art_group:a.name||'Logo',_cust_art_id:a.id}]);e.target.value=''}}
+                      style={{padding:'2px 4px',borderRadius:3,fontSize:9,fontWeight:700,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer',maxWidth:120,appearance:'none'}}>
+                      <option value="">📁 Customer logo…</option>
+                      {custArt.map(a=><option key={a.id} value={a.id}>{a.name||'Untitled'} ({(a.deco_type||'').replace(/_/g,' ')})</option>)}
+                    </select>}
                     {[['SP','screen_print'],['EMB','embroidery'],['HTV','heat_press']].map(([label,type])=>{
                       const pfx=type==='screen_print'?'SP':type==='embroidery'?'EMB':'HTV';
                       const existing=[...new Set((s.products||[]).flatMap(pr=>(pr.decorations||[]).filter(d=>d.type===type).map(d=>d.art_group)).filter(Boolean))].sort();
@@ -13504,6 +13521,11 @@ export default function App(){
                   return <div style={{display:'flex',flexDirection:'column',gap:2}}>
                     {decos.map((d,di)=>{
                       const color=d.type==='screen_print'?'#1e40af':d.type==='embroidery'?'#6d28d9':'#92400e';
+                      // Library-linked logos carry their own name + production status,
+                      // so the name is read-only and there's no "on file" toggle.
+                      if(d._cust_art_id)return <div key={di} title="From customer art library — art & files come from the saved logo" style={{display:'flex',alignItems:'center',gap:3,fontSize:9,fontWeight:700,color}}>
+                        <span>📁 {d.art_group||'Logo'}</span>
+                      </div>;
                       return <div key={di} style={{display:'flex',alignItems:'center',gap:4}}>
                         <input type="text" value={d.art_group||''} placeholder="name..."
                           onChange={e=>{const val=e.target.value;updateDecos((p.decorations||[]).map((dd,j)=>j===di?{...dd,art_group:val}:dd))}}
