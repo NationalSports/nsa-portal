@@ -66,7 +66,7 @@ function isMissingTable(err) {
   return err.code === '42P01' || m.includes('does not exist') || m.includes('could not find the table') || m.includes('schema cache');
 }
 
-function Webstores({ cust = [], REPS = [], onCreateSO }) {
+function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
   const [stores, setStores] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -156,6 +156,12 @@ function Webstores({ cust = [], REPS = [], onCreateSO }) {
     const { error } = await supabase.from('webstore_products').update({ image_url: url || null }).eq('id', id);
     if (error) { flash('Error: ' + error.message); return; }
     flash(url ? 'Image updated' : 'Image removed'); loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
+  const updateCatalogItem = useCallback(async (id, fields) => {
+    const { error } = await supabase.from('webstore_products').update(fields).eq('id', id);
+    if (error) { flash('Error: ' + error.message); return; }
+    flash('Item updated'); loadDetail(sel);
   }, [sel, flash, loadDetail]);
 
   const createBundle = useCallback(async ({ name, price, fundraise, image_url, components }) => {
@@ -273,8 +279,8 @@ function Webstores({ cust = [], REPS = [], onCreateSO }) {
         <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab}
           custName={custName} repName={repName}
           onBack={() => { setSel(null); setDetail(null); }}
-          onEdit={() => setEditing(sel)}
-          onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} />
+          onEdit={() => setEditing(sel)} onOpenSO={onOpenSO}
+          onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} onUpdateItem={updateCatalogItem} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} />
       )}
@@ -515,7 +521,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onUpdateItem }) {
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
   const catalog = detail?.catalog || [];
@@ -527,6 +533,12 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
   const fundraiseTotal = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const playerCount = new Set(orderItems.map((i) => (i.player_name || '').trim().toLowerCase()).filter(Boolean)).size;
   const notOrdered = roster.filter((r) => !r.ordered);
+  // Sales Orders created from this store's batches, with how many orders each covers.
+  const soSummary = (() => {
+    const m = {};
+    orders.forEach((o) => { if (o.so_id) m[o.so_id] = (m[o.so_id] || 0) + 1; });
+    return Object.entries(m).map(([id, count]) => ({ id, count }));
+  })();
 
   const TABS = [
     { id: 'catalog', label: `Catalog (${catalog.length})` },
@@ -561,13 +573,23 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
         </div>
       </div></div>
 
+      {soSummary.length > 0 && <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5 }}>Sales Orders created</span>
+        {soSummary.map((so) => (
+          <button key={so.id} onClick={() => onOpenSO && onOpenSO(so.id)} title="Open in Sales Orders"
+            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 8, border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1e40af', cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'monospace' }}>
+            {so.id} <span style={{ fontFamily: 'inherit', fontWeight: 500, color: '#64748b' }}>· {so.count} order{so.count === 1 ? '' : 's'} ↗</span>
+          </button>
+        ))}
+      </div></div>}
+
       <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
         {TABS.map((t) => <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(t.id)}>{t.label}</button>)}
       </div>
 
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} />}
+          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onUpdateItem={onUpdateItem} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} />}
           {tab === 'roster' && <RosterTab roster={roster} notOrdered={notOrdered} />}
           {tab === 'settings' && <SettingsTab store={s} />}
@@ -639,9 +661,10 @@ function stockText(stock) {
 }
 
 // ── Catalog tab with editing ─────────────────────────────────────────
-function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder }) {
+function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onUpdateItem }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
+  const [editId, setEditId] = useState(null); // catalog row being edited inline
   const [expandAll, setExpandAll] = useState(false);
   const [openRows, setOpenRows] = useState(() => new Set());
   const toggleRow = (id) => setOpenRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -673,7 +696,8 @@ function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBund
                 const fund = Number(p.fundraise_amount) || 0;
                 const open = expandAll || openRows.has(p.id);
                 return (
-                  <tr key={p.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                  <React.Fragment key={p.id}>
+                  <tr style={{ borderTop: '1px solid #f1f5f9' }}>
                     <td style={{ ...td, whiteSpace: 'nowrap' }}>
                       <button onClick={() => onReorder(p, 'up')} disabled={i === 0} title="Move up" style={arrowBtn(i === 0)}>▲</button>
                       <button onClick={() => onReorder(p, 'down')} disabled={i === ordered.length - 1} title="Move down" style={arrowBtn(i === ordered.length - 1)}>▼</button>
@@ -701,8 +725,15 @@ function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBund
                         </div>
                       )}
                     </td>
-                    <td style={{ ...td, textAlign: 'right' }}><button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => onRemove(p.id, label)}>Remove</button></td>
+                    <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <button className="btn btn-sm btn-secondary" onClick={() => setEditId(editId === p.id ? null : p.id)}>{editId === p.id ? 'Close' : 'Edit'}</button>
+                      <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c', marginLeft: 6 }} onClick={() => onRemove(p.id, label)}>Remove</button>
+                    </td>
                   </tr>
+                  {editId === p.id && <tr><td colSpan={9} style={{ background: '#f8fafc', padding: 0 }}>
+                    <CatalogItemEditor item={p} defaultName={stock?.name} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
+                  </td></tr>}
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -710,6 +741,43 @@ function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBund
         </div></div>
       )}
     </>
+  );
+}
+
+// Inline editor for an existing catalog item (single or bundle).
+function CatalogItemEditor({ item, defaultName, onCancel, onSave }) {
+  const isBundle = item.kind === 'bundle';
+  const [name, setName] = useState(item.display_name || (isBundle ? '' : ''));
+  const [price, setPrice] = useState(item.retail_price || 0);
+  const [fundraise, setFundraise] = useState(item.fundraise_amount || 0);
+  const [takesNumber, setTakesNumber] = useState(!!item.takes_number);
+  const [takesName, setTakesName] = useState(!!item.takes_name);
+  const [nameUp, setNameUp] = useState(item.name_upcharge || 0);
+  const total = (Number(price) || 0) + (Number(fundraise) || 0);
+  const save = () => {
+    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: name.trim() || null };
+    if (!isBundle) { fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0; }
+    onSave(fields);
+  };
+  return (
+    <div style={{ padding: 16 }}>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <Row label={isBundle ? 'Package name' : 'Display name (optional override)'}><input className="form-input" value={name} onChange={(e) => setName(e.target.value)} placeholder={defaultName || ''} /></Row>
+        <Row label="Price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Row>
+        <Row label="Fundraising (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} /></Row>
+        <Row label="Shopper pays"><div className="form-input" style={{ background: '#fff', fontWeight: 700 }}>{money(total)}</div></Row>
+      </div>
+      {!isBundle && <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
+        <Toggle label="Player adds a number" checked={takesNumber} onChange={setTakesNumber} />
+        <Toggle label="Player adds a name" checked={takesName} onChange={setTakesName} />
+        {takesName && <label style={{ fontSize: 13 }}>Name upcharge +$<input className="form-input" style={{ width: 80, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={nameUp} onChange={(e) => setNameUp(e.target.value)} /></label>}
+      </div>}
+      {isBundle && <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>To change which items are in this package or their number/name options, remove and re-create the package.</div>}
+      <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+        <button className="btn btn-primary" onClick={save}>Save changes</button>
+        <button className="btn btn-secondary" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
   );
 }
 
