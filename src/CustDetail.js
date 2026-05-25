@@ -772,6 +772,19 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       setCustArtDetail(d=>d?{...d,_allMockups:(d._allMockups||[]).map(x=>x.url===url?{...x,file:{...(typeof x.file==='string'?{url:x.file}:(x.file||{url})),color_way:cwColor}}:x)}:d);
       nf&&nf('Mock tagged as '+cwColor);
     };
+    // Persist color-way edits for this logo across every matching art record (orders + customer library).
+    // Uses the lightweight art-files save so items/POs are never re-persisted.
+    const persistColorWays=(newCws)=>{
+      if(saveArt)custSOs.forEach(so=>{
+        let changed=false;
+        const updArt=(so.art_files||[]).map(a=>{if(!_logoMatch(a))return a;changed=true;return{...a,color_ways:newCws}});
+        if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
+      });
+      const lib=customer.art_files||[];
+      if(onRefreshCustomer&&lib.some(_logoMatch))onRefreshCustomer({...customer,art_files:lib.map(a=>_logoMatch(a)?{...a,color_ways:newCws}:a)});
+      setCustArtDetail(d=>d?{...d,color_ways:newCws}:d);
+    };
+    const cws=art.color_ways||[];
     return<div className="modal-overlay" onClick={()=>setCustArtDetail(null)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header"><h2>{art.name||'Untitled'}</h2><button className="modal-close" onClick={()=>setCustArtDetail(null)}>x</button></div>
       <div className="modal-body">
@@ -782,6 +795,34 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           {art.ink_colors&&<div><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Colors</span><div style={{fontSize:12}}>{art.ink_colors.split('\n').filter(l=>l.trim()).map((c,ci)=><div key={ci} style={{fontWeight:600}}>{c.trim()}</div>)}</div></div>}
           {art.thread_colors&&<div><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Thread</span><div style={{fontSize:13,fontWeight:600}}>{art.thread_colors}</div></div>}
           <div><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Status</span><div><span style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,background:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).bg,color:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).c}}>{(art.status||'waiting_for_art').replace(/_/g,' ')}</span></div></div>
+        </div>
+        {/* Color Ways (editable) */}
+        <div style={{marginBottom:16}}>
+          <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#475569'}}>Color Ways ({cws.length})</div>
+            <span style={{fontSize:10,color:'#94a3b8'}}>{art.deco_type==='embroidery'?'Thread colors per garment':'Ink colors per garment'}</span>
+          </div>
+          {saveArt?<>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
+              {cws.map((cw,ci)=><div key={cw.id||ci} style={{flex:'1 1 220px',minWidth:220,maxWidth:360,background:'white',border:'1px solid #e2e8f0',borderRadius:8,padding:10}}>
+                <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:6}}>
+                  <span style={{fontSize:11,fontWeight:700,color:'#475569'}}>CW {ci+1}</span>
+                  <input className="form-input" value={cw.garment_color||''} onChange={e=>{const n=[...cws];n[ci]={...cw,garment_color:e.target.value};persistColorWays(n)}} placeholder="Garment color..." style={{fontSize:11,flex:1}}/>
+                  <button onClick={()=>persistColorWays(cws.filter((_,x)=>x!==ci))} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:2}} title="Remove CW"><Icon name="trash" size={12}/></button>
+                </div>
+                {(cw.inks||[]).map((ink,ii)=><div key={ii} style={{display:'flex',gap:4,alignItems:'center',marginBottom:3}}>
+                  <span style={{fontSize:10,color:'#94a3b8',width:14,textAlign:'right'}}>{ii+1}</span>
+                  {pantoneHex(ink)&&<span style={{width:12,height:12,borderRadius:2,background:pantoneHex(ink),border:'1px solid #d1d5db',flexShrink:0}}/>}
+                  <input className="form-input" value={ink} onChange={e=>{const n=[...cws];const inks=[...(cw.inks||[])];inks[ii]=e.target.value;n[ci]={...cw,inks};persistColorWays(n)}} placeholder={art.deco_type==='embroidery'?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1}}/>
+                  <button onClick={()=>{const n=[...cws];n[ci]={...cw,inks:(cw.inks||[]).filter((_,x)=>x!==ii)};persistColorWays(n)}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:2}}><Icon name="x" size={10}/></button>
+                </div>)}
+                {art.deco_type==='embroidery'?<ThreadQuickPicks colors={mergeColors(customer,allCustomers,'thread_colors')} onPick={v=>{const n=[...cws];const inks=[...(cw.inks||[])];const e2=inks.findIndex(x=>!x);if(e2>=0)inks[e2]=v;else inks.push(v);n[ci]={...cw,inks};persistColorWays(n)}}/>
+                :<PantoneQuickPicks colors={mergeColors(customer,allCustomers,'pantone_colors')} onPick={v=>{const n=[...cws];const inks=[...(cw.inks||[])];const e2=inks.findIndex(x=>!x);if(e2>=0)inks[e2]=v;else inks.push(v);n[ci]={...cw,inks};persistColorWays(n)}}/>}
+                <button onClick={()=>{const n=[...cws];n[ci]={...cw,inks:[...(cw.inks||[]),'']};persistColorWays(n)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#2563eb',padding:'2px 0'}}>+ Add color</button>
+              </div>)}
+            </div>
+            <button onClick={()=>persistColorWays([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{background:'none',border:'1px dashed #cbd5e1',borderRadius:6,cursor:'pointer',fontSize:11,color:'#475569',padding:'6px 12px',fontWeight:600}}>+ Add Color Way</button>
+          </>:(cws.length>0?<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{cws.map((cw,ci)=><span key={cw.id||ci} style={{fontSize:11,padding:'2px 8px',background:'#f1f5f9',borderRadius:6,color:'#475569',fontWeight:600}}>{cw.garment_color||'CW '+(ci+1)}</span>)}</div>:<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No color ways</div>)}
         </div>
         {/* All mockup versions */}
         <div style={{marginBottom:16}}>
