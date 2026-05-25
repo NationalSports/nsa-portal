@@ -3,6 +3,35 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
 import { cloudUpload } from './utils';
 import { shipStationCall } from './vendorApis';
+import { NSA } from './constants';
+
+const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
+
+// Create a ShipStation label (base64 PDF) for one ship-to-home webstore order.
+async function createWebstoreLabel(order, items, store) {
+  const a = order.ship_address || {};
+  const ss = await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(webstoreToShipStation(order, items, store)) });
+  const orderId = ss && ss.orderId;
+  if (!orderId) throw new Error('ShipStation order not created');
+  if (Number(store.shipstation_tag_id)) { try { await shipStationCall('/orders/addtag', { method: 'POST', body: JSON.stringify({ orderId, tagId: Number(store.shipstation_tag_id) }) }); } catch {} }
+  const cm = SS_CARRIERS[(store.shipstation_carrier || 'fedex').toLowerCase()] || SS_CARRIERS.fedex;
+  const payload = {
+    orderId, carrierCode: cm.carrierCode, serviceCode: store.shipstation_service || cm.serviceCode,
+    packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
+    weight: { value: Number(store.label_weight_lbs) || 1, units: 'pounds' },
+    shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
+    shipTo: { name: a.name || order.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: order.buyer_phone || '' },
+    testLabel: false,
+  };
+  const res = await shipStationCall('/orders/createlabelfororder', { method: 'POST', body: JSON.stringify(payload) });
+  return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode };
+}
+
+// Render base64 PDF labels into one printable window.
+function printLabels(labels) {
+  const embeds = labels.map((b64) => `<div class="lp"><embed src="data:application/pdf;base64,${b64}" type="application/pdf" width="100%" height="100%"></div>`).join('');
+  printHtml(`<!doctype html><html><head><title>Shipping labels</title><style>body{margin:0}.lp{width:100%;height:6in;page-break-after:always}</style></head><body>${embeds || 'No labels.'}</body></html>`);
+}
 
 // Print an HTML doc via a popup window (packing lists / player reports).
 function printHtml(html) {
@@ -275,7 +304,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     const { data: bundle, error } = await supabase.from('webstore_products').insert({ store_id: sel.id, kind: 'bundle', display_name: name, retail_price: price, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, active: true, sort_order: (detail?.catalog?.length || 0) }).select().single();
     if (error) { flash('Error: ' + error.message); return; }
     if (components.length) {
-      const rows = components.map((c, i) => ({ bundle_id: bundle.id, product_id: c.product_id, sku: c.sku, qty: c.qty || 1, size_required: c.size_required !== false, takes_number: !!c.takes_number, takes_name: !!c.takes_name, name_upcharge: Number(c.name_upcharge) || 0, transfer_code: c.transfer_code || null, sort_order: i }));
+      const rows = components.map((c, i) => ({ bundle_id: bundle.id, product_id: c.product_id, sku: c.sku, qty: c.qty || 1, size_required: c.size_required !== false, takes_number: !!c.takes_number, takes_name: !!c.takes_name, name_upcharge: Number(c.name_upcharge) || 0, transfer_code: c.transfer_code || null, num_transfer_size: c.takes_number ? c.num_transfer_size : null, num_transfer_color: c.takes_number ? c.num_transfer_color : null, sort_order: i }));
       const { error: e2 } = await supabase.from('webstore_bundle_items').insert(rows);
       if (e2) { flash('Bundle created but items failed: ' + e2.message); loadDetail(sel); return; }
     }
@@ -483,7 +512,7 @@ const BLANK = {
   open_at: '', close_at: '',
   payment_mode: 'paid', require_login: false,
   delivery_mode: 'ship_home',
-  shipstation_store_id: '', shipstation_tag_id: '',
+  shipstation_store_id: '', shipstation_tag_id: '', shipstation_carrier: 'fedex', shipstation_service: '', label_weight_lbs: 1,
   director_name: '', director_email: '', director_phone: '',
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
   so_creation: 'manual',
@@ -516,6 +545,7 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
     payload.rep_id = payload.rep_id || null;
     payload.open_at = payload.open_at || null;
     payload.close_at = payload.close_at || null;
+    payload.label_weight_lbs = Number(payload.label_weight_lbs) || 1;
     const r = await onSave(payload);
     setBusy(false);
     if (r?.error) setError(r.error.message || 'Save failed.');
@@ -568,6 +598,11 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
           <Row label="ShipStation Tag ID (optional)"><input className="form-input" value={f.shipstation_tag_id || ''} onChange={(e) => set('shipstation_tag_id', e.target.value)} placeholder="team tag id" /></Row>
         </div>
         <div style={{ fontSize: 11, color: '#94a3b8', marginTop: -4 }}>Ship-to-home orders pushed to ShipStation route into that Store and get tagged (create a tag named after the team in ShipStation, paste its id). The team name is also set as the order's customer.</div>
+        <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
+          <Row label="Label carrier"><select className="form-select" value={f.shipstation_carrier || 'fedex'} onChange={(e) => set('shipstation_carrier', e.target.value)}>{['fedex', 'ups', 'usps'].map((c) => <option key={c} value={c}>{c.toUpperCase()}</option>)}</select></Row>
+          <Row label="Service code (optional)"><input className="form-input" value={f.shipstation_service || ''} onChange={(e) => set('shipstation_service', e.target.value)} placeholder="fedex_ground" /></Row>
+          <Row label="Weight per order (lbs)"><input className="form-input" type="number" step="0.1" value={f.label_weight_lbs} onChange={(e) => set('label_weight_lbs', e.target.value)} /></Row>
+        </div>
       </Section>
 
       <Section title="Jersey numbers">
@@ -804,7 +839,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, transfers = [], onAddSing
 
       {mode === 'single' && !pending && <ProductSearch label="Add a product to this store" onPick={(p) => setPending(p)} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} onCancel={() => setPending(null)} onAdd={(opts) => { onAddSingle(opts); setMode(null); setPending(null); }} />}
-      {mode === 'bundle' && <BundleBuilder storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
 
       {catalog.length === 0 ? <Empty msg="No products in this store's catalog yet. Add one above." /> : (
         <div className="card"><div style={{ overflowX: 'auto' }}>
@@ -1021,7 +1056,7 @@ function ProductSearch({ label, onPick, onClose, compact }) {
   );
 }
 
-function BundleBuilder({ storeItems = [], onCreate, onClose }) {
+function BundleBuilder({ storeItems = [], designOptions = [], numberSets = [], onCreate, onClose }) {
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
   const [fundraise, setFundraise] = useState('');
@@ -1029,7 +1064,7 @@ function BundleBuilder({ storeItems = [], onCreate, onClose }) {
   const [components, setComponents] = useState([]);
   const [picking, setPicking] = useState(false);
   // ProductSearch returns {id,sku,name}; store items already carry {product_id,sku,name}.
-  const addComp = (p) => { setComponents((c) => [...c, { product_id: p.product_id || p.id, sku: p.sku, name: p.name, qty: 1, size_required: true, takes_number: false, takes_name: false, name_upcharge: 0 }]); setPicking(false); };
+  const addComp = (p) => { setComponents((c) => [...c, { product_id: p.product_id || p.id, sku: p.sku, name: p.name, qty: 1, size_required: true, takes_number: false, takes_name: false, name_upcharge: 0, transfer_code: '', num_transfer_size: null, num_transfer_color: null }]); setPicking(false); };
   const addedKeys = new Set(components.map((c) => c.product_id));
   const upd = (i, k, v) => setComponents((c) => c.map((x, idx) => (idx === i ? { ...x, [k]: v } : x)));
   const rm = (i) => setComponents((c) => c.filter((_, idx) => idx !== i));
@@ -1055,6 +1090,10 @@ function BundleBuilder({ storeItems = [], onCreate, onClose }) {
           <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={c.takes_name} onChange={(e) => upd(i, 'takes_name', e.target.checked)} />add name</label>
           {c.takes_name && <label style={{ fontSize: 12 }}>name +$<input type="number" step="0.01" min={0} value={c.name_upcharge} onChange={(e) => upd(i, 'name_upcharge', Number(e.target.value) || 0)} style={{ width: 60, marginLeft: 2 }} /></label>}
           <button onClick={() => rm(i)} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer' }}>remove</button>
+          <div style={{ flexBasis: '100%', display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 4 }}>
+            <label style={{ fontSize: 12 }}>Logo transfer <select value={c.transfer_code || ''} onChange={(e) => upd(i, 'transfer_code', e.target.value)} style={{ marginLeft: 4, fontSize: 12 }}><option value="">None</option>{designOptions.map((d) => <option key={d.code} value={d.code}>{d.label}</option>)}</select></label>
+            {c.takes_number && <label style={{ fontSize: 12 }}>Number set <select value={(c.num_transfer_size || '') + '|' + (c.num_transfer_color || '')} onChange={(e) => { const [s, cl] = e.target.value.split('|'); upd(i, 'num_transfer_size', s || null); upd(i, 'num_transfer_color', cl || null); }} style={{ marginLeft: 4, fontSize: 12 }}><option value="|">None</option>{numberSets.map((s, si) => <option key={si} value={`${s.size}|${s.color}`}>{s.size} · {s.color}</option>)}</select></label>}
+          </div>
         </div>
       ))}
       {storeItems.length > 0 && <div style={{ margin: '10px 0' }}>
@@ -1287,8 +1326,9 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     return linked.map((o) => ({ order: o, items: orderItems.filter((i) => i.order_id === o.id) }));
   };
   const printPacking = (soId, soLabel) => printHtml(buildPackingLists(store, soLabel, batchGroups(soId)));
+  const homeGroups = (soId) => batchGroups(soId).filter((g) => (g.order.ship_method || store.delivery_mode) !== 'deliver_club' && g.order.ship_address);
   const sendToShipStation = async (soId) => {
-    const groups = batchGroups(soId).filter((g) => (g.order.ship_method || store.delivery_mode) !== 'deliver_club' && g.order.ship_address);
+    const groups = homeGroups(soId);
     if (!groups.length) { setSsMsg((m) => ({ ...m, [soId]: 'No ship-to-home orders with addresses.' })); return; }
     setSsMsg((m) => ({ ...m, [soId]: `Sending ${groups.length}…` }));
     let ok = 0, fail = 0;
@@ -1301,6 +1341,21 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       } catch { fail++; }
     }
     setSsMsg((m) => ({ ...m, [soId]: `Sent ${ok} to ShipStation${fail ? `, ${fail} failed` : ''}. Bulk-print labels in ShipStation.` }));
+  };
+  const printShipLabels = async (soId) => {
+    const groups = homeGroups(soId);
+    if (!groups.length) { setSsMsg((m) => ({ ...m, [soId]: 'No ship-to-home orders with addresses.' })); return; }
+    setSsMsg((m) => ({ ...m, [soId]: `Creating ${groups.length} labels…` }));
+    const labels = []; let fail = 0;
+    for (const g of groups) {
+      try {
+        const { labelData, trackingNumber, carrier } = await createWebstoreLabel(g.order, g.items, store);
+        if (labelData) labels.push(labelData);
+        if (trackingNumber) { try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber, carrier }).eq('id', g.order.id); } catch {} }
+      } catch { fail++; }
+    }
+    if (labels.length) printLabels(labels);
+    setSsMsg((m) => ({ ...m, [soId]: `${labels.length} labels created${fail ? `, ${fail} failed` : ''}.` }));
   };
   const maps = buildTransferMaps(catalog, bundleItems);
   const transferLabel = (code) => { const t = transfers.find((x) => x.code === code); if (t) return t.label; const [d, s, c] = code.split('|'); return s ? `#${d} · ${s} · ${c}` : code; };
@@ -1373,7 +1428,8 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
                 <div style={{ fontSize: 12, color: '#64748b' }}>{o.memo}</div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                   <button className="btn btn-sm btn-secondary" onClick={() => printPacking(o.id, o.id)}>🖨️ Packing lists</button>
-                  {shipHome && <button className="btn btn-sm btn-secondary" onClick={() => sendToShipStation(o.id)}>📦 Send home orders to ShipStation</button>}
+                  {shipHome && <button className="btn btn-sm btn-secondary" onClick={() => sendToShipStation(o.id)}>📦 Send to ShipStation</button>}
+                  {shipHome && <button className="btn btn-sm btn-secondary" onClick={() => printShipLabels(o.id)}>🏷️ Create & print labels</button>}
                 </div>
                 {ssMsg[o.id] && <div style={{ fontSize: 11, color: '#1e40af', marginTop: 4 }}>{ssMsg[o.id]}</div>}
               </div>
