@@ -687,7 +687,7 @@ const _dbLoad = async (opts={}) => {
     // Messages: attach read_by array and parse tagged_members
     const messages=msgRaw.map(m=>{const tm=m.tagged_members;const mapped={...m,text:m.body||m.text,ts:m.created_at||m.ts};delete mapped.body;return{...mapped,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
-    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>{const dt=(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||''}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,_artwork:p._artwork||[]}})}));
+    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>{const noDeco=p.deco_type==='no_deco';const dt=noDeco?[]:(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||''}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,no_deco:noDeco,_artwork:p._artwork||[]}})}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     // True if any SO/estimate child-row query timed out — used to skip polls and warn on initial load
@@ -3207,7 +3207,7 @@ export default function App(){
     const oldProds=JSON.stringify((old?.products||[]).map(p=>p.sku+p.cost+(p.decorations||[]).map(d=>d.type+':'+d.art_group).join('|')+p.vendor_id).sort());
     const newProds=JSON.stringify((s.products||[]).map(p=>p.sku+p.cost+(p.decorations||[]).map(d=>d.type+':'+d.art_group).join('|')+p.vendor_id).sort());
     if(oldProds!==newProds&&(s.products||[]).length>0){
-      const prods=(s.products||[]).map(p=>({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:(p.decorations||[]).map(d=>d.type).join('|')||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',vendor_id:p.vendor_id||'',art_group:(p.decorations||[]).map(d=>d.art_group).join('|')||'',_cost_source:p._cost_source||''}));
+      const prods=(s.products||[]).map(p=>({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.no_deco?'no_deco':((p.decorations||[]).map(d=>d.type).join('|')||''),deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',vendor_id:p.vendor_id||'',art_group:(p.decorations||[]).map(d=>d.art_group).join('|')||'',_cost_source:p._cost_source||''}));
       // Delete old products and insert fresh (handles SKU changes)
       if(supabase){supabase.from('omg_store_products').delete().eq('store_id',s.id).then(()=>{supabase.from('omg_store_products').insert(prods).then(r=>{if(r.error)console.error('[DB] omg products save:',r.error.message)})})}
     }
@@ -4196,6 +4196,7 @@ export default function App(){
           vendor_id: existing.vendor_id || p.vendor_id,
           deco_type: existing.deco_type || p.deco_type,
           art_group: existing.art_group || p.art_group,
+          no_deco: existing.no_deco || p.no_deco || false,
           decorations: (existing.decorations||[]).length>0 ? existing.decorations : p.decorations || [],
           // Keep an image already on the row if the fresh parse has none
           // (the shared report JSON carries no artwork for many stores).
@@ -13175,12 +13176,24 @@ export default function App(){
             {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
               if(sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
               const generatedId=nextSOId(sos);
+              // Every product must be assigned an art group or explicitly marked
+              // "No Deco" (shoes, socks, equipment) before it can become an SO.
+              const needArt=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);
+              if(needArt.length){nf(`${needArt.length} item(s) need an art group or "No Deco": ${needArt.slice(0,6).map(p=>p.sku).join(', ')}${needArt.length>6?'…':''}`,'error');return;}
               // Build art files from unique art_group labels across all decorations
               const artGroups=[...new Set((s.products||[]).flatMap(p=>(p.decorations||[]).map(d=>d.art_group)).filter(Boolean))];
               const artFiles=artGroups.map((g,idx)=>{
                 const sampleDeco=(s.products||[]).flatMap(p=>(p.decorations||[]).filter(d=>d.art_group===g))[0];
+                // Carry each grouped SKU's OMG mockup onto the art file, keyed by
+                // sku|color, so the art and production views show the right mock
+                // per item even when several SKUs share one logo/art group.
+                const item_mockups={};let preview='';
+                (s.products||[]).filter(p=>(p.decorations||[]).some(d=>d.art_group===g)).forEach(p=>{
+                  const img=p.image_url||'';if(!img)return;if(!preview)preview=img;
+                  item_mockups[p.sku+'|'+(p.color||'')]=[img];
+                });
                 return{id:'af_omg_'+idx,name:g,deco_type:sampleDeco?.type||'screen_print',
-                  ink_colors:'',thread_colors:'',art_size:'',files:[],mockup_files:[],prod_files:[],
+                  ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],item_mockups,preview_url:preview,prod_files:[],
                   notes:'From OMG store '+s.store_name,status:'pending',uploaded:new Date().toLocaleDateString()};
               });
               // Build SO items from imported products
@@ -13197,7 +13210,7 @@ export default function App(){
                   sizes:p.sizes||{},
                   available_sizes:Object.keys(p.sizes||{}),
                   _colorImage:p.image_url||'',
-                  no_deco:decos.length===0,
+                  no_deco:p.no_deco||decos.length===0,
                   decorations:decos.map((d,di)=>{const artFileId=d.art_group?artFiles.find(af=>af.name===d.art_group)?.id||null:null;return{kind:'art',position:positions[di]||'Position '+(di+1),type:d.type,art_file_id:artFileId,sell_override:0,sell_each:0,cost_each:0}}),
                   pick_lines:[],po_lines:[],
                 };
@@ -13217,6 +13230,7 @@ export default function App(){
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
               nf(`Created SO with ${soItems.length} items from ${s.store_name}`);
             }}>📋 Create Sales Order ({(s.products||[]).length} items)</button>}
+            {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&(()=>{const na=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);return na.length>0?<div style={{marginTop:6,padding:'6px 10px',background:'#fef3c7',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⚠️ {na.length} item{na.length>1?'s':''} need an art group or “No Deco” before creating the SO</div>:null})()}
             {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
               ✅ Already pulled → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>}
             {s.status!=='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -13406,7 +13420,12 @@ export default function App(){
             <table><thead><tr><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Art Group</th><th>Retail</th><th>Cost</th><th>Sizes</th><th>Units</th><th>Revenue</th></tr></thead>
             <tbody>{(s.products||[]).map((p,i)=>{const q=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);
               const updateDecos=(newDecos)=>{
-                const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,decorations:newDecos,deco_type:newDecos.map(d=>d.type).join('|'),art_group:newDecos.map(d=>d.art_group).join('|')}:pr);
+                const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,decorations:newDecos,deco_type:newDecos.length>0?newDecos.map(d=>d.type).join('|'):'',art_group:newDecos.map(d=>d.art_group).join('|'),...(newDecos.length>0?{no_deco:false}:{})}:pr);
+                const upd={...s,products:newProds};
+                setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
+              };
+              const setNoDeco=(v)=>{
+                const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,no_deco:v,...(v?{decorations:[],deco_type:'no_deco',art_group:''}:{deco_type:''})}:pr);
                 const upd={...s,products:newProds};
                 setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
               };
@@ -13433,7 +13452,13 @@ export default function App(){
                     </span>}
                   </div></td>
                 <td style={{fontSize:11}}>{p.color}</td>
-                <td><div style={{display:'flex',flexDirection:'column',gap:2}}>
+                <td>{p.no_deco?(
+                  <div style={{display:'flex',alignItems:'center',gap:4}}>
+                    <span style={{padding:'2px 8px',borderRadius:3,fontSize:9,fontWeight:800,background:'#f1f5f9',color:'#64748b',border:'2px solid #cbd5e1'}}>NO DECO</span>
+                    <button onClick={()=>setNoDeco(false)} title="Clear — this item gets decoration" style={{fontSize:12,color:'#94a3b8',cursor:'pointer',border:'none',background:'none',padding:'0 2px',lineHeight:1}}>&times;</button>
+                  </div>
+                ):(
+                <div style={{display:'flex',flexDirection:'column',gap:2}}>
                   {(p.decorations||[]).map((d,di)=>{const [label,bg,fg]=d.type==='screen_print'?['SP','#dbeafe','#1e40af']:d.type==='embroidery'?['EMB','#ede9fe','#6d28d9']:['HTV','#fef3c7','#92400e'];
                     return <div key={di} style={{display:'flex',alignItems:'center',gap:2}}>
                       <span style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:800,background:bg,color:fg,border:`2px solid ${fg}`}}>{d.art_group||label}</span>
@@ -13455,8 +13480,9 @@ export default function App(){
                         </select>
                       </div>}
                     )}
+                    <button onClick={()=>setNoDeco(true)} title="Mark as no decoration (shoes, socks, equipment)" style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:700,border:'1px dashed #cbd5e1',background:'#f8fafc',color:'#94a3b8',cursor:'pointer'}}>No Deco</button>
                   </div>
-                </div></td>
+                </div>)}</td>
                 <td>{(()=>{
                   const decos=p.decorations||[];
                   if(decos.length===0)return <span style={{fontSize:11,color:'#94a3b8'}}>—</span>;
