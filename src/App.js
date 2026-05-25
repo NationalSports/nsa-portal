@@ -2796,6 +2796,7 @@ export default function App(){
           if(as.batch_counter)setBatchCounter(as.batch_counter);
           if(as.change_log)setChangeLog(as.change_log);
           if(as.so_history)setSOHistory(as.so_history);
+          if(as.wh_recent_actions)setWhRecentActions(as.wh_recent_actions);
           if(as.job_time_logs)setJobTimeLogs(as.job_time_logs);
           if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:{..._qbDef.mapping,...(as.qb_config.mapping||{})},syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
           if(as.inv_pos)setInvPOs(as.inv_pos);
@@ -2822,7 +2823,7 @@ export default function App(){
             try{
               await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
               if(issues?.length) _dbSave('issues',issues.map(i=>_pick(i,_issueCols)));
-              const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo};
+              const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo,wh_recent_actions:whRecentActions};
               for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
               await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
               console.log('[DB] Seeded Supabase from localStorage');
@@ -2859,7 +2860,7 @@ export default function App(){
               try{
                 await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
                 if(issues?.length) _dbSave('issues',issues.map(i=>_pick(i,_issueCols)));
-                const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo};
+                const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo,wh_recent_actions:whRecentActions};
                 for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
                 await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
                 console.log('[DB] Seeded Supabase from localStorage (fallback)');
@@ -5183,8 +5184,8 @@ export default function App(){
       });
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'📌 Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
-        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'all',date:so.expected_date});
-        if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'📅 Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'production',date:so.expected_date})};
+        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'all',date:so.expected_date});
+        if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'📅 Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'production',date:so.expected_date})};
       if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'🛒 Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales',date:so.created_at});
       // Booking order confirmation todo — fires when within alert threshold of expected ship date
       if(so.order_type==='booking'&&!so.booking_confirmed&&so.expected_ship_date){
@@ -5301,7 +5302,7 @@ export default function App(){
     // Admin-view todos: filterable by rep selector
     const isAdmin=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
     const adminTodos=isAdmin?(()=>{const _seenAdmin=new Set();return todos.filter(t=>{
-      const _match=adminRepFilter==='all'||t.role==='all'||t.repId===(adminRepFilter==='me'?cu.id:adminRepFilter);
+      const _match=adminRepFilter==='all'||(t.role==='all'&&!t.repId)||t.repId===(adminRepFilter==='me'?cu.id:adminRepFilter);
       if(!_match)return false;
       // Same action can be pushed once per role (e.g. sales + csr) — collapse to one row on the all-roles admin view.
       if(_seenAdmin.has(t.dismissKey))return false;_seenAdmin.add(t.dismissKey);return true;
@@ -7364,8 +7365,8 @@ export default function App(){
       });
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
-        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'all',date:so.expected_date});
-        if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'production',date:so.expected_date})};
+        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'all',date:so.expected_date});
+        if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'production',date:so.expected_date})};
       if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales',date:so.created_at});
       if(so.order_type==='booking'&&!so.booking_confirmed&&so.expected_ship_date){
         const shipDaysOut=Math.ceil((new Date(so.expected_ship_date)-new Date())/(1000*60*60*24));
@@ -13618,7 +13619,7 @@ export default function App(){
   // WAREHOUSE DASHBOARD
   const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);const[whRecvPO,setWhRecvPO]=useState(null);const[whReceiving,setWhReceiving]=useState(false);const[whViewIF,setWhViewIF]=useState(null);const[whPulling,setWhPulling]=useState(false);
   const[shippedCustF,setShippedCustF]=useState('all');const[shippedDateF,setShippedDateF]=useState('all');
-  const[whRecentActions,setWhRecentActions]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_wh_recent')||'[]')}catch{return[]}});
+  const[whRecentActions,setWhRecentActions]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_wh_recent_actions')||localStorage.getItem('nsa_wh_recent')||'[]')}catch{return[]}});
   // Auto-check UPS pickup status once daily after 3 AM (moved out of rWarehouse to avoid conditional hook call)
   React.useEffect(()=>{
     let count=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)count++})});
@@ -13653,7 +13654,9 @@ export default function App(){
     };
     checkPickups();
   },[sos]); // eslint-disable-line react-hooks/exhaustive-deps
-  const addWhAction=(action)=>{setWhRecentActions(prev=>{const next=[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,500);_lsSet('nsa_wh_recent',JSON.stringify(next));return next})};
+  const addWhAction=(action)=>{setWhRecentActions(prev=>[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,500))};
+  // Persist warehouse recent actions to app_state (DB) + localStorage so they survive across devices/sessions
+  React.useEffect(()=>{_saveAppState('wh_recent_actions',whRecentActions)},[whRecentActions]);
   const[whActionRange,setWhActionRange]=useState('7d');
   const[whActionSearch,setWhActionSearch]=useState('');
   const[whEditActionIdx,setWhEditActionIdx]=useState(null);
@@ -16043,16 +16046,16 @@ export default function App(){
             <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}>
               <span style={{fontSize:11,fontWeight:700,color:'#92400e'}}>Editing Action</span>
               <select style={{fontSize:11,padding:'2px 6px',border:'1px solid #e2e8f0',borderRadius:4}} defaultValue={a.type}
-                onChange={e=>{const next=[...whRecentActions];next[origIdx]={...next[origIdx],type:e.target.value};setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next))}}>
-                {['pulled','shipped','received','label_created','pickup_confirmed','deleted_shipment','move_to_deco'].map(t=>
-                  <option key={t} value={t}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco'}[t]}</option>)}
+                onChange={e=>{const next=[...whRecentActions];next[origIdx]={...next[origIdx],type:e.target.value};setWhRecentActions(next)}}>
+                {['pulled','shipped','received','label_created','pickup_confirmed','deleted_shipment','move_to_deco','delivered','manual_ship'].map(t=>
+                  <option key={t} value={t}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco',delivered:'Delivered',manual_ship:'Shipped (Manual)'}[t]}</option>)}
               </select>
             </div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:8}}>
               {[['soId','SO#'],['customer','Customer'],['tracking','Tracking'],['carrier','Carrier'],['sku','SKU'],['qty','Qty']].map(([field,label])=>
                 <div key={field}><div style={{fontSize:9,color:'#64748b',marginBottom:1}}>{label}</div>
                 <input style={{fontSize:11,padding:'3px 6px',border:'1px solid #e2e8f0',borderRadius:4,width:'100%'}} value={a[field]||''}
-                  onChange={e=>{const next=[...whRecentActions];next[origIdx]={...next[origIdx],[field]:e.target.value};setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next))}}/></div>)}
+                  onChange={e=>{const next=[...whRecentActions];next[origIdx]={...next[origIdx],[field]:e.target.value};setWhRecentActions(next)}}/></div>)}
             </div>
             {a.type==='pulled'&&a.sizes&&(()=>{
               const parsedPairs=(a.sizes+'').split(/\s+/).filter(p=>p.includes(':')).map(p=>{const[sz,v]=p.split(':');return[sz,parseInt(v)||0]});
@@ -16072,7 +16075,7 @@ export default function App(){
                           const newSizesStr=newPairs.filter(([,val])=>val>0).map(([s,val])=>s+':'+val).join(' ');
                           const newQty=newPairs.reduce((sum,[,val])=>sum+val,0);
                           const next=[...whRecentActions];next[origIdx]={...next[origIdx],sizes:newSizesStr,qty:newQty};
-                          setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next));
+                          setWhRecentActions(next);
                         }}/>
                       <div style={{fontSize:8,color:inv>0?'#94a3b8':'#dc2626',marginTop:2}}>{inv} inv</div>
                       {item2&&<div style={{fontSize:8,color:'#94a3b8'}}>{item2.sizes?.[sz]||0} ord</div>}
@@ -16137,7 +16140,7 @@ export default function App(){
                       }));
                     }
                   }
-                  const next=whRecentActions.filter((_,idx)=>idx!==origIdx);setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next));setWhEditActionIdx(null)}}>Delete</button>
+                  const next=whRecentActions.filter((_,idx)=>idx!==origIdx);setWhRecentActions(next);setWhEditActionIdx(null)}}>Delete</button>
             </div>
           </div>
           :<div style={{display:'flex',alignItems:'center',gap:10,cursor:a.soId?'pointer':'default'}}
@@ -16149,7 +16152,7 @@ export default function App(){
             <div style={{flex:1,minWidth:0}}>
               <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                 <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':a.type==='shipped'||a.type==='pickup_confirmed'?'#166534':a.type==='deleted_shipment'?'#dc2626':a.type==='move_to_deco'?'#6d28d9':'#1e40af'}}>{a.jobId||a.pickId||a.poId||a.soId||'Action'}</span>
-                <span style={{fontSize:11,color:'#475569'}}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco'}[a.type]||'Action'}</span>
+                <span style={{fontSize:11,color:'#475569'}}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',manual_label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco',delivered:'Delivered',manual_ship:'Shipped (Manual)'}[a.type]||'Action'}</span>
                 <span style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'underline'}}>{a.soId}</span>
                 <span style={{fontSize:11,color:'#64748b'}}>{a.customer}</span>
               </div>
@@ -16224,7 +16227,7 @@ export default function App(){
                     savSO({...so2,items:updItems,jobs:updJobs,updated_at:new Date().toLocaleString()},{skipMerge:true});
                     // Remove every recent action entry tied to this pick_id+SO so the history stays clean
                     const nextActions=whRecentActions.filter(x=>!(x.type==='pulled'&&x.pickId===a.pickId&&x.soId===a.soId));
-                    setWhRecentActions(nextActions);_lsSet('nsa_wh_recent',JSON.stringify(nextActions));
+                    setWhRecentActions(nextActions);
                     nf('🔓 '+a.pickId+' re-opened — back in the pull queue');
                   }}>🔓 Re-open IF</button>}
                 <button style={{fontSize:9,color:'#64748b',background:'none',border:'1px solid #e2e8f0',borderRadius:4,padding:'1px 6px',cursor:'pointer'}}
@@ -16235,7 +16238,7 @@ export default function App(){
         </div>})}
         {whRecentActions.length>0&&<div style={{display:'flex',gap:8,alignItems:'center',marginTop:12}}>
           <span style={{fontSize:10,color:'#94a3b8'}}>Showing {filteredActions.length} of {whRecentActions.length} actions</span>
-          <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginLeft:'auto'}} onClick={()=>{setWhRecentActions([]);try{localStorage.removeItem('nsa_wh_recent')}catch{}}}>Clear History</button>
+          <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginLeft:'auto'}} onClick={()=>{setWhRecentActions([]);try{localStorage.removeItem('nsa_wh_recent')}catch{}}}>Clear History</button>{/* effect persists empty list to app_state */}
         </div>}
       </>})()}
     </>}
@@ -25534,7 +25537,7 @@ export default function App(){
       </div>}
       {cacheFull&&<div style={{padding:'8px 16px',background:'#eff6ff',border:'1px solid #bfdbfe',color:'#1e40af',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
         <span style={{fontSize:14}}>&#128230;</span><span style={{flex:1}}>Local cache full &mdash; data is still saved to cloud. Clear browser data if issues persist.</span>
-        <button onClick={()=>{try{const heavyKeys=['nsa_auto_backup','nsa_auto_backup_ts','nsa_cust','nsa_ests','nsa_sos','nsa_invs','nsa_msgs','nsa_prod','nsa_vend','nsa_change_log','nsa_so_history','nsa_inv_adj_log','nsa_wh_recent'];heavyKeys.forEach(k=>{try{localStorage.removeItem(k)}catch{}});const keys=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('nsa_snap_'))keys.push(k)}keys.forEach(k=>localStorage.removeItem(k));_lsQuotaWarned=false;setCacheFull(false);console.log('[Storage] Cleared heavy cache keys + snap keys')}catch(e){console.error('[Storage] cache clear failed:',e)}}} style={{background:'#1e40af',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Clear Cache</button>
+        <button onClick={()=>{try{const heavyKeys=['nsa_auto_backup','nsa_auto_backup_ts','nsa_cust','nsa_ests','nsa_sos','nsa_invs','nsa_msgs','nsa_prod','nsa_vend','nsa_change_log','nsa_so_history','nsa_inv_adj_log','nsa_wh_recent','nsa_wh_recent_actions'];heavyKeys.forEach(k=>{try{localStorage.removeItem(k)}catch{}});const keys=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('nsa_snap_'))keys.push(k)}keys.forEach(k=>localStorage.removeItem(k));_lsQuotaWarned=false;setCacheFull(false);console.log('[Storage] Cleared heavy cache keys + snap keys')}catch(e){console.error('[Storage] cache clear failed:',e)}}} style={{background:'#1e40af',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Clear Cache</button>
         <button onClick={()=>setCacheFull(false)} style={{background:'none',border:'none',color:'#1e40af',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
       </div>}
       {failedSaveCount>0&&<div style={{background:'#fefce8',border:'1px solid #fde68a',color:'#92400e',fontSize:12,fontWeight:600}}>

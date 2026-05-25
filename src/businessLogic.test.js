@@ -463,6 +463,64 @@ describe('SO Status Calculation (calcSOStatus)', () => {
     expect(calcSOStatus(so)).toBe('complete');
   });
 
+  test('delivery order: jobs completed but not delivered = ready_to_invoice', () => {
+    const so = makeSO({
+      ship_preference: 'warehouse_delivery',
+      items: [makeSOItem({
+        sizes: { S: 5 },
+        decorations: [{ kind: 'art', art_file_id: 'af1' }],
+        pick_lines: [{ status: 'pulled', pick_id: 'IF-1', S: 5 }],
+      })],
+      jobs: [{ id: 'JOB-1', prod_status: 'completed' }],
+    });
+    expect(calcSOStatus(so)).toBe('ready_to_invoice');
+  });
+
+  test('delivery order: all jobs completed and delivered = complete', () => {
+    const so = makeSO({
+      ship_preference: 'warehouse_delivery',
+      delivered: { 'job|JOB-1': { at: '2026-05-25T00:00:00Z', by: 'u1' } },
+      items: [makeSOItem({
+        sizes: { S: 5 },
+        decorations: [{ kind: 'art', art_file_id: 'af1' }],
+        pick_lines: [{ status: 'pulled', pick_id: 'IF-1', S: 5 }],
+      })],
+      jobs: [{ id: 'JOB-1', prod_status: 'completed' }],
+    });
+    expect(calcSOStatus(so)).toBe('complete');
+  });
+
+  test('delivery order: one job delivered, sibling job not delivered = ready_to_invoice', () => {
+    const so = makeSO({
+      ship_preference: 'warehouse_delivery',
+      delivered: { 'job|JOB-1': { at: '2026-05-25T00:00:00Z', by: 'u1' } },
+      items: [makeSOItem({
+        sizes: { S: 5 },
+        decorations: [{ kind: 'art', art_file_id: 'af1' }],
+        pick_lines: [{ status: 'pulled', pick_id: 'IF-1', S: 5 }],
+      })],
+      jobs: [
+        { id: 'JOB-1', prod_status: 'completed' },
+        { id: 'JOB-2', prod_status: 'completed' },
+      ],
+    });
+    expect(calcSOStatus(so)).toBe('ready_to_invoice');
+  });
+
+  test('deliver_on_date order: no-deco item delivered = complete', () => {
+    const so = makeSO({
+      ship_preference: 'deliver_on_date',
+      delivered: { 'nd|0': { at: '2026-05-25T00:00:00Z', by: 'u1' } },
+      items: [makeSOItem({
+        sizes: { S: 5, M: 10 },
+        decorations: [],
+        pick_lines: [{ status: 'pulled', pick_id: 'IF-1', S: 5, M: 10 }],
+      })],
+      jobs: [],
+    });
+    expect(calcSOStatus(so)).toBe('complete');
+  });
+
   test('partial picks = need_order (not enough coverage)', () => {
     const so = makeSO({
       items: [makeSOItem({

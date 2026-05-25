@@ -99,6 +99,21 @@ function calcSOStatus(ord) {
   const anyJobActive = hasJobs && boardJobs.some(j => j.prod_status === 'staging' || j.prod_status === 'in_process');
   const hasAnyDeco = safeItems(ord).some(it => !it.no_deco && safeDecos(it).length > 0);
   if (allJobsShipped) return 'complete';
+  // Delivery-preference orders: delivery is the terminal fulfillment step (the equivalent of
+  // shipping). Complete once production is done, all goods are in, and every deliverable is
+  // marked in the delivered map — these orders never pass through a 'shipped' job state.
+  const isDeliveryPref = ord.ship_preference === 'warehouse_delivery' || ord.ship_preference === 'deliver_on_date';
+  if (isDeliveryPref) {
+    const dlv = ord.delivered || {};
+    const noActiveJobs = !hasJobs || allJobsDone;
+    const allJobsDelivered = boardJobs.every(j => dlv['job|' + j.id]);
+    const noDecoDelivered = safeItems(ord).every((it, idx) => {
+      if (!it.no_deco && safeDecos(it).length > 0) return true;
+      const units = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
+      return units <= 0 || !!dlv['nd|' + idx];
+    });
+    if (noActiveJobs && fulfilledSz >= totalSz && allJobsDelivered && noDecoDelivered) return 'complete';
+  }
   if (!hasAnyDeco && !hasJobs && fulfilledSz >= totalSz) return ord.status === 'complete' ? 'complete' : 'ready_to_invoice';
   if (allJobsDone) return 'ready_to_invoice';
   if (anyJobActive) return 'in_production';
