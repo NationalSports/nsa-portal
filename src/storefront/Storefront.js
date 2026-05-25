@@ -1,6 +1,20 @@
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
+import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
+
+const STRIPE_PK = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_STRIPE_PK) || '';
+let _stripePromise = null;
+try { if (STRIPE_PK) _stripePromise = loadStripe(STRIPE_PK); } catch { _stripePromise = null; }
+
+// ── Cart (localStorage, per store slug) ──────────────────────────────
+const cartKey = (slug) => 'nsa_cart_' + slug;
+const loadCart = (slug) => { try { return JSON.parse(localStorage.getItem(cartKey(slug)) || '[]'); } catch { return []; } };
+const saveCart = (slug, items) => { try { localStorage.setItem(cartKey(slug), JSON.stringify(items)); } catch {} };
+const lineUnit = (l) => (Number(l.unit_price) || 0) + (Number(l.fundraise) || 0) + (Number(l.name_extra) || 0);
+const cartCount = (items) => items.reduce((a, l) => a + (l.qty || 1), 0);
+const cartTotal = (items) => items.reduce((a, l) => a + lineUnit(l) * (l.qty || 1), 0);
 
 // ─────────────────────────────────────────────────────────────────────
 // Public club storefront — /shop/<slug>
@@ -60,6 +74,11 @@ export default function Storefront() {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
+  const [cart, setCart] = useState([]);
+  useEffect(() => { if (route.slug) setCart(loadCart(route.slug)); }, [route.slug]);
+  const updateCart = useCallback((items) => { setCart(items); saveCart(route.slug, items); }, [route.slug]);
+  const addToCart = useCallback((line) => { const next = [...loadCart(route.slug), { ...line, key: Math.random().toString(36).slice(2) }]; updateCart(next); }, [route.slug, updateCart]);
+
   const [store, setStore] = useState(null);
   const [products, setProducts] = useState([]);
   const [bundleItems, setBundleItems] = useState([]);
@@ -105,13 +124,15 @@ export default function Storefront() {
   const isOpen = store.status === 'open';
   return (
     <div style={{ fontFamily: '"Helvetica Neue",system-ui,-apple-system,Segoe UI,Roboto,sans-serif', color: '#0b1220', minHeight: '100vh', background: '#fff', display: 'flex', flexDirection: 'column' }}>
-      <Header store={store} theme={theme} />
+      <Header store={store} theme={theme} cartCount={cartCount(cart)} />
       {!isOpen && <PreviewBanner status={store.status} />}
       <main style={{ flex: 1 }}>
         {route.view === 'home' && <Home store={store} theme={theme} products={products} />}
-        {route.view === 'p' && <Wrap><ProductPage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} isOpen={isOpen} /></Wrap>}
-        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} isOpen={isOpen} /></Wrap>}
-        {['cart', 'checkout', 'order'].includes(route.view) && <Wrap><Splash>This part of the store is coming soon.</Splash></Wrap>}
+        {route.view === 'p' && <Wrap><ProductPage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
+        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
+        {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
+        {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onClear={() => updateCart([])} /></Wrap>}
+        {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderId={route.id} /></Wrap>}
       </main>
       <Footer theme={theme} />
     </div>
@@ -121,7 +142,7 @@ export default function Storefront() {
 const Wrap = ({ children }) => <div style={{ maxWidth: 1180, margin: '0 auto', padding: '0 20px 64px', boxSizing: 'border-box' }}>{children}</div>;
 
 // ── Header ───────────────────────────────────────────────────────────
-function Header({ store, theme }) {
+function Header({ store, theme, cartCount = 0 }) {
   return (
     <header style={{ position: 'sticky', top: 0, zIndex: 20, background: theme.primary, color: '#fff', borderBottom: `3px solid ${theme.accent}` }}>
       <div style={{ maxWidth: 1180, margin: '0 auto', padding: '14px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
@@ -131,6 +152,9 @@ function Header({ store, theme }) {
             : <div style={{ height: 44, width: 44, borderRadius: 8, background: theme.accent, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: 20 }}>{(store.name || '?')[0]}</div>}
           <div style={{ fontWeight: 900, fontSize: 19, letterSpacing: 1, textTransform: 'uppercase' }}>{store.name}</div>
         </div>
+        <button onClick={() => navTo('/shop/' + store.slug + '/cart')} style={{ marginLeft: 'auto', background: 'rgba(255,255,255,0.14)', color: '#fff', border: 'none', borderRadius: 999, padding: '9px 18px', fontWeight: 800, fontSize: 13, cursor: 'pointer', letterSpacing: 0.5 }}>
+          CART{cartCount > 0 ? ` · ${cartCount}` : ''}
+        </button>
       </div>
     </header>
   );
@@ -216,14 +240,31 @@ function Placeholder({ theme, label }) {
 }
 
 // ── Single product ───────────────────────────────────────────────────
-function ProductPage({ store, theme, product: p, isOpen }) {
+function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
   const [size, setSize] = useState(null);
   const [img, setImg] = useState('front');
   const [num, setNum] = useState('');
   const [pname, setPname] = useState('');
+  const [added, setAdded] = useState(false);
   if (!p) return <Splash>Product not found.</Splash>;
+  const sizesArr = Array.isArray(p.available_sizes) ? p.available_sizes : [];
   const nameUp = Number(p.name_upcharge) || 0;
   const total = priceOf(p) + (p.takes_name && pname.trim() ? nameUp : 0);
+  const needSize = sizesArr.length > 0;
+  const needNumber = !!p.takes_number;
+  const canAdd = isOpen && (!needSize || size) && (!needNumber || num.trim());
+  const addToCart = () => {
+    onAdd({
+      kind: 'single', webstore_product_id: p.webstore_product_id, product_id: p.product_id, sku: p.sku,
+      name: p.name, image: p.image_front_url || null, size: size || null,
+      unit_price: Number(p.retail_price) || 0, fundraise: Number(p.fundraise_amount) || 0,
+      name_extra: p.takes_name && pname.trim() ? nameUp : 0,
+      player_number: needNumber ? num.trim() : null,
+      player_name: p.takes_name && pname.trim() ? pname.trim() : null,
+      qty: 1,
+    });
+    setAdded(true); setTimeout(() => setAdded(false), 1500);
+  };
   const sizes = Array.isArray(p.available_sizes) ? p.available_sizes : [];
   const onHand = effOnHand(p);
   const incoming = isIncoming(p);
@@ -274,8 +315,9 @@ function ProductPage({ store, theme, product: p, isOpen }) {
           )}
 
           {p.takes_name && nameUp > 0 && pname.trim() ? <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 10 }}>Total: {money(total)}</div> : null}
-          <button disabled style={{ ...cta(theme), opacity: 0.5, cursor: 'not-allowed', marginTop: 8 }}>{isOpen ? 'Add to cart — coming soon' : 'Store not open yet'}</button>
-          <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 12 }}>Cart &amp; checkout are being built — this is a preview of the product page.</div>
+          <button onClick={addToCart} disabled={!canAdd} style={{ ...cta(theme), opacity: canAdd ? 1 : 0.5, cursor: canAdd ? 'pointer' : 'not-allowed', marginTop: 8 }}>
+            {!isOpen ? 'Store not open yet' : added ? '✓ Added to cart' : needSize && !size ? 'Select a size' : needNumber && !num.trim() ? 'Enter a number' : 'Add to cart'}
+          </button>
         </div>
       </div>
     </div>
@@ -283,12 +325,32 @@ function ProductPage({ store, theme, product: p, isOpen }) {
 }
 
 // ── Package ──────────────────────────────────────────────────────────
-function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpen }) {
+function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpen, onAdd }) {
   const [picks, setPicks] = useState({}); // component id -> selected size
   const [nums, setNums] = useState({});   // component id -> jersey number
   const [names, setNames] = useState({}); // component id -> custom name
+  const [added, setAdded] = useState(false);
   if (!p) return <Splash>Package not found.</Splash>;
+  const compSizesArr = (c) => { const s = compInfo[c.product_id]?.available_sizes; return Array.isArray(s) ? s : []; };
   const nameExtra = components.reduce((a, c) => a + ((c.takes_name && (names[c.id] || '').trim()) ? (Number(c.name_upcharge) || 0) : 0), 0);
+  const missingSize = components.some((c) => c.size_required && compSizesArr(c).length > 0 && !picks[c.id]);
+  const missingNum = components.some((c) => c.takes_number && !(nums[c.id] || '').trim());
+  const canAdd = isOpen && !missingSize && !missingNum;
+  const addToCart = () => {
+    onAdd({
+      kind: 'bundle', webstore_product_id: p.webstore_product_id, product_id: null, sku: null,
+      name: p.name, image: p.image_front_url || (components.map((c) => compInfo[c.product_id]?.image_front_url).find(Boolean)) || null,
+      unit_price: Number(p.retail_price) || 0, fundraise: Number(p.fundraise_amount) || 0, name_extra: nameExtra,
+      components: components.map((c) => ({
+        bundle_item_id: c.id, product_id: c.product_id, sku: c.sku, name: compInfo[c.product_id]?.name || c.sku,
+        size: picks[c.id] || null,
+        player_number: c.takes_number ? (nums[c.id] || '').trim() : null,
+        player_name: c.takes_name ? (names[c.id] || '').trim() : null,
+      })),
+      qty: 1,
+    });
+    setAdded(true); setTimeout(() => setAdded(false), 1500);
+  };
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   const compName = (c) => compInfo[c.product_id]?.name || c.sku || 'Item';
   const compImg = (c) => compInfo[c.product_id]?.image_front_url;
@@ -362,12 +424,235 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpe
             })}
 
           {nameExtra > 0 && <div style={{ fontSize: 14, fontWeight: 700, marginTop: 16 }}>Total with personalization: {money(priceOf(p) + nameExtra)}</div>}
-          <button disabled style={{ ...cta(theme), opacity: 0.5, cursor: 'not-allowed', marginTop: 16 }}>{isOpen ? 'Add package — coming soon' : 'Store not open yet'}</button>
+          <button onClick={addToCart} disabled={!canAdd} style={{ ...cta(theme), opacity: canAdd ? 1 : 0.5, cursor: canAdd ? 'pointer' : 'not-allowed', marginTop: 16 }}>
+            {!isOpen ? 'Store not open yet' : added ? '✓ Added to cart' : missingSize ? 'Pick a size for each item' : missingNum ? 'Enter a number' : 'Add package to cart'}
+          </button>
         </div>
       </div>
     </div>
   );
 }
+
+// ── Cart ─────────────────────────────────────────────────────────────
+function lineDetail(l) {
+  if (l.kind === 'bundle') return (l.components || []).map((c) => `${c.name}${c.size ? ' · ' + c.size : ''}${c.player_number ? ' · #' + c.player_number : ''}${c.player_name ? ' · ' + c.player_name : ''}`);
+  return [[l.size && 'Size ' + l.size, l.player_number && '#' + l.player_number, l.player_name].filter(Boolean).join(' · ')].filter(Boolean);
+}
+function CartPage({ store, theme, cart, onUpdate }) {
+  if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} /><Splash>Your cart is empty.</Splash></div>;
+  const remove = (key) => onUpdate(cart.filter((l) => l.key !== key));
+  return (
+    <div style={{ paddingTop: 26 }}>
+      <BackLink store={store} />
+      <h1 style={{ fontSize: 28, fontWeight: 900, textTransform: 'uppercase', letterSpacing: -0.5, margin: '0 0 20px' }}>Your cart</h1>
+      {cart.map((l) => (
+        <div key={l.key} style={{ display: 'flex', gap: 14, padding: '14px 0', borderBottom: '1px solid #eef1f5' }}>
+          <div style={{ width: 64, height: 64, borderRadius: 8, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0 }}>{l.image && <img src={l.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 800 }}>{l.name}{l.kind === 'bundle' ? ' (package)' : ''}</div>
+            {lineDetail(l).map((d, i) => <div key={i} style={{ fontSize: 12, color: '#64748b' }}>{d}</div>)}
+            <button onClick={() => remove(l.key)} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 12, padding: '4px 0 0' }}>Remove</button>
+          </div>
+          <div style={{ fontWeight: 800 }}>{money(lineUnit(l))}</div>
+        </div>
+      ))}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 20 }}>
+        <div style={{ fontSize: 20, fontWeight: 900 }}>Total: {money(cartTotal(cart))}</div>
+        <button onClick={() => navTo('/shop/' + store.slug + '/checkout')} style={{ ...cta(theme), width: 'auto', padding: '14px 40px' }}>Checkout</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Checkout ─────────────────────────────────────────────────────────
+async function placeOrder({ store, cart, buyer, ship, payMode, stripePiId }) {
+  const subtotal = cart.reduce((a, l) => a + (Number(l.unit_price) || 0) * (l.qty || 1), 0);
+  const fundraise = cart.reduce((a, l) => a + ((Number(l.fundraise) || 0) + (Number(l.name_extra) || 0)) * (l.qty || 1), 0);
+  const total = cartTotal(cart);
+  const { data: order, error } = await supabase.from('webstore_orders').insert({
+    store_id: store.id, status: payMode === 'paid' ? 'paid' : 'unpaid', payment_mode: payMode, order_kind: 'individual',
+    buyer_name: buyer.name, buyer_email: buyer.email, buyer_phone: buyer.phone || null,
+    ship_address: store.delivery_mode === 'ship_home' ? ship : null, ship_method: store.delivery_mode,
+    subtotal, fundraise_amt: fundraise, total, stripe_pi_id: stripePiId || null,
+  }).select().single();
+  if (error) return { error };
+
+  const items = [];
+  cart.forEach((l) => {
+    if (l.kind === 'bundle') {
+      const bref = (crypto.randomUUID && crypto.randomUUID()) || Math.random().toString(36).slice(2);
+      items.push({ order_id: order.id, product_id: null, sku: null, size: null, qty: 1, unit_price: l.unit_price, unit_fundraise: (l.fundraise || 0) + (l.name_extra || 0), player_name: null, player_number: null, bundle_ref: bref, bundle_product_id: l.webstore_product_id, is_bundle_parent: true, line_status: 'pending' });
+      (l.components || []).forEach((c) => items.push({ order_id: order.id, product_id: c.product_id, sku: c.sku, size: c.size, qty: 1, unit_price: 0, unit_fundraise: 0, player_name: c.player_name || null, player_number: c.player_number || null, bundle_ref: bref, bundle_product_id: l.webstore_product_id, is_bundle_parent: false, line_status: 'pending' }));
+    } else {
+      items.push({ order_id: order.id, product_id: l.product_id, sku: l.sku, size: l.size, qty: l.qty || 1, unit_price: l.unit_price, unit_fundraise: (l.fundraise || 0) + (l.name_extra || 0), player_name: l.player_name || null, player_number: l.player_number || null, line_status: 'pending' });
+    }
+  });
+  await supabase.from('webstore_order_items').insert(items);
+
+  // Jersey number uniqueness claims (only when the store enforces it).
+  if (store.number_unique) {
+    const nums = new Set();
+    items.forEach((i) => { if (i.player_number) nums.add(i.player_number); });
+    for (const n of nums) {
+      const { error: ce } = await supabase.from('webstore_number_claims').insert({ store_id: store.id, player_number: String(n), order_id: order.id, player_name: buyer.name });
+      if (ce && /duplicate|unique/i.test(ce.message || '')) return { error: { message: `Number ${n} was just taken by someone else — please pick a different number.` }, order };
+    }
+  }
+  return { order };
+}
+
+function CheckoutPage({ store, theme, cart, onClear }) {
+  const allowUnpaid = store.payment_mode === 'unpaid' || store.payment_mode === 'either';
+  const allowPaid = store.payment_mode === 'paid' || store.payment_mode === 'either';
+  const [buyer, setBuyer] = useState({ name: '', email: '', phone: '' });
+  const [ship, setShip] = useState({ name: '', street1: '', street2: '', city: '', state: '', zip: '' });
+  const [method, setMethod] = useState(allowPaid && _stripePromise ? 'paid' : 'unpaid');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [clientSecret, setClientSecret] = useState(null);
+  const needAddr = store.delivery_mode === 'ship_home';
+
+  if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} /><Splash>Your cart is empty.</Splash></div>;
+
+  const validBuyer = buyer.name.trim() && /.+@.+\..+/.test(buyer.email) && (!needAddr || (ship.street1 && ship.city && ship.state && ship.zip));
+
+  const submitUnpaid = async () => {
+    setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
+    setBusy(true);
+    const r = await placeOrder({ store, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid' });
+    setBusy(false);
+    if (r.error) { setErr(r.error.message); return; }
+    onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
+  };
+
+  const startCard = async () => {
+    setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
+    setBusy(true);
+    try {
+      const res = await fetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create_intent', amount_cents: Math.round(cartTotal(cart) * 100), customer_name: buyer.name, customer_email: buyer.email, invoice_id: store.slug, invoice_memo: store.name + ' webstore' }) });
+      const data = await res.json();
+      if (data.clientSecret) setClientSecret(data.clientSecret);
+      else setErr(data.error || 'Could not start payment.');
+    } catch (e) { setErr('Payment setup failed: ' + e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <div style={{ paddingTop: 26, maxWidth: 640 }}>
+      <BackLink store={store} />
+      <h1 style={{ fontSize: 28, fontWeight: 900, textTransform: 'uppercase', letterSpacing: -0.5, margin: '0 0 20px' }}>Checkout</h1>
+      {err && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}>{err}</div>}
+
+      <Field label="Your name"><input style={inp} value={buyer.name} onChange={(e) => setBuyer({ ...buyer, name: e.target.value })} /></Field>
+      <div style={{ display: 'flex', gap: 12 }}>
+        <Field label="Email"><input style={inp} value={buyer.email} onChange={(e) => setBuyer({ ...buyer, email: e.target.value })} /></Field>
+        <Field label="Phone (optional)"><input style={inp} value={buyer.phone} onChange={(e) => setBuyer({ ...buyer, phone: e.target.value })} /></Field>
+      </div>
+
+      {needAddr ? (
+        <><div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#64748b', margin: '12px 0 6px' }}>Ship to home</div>
+        <Field label="Street"><input style={inp} value={ship.street1} onChange={(e) => setShip({ ...ship, street1: e.target.value })} /></Field>
+        <Field label="Apt / unit (optional)"><input style={inp} value={ship.street2} onChange={(e) => setShip({ ...ship, street2: e.target.value })} /></Field>
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Field label="City"><input style={inp} value={ship.city} onChange={(e) => setShip({ ...ship, city: e.target.value })} /></Field>
+          <Field label="State"><input style={inp} value={ship.state} onChange={(e) => setShip({ ...ship, state: e.target.value })} /></Field>
+          <Field label="ZIP"><input style={inp} value={ship.zip} onChange={(e) => setShip({ ...ship, zip: e.target.value })} /></Field>
+        </div></>
+      ) : <div style={{ background: '#eff6ff', color: '#1e40af', padding: '10px 14px', borderRadius: 8, fontSize: 13, margin: '12px 0' }}>Orders for this store are <b>delivered to the club</b> — no shipping address needed.</div>}
+
+      <div style={{ borderTop: '1px solid #eef1f5', margin: '18px 0', paddingTop: 14, display: 'flex', justifyContent: 'space-between', fontSize: 20, fontWeight: 900 }}>
+        <span>Total</span><span>{money(cartTotal(cart))}</span>
+      </div>
+
+      {store.payment_mode === 'either' && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+          {allowPaid && _stripePromise && <button onClick={() => { setMethod('paid'); setClientSecret(null); }} style={methodBtn(theme, method === 'paid')}>Pay by card</button>}
+          {allowUnpaid && <button onClick={() => { setMethod('unpaid'); setClientSecret(null); }} style={methodBtn(theme, method === 'unpaid')}>Put on team tab</button>}
+        </div>
+      )}
+
+      {method === 'paid' && allowPaid ? (
+        _stripePromise ? (
+          clientSecret ? (
+            <Elements stripe={_stripePromise} options={{ clientSecret, appearance: { theme: 'stripe' } }}>
+              <CardForm theme={theme} onPaid={async (piId) => { const r = await placeOrder({ store, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', stripePiId: piId }); if (r.error) { setErr(r.error.message); return; } onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`); }} />
+            </Elements>
+          ) : <button onClick={startCard} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1 }}>{busy ? 'Starting…' : 'Continue to payment'}</button>
+        ) : <div style={{ color: '#b91c1c', fontSize: 13 }}>Card payment isn’t configured for this store.</div>
+      ) : (
+        <button onClick={submitUnpaid} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1 }}>{busy ? 'Placing…' : 'Place order — invoice the team'}</button>
+      )}
+    </div>
+  );
+}
+
+function CardForm({ theme, onPaid }) {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const pay = async () => {
+    if (!stripe || !elements) return;
+    setBusy(true); setErr('');
+    const { error, paymentIntent } = await stripe.confirmPayment({ elements, redirect: 'if_required' });
+    if (error) { setErr(error.message || 'Payment failed.'); setBusy(false); return; }
+    if (paymentIntent && paymentIntent.status === 'succeeded') { await onPaid(paymentIntent.id); }
+    else { setErr('Payment not completed.'); setBusy(false); }
+  };
+  return (
+    <div>
+      <PaymentElement />
+      {err && <div style={{ color: '#b91c1c', fontSize: 13, marginTop: 8 }}>{err}</div>}
+      <button onClick={pay} disabled={busy} style={{ ...cta(theme), opacity: busy ? 0.5 : 1, marginTop: 14 }}>{busy ? 'Processing…' : 'Pay now'}</button>
+    </div>
+  );
+}
+
+// ── Order status (tokenless lookup by id; emailed link comes later) ──
+function OrderStatusPage({ store, theme, orderId }) {
+  const [order, setOrder] = useState(null);
+  const [items, setItems] = useState([]);
+  const [status, setStatus] = useState('loading');
+  useEffect(() => {
+    (async () => {
+      const { data: o } = await supabase.from('webstore_orders').select('*').eq('id', orderId).limit(1);
+      if (!o || !o[0]) { setStatus('notfound'); return; }
+      setOrder(o[0]);
+      const { data: its } = await supabase.from('webstore_order_items').select('*').eq('order_id', orderId);
+      setItems(its || []); setStatus('ok');
+    })();
+  }, [orderId]);
+  if (status === 'loading') return <Splash>Loading your order…</Splash>;
+  if (status === 'notfound') return <div style={{ paddingTop: 26 }}><BackLink store={store} /><Splash>Order not found.</Splash></div>;
+  const steps = ['pending', 'in_production', 'shipped', 'complete'];
+  const cur = items[0]?.line_status || 'pending';
+  const curIdx = Math.max(0, steps.indexOf(cur));
+  return (
+    <div style={{ paddingTop: 26, maxWidth: 640 }}>
+      <BackLink store={store} />
+      <div style={{ background: '#dcfce7', color: '#166534', padding: '14px 18px', borderRadius: theme.radius, fontWeight: 800, marginBottom: 18 }}>
+        ✓ Order confirmed{order.payment_mode === 'paid' ? ' & paid' : ' — invoiced to the team'}. A confirmation was recorded for {order.buyer_email}.
+      </div>
+      <h1 style={{ fontSize: 22, fontWeight: 900, margin: '0 0 14px' }}>Order status</h1>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 20, flexWrap: 'wrap' }}>
+        {['Ordered', 'In production', 'Shipped', 'Complete'].map((s, i) => (
+          <div key={s} style={{ flex: 1, minWidth: 110, textAlign: 'center', padding: '10px 6px', borderRadius: 8, fontSize: 12, fontWeight: 700, background: i <= curIdx ? theme.accent : '#f1f5f9', color: i <= curIdx ? '#fff' : '#94a3b8' }}>{s}</div>
+        ))}
+      </div>
+      {items.filter((i) => !i.is_bundle_parent).map((i) => (
+        <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #eef1f5', fontSize: 14 }}>
+          <div>{i.sku}{i.size ? ' · ' + i.size : ''}{i.player_number ? ' · #' + i.player_number : ''}{i.player_name ? ' · ' + i.player_name : ''}</div>
+          <div style={{ color: '#64748b' }}>{(i.line_status || 'pending').replace(/_/g, ' ')}</div>
+        </div>
+      ))}
+      <div style={{ marginTop: 18, fontWeight: 900, fontSize: 18 }}>Total: {money(order.total)}</div>
+    </div>
+  );
+}
+
+const inp = { width: '100%', padding: '11px 12px', borderRadius: 8, border: '2px solid #e2e8f0', fontSize: 14, fontFamily: 'inherit', boxSizing: 'border-box' };
+const methodBtn = (t, sel) => ({ flex: 1, padding: '12px', borderRadius: t.radius, border: `2px solid ${sel ? t.accent : '#e2e8f0'}`, background: sel ? t.accent : '#fff', color: sel ? '#fff' : '#0b1220', fontWeight: 800, fontSize: 13, cursor: 'pointer' });
+function Field({ label, children }) { return <div style={{ marginBottom: 12, flex: 1 }}><div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', marginBottom: 4 }}>{label}</div>{children}</div>; }
 
 function StockLine({ onHand, incoming, eta, onOrder }) {
   if (onHand > 0) return <Pill bg="#dcfce7" fg="#166534">● In stock — ready to ship</Pill>;
