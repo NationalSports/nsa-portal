@@ -4340,6 +4340,40 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{fontSize:11,color:'#64748b'}}>{h.printed_at} · by {h.printed_by}</div></div>
           </div>)}
         </div>
+        {/* Fulfillment History — deliveries & shipments (SOs only) */}
+        {!isE&&(()=>{
+          const fEvents=[];
+          const nameFor=(by)=>REPS.find(r=>r.id===by)?.name||by||'warehouse';
+          Object.entries(o.delivered||{}).forEach(([key,v])=>{
+            let desc=key;
+            if(key.startsWith('job|')){const j=safeJobs(o).find(jj=>jj.id===key.slice(4));desc=j?.art_name||key.slice(4);}
+            else if(key.startsWith('nd|')){const it=safeItems(o)[+key.slice(3)];desc=it?((it.sku?it.sku+' ':'')+(it.name||'')).trim():key;}
+            fEvents.push({ts:v.at,type:'delivered',detail:desc,by:nameFor(v.by)});
+          });
+          (o._shipments||[]).forEach((s,si)=>{
+            const ts=s.ship_date||s.created_at;
+            fEvents.push({ts,type:'shipped',detail:s.tracking_number?((s.carrier?s.carrier.toUpperCase()+' ':'')+s.tracking_number):('Box '+(si+1)),by:nameFor(s.shipped_by)});
+          });
+          fEvents.sort((a,b)=>new Date(b.ts||0)-new Date(a.ts||0));
+          const planned=[];
+          if(o.deliver_on_date)planned.push({label:'Scheduled delivery',date:o.deliver_on_date});
+          if(o.ship_on_date)planned.push({label:'Scheduled ship',date:o.ship_on_date});
+          if(fEvents.length===0&&planned.length===0)return null;
+          const fmt=(ts)=>{const d=new Date(ts);return isNaN(d)?(ts||'—'):d.toLocaleDateString()+' @ '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});};
+          return<div style={{marginBottom:16}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Fulfillment</div>
+            {planned.map((p,pi)=><div key={'p'+pi} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#fffbeb',borderRadius:6,border:'1px solid #fde68a',marginBottom:4}}>
+              <span style={{fontSize:16}}>🗓️</span>
+              <div><div style={{fontSize:13,fontWeight:600,color:'#92400e'}}>{p.label}</div>
+              <div style={{fontSize:11,color:'#64748b'}}>{new Date(p.date).toLocaleDateString()}</div></div>
+            </div>)}
+            {fEvents.map((ev,ei)=><div key={ei} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#f0fdf4',borderRadius:6,border:'1px solid #bbf7d0',marginBottom:4}}>
+              <span style={{fontSize:16}}>{ev.type==='delivered'?'🚚':'📦'}</span>
+              <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{ev.type==='delivered'?'Delivered':'Shipped'}{ev.detail?' — '+ev.detail:''}</div>
+              <div style={{fontSize:11,color:'#64748b'}}>{fmt(ev.ts)} · by {ev.by}</div></div>
+            </div>)}
+          </div>;
+        })()}
         {/* Change Log */}
         <div>
           <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Changes</div>

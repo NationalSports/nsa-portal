@@ -16015,8 +16015,8 @@ export default function App(){
               <span style={{fontSize:11,fontWeight:700,color:'#92400e'}}>Editing Action</span>
               <select style={{fontSize:11,padding:'2px 6px',border:'1px solid #e2e8f0',borderRadius:4}} defaultValue={a.type}
                 onChange={e=>{const next=[...whRecentActions];next[origIdx]={...next[origIdx],type:e.target.value};setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next))}}>
-                {['pulled','shipped','received','label_created','pickup_confirmed','deleted_shipment','move_to_deco'].map(t=>
-                  <option key={t} value={t}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco'}[t]}</option>)}
+                {['pulled','shipped','received','label_created','pickup_confirmed','deleted_shipment','move_to_deco','delivered','manual_ship'].map(t=>
+                  <option key={t} value={t}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco',delivered:'Delivered',manual_ship:'Shipped (Manual)'}[t]}</option>)}
               </select>
             </div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:8}}>
@@ -16120,7 +16120,7 @@ export default function App(){
             <div style={{flex:1,minWidth:0}}>
               <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                 <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':a.type==='shipped'||a.type==='pickup_confirmed'?'#166534':a.type==='deleted_shipment'?'#dc2626':a.type==='move_to_deco'?'#6d28d9':'#1e40af'}}>{a.jobId||a.pickId||a.poId||a.soId||'Action'}</span>
-                <span style={{fontSize:11,color:'#475569'}}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco'}[a.type]||'Action'}</span>
+                <span style={{fontSize:11,color:'#475569'}}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',manual_label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco',delivered:'Delivered',manual_ship:'Shipped (Manual)'}[a.type]||'Action'}</span>
                 <span style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'underline'}}>{a.soId}</span>
                 <span style={{fontSize:11,color:'#64748b'}}>{a.customer}</span>
               </div>
