@@ -4149,9 +4149,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(expected===0&&actual===0)return;
           const skus=(dp.item_idxs||[]).map(ii=>safeItems(o)[ii]?.sku).filter(Boolean);
           const dtLabel=dp.deco_type?dp.deco_type.replace(/_/g,' '):'';
-          costLines.push({category:'Outside Deco',
+          const tsLabel=dp.topstar_service?(dp.topstar_service==='vector'?'Vector Logo':'DST File'):'';
+          costLines.push({category:dp.topstar_service?'Digitizing':'Outside Deco',
             sku:skus.join(', ')||'—',
-            name:'Outside Deco'+(dtLabel?' — '+dtLabel:''),
+            name:dp.topstar_service?'Topstar Digitizing — '+tsLabel:'Outside Deco'+(dtLabel?' — '+dtLabel:''),
             vendor:dp.vendor||'—',
             qty,
             expected:Math.round(expected*100)/100,
