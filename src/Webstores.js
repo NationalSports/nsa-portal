@@ -102,7 +102,7 @@ function Webstores({ cust = [], REPS = [] }) {
     const [catRes, bundleRes, stockRes, ordRes, itemRes, rosterRes, claimRes] = await Promise.all([
       supabase.from('webstore_products').select('*').eq('store_id', sid).order('sort_order'),
       supabase.from('webstore_bundle_items').select('*').order('sort_order'),
-      supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,vendor_eta,name,color,category,image_front_url').eq('store_id', sid),
+      supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,available_sizes,vendor_eta,name,color,category,image_front_url').eq('store_id', sid),
       supabase.from('webstore_orders').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
       supabase.from('webstore_order_items').select('*'),
       supabase.from('webstore_roster').select('*').eq('store_id', sid).order('player_name'),
@@ -507,6 +507,50 @@ function Stat({ label, value, tone }) {
   return <div><div style={{ fontSize: 18, fontWeight: 800, color: tone || '#1e293b' }}>{value}</div><div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div></div>;
 }
 
+// Per-size breakdown: in-house warehouse qty and Adidas vendor qty side by
+// side, across the product's available sizes (with totals + ETA).
+function StockBreakdown({ stock, summary }) {
+  const house = stock?.size_stock || {};
+  const vendor = stock?.vendor_size_stock || {};
+  const sizes = Array.isArray(stock?.available_sizes) && stock.available_sizes.length
+    ? stock.available_sizes
+    : Array.from(new Set([...Object.keys(house), ...Object.keys(vendor)]));
+  const houseTotal = sumSizes(house);
+  const vendorTotal = Number(stock?.vendor_on_hand) || sumSizes(vendor);
+  return (
+    <div style={{ minWidth: 220 }}>
+      <div style={{ fontWeight: 700, color: summary.color, marginBottom: 6 }}>{summary.text}</div>
+      {sizes.length > 0 && (
+        <table style={{ borderCollapse: 'collapse', fontSize: 11, color: '#475569' }}>
+          <thead><tr style={{ color: '#94a3b8' }}>
+            <th style={{ textAlign: 'left', padding: '1px 8px 1px 0', fontWeight: 600 }}>Size</th>
+            <th style={{ textAlign: 'right', padding: '1px 8px', fontWeight: 600 }}>In‑house</th>
+            <th style={{ textAlign: 'right', padding: '1px 0 1px 8px', fontWeight: 600 }}>Adidas</th>
+          </tr></thead>
+          <tbody>
+            {sizes.map((sz) => {
+              const h = Number(house[sz]) || 0; const v = Number(vendor[sz]) || 0;
+              return <tr key={sz}>
+                <td style={{ padding: '1px 8px 1px 0', fontWeight: 600 }}>{sz}</td>
+                <td style={{ textAlign: 'right', padding: '1px 8px', color: h > 0 ? '#166534' : '#cbd5e1' }}>{h.toLocaleString()}</td>
+                <td style={{ textAlign: 'right', padding: '1px 0 1px 8px', color: v > 0 ? '#1e40af' : '#cbd5e1' }}>{v.toLocaleString()}</td>
+              </tr>;
+            })}
+            <tr style={{ borderTop: '1px solid #e2e8f0', fontWeight: 700 }}>
+              <td style={{ padding: '2px 8px 0 0' }}>Total</td>
+              <td style={{ textAlign: 'right', padding: '2px 8px 0', color: '#166534' }}>{houseTotal.toLocaleString()}</td>
+              <td style={{ textAlign: 'right', padding: '2px 0 0 8px', color: '#1e40af' }}>{vendorTotal.toLocaleString()}</td>
+            </tr>
+          </tbody>
+        </table>
+      )}
+      {(stock?.vendor_eta || stock?.earliest_eta) && houseTotal + vendorTotal === 0 && (
+        <div style={{ fontSize: 11, color: '#92400e', marginTop: 4 }}>Arriving ~{[stock?.earliest_eta, stock?.vendor_eta].filter(Boolean).sort()[0]}</div>
+      )}
+    </div>
+  );
+}
+
 // Effective availability = on-hand warehouse stock + Adidas vendor stock
 // (drop-shippable). ETA falls back to the soonest of open-PO or Adidas
 // future-delivery dates.
@@ -533,7 +577,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBund
 
       {mode === 'single' && !pending && <ProductSearch label="Add a product to this store" onPick={(p) => setPending(p)} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} onCancel={() => setPending(null)} onAdd={(opts) => { onAddSingle(opts); setMode(null); setPending(null); }} />}
-      {mode === 'bundle' && <BundleBuilder onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'bundle' && <BundleBuilder storeItems={catalog.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
 
       {catalog.length === 0 ? <Empty msg="No products in this store's catalog yet. Add one above." /> : (
         <div className="card"><div style={{ overflowX: 'auto' }}>
@@ -562,7 +606,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBund
                     <td style={td}>{money(p.retail_price)}</td>
                     <td style={td}>{fund > 0 ? <span style={{ color: '#166534', fontWeight: 600 }}>+{money(fund)}</span> : '—'}</td>
                     <td style={{ ...td, fontWeight: 700 }}>{money((Number(p.retail_price) || 0) + fund)}</td>
-                    <td style={{ ...td, color: st.color, fontWeight: 600 }}>{p.kind === 'bundle' ? '—' : st.text}</td>
+                    <td style={td}>{p.kind === 'bundle' ? '—' : <StockBreakdown stock={stock} summary={st} />}</td>
                     <td style={{ ...td, textAlign: 'right' }}><button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => onRemove(p.id, label)}>Remove</button></td>
                   </tr>
                 );
@@ -656,14 +700,16 @@ function ProductSearch({ label, onPick, onClose, compact }) {
   );
 }
 
-function BundleBuilder({ onCreate, onClose }) {
+function BundleBuilder({ storeItems = [], onCreate, onClose }) {
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
   const [fundraise, setFundraise] = useState('');
   const [image, setImage] = useState(null);
   const [components, setComponents] = useState([]);
   const [picking, setPicking] = useState(false);
-  const addComp = (p) => { setComponents((c) => [...c, { product_id: p.id, sku: p.sku, name: p.name, qty: 1, size_required: true, takes_number: false }]); setPicking(false); };
+  // ProductSearch returns {id,sku,name}; store items already carry {product_id,sku,name}.
+  const addComp = (p) => { setComponents((c) => [...c, { product_id: p.product_id || p.id, sku: p.sku, name: p.name, qty: 1, size_required: true, takes_number: false }]); setPicking(false); };
+  const addedKeys = new Set(components.map((c) => c.product_id));
   const upd = (i, k, v) => setComponents((c) => c.map((x, idx) => (idx === i ? { ...x, [k]: v } : x)));
   const rm = (i) => setComponents((c) => c.filter((_, idx) => idx !== i));
   const valid = name.trim() && Number(price) > 0 && components.length > 0;
@@ -688,8 +734,19 @@ function BundleBuilder({ onCreate, onClose }) {
           <button onClick={() => rm(i)} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer' }}>remove</button>
         </div>
       ))}
-      {picking ? <ProductSearch label="Add an item to the package" onPick={addComp} onClose={() => setPicking(false)} /> :
-        <button className="btn btn-sm btn-secondary" style={{ marginTop: 8 }} onClick={() => setPicking(true)}>+ Add item</button>}
+      {storeItems.length > 0 && <div style={{ margin: '10px 0' }}>
+        <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>Add from items already in this store:</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {storeItems.map((it) => {
+            const added = addedKeys.has(it.product_id);
+            return <button key={it.product_id} disabled={added} onClick={() => addComp(it)}
+              style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid #e2e8f0', background: added ? '#f1f5f9' : '#fff', color: added ? '#94a3b8' : '#1e40af', cursor: added ? 'default' : 'pointer' }}>
+              {added ? '✓ ' : '+ '}{it.name}</button>;
+          })}
+        </div>
+      </div>}
+      {picking ? <ProductSearch label="Or search all products" onPick={addComp} onClose={() => setPicking(false)} /> :
+        <button className="btn btn-sm btn-secondary" style={{ marginTop: 8 }} onClick={() => setPicking(true)}>+ Search all products</button>}
       <div style={{ marginTop: 14 }}><button className="btn btn-primary" disabled={!valid} onClick={() => onCreate({ name: name.trim(), price: Number(price), fundraise: Number(fundraise) || 0, image_url: image, components })}>Create package</button></div>
     </div></div>
   );
