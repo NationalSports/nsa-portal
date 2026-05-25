@@ -4109,8 +4109,11 @@ export default function App(){
 
             // Match this SKU's mockup image (each color has its own art),
             // falling back to the section's first artwork.
+            // The OMG report labels each mockup with its color+SKU in the
+            // `caption` (e.g. "Black/White (KB9093)"); match on that so each
+            // SKU gets its own mock rather than the section's first image.
             const matchedArt = sku
-              ? artworkList.filter(a => `${a.link||''} ${a.thumbnail||''} ${a.color||''} ${a.name||''} ${a.label||''}`.toUpperCase().includes(sku))
+              ? artworkList.filter(a => `${a.caption||''} ${a.color||''} ${a.name||''} ${a.label||''}`.toUpperCase().includes(sku))
               : [];
             const artForSku = matchedArt.length ? matchedArt : artworkList;
             const artwork = artForSku[0];

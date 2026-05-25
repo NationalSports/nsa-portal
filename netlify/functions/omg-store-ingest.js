@@ -90,7 +90,7 @@ exports.handler = async (event) => {
             sku = fromText || sectionSku;
           }
           const matchedArt = sku
-            ? artworkList.filter(a => `${a.link||''} ${a.thumbnail||''} ${a.color||''} ${a.name||''} ${a.label||''}`.toUpperCase().includes(sku))
+            ? artworkList.filter(a => `${a.caption||''} ${a.color||''} ${a.name||''} ${a.label||''}`.toUpperCase().includes(sku))
             : [];
           const artwork = (matchedArt.length ? matchedArt : artworkList)[0];
           products.push({
