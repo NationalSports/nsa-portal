@@ -269,9 +269,16 @@ export const downloadQrLabel=async({id,qrData,lines,shipBadge})=>{
     else style+='font-size:13px;';
     return '<p style="'+style+(l.style||'')+'">'+l.text+'</p>';
   }).join('');
+  // Use the same off-screen container pattern as the other working PDF
+  // generators here: position:absolute (not fixed) with no negative z-index,
+  // and render from an inner div. A fixed-position element parked at
+  // left:-10000px gives html2canvas a bounding box entirely outside the
+  // viewport, so it captures an empty region and the PDF comes out blank.
   const container=document.createElement('div');
-  container.style.cssText='position:fixed;left:-10000px;top:0;width:360px;background:white;font-family:Helvetica,Arial,sans-serif;color:#0f172a;padding:8px 12px;line-height:1.25;box-sizing:border-box;z-index:-1';
-  container.innerHTML=`<div style="text-align:center;margin-bottom:6px"><img src="${qrSrc}" alt="${id||''}" style="width:180px;height:180px;display:block;margin:0 auto;image-rendering:pixelated"/></div><h1 style="font-size:22px;margin:0 0 4px;line-height:1.1;text-align:center">${id||''}</h1>${badgeHtml}${linesHtml}`;
+  container.style.cssText='position:absolute;left:-9999px;top:0;width:360px;background:white;font-family:Helvetica,Arial,sans-serif;color:#0f172a;padding:8px 12px;line-height:1.25;box-sizing:border-box';
+  const bodyDiv=document.createElement('div');
+  bodyDiv.innerHTML=`<div style="text-align:center;margin-bottom:6px"><img src="${qrSrc}" alt="${id||''}" style="width:180px;height:180px;display:block;margin:0 auto;image-rendering:pixelated"/></div><h1 style="font-size:22px;margin:0 0 4px;line-height:1.1;text-align:center">${id||''}</h1>${badgeHtml}${linesHtml}`;
+  container.appendChild(bodyDiv);
   document.body.appendChild(container);
   const fname=String(id||'label').replace(/[^a-z0-9._-]+/gi,'_')+'.pdf';
   try{
@@ -281,10 +288,37 @@ export const downloadQrLabel=async({id,qrData,lines,shipBadge})=>{
       await new Promise(resolve=>{imgEl.onload=resolve;imgEl.onerror=resolve;setTimeout(resolve,3000)});
     }
     await new Promise(r=>setTimeout(r,500));
-    await html2pdf().set({margin:0.15,filename:fname,image:{type:'jpeg',quality:0.98},html2canvas:{scale:3,useCORS:true,allowTaint:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:[4,6],orientation:'portrait'}}).from(container).save();
+    await html2pdf().set({margin:0.15,filename:fname,image:{type:'jpeg',quality:0.98},html2canvas:{scale:3,useCORS:true,allowTaint:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:[4,6],orientation:'portrait'}}).from(bodyDiv).save();
   }finally{
     document.body.removeChild(container);
   }
+};
+// Download a full-page (letter) PDF pick ticket for an item fulfillment, laid
+// out like a packing slip via buildDocHtml/downloadDoc. The 4x6 thermal label
+// stays on printQrLabel/downloadQrLabel; this is the "Download (PDF)" sheet.
+// The QR is fetched and inlined as a data URL so html2canvas doesn't get
+// blocked by api.qrserver.com's CORS headers.
+export const downloadQrSheet=async({id,qrData,title,subtitle,shipBadge,items,totalUnits})=>{
+  const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=4&data='+encodeURIComponent(qrData||id||'');
+  let qrSrc=qrUrl;
+  try{
+    const resp=await fetch(qrUrl);
+    if(resp.ok){const blob=await resp.blob();qrSrc=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(blob)})}
+  }catch(e){/* fall back to direct URL */}
+  const headerRight='<img src="'+qrSrc+'" alt="'+(id||'')+'" style="width:130px;height:130px;display:block;margin:0 0 6px auto;background:#fff;padding:4px;image-rendering:pixelated"/>'+(totalUnits!=null?'<div class="ta" style="font-size:22px">'+totalUnits+' Units</div>':'');
+  const infoBoxes=[];
+  if(title)infoBoxes.push({label:'Customer / Team',value:title,sub:subtitle||''});
+  if(shipBadge&&shipBadge.text)infoBoxes.push({label:'Ship To',value:shipBadge.text});
+  else infoBoxes.push({label:'Fulfillment',value:'In-House Deco'});
+  const rows=(items||[]).map(it=>({cells:[it.sku||'',it.name||'',it.color||'—',it.sizes||'',it.units!=null?it.units:'']}));
+  const opts={
+    title:title||id,docNum:id,docType:'PICK TICKET',showPricing:false,
+    headerRight,
+    infoBoxes,
+    tables:[{title:'Items to Pull',headers:['SKU','Item','Color','Sizes','Qty'],aligns:['left','left','left','left','center'],rows}],
+    footer:'Item Fulfillment — Warehouse Pick Ticket'
+  };
+  return downloadDoc(opts,String(id||'pick-ticket'));
 };
 // Auto-download the document as a PDF file. Renders the same HTML used for
 // printing/email attachments via html2pdf, with flex→table CSS overrides so
