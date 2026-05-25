@@ -63,6 +63,7 @@ export default function Storefront() {
   const [store, setStore] = useState(null);
   const [products, setProducts] = useState([]);
   const [bundleItems, setBundleItems] = useState([]);
+  const [compInfo, setCompInfo] = useState({}); // product_id -> {name,image_front_url,available_sizes}
   const [status, setStatus] = useState('loading');
   const [errMsg, setErrMsg] = useState('');
 
@@ -80,7 +81,16 @@ export default function Storefront() {
     const prods = prodRes.data || [];
     setProducts(prods);
     const bundleIds = new Set(prods.filter((p) => p.kind === 'bundle').map((p) => p.webstore_product_id));
-    setBundleItems((bundleRes.data || []).filter((b) => bundleIds.has(b.bundle_id)));
+    const bItems = (bundleRes.data || []).filter((b) => bundleIds.has(b.bundle_id));
+    setBundleItems(bItems);
+    // Component product details (name/image/sizes) so packages show real names + photos.
+    const compPids = [...new Set(bItems.map((b) => b.product_id).filter(Boolean))];
+    const info = {};
+    if (compPids.length) {
+      const { data } = await supabase.from('products').select('id,sku,name,image_front_url,available_sizes').in('id', compPids);
+      (data || []).forEach((p) => { info[p.id] = p; });
+    }
+    setCompInfo(info);
     setStatus('ok');
   }, []);
 
@@ -100,7 +110,7 @@ export default function Storefront() {
       <main style={{ flex: 1 }}>
         {route.view === 'home' && <Home store={store} theme={theme} products={products} />}
         {route.view === 'p' && <Wrap><ProductPage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} isOpen={isOpen} /></Wrap>}
-        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} isOpen={isOpen} /></Wrap>}
+        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} isOpen={isOpen} /></Wrap>}
         {['cart', 'checkout', 'order'].includes(route.view) && <Wrap><Splash>This part of the store is coming soon.</Splash></Wrap>}
       </main>
       <Footer theme={theme} />
@@ -255,31 +265,66 @@ function ProductPage({ store, theme, product: p, isOpen }) {
 }
 
 // ── Package ──────────────────────────────────────────────────────────
-function BundlePage({ store, theme, product: p, components, isOpen }) {
+function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpen }) {
+  const [picks, setPicks] = useState({}); // component id -> selected size
   if (!p) return <Splash>Package not found.</Splash>;
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
+  const compName = (c) => compInfo[c.product_id]?.name || c.sku || 'Item';
+  const compImg = (c) => compInfo[c.product_id]?.image_front_url;
+  const compSizes = (c) => { const s = compInfo[c.product_id]?.available_sizes; return Array.isArray(s) ? s : []; };
+  // When the rep hasn't uploaded a custom package photo, show all the items.
+  const galleryImgs = components.map(compImg).filter(Boolean);
   return (
     <div style={{ paddingTop: 26 }}>
       <BackLink store={store} />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 44, alignItems: 'start' }}>
-        <div style={{ aspectRatio: '4/5', background: '#f4f6f9', borderRadius: theme.radius, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {p.image_front_url ? <img src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <Placeholder theme={theme} label={store.name} />}
+        <div>
+          {p.image_front_url
+            ? <div style={{ aspectRatio: '4/5', background: '#f4f6f9', borderRadius: theme.radius, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <img src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              </div>
+            : galleryImgs.length
+              ? <div style={{ display: 'grid', gridTemplateColumns: galleryImgs.length === 1 ? '1fr' : 'repeat(2,1fr)', gap: 10 }}>
+                  {components.filter(compImg).map((c) => (
+                    <div key={c.id} style={{ aspectRatio: '1', background: '#f4f6f9', borderRadius: theme.radius, overflow: 'hidden' }}>
+                      <img src={compImg(c)} alt={compName(c)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    </div>
+                  ))}
+                </div>
+              : <div style={{ aspectRatio: '4/5', background: '#f4f6f9', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Placeholder theme={theme} label={store.name} /></div>}
         </div>
         <div style={{ paddingTop: 4 }}>
           <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', padding: '4px 12px', borderRadius: 999, background: '#1e40af', color: '#fff' }}>Package Deal</span>
           <h1 style={{ fontSize: 30, fontWeight: 900, margin: '12px 0 8px', letterSpacing: -0.5, lineHeight: 1.05 }}>{p.name}</h1>
           <div style={{ fontSize: 30, fontWeight: 900, marginBottom: showFund ? 4 : 8 }}>{money(priceOf(p))}</div>
           {showFund && <div style={{ fontSize: 13, color: '#16a34a', fontWeight: 700, marginBottom: 8 }}>Includes {money(p.fundraise_amount)} that supports the team</div>}
-          <div style={{ fontSize: 14, color: '#64748b', marginBottom: 20 }}>One price — pick a size for each item at checkout.</div>
+          <div style={{ fontSize: 14, color: '#64748b', marginBottom: 20 }}>One price — pick a size for each item below.</div>
 
           <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 }}>What's included</div>
           {components.length === 0 ? <Splash>This package has no items configured yet.</Splash> :
-            components.map((c) => (
-              <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0', borderBottom: '1px solid #eef1f5' }}>
-                <div style={{ fontWeight: 700, fontSize: 14 }}>{c.qty > 1 ? `${c.qty}× ` : ''}{c.sku || c.product_id}{c.takes_number ? ' · your number' : ''}</div>
-                <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>{c.size_required ? 'choose size' : 'one size'}</div>
-              </div>
-            ))}
+            components.map((c) => {
+              const sizes = compSizes(c);
+              return (
+                <div key={c.id} style={{ padding: '14px 0', borderBottom: '1px solid #eef1f5' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    {compImg(c) && <img src={compImg(c)} alt="" style={{ width: 48, height: 48, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }} />}
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 700, fontSize: 15 }}>{c.qty > 1 ? `${c.qty}× ` : ''}{compName(c)}</div>
+                      {c.takes_number && <div style={{ fontSize: 12, color: '#1e40af', fontWeight: 600 }}>Your jersey number</div>}
+                      {!c.size_required && <div style={{ fontSize: 12, color: '#94a3b8' }}>One size</div>}
+                    </div>
+                  </div>
+                  {c.size_required && sizes.length > 0 && (
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10, marginLeft: compImg(c) ? 60 : 0 }}>
+                      {sizes.map((sz) => {
+                        const seld = picks[c.id] === sz;
+                        return <button key={sz} onClick={() => setPicks((x) => ({ ...x, [c.id]: sz }))} style={sizeBtn(theme, seld)}>{sz}</button>;
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
 
           <button disabled style={{ ...cta(theme), opacity: 0.5, cursor: 'not-allowed', marginTop: 20 }}>{isOpen ? 'Add package — coming soon' : 'Store not open yet'}</button>
         </div>

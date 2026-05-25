@@ -66,7 +66,7 @@ function isMissingTable(err) {
   return err.code === '42P01' || m.includes('does not exist') || m.includes('could not find the table') || m.includes('schema cache');
 }
 
-function Webstores({ cust = [], REPS = [] }) {
+function Webstores({ cust = [], REPS = [], onCreateSO }) {
   const [stores, setStores] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -169,6 +169,56 @@ function Webstores({ cust = [], REPS = [] }) {
     flash('Package created'); loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
 
+  // Batch all not-yet-batched orders into one Sales Order via the app's normal
+  // SO creation path (onCreateSO), then link each order back to the new SO id.
+  const batchOrders = useCallback(async () => {
+    if (!sel || !detail || !onCreateSO) return;
+    const open = (detail.orders || []).filter((o) => !o.so_id);
+    if (!open.length) { flash('No unbatched orders to send'); return; }
+    if (!window.confirm(`Create a Sales Order from ${open.length} order${open.length === 1 ? '' : 's'}?`)) return;
+    const openIds = new Set(open.map((o) => o.id));
+    const lines = (detail.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent);
+
+    // Aggregate quantities by product + size into so_items (sizes jsonb).
+    const byProduct = {};
+    lines.forEach((i) => {
+      const pid = i.product_id || i.sku || 'unknown';
+      if (!byProduct[pid]) byProduct[pid] = { product_id: i.product_id || null, sku: i.sku || '', sizes: {} };
+      const sz = i.size || 'OS';
+      byProduct[pid].sizes[sz] = (byProduct[pid].sizes[sz] || 0) + (i.qty || 1);
+    });
+    const pids = [...new Set(lines.map((i) => i.product_id).filter(Boolean))];
+    const pinfo = {};
+    if (pids.length) {
+      const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price').in('id', pids);
+      (data || []).forEach((p) => { pinfo[p.id] = p; });
+    }
+    const soItems = Object.values(byProduct).map((g) => {
+      const info = pinfo[g.product_id] || {};
+      return { sku: g.sku || info.sku || '', name: info.name || g.sku || 'Item', brand: info.brand || '', color: info.color || '',
+        product_id: g.product_id || null, nsa_cost: info.nsa_cost || 0, retail_price: info.retail_price || 0, unit_sell: info.retail_price || 0,
+        sizes: g.sizes, available_sizes: Object.keys(g.sizes), no_deco: true, decorations: [], pick_lines: [], po_lines: [] };
+    });
+
+    // Per-player roster carried into production notes so personalization survives.
+    const roster = open.map((o) => {
+      const its = (detail.orderItems || []).filter((i) => i.order_id === o.id && !i.is_bundle_parent);
+      const player = its[0]?.player_name || o.buyer_name || '—';
+      const num = its[0]?.player_number ? ' #' + its[0].player_number : '';
+      const desc = its.map((i) => `${i.qty}× ${i.sku} ${i.size || ''}`.trim()).join(', ');
+      return `${player}${num} — ${desc} [${o.payment_mode === 'paid' ? 'PAID' : 'TEAM TAB'}]`;
+    }).join('\n');
+    const units = soItems.reduce((a, i) => a + Object.values(i.sizes).reduce((b, v) => b + v, 0), 0);
+    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})\n${open.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'to club' : 'ship to home'}\n\nROSTER:\n${roster}`;
+
+    const soId = onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id });
+    if (!soId) { flash('Could not create Sales Order'); return; }
+    const { error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...openIds]);
+    if (error) flash(`SO ${soId} created, but linking failed: ${error.message}`);
+    else flash(`Created ${soId} · linked ${open.length} orders`);
+    loadDetail(sel);
+  }, [sel, detail, onCreateSO, flash, loadDetail]);
+
   const removeCatalogItem = useCallback(async (id, label) => {
     if (!window.confirm('Remove "' + label + '" from this store?')) return;
     const { error } = await supabase.from('webstore_products').delete().eq('id', id);
@@ -200,7 +250,7 @@ function Webstores({ cust = [], REPS = [] }) {
           custName={custName} repName={repName}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)}
-          onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} />
+          onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} />
       )}
@@ -441,7 +491,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onAddSingle, onCreateBundle, onRemove, onUpdateImage }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch }) {
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
   const catalog = detail?.catalog || [];
@@ -494,7 +544,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} />}
-          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} />}
+          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} />}
           {tab === 'roster' && <RosterTab roster={roster} notOrdered={notOrdered} />}
           {tab === 'settings' && <SettingsTab store={s} />}
         </>
@@ -752,23 +802,53 @@ function BundleBuilder({ storeItems = [], onCreate, onClose }) {
   );
 }
 
-function OrdersTab({ orders, orderItems, numbersEnabled }) {
-  if (!orders.length) return <Empty msg="No orders placed in this store yet." />;
+function OrdersTab({ orders, orderItems, numbersEnabled, onBatch }) {
+  const [q, setQ] = useState('');
+  const [fStatus, setFStatus] = useState('all');   // all | pending | in_production | shipped | complete
+  const [fPay, setFPay] = useState('all');         // all | paid | unpaid
+  const [fBatch, setFBatch] = useState('all');     // all | unbatched | batched
   const itemsByOrder = {};
   orderItems.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
+  const enrich = (o) => {
+    const items = itemsByOrder[o.id] || [];
+    return { o, items, players: [...new Set(items.map((i) => i.player_name).filter(Boolean))], numbers: [...new Set(items.map((i) => i.player_number).filter(Boolean))], lineStatus: items[0]?.line_status || 'pending' };
+  };
+  const unbatchedCount = orders.filter((o) => !o.so_id).length;
+
+  const filtered = orders.map(enrich).filter(({ o, players, numbers, lineStatus }) => {
+    if (fStatus !== 'all' && lineStatus !== fStatus) return false;
+    if (fPay === 'paid' && o.payment_mode !== 'paid') return false;
+    if (fPay === 'unpaid' && o.payment_mode === 'paid') return false;
+    if (fBatch === 'batched' && !o.so_id) return false;
+    if (fBatch === 'unbatched' && o.so_id) return false;
+    if (q.trim()) {
+      const hay = `${o.buyer_name} ${o.buyer_email} ${players.join(' ')} ${numbers.join(' ')}`.toLowerCase();
+      if (!hay.includes(q.toLowerCase())) return false;
+    }
+    return true;
+  });
+
+  if (!orders.length) return <Empty msg="No orders placed in this store yet." />;
+  const sel = { padding: '7px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12, background: '#fff' };
   return (
-    <div className="card"><div style={{ overflowX: 'auto' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-        <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
-          <th style={th}>Buyer / Player</th>{numbersEnabled && <th style={th}>#</th>}<th style={th}>Items</th><th style={th}>Kind</th><th style={th}>Paid?</th><th style={th}>Total</th><th style={th}>Status</th>
-        </tr></thead>
-        <tbody>
-          {orders.map((o) => {
-            const items = itemsByOrder[o.id] || [];
-            const players = [...new Set(items.map((i) => i.player_name).filter(Boolean))];
-            const numbers = [...new Set(items.map((i) => i.player_number).filter(Boolean))];
-            const lineStatus = items[0]?.line_status || 'pending';
-            return (
+    <>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input className="form-input" style={{ flex: 1, minWidth: 200 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search player, parent, email, number…" />
+        <select style={sel} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>{['all', 'pending', 'in_production', 'shipped', 'complete'].map((s) => <option key={s} value={s}>{s === 'all' ? 'All statuses' : s.replace(/_/g, ' ')}</option>)}</select>
+        <select style={sel} value={fPay} onChange={(e) => setFPay(e.target.value)}><option value="all">All payment</option><option value="paid">Paid</option><option value="unpaid">Team tab</option></select>
+        <select style={sel} value={fBatch} onChange={(e) => setFBatch(e.target.value)}><option value="all">All</option><option value="unbatched">Not batched</option><option value="batched">Batched</option></select>
+        <button className="btn btn-primary" disabled={!unbatchedCount} onClick={onBatch} title={unbatchedCount ? '' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
+          Create Sales Order ({unbatchedCount})
+        </button>
+      </div>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Showing {filtered.length} of {orders.length} orders.</div>
+      <div className="card"><div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
+            <th style={th}>Buyer / Player</th>{numbersEnabled && <th style={th}>#</th>}<th style={th}>Items</th><th style={th}>Kind</th><th style={th}>Paid?</th><th style={th}>Total</th><th style={th}>Status</th><th style={th}>SO</th>
+          </tr></thead>
+          <tbody>
+            {filtered.map(({ o, items, players, numbers, lineStatus }) => (
               <tr key={o.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                 <td style={td}><div style={{ fontWeight: 600 }}>{o.buyer_name || '—'}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{players.join(', ') || o.buyer_email}</div></td>
                 {numbersEnabled && <td style={td}>{numbers.join(', ') || '—'}</td>}
@@ -777,12 +857,13 @@ function OrdersTab({ orders, orderItems, numbersEnabled }) {
                 <td style={td}>{o.payment_mode === 'paid' ? <Chip label="Paid" tone="green" /> : <Chip label="Team tab" />}</td>
                 <td style={td}>{money(o.total)}</td>
                 <td style={td}><Chip label={(lineStatus || 'pending').replace(/_/g, ' ')} tone={lineStatus === 'complete' ? 'green' : lineStatus === 'shipped' ? 'blue' : 'slate'} /></td>
+                <td style={td}>{o.so_id ? <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#1e40af' }}>{o.so_id}</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div></div>
+            ))}
+          </tbody>
+        </table>
+      </div></div>
+    </>
   );
 }
 
