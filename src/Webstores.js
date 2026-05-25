@@ -988,6 +988,9 @@ function BundleBuilder({ storeItems = [], onCreate, onClose }) {
 function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orderItems, onSetTransferStock, onAddTransfers, onRemoveTransfer }) {
   const [addDesign, setAddDesign] = useState(false);
   const [addSet, setAddSet] = useState(false);
+  const [expandAll, setExpandAll] = useState(false);
+  const [openRows, setOpenRows] = useState(() => new Set());
+  const toggleRow = (id) => setOpenRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   // Maps: product_id -> design code, number set {size,color}, takes_number.
   const designByPid = {}; const numSetByPid = {}; const takesNumByPid = {};
@@ -1023,7 +1026,10 @@ function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orde
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       {/* Garment stock */}
       <div>
-        <div style={{ fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#475569', marginBottom: 8 }}>Garment stock</div>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#475569' }}>Garment stock</div>
+          <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => { setExpandAll((v) => !v); setOpenRows(new Set()); }}>{expandAll ? 'Collapse all sizes' : 'Expand all sizes'}</button>
+        </div>
         <div className="card"><div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Item</th><th style={th}>Type</th><th style={th}>In-house</th><th style={th}>Adidas</th><th style={th}>Transfer</th></tr></thead>
@@ -1031,15 +1037,21 @@ function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orde
               {ordered.map((p) => {
                 const st = stockByWp[p.id];
                 const wh = sumSizes(st?.size_stock); const ven = Number(st?.vendor_on_hand) || 0;
+                const open = expandAll || openRows.has(p.id);
                 const tlabel = p.kind === 'bundle' ? '—' : [p.transfer_code && (designs.find((d) => d.code === p.transfer_code)?.label || p.transfer_code), p.takes_number && `#s ${p.num_transfer_size || '?'}/${p.num_transfer_color || '?'}`].filter(Boolean).join(' + ') || '—';
                 return (
-                  <tr key={p.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                  <React.Fragment key={p.id}>
+                  <tr style={{ borderTop: '1px solid #f1f5f9' }}>
                     <td style={td}><div style={{ fontWeight: 600 }}>{p.display_name || st?.name || p.sku}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{p.sku}</div></td>
                     <td style={td}>{p.kind === 'bundle' ? <Chip label="Bundle" tone="blue" /> : <Chip label="Single" />}</td>
-                    <td style={{ ...td, color: wh > 0 ? '#166534' : '#cbd5e1' }}>{p.kind === 'bundle' ? '—' : wh.toLocaleString()}</td>
-                    <td style={{ ...td, color: ven > 0 ? '#1e40af' : '#cbd5e1' }}>{p.kind === 'bundle' ? '—' : ven.toLocaleString()}</td>
+                    <td style={td}>{p.kind === 'bundle' ? '—' : <span style={{ color: wh > 0 ? '#166534' : '#cbd5e1', fontWeight: 600 }}>{wh.toLocaleString()}</span>}</td>
+                    <td style={td}>
+                      {p.kind === 'bundle' ? '—' : <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ color: ven > 0 ? '#1e40af' : '#cbd5e1', fontWeight: 600 }}>{ven.toLocaleString()}</span><button onClick={() => toggleRow(p.id)} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 11, padding: 0 }}>{open ? 'hide sizes ▲' : 'sizes ▾'}</button></span>}
+                    </td>
                     <td style={{ ...td, fontSize: 12, color: '#475569' }}>{tlabel}</td>
                   </tr>
+                  {open && p.kind !== 'bundle' && <tr><td colSpan={5} style={{ background: '#f8fafc', padding: '8px 16px' }}><StockBreakdown stock={st} summary={stockText(st)} /></td></tr>}
+                  </React.Fragment>
                 );
               })}
             </tbody>
