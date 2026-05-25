@@ -4061,62 +4061,82 @@ export default function App(){
       // Parse all sections → products
       const products = [];
       let totalQty = 0, totalSales = 0;
+      // Pull a SKU out of a string like "Black/White (KB9093)" → KB9093
+      const extractSku = (str) => {
+        const m = (str || '').match(/\(([A-Za-z0-9]{4,10})\)/);
+        return m ? m[1].toUpperCase() : '';
+      };
       (report.reports || []).forEach(r => {
         (r.sections || []).forEach(section => {
           const meta = section.meta || {};
           const rows = section.rows || [];
-          // Aggregate sizes across all rows for this product
-          const sizes = {};
-          let productQty = 0, productPaid = 0;
-          const colors = new Set();
+          const artworkList = meta.artwork || [];
+          // The section's own SKU is a usable fallback only when it looks
+          // like a real SKU (no spaces, not absurdly long) — otherwise it's
+          // a product name and we rely on the per-row color SKU instead.
+          const sectionSku = meta.sku || '';
+          const sectionSkuOk = sectionSku && !sectionSku.includes(' ') && sectionSku.length <= 15;
+
+          // Same product can ship multiple SKUs (one per color), e.g. the
+          // 3-stripe short is KB9093 in black and KB9097 in grey. Split each
+          // distinct SKU into its own product row instead of merging them.
+          const groups = {};
           rows.forEach(row => {
             const rawSz = (row.size || 'OS').trim().replace(/["''″]+$/,'');
             const sz = SZ_NORM[rawSz.toUpperCase()] || (/^adult\b/i.test(rawSz)?'OSFA':rawSz);
             const qty = row.quantity || 0;
-            sizes[sz] = (sizes[sz] || 0) + qty;
-            productQty += qty;
-            productPaid += (row.paid || 0);
-            if (row.color) colors.add(row.color);
+            const rowSku = extractSku(row.color) || (sectionSkuOk ? sectionSku.toUpperCase() : '');
+            const key = rowSku || '__nosku__';
+            if (!groups[key]) groups[key] = { sku: rowSku, sizes: {}, qty: 0, paid: 0, colors: new Set() };
+            const g = groups[key];
+            g.sizes[sz] = (g.sizes[sz] || 0) + qty;
+            g.qty += qty;
+            g.paid += (row.paid || 0);
+            if (row.color) g.colors.add(row.color);
           });
-          // Get artwork image
-          const artwork = (meta.artwork || [])[0];
-          const imageUrl = artwork?.link || artwork?.thumbnail || '';
 
-          // Skip items with 0 sales — no one ordered them
-          if (productQty === 0) return;
+          Object.values(groups).forEach(g => {
+            // Skip items with 0 sales — no one ordered them
+            if (g.qty === 0) return;
 
-          // Fix bad SKUs: if SKU looks like a product name (has spaces or
-          // is very long), try to extract a real SKU from parentheses in
-          // the color or name fields, e.g. "Black/White (HT3973)" → HT3973
-          let sku = meta.sku || '';
-          const skuLooksBad = sku.includes(' ') || sku.length > 15;
-          if (skuLooksBad) {
-            const colorStr = [...colors].join(' ');
-            const nameStr = meta.name || '';
-            const parenMatch = (colorStr + ' ' + nameStr).match(/\(([A-Za-z0-9]{4,10})\)/);
-            if (parenMatch) sku = parenMatch[1].toUpperCase();
-          }
+            // Resolve a SKU: prefer the per-row color SKU, then any SKU in
+            // the grouped colors/name, then the section SKU.
+            let sku = g.sku;
+            if (!sku) {
+              const fromText = extractSku([...g.colors].join(' ') + ' ' + (meta.name || ''));
+              sku = fromText || (sectionSkuOk ? sectionSku.toUpperCase() : sectionSku);
+            }
 
-          products.push({
-            sku,
-            name: meta.name || '',
-            manufacturer: meta.manufacturer || '',
-            category: meta.category || '',
-            color: [...colors].join(', '),
-            retail: meta.base_price || 0,
-            cost: meta.cogs || 0,
-            deco_type: '',
-            deco_cost: 0,
-            art_group: '',
-            decorations: [],
-            sizes,
-            image_url: imageUrl,
-            _omg_product_id: meta.id,
-            _original_sku: sku,
-            _artwork: meta.artwork || [],
+            // Match this SKU's mockup image (each color has its own art),
+            // falling back to the section's first artwork.
+            const matchedArt = sku
+              ? artworkList.filter(a => `${a.link||''} ${a.thumbnail||''} ${a.color||''} ${a.name||''} ${a.label||''}`.toUpperCase().includes(sku))
+              : [];
+            const artForSku = matchedArt.length ? matchedArt : artworkList;
+            const artwork = artForSku[0];
+            const imageUrl = artwork?.link || artwork?.thumbnail || '';
+
+            products.push({
+              sku,
+              name: meta.name || '',
+              manufacturer: meta.manufacturer || '',
+              category: meta.category || '',
+              color: [...g.colors].join(', '),
+              retail: meta.base_price || 0,
+              cost: meta.cogs || 0,
+              deco_type: '',
+              deco_cost: 0,
+              art_group: '',
+              decorations: [],
+              sizes: g.sizes,
+              image_url: imageUrl,
+              _omg_product_id: meta.id,
+              _original_sku: sku,
+              _artwork: artForSku,
+            });
+            totalQty += g.qty;
+            totalSales += g.paid;
           });
-          totalQty += productQty;
-          totalSales += productPaid;
         });
       });
 
@@ -4155,8 +4175,11 @@ export default function App(){
       // Match by _omg_product_id (stable) or original SKU position.
       const existingProducts = store.products || [];
       const mergedProducts = products.map((p, idx) => {
-        // Find existing product by OMG product ID or by position
-        const existing = existingProducts.find(ep => ep._omg_product_id && ep._omg_product_id === p._omg_product_id)
+        // Find existing product by OMG product ID + SKU (a single OMG product
+        // can now span multiple SKU rows, so the ID alone isn't unique) or by
+        // position. Compare against the existing row's original SKU so user
+        // edits to the displayed SKU don't break the match.
+        const existing = existingProducts.find(ep => ep._omg_product_id && ep._omg_product_id === p._omg_product_id && (ep._original_sku || ep.sku) === p.sku)
           || existingProducts[idx];
         if (!existing) return p;
         // Preserve manual edits, take fresh data for quantities
