@@ -294,7 +294,7 @@ const BLANK = {
   name: '', slug: '', customer_id: '', rep_id: '', status: 'draft',
   open_at: '', close_at: '',
   payment_mode: 'paid', require_login: false,
-  ship_home_enabled: true, deliver_club_enabled: true,
+  delivery_mode: 'ship_home',
   director_name: '', director_email: '', director_phone: '',
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
   so_creation: 'manual',
@@ -368,10 +368,12 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
         <Toggle label="Require login (club members only)" checked={f.require_login} onChange={(v) => set('require_login', v)} />
       </Section>
 
-      <Section title="Delivery options">
-        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Shoppers choose one at checkout.</div>
-        <Toggle label="Ship to home (collects each buyer's home address)" checked={f.ship_home_enabled} onChange={(v) => set('ship_home_enabled', v)} />
-        <Toggle label="Deliver to club (ships to the club's default address)" checked={f.deliver_club_enabled} onChange={(v) => set('deliver_club_enabled', v)} />
+      <Section title="Delivery">
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Applies to the whole store (set by you, not chosen by shoppers).</div>
+        <Row label="Delivery method"><select className="form-select" value={f.delivery_mode} onChange={(e) => set('delivery_mode', e.target.value)}>
+          <option value="ship_home">Ship to home — collect each buyer's home address</option>
+          <option value="deliver_club">Deliver to club — ships to the club's default address</option>
+        </select></Row>
       </Section>
 
       <Section title="Jersey numbers">
@@ -386,8 +388,8 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
       </Section>
 
       <Section title="Fundraising">
-        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Fundraising is set <b>per product/package</b> in the Catalog tab (price X + fundraising Y on top). This toggle just controls whether shoppers see that breakdown.</div>
-        <Toggle label='Show "$X supports the team" to shoppers' checked={f.fundraise_show_parents} onChange={(v) => set('fundraise_show_parents', v)} />
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>Fundraising is set <b>per product/package</b> in the Catalog tab (price X + fundraising Y on top). By default families do <b>not</b> see the fundraising amount — turn this on only if you want it shown.</div>
+        <Toggle label='Show families the "$X supports the team" breakdown (off by default)' checked={f.fundraise_show_parents} onChange={(v) => set('fundraise_show_parents', v)} />
       </Section>
 
       <Section title="Branding">
@@ -732,7 +734,7 @@ function RosterTab({ roster, notOrdered }) {
 }
 
 function SettingsTab({ store: s }) {
-  const dlv = [s.ship_home_enabled !== false ? 'Ship to home' : null, s.deliver_club_enabled !== false ? 'Deliver to club' : null].filter(Boolean).join(' · ') || 'None';
+  const dlv = s.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home';
   const rows = [
     ['Slug', '/shop/' + s.slug],
     ['Status', (s.status || 'draft').toUpperCase()],
@@ -743,7 +745,7 @@ function SettingsTab({ store: s }) {
     ['Delivery', dlv],
     ['Numbers', s.number_enabled ? `Enabled (${s.number_min}–${s.number_max}${s.number_unique ? ', unique required' : ''})` : 'Off'],
     ['SO creation', s.so_creation],
-    ['Fundraising', `Per-item${s.fundraise_show_parents ? ', shown to shoppers' : ', hidden from shoppers'}`],
+    ['Fundraising', `Per-item${s.fundraise_show_parents ? ', shown to families' : ', hidden from families'}`],
     ['Theme', s.theme || 'classic'],
   ];
   return (
