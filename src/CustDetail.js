@@ -803,26 +803,28 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <span style={{fontSize:10,color:'#94a3b8'}}>{art.deco_type==='embroidery'?'Thread colors per garment':'Ink colors per garment'}</span>
           </div>
           {saveArt?<>
-            <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
-              {cws.map((cw,ci)=><div key={cw.id||ci} style={{flex:'1 1 220px',minWidth:220,maxWidth:360,background:'white',border:'1px solid #e2e8f0',borderRadius:8,padding:10}}>
-                <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:6}}>
-                  <span style={{fontSize:11,fontWeight:700,color:'#475569'}}>CW {ci+1}</span>
-                  <input className="form-input" value={cw.garment_color||''} onChange={e=>{const n=[...cws];n[ci]={...cw,garment_color:e.target.value};persistColorWays(n)}} placeholder="Garment color..." style={{fontSize:11,flex:1}}/>
-                  <button onClick={()=>persistColorWays(cws.filter((_,x)=>x!==ci))} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:2}} title="Remove CW"><Icon name="trash" size={12}/></button>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(248px,1fr))',gap:10,marginBottom:10}}>
+              {cws.map((cw,ci)=><div key={cw.id||ci} style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',boxShadow:'0 1px 2px rgba(0,0,0,0.04)'}}>
+                <div style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',background:'#f8fafc',borderBottom:'1px solid #eef2f7'}}>
+                  <span style={{fontSize:10,fontWeight:700,color:'#fff',background:'#64748b',borderRadius:6,padding:'2px 7px',flexShrink:0}}>CW {ci+1}</span>
+                  <input value={cw.garment_color||''} onChange={e=>{const n=[...cws];n[ci]={...cw,garment_color:e.target.value};persistColorWays(n)}} placeholder="Garment color" style={{flex:1,minWidth:0,fontSize:13,fontWeight:600,color:'#1e293b',border:'none',background:'transparent',outline:'none'}}/>
+                  <button onClick={()=>persistColorWays(cws.filter((_,x)=>x!==ci))} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:2,flexShrink:0,display:'flex'}} title="Remove color way"><Icon name="trash" size={13}/></button>
                 </div>
-                {(cw.inks||[]).map((ink,ii)=><div key={ii} style={{display:'flex',gap:4,alignItems:'center',marginBottom:3}}>
-                  <span style={{fontSize:10,color:'#94a3b8',width:14,textAlign:'right'}}>{ii+1}</span>
-                  {pantoneHex(ink)&&<span style={{width:12,height:12,borderRadius:2,background:pantoneHex(ink),border:'1px solid #d1d5db',flexShrink:0}}/>}
-                  <input className="form-input" value={ink} onChange={e=>{const n=[...cws];const inks=[...(cw.inks||[])];inks[ii]=e.target.value;n[ci]={...cw,inks};persistColorWays(n)}} placeholder={art.deco_type==='embroidery'?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1}}/>
-                  <button onClick={()=>{const n=[...cws];n[ci]={...cw,inks:(cw.inks||[]).filter((_,x)=>x!==ii)};persistColorWays(n)}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:2}}><Icon name="x" size={10}/></button>
-                </div>)}
-                {art.deco_type==='embroidery'?<ThreadQuickPicks colors={mergeColors(customer,allCustomers,'thread_colors')} onPick={v=>{const n=[...cws];const inks=[...(cw.inks||[])];const e2=inks.findIndex(x=>!x);if(e2>=0)inks[e2]=v;else inks.push(v);n[ci]={...cw,inks};persistColorWays(n)}}/>
-                :<PantoneQuickPicks colors={mergeColors(customer,allCustomers,'pantone_colors')} onPick={v=>{const n=[...cws];const inks=[...(cw.inks||[])];const e2=inks.findIndex(x=>!x);if(e2>=0)inks[e2]=v;else inks.push(v);n[ci]={...cw,inks};persistColorWays(n)}}/>}
-                <button onClick={()=>{const n=[...cws];n[ci]={...cw,inks:[...(cw.inks||[]),'']};persistColorWays(n)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#2563eb',padding:'2px 0'}}>+ Add color</button>
+                <div style={{padding:'8px 10px'}}>
+                  {(cw.inks||[]).length===0&&<div style={{fontSize:10,color:'#cbd5e1',fontStyle:'italic',marginBottom:6}}>No colors yet</div>}
+                  {(cw.inks||[]).map((ink,ii)=><div key={ii} style={{display:'flex',gap:6,alignItems:'center',marginBottom:5}}>
+                    <span style={{width:16,height:16,borderRadius:4,background:pantoneHex(ink)||'#f1f5f9',border:'1px solid #d1d5db',flexShrink:0}}/>
+                    <input value={ink} onChange={e=>{const n=[...cws];const inks=[...(cw.inks||[])];inks[ii]=e.target.value;n[ci]={...cw,inks};persistColorWays(n)}} placeholder={art.deco_type==='embroidery'?'Thread color':'Ink color'} style={{flex:1,minWidth:0,fontSize:12,padding:'4px 8px',border:'1px solid #e5e7eb',borderRadius:6,background:'#fff',outline:'none'}}/>
+                    <button onClick={()=>{const n=[...cws];n[ci]={...cw,inks:(cw.inks||[]).filter((_,x)=>x!==ii)};persistColorWays(n)}} style={{background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',padding:2,flexShrink:0,display:'flex'}} title="Remove color"><Icon name="x" size={12}/></button>
+                  </div>)}
+                  <div style={{marginTop:6}}>{art.deco_type==='embroidery'?<ThreadQuickPicks colors={mergeColors(customer,allCustomers,'thread_colors')} onPick={v=>{const n=[...cws];const inks=[...(cw.inks||[])];const e2=inks.findIndex(x=>!x);if(e2>=0)inks[e2]=v;else inks.push(v);n[ci]={...cw,inks};persistColorWays(n)}}/>
+                  :<PantoneQuickPicks colors={mergeColors(customer,allCustomers,'pantone_colors')} onPick={v=>{const n=[...cws];const inks=[...(cw.inks||[])];const e2=inks.findIndex(x=>!x);if(e2>=0)inks[e2]=v;else inks.push(v);n[ci]={...cw,inks};persistColorWays(n)}}/>}</div>
+                  <button onClick={()=>{const n=[...cws];n[ci]={...cw,inks:[...(cw.inks||[]),'']};persistColorWays(n)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#2563eb',padding:'4px 0 0',fontWeight:600}}>+ Add color</button>
+                </div>
               </div>)}
+              <button onClick={()=>persistColorWays([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,minHeight:90,background:'#fafbfc',border:'2px dashed #cbd5e1',borderRadius:10,cursor:'pointer',fontSize:12,color:'#64748b',fontWeight:600}}><Icon name="plus" size={16}/>Add Color Way</button>
             </div>
-            <button onClick={()=>persistColorWays([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{background:'none',border:'1px dashed #cbd5e1',borderRadius:6,cursor:'pointer',fontSize:11,color:'#475569',padding:'6px 12px',fontWeight:600}}>+ Add Color Way</button>
-          </>:(cws.length>0?<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{cws.map((cw,ci)=><span key={cw.id||ci} style={{fontSize:11,padding:'2px 8px',background:'#f1f5f9',borderRadius:6,color:'#475569',fontWeight:600}}>{cw.garment_color||'CW '+(ci+1)}</span>)}</div>:<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No color ways</div>)}
+          </>:(cws.length>0?<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{cws.map((cw,ci)=><span key={cw.id||ci} style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:11,padding:'3px 9px',background:'#f1f5f9',borderRadius:8,color:'#475569',fontWeight:600}}>{cw.garment_color||'CW '+(ci+1)}{(cw.inks||[]).filter(Boolean).length>0&&<span style={{display:'inline-flex',gap:2}}>{(cw.inks||[]).filter(Boolean).map((ink,ii)=><span key={ii} title={ink} style={{width:11,height:11,borderRadius:3,background:pantoneHex(ink)||'#cbd5e1',border:'1px solid #d1d5db'}}/>)}</span>}</span>)}</div>:<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No color ways</div>)}
         </div>
         {/* All mockup versions */}
         <div style={{marginBottom:16}}>
