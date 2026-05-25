@@ -943,11 +943,21 @@ function BatchesTab({ store, productStock, onOpenSO }) {
       if (!ids.length) { setSos([]); return; }
       const { data: items } = await supabase.from('so_items').select('id,so_id,sku,name,product_id,sizes').in('so_id', ids);
       const itemIds = (items || []).map((i) => i.id);
-      let picks = [];
-      if (itemIds.length) { const { data: pl } = await supabase.from('so_item_pick_lines').select('so_item_id,sizes,status').in('so_item_id', itemIds); picks = pl || []; }
+      let picks = [], decos = [], jobs = [];
+      if (itemIds.length) {
+        const [plRes, decoRes] = await Promise.all([
+          supabase.from('so_item_pick_lines').select('so_item_id,sizes,status').in('so_item_id', itemIds),
+          supabase.from('so_item_decorations').select('so_item_id,kind,position,type,num_method,deco_type,art_file_id').in('so_item_id', itemIds),
+        ]);
+        picks = plRes.data || []; decos = decoRes.data || [];
+      }
+      const { data: jobRes } = await supabase.from('so_jobs').select('so_id,art_name,deco_type,positions,art_status,prod_status,total_units,fulfilled_units').in('so_id', ids);
+      jobs = jobRes || [];
       const pickedByItem = {};
       picks.forEach((p) => { if ((p.status || '') === 'pulled') { const t = sumSizes(p.sizes); pickedByItem[p.so_item_id] = (pickedByItem[p.so_item_id] || 0) + t; } });
-      setSos((orders || []).map((o) => ({ ...o, items: (items || []).filter((i) => i.so_id === o.id), pickedByItem })));
+      const decosByItem = {};
+      decos.forEach((d) => { (decosByItem[d.so_item_id] = decosByItem[d.so_item_id] || []).push(d); });
+      setSos((orders || []).map((o) => ({ ...o, items: (items || []).filter((i) => i.so_id === o.id), pickedByItem, decosByItem, jobs: jobs.filter((j) => j.so_id === o.id) })));
     })();
   }, [store.id]);
 
@@ -1002,9 +1012,16 @@ function BatchesTab({ store, productStock, onOpenSO }) {
                   const picked = o.pickedByItem[it.id] || 0;
                   const sh = stockHealth(it);
                   const sizeStr = Object.entries(it.sizes || {}).filter(([, q]) => Number(q) > 0).map(([sz, q]) => `${sz}:${q}`).join('  ');
+                  const ds = (o.decosByItem || {})[it.id] || [];
                   return (
                     <tr key={it.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                      <td style={td}><div style={{ fontWeight: 600 }}>{it.name || it.sku}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{it.sku}</div></td>
+                      <td style={td}>
+                        <div style={{ fontWeight: 600 }}>{it.name || it.sku}</div>
+                        <div style={{ fontSize: 11, color: '#94a3b8' }}>{it.sku}</div>
+                        {ds.length > 0 && <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+                          {ds.map((d, di) => <span key={di} style={{ fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 5, background: d.kind === 'numbers' ? '#dcfce7' : d.kind === 'names' ? '#fef3c7' : '#ede9fe', color: d.kind === 'numbers' ? '#166534' : d.kind === 'names' ? '#92400e' : '#6d28d9' }}>{d.kind === 'numbers' ? 'Numbers' : d.kind === 'names' ? 'Names' : (d.deco_type || d.type || 'art').replace(/_/g, ' ')}{d.position ? ' · ' + d.position : ''}{d.num_method ? ' · ' + d.num_method.replace(/_/g, ' ') : ''}</span>)}
+                        </div>}
+                      </td>
                       <td style={{ ...td, fontFamily: 'monospace', fontSize: 12 }}>{sizeStr || '—'} <span style={{ color: '#94a3b8' }}>({ordered})</span></td>
                       <td style={{ ...td, color: picked >= ordered ? '#166534' : '#92400e', fontWeight: 600 }}>{picked}/{ordered}</td>
                       <td style={{ ...td, color: sh.color, fontWeight: 600 }}>{sh.text}</td>
@@ -1013,12 +1030,30 @@ function BatchesTab({ store, productStock, onOpenSO }) {
                 })}
               </tbody>
             </table>
+            {(o.jobs || []).length > 0 && <div style={{ marginTop: 12, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Decoration / production</div>
+              {o.jobs.map((j, ji) => (
+                <div key={ji} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 0', fontSize: 12, flexWrap: 'wrap' }}>
+                  <span style={{ fontWeight: 600, minWidth: 140 }}>{j.art_name || (j.deco_type || '').replace(/_/g, ' ') || 'Deco'}</span>
+                  <span style={{ color: '#94a3b8' }}>{(j.deco_type || '').replace(/_/g, ' ')}{j.positions ? ' · ' + j.positions : ''}</span>
+                  <DecoStat label="Art" value={j.art_status} />
+                  <DecoStat label="Prod" value={j.prod_status} />
+                  <span style={{ color: '#64748b' }}>{j.fulfilled_units || 0}/{j.total_units || 0} units</span>
+                </div>
+              ))}
+            </div>}
             {o._tracking_number && <div style={{ fontSize: 12, color: '#1e40af', marginTop: 8 }}>Tracking: {o._tracking_number}</div>}
           </div></div>
         );
       })}
     </div>
   );
+}
+
+function DecoStat({ label, value }) {
+  const v = (value || 'pending').replace(/_/g, ' ');
+  const done = /complete|approved|done|art_complete/i.test(value || '');
+  return <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 7px', borderRadius: 5, background: done ? '#dcfce7' : '#f1f5f9', color: done ? '#166534' : '#475569' }}>{label}: {v}</span>;
 }
 
 function OrdersTab({ orders, orderItems, numbersEnabled, onBatch }) {
