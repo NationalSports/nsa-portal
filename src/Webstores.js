@@ -99,7 +99,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
   const loadDetail = useCallback(async (store) => {
     setDetailLoading(true);
     const sid = store.id;
-    const [catRes, bundleRes, stockRes, ordRes, itemRes, rosterRes, claimRes] = await Promise.all([
+    const [catRes, bundleRes, stockRes, ordRes, itemRes, rosterRes, claimRes, transferRes] = await Promise.all([
       supabase.from('webstore_products').select('*').eq('store_id', sid).order('sort_order'),
       supabase.from('webstore_bundle_items').select('*').order('sort_order'),
       supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,available_sizes,vendor_eta,name,color,category,image_front_url').eq('store_id', sid),
@@ -107,6 +107,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
       supabase.from('webstore_order_items').select('*'),
       supabase.from('webstore_roster').select('*').eq('store_id', sid).order('player_name'),
       supabase.from('webstore_number_claims').select('*').eq('store_id', sid).order('player_number'),
+      supabase.from('webstore_transfers').select('*').eq('store_id', sid).order('kind').order('code'),
     ]);
     const catalog = catRes.data || [];
     const catIds = new Set(catalog.map((c) => c.id));
@@ -121,6 +122,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
       orderItems: (itemRes.data || []).filter((i) => orderIds.has(i.order_id)),
       roster: rosterRes.data || [],
       claims: claimRes.data || [],
+      transfers: transferRes.data || [],
     });
     setDetailLoading(false);
   }, []);
@@ -145,8 +147,8 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     flash('Store created'); return { data };
   }, [sel, flash]);
 
-  const addSingle = useCallback(async ({ product, price, fundraise, image_url, takes_number, takes_name, name_upcharge }) => {
-    const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, takes_number: !!takes_number, takes_name: !!takes_name, name_upcharge: Number(name_upcharge) || 0, active: true, sort_order: (detail?.catalog?.length || 0) };
+  const addSingle = useCallback(async ({ product, price, fundraise, image_url, takes_number, takes_name, name_upcharge, transfer_code }) => {
+    const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, takes_number: !!takes_number, takes_name: !!takes_name, name_upcharge: Number(name_upcharge) || 0, transfer_code: transfer_code || null, active: true, sort_order: (detail?.catalog?.length || 0) };
     const { error } = await supabase.from('webstore_products').insert(row);
     if (error) { flash('Error: ' + error.message); return; }
     flash('Added ' + (product.name || product.sku)); loadDetail(sel);
@@ -164,11 +166,30 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     flash('Item updated'); loadDetail(sel);
   }, [sel, flash, loadDetail]);
 
+  const setTransferStock = useCallback(async (id, on_hand) => {
+    const { error } = await supabase.from('webstore_transfers').update({ on_hand: Number(on_hand) || 0 }).eq('id', id);
+    if (error) { flash('Error: ' + error.message); return; }
+    loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
+  const addTransfers = useCallback(async (rows) => {
+    const payload = rows.map((r) => ({ store_id: sel.id, ...r }));
+    const { error } = await supabase.from('webstore_transfers').insert(payload);
+    if (error) { flash('Error: ' + error.message); return; }
+    flash('Transfer inventory added'); loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
+  const removeTransfer = useCallback(async (id) => {
+    const { error } = await supabase.from('webstore_transfers').delete().eq('id', id);
+    if (error) { flash('Error: ' + error.message); return; }
+    loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
   const createBundle = useCallback(async ({ name, price, fundraise, image_url, components }) => {
     const { data: bundle, error } = await supabase.from('webstore_products').insert({ store_id: sel.id, kind: 'bundle', display_name: name, retail_price: price, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, active: true, sort_order: (detail?.catalog?.length || 0) }).select().single();
     if (error) { flash('Error: ' + error.message); return; }
     if (components.length) {
-      const rows = components.map((c, i) => ({ bundle_id: bundle.id, product_id: c.product_id, sku: c.sku, qty: c.qty || 1, size_required: c.size_required !== false, takes_number: !!c.takes_number, takes_name: !!c.takes_name, name_upcharge: Number(c.name_upcharge) || 0, sort_order: i }));
+      const rows = components.map((c, i) => ({ bundle_id: bundle.id, product_id: c.product_id, sku: c.sku, qty: c.qty || 1, size_required: c.size_required !== false, takes_number: !!c.takes_number, takes_name: !!c.takes_name, name_upcharge: Number(c.name_upcharge) || 0, transfer_code: c.transfer_code || null, sort_order: i }));
       const { error: e2 } = await supabase.from('webstore_bundle_items').insert(rows);
       if (e2) { flash('Bundle created but items failed: ' + e2.message); loadDetail(sel); return; }
     }
@@ -280,7 +301,8 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
           custName={custName} repName={repName}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO}
-          onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} onUpdateItem={updateCatalogItem} />
+          onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} onUpdateItem={updateCatalogItem}
+          onSetTransferStock={setTransferStock} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} />
       )}
@@ -521,7 +543,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onUpdateItem }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onUpdateItem, onSetTransferStock, onAddTransfers, onRemoveTransfer }) {
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
   const catalog = detail?.catalog || [];
@@ -544,6 +566,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
     { id: 'catalog', label: `Catalog (${catalog.length})` },
     { id: 'orders', label: `Orders (${orders.length})` },
     { id: 'batches', label: soSummary.length ? `Batches (${soSummary.length})` : 'Batches' },
+    { id: 'inventory', label: 'Inventory' },
     { id: 'roster', label: roster.length ? `Roster (${roster.length})` : 'Roster' },
     { id: 'settings', label: 'Settings' },
   ];
@@ -593,9 +616,10 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
 
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onUpdateItem={onUpdateItem} />}
+          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onUpdateItem={onUpdateItem} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} />}
+          {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onSetTransferStock={onSetTransferStock} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'roster' && <RosterTab roster={roster} notOrdered={notOrdered} />}
           {tab === 'settings' && <SettingsTab store={s} />}
         </>
@@ -666,10 +690,12 @@ function stockText(stock) {
 }
 
 // ── Catalog tab with editing ─────────────────────────────────────────
-function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onUpdateItem }) {
+function CatalogTab({ catalog, bundleItems, stockByWp, transfers = [], onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder, onUpdateItem }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
   const [editId, setEditId] = useState(null); // catalog row being edited inline
+  const designOptions = transfers.filter((t) => t.kind === 'design').map((t) => ({ code: t.code, label: t.label }));
+  const numberSets = [...new Set(transfers.filter((t) => t.kind === 'number').map((t) => `${t.tsize || ''}|${t.color || ''}`))].map((k) => { const [size, color] = k.split('|'); return { size, color }; });
   const [expandAll, setExpandAll] = useState(false);
   const [openRows, setOpenRows] = useState(() => new Set());
   const toggleRow = (id) => setOpenRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -683,7 +709,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBund
       </div>
 
       {mode === 'single' && !pending && <ProductSearch label="Add a product to this store" onPick={(p) => setPending(p)} onClose={() => setMode(null)} />}
-      {mode === 'single' && pending && <SinglePriceEditor product={pending} onCancel={() => setPending(null)} onAdd={(opts) => { onAddSingle(opts); setMode(null); setPending(null); }} />}
+      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} onCancel={() => setPending(null)} onAdd={(opts) => { onAddSingle(opts); setMode(null); setPending(null); }} />}
       {mode === 'bundle' && <BundleBuilder storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
 
       {catalog.length === 0 ? <Empty msg="No products in this store's catalog yet. Add one above." /> : (
@@ -736,7 +762,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBund
                     </td>
                   </tr>
                   {editId === p.id && <tr><td colSpan={9} style={{ background: '#f8fafc', padding: 0 }}>
-                    <CatalogItemEditor item={p} defaultName={stock?.name} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
+                    <CatalogItemEditor item={p} defaultName={stock?.name} designOptions={designOptions} numberSets={numberSets} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); setEditId(null); }} />
                   </td></tr>}
                   </React.Fragment>
                 );
@@ -750,7 +776,7 @@ function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBund
 }
 
 // Inline editor for an existing catalog item (single or bundle).
-function CatalogItemEditor({ item, defaultName, onCancel, onSave }) {
+function CatalogItemEditor({ item, defaultName, designOptions = [], numberSets = [], onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
   const [name, setName] = useState(item.display_name || (isBundle ? '' : ''));
   const [price, setPrice] = useState(item.retail_price || 0);
@@ -758,10 +784,18 @@ function CatalogItemEditor({ item, defaultName, onCancel, onSave }) {
   const [takesNumber, setTakesNumber] = useState(!!item.takes_number);
   const [takesName, setTakesName] = useState(!!item.takes_name);
   const [nameUp, setNameUp] = useState(item.name_upcharge || 0);
+  const [transferCode, setTransferCode] = useState(item.transfer_code || '');
+  const [numSize, setNumSize] = useState(item.num_transfer_size || null);
+  const [numColor, setNumColor] = useState(item.num_transfer_color || null);
   const total = (Number(price) || 0) + (Number(fundraise) || 0);
   const save = () => {
     const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: name.trim() || null };
-    if (!isBundle) { fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0; }
+    if (!isBundle) {
+      fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
+      fields.transfer_code = transferCode || null;
+      fields.num_transfer_size = takesNumber ? numSize : null;
+      fields.num_transfer_color = takesNumber ? numColor : null;
+    }
     onSave(fields);
   };
   return (
@@ -777,6 +811,7 @@ function CatalogItemEditor({ item, defaultName, onCancel, onSave }) {
         <Toggle label="Player adds a name" checked={takesName} onChange={setTakesName} />
         {takesName && <label style={{ fontSize: 13 }}>Name upcharge +$<input className="form-input" style={{ width: 80, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={nameUp} onChange={(e) => setNameUp(e.target.value)} /></label>}
       </div>}
+      {!isBundle && <TransferFields designOptions={designOptions} numberSets={numberSets} transferCode={transferCode} setTransferCode={setTransferCode} numSize={numSize} setNumSize={setNumSize} numColor={numColor} setNumColor={setNumColor} showNumber={takesNumber} />}
       {isBundle && <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>To change which items are in this package or their number/name options, remove and re-create the package.</div>}
       <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
         <button className="btn btn-primary" onClick={save}>Save changes</button>
@@ -809,14 +844,30 @@ function RowImage({ row, stockImg, onUpdateImage }) {
   );
 }
 
-// After a product is picked, set its base price (X), fundraising add-on (Y), and image.
-function SinglePriceEditor({ product, onAdd, onCancel }) {
+// Shared transfer-inventory selectors (which transfers an item consumes).
+function TransferFields({ designOptions = [], numberSets = [], transferCode, setTransferCode, numSize, setNumSize, numColor, setNumColor, showNumber }) {
+  return (
+    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 4 }}>
+      <Row label="Logo transfer (deducts 1 per item)"><select className="form-select" value={transferCode || ''} onChange={(e) => setTransferCode(e.target.value)}><option value="">None</option>{designOptions.map((d) => <option key={d.code} value={d.code}>{d.label}</option>)}</select></Row>
+      {showNumber && <Row label="Number transfer set"><select className="form-select" value={(numSize || '') + '|' + (numColor || '')} onChange={(e) => { const [s, c] = e.target.value.split('|'); setNumSize(s || null); setNumColor(c || null); }}>
+        <option value="|">None</option>
+        {numberSets.map((s, i) => <option key={i} value={`${s.size}|${s.color}`}>{s.size} · {s.color}</option>)}
+      </select></Row>}
+    </div>
+  );
+}
+
+// After a product is picked, set its base price (X), fundraising add-on (Y), image, personalization + transfers.
+function SinglePriceEditor({ product, designOptions, numberSets, onAdd, onCancel }) {
   const [price, setPrice] = useState(product.retail_price || 0);
   const [fundraise, setFundraise] = useState(0);
   const [image, setImage] = useState(null);
   const [takesNumber, setTakesNumber] = useState(false);
   const [takesName, setTakesName] = useState(false);
   const [nameUpcharge, setNameUpcharge] = useState(0);
+  const [transferCode, setTransferCode] = useState('');
+  const [numSize, setNumSize] = useState(null);
+  const [numColor, setNumColor] = useState(null);
   const total = (Number(price) || 0) + (Number(fundraise) || 0);
   return (
     <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 16 }}>
@@ -833,8 +884,9 @@ function SinglePriceEditor({ product, onAdd, onCancel }) {
         <Toggle label="Player adds a name" checked={takesName} onChange={setTakesName} />
         {takesName && <label style={{ fontSize: 13 }}>Name upcharge +$<input className="form-input" style={{ width: 80, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={nameUpcharge} onChange={(e) => setNameUpcharge(e.target.value)} /></label>}
       </div>
+      <TransferFields designOptions={designOptions} numberSets={numberSets} transferCode={transferCode} setTransferCode={setTransferCode} numSize={numSize} setNumSize={setNumSize} numColor={numColor} setNumColor={setNumColor} showNumber={takesNumber} />
       <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-        <button className="btn btn-primary" onClick={() => onAdd({ product, price, fundraise, image_url: image, takes_number: takesNumber, takes_name: takesName, name_upcharge: nameUpcharge })}>Add to store</button>
+        <button className="btn btn-primary" onClick={() => onAdd({ product, price, fundraise, image_url: image, takes_number: takesNumber, takes_name: takesName, name_upcharge: nameUpcharge, transfer_code: transferCode || null, num_transfer_size: takesNumber ? numSize : null, num_transfer_color: takesNumber ? numColor : null })}>Add to store</button>
         <button className="btn btn-secondary" onClick={onCancel}>Back</button>
       </div>
     </div></div>
@@ -925,6 +977,150 @@ function BundleBuilder({ storeItems = [], onCreate, onClose }) {
       {picking ? <ProductSearch label="Or search all products" onPick={addComp} onClose={() => setPicking(false)} /> :
         <button className="btn btn-sm btn-secondary" style={{ marginTop: 8 }} onClick={() => setPicking(true)}>+ Search all products</button>}
       <div style={{ marginTop: 14 }}><button className="btn btn-primary" disabled={!valid} onClick={() => onCreate({ name: name.trim(), price: Number(price), fundraise: Number(fundraise) || 0, image_url: image, components })}>Create package</button></div>
+    </div></div>
+  );
+}
+
+// Inventory: garment stock for everything in the store + heat-transfer
+// inventory (design transfers deducted per item; number transfers deducted
+// per digit, matched to the item's number size/color set). "Used" is computed
+// live from all non-cancelled orders.
+function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orderItems, onSetTransferStock, onAddTransfers, onRemoveTransfer }) {
+  const [addDesign, setAddDesign] = useState(false);
+  const [addSet, setAddSet] = useState(false);
+
+  // Maps: product_id -> design code, number set {size,color}, takes_number.
+  const designByPid = {}; const numSetByPid = {}; const takesNumByPid = {};
+  catalog.forEach((c) => { if (c.product_id) { if (c.transfer_code) designByPid[c.product_id] = c.transfer_code; if (c.takes_number) { takesNumByPid[c.product_id] = true; numSetByPid[c.product_id] = { size: c.num_transfer_size, color: c.num_transfer_color }; } } });
+  bundleItems.forEach((b) => { if (b.product_id) { if (b.transfer_code) designByPid[b.product_id] = b.transfer_code; if (b.takes_number) { takesNumByPid[b.product_id] = true; numSetByPid[b.product_id] = { size: b.num_transfer_size, color: b.num_transfer_color }; } } });
+
+  // Compute used per transfer code from live orders.
+  const activeOrderIds = new Set(orders.filter((o) => o.status !== 'cancelled').map((o) => o.id));
+  const used = {};
+  orderItems.forEach((i) => {
+    if (i.is_bundle_parent || !activeOrderIds.has(i.order_id)) return;
+    const units = i.qty || 1;
+    const dcode = designByPid[i.product_id];
+    if (dcode) used[dcode] = (used[dcode] || 0) + units;
+    if (takesNumByPid[i.product_id] && i.player_number) {
+      const set = numSetByPid[i.product_id] || {};
+      String(i.player_number).replace(/[^0-9]/g, '').split('').forEach((dg) => {
+        const code = `${dg}|${set.size || ''}|${set.color || ''}`;
+        used[code] = (used[code] || 0) + units;
+      });
+    }
+  });
+
+  const designs = transfers.filter((t) => t.kind === 'design');
+  const numbers = transfers.filter((t) => t.kind === 'number');
+  const sets = {}; numbers.forEach((t) => { const k = `${t.tsize || ''}|${t.color || ''}`; (sets[k] = sets[k] || []).push(t); });
+  const ordered = [...catalog].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+
+  const Remaining = ({ t }) => { const u = used[t.code] || 0; const r = (t.on_hand || 0) - u; return <span style={{ fontWeight: 700, color: r < 0 ? '#b91c1c' : r < 10 ? '#92400e' : '#166534' }}>{r}</span>; };
+  const OnHand = ({ t }) => <input defaultValue={t.on_hand} type="number" onBlur={(e) => { if (Number(e.target.value) !== t.on_hand) onSetTransferStock(t.id, e.target.value); }} style={{ width: 70, padding: '4px 6px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 13 }} />;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      {/* Garment stock */}
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#475569', marginBottom: 8 }}>Garment stock</div>
+        <div className="card"><div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Item</th><th style={th}>Type</th><th style={th}>In-house</th><th style={th}>Adidas</th><th style={th}>Transfer</th></tr></thead>
+            <tbody>
+              {ordered.map((p) => {
+                const st = stockByWp[p.id];
+                const wh = sumSizes(st?.size_stock); const ven = Number(st?.vendor_on_hand) || 0;
+                const tlabel = p.kind === 'bundle' ? '—' : [p.transfer_code && (designs.find((d) => d.code === p.transfer_code)?.label || p.transfer_code), p.takes_number && `#s ${p.num_transfer_size || '?'}/${p.num_transfer_color || '?'}`].filter(Boolean).join(' + ') || '—';
+                return (
+                  <tr key={p.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                    <td style={td}><div style={{ fontWeight: 600 }}>{p.display_name || st?.name || p.sku}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{p.sku}</div></td>
+                    <td style={td}>{p.kind === 'bundle' ? <Chip label="Bundle" tone="blue" /> : <Chip label="Single" />}</td>
+                    <td style={{ ...td, color: wh > 0 ? '#166534' : '#cbd5e1' }}>{p.kind === 'bundle' ? '—' : wh.toLocaleString()}</td>
+                    <td style={{ ...td, color: ven > 0 ? '#1e40af' : '#cbd5e1' }}>{p.kind === 'bundle' ? '—' : ven.toLocaleString()}</td>
+                    <td style={{ ...td, fontSize: 12, color: '#475569' }}>{tlabel}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div></div>
+      </div>
+
+      {/* Transfer inventory */}
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#475569' }}>Heat-transfer inventory</div>
+          <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => setAddDesign((v) => !v)}>+ Design transfer</button>
+          <button className="btn btn-sm btn-secondary" onClick={() => setAddSet((v) => !v)}>+ Number set</button>
+        </div>
+        {addDesign && <AddDesignTransfer onAdd={(row) => { onAddTransfers([row]); setAddDesign(false); }} onClose={() => setAddDesign(false)} />}
+        {addSet && <AddNumberSet onAdd={(rows) => { onAddTransfers(rows); setAddSet(false); }} onClose={() => setAddSet(false)} />}
+
+        {designs.length > 0 && <div className="card" style={{ marginBottom: 12 }}><div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Design transfer</th><th style={th}>On hand</th><th style={th}>Used</th><th style={th}>Remaining</th><th style={th}></th></tr></thead>
+            <tbody>
+              {designs.map((t) => (
+                <tr key={t.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                  <td style={td}><div style={{ fontWeight: 600 }}>{t.label}</div><div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{t.code}</div></td>
+                  <td style={td}><OnHand t={t} /></td><td style={td}>{used[t.code] || 0}</td><td style={td}><Remaining t={t} /></td>
+                  <td style={{ ...td, textAlign: 'right' }}><button onClick={() => onRemoveTransfer(t.id)} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 12 }}>remove</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div></div>}
+
+        {Object.entries(sets).map(([key, rows]) => {
+          const [sz, col] = key.split('|');
+          const sorted = [...rows].sort((a, b) => (a.digit || '').localeCompare(b.digit || ''));
+          return (
+            <div key={key} className="card" style={{ marginBottom: 12 }}><div style={{ padding: '10px 16px 0', fontWeight: 700, fontSize: 13 }}>Numbers · {sz || '?'} · {col || '?'}</div><div style={{ overflowX: 'auto', padding: '6px 0 4px' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Digit</th><th style={th}>On hand</th><th style={th}>Used</th><th style={th}>Remaining</th></tr></thead>
+                <tbody>
+                  {sorted.map((t) => (
+                    <tr key={t.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                      <td style={{ ...td, fontWeight: 700 }}>{t.digit}</td><td style={td}><OnHand t={t} /></td><td style={td}>{used[t.code] || 0}</td><td style={td}><Remaining t={t} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div></div>
+          );
+        })}
+        {transfers.length === 0 && <Empty msg="No transfer inventory yet. Add a design transfer or a number set above." />}
+      </div>
+    </div>
+  );
+}
+
+function AddDesignTransfer({ onAdd, onClose }) {
+  const [label, setLabel] = useState(''); const [onHand, setOnHand] = useState(0);
+  return (
+    <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 14, display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+      <Row label="Transfer name"><input className="form-input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Left Chest Logo DTF" /></Row>
+      <Row label="On hand"><input className="form-input" type="number" value={onHand} onChange={(e) => setOnHand(e.target.value)} /></Row>
+      <button className="btn btn-primary" disabled={!label.trim()} onClick={() => onAdd({ code: slugify(label) || ('design-' + Date.now()), label: label.trim(), kind: 'design', on_hand: Number(onHand) || 0 })}>Add</button>
+      <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+    </div></div>
+  );
+}
+function AddNumberSet({ onAdd, onClose }) {
+  const [size, setSize] = useState('8in'); const [color, setColor] = useState(''); const [onHand, setOnHand] = useState(0);
+  const create = () => {
+    const rows = [];
+    for (let d = 0; d <= 9; d++) rows.push({ code: `${d}|${size}|${color}`, label: `Number ${d} · ${size} · ${color}`, kind: 'number', digit: String(d), tsize: size, color, on_hand: Number(onHand) || 0 });
+    onAdd(rows);
+  };
+  return (
+    <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 14, display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+      <Row label="Size"><input className="form-input" value={size} onChange={(e) => setSize(e.target.value)} placeholder="8in" /></Row>
+      <Row label="Color"><input className="form-input" value={color} onChange={(e) => setColor(e.target.value)} placeholder="White" /></Row>
+      <Row label="On hand (each digit)"><input className="form-input" type="number" value={onHand} onChange={(e) => setOnHand(e.target.value)} /></Row>
+      <button className="btn btn-primary" disabled={!size.trim() || !color.trim()} onClick={create}>Add 0–9</button>
+      <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
     </div></div>
   );
 }
