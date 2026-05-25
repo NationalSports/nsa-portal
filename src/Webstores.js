@@ -393,19 +393,33 @@ function StoreForm({ store, cust, REPS, onCancel, onSave }) {
       </Section>
 
       <Section title="Branding">
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>These control how the storefront looks — logo in the header, banner behind the hero, and your team colors throughout.</div>
         <Row label="Theme"><select className="form-select" value={f.theme} onChange={(e) => set('theme', e.target.value)}>{['classic', 'bold', 'minimal'].map((t) => <option key={t} value={t}>{t}</option>)}</select></Row>
-        <div style={{ display: 'flex', gap: 12 }}>
-          <Row label="Primary color"><input className="form-input" value={f.primary_color || ''} onChange={(e) => set('primary_color', e.target.value)} placeholder="#0f172a" /></Row>
-          <Row label="Accent color"><input className="form-input" value={f.accent_color || ''} onChange={(e) => set('accent_color', e.target.value)} placeholder="#2563eb" /></Row>
+        <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+          <ColorField label="Primary color" value={f.primary_color} onChange={(v) => set('primary_color', v)} fallback="#0b1f3a" />
+          <ColorField label="Accent color" value={f.accent_color} onChange={(v) => set('accent_color', v)} fallback="#e11d2a" />
         </div>
-        <Row label="Logo URL"><input className="form-input" value={f.logo_url || ''} onChange={(e) => set('logo_url', e.target.value)} /></Row>
-        <Row label="Banner URL"><input className="form-input" value={f.banner_url || ''} onChange={(e) => set('banner_url', e.target.value)} /></Row>
-        <Row label="Hero blurb"><textarea className="form-input" rows={2} value={f.hero_blurb || ''} onChange={(e) => set('hero_blurb', e.target.value)} /></Row>
+        <ImageUpload value={f.logo_url || null} onChange={(url) => set('logo_url', url || '')} label="Main logo (header)" />
+        <ImageUpload value={f.banner_url || null} onChange={(url) => set('banner_url', url || '')} label="Banner image (hero background)" />
+        <Row label="Hero blurb"><textarea className="form-input" rows={2} value={f.hero_blurb || ''} onChange={(e) => set('hero_blurb', e.target.value)} placeholder="Welcome to the official Tartan FC team store — gear up for the season!" /></Row>
       </Section>
 
       <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
         <button className="btn btn-primary" disabled={busy} onClick={submit}>{busy ? 'Saving…' : store ? 'Save changes' : 'Create store'}</button>
         <button className="btn btn-secondary" disabled={busy} onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function ColorField({ label, value, onChange, fallback }) {
+  const v = value || fallback;
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <label className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: 12, color: '#64748b' }}>{label}</label>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <input type="color" value={/^#[0-9a-fA-F]{6}$/.test(v) ? v : fallback} onChange={(e) => onChange(e.target.value)} style={{ width: 44, height: 38, padding: 0, border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer', background: 'none' }} />
+        <input className="form-input" style={{ width: 120 }} value={value || ''} onChange={(e) => onChange(e.target.value)} placeholder={fallback} />
       </div>
     </div>
   );
