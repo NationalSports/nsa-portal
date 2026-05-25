@@ -543,9 +543,13 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
   const TABS = [
     { id: 'catalog', label: `Catalog (${catalog.length})` },
     { id: 'orders', label: `Orders (${orders.length})` },
+    { id: 'batches', label: soSummary.length ? `Batches (${soSummary.length})` : 'Batches' },
     { id: 'roster', label: roster.length ? `Roster (${roster.length})` : 'Roster' },
     { id: 'settings', label: 'Settings' },
   ];
+  // product_id -> stock (warehouse + Adidas) for the batch health check.
+  const productStock = {};
+  Object.values(stockByWp).forEach((s) => { if (s.product_id) productStock[s.product_id] = s; });
 
   return (
     <>
@@ -591,6 +595,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
         <>
           {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onUpdateItem={onUpdateItem} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} />}
+          {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} />}
           {tab === 'roster' && <RosterTab roster={roster} notOrdered={notOrdered} />}
           {tab === 'settings' && <SettingsTab store={s} />}
         </>
@@ -921,6 +926,98 @@ function BundleBuilder({ storeItems = [], onCreate, onClose }) {
         <button className="btn btn-sm btn-secondary" style={{ marginTop: 8 }} onClick={() => setPicking(true)}>+ Search all products</button>}
       <div style={{ marginTop: 14 }}><button className="btn btn-primary" disabled={!valid} onClick={() => onCreate({ name: name.trim(), price: Number(price), fundraise: Number(fundraise) || 0, image_url: image, components })}>Create package</button></div>
     </div></div>
+  );
+}
+
+// Batches: the Sales Orders created from this store, with full fulfillment
+// status — ordered qty, picked qty, and stock health per line item.
+function BatchesTab({ store, productStock, onOpenSO }) {
+  const [sos, setSos] = useState(null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    (async () => {
+      setSos(null); setErr('');
+      const { data: orders, error } = await supabase.from('sales_orders').select('id,status,created_at,memo,production_notes,_shipping_status,_tracking_number').eq('webstore_id', store.id).order('created_at', { ascending: false });
+      if (error) { setErr(error.message); setSos([]); return; }
+      const ids = (orders || []).map((o) => o.id);
+      if (!ids.length) { setSos([]); return; }
+      const { data: items } = await supabase.from('so_items').select('id,so_id,sku,name,product_id,sizes').in('so_id', ids);
+      const itemIds = (items || []).map((i) => i.id);
+      let picks = [];
+      if (itemIds.length) { const { data: pl } = await supabase.from('so_item_pick_lines').select('so_item_id,sizes,status').in('so_item_id', itemIds); picks = pl || []; }
+      const pickedByItem = {};
+      picks.forEach((p) => { if ((p.status || '') === 'pulled') { const t = sumSizes(p.sizes); pickedByItem[p.so_item_id] = (pickedByItem[p.so_item_id] || 0) + t; } });
+      setSos((orders || []).map((o) => ({ ...o, items: (items || []).filter((i) => i.so_id === o.id), pickedByItem })));
+    })();
+  }, [store.id]);
+
+  if (sos === null) return <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading batches…</div>;
+  if (err) return <Empty msg={'Could not load batches: ' + err} />;
+  if (!sos.length) return <Empty msg="No Sales Orders batched from this store yet. Use Orders → Create Sales Order." />;
+
+  const stockHealth = (item) => {
+    const st = productStock[item.product_id];
+    const sizes = item.sizes || {};
+    let short = 0, ok = 0;
+    Object.entries(sizes).forEach(([sz, qty]) => {
+      const need = Number(qty) || 0; if (!need) return;
+      const avail = (Number(st?.size_stock?.[sz]) || 0) + (Number(st?.vendor_size_stock?.[sz]) || 0);
+      if (avail >= need) ok++; else short++;
+    });
+    if (!st) return { text: 'No stock data', color: '#94a3b8' };
+    return short === 0 ? { text: 'Stock OK', color: '#166534' } : { text: `Short on ${short} size${short === 1 ? '' : 's'}`, color: '#b91c1c' };
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {sos.map((o) => {
+        const totalOrdered = o.items.reduce((a, i) => a + sumSizes(i.sizes), 0);
+        const totalPicked = o.items.reduce((a, i) => a + (o.pickedByItem[i.id] || 0), 0);
+        const pickPct = totalOrdered ? Math.round((totalPicked / totalOrdered) * 100) : 0;
+        const allStockOk = o.items.every((i) => stockHealth(i).text === 'Stock OK');
+        return (
+          <div key={o.id} className="card"><div style={{ padding: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 16, fontWeight: 800, fontFamily: 'monospace', color: '#1e40af', cursor: 'pointer' }} onClick={() => onOpenSO && onOpenSO(o.id)}>{o.id} ↗</div>
+                <div style={{ fontSize: 12, color: '#64748b' }}>{o.memo}</div>
+              </div>
+              <div style={{ display: 'flex', gap: 14, textAlign: 'right' }}>
+                <Stat label="Ordered" value={totalOrdered} />
+                <Stat label="Picked" value={`${totalPicked}/${totalOrdered}`} tone={pickPct === 100 ? '#166534' : '#92400e'} />
+                <Stat label="Stock" value={allStockOk ? 'OK' : 'Short'} tone={allStockOk ? '#166534' : '#b91c1c'} />
+                <Stat label="Status" value={(o._shipping_status || o.status || '—').replace(/_/g, ' ')} />
+              </div>
+            </div>
+            <div style={{ height: 6, borderRadius: 4, background: '#f1f5f9', overflow: 'hidden', marginBottom: 12 }}>
+              <div style={{ width: pickPct + '%', height: '100%', background: pickPct === 100 ? '#16a34a' : '#f59e0b' }} />
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
+                <th style={th}>Item</th><th style={th}>Ordered (by size)</th><th style={th}>Picked</th><th style={th}>Stock</th>
+              </tr></thead>
+              <tbody>
+                {o.items.map((it) => {
+                  const ordered = sumSizes(it.sizes);
+                  const picked = o.pickedByItem[it.id] || 0;
+                  const sh = stockHealth(it);
+                  const sizeStr = Object.entries(it.sizes || {}).filter(([, q]) => Number(q) > 0).map(([sz, q]) => `${sz}:${q}`).join('  ');
+                  return (
+                    <tr key={it.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                      <td style={td}><div style={{ fontWeight: 600 }}>{it.name || it.sku}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{it.sku}</div></td>
+                      <td style={{ ...td, fontFamily: 'monospace', fontSize: 12 }}>{sizeStr || '—'} <span style={{ color: '#94a3b8' }}>({ordered})</span></td>
+                      <td style={{ ...td, color: picked >= ordered ? '#166534' : '#92400e', fontWeight: 600 }}>{picked}/{ordered}</td>
+                      <td style={{ ...td, color: sh.color, fontWeight: 600 }}>{sh.text}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {o._tracking_number && <div style={{ fontSize: 12, color: '#1e40af', marginTop: 8 }}>Tracking: {o._tracking_number}</div>}
+          </div></div>
+        );
+      })}
+    </div>
   );
 }
 
