@@ -4004,6 +4004,8 @@ export default function App(){
       ship_to_id:'default',tax_rate:0,firm_dates:[],art_files:[],jobs:[],items:items||[],
       source:'webstore',webstore_id:webstore_id||null};
     setSOs(prev=>[newSO,...prev]);
+    // Jump the user straight into the new SO in the Sales Orders editor.
+    setESO(newSO);setESOC(cust.find(c=>c.id===customer_id)||null);setPg('orders');
     nf('Created '+id+' from webstore — '+(items||[]).length+' line(s)');
     return id;
   };
