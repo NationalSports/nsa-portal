@@ -5319,7 +5319,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
               <div><label className="form-label">Expected Return</label><input className="form-input" type="date" id={'dpo-date-'+poId}/></div>
             </div>
-            <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" id={'dpo-dropship-'+poId}/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school, skip warehouse receive</span></label></div>
             <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:6}}>Items covered by this PO</div>
             {allItems.length>1&&<div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8,fontSize:11}}>
               <span style={{color:'#64748b',fontWeight:600}}>{allItems.length} item{allItems.length!==1?'s':''} available</span>
@@ -5350,7 +5349,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const decoType=document.getElementById('dpo-type-'+poId)?.value||'embroidery';
               const returnDate=document.getElementById('dpo-date-'+poId)?.value||'';
               const notes=document.getElementById('dpo-notes-'+poId)?.value||'';
-              const isDropShip=document.getElementById('dpo-dropship-'+poId)?.checked||false;
               const itemIdxs=[];let totalQty=0;
               allItems.forEach((it,vi)=>{if(document.getElementById('dpo-sel-'+vi)?.checked){itemIdxs.push(it._idx);totalQty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)}});
               if(itemIdxs.length===0){nf('Pick at least one item for this PO','error');return}
@@ -5359,7 +5357,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const newDecoPO={id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
                 po_id:effectivePoId,vendor:decoVendor,deco_vendor_id:dv?.id||null,deco_type:decoType,
                 item_idxs:itemIdxs,qty:totalQty,unit_cost:unitCost,expected_cost:expectedCost,
-                notes,drop_ship:isDropShip||undefined,expected_date:returnDate,preexisting:preexistingPO||undefined,
+                notes,expected_date:returnDate,preexisting:preexistingPO||undefined,
                 status:preexistingPO?'ordered':'waiting',created_at:new Date().toLocaleDateString(),
                 _bill_cost:0,_bill_details:[],tracking_numbers:[]};
               const updated={...o,deco_pos:[...(o.deco_pos||[]),newDecoPO],updated_at:new Date().toLocaleString()};
