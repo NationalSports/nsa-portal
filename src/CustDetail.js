@@ -556,11 +556,13 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const imgUrl=[art.preview_url,...mockups,...(art.files||[])].map(f=>typeof f==='string'?f:(f?.url||'')).find(u=>u&&_isImgUrl(u))||'';
       const usedOnSOs=[];if(art._src==='so'||art._src==='est'){custSOs.forEach(so=>{(so.art_files||[]).forEach(a=>{if(a.name===art.name&&a.deco_type===art.deco_type){const items=[];(so.items||[]).forEach(it=>{(it.decorations||[]).forEach(d=>{if(d.art_file_id===a.id)items.push({sku:it.sku,name:it.name,position:d.position,deco_type:d.deco_type||a.deco_type})})});usedOnSOs.push({so_id:so.id,memo:so.memo,status:so.status,items})}})})}
       const allMockups=[];const seen=new Set();
+      const allProd=[];const seenP=new Set();
       const grpKey=(art.name||'').toLowerCase()+'||'+(art.deco_type||'');
       artGroups[grpKey]?.instances.forEach(inst=>{[...(inst.mockup_files||[]),...Object.values(inst.item_mockups||{}).flat(),...(inst.files||[])].filter(f=>f).forEach(f=>{const url=typeof f==='string'?f:(f?.url||'');if(url&&!seen.has(url)){seen.add(url);allMockups.push({file:f,url,src:inst._srcLabel})}})});
+      artGroups[grpKey]?.instances.forEach(inst=>{(inst.prod_files||[]).filter(f=>f).forEach(f=>{const url=typeof f==='string'?f:(f?.url||'');if(url&&!seenP.has(url)){seenP.add(url);allProd.push({file:f,url,src:inst._srcLabel})}})});
       // Find index in ownArt for editable items
       const ownIdx=art._src==='library'?ownArt.findIndex(a=>a.id===art.id):-1;
-      return{...art,_st:st,_mockups:dispFiles,_imgUrl:imgUrl,_usedOnSOs:usedOnSOs,_allMockups:allMockups,_ownIdx:ownIdx};
+      return{...art,_st:st,_mockups:dispFiles,_imgUrl:imgUrl,_usedOnSOs:usedOnSOs,_allMockups:allMockups,_allProd:allProd,_ownIdx:ownIdx};
     }).filter(a=>a._src==='library'||a._st!=='waiting_for_art');
     // Collapse to one card per logo (name+deco_type) — a logo reused across multiple SOs shows once.
     const _stRank={needs_approval:3,approved:2,waiting_for_art:1};
@@ -599,7 +601,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {filtered.map((art,i)=>{const isEditable=art._ownIdx>=0;const isExp=custArtExpanded===art.id;const oi=art._ownIdx;
           return<div key={art.id+'-'+art._src+'-'+i} style={{background:'#f8fafc',borderRadius:8,border:art._st==='approved'?'2px solid #22c55e':art._st==='needs_approval'?'2px solid #f59e0b':'1px solid #e2e8f0',overflow:'hidden'}}>
             {/* Summary row */}
-            <div style={{display:'flex',gap:10,alignItems:'center',padding:'10px 14px',cursor:'pointer'}} onClick={()=>{if(isEditable)setCustArtExpanded(isExp?null:art.id);else setCustArtDetail({...art,_usedOnSOs:art._usedOnSOs,_allMockups:art._allMockups})}}>
+            <div style={{display:'flex',gap:10,alignItems:'center',padding:'10px 14px',cursor:'pointer'}} onClick={()=>{if(isEditable)setCustArtExpanded(isExp?null:art.id);else setCustArtDetail({...art,_usedOnSOs:art._usedOnSOs,_allMockups:art._allMockups,_allProd:art._allProd})}}>
               {art._imgUrl&&_isImgUrl(art._imgUrl)?<img src={art._imgUrl} alt="" style={{width:56,height:56,borderRadius:6,objectFit:'contain',flexShrink:0,background:'white',border:'1px solid #e2e8f0'}}/>:
                 <div style={{width:56,height:56,borderRadius:6,background:art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,flexShrink:0}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':'🔥'}</div>}
               <div style={{flex:1}}>
@@ -708,7 +710,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         });
         if(changed)onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
       });
-      setCustArtDetail(d=>d?{...d,_allMockups:(d._allMockups||[]).filter(x=>x.url!==url),mockup_files:(d.mockup_files||[]).filter(f=>urlOf(f)!==url),files:(d.files||[]).filter(f=>urlOf(f)!==url)}:d);
+      setCustArtDetail(d=>d?{...d,_allMockups:(d._allMockups||[]).filter(x=>x.url!==url),_allProd:(d._allProd||[]).filter(x=>x.url!==url),mockup_files:(d.mockup_files||[]).filter(f=>urlOf(f)!==url),files:(d.files||[]).filter(f=>urlOf(f)!==url),prod_files:(d.prod_files||[]).filter(f=>urlOf(f)!==url)}:d);
       nf&&nf('File removed from '+(art.name||'artwork'));
     };
     // Upload a new mockup and attach it to this artwork's record on its source order.
@@ -726,6 +728,22 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       nf&&nf(added.length+' mockup'+(added.length>1?'s':'')+' added');
     };
     const pickMock=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*,.pdf';inp.multiple=true;inp.onchange=()=>addMockToArt(inp.files);inp.click()};
+    // Upload a new production file and attach it to this artwork's record on its source order.
+    const addProdToArt=async(fileList)=>{
+      const soId=art._so_id||(usedOnSOs[0]&&usedOnSOs[0].so_id);
+      const so=custSOs.find(s=>s.id===soId);
+      if(!so||!onSaveSO){nf&&nf('No order found to attach the file to','error');return}
+      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
+      const added=[];
+      for(const f of Array.from(fileList||[])){nf&&nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');added.push({url,name:f.name})}catch(e){nf&&nf('Upload failed: '+e.message,'error')}}
+      if(!added.length)return;
+      const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);return match?{...a,prod_files:[...(a.prod_files||[]),...added]}:a});
+      onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
+      setCustArtDetail(d=>d?{...d,_allProd:[...(d._allProd||[]),...added.map(m=>({file:m,url:m.url,src:so.id+(so.memo?' — '+so.memo:'')}))]}:d);
+      nf&&nf(added.length+' production file'+(added.length>1?'s':'')+' added');
+    };
+    const pickProd=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=()=>addProdToArt(inp.files);inp.click()};
+    const prodFiles=(art._allProd&&art._allProd.length)?art._allProd:(art.prod_files||[]).filter(f=>f).map(f=>({file:f,url:typeof f==='string'?f:(f?.url||''),src:art._srcLabel||''}));
     // Color ways for this artwork — from the art's color_ways, else distinct colors of items that use it.
     const _logoMatch=a=>(a.name||'').toLowerCase()===(art.name||'').toLowerCase()&&(a.deco_type||'')===(art.deco_type||'');
     const cwColors=(art.color_ways&&art.color_ways.length)
@@ -781,6 +799,22 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               </select>}
             </div>})}
           </div>}
+        </div>
+        {/* Production files (internal) */}
+        <div style={{marginBottom:16}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#d97706'}}>Production Files ({prodFiles.length}) <span style={{fontSize:10,fontWeight:500,color:'#94a3b8'}}>Internal only</span></div>
+            {onSaveSO&&<button className="btn btn-sm" style={{fontSize:11,background:'#f59e0b',color:'white',border:'none'}} onClick={pickProd}><Icon name="plus" size={11}/> Add Production File</button>}
+          </div>
+          {prodFiles.length>0?<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:8}}>
+            {prodFiles.map((m,mi)=>{const url=m.url;return<div key={mi} style={{borderRadius:8,border:'1px solid #fde68a',overflow:'hidden',background:'#fffbeb',cursor:'pointer',position:'relative'}} onClick={()=>openFile(m.file||url)}>
+              {onSaveSO&&<button title="Remove this file from the artwork" onClick={e=>{e.stopPropagation();removeMockFromArt(url)}} style={{position:'absolute',top:4,right:4,zIndex:2,width:22,height:22,borderRadius:11,border:'none',background:'rgba(220,38,38,0.92)',color:'white',cursor:'pointer',fontSize:13,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
+              {_isImgUrl(url)?<img src={url} alt="" style={{width:'100%',height:120,objectFit:'contain',display:'block',background:'#fff'}}/>
+              :_isPdfUrl(url)?<div style={{height:120,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',background:'#fff'}}>{_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt="" style={{maxHeight:100,objectFit:'contain'}} onError={e=>{e.target.style.display='none'}}/>:<span style={{fontSize:32}}>PDF</span>}</div>
+              :<div style={{height:120,display:'flex',alignItems:'center',justifyContent:'center',background:'#fff',fontSize:28}}>📄</div>}
+              <div style={{padding:'4px 6px',fontSize:9,color:'#64748b',borderTop:'1px solid #fef3c7'}}>{fileDisplayName(m.file||url)}<br/><span style={{color:'#94a3b8'}}>{m.src}</span></div>
+            </div>})}
+          </div>:<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No production files attached</div>}
         </div>
         {/* Jobs / orders that used this art */}
         {usedOnSOs.length>0&&<div>
