@@ -193,6 +193,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Subtotal</span><span style={{fontWeight:700}}>${estSubtotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>
             {estShip>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Shipping</span><span>${estShip.toFixed(2)}</span></div>}
             {estTax>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Tax ({(estTaxRate*100).toFixed(2)}%)</span><span>${estTax.toFixed(2)}</span></div>}
+            {est.promo_applied&&safeNum(est.promo_amount)>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13,color:'#92400e'}}><span>🎁 Promo Funds Applied</span><span style={{fontWeight:700}}>${safeNum(est.promo_amount).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>}
             <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 4px',borderTop:'2px solid #1e3a5f',marginTop:6}}>
               <span style={{fontWeight:800,fontSize:16}}>Estimated Total</span><span style={{fontWeight:800,fontSize:18,color:'#92400e'}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
             </div>
@@ -338,6 +339,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Subtotal</span><span style={{fontWeight:700}}>${soSubtotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>
             {soShip>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Shipping</span><span>${soShip.toFixed(2)}</span></div>}
             {soTax>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Tax ({(soTaxRate*100).toFixed(2)}%)</span><span>${soTax.toFixed(2)}</span></div>}
+            {so.promo_applied&&safeNum(so.promo_amount)>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13,color:'#92400e'}}><span>🎁 Promo Funds Applied</span><span style={{fontWeight:700}}>${safeNum(so.promo_amount).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>}
             <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 4px',borderTop:'2px solid #1e3a5f',marginTop:6}}>
               <span style={{fontWeight:800,fontSize:16}}>Total</span><span style={{fontWeight:800,fontSize:18,color:'#1e3a5f'}}>${soTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
             </div>
