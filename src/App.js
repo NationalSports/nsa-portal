@@ -5155,8 +5155,8 @@ export default function App(){
       });
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'📌 Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
-        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'all',date:so.expected_date});
-        if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'📅 Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'production',date:so.expected_date})};
+        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'all',date:so.expected_date});
+        if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'📅 Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'production',date:so.expected_date})};
       if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'🛒 Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales',date:so.created_at});
       // Booking order confirmation todo — fires when within alert threshold of expected ship date
       if(so.order_type==='booking'&&!so.booking_confirmed&&so.expected_ship_date){
@@ -5273,7 +5273,7 @@ export default function App(){
     // Admin-view todos: filterable by rep selector
     const isAdmin=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
     const adminTodos=isAdmin?(()=>{const _seenAdmin=new Set();return todos.filter(t=>{
-      const _match=adminRepFilter==='all'||t.role==='all'||t.repId===(adminRepFilter==='me'?cu.id:adminRepFilter);
+      const _match=adminRepFilter==='all'||(t.role==='all'&&!t.repId)||t.repId===(adminRepFilter==='me'?cu.id:adminRepFilter);
       if(!_match)return false;
       // Same action can be pushed once per role (e.g. sales + csr) — collapse to one row on the all-roles admin view.
       if(_seenAdmin.has(t.dismissKey))return false;_seenAdmin.add(t.dismissKey);return true;
@@ -7336,8 +7336,8 @@ export default function App(){
       });
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
-        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'all',date:so.expected_date});
-        if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'production',date:so.expected_date})};
+        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'all',date:so.expected_date});
+        if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,repId:_repId,action:'Open SO',role:'production',date:so.expected_date})};
       if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales',date:so.created_at});
       if(so.order_type==='booking'&&!so.booking_confirmed&&so.expected_ship_date){
         const shipDaysOut=Math.ceil((new Date(so.expected_ship_date)-new Date())/(1000*60*60*24));
