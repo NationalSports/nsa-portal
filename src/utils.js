@@ -269,9 +269,16 @@ export const downloadQrLabel=async({id,qrData,lines,shipBadge})=>{
     else style+='font-size:13px;';
     return '<p style="'+style+(l.style||'')+'">'+l.text+'</p>';
   }).join('');
+  // Use the same off-screen container pattern as the other working PDF
+  // generators here: position:absolute (not fixed) with no negative z-index,
+  // and render from an inner div. A fixed-position element parked at
+  // left:-10000px gives html2canvas a bounding box entirely outside the
+  // viewport, so it captures an empty region and the PDF comes out blank.
   const container=document.createElement('div');
-  container.style.cssText='position:fixed;left:-10000px;top:0;width:360px;background:white;font-family:Helvetica,Arial,sans-serif;color:#0f172a;padding:8px 12px;line-height:1.25;box-sizing:border-box;z-index:-1';
-  container.innerHTML=`<div style="text-align:center;margin-bottom:6px"><img src="${qrSrc}" alt="${id||''}" style="width:180px;height:180px;display:block;margin:0 auto;image-rendering:pixelated"/></div><h1 style="font-size:22px;margin:0 0 4px;line-height:1.1;text-align:center">${id||''}</h1>${badgeHtml}${linesHtml}`;
+  container.style.cssText='position:absolute;left:-9999px;top:0;width:360px;background:white;font-family:Helvetica,Arial,sans-serif;color:#0f172a;padding:8px 12px;line-height:1.25;box-sizing:border-box';
+  const bodyDiv=document.createElement('div');
+  bodyDiv.innerHTML=`<div style="text-align:center;margin-bottom:6px"><img src="${qrSrc}" alt="${id||''}" style="width:180px;height:180px;display:block;margin:0 auto;image-rendering:pixelated"/></div><h1 style="font-size:22px;margin:0 0 4px;line-height:1.1;text-align:center">${id||''}</h1>${badgeHtml}${linesHtml}`;
+  container.appendChild(bodyDiv);
   document.body.appendChild(container);
   const fname=String(id||'label').replace(/[^a-z0-9._-]+/gi,'_')+'.pdf';
   try{
@@ -281,7 +288,7 @@ export const downloadQrLabel=async({id,qrData,lines,shipBadge})=>{
       await new Promise(resolve=>{imgEl.onload=resolve;imgEl.onerror=resolve;setTimeout(resolve,3000)});
     }
     await new Promise(r=>setTimeout(r,500));
-    await html2pdf().set({margin:0.15,filename:fname,image:{type:'jpeg',quality:0.98},html2canvas:{scale:3,useCORS:true,allowTaint:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:[4,6],orientation:'portrait'}}).from(container).save();
+    await html2pdf().set({margin:0.15,filename:fname,image:{type:'jpeg',quality:0.98},html2canvas:{scale:3,useCORS:true,allowTaint:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:[4,6],orientation:'portrait'}}).from(bodyDiv).save();
   }finally{
     document.body.removeChild(container);
   }
