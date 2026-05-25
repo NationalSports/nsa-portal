@@ -226,6 +226,20 @@ function Webstores({ cust = [], REPS = [], onCreateSO }) {
     flash('Removed'); loadDetail(sel);
   }, [sel, flash, loadDetail]);
 
+  // Move a catalog item up/down; normalizes sort_order to its array index so
+  // the storefront and admin show the same order.
+  const reorderItem = useCallback(async (item, dir) => {
+    const list = [...(detail?.catalog || [])].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    const idx = list.findIndex((x) => x.id === item.id);
+    const swap = dir === 'up' ? idx - 1 : idx + 1;
+    if (idx < 0 || swap < 0 || swap >= list.length) return;
+    [list[idx], list[swap]] = [list[swap], list[idx]];
+    for (let i = 0; i < list.length; i++) {
+      if ((list[i].sort_order || 0) !== i) await supabase.from('webstore_products').update({ sort_order: i }).eq('id', list[i].id);
+    }
+    loadDetail(sel);
+  }, [detail, sel, loadDetail]);
+
   // ── render gates ─────────────────────────────────────────────────────
   if (needsMigration) return <MigrationNotice onRetry={loadStores} />;
   if (loading) return <div style={{ padding: 40, color: '#64748b', fontSize: 14 }}>Loading webstores…</div>;
@@ -250,7 +264,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO }) {
           custName={custName} repName={repName}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)}
-          onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} />
+          onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} />
       )}
@@ -491,7 +505,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder }) {
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
   const catalog = detail?.catalog || [];
@@ -543,7 +557,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
 
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} />}
+          {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} />}
           {tab === 'roster' && <RosterTab roster={roster} notOrdered={notOrdered} />}
           {tab === 'settings' && <SettingsTab store={s} />}
@@ -559,7 +573,7 @@ function Stat({ label, value, tone }) {
 
 // Per-size breakdown: in-house warehouse qty and Adidas vendor qty side by
 // side, across the product's available sizes (with totals + ETA).
-function StockBreakdown({ stock, summary }) {
+function StockBreakdown({ stock, summary, hideSummary }) {
   const house = stock?.size_stock || {};
   const vendor = stock?.vendor_size_stock || {};
   const sizes = Array.isArray(stock?.available_sizes) && stock.available_sizes.length
@@ -569,7 +583,7 @@ function StockBreakdown({ stock, summary }) {
   const vendorTotal = Number(stock?.vendor_on_hand) || sumSizes(vendor);
   return (
     <div style={{ minWidth: 220 }}>
-      <div style={{ fontWeight: 700, color: summary.color, marginBottom: 6 }}>{summary.text}</div>
+      {!hideSummary && <div style={{ fontWeight: 700, color: summary.color, marginBottom: 6 }}>{summary.text}</div>}
       {sizes.length > 0 && (
         <table style={{ borderCollapse: 'collapse', fontSize: 11, color: '#475569' }}>
           <thead><tr style={{ color: '#94a3b8' }}>
@@ -615,35 +629,45 @@ function stockText(stock) {
 }
 
 // ── Catalog tab with editing ─────────────────────────────────────────
-function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBundle, onRemove, onUpdateImage }) {
+function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onReorder }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pending, setPending] = useState(null); // picked product awaiting price + fundraise
+  const [expandAll, setExpandAll] = useState(false);
+  const [openRows, setOpenRows] = useState(() => new Set());
+  const toggleRow = (id) => setOpenRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const ordered = [...catalog].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   return (
     <>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <button className="btn btn-sm btn-primary" onClick={() => { setMode(mode === 'single' ? null : 'single'); setPending(null); }}>+ Add product</button>
         <button className="btn btn-sm btn-secondary" onClick={() => { setMode(mode === 'bundle' ? null : 'bundle'); setPending(null); }}>+ Create package</button>
+        <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => { setExpandAll((v) => !v); setOpenRows(new Set()); }}>{expandAll ? 'Collapse all sizes' : 'Expand all sizes'}</button>
       </div>
 
       {mode === 'single' && !pending && <ProductSearch label="Add a product to this store" onPick={(p) => setPending(p)} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} onCancel={() => setPending(null)} onAdd={(opts) => { onAddSingle(opts); setMode(null); setPending(null); }} />}
-      {mode === 'bundle' && <BundleBuilder storeItems={catalog.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'bundle' && <BundleBuilder storeItems={ordered.filter((c) => c.kind === 'single').map((c) => ({ product_id: c.product_id, sku: c.sku, name: c.display_name || stockByWp[c.id]?.name || c.sku }))} onCreate={(b) => { onCreateBundle(b); setMode(null); }} onClose={() => setMode(null)} />}
 
       {catalog.length === 0 ? <Empty msg="No products in this store's catalog yet. Add one above." /> : (
         <div className="card"><div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
-              <th style={th}>Image</th><th style={th}>Product</th><th style={th}>Type</th><th style={th}>Price</th><th style={th}>Fundraising</th><th style={th}>Shopper pays</th><th style={th}>Stock / ETA</th><th style={th}></th>
+              <th style={th}>Order</th><th style={th}>Image</th><th style={th}>Product</th><th style={th}>Type</th><th style={th}>Price</th><th style={th}>Fundraising</th><th style={th}>Shopper pays</th><th style={th}>Stock / ETA</th><th style={th}></th>
             </tr></thead>
             <tbody>
-              {catalog.map((p) => {
+              {ordered.map((p, i) => {
                 const stock = stockByWp[p.id];
                 const st = stockText(stock);
                 const comps = p.kind === 'bundle' ? bundleItems.filter((b) => b.bundle_id === p.id) : [];
                 const label = p.display_name || stock?.name || p.sku || '(unnamed)';
                 const fund = Number(p.fundraise_amount) || 0;
+                const open = expandAll || openRows.has(p.id);
                 return (
                   <tr key={p.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                    <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                      <button onClick={() => onReorder(p, 'up')} disabled={i === 0} title="Move up" style={arrowBtn(i === 0)}>▲</button>
+                      <button onClick={() => onReorder(p, 'down')} disabled={i === ordered.length - 1} title="Move down" style={arrowBtn(i === ordered.length - 1)}>▼</button>
+                    </td>
                     <td style={td}><RowImage row={p} stockImg={stock?.image_front_url} onUpdateImage={onUpdateImage} /></td>
                     <td style={td}>
                       <div style={{ fontWeight: 600 }}>{label}</div>
@@ -656,7 +680,17 @@ function CatalogTab({ catalog, bundleItems, stockByWp, onAddSingle, onCreateBund
                     <td style={td}>{money(p.retail_price)}</td>
                     <td style={td}>{fund > 0 ? <span style={{ color: '#166534', fontWeight: 600 }}>+{money(fund)}</span> : '—'}</td>
                     <td style={{ ...td, fontWeight: 700 }}>{money((Number(p.retail_price) || 0) + fund)}</td>
-                    <td style={td}>{p.kind === 'bundle' ? '—' : <StockBreakdown stock={stock} summary={st} />}</td>
+                    <td style={td}>
+                      {p.kind === 'bundle' ? '—' : (
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontWeight: 700, color: st.color }}>{st.text}</span>
+                            <button onClick={() => toggleRow(p.id)} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 11, padding: 0 }}>{open ? 'hide sizes ▲' : 'sizes ▾'}</button>
+                          </div>
+                          {open && <div style={{ marginTop: 6 }}><StockBreakdown stock={stock} summary={st} hideSummary /></div>}
+                        </div>
+                      )}
+                    </td>
                     <td style={{ ...td, textAlign: 'right' }}><button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => onRemove(p.id, label)}>Remove</button></td>
                   </tr>
                 );
@@ -924,5 +958,6 @@ function Empty({ msg }) {
 
 const th = { padding: '10px 12px', fontWeight: 600 };
 const td = { padding: '10px 12px', verticalAlign: 'top' };
+const arrowBtn = (disabled) => ({ display: 'block', width: 22, height: 18, lineHeight: '16px', textAlign: 'center', border: '1px solid #e2e8f0', borderRadius: 4, background: '#fff', color: disabled ? '#cbd5e1' : '#475569', cursor: disabled ? 'default' : 'pointer', fontSize: 9, marginBottom: 2 });
 
 export default Webstores;
