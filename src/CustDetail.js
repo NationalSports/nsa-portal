@@ -784,6 +784,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       if(onRefreshCustomer&&lib.some(_logoMatch))onRefreshCustomer({...customer,art_files:lib.map(a=>_logoMatch(a)?{...a,color_ways:newCws}:a)});
       setCustArtDetail(d=>d?{...d,color_ways:newCws}:d);
     };
+    // For text fields: update only the modal's local state while typing (snappy, no focus loss), then
+    // persist once on blur. Discrete actions (add/remove/quick-pick) call persistColorWays directly.
+    const setCwsLocal=(newCws)=>setCustArtDetail(d=>d?{...d,color_ways:newCws}:d);
     const cws=art.color_ways||[];
     return<div className="modal-overlay" onClick={()=>setCustArtDetail(null)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header"><h2>{art.name||'Untitled'}</h2><button className="modal-close" onClick={()=>setCustArtDetail(null)}>x</button></div>
@@ -807,14 +810,14 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               {cws.map((cw,ci)=><div key={cw.id||ci} style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',boxShadow:'0 1px 2px rgba(0,0,0,0.04)'}}>
                 <div style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',background:'#f8fafc',borderBottom:'1px solid #eef2f7'}}>
                   <span style={{fontSize:10,fontWeight:700,color:'#fff',background:'#64748b',borderRadius:6,padding:'2px 7px',flexShrink:0}}>CW {ci+1}</span>
-                  <input value={cw.garment_color||''} onChange={e=>{const n=[...cws];n[ci]={...cw,garment_color:e.target.value};persistColorWays(n)}} placeholder="Garment color" style={{flex:1,minWidth:0,fontSize:13,fontWeight:600,color:'#1e293b',border:'none',background:'transparent',outline:'none'}}/>
+                  <input value={cw.garment_color||''} onChange={e=>{const n=[...cws];n[ci]={...cw,garment_color:e.target.value};setCwsLocal(n)}} onBlur={()=>persistColorWays(cws)} placeholder="Name this color way" style={{flex:1,minWidth:0,fontSize:13,fontWeight:600,color:'#1e293b',border:'1px solid #e5e7eb',borderRadius:6,background:'#fff',padding:'3px 8px',outline:'none'}}/>
                   <button onClick={()=>persistColorWays(cws.filter((_,x)=>x!==ci))} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:2,flexShrink:0,display:'flex'}} title="Remove color way"><Icon name="trash" size={13}/></button>
                 </div>
                 <div style={{padding:'8px 10px'}}>
                   {(cw.inks||[]).length===0&&<div style={{fontSize:10,color:'#cbd5e1',fontStyle:'italic',marginBottom:6}}>No colors yet</div>}
                   {(cw.inks||[]).map((ink,ii)=><div key={ii} style={{display:'flex',gap:6,alignItems:'center',marginBottom:5}}>
                     <span style={{width:16,height:16,borderRadius:4,background:pantoneHex(ink)||'#f1f5f9',border:'1px solid #d1d5db',flexShrink:0}}/>
-                    <input value={ink} onChange={e=>{const n=[...cws];const inks=[...(cw.inks||[])];inks[ii]=e.target.value;n[ci]={...cw,inks};persistColorWays(n)}} placeholder={art.deco_type==='embroidery'?'Thread color':'Ink color'} style={{flex:1,minWidth:0,fontSize:12,padding:'4px 8px',border:'1px solid #e5e7eb',borderRadius:6,background:'#fff',outline:'none'}}/>
+                    <input value={ink} onChange={e=>{const n=[...cws];const inks=[...(cw.inks||[])];inks[ii]=e.target.value;n[ci]={...cw,inks};setCwsLocal(n)}} onBlur={()=>persistColorWays(cws)} placeholder={art.deco_type==='embroidery'?'Thread color':'Ink color'} style={{flex:1,minWidth:0,fontSize:12,padding:'4px 8px',border:'1px solid #e5e7eb',borderRadius:6,background:'#fff',outline:'none'}}/>
                     <button onClick={()=>{const n=[...cws];n[ci]={...cw,inks:(cw.inks||[]).filter((_,x)=>x!==ii)};persistColorWays(n)}} style={{background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',padding:2,flexShrink:0,display:'flex'}} title="Remove color"><Icon name="x" size={12}/></button>
                   </div>)}
                   <div style={{marginTop:6}}>{art.deco_type==='embroidery'?<ThreadQuickPicks colors={mergeColors(customer,allCustomers,'thread_colors')} onPick={v=>{const n=[...cws];const inks=[...(cw.inks||[])];const e2=inks.findIndex(x=>!x);if(e2>=0)inks[e2]=v;else inks.push(v);n[ci]={...cw,inks};persistColorWays(n)}}/>
