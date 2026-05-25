@@ -7890,36 +7890,38 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
           </div></>})()}
 
-          {/* Cancel sizes from PO */}
-          {hasOpen&&<div style={{marginBottom:12}}>
+          {/* Edit PO — cancel sizes or add back previously cancelled */}
+          {(hasOpen||totalCancelled>0)&&<div style={{marginBottom:12}}>
             <div style={{fontSize:11,color:'#64748b',cursor:'pointer',display:'flex',alignItems:'center',gap:4}} onClick={e=>{const el=e.currentTarget.nextSibling;if(el)el.style.display=el.style.display==='none'?'block':'none'}}>
-              ⚠️ <span style={{textDecoration:'underline'}}>Cancel sizes from this PO</span> <span style={{fontSize:9}}>(vendor cancelled / shorted)</span>
+              ✏️ <span style={{textDecoration:'underline'}}>Edit PO</span> <span style={{fontSize:9}}>(cancel sizes or add back previously cancelled)</span>
             </div>
             <div style={{display:'none',marginTop:8,padding:10,border:'1px dashed #f59e0b',borderRadius:6,background:'#fffbeb'}}>
-              <div style={{fontSize:11,color:'#92400e',marginBottom:6}}>Enter quantities to cancel (these sizes will become available for new picks/POs):</div>
+              <div style={{fontSize:11,color:'#92400e',marginBottom:6}}>Set the cancelled quantity for each size. Lower a number to add sizes back; raise it to cancel (cancelled sizes become available for new picks/POs):</div>
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
-                {szKeys.filter(sz=>getOpen(sz)>0).map(sz=><div key={sz} style={{textAlign:'center'}}>
+                {szKeys.filter(sz=>getOpen(sz)>0||getCncl(sz)>0).map(sz=>{const maxCancel=Math.max(0,(po[sz]||0)-getRcvd(sz));return<div key={sz} style={{textAlign:'center'}}>
                   <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                  <input id={'po-cancel-'+sz} style={{width:42,textAlign:'center',border:'1px solid #f59e0b',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={0}/>
-                  <div style={{fontSize:9,color:'#64748b'}}>{getOpen(sz)} open</div>
-                </div>)}
+                  <input id={'po-cancel-'+sz} type="number" min={0} max={maxCancel} style={{width:42,textAlign:'center',border:'1px solid #f59e0b',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getCncl(sz)}/>
+                  <div style={{fontSize:9,color:'#64748b'}}>{getOpen(sz)} open · max {maxCancel}</div>
+                </div>})}
               </div>
               <button className="btn btn-sm" style={{background:'#f59e0b',color:'white',fontSize:11}} onClick={()=>{
                 const newCancelled={...cancelled};
-                let anyCancelled=false;
-                szKeys.filter(sz=>getOpen(sz)>0).forEach(sz=>{
+                let anyChange=false;
+                szKeys.filter(sz=>getOpen(sz)>0||getCncl(sz)>0).forEach(sz=>{
                   const el=document.getElementById('po-cancel-'+sz);
-                  const qty=el?Math.min(parseInt(el.value)||0,getOpen(sz)):0;
-                  if(qty>0){newCancelled[sz]=(newCancelled[sz]||0)+qty;anyCancelled=true}
+                  const maxCancel=Math.max(0,(po[sz]||0)-getRcvd(sz));
+                  const qty=el?Math.max(0,Math.min(parseInt(el.value)||0,maxCancel)):getCncl(sz);
+                  if(qty!==getCncl(sz))anyChange=true;
+                  newCancelled[sz]=qty;
                 });
-                if(!anyCancelled){nf('Enter quantities to cancel','error');return}
+                if(!anyChange){nf('No changes to apply','error');return}
                 const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(received[sz]||0)-(newCancelled[sz]||0)),0);
                 const newStatus=newTotalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting';
                 const updatedPO={...po,cancelled:newCancelled,status:newStatus};
                 const updatedItems=o.items.map((it,i)=>i===activeLine.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===activeLine.poIdx?updatedPO:p)}:it);
                 const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
-                setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO});nf('Sizes cancelled from '+po.po_id);
-              }}>⚠️ Cancel These Sizes</button>
+                setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO});nf('PO '+po.po_id+' updated');
+              }}>✏️ Update PO</button>
             </div>
           </div>}
 
@@ -8715,26 +8717,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
           </div>})()}
 
-          {/* Cancel sizes */}
-          {totalOpen>0&&!isDropShipFP&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #f59e0b'}}>
-            <div className="card-header" style={{background:'#fffbeb',cursor:'pointer'}} onClick={e=>{const el=e.currentTarget.nextSibling;if(el)el.style.display=el.style.display==='none'?'block':'none'}}><h2 style={{color:'#92400e',fontSize:14}}>Cancel Sizes from PO</h2></div>
+          {/* Edit PO — cancel sizes or add back previously cancelled */}
+          {(totalOpen>0||totalCancelled>0)&&!isDropShipFP&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #f59e0b'}}>
+            <div className="card-header" style={{background:'#fffbeb',cursor:'pointer'}} onClick={e=>{const el=e.currentTarget.nextSibling;if(el)el.style.display=el.style.display==='none'?'block':'none'}}><h2 style={{color:'#92400e',fontSize:14}}>Edit PO — Cancel / Add Back Sizes</h2></div>
             <div className="card-body" style={{display:'none'}}>
-              <div style={{fontSize:12,color:'#92400e',marginBottom:8}}>Enter quantities to cancel (these sizes will become available for new picks/POs):</div>
+              <div style={{fontSize:12,color:'#92400e',marginBottom:8}}>Set the cancelled quantity for each size. Lower a number to add sizes back; raise it to cancel (cancelled sizes become available for new picks/POs):</div>
               <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:12}}>
-                {szKeys.filter(sz=>getOpen(sz)>0).map(sz=><div key={sz} style={{textAlign:'center'}}>
+                {szKeys.filter(sz=>getOpen(sz)>0||getCncl(sz)>0).map(sz=>{const maxCancel=Math.max(0,(po[sz]||0)-getRcvd(sz));return<div key={sz} style={{textAlign:'center'}}>
                   <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                  <input id={'po-fp-cancel-'+sz} style={{width:48,textAlign:'center',border:'1px solid #f59e0b',borderRadius:4,padding:'5px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={0}/>
-                  <div style={{fontSize:9,color:'#64748b'}}>{getOpen(sz)} open</div>
-                </div>)}
+                  <input id={'po-fp-cancel-'+sz} type="number" min={0} max={maxCancel} style={{width:48,textAlign:'center',border:'1px solid #f59e0b',borderRadius:4,padding:'5px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getCncl(sz)}/>
+                  <div style={{fontSize:9,color:'#64748b'}}>{getOpen(sz)} open · max {maxCancel}</div>
+                </div>})}
               </div>
               <button className="btn btn-sm" style={{background:'#f59e0b',color:'white',fontSize:12}} onClick={()=>{
-                const newCancelled={...cancelled};let anyCancelled=false;
-                szKeys.filter(sz=>getOpen(sz)>0).forEach(sz=>{
+                const newCancelled={...cancelled};let anyChange=false;
+                szKeys.filter(sz=>getOpen(sz)>0||getCncl(sz)>0).forEach(sz=>{
                   const el=document.getElementById('po-fp-cancel-'+sz);
-                  const qty=el?Math.min(parseInt(el.value)||0,getOpen(sz)):0;
-                  if(qty>0){newCancelled[sz]=(newCancelled[sz]||0)+qty;anyCancelled=true}
+                  const maxCancel=Math.max(0,(po[sz]||0)-getRcvd(sz));
+                  const qty=el?Math.max(0,Math.min(parseInt(el.value)||0,maxCancel)):getCncl(sz);
+                  if(qty!==getCncl(sz))anyChange=true;
+                  newCancelled[sz]=qty;
                 });
-                if(!anyCancelled){nf('Enter quantities to cancel','error');return}
+                if(!anyChange){nf('No changes to apply','error');return}
                 const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(received[sz]||0)-(newCancelled[sz]||0)),0);
                 const newStatus=newTotalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting';
                 const updatedPO={...po,cancelled:newCancelled,status:newStatus};
@@ -8743,8 +8747,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 let updatedItems=[...o.items];
                 affectedIdxs.forEach(idx=>{updatedItems=updatedItems.map((it,i)=>i===idx?{...it,po_lines:it.po_lines.map(p=>p.po_id===po.po_id?{...p,cancelled:newCancelled,status:newStatus}:p)}:it)});
                 const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
-                setO(updated);onSave(updated);setPoFullPage({...poFullPage,po:updatedPO});nf('Sizes cancelled from '+po.po_id);
-              }}>Cancel These Sizes</button>
+                setO(updated);onSave(updated);setPoFullPage({...poFullPage,po:updatedPO});nf('PO '+po.po_id+' updated');
+              }}>✏️ Update PO</button>
             </div>
           </div>}
 
