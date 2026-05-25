@@ -179,13 +179,24 @@ function Webstores({ cust = [], REPS = [], onCreateSO }) {
     const openIds = new Set(open.map((o) => o.id));
     const lines = (detail.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent);
 
-    // Aggregate quantities by product + size into so_items (sizes jsonb).
+    // Which products collect a number / name (from catalog singles + bundle components).
+    const personalize = {};
+    (detail.catalog || []).forEach((c) => { if (c.product_id) personalize[c.product_id] = { num: !!c.takes_number, name: !!c.takes_name }; });
+    (detail.bundleItems || []).forEach((b) => { if (b.product_id) { const e = personalize[b.product_id] || { num: false, name: false }; personalize[b.product_id] = { num: e.num || !!b.takes_number, name: e.name || !!b.takes_name }; } });
+
+    // Aggregate by product + size; build parallel number/name rosters per size
+    // (one entry per garment unit) so they attach as real deco lines.
     const byProduct = {};
     lines.forEach((i) => {
       const pid = i.product_id || i.sku || 'unknown';
-      if (!byProduct[pid]) byProduct[pid] = { product_id: i.product_id || null, sku: i.sku || '', sizes: {} };
-      const sz = i.size || 'OS';
-      byProduct[pid].sizes[sz] = (byProduct[pid].sizes[sz] || 0) + (i.qty || 1);
+      if (!byProduct[pid]) byProduct[pid] = { product_id: i.product_id || null, sku: i.sku || '', sizes: {}, numbers: {}, names: {} };
+      const g = byProduct[pid]; const sz = i.size || 'OS'; const q = i.qty || 1;
+      const pdef = personalize[i.product_id] || {};
+      g.sizes[sz] = (g.sizes[sz] || 0) + q;
+      for (let u = 0; u < q; u++) {
+        if (pdef.num) (g.numbers[sz] = g.numbers[sz] || []).push(i.player_number ? String(i.player_number) : '');
+        if (pdef.name) (g.names[sz] = g.names[sz] || []).push(i.player_name || '');
+      }
     });
     const pids = [...new Set(lines.map((i) => i.product_id).filter(Boolean))];
     const pinfo = {};
@@ -193,23 +204,22 @@ function Webstores({ cust = [], REPS = [], onCreateSO }) {
       const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price').in('id', pids);
       (data || []).forEach((p) => { pinfo[p.id] = p; });
     }
+    const hasVals = (m) => Object.values(m).some((arr) => arr.some((v) => v && v.trim()));
     const soItems = Object.values(byProduct).map((g) => {
       const info = pinfo[g.product_id] || {};
+      const pdef = personalize[g.product_id] || {};
+      const decorations = [];
+      // Numbers / names attach as deco lines with the actual values (roster/names
+      // keyed by size), NOT as free-text production notes.
+      if (pdef.num && hasVals(g.numbers)) decorations.push({ kind: 'numbers', position: 'Back', num_method: 'screen_print', num_size: '6"', two_color: false, sell_override: null, custom_font_art_id: null, roster: g.numbers });
+      if (pdef.name && hasVals(g.names)) decorations.push({ kind: 'names', position: 'Back Center', sell_override: null, sell_each: 6, cost_each: 3, names: g.names });
       return { sku: g.sku || info.sku || '', name: info.name || g.sku || 'Item', brand: info.brand || '', color: info.color || '',
         product_id: g.product_id || null, nsa_cost: info.nsa_cost || 0, retail_price: info.retail_price || 0, unit_sell: info.retail_price || 0,
-        sizes: g.sizes, available_sizes: Object.keys(g.sizes), no_deco: true, decorations: [], pick_lines: [], po_lines: [] };
+        sizes: g.sizes, available_sizes: Object.keys(g.sizes), no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
     });
 
-    // Per-player roster carried into production notes so personalization survives.
-    const roster = open.map((o) => {
-      const its = (detail.orderItems || []).filter((i) => i.order_id === o.id && !i.is_bundle_parent);
-      const player = its[0]?.player_name || o.buyer_name || '—';
-      const num = its[0]?.player_number ? ' #' + its[0].player_number : '';
-      const desc = its.map((i) => `${i.qty}× ${i.sku} ${i.size || ''}`.trim()).join(', ');
-      return `${player}${num} — ${desc} [${o.payment_mode === 'paid' ? 'PAID' : 'TEAM TAB'}]`;
-    }).join('\n');
     const units = soItems.reduce((a, i) => a + Object.values(i.sizes).reduce((b, v) => b + v, 0), 0);
-    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})\n${open.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'to club' : 'ship to home'}\n\nROSTER:\n${roster}`;
+    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})\n${open.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.`;
 
     const soId = onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id });
     if (!soId) { flash('Could not create Sales Order'); return; }
