@@ -102,7 +102,7 @@ function Webstores({ cust = [], REPS = [] }) {
     const [catRes, bundleRes, stockRes, ordRes, itemRes, rosterRes, claimRes] = await Promise.all([
       supabase.from('webstore_products').select('*').eq('store_id', sid).order('sort_order'),
       supabase.from('webstore_bundle_items').select('*').order('sort_order'),
-      supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,name,color,category,image_front_url').eq('store_id', sid),
+      supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,vendor_eta,name,color,category,image_front_url').eq('store_id', sid),
       supabase.from('webstore_orders').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
       supabase.from('webstore_order_items').select('*'),
       supabase.from('webstore_roster').select('*').eq('store_id', sid).order('player_name'),
@@ -507,10 +507,16 @@ function Stat({ label, value, tone }) {
   return <div><div style={{ fontSize: 18, fontWeight: 800, color: tone || '#1e293b' }}>{value}</div><div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div></div>;
 }
 
+// Effective availability = on-hand warehouse stock + Adidas vendor stock
+// (drop-shippable). ETA falls back to the soonest of open-PO or Adidas
+// future-delivery dates.
 function stockText(stock) {
-  const onHand = sumSizes(stock?.size_stock);
-  if (onHand > 0) return { text: `In stock (${onHand})`, color: '#166534' };
-  if (stock?.on_order_qty > 0) return { text: stock.earliest_eta ? `Arriving ~${stock.earliest_eta}` : `On order (${stock.on_order_qty})`, color: '#92400e' };
+  const wh = sumSizes(stock?.size_stock);
+  const vendor = Number(stock?.vendor_on_hand) || 0;
+  const total = wh + vendor;
+  if (total > 0) return { text: `In stock (${total.toLocaleString()})`, color: '#166534' };
+  const eta = [stock?.earliest_eta, stock?.vendor_eta].filter(Boolean).sort()[0];
+  if (stock?.on_order_qty > 0 || eta) return { text: eta ? `Arriving ~${eta}` : 'On order', color: '#92400e' };
   return { text: 'Out of stock', color: '#b91c1c' };
 }
 

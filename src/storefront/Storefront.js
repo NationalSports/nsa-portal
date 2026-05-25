@@ -14,6 +14,11 @@ import { supabase } from '../lib/supabase';
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const sumSizes = (j) => Object.values(j || {}).reduce((a, v) => a + (Number(v) || 0), 0);
 const priceOf = (p) => (p.display_price != null ? p.display_price : p.retail_price);
+// Effective stock counts on-hand warehouse + Adidas vendor (drop-ship) stock.
+const effOnHand = (p) => sumSizes(p.size_stock) + (Number(p.vendor_on_hand) || 0);
+const effSizeQty = (p, sz) => (Number((p.size_stock || {})[sz]) || 0) + (Number((p.vendor_size_stock || {})[sz]) || 0);
+const isIncoming = (p) => (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
+const etaOf = (p) => [p.earliest_eta, p.vendor_eta].filter(Boolean).sort()[0] || null;
 
 function isMissingTable(err) {
   if (!err) return false;
@@ -166,9 +171,8 @@ function SectionTitle({ children, theme }) {
 
 function stockBadge(p) {
   if (p.kind === 'bundle') return { text: 'Package', color: '#fff', bg: '#1e40af' };
-  const onHand = sumSizes(p.size_stock);
-  if (onHand > 0) return { text: 'In stock', color: '#fff', bg: '#16a34a' };
-  if (p.on_order_qty > 0) return { text: p.earliest_eta ? `Arriving ${p.earliest_eta}` : 'On the way', color: '#fff', bg: '#d97706' };
+  if (effOnHand(p) > 0) return { text: 'In stock', color: '#fff', bg: '#16a34a' };
+  if (isIncoming(p)) { const e = etaOf(p); return { text: e ? `Arriving ${e}` : 'On the way', color: '#fff', bg: '#d97706' }; }
   return { text: 'Sold out', color: '#fff', bg: '#b91c1c' };
 }
 
@@ -207,9 +211,8 @@ function ProductPage({ store, theme, product: p, isOpen }) {
   const [img, setImg] = useState('front');
   if (!p) return <Splash>Product not found.</Splash>;
   const sizes = Array.isArray(p.available_sizes) ? p.available_sizes : [];
-  const stock = p.size_stock || {};
-  const onHand = sumSizes(stock);
-  const incoming = p.on_order_qty > 0;
+  const onHand = effOnHand(p);
+  const incoming = isIncoming(p);
   const imgUrl = img === 'back' && p.image_back_url ? p.image_back_url : p.image_front_url;
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   return (
@@ -230,14 +233,14 @@ function ProductPage({ store, theme, product: p, isOpen }) {
           <div style={{ fontSize: 30, fontWeight: 900, marginBottom: showFund ? 4 : 18 }}>{money(priceOf(p))}</div>
           {showFund && <div style={{ fontSize: 13, color: '#16a34a', fontWeight: 700, marginBottom: 18 }}>Includes {money(p.fundraise_amount)} that supports the team</div>}
 
-          <StockLine onHand={onHand} incoming={incoming} eta={p.earliest_eta} onOrder={p.on_order_qty} />
+          <StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} />
 
           {sizes.length > 0 && <div style={{ margin: '22px 0' }}>
             <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220', marginBottom: 10 }}>Select size</div>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               {sizes.map((sz) => {
-                const q = Number(stock[sz] || 0); const sel = size === sz; const out = q <= 0 && !incoming;
-                return <button key={sz} disabled={out} onClick={() => setSize(sz)} title={q > 0 ? `${q} in stock` : incoming ? 'Backorder' : 'Out of stock'}
+                const q = effSizeQty(p, sz); const sel = size === sz; const out = q <= 0 && !incoming;
+                return <button key={sz} disabled={out} onClick={() => setSize(sz)} title={q > 0 ? `${q} available` : incoming ? 'Backorder' : 'Out of stock'}
                   style={{ ...sizeBtn(theme, sel), opacity: out ? 0.35 : 1, cursor: out ? 'not-allowed' : 'pointer', textDecoration: out ? 'line-through' : 'none' }}>{sz}</button>;
               })}
             </div>
