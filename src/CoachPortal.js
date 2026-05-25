@@ -6,6 +6,82 @@ import { calcSOStatus } from './components';
 import { dP, rQ, SP } from './pricing';
 import { sendBrevoEmail, _brevoKey, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, getBillingContacts } from './utils';
 import { StripePaymentModal } from './modals';
+import { supabase } from './lib/supabase';
+
+// Read-only team-store view for the coach: who ordered, their number, and the
+// live fulfillment status of each player's order. No editing.
+function CoachStore({ customer }) {
+  const [stores, setStores] = useState([]);
+  const [data, setData] = useState({}); // storeId -> {orders, items, roster}
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      const ids = [customer.id, customer.parent_id].filter(Boolean);
+      const { data: ws, error } = await supabase.from('webstores').select('*').in('customer_id', ids);
+      if (cancel) return;
+      if (error || !ws || !ws.length) { setLoaded(true); return; }
+      setStores(ws);
+      const out = {};
+      for (const s of ws) {
+        const [o, r] = await Promise.all([
+          supabase.from('webstore_orders').select('*').eq('store_id', s.id).order('created_at', { ascending: false }),
+          supabase.from('webstore_roster').select('*').eq('store_id', s.id),
+        ]);
+        const orders = o.data || [];
+        const orderIds = orders.map((x) => x.id);
+        let items = [];
+        if (orderIds.length) { const it = await supabase.from('webstore_order_items').select('*').in('order_id', orderIds); items = it.data || []; }
+        out[s.id] = { orders, items, roster: r.data || [] };
+      }
+      if (!cancel) { setData(out); setLoaded(true); }
+    })();
+    return () => { cancel = true; };
+  }, [customer.id, customer.parent_id]);
+
+  if (!loaded || !stores.length) return null;
+  const STAGES = { pending: 'Ordered', in_production: 'In production', shipped: 'Shipped', complete: 'Complete' };
+  const stTone = (s) => s === 'complete' ? '#166534' : s === 'shipped' ? '#1e40af' : s === 'in_production' ? '#92400e' : '#64748b';
+  return (
+    <div style={{ marginBottom: 18 }}>
+      {stores.map((s) => {
+        const d = data[s.id] || { orders: [], items: [], roster: [] };
+        const itemsByOrder = {}; d.items.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
+        const players = new Set(d.items.map((i) => (i.player_name || '').trim().toLowerCase()).filter(Boolean));
+        const notOrdered = (d.roster || []).filter((r) => !r.ordered);
+        return (
+          <div key={s.id} style={{ border: '1px solid #e2e8f0', borderRadius: 12, marginBottom: 12, overflow: 'hidden' }}>
+            <div style={{ background: '#0b1f3a', color: '#fff', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+              <div style={{ fontWeight: 800 }}>🛍️ {s.name} <span style={{ fontWeight: 400, opacity: 0.7, fontSize: 12 }}>· team store</span></div>
+              <div style={{ fontSize: 12, opacity: 0.85 }}>{d.orders.length} orders · {players.size} players{notOrdered.length ? ` · ${notOrdered.length} not ordered` : ''}</div>
+            </div>
+            <div style={{ padding: 12 }}>
+              {d.orders.length === 0 ? <div style={{ fontSize: 13, color: '#64748b', padding: 8 }}>No orders yet.</div> : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead><tr style={{ textAlign: 'left', color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}><th style={{ padding: 6 }}>Player</th><th style={{ padding: 6 }}>#</th><th style={{ padding: 6 }}>Items</th><th style={{ padding: 6 }}>Paid?</th><th style={{ padding: 6 }}>Status</th></tr></thead>
+                  <tbody>
+                    {d.orders.map((o) => { const its = itemsByOrder[o.id] || []; const player = [...new Set(its.map((i) => i.player_name).filter(Boolean))].join(', '); const num = [...new Set(its.map((i) => i.player_number).filter(Boolean))].join(', '); const ls = its[0]?.line_status || 'pending'; const qty = its.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (i.qty || 0), 0); return (
+                      <tr key={o.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                        <td style={{ padding: 6 }}>{player || o.buyer_name || '—'}</td>
+                        <td style={{ padding: 6 }}>{num || '—'}</td>
+                        <td style={{ padding: 6 }}>{qty}</td>
+                        <td style={{ padding: 6 }}>{o.payment_mode === 'paid' ? 'Paid' : 'Team tab'}</td>
+                        <td style={{ padding: 6, fontWeight: 700, color: stTone(ls) }}>{STAGES[ls] || ls}</td>
+                      </tr>
+                    ); })}
+                  </tbody>
+                </table>
+              )}
+              {notOrdered.length > 0 && <div style={{ marginTop: 10, fontSize: 12, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 10px' }}>
+                <b>Not yet ordered ({notOrdered.length}):</b> {notOrdered.map((r) => r.player_name + (r.player_number ? ' #' + r.player_number : '')).join(', ')}
+              </div>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs,onUpdateSOs,onUpdateEsts,savSOFn,portalSettings,dbSaveEstimate:_dbSaveEstimate}){
   const _portalDisclaimer=portalSettings?.disclaimer||'';
@@ -724,6 +800,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </div>
       </div>
       <div style={{padding:'20px 28px'}}>
+
+        {/* Team store — read-only order tracking for the coach */}
+        <CoachStore customer={customer} />
 
         {/* Payment success banner */}
         {paySuccess&&<div style={{padding:16,background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:12,marginBottom:16,textAlign:'center'}}>
