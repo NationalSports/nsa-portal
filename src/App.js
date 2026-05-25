@@ -4172,21 +4172,21 @@ export default function App(){
 
       // Merge with existing data — preserve manual edits (SKU corrections,
       // costs, deco types, art groups, vendors) from previous imports.
-      // Match by _omg_product_id (stable) or original SKU position.
+      // Match by OMG product id + SKU, then by SKU. NEVER fall back to array
+      // position: a single OMG product now spans multiple SKU rows, so the
+      // product list changes shape between imports and a positional match
+      // would graft an unrelated product's name/SKU onto a row.
       const existingProducts = store.products || [];
-      const mergedProducts = products.map((p, idx) => {
-        // Find existing product by OMG product ID + SKU (a single OMG product
-        // can now span multiple SKU rows, so the ID alone isn't unique) or by
-        // position. Compare against the existing row's original SKU so user
-        // edits to the displayed SKU don't break the match.
+      const mergedProducts = products.map((p) => {
         const existing = existingProducts.find(ep => ep._omg_product_id && ep._omg_product_id === p._omg_product_id && (ep._original_sku || ep.sku) === p.sku)
-          || existingProducts[idx];
+          || existingProducts.find(ep => (ep._original_sku || ep.sku) === p.sku);
         if (!existing) return p;
         // Preserve manual edits, take fresh data for quantities
         return {
           ...p,
-          // Preserve user edits if they were changed from the original
-          sku: existing.sku !== existing._original_sku && existing.sku ? existing.sku : p.sku,
+          // Keep a user-edited SKU only when we actually tracked an original
+          // to compare against — otherwise trust the freshly parsed SKU.
+          sku: (existing._original_sku && existing.sku && existing.sku !== existing._original_sku) ? existing.sku : p.sku,
           name: existing.name || p.name,
           cost: existing.cost > 0 ? existing.cost : p.cost,
           _cost_source: existing.cost > 0 ? existing._cost_source : p._cost_source,
@@ -4194,7 +4194,10 @@ export default function App(){
           deco_type: existing.deco_type || p.deco_type,
           art_group: existing.art_group || p.art_group,
           decorations: (existing.decorations||[]).length>0 ? existing.decorations : p.decorations || [],
-          // Fresh from report: sizes, quantities, retail, colors, images
+          // Keep an image already on the row if the fresh parse has none
+          // (the shared report JSON carries no artwork for many stores).
+          image_url: p.image_url || existing.image_url || '',
+          // Fresh from report: sizes, quantities, retail, colors
           _original_sku: p.sku, // track original for detecting user edits
         };
       });
