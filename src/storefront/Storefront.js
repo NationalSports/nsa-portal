@@ -649,7 +649,7 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const allowPaid = store.payment_mode === 'paid' || store.payment_mode === 'either';
   const [buyer, setBuyer] = useState({ name: '', email: '', phone: '' });
   const [ship, setShip] = useState({ name: '', street1: '', street2: '', city: '', state: '', zip: '' });
-  const [method, setMethod] = useState(allowPaid && _stripePromise ? 'paid' : 'unpaid');
+  const [method, setMethod] = useState(allowPaid ? 'paid' : 'unpaid');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [clientSecret, setClientSecret] = useState(null);
@@ -778,10 +778,10 @@ function CheckoutPage({ store, theme, cart, onClear }) {
               <CardForm theme={theme} onPaid={confirmPaid} />
             </Elements>
           ) : <button className="sf-btn" onClick={startCard} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1, marginTop: store.payment_mode === 'either' ? 0 : 14 }}>{busy ? 'Starting…' : 'Continue to payment'}</button>
-        ) : <div style={{ color: '#b91c1c', fontSize: 13 }}>Card payment isn’t configured for this store.</div>
-      ) : (
+        ) : <div style={{ color: '#b91c1c', fontSize: 13, marginTop: 14 }}>Card payment isn’t set up for this store yet — please contact us.</div>
+      ) : allowUnpaid ? (
         <button className="sf-btn" onClick={submitUnpaid} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1 }}>{busy ? 'Placing…' : 'Place order — invoice the team'}</button>
-      )}
+      ) : null}
       </>)}
     </div>
   );

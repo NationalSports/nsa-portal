@@ -8,7 +8,19 @@ import { NSA } from './constants';
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 
 // Create a ShipStation label (base64 PDF) for one ship-to-home webstore order.
-async function createWebstoreLabel(order, items, store) {
+// Order ship weight (lbs): sum per-item weights (catalog override or estimate);
+// fall back to the store's flat weight if nothing resolves.
+function labelWeightLbs(items, store, weightByPid = {}) {
+  let oz = 0, any = false;
+  (items || []).filter((i) => !i.is_bundle_parent).forEach((i) => {
+    const w = (weightByPid && weightByPid[i.product_id]) || estimateWeightOz(i.sku || i.name);
+    oz += w * (i.qty || 1); any = true;
+  });
+  if (any && oz > 0) return Math.max(0.1, Math.round(oz / 16 * 10) / 10);
+  return Number(store.label_weight_lbs) || 1;
+}
+
+async function createWebstoreLabel(order, items, store, weightByPid = {}) {
   const a = order.ship_address || {};
   const ss = await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(webstoreToShipStation(order, items, store)) });
   const orderId = ss && ss.orderId;
@@ -18,7 +30,7 @@ async function createWebstoreLabel(order, items, store) {
   const payload = {
     orderId, carrierCode: cm.carrierCode, serviceCode: store.shipstation_service || cm.serviceCode,
     packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
-    weight: { value: Number(store.label_weight_lbs) || 1, units: 'pounds' },
+    weight: { value: labelWeightLbs(items, store, weightByPid), units: 'pounds' },
     shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
     shipTo: { name: a.name || order.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: order.buyer_phone || '' },
     testLabel: false,
@@ -202,6 +214,28 @@ function StatusBadge({ status }) {
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const sumSizes = (jsonb) => Object.values(jsonb || {}).reduce((a, v) => a + (Number(v) || 0), 0);
 const slugify = (s) => (s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+
+// Rough ship weight (oz) by item type, from the name/sku keywords. Used as a
+// default in the catalog editor and as a fallback when a label is created.
+function estimateWeightOz(text) {
+  const t = (text || '').toLowerCase();
+  const rules = [
+    [/back ?pack|duffel|duffle|equipment bag|gear bag/, 28],
+    [/tote|sackpack|cinch|drawstring|bag/, 10],
+    [/jacket|coat|parka|fleece|pullover|hoodie|hooded|sweatshirt|quarter ?zip|1\/4 ?zip|half ?zip|1\/2 ?zip/, 18],
+    [/sweatpant|jogger|tearaway|pant|legging|tight/, 12],
+    [/short/, 7],
+    [/jersey|tank|singlet/, 5],
+    [/tee|t-?shirt|shirt|polo|jersey top|top|warmup|warm-?up/, 6],
+    [/beanie|hat|cap|visor/, 3],
+    [/sock|glove|belt|headband|wristband|scrunchie/, 2],
+    [/bottle|tumbler|mug/, 14],
+    [/ball/, 16],
+    [/blanket|towel/, 20],
+  ];
+  for (const [re, oz] of rules) if (re.test(t)) return oz;
+  return 8; // generic garment default
+}
 
 // Map products -> which transfers they consume, then tally usage from order lines.
 function buildTransferMaps(catalog, bundleItems) {
@@ -1123,9 +1157,11 @@ function CatalogItemEditor({ item, defaultName, designOptions = [], numberSets =
   const [transferCode, setTransferCode] = useState(item.transfer_code || '');
   const [numSize, setNumSize] = useState(item.num_transfer_size || null);
   const [numColor, setNumColor] = useState(item.num_transfer_color || null);
+  const estOz = estimateWeightOz(name || item.display_name || defaultName || item.sku);
+  const [weight, setWeight] = useState(item.weight_oz != null ? item.weight_oz : '');
   const total = (Number(price) || 0) + (Number(fundraise) || 0);
   const save = () => {
-    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: name.trim() || null };
+    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: name.trim() || null, weight_oz: weight === '' ? null : Number(weight) || 0 };
     if (!isBundle) {
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
       fields.transfer_code = transferCode || null;
@@ -1141,7 +1177,9 @@ function CatalogItemEditor({ item, defaultName, designOptions = [], numberSets =
         <Row label="Price (X)"><input className="form-input" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></Row>
         <Row label="Fundraising (Y)"><input className="form-input" type="number" step="0.01" value={fundraise} onChange={(e) => setFundraise(e.target.value)} /></Row>
         <Row label="Shopper pays"><div className="form-input" style={{ background: '#fff', fontWeight: 700 }}>{money(total)}</div></Row>
+        <Row label="Ship weight (oz)"><input className="form-input" type="number" step="0.1" min={0} value={weight} onChange={(e) => setWeight(e.target.value)} placeholder={`auto ~${estOz}`} style={{ width: 110 }} /></Row>
       </div>
+      <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Leave weight blank to auto-estimate by item type (~{estOz} oz here). Shipping labels use the total order weight.</div>
       {!isBundle && <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
         <Toggle label="Player adds a number" checked={takesNumber} onChange={setTakesNumber} />
         <Toggle label="Player adds a name" checked={takesName} onChange={setTakesName} />
@@ -1671,10 +1709,11 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     const groups = homeGroups(soId);
     if (!groups.length) { setSsMsg((m) => ({ ...m, [soId]: 'No ship-to-home orders with addresses.' })); return; }
     setSsMsg((m) => ({ ...m, [soId]: `Creating ${groups.length} labels…` }));
+    const weightByPid = {}; (catalog || []).forEach((c) => { if (c.product_id && c.weight_oz != null) weightByPid[c.product_id] = Number(c.weight_oz) || 0; });
     const labels = []; let fail = 0;
     for (const g of groups) {
       try {
-        const { labelData, trackingNumber, carrier, cost } = await createWebstoreLabel(g.order, g.items, store);
+        const { labelData, trackingNumber, carrier, cost } = await createWebstoreLabel(g.order, g.items, store, weightByPid);
         if (labelData) labels.push(labelData);
         if (trackingNumber || cost != null) { try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber, carrier, label_cost: cost }).eq('id', g.order.id); } catch {} }
       } catch { fail++; }
