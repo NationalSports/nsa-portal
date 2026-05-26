@@ -13151,10 +13151,32 @@ export default function App(){
     // Store detail view
     if(omgSel){
       const s=omgSel;const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
-      // Customer art library (this account + parent), de-duped by id — used to
-      // assign existing logos to store products instead of inventing new ones.
-      const custArt=(()=>{if(!c)return[];const ids=c.parent_id?[c.parent_id,c.id]:[c.id];const seen=new Map();ids.forEach(cid=>{const cc=cust.find(x=>x.id===cid);(cc?.art_files||[]).forEach(a=>{if(a&&a.id&&!seen.has(a.id))seen.set(a.id,a)})});return[...seen.values()]})();
-      const custArtById=Object.fromEntries(custArt.map(a=>[a.id,a]));
+      // Customer art library — mirrors the customer Artwork tab: the account's
+      // (and parent's) saved logos PLUS art aggregated from their past SOs and
+      // estimates, since most existing logos live on prior orders, not the
+      // library column. De-duped by name+deco_type, preferring the most
+      // production-ready instance (library > files-on-hand > approved > other).
+      const _artLib=(()=>{
+        if(!c)return{list:[],byId:{}};
+        const isP=!c.parent_id;
+        const subs=isP?cust.filter(x=>x.parent_id===c.id):[];
+        const parentC=c.parent_id?cust.find(x=>x.id===c.parent_id):null;
+        const orderIds=[c.id,...subs.map(x=>x.id),c.parent_id].filter(Boolean);
+        const pool=[];
+        (c.art_files||[]).forEach(a=>pool.push({a,pref:4,label:'Library'}));
+        if(parentC)(parentC.art_files||[]).forEach(a=>pool.push({a,pref:4,label:'Parent library'}));
+        (sos||[]).filter(o=>orderIds.includes(o.customer_id)).forEach(o=>(o.art_files||[]).forEach(a=>pool.push({a,pref:(a.prod_files||[]).length?3:(a.status==='approved'?2:1),label:o.id})));
+        (ests||[]).filter(e=>orderIds.includes(e.customer_id)).forEach(e=>(e.art_files||[]).forEach(a=>pool.push({a,pref:1,label:e.id})));
+        const byId={};pool.forEach(({a})=>{if(a&&a.id&&!byId[a.id])byId[a.id]=a});
+        const byKey=new Map();
+        pool.forEach(({a,pref,label})=>{if(!a||!a.id||!(a.name||'').trim())return;const key=(a.name||'').toLowerCase()+'||'+(a.deco_type||'');const ex=byKey.get(key);if(!ex||pref>ex.pref)byKey.set(key,{a,pref,label})});
+        const list=[...byKey.values()].map(({a,label})=>({...a,_srcLabel:label})).sort((x,y)=>(x.name||'').localeCompare(y.name||''));
+        return{list,byId};
+      })();
+      const custArt=_artLib.list;
+      const custArtById=_artLib.byId;
+      const setStoreCustomer=(cid)=>{const upd={...s,customer_id:cid||null};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
+      const _custOpts=[...cust].filter(cc=>cc&&cc.id).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
       const totalCost=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
       const totalRetail=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
       const storeFees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);
@@ -13167,7 +13189,16 @@ export default function App(){
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
             <div>
               <div style={{fontSize:20,fontWeight:800}}>{s.store_name}</div>
-              <div style={{fontSize:13,color:'#64748b'}}>{s._omg_sale_code&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',marginRight:6}}>{s._omg_sale_code}</span>}{c?.name} ({c?.alpha_tag}) · Rep: {rep?.name} · {s.id}</div>
+              <div style={{fontSize:13,color:'#64748b',display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                {s._omg_sale_code&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{s._omg_sale_code}</span>}
+                <select value={s.customer_id||''} onChange={e=>setStoreCustomer(e.target.value)}
+                  title="Link this store to a customer — enables the art library, pricing, and sets the customer on any sales order created from this store"
+                  style={{fontSize:12,fontWeight:700,padding:'2px 6px',borderRadius:4,border:`1px solid ${c?'#cbd5e1':'#fca5a5'}`,background:c?'#fff':'#fef2f2',color:c?'#0f172a':'#dc2626',maxWidth:260}}>
+                  <option value="">⚠ Link a customer…</option>
+                  {_custOpts.map(cc=><option key={cc.id} value={cc.id}>{cc.name}{cc.alpha_tag?' ('+cc.alpha_tag+')':''}</option>)}
+                </select>
+                · Rep: {rep?.name} · {s.id}
+              </div>
               {s._omg_id&&<div style={{fontSize:12,marginTop:2,display:'flex',gap:10}}>
                 <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" style={{color:'#2563eb',textDecoration:'none',fontWeight:600}}>🔗 OMG Admin</a>
                 {s.subdomain&&<a href={`https://${s.subdomain}.ordermygear.com`} target="_blank" rel="noopener noreferrer" style={{color:'#64748b',textDecoration:'none'}}>🌐 {s.subdomain}.ordermygear.com</a>}
@@ -13180,6 +13211,7 @@ export default function App(){
             </div>
             {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
               if(sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
+              if(!s.customer_id){nf('Link this store to a customer first (top of the page).','error');return}
               const generatedId=nextSOId(sos);
               // Every product must be assigned an art group or explicitly marked
               // "No Deco" (shoes, socks, equipment) before it can become an SO.
