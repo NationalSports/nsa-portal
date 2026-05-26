@@ -687,7 +687,7 @@ const _dbLoad = async (opts={}) => {
     // Messages: attach read_by array and parse tagged_members
     const messages=msgRaw.map(m=>{const tm=m.tagged_members;const mapped={...m,text:m.body||m.text,ts:m.created_at||m.ts};delete mapped.body;return{...mapped,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
-    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>{const dt=(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||''}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,_artwork:p._artwork||[]}})}));
+    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>{const noDeco=p.deco_type==='no_deco';const dt=noDeco?[]:(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const ci=(p.art_cust_ids||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||'',...(ci[i]?{_cust_art_id:ci[i]}:{})}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,no_deco:noDeco,art_ready:!!p.art_ready,_artwork:p._artwork||[]}})}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     // True if any SO/estimate child-row query timed out — used to skip polls and warn on initial load
@@ -737,7 +737,7 @@ const _dbSeed = async (d) => {
   // Seed OMG stores
   if(d.omg_stores?.length){
     await supabase.from('omg_stores').upsert(d.omg_stores.map(s=>_pick(s,_omgStoreCols)),{onConflict:'id'});
-    const allProds=[];d.omg_stores.forEach(s=>(s.products||[]).forEach(p=>allProds.push({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes,image_url:p.image_url||'',manufacturer:p.manufacturer||''})));
+    const allProds=[];d.omg_stores.forEach(s=>(s.products||[]).forEach(p=>allProds.push({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes,image_url:p.image_url||'',manufacturer:p.manufacturer||'',art_ready:!!p.art_ready,art_cust_ids:(p.decorations||[]).map(d=>d._cust_art_id||'').join('|')})));
     if(allProds.length) await supabase.from('omg_store_products').upsert(allProds,{onConflict:'store_id,sku'});
   }
 };
@@ -3207,7 +3207,7 @@ export default function App(){
     const oldProds=JSON.stringify((old?.products||[]).map(p=>p.sku+p.cost+(p.decorations||[]).map(d=>d.type+':'+d.art_group).join('|')+p.vendor_id).sort());
     const newProds=JSON.stringify((s.products||[]).map(p=>p.sku+p.cost+(p.decorations||[]).map(d=>d.type+':'+d.art_group).join('|')+p.vendor_id).sort());
     if(oldProds!==newProds&&(s.products||[]).length>0){
-      const prods=(s.products||[]).map(p=>({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:(p.decorations||[]).map(d=>d.type).join('|')||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',vendor_id:p.vendor_id||'',art_group:(p.decorations||[]).map(d=>d.art_group).join('|')||'',_cost_source:p._cost_source||''}));
+      const prods=(s.products||[]).map(p=>({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.no_deco?'no_deco':((p.decorations||[]).map(d=>d.type).join('|')||''),deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',vendor_id:p.vendor_id||'',art_group:(p.decorations||[]).map(d=>d.art_group).join('|')||'',art_cust_ids:(p.decorations||[]).map(d=>d._cust_art_id||'').join('|'),_cost_source:p._cost_source||'',art_ready:!!p.art_ready}));
       // Delete old products and insert fresh (handles SKU changes)
       if(supabase){supabase.from('omg_store_products').delete().eq('store_id',s.id).then(()=>{supabase.from('omg_store_products').insert(prods).then(r=>{if(r.error)console.error('[DB] omg products save:',r.error.message)})})}
     }
@@ -4058,12 +4058,38 @@ export default function App(){
   const[aiInvPoWizOpen,setAiInvPoWizOpen]=useState(false);
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
   // OMG Team Stores
-  const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);
+  const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);const[omgBulkSel,setOmgBulkSel]=useState(()=>new Set());const[omgBulkArt,setOmgBulkArt]=useState('');
+  React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
   const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);
 
   // Import products from an OMG shared report URL.
   // Fetches report JSON via Netlify proxy, parses products with SKUs, sizes,
   // quantities, prices, and mockup images. Replaces the broken V1 API sync.
+  // Best-effort match of an OMG store name (e.g. "Dana Hills Football 2026")
+  // to a customer. Strips year/season/store-type noise, then prefers an exact
+  // normalized match, else a customer whose every word appears in the store
+  // name (≥2 words, to avoid generic single-word mislinks). Returns null when
+  // not confident, so we never silently link the wrong account.
+  const _omgMatchCustomer=(storeName)=>{
+    const norm=str=>(str||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ')
+      .replace(/\b(20\d{2}|19\d{2}|fall|spring|summer|winter|fundraiser|webstore|web|online|store|shop|spiritwear|spirit|wear|apparel|gear|team|popup|pop|up|preorder|pre|order)\b/g,' ')
+      .replace(/\s+/g,' ').trim();
+    const sN=norm(storeName);if(!sN)return null;
+    const sToks=new Set(sN.split(' ').filter(Boolean));
+    let best=null,bestScore=0,bestLen=0;
+    for(const c of cust){
+      if(!c||!c.name)continue;
+      const cN=norm(c.name);if(!cN)continue;
+      const cToks=cN.split(' ').filter(Boolean);if(!cToks.length)continue;
+      const inCount=cToks.filter(t=>sToks.has(t)).length;
+      let score;
+      if(sN===cN)score=1;
+      else if(inCount===cToks.length&&cToks.length>=2)score=0.9;
+      else score=(inCount/cToks.length)*0.6;
+      if(score>bestScore||(score===bestScore&&cToks.length>bestLen)){best=c;bestScore=score;bestLen=cToks.length}
+    }
+    return bestScore>=0.9?best:null;
+  };
   const importOMGReport = async (store, reportUrl) => {
     // Extract UUID from various URL formats
     const urlStr = (reportUrl || '').trim();
@@ -4081,62 +4107,85 @@ export default function App(){
       // Parse all sections → products
       const products = [];
       let totalQty = 0, totalSales = 0;
+      // Pull a SKU out of a string like "Black/White (KB9093)" → KB9093
+      const extractSku = (str) => {
+        const m = (str || '').match(/\(([A-Za-z0-9]{4,10})\)/);
+        return m ? m[1].toUpperCase() : '';
+      };
       (report.reports || []).forEach(r => {
         (r.sections || []).forEach(section => {
           const meta = section.meta || {};
           const rows = section.rows || [];
-          // Aggregate sizes across all rows for this product
-          const sizes = {};
-          let productQty = 0, productPaid = 0;
-          const colors = new Set();
+          const artworkList = meta.artwork || [];
+          // The section's own SKU is a usable fallback only when it looks
+          // like a real SKU (no spaces, not absurdly long) — otherwise it's
+          // a product name and we rely on the per-row color SKU instead.
+          const sectionSku = meta.sku || '';
+          const sectionSkuOk = sectionSku && !sectionSku.includes(' ') && sectionSku.length <= 15;
+
+          // Same product can ship multiple SKUs (one per color), e.g. the
+          // 3-stripe short is KB9093 in black and KB9097 in grey. Split each
+          // distinct SKU into its own product row instead of merging them.
+          const groups = {};
           rows.forEach(row => {
             const rawSz = (row.size || 'OS').trim().replace(/["''″]+$/,'');
             const sz = SZ_NORM[rawSz.toUpperCase()] || (/^adult\b/i.test(rawSz)?'OSFA':rawSz);
             const qty = row.quantity || 0;
-            sizes[sz] = (sizes[sz] || 0) + qty;
-            productQty += qty;
-            productPaid += (row.paid || 0);
-            if (row.color) colors.add(row.color);
+            const rowSku = extractSku(row.color) || (sectionSkuOk ? sectionSku.toUpperCase() : '');
+            const key = rowSku || '__nosku__';
+            if (!groups[key]) groups[key] = { sku: rowSku, sizes: {}, qty: 0, paid: 0, colors: new Set() };
+            const g = groups[key];
+            g.sizes[sz] = (g.sizes[sz] || 0) + qty;
+            g.qty += qty;
+            g.paid += (row.paid || 0);
+            if (row.color) g.colors.add(row.color);
           });
-          // Get artwork image
-          const artwork = (meta.artwork || [])[0];
-          const imageUrl = artwork?.link || artwork?.thumbnail || '';
 
-          // Skip items with 0 sales — no one ordered them
-          if (productQty === 0) return;
+          Object.values(groups).forEach(g => {
+            // Skip items with 0 sales — no one ordered them
+            if (g.qty === 0) return;
 
-          // Fix bad SKUs: if SKU looks like a product name (has spaces or
-          // is very long), try to extract a real SKU from parentheses in
-          // the color or name fields, e.g. "Black/White (HT3973)" → HT3973
-          let sku = meta.sku || '';
-          const skuLooksBad = sku.includes(' ') || sku.length > 15;
-          if (skuLooksBad) {
-            const colorStr = [...colors].join(' ');
-            const nameStr = meta.name || '';
-            const parenMatch = (colorStr + ' ' + nameStr).match(/\(([A-Za-z0-9]{4,10})\)/);
-            if (parenMatch) sku = parenMatch[1].toUpperCase();
-          }
+            // Resolve a SKU: prefer the per-row color SKU, then any SKU in
+            // the grouped colors/name, then the section SKU.
+            let sku = g.sku;
+            if (!sku) {
+              const fromText = extractSku([...g.colors].join(' ') + ' ' + (meta.name || ''));
+              sku = fromText || (sectionSkuOk ? sectionSku.toUpperCase() : sectionSku);
+            }
 
-          products.push({
-            sku,
-            name: meta.name || '',
-            manufacturer: meta.manufacturer || '',
-            category: meta.category || '',
-            color: [...colors].join(', '),
-            retail: meta.base_price || 0,
-            cost: meta.cogs || 0,
-            deco_type: '',
-            deco_cost: 0,
-            art_group: '',
-            decorations: [],
-            sizes,
-            image_url: imageUrl,
-            _omg_product_id: meta.id,
-            _original_sku: sku,
-            _artwork: meta.artwork || [],
+            // Match this SKU's mockup image (each color has its own art),
+            // falling back to the section's first artwork.
+            // The OMG report labels each mockup with its color+SKU in the
+            // `caption` (e.g. "Black/White (KB9093)"); match on that so each
+            // SKU gets its own mock rather than the section's first image.
+            const matchedArt = sku
+              ? artworkList.filter(a => `${a.caption||''} ${a.color||''} ${a.name||''} ${a.label||''}`.toUpperCase().includes(sku))
+              : [];
+            const artForSku = matchedArt.length ? matchedArt : artworkList;
+            const artwork = artForSku[0];
+            const imageUrl = artwork?.link || artwork?.thumbnail || '';
+
+            products.push({
+              sku,
+              name: meta.name || '',
+              manufacturer: meta.manufacturer || '',
+              category: meta.category || '',
+              color: [...g.colors].join(', '),
+              retail: meta.base_price || 0,
+              cost: meta.cogs || 0,
+              deco_type: '',
+              deco_cost: 0,
+              art_group: '',
+              decorations: [],
+              sizes: g.sizes,
+              image_url: imageUrl,
+              _omg_product_id: meta.id,
+              _original_sku: sku,
+              _artwork: artForSku,
+            });
+            totalQty += g.qty;
+            totalSales += g.paid;
           });
-          totalQty += productQty;
-          totalSales += productPaid;
         });
       });
 
@@ -4172,26 +4221,34 @@ export default function App(){
 
       // Merge with existing data — preserve manual edits (SKU corrections,
       // costs, deco types, art groups, vendors) from previous imports.
-      // Match by _omg_product_id (stable) or original SKU position.
+      // Match by OMG product id + SKU, then by SKU. NEVER fall back to array
+      // position: a single OMG product now spans multiple SKU rows, so the
+      // product list changes shape between imports and a positional match
+      // would graft an unrelated product's name/SKU onto a row.
       const existingProducts = store.products || [];
-      const mergedProducts = products.map((p, idx) => {
-        // Find existing product by OMG product ID or by position
-        const existing = existingProducts.find(ep => ep._omg_product_id && ep._omg_product_id === p._omg_product_id)
-          || existingProducts[idx];
+      const mergedProducts = products.map((p) => {
+        const existing = existingProducts.find(ep => ep._omg_product_id && ep._omg_product_id === p._omg_product_id && (ep._original_sku || ep.sku) === p.sku)
+          || existingProducts.find(ep => (ep._original_sku || ep.sku) === p.sku);
         if (!existing) return p;
         // Preserve manual edits, take fresh data for quantities
         return {
           ...p,
-          // Preserve user edits if they were changed from the original
-          sku: existing.sku !== existing._original_sku && existing.sku ? existing.sku : p.sku,
+          // Keep a user-edited SKU only when we actually tracked an original
+          // to compare against — otherwise trust the freshly parsed SKU.
+          sku: (existing._original_sku && existing.sku && existing.sku !== existing._original_sku) ? existing.sku : p.sku,
           name: existing.name || p.name,
           cost: existing.cost > 0 ? existing.cost : p.cost,
           _cost_source: existing.cost > 0 ? existing._cost_source : p._cost_source,
           vendor_id: existing.vendor_id || p.vendor_id,
           deco_type: existing.deco_type || p.deco_type,
           art_group: existing.art_group || p.art_group,
+          no_deco: existing.no_deco || p.no_deco || false,
+          art_ready: existing.art_ready || p.art_ready || false,
           decorations: (existing.decorations||[]).length>0 ? existing.decorations : p.decorations || [],
-          // Fresh from report: sizes, quantities, retail, colors, images
+          // Keep an image already on the row if the fresh parse has none
+          // (the shared report JSON carries no artwork for many stores).
+          image_url: p.image_url || existing.image_url || '',
+          // Fresh from report: sizes, quantities, retail, colors
           _original_sku: p.sku, // track original for detecting user edits
         };
       });
@@ -4213,10 +4270,17 @@ export default function App(){
       if (!updated._omg_tax && store._omg_tax) updated._omg_tax = store._omg_tax;
       if (!updated._omg_fundraise && store._omg_fundraise) updated._omg_fundraise = store._omg_fundraise;
       if (!updated._omg_grand_total && store._omg_grand_total) updated._omg_grand_total = store._omg_grand_total;
+      // Auto-link a customer when none is set, so the art library and SO
+      // creation work without a manual link. Never override an existing link.
+      let _autoLinked = null;
+      if (!updated.customer_id) {
+        const m = _omgMatchCustomer(store.store_name);
+        if (m) { updated.customer_id = m.id; if (!updated.rep_id) updated.rep_id = m.primary_rep_id || updated.rep_id; _autoLinked = m; }
+      }
 
       setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
       setOmgSel(updated);
-      nf(`Imported ${products.length} products from OMG report (${totalQty} total items)`);
+      nf(`Imported ${products.length} products from OMG report (${totalQty} total items)${_autoLinked ? ` · linked to ${_autoLinked.name}` : ''}`);
       return updated;
     } catch (e) {
       console.error('[OMG Report] Import failed:', e);
@@ -4869,6 +4933,10 @@ export default function App(){
         const saleOrders = ordersBySale[store.id] || [];
         const basic = { data: store, included: omgStoresData.included || [], orders: saleOrders, orderProducts: [] };
         const converted = convertOMGStore(basic, cust);
+        if (!converted.customer_id) {
+          const m = _omgMatchCustomer(converted.store_name);
+          if (m) { converted.customer_id = m.id; if (!converted.rep_id) converted.rep_id = m.primary_rep_id || converted.rep_id; }
+        }
         const totals = saleTotals[store.id];
         if (totals) {
           if (totals.orderCount > 0) converted.orders = totals.orderCount;
@@ -13141,6 +13209,57 @@ export default function App(){
     // Store detail view
     if(omgSel){
       const s=omgSel;const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
+      // Customer art library — mirrors the customer Artwork tab: the account's
+      // (and parent's) saved logos PLUS art aggregated from their past SOs and
+      // estimates, since most existing logos live on prior orders, not the
+      // library column. De-duped by name+deco_type, preferring the most
+      // production-ready instance (library > files-on-hand > approved > other).
+      const _artLib=(()=>{
+        if(!c)return{list:[],byId:{}};
+        const isP=!c.parent_id;
+        const subs=isP?cust.filter(x=>x.parent_id===c.id):[];
+        const parentC=c.parent_id?cust.find(x=>x.id===c.parent_id):null;
+        const orderIds=[c.id,...subs.map(x=>x.id),c.parent_id].filter(Boolean);
+        const pool=[];
+        (c.art_files||[]).forEach(a=>pool.push({a,pref:4,label:'Library'}));
+        if(parentC)(parentC.art_files||[]).forEach(a=>pool.push({a,pref:4,label:'Parent library'}));
+        (sos||[]).filter(o=>orderIds.includes(o.customer_id)).forEach(o=>(o.art_files||[]).forEach(a=>pool.push({a,pref:(a.prod_files||[]).length?3:(a.status==='approved'?2:1),label:o.id})));
+        (ests||[]).filter(e=>orderIds.includes(e.customer_id)).forEach(e=>(e.art_files||[]).forEach(a=>pool.push({a,pref:1,label:e.id})));
+        const byId={};pool.forEach(({a})=>{if(a&&a.id&&!byId[a.id])byId[a.id]=a});
+        const byKey=new Map();
+        pool.forEach(({a,pref,label})=>{if(!a||!a.id||!(a.name||'').trim())return;const key=(a.name||'').toLowerCase()+'||'+(a.deco_type||'');const ex=byKey.get(key);if(!ex||pref>ex.pref)byKey.set(key,{a,pref,label})});
+        const list=[...byKey.values()].map(({a,label})=>({...a,_srcLabel:label})).sort((x,y)=>(x.name||'').localeCompare(y.name||''));
+        return{list,byId};
+      })();
+      const custArt=_artLib.list;
+      const custArtById=_artLib.byId;
+      const setStoreCustomer=(cid)=>{const upd={...s,customer_id:cid||null};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
+      const _applyStoreProds=newProds=>{const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
+      const _decoFields=decos=>({decorations:decos,deco_type:decos.length>0?decos.map(d=>d.type).join('|'):'',art_group:decos.map(d=>d.art_group).join('|')});
+      const applyBulkArt=()=>{
+        if(!omgBulkArt||omgBulkSel.size===0)return;
+        let deco=null;
+        if(omgBulkArt.startsWith('lib:')){const a=custArtById[omgBulkArt.slice(4)];if(!a)return;deco={type:a.deco_type||'screen_print',art_group:a.name||'Logo',_cust_art_id:a.id};}
+        else if(omgBulkArt.startsWith('new:')){const type=omgBulkArt.slice(4);const pfx=type==='embroidery'?'EMB':type==='heat_press'?'DTF':'SP';const existing=[...new Set((s.products||[]).flatMap(pr=>(pr.decorations||[]).filter(d=>d.type===type).map(d=>d.art_group)).filter(Boolean))];const nums=existing.filter(g=>g.startsWith(pfx+'-')).map(g=>parseInt(g.split('-')[1])||0);deco={type,art_group:`${pfx}-${nums.length?Math.max(...nums)+1:1}`};}
+        if(!deco)return;
+        const newProds=(s.products||[]).map((pr,j)=>{
+          if(!omgBulkSel.has(j))return pr;
+          const decos=pr.decorations||[];
+          const dup=deco._cust_art_id?decos.some(d=>d._cust_art_id===deco._cust_art_id):decos.some(d=>d.art_group===deco.art_group&&d.type===deco.type);
+          return{...pr,no_deco:false,..._decoFields(dup?decos:[...decos,{...deco}])};
+        });
+        _applyStoreProds(newProds);
+        nf(`Applied “${deco.art_group}” to ${omgBulkSel.size} item${omgBulkSel.size>1?'s':''}`);
+        setOmgBulkSel(new Set());setOmgBulkArt('');
+      };
+      const bulkNoDeco=()=>{
+        if(omgBulkSel.size===0)return;
+        _applyStoreProds((s.products||[]).map((pr,j)=>omgBulkSel.has(j)?{...pr,no_deco:true,decorations:[],deco_type:'no_deco',art_group:''}:pr));
+        nf(`Marked ${omgBulkSel.size} item${omgBulkSel.size>1?'s':''} as No Deco`);
+        setOmgBulkSel(new Set());
+      };
+      const _toggleRow=j=>setOmgBulkSel(prev=>{const n=new Set(prev);if(n.has(j))n.delete(j);else n.add(j);return n});
+      const _custOpts=[...cust].filter(cc=>cc&&cc.id).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
       const totalCost=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
       const totalRetail=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
       const storeFees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);
@@ -13153,7 +13272,33 @@ export default function App(){
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
             <div>
               <div style={{fontSize:20,fontWeight:800}}>{s.store_name}</div>
-              <div style={{fontSize:13,color:'#64748b'}}>{s._omg_sale_code&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',marginRight:6}}>{s._omg_sale_code}</span>}{c?.name} ({c?.alpha_tag}) · Rep: {rep?.name} · {s.id}</div>
+              <div style={{fontSize:13,color:'#64748b',display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                {s._omg_sale_code&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{s._omg_sale_code}</span>}
+                {(()=>{
+                  if(omgCustEdit===null)return <button onClick={()=>setOmgCustEdit('')}
+                    title="Link / change the customer for this store — enables the art library and sets the customer on any sales order created from this store"
+                    style={{fontSize:12,fontWeight:700,padding:'2px 8px',borderRadius:4,border:`1px solid ${c?'#cbd5e1':'#fca5a5'}`,background:c?'#fff':'#fef2f2',color:c?'#0f172a':'#dc2626',cursor:'pointer'}}>
+                    {c?`${c.name}${c.alpha_tag?' ('+c.alpha_tag+')':''}`:'⚠ Link a customer…'} ▾
+                  </button>;
+                  const toks=omgCustEdit.toLowerCase().split(/\s+/).filter(Boolean);
+                  const matches=_custOpts.filter(cc=>{const hay=((cc.name||'')+' '+(cc.alpha_tag||'')).toLowerCase();return toks.every(t=>hay.includes(t))}).slice(0,12);
+                  return <span style={{position:'relative',display:'inline-block'}}>
+                    <input autoFocus value={omgCustEdit} onChange={e=>setOmgCustEdit(e.target.value)} placeholder="Search customers…"
+                      onKeyDown={e=>{if(e.key==='Escape')setOmgCustEdit(null)}} onBlur={()=>setTimeout(()=>setOmgCustEdit(null),150)}
+                      style={{fontSize:12,padding:'3px 8px',borderRadius:4,border:'1px solid #2563eb',width:220,outline:'none'}}/>
+                    {matches.length>0&&<div style={{position:'absolute',top:'100%',left:0,zIndex:50,background:'#fff',border:'1px solid #cbd5e1',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.12)',maxHeight:260,overflowY:'auto',minWidth:240,marginTop:2}}>
+                      {matches.map(cc=><div key={cc.id} onMouseDown={e=>{e.preventDefault();setStoreCustomer(cc.id);setOmgCustEdit(null)}}
+                        onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='#fff'}
+                        style={{padding:'6px 10px',fontSize:12,cursor:'pointer',borderBottom:'1px solid #f1f5f9',whiteSpace:'nowrap',display:'flex',justifyContent:'space-between',gap:12}}>
+                        <span style={{fontWeight:600,color:'#0f172a'}}>{cc.name}</span>
+                        <span style={{color:'#94a3b8'}}>{cc.alpha_tag||''}{!cc.parent_id?' · parent':''}</span>
+                      </div>)}
+                    </div>}
+                    {c&&<button onMouseDown={e=>{e.preventDefault();setStoreCustomer(null);setOmgCustEdit(null)}} title="Unlink customer" style={{marginLeft:4,fontSize:11,color:'#94a3b8',border:'none',background:'none',cursor:'pointer'}}>unlink</button>}
+                  </span>;
+                })()}
+                · Rep: {rep?.name} · {s.id}
+              </div>
               {s._omg_id&&<div style={{fontSize:12,marginTop:2,display:'flex',gap:10}}>
                 <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" style={{color:'#2563eb',textDecoration:'none',fontWeight:600}}>🔗 OMG Admin</a>
                 {s.subdomain&&<a href={`https://${s.subdomain}.ordermygear.com`} target="_blank" rel="noopener noreferrer" style={{color:'#64748b',textDecoration:'none'}}>🌐 {s.subdomain}.ordermygear.com</a>}
@@ -13166,14 +13311,44 @@ export default function App(){
             </div>
             {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
               if(sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
+              if(!s.customer_id){nf('Link this store to a customer first (top of the page).','error');return}
               const generatedId=nextSOId(sos);
+              // Every product must be assigned an art group or explicitly marked
+              // "No Deco" (shoes, socks, equipment) before it can become an SO.
+              const needArt=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);
+              if(needArt.length){nf(`${needArt.length} item(s) need an art group or "No Deco": ${needArt.slice(0,6).map(p=>p.sku).join(', ')}${needArt.length>6?'…':''}`,'error');return;}
               // Build art files from unique art_group labels across all decorations
-              const artGroups=[...new Set((s.products||[]).flatMap(p=>(p.decorations||[]).map(d=>d.art_group)).filter(Boolean))];
-              const artFiles=artGroups.map((g,idx)=>{
-                const sampleDeco=(s.products||[]).flatMap(p=>(p.decorations||[]).filter(d=>d.art_group===g))[0];
-                return{id:'af_omg_'+idx,name:g,deco_type:sampleDeco?.type||'screen_print',
-                  ink_colors:'',thread_colors:'',art_size:'',files:[],mockup_files:[],prod_files:[],
-                  notes:'From OMG store '+s.store_name,status:'pending',uploaded:new Date().toLocaleDateString()};
+              // Each distinct art is either a customer-library logo (keyed by its
+              // saved art id) or a new named group. Build one art file per identity.
+              const artKeyOf=d=>d._cust_art_id?'lib:'+d._cust_art_id:(d.art_group?'name:'+d.art_group:null);
+              const artKeys=[];const seenArtKey=new Set();
+              (s.products||[]).forEach(p=>(p.decorations||[]).forEach(d=>{const k=artKeyOf(d);if(k&&!seenArtKey.has(k)){seenArtKey.add(k);artKeys.push({key:k,deco:d})}}));
+              const artKeyToId={};
+              const artFiles=artKeys.map(({key,deco},idx)=>{
+                const id='af_omg_'+idx;artKeyToId[key]=id;
+                const groupProds=(s.products||[]).filter(p=>(p.decorations||[]).some(d=>artKeyOf(d)===key));
+                // OMG mockup per SKU in this group, keyed sku|color.
+                const omgMocks={};let preview='';
+                groupProds.forEach(p=>{const img=p.image_url||'';if(!img)return;if(!preview)preview=img;omgMocks[p.sku+'|'+(p.color||'')]=[img]});
+                const src=deco._cust_art_id?custArtById[deco._cust_art_id]:null;
+                if(src){
+                  // Apply the customer's saved logo — its files, color ways, and
+                  // approval/production status come with it (so a fully-prepped
+                  // logo lands art-complete) — then layer in the OMG mockups.
+                  const copy=JSON.parse(JSON.stringify(src));
+                  const item_mockups={...(copy.item_mockups||{})};
+                  Object.entries(omgMocks).forEach(([k2,v])=>{if(!item_mockups[k2])item_mockups[k2]=v});
+                  return{...copy,id,item_mockups,preview_url:copy.preview_url||preview,uploaded:new Date().toLocaleDateString(),
+                    notes:(copy.notes?copy.notes+' · ':'')+'Applied from customer library — OMG store '+s.store_name};
+                }
+                // New logo: the OMG mockup is the approved proof, so the art file
+                // starts approved and the job lands in the "needs files" stage.
+                // "On file" adds the standard production marker → art-complete.
+                const ready=groupProds.length>0&&groupProds.every(p=>p.art_ready);
+                const prod_files=ready?[{name:'Existing art on file',on_file:true,at:new Date().toISOString(),by:cu?.name||'Rep'}]:[];
+                return{id,name:deco.art_group,deco_type:deco.type||'screen_print',
+                  ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],item_mockups:omgMocks,preview_url:preview,prod_files,
+                  notes:'From OMG store '+s.store_name+(ready?' — logo on file, art ready':' — mockup is the approved proof'),status:'approved',approved_at:new Date().toISOString(),uploaded:new Date().toLocaleDateString()};
               });
               // Build SO items from imported products
               const soItems=(s.products||[]).map(p=>{
@@ -13189,8 +13364,8 @@ export default function App(){
                   sizes:p.sizes||{},
                   available_sizes:Object.keys(p.sizes||{}),
                   _colorImage:p.image_url||'',
-                  no_deco:decos.length===0,
-                  decorations:decos.map((d,di)=>{const artFileId=d.art_group?artFiles.find(af=>af.name===d.art_group)?.id||null:null;return{kind:'art',position:positions[di]||'Position '+(di+1),type:d.type,art_file_id:artFileId,sell_override:0,sell_each:0,cost_each:0}}),
+                  no_deco:p.no_deco||decos.length===0,
+                  decorations:decos.map((d,di)=>{const k=artKeyOf(d);const artFileId=k?artKeyToId[k]||null:null;return{kind:'art',position:positions[di]||'Position '+(di+1),type:d.type||(d._cust_art_id&&custArtById[d._cust_art_id]?.deco_type)||'screen_print',art_file_id:artFileId,sell_override:0,sell_each:0,cost_each:0}}),
                   pick_lines:[],po_lines:[],
                 };
               });
@@ -13209,6 +13384,7 @@ export default function App(){
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
               nf(`Created SO with ${soItems.length} items from ${s.store_name}`);
             }}>📋 Create Sales Order ({(s.products||[]).length} items)</button>}
+            {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&(()=>{const na=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);return na.length>0?<div style={{marginTop:6,padding:'6px 10px',background:'#fef3c7',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⚠️ {na.length} item{na.length>1?'s':''} need an art group or “No Deco” before creating the SO</div>:null})()}
             {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
               ✅ Already pulled → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>}
             {s.status!=='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -13394,11 +13570,33 @@ export default function App(){
                 <div style={{fontSize:40,marginBottom:8}}>📦</div>
                 <div style={{fontSize:13,color:'#94a3b8'}}>Products will appear here after importing the OMG report.</div>
               </div>
-            ) : (
-            <table><thead><tr><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Art Group</th><th>Retail</th><th>Cost</th><th>Sizes</th><th>Units</th><th>Revenue</th></tr></thead>
+            ) : (<>
+            <div style={{padding:'10px 16px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+              <span style={{fontSize:12,fontWeight:800,color:'#0f172a'}}>⚡ Bulk assign art</span>
+              <select value={omgBulkArt} onChange={e=>setOmgBulkArt(e.target.value)} style={{fontSize:12,padding:'4px 8px',borderRadius:5,border:'1px solid #cbd5e1',maxWidth:240}}>
+                <option value="">Choose a logo…</option>
+                {custArt.length>0&&<optgroup label="Customer logos">{custArt.map(a=><option key={a.id} value={'lib:'+a.id}>{a.name||'Untitled'} ({(a.deco_type||'').replace(/_/g,' ')})</option>)}</optgroup>}
+                <optgroup label="New logo">
+                  <option value="new:screen_print">+ New Screen Print group</option>
+                  <option value="new:embroidery">+ New Embroidery group</option>
+                  <option value="new:heat_press">+ New DTF group</option>
+                </optgroup>
+              </select>
+              <button className="btn btn-sm btn-primary" disabled={!omgBulkArt||omgBulkSel.size===0} onClick={applyBulkArt} style={{opacity:(!omgBulkArt||omgBulkSel.size===0)?0.5:1}}>Apply to {omgBulkSel.size} selected</button>
+              <button className="btn btn-sm" disabled={omgBulkSel.size===0} onClick={bulkNoDeco} style={{fontSize:11,opacity:omgBulkSel.size===0?0.5:1}}>Mark No Deco</button>
+              <span style={{width:1,height:18,background:'#cbd5e1'}}/>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{const ns=new Set();(s.products||[]).forEach((p,j)=>{if(!p.no_deco&&(p.decorations||[]).length===0)ns.add(j)});setOmgBulkSel(ns)}}>Select items needing art</button>
+              {omgBulkSel.size>0&&<button className="btn btn-sm" style={{fontSize:11,color:'#64748b'}} onClick={()=>setOmgBulkSel(new Set())}>Clear ({omgBulkSel.size})</button>}
+            </div>
+            <table><thead><tr><th style={{width:28}}><input type="checkbox" title="Select all" checked={(s.products||[]).length>0&&omgBulkSel.size===(s.products||[]).length} ref={el=>{if(el)el.indeterminate=omgBulkSel.size>0&&omgBulkSel.size<(s.products||[]).length}} onChange={e=>{if(e.target.checked)setOmgBulkSel(new Set((s.products||[]).map((_,j)=>j)));else setOmgBulkSel(new Set())}} style={{cursor:'pointer'}}/></th><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Art Group</th><th>Retail</th><th>Cost</th><th>Sizes</th><th>Units</th><th>Revenue</th></tr></thead>
             <tbody>{(s.products||[]).map((p,i)=>{const q=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);
               const updateDecos=(newDecos)=>{
-                const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,decorations:newDecos,deco_type:newDecos.map(d=>d.type).join('|'),art_group:newDecos.map(d=>d.art_group).join('|')}:pr);
+                const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,decorations:newDecos,deco_type:newDecos.length>0?newDecos.map(d=>d.type).join('|'):'',art_group:newDecos.map(d=>d.art_group).join('|'),...(newDecos.length>0?{no_deco:false}:{})}:pr);
+                const upd={...s,products:newProds};
+                setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
+              };
+              const setNoDeco=(v)=>{
+                const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,no_deco:v,...(v?{decorations:[],deco_type:'no_deco',art_group:''}:{deco_type:''})}:pr);
                 const upd={...s,products:newProds};
                 setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
               };
@@ -13406,9 +13604,27 @@ export default function App(){
                 const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,[key]:val}:pr);
                 const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
               };
-              return<tr key={i}>
-                <td style={{padding:4}}>{p.image_url?<img src={p.image_url} alt="" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',cursor:'pointer'}} onClick={e=>{
-                  e.stopPropagation();const overlay=document.createElement('div');
+              // "Art ready" is tracked per product; an art group counts as ready
+              // when every product carrying that group is marked. Toggling a group
+              // sets the flag on all of its products at once.
+              const groupReady=(g)=>{const ps=(s.products||[]).filter(pr=>(pr.decorations||[]).some(d=>d.art_group===g));return ps.length>0&&ps.every(pr=>pr.art_ready);};
+              const setGroupReady=(g,val)=>{const newProds=(s.products||[]).map(pr=>(pr.decorations||[]).some(d=>d.art_group===g)?{...pr,art_ready:val}:pr);const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);};
+              return<tr key={i} style={omgBulkSel.has(i)?{background:'#eff6ff'}:undefined}>
+                <td style={{textAlign:'center'}}><input type="checkbox" checked={omgBulkSel.has(i)} onChange={()=>_toggleRow(i)} style={{cursor:'pointer'}}/></td>
+                <td style={{padding:4}}>{p.image_url?<img src={p.image_url} alt="" title="Hover to preview · click for full size" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',cursor:'pointer'}}
+                  onMouseEnter={e=>{
+                    const old=document.getElementById('omg-hover-preview');if(old)old.remove();
+                    const r=e.currentTarget.getBoundingClientRect();const size=280;
+                    const pop=document.createElement('div');pop.id='omg-hover-preview';
+                    let left=r.right+12;if(left+size>window.innerWidth)left=r.left-size-12;left=Math.max(8,left);
+                    let top=r.top+r.height/2-size/2;top=Math.max(8,Math.min(top,window.innerHeight-size-8));
+                    pop.style.cssText=`position:fixed;z-index:9998;pointer-events:none;left:${left}px;top:${top}px;width:${size}px;height:${size}px;border-radius:8px;overflow:hidden;background:#fff;border:1px solid #e2e8f0;box-shadow:0 8px 32px rgba(0,0,0,0.35)`;
+                    pop.innerHTML=`<img src="${p.image_url}" style="width:100%;height:100%;object-fit:contain;background:#fff"/>`;
+                    document.body.appendChild(pop);
+                  }}
+                  onMouseLeave={()=>{const el=document.getElementById('omg-hover-preview');if(el)el.remove()}}
+                  onClick={e=>{
+                  e.stopPropagation();const hp=document.getElementById('omg-hover-preview');if(hp)hp.remove();const overlay=document.createElement('div');
                   overlay.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;cursor:pointer';
                   overlay.innerHTML=`<img src="${p.image_url}" style="max-width:90vw;max-height:90vh;object-fit:contain;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.5)"/>`;
                   overlay.onclick=()=>overlay.remove();document.body.appendChild(overlay);
@@ -13425,15 +13641,26 @@ export default function App(){
                     </span>}
                   </div></td>
                 <td style={{fontSize:11}}>{p.color}</td>
-                <td><div style={{display:'flex',flexDirection:'column',gap:2}}>
-                  {(p.decorations||[]).map((d,di)=>{const [label,bg,fg]=d.type==='screen_print'?['SP','#dbeafe','#1e40af']:d.type==='embroidery'?['EMB','#ede9fe','#6d28d9']:['HTV','#fef3c7','#92400e'];
+                <td>{p.no_deco?(
+                  <div style={{display:'flex',alignItems:'center',gap:4}}>
+                    <span style={{padding:'2px 8px',borderRadius:3,fontSize:9,fontWeight:800,background:'#f1f5f9',color:'#64748b',border:'2px solid #cbd5e1'}}>NO DECO</span>
+                    <button onClick={()=>setNoDeco(false)} title="Clear — this item gets decoration" style={{fontSize:12,color:'#94a3b8',cursor:'pointer',border:'none',background:'none',padding:'0 2px',lineHeight:1}}>&times;</button>
+                  </div>
+                ):(
+                <div style={{display:'flex',flexDirection:'column',gap:2}}>
+                  {(p.decorations||[]).map((d,di)=>{const [label,bg,fg]=d.type==='screen_print'?['SP','#dbeafe','#1e40af']:d.type==='embroidery'?['EMB','#ede9fe','#6d28d9']:['DTF','#fef3c7','#92400e'];
                     return <div key={di} style={{display:'flex',alignItems:'center',gap:2}}>
-                      <span style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:800,background:bg,color:fg,border:`2px solid ${fg}`}}>{d.art_group||label}</span>
+                      <span title={d._cust_art_id?'From customer art library':''} style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:800,background:bg,color:fg,border:`2px solid ${fg}`}}>{d._cust_art_id?'📁 ':''}{d.art_group||label}</span>
                       <button onClick={()=>updateDecos((p.decorations||[]).filter((_,j)=>j!==di))} style={{fontSize:12,color:'#94a3b8',cursor:'pointer',border:'none',background:'none',padding:'0 2px',lineHeight:1}}>&times;</button>
                     </div>})}
-                  <div style={{display:'flex',gap:2}}>
-                    {[['SP','screen_print'],['EMB','embroidery'],['HTV','heat_press']].map(([label,type])=>{
-                      const pfx=type==='screen_print'?'SP':type==='embroidery'?'EMB':'HTV';
+                  <div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
+                    {custArt.length>0&&<select value="" title="Apply a logo already on this customer" onChange={e=>{if(!e.target.value)return;const a=custArtById[e.target.value];if(a)updateDecos([...(p.decorations||[]),{type:a.deco_type||'screen_print',art_group:a.name||'Logo',_cust_art_id:a.id}]);e.target.value=''}}
+                      style={{padding:'2px 4px',borderRadius:3,fontSize:9,fontWeight:700,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer',maxWidth:120,appearance:'none'}}>
+                      <option value="">📁 Customer logo…</option>
+                      {custArt.map(a=><option key={a.id} value={a.id}>{a.name||'Untitled'} ({(a.deco_type||'').replace(/_/g,' ')})</option>)}
+                    </select>}
+                    {[['SP','screen_print'],['EMB','embroidery'],['DTF','heat_press']].map(([label,type])=>{
+                      const pfx=type==='screen_print'?'SP':type==='embroidery'?'EMB':'DTF';
                       const existing=[...new Set((s.products||[]).flatMap(pr=>(pr.decorations||[]).filter(d=>d.type===type).map(d=>d.art_group)).filter(Boolean))].sort();
                       const prefixed=existing.filter(g=>g.startsWith(pfx));
                       const nums=prefixed.map(g=>parseInt(g.split('-')[1])||0);
@@ -13447,18 +13674,29 @@ export default function App(){
                         </select>
                       </div>}
                     )}
+                    <button onClick={()=>setNoDeco(true)} title="Mark as no decoration (shoes, socks, equipment)" style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:700,border:'1px dashed #cbd5e1',background:'#f8fafc',color:'#94a3b8',cursor:'pointer'}}>No Deco</button>
                   </div>
-                </div></td>
+                </div>)}</td>
                 <td>{(()=>{
                   const decos=p.decorations||[];
                   if(decos.length===0)return <span style={{fontSize:11,color:'#94a3b8'}}>—</span>;
                   return <div style={{display:'flex',flexDirection:'column',gap:2}}>
                     {decos.map((d,di)=>{
                       const color=d.type==='screen_print'?'#1e40af':d.type==='embroidery'?'#6d28d9':'#92400e';
-                      return <input key={di} type="text" value={d.art_group||''} placeholder="name..."
-                        onChange={e=>{const val=e.target.value;updateDecos((p.decorations||[]).map((dd,j)=>j===di?{...dd,art_group:val}:dd))}}
-                        style={{width:80,padding:'2px 5px',borderRadius:3,fontSize:9,fontWeight:700,border:`1px solid ${color}40`,color,background:'transparent',outline:'none'}}
-                        onFocus={e=>{e.target.style.borderColor=color}} onBlur={e=>{e.target.style.borderColor=color+'40'}}/>;
+                      // Library-linked logos carry their own name + production status,
+                      // so the name is read-only and there's no "on file" toggle.
+                      if(d._cust_art_id)return <div key={di} title="From customer art library — art & files come from the saved logo" style={{display:'flex',alignItems:'center',gap:3,fontSize:9,fontWeight:700,color}}>
+                        <span>📁 {d.art_group||'Logo'}</span>
+                      </div>;
+                      return <div key={di} style={{display:'flex',alignItems:'center',gap:4}}>
+                        <input type="text" value={d.art_group||''} placeholder="name..."
+                          onChange={e=>{const val=e.target.value;updateDecos((p.decorations||[]).map((dd,j)=>j===di?{...dd,art_group:val}:dd))}}
+                          style={{width:80,padding:'2px 5px',borderRadius:3,fontSize:9,fontWeight:700,border:`1px solid ${color}40`,color,background:'transparent',outline:'none'}}
+                          onFocus={e=>{e.target.style.borderColor=color}} onBlur={e=>{e.target.style.borderColor=color+'40'}}/>
+                        {d.art_group&&<label title="Logo already on file — art is ready, skip straight to production" style={{display:'flex',alignItems:'center',gap:2,fontSize:8,fontWeight:700,color:groupReady(d.art_group)?'#166534':'#94a3b8',cursor:'pointer',whiteSpace:'nowrap'}}>
+                          <input type="checkbox" checked={groupReady(d.art_group)} onChange={e=>setGroupReady(d.art_group,e.target.checked)} style={{margin:0,cursor:'pointer'}}/>on file
+                        </label>}
+                      </div>;
                     })}
                   </div>;
                 })()}</td>
@@ -13495,7 +13733,7 @@ export default function App(){
                 <td style={{fontWeight:700,textAlign:'center'}}>{q}</td>
                 <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>${rev.toLocaleString()}</td>
               </tr>})}</tbody></table>
-            )}
+            </>)}
           </div>
         </div>
 
