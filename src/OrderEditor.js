@@ -4099,6 +4099,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(bc>0){_skuBillCost[sk]=(_skuBillCost[sk]||0)+bc;
             if(!_skuBillQtySeen[sk]){_skuBillQtySeen[sk]=true;_skuBillCost[sk+'_qty']=blankPOs.reduce((a,pl)=>a+Object.values(pl.billed||{}).reduce((a2,v)=>a2+safeNum(v),0),0)}}
         });
+        // In-house deco is accumulated by logo/art group (one screen-print run
+        // covers many garments) and pushed as a single grouped row after the
+        // item loop — instead of a separate, setup-inflated row per garment.
+        const decoGroups={};
         safeItems(o).forEach((it,ii)=>{
           const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
           if(!qty)return;
@@ -4138,17 +4142,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const matchingDPOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
             const isOutside=d.kind==='outside_deco'||matchingDPOs.length>0;
             if(isOutside)return;
-            const dp=dP(d,qty,af,qty);
-            const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const expectedDeco=eqD*dp.cost;
+            // Price the shared logo at its COMBINED run quantity (cq) so one
+            // setup is spread across every garment — matching the header margin.
+            const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;
+            const dp=dP(d,qty,af,cq);
+            if(!(dp.cost>0))return;
+            const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);
             const artF=af.find(a=>a.id===d.art_file_id);
-            if(dp.cost>0){
-              costLines.push({category:'In-House Deco',
-                sku:it.sku,name:artF?.name||d.deco_type?.replace(/_/g,' ')||'Decoration',
-                vendor:'NSA In-House',
-                qty,expected:expectedDeco,actual:expectedDeco,
-                poCount:0,poIds:'',allReceived:true});
-            }
+            const gkey=(d.art_file_id&&d.art_file_id!=='__tbd')?('art:'+d.art_file_id):('t:'+(d.deco_type||d.type||d.kind||'deco'));
+            const g=decoGroups[gkey]||(decoGroups[gkey]={name:artF?.name||(d.deco_type||d.type||'').replace(/_/g,' ')||'Decoration',expected:0,qty:0,skus:[]});
+            g.expected+=eqD*dp.cost;g.qty+=eqD;
+            if(it.sku&&!g.skus.includes(it.sku))g.skus.push(it.sku);
           });
+        });
+        // One In-House Deco row per logo/art group, listing the garments it covers.
+        Object.values(decoGroups).forEach(g=>{
+          const exp=Math.round(g.expected*100)/100;
+          costLines.push({category:'In-House Deco',sku:'',
+            name:g.name+(g.skus.length?` · ${g.skus.length} item${g.skus.length>1?'s':''}: ${g.skus.join(', ')}`:''),
+            vendor:'NSA In-House',qty:g.qty,expected:exp,actual:exp,poCount:0,poIds:'',allReceived:true});
         });
         // Outside deco — one row per SO-level deco PO (so.deco_pos). Expected = qty × unit_cost
         // from the PO (price-list driven); Actual = _bill_cost (—, when no bill applied yet).
