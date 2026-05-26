@@ -1554,8 +1554,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     });
     // Outside-deco POs live at SO level (so.deco_pos), not under items
     (o.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
+    // OMG team-store fees NSA is charged (e.g. processing) are a real cost, so
+    // fold them into cost — the order's margin then reflects NSA's true net
+    // after OMG's cut rather than a product-only number.
+    const omgFee=safeNum(o._omg_processing||0);cost+=omgFee;
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const tax=rev*taxRate;
-    return{rev,cost,ship,tax,taxRate,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust]); // eslint-disable-line
+    return{rev,cost,ship,tax,taxRate,omgFee,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust]); // eslint-disable-line
 
   // Promo totals — separate calc to not disturb existing totals
   const promoTotals=useMemo(()=>{
@@ -1938,9 +1942,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
           {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626'},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
+            ...(totals.omgFee>0?[{l:'OMG FEE',v:totals.omgFee,bg:'#fff7ed',c:'#9a3412',s:'in cost'}]:[]),
             ...(totals.ship>0?[{l:'SHIP',v:totals.ship,bg:'#f0f9ff',c:'#0369a1'}]:[]),
             ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(3)+'%'}]:[]),
-            ...(cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),
+            ...(o.omg_store_id&&o.tax_exempt?[{l:'TAX',v:0,bg:'#f0fdf4',c:'#166534',s:'OMG remits'}]:cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),
             {l:'TOTAL',v:(()=>{let t=o.promo_applied&&promoTotals?promoTotals.customerPays:totals.grand;if(o.credit_applied)t=Math.max(0,t-safeNum(o.credit_amount));return t})(),bg:o.promo_applied||o.credit_applied?'#dcfce7':'#faf5ff',c:o.promo_applied||o.credit_applied?'#166534':'#7c3aed'},
             ...(o.credit_applied?[{l:'CREDIT',v:safeNum(o.credit_amount),bg:'#d1fae5',c:'#065f46',s:'deducted'}]:[])].map(x=>
             <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
@@ -4181,6 +4186,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           costLines.push({category:'Shipping',sku:'—',name:'Inbound Freight (Supplier Bills)',vendor:'Supplier',qty:1,expected:0,actual:freightVal,isShipping:true,isShippingDetail:true,poCount:freightVal>0?1:0,poIds:'',allReceived:true});
           costLines.push({category:'Shipping',sku:'',name:'Shipping Total',vendor:'',qty:'',expected:quotedShip,actual:shipCostVal+freightVal,isShipping:true,isShippingSubtotal:true,poCount:1,poIds:'',allReceived:true});
         }
+        // OMG team-store fees NSA is charged (processing) — a real order cost,
+        // shown here so the Costs tab matches the margin in the header.
+        const _omgFee=safeNum(o._omg_processing||0);
+        if(_omgFee>0){costLines.push({category:'OMG Fees',sku:'—',name:'OMG Processing Fee',vendor:'OrderMyGear',qty:1,expected:_omgFee,actual:_omgFee,poCount:1,poIds:'',allReceived:true});}
         // Totals computed AFTER shipping lines added
         const totalExpected=costLines.reduce((a,l)=>a+(l.isShippingSubtotal?0:l.expected),0)+quotedShip;
         const totalActual=costLines.reduce((a,l)=>a+(l.isShippingSubtotal?0:l.actual),0);

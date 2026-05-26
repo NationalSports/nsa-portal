@@ -13373,16 +13373,35 @@ export default function App(){
                 created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
                 expected_date:'',production_notes:'OMG Store '+s.store_name+' — '+soItems.length+' items imported from report. Deco cost is $0 (bundled in store price).'
                   +(s._omg_shipping?'\nShipping collected: $'+s._omg_shipping.toFixed(2):'')
-                  +(s._omg_processing?'\nProcessing fees: $'+s._omg_processing.toFixed(2):'')
-                  +(s._omg_tax?'\nSales tax collected: $'+s._omg_tax.toFixed(2):'')
+                  +(s._omg_processing?'\nProcessing fees (counted as NSA cost): $'+s._omg_processing.toFixed(2):'')
+                  +(s._omg_tax?'\nSales tax collected & remitted by OMG: $'+s._omg_tax.toFixed(2)+' (SO tax left at $0)':'')
+                  +(s._omg_fundraise?'\nFundraising added to customer as promo credit: $'+s._omg_fundraise.toFixed(2):'')
                   +(s._omg_grand_total?'\nGrand total: $'+s._omg_grand_total.toFixed(2):''),
                 shipping_type:'flat',shipping_value:s._omg_shipping||0,
-                tax_rate:0,
+                tax_rate:0,tax_exempt:true,
                 ship_to_id:'default',firm_dates:[],art_files:artFiles,
                 jobs:[],items:soItems,omg_store_id:s.id,
-                _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_grand_total:s._omg_grand_total||0};
+                _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_fundraise:s._omg_fundraise||0,_omg_grand_total:s._omg_grand_total||0};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
-              nf(`Created SO with ${soItems.length} items from ${s.store_name}`);
+              // OMG store fundraising profit becomes a promo credit the school can
+              // spend on future NSA orders. Add to (or create) the customer's
+              // current promo period so the existing apply-promo flow can use it.
+              const _fund=s._omg_fundraise||0;
+              if(_fund>0&&c){
+                const promoOwnerId=c.parent_id||c.id;
+                const isFamily=cc=>cc.id===promoOwnerId||cc.parent_id===promoOwnerId;
+                const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
+                const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
+                const owner=cust.find(x=>x.id===promoOwnerId)||c;
+                const existing=(owner.promo_periods||[]).find(p=>p.period_start===_pStart);
+                const note='OMG fundraising: '+s.store_name;
+                const savedPeriod=existing
+                  ?{...existing,allocated:(existing.allocated||0)+_fund,notes:existing.notes?existing.notes+' · '+note:note}
+                  :{id:'pp_'+Date.now(),customer_id:promoOwnerId,program_id:null,period_start:_pStart,period_end:_pEnd,allocated:_fund,used:0,notes:note,created_at:new Date().toISOString()};
+                _dbSavePromoPeriod(savedPeriod);
+                setCust(prev=>prev.map(cc=>{if(!isFamily(cc))return cc;const has=(cc.promo_periods||[]).some(p=>p.id===savedPeriod.id);const periods=has?(cc.promo_periods||[]).map(p=>p.id===savedPeriod.id?savedPeriod:p):[...(cc.promo_periods||[]),savedPeriod];return{...cc,promo_periods:periods}}));
+              }
+              nf(`Created SO with ${soItems.length} items from ${s.store_name}`+(_fund>0?` · $${_fund.toFixed(2)} fundraising added as promo credit`:''));
             }}>📋 Create Sales Order ({(s.products||[]).length} items)</button>}
             {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&(()=>{const na=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);return na.length>0?<div style={{marginTop:6,padding:'6px 10px',background:'#fef3c7',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⚠️ {na.length} item{na.length>1?'s':''} need an art group or “No Deco” before creating the SO</div>:null})()}
             {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
