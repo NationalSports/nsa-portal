@@ -246,7 +246,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         try{
           const prodData=await sanmarGetProduct(sku,color||'','');
           const prodItems=prodData?.items||[];
-          if(prodItems.length){const it=prodItems[0];const bi=it.productBasicInfo||it;front=bi.thumbImageUrl||bi.imageUrl||bi.colorProductImage||'';back=bi.backImageUrl||bi.colorProductBackImage||''}
+          if(prodItems.length){
+            // SanMar nests image fields in productImageInfo — flatten before reading (same fields as the catalog builder).
+            const raw=prodItems[0];const it={...(raw.productBasicInfo||{}),...(raw.productImageInfo||{}),...raw};
+            front=it.colorProductImageThumbnail||it.colorProductImage||it.colorSwatchImage||it.productImage||it.thumbnailImage||'';
+            back=it.colorProductImageBackThumbnail||it.colorProductImageBack||it.colorProductBackImage||'';
+          }
         }catch(e){console.warn('[SM] Image fetch error for',sku,e.message)}
       }else if(isMT){
         // Momentec: fetch product detail for images
@@ -7372,7 +7377,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const rel=g.items.filter(it=>!it._excluded);
           const _back=full=>{const prd=products.find(pp=>pp.id===full?.product_id||pp.sku===full?.sku);return prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
           const garments=[];const seenG=new Set();
-          rel.forEach(it=>{const key=it.sku+'|'+(it.color||'');if(seenG.has(key))return;seenG.add(key);const full=safeItems(o)[it.item_idx];const front=_itemImg(full),back=_back(full);const vendorItem=!!(full&&(isSSItem(full)||isSanMarItem(full)||isMomentecItem(full)));const vKey=(it.sku+'|'+(it.color||'')).toLowerCase();const pending=vendorItem&&!front&&vendorImgs[vKey]===undefined;garments.push({key,sku:it.sku,color:it.color||'',name:it.name||'',frontUrl:front,backUrl:back,pending})});
+          rel.forEach(it=>{const key=it.sku+'|'+(it.color||'');if(seenG.has(key))return;seenG.add(key);const full=safeItems(o)[it.item_idx];const front=_itemImg(full),back=_back(full);const vendorItem=!!(full&&(isSSItem(full)||isSanMarItem(full)||isMomentecItem(full)));const vKey=it.sku+'|'+(it.color||'').toLowerCase();const pending=vendorItem&&!front&&vendorImgs[vKey]===undefined;garments.push({key,sku:it.sku,color:it.color||'',name:it.name||'',frontUrl:front,backUrl:back,pending})});
           const locations=[];const seenL=new Set();
           const _renderable=f=>{const u=typeof f==='string'?f:(f?.url||'');return !!u&&(_isImgUrl(u)||/\.svg(\?|$)/i.test(u))};
           // One location per distinct artwork on the included items. An item can carry several
@@ -7387,11 +7392,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               seenL.add(aid);
               // Source art a rep already attached lives in prod_files (Art Library uploads) and files.
               const _onfile=(art?[...(art.files||[]),...(art.prod_files||[])]:[]).filter(f=>typeof f==='string'||f?.url);
-              const cand=[art?.preview_url,...(art?.mockup_files||[]),..._onfile].find(_renderable);
-              let preview=cand?{url:(typeof cand==='string'?cand:cand.url)}:null;
-              // No directly-renderable art on file — rasterize an on-file .ai/.eps/.pdf to PNG via Cloudinary.
-              if(!preview){const conv=[..._onfile,...(art?.mockup_files||[])].map(f=>typeof f==='string'?f:f?.url).find(u=>u&&u.includes('cloudinary.com')&&/\.(ai|eps|pdf)(\?|$)/i.test(u));if(conv){const png=_cloudinaryPdfThumb(conv);if(png)preview={url:png,vectorSrc:conv}}}
-              locations.push({artFileId:aid,name:art?.name||it.art_name||DECO_LABELS_W[g.deco_type]||g.name,position:d.position||'',existingFiles:_onfile,preview});
+              // Build a previewable source for one file: a renderable image/SVG as-is, else rasterize an .ai/.eps/.pdf to PNG.
+              const _filePreview=f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u)return null;if(_renderable(f))return{url:u};if(u.includes('cloudinary.com')&&/\.(ai|eps|pdf)(\?|$)/i.test(u)){const png=_cloudinaryPdfThumb(u);if(png)return{url:png,vectorSrc:u}}return null};
+              const _fileName=f=>{const u=typeof f==='string'?f:(f?.url||'');return (typeof f!=='string'&&f?.name)||u.split('?')[0].split('/').pop()||'art'};
+              // Every previewable attachment, so the rep can flip between the files on this artwork in the mock builder.
+              const files=[];const _seenF=new Set();
+              [art?.preview_url,...(art?.mockup_files||[]),..._onfile].forEach(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenF.has(u))return;const pv=_filePreview(f);if(!pv)return;_seenF.add(u);files.push({name:_fileName(f),url:u,preview:pv})});
+              const preview=files.length?files[0].preview:null;
+              locations.push({artFileId:aid,name:art?.name||it.art_name||DECO_LABELS_W[g.deco_type]||g.name,position:d.position||'',existingFiles:_onfile,files,preview});
             });});
           return<QuickMockBuilder garments={garments} locations={locations} initialMocks={g.qmMocks} initialFiles={g.qmFiles} nf={nf}
             onClose={()=>setMockBuilder(null)}
