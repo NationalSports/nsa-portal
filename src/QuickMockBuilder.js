@@ -18,6 +18,37 @@ import { fileUpload, _cloudinaryPdfThumb } from './utils';
 //   onSave({mocksByGarment, filesByLocation})
 //   onClose()
 //   nf
+
+// Common apparel color names -> swatch hex, so the rep can eyeball which colorway
+// they're mocking. Unknown names fall back to neutral grey.
+const COLOR_HEX = {
+  black:'#111827', white:'#ffffff', navy:'#1f2a44', 'navy blue':'#1f2a44',
+  royal:'#1d4ed8', 'royal blue':'#1d4ed8', red:'#dc2626', maroon:'#7f1d1d',
+  cardinal:'#9b1c31', scarlet:'#c8102e', burgundy:'#7b1e3b', forest:'#14532d',
+  'forest green':'#14532d', green:'#16a34a', kelly:'#16a34a', 'kelly green':'#16a34a',
+  lime:'#84cc16', 'safety green':'#c6ff00', 'neon green':'#39ff14', gold:'#d4af37',
+  'old gold':'#caa53d', 'vegas gold':'#c5b358', yellow:'#facc15', orange:'#ea580c',
+  purple:'#7c3aed', grey:'#9ca3af', gray:'#9ca3af', 'heather grey':'#b6bcc4',
+  'heather gray':'#b6bcc4', 'athletic heather':'#cbd5e1', charcoal:'#374151',
+  silver:'#cbd5e1', pink:'#ec4899', 'light blue':'#7dd3fc', 'carolina blue':'#4b9cd3',
+  'columbia blue':'#9bcbeb', teal:'#14b8a6', brown:'#5c4033', tan:'#d2b48c',
+  natural:'#f0ead6', cream:'#fffdd0', sand:'#e0d3af',
+};
+const hexesForColor = name => {
+  if (!name) return ['#cbd5e1'];
+  return name.split('/').map(p => COLOR_HEX[p.trim().toLowerCase()] || '#cbd5e1');
+};
+const ColorSwatch = ({name, size = 12}) => {
+  const hx = hexesForColor(name);
+  const bg = hx.length === 1 ? hx[0]
+    : `linear-gradient(135deg, ${hx[0]} 0 50%, ${hx[1]} 50% 100%)`;
+  return <span style={{display: 'inline-block', width: size, height: size, borderRadius: '50%', background: bg, border: '1px solid rgba(0,0,0,0.25)', flexShrink: 0, verticalAlign: 'middle'}} />;
+};
+const hexToRgb = h => {
+  const m = (h || '').replace('#', '').match(/.{2}/g);
+  return m ? {r: parseInt(m[0], 16), g: parseInt(m[1], 16), b: parseInt(m[2], 16)} : {r: 0, g: 0, b: 0};
+};
+
 export default function QuickMockBuilder({garments, locations, initialMocks, onSave, onClose, nf}){
   const [gi, setGi] = useState(0);
   const [side, setSide] = useState('front');
@@ -163,6 +194,34 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
     proxied.src = /^data:/.test(url) ? url : ('/.netlify/functions/image-proxy?url=' + encodeURIComponent(url));
   };
 
+  // Recolor the selected art to a single ink. For SVG art (a fabric group) every
+  // fill/stroke is retargeted, so true per-shape recoloring is possible. Rasterized
+  // art (.ai/.eps/.pdf/.png) has no separate fills left, so we flatten every opaque
+  // pixel to the ink while preserving alpha — i.e. flip the whole design to one color.
+  const recolorActive = hex => {
+    if (!canvas) return;
+    const obj = canvas.getActiveObject();
+    if (!obj || !obj._isArt) { nf && nf('Select an art element to recolor', 'error'); return; }
+    if (typeof obj.getObjects === 'function') {
+      const apply = o => {
+        if (typeof o.getObjects === 'function') { o.getObjects().forEach(apply); return; }
+        if (o.fill && o.fill !== 'transparent' && o.fill !== '') o.set('fill', hex);
+        if (o.stroke && o.stroke !== 'transparent' && o.stroke !== '') o.set('stroke', hex);
+      };
+      apply(obj); obj.dirty = true; canvas.requestRenderAll();
+      return;
+    }
+    try {
+      const el = obj.getElement();
+      const w = el.naturalWidth || el.width, h = el.naturalHeight || el.height;
+      const off = document.createElement('canvas'); off.width = w; off.height = h;
+      const ctx = off.getContext('2d'); ctx.drawImage(el, 0, 0, w, h);
+      const id = ctx.getImageData(0, 0, w, h); const d = id.data; const {r, g, b} = hexToRgb(hex);
+      for (let i = 0; i < d.length; i += 4) { if (d[i + 3] > 0) { d[i] = r; d[i + 1] = g; d[i + 2] = b; } }
+      ctx.putImageData(id, 0, 0); obj.setElement(off); canvas.requestRenderAll();
+    } catch (e) { nf && nf('Could not recolor this art — try re-placing it', 'error'); }
+  };
+
   const uploadLayerFile = useCallback(async (idx, file) => {
     const ext = (file.name.split('.').pop() || '').toLowerCase();
     const isImg = ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext);
@@ -237,8 +296,8 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
           </div>
 
           {garments.length > 1 && <div style={{display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12}}>
-            {garments.map((g, i) => <button key={g.key} title={[g.name, g.color].filter(Boolean).join(' — ')} className={`btn btn-sm ${i === gi ? 'btn-primary' : 'btn-secondary'}`} style={{fontSize: 11}}
-              onClick={() => setGi(i)}>{(g.sku || g.name || 'Item')}{g.color ? ' · ' + g.color : ''}{(mocks[g.key] || []).length > 0 && <span style={{marginLeft: 4}}>✓</span>}</button>)}
+            {garments.map((g, i) => <button key={g.key} title={[g.name, g.color].filter(Boolean).join(' — ')} className={`btn btn-sm ${i === gi ? 'btn-primary' : 'btn-secondary'}`} style={{fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 5}}
+              onClick={() => setGi(i)}>{g.color && <ColorSwatch name={g.color} />}<span>{(g.sku || g.name || 'Item')}{g.color ? ' · ' + g.color : ''}</span>{(mocks[g.key] || []).length > 0 && <span>✓</span>}</button>)}
           </div>}
 
           <div style={{display: 'grid', gridTemplateColumns: '300px 1fr', gap: 16}}>
@@ -284,7 +343,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
 
             <div>
               <div style={{display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap'}}>
-                <span style={{fontSize: 12, fontWeight: 700, color: '#1e293b'}}>{garment.name || garment.sku} — {garment.color || 'Default'}</span>
+                <span style={{fontSize: 12, fontWeight: 700, color: '#1e293b', display: 'inline-flex', alignItems: 'center', gap: 5}}>{garment.color && <ColorSwatch name={garment.color} size={14} />}{garment.name || garment.sku} — {garment.color || 'Default'}</span>
                 {garment.backUrl && <div style={{display: 'flex', gap: 2}}>
                   <button className={`btn btn-sm ${side === 'front' ? 'btn-primary' : 'btn-secondary'}`} style={{fontSize: 10}} onClick={() => setSide('front')}>Front</button>
                   <button className={`btn btn-sm ${side === 'back' ? 'btn-primary' : 'btn-secondary'}`} style={{fontSize: 10}} onClick={() => setSide('back')}>Back</button>
@@ -292,6 +351,12 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
                 <button className="btn btn-sm btn-secondary" style={{fontSize: 10}} title="Delete selected" onClick={() => { if (!canvas) return; const sel = canvas.getActiveObject(); if (sel && sel._isArt) { canvas.remove(sel); canvas.discardActiveObject(); canvas.renderAll(); } else nf && nf('Select an art element to delete', 'error'); }}>
                   <Icon name="trash" size={11} /> Delete
                 </button>
+                <div style={{display: 'flex', alignItems: 'center', gap: 4}} title="Recolor the selected art to one ink (e.g. flip black → white for a dark garment)">
+                  <span style={{fontSize: 10, color: '#475569', fontWeight: 600}}>Recolor:</span>
+                  <button onClick={() => recolorActive('#ffffff')} title="White" style={{width: 18, height: 18, borderRadius: '50%', background: '#fff', border: '1px solid #cbd5e1', cursor: 'pointer', padding: 0}} />
+                  <button onClick={() => recolorActive('#111827')} title="Black" style={{width: 18, height: 18, borderRadius: '50%', background: '#111827', border: '1px solid #cbd5e1', cursor: 'pointer', padding: 0}} />
+                  <input type="color" onChange={e => recolorActive(e.target.value)} title="Custom color" style={{width: 22, height: 20, padding: 0, border: '1px solid #cbd5e1', borderRadius: 4, cursor: 'pointer', background: '#fff'}} />
+                </div>
                 <button className="btn btn-sm btn-primary" style={{fontSize: 10, marginLeft: 'auto'}} disabled={busy} onClick={saveColorMock}>
                   <Icon name="save" size={11} /> Save Mock for {garment.color || garment.sku}
                 </button>
@@ -308,6 +373,18 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
                 </div>}
               </div>
               <div style={{fontSize: 10, color: '#94a3b8', marginTop: 6, textAlign: 'center'}}>Click art to select. Drag to move, corners to resize. Press Delete to remove.</div>
+              {(mocks[garment.key] || []).length > 0 && <div style={{marginTop: 10, paddingTop: 10, borderTop: '1px solid #e2e8f0'}}>
+                <div style={{fontSize: 10, fontWeight: 700, color: '#166534', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4}}>
+                  <Icon name="check" size={12} /> Saved mock{(mocks[garment.key].length > 1 ? 's' : '')} for {garment.color || garment.sku}
+                </div>
+                <div style={{display: 'flex', gap: 8, flexWrap: 'wrap'}}>
+                  {(mocks[garment.key] || []).map((m, mi) => <div key={mi} style={{position: 'relative', border: '1px solid #e2e8f0', borderRadius: 6, padding: 4, background: '#fff'}}>
+                    <img src={m.url} alt={m.name} style={{width: 72, height: 88, objectFit: 'contain', display: 'block'}} />
+                    <button title="Remove this mock" onClick={() => setMocks(prev => ({...prev, [garment.key]: (prev[garment.key] || []).filter((_, x) => x !== mi)}))}
+                      style={{position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%', border: 'none', background: '#ef4444', color: '#fff', fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0}}>×</button>
+                  </div>)}
+                </div>
+              </div>}
             </div>
           </div>
         </div>
