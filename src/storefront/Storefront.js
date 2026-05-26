@@ -500,19 +500,31 @@ function lineDetail(l) {
 function CartPage({ store, theme, cart, onUpdate }) {
   if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} /><Splash>Your cart is empty.</Splash></div>;
   const remove = (key) => onUpdate(cart.filter((l) => l.key !== key));
+  const setQty = (key, q) => onUpdate(cart.map((l) => (l.key === key ? { ...l, qty: Math.max(1, q) } : l)));
+  // Personalized items (a specific jersey number/name) and packages are 1-of-a-kind.
+  const fixedQty = (l) => l.kind === 'bundle' || !!l.player_number || !!l.player_name;
   return (
     <div style={{ paddingTop: 26 }}>
       <BackLink store={store} />
       <h1 style={{ fontFamily: DISPLAY, fontSize: 'clamp(30px,5vw,44px)', textTransform: 'uppercase', letterSpacing: 0.3, margin: '0 0 20px', lineHeight: 0.95 }}>Your cart</h1>
       {cart.map((l) => (
-        <div key={l.key} style={{ display: 'flex', gap: 14, padding: '14px 0', borderBottom: '1px solid #eef1f5' }}>
+        <div key={l.key} style={{ display: 'flex', gap: 14, padding: '14px 0', borderBottom: '1px solid #eef1f5', alignItems: 'center' }}>
           <div style={{ width: 64, height: 64, borderRadius: 8, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0 }}>{l.image && <img src={l.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}</div>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 800 }}>{l.name}{l.kind === 'bundle' ? ' (package)' : ''}</div>
             {lineDetail(l).map((d, i) => <div key={i} style={{ fontSize: 12, color: '#64748b' }}>{d}</div>)}
-            <button onClick={() => remove(l.key)} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 12, padding: '4px 0 0' }}>Remove</button>
+            {fixedQty(l)
+              ? <button onClick={() => remove(l.key)} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 12, padding: '4px 0 0' }}>Remove</button>
+              : <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
+                    <button onClick={() => setQty(l.key, (l.qty || 1) - 1)} disabled={(l.qty || 1) <= 1} style={qtyBtn((l.qty || 1) <= 1)}>−</button>
+                    <span style={{ minWidth: 30, textAlign: 'center', fontWeight: 700, fontSize: 14 }}>{l.qty || 1}</span>
+                    <button onClick={() => setQty(l.key, (l.qty || 1) + 1)} style={qtyBtn(false)}>+</button>
+                  </div>
+                  <button onClick={() => remove(l.key)} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 12 }}>Remove</button>
+                </div>}
           </div>
-          <div style={{ fontWeight: 800 }}>{money(lineUnit(l))}</div>
+          <div style={{ fontWeight: 800 }}>{money(lineUnit(l) * (l.qty || 1))}</div>
         </div>
       ))}
       {shipFee(store) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16, fontSize: 13, color: '#475569' }}><span>Shipping (flat)</span><span>{money(shipFee(store))}</span></div>}
@@ -522,6 +534,41 @@ function CartPage({ store, theme, cart, onUpdate }) {
       </div>
     </div>
   );
+}
+
+// ── Order confirmation email (server-side Brevo proxy keeps the key secret) ──
+async function sendOrderEmail({ store, order, cart, buyer, shipping, total }) {
+  try {
+    const link = `${window.location.origin}/shop/${store.slug}/order/${order.id}`;
+    const rows = cart.map((l) => {
+      const det = lineDetail(l).join(' · ');
+      return `<tr><td style="padding:8px 0;border-bottom:1px solid #eef1f5">${l.name}${l.kind === 'bundle' ? ' (package)' : ''}${l.qty > 1 ? ` ×${l.qty}` : ''}${det ? `<div style="font-size:12px;color:#64748b">${det}</div>` : ''}</td><td style="padding:8px 0;border-bottom:1px solid #eef1f5;text-align:right;font-weight:700;white-space:nowrap">${money(lineUnit(l) * (l.qty || 1))}</td></tr>`;
+    }).join('');
+    const accent = store.accent_color || '#e11d2a';
+    const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:560px;margin:0 auto">
+      <div style="background:${store.primary_color || '#0b1f3a'};color:#fff;padding:20px 24px;border-radius:10px 10px 0 0">
+        <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;opacity:.85">${store.name}</div>
+        <div style="font-size:22px;font-weight:800;margin-top:4px">Order confirmed${order.payment_mode === 'paid' ? ' &amp; paid' : ''}</div>
+      </div>
+      <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:22px 24px">
+        <p style="margin:0 0 14px">Thanks, ${buyer.name}! ${order.payment_mode === 'paid' ? "We've received your payment." : 'Your order has been placed and will be invoiced to the team.'}</p>
+        <table style="width:100%;border-collapse:collapse;font-size:14px">${rows}
+          ${shipping > 0 ? `<tr><td style="padding:8px 0;color:#475569">Shipping</td><td style="padding:8px 0;text-align:right">${money(shipping)}</td></tr>` : ''}
+          <tr><td style="padding:12px 0 0;font-weight:800;font-size:16px">Total</td><td style="padding:12px 0 0;text-align:right;font-weight:800;font-size:16px">${money(total)}</td></tr>
+        </table>
+        <a href="${link}" style="display:inline-block;margin-top:20px;background:${accent};color:#fff;text-decoration:none;padding:13px 26px;border-radius:8px;font-weight:700">Track your order</a>
+        <p style="font-size:12px;color:#94a3b8;margin-top:18px">Save this email — the link above is how you check your order status anytime.</p>
+      </div></div>`;
+    await fetch('/.netlify/functions/brevo-proxy', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sender: { name: store.name || 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+        to: [{ email: buyer.email, name: buyer.name }],
+        subject: `Your ${store.name} order is confirmed`,
+        htmlContent: html,
+      }),
+    });
+  } catch (e) { console.warn('[storefront] confirmation email failed:', e); }
 }
 
 // ── Checkout ─────────────────────────────────────────────────────────
@@ -559,6 +606,7 @@ async function placeOrder({ store, cart, buyer, ship, payMode, stripePiId }) {
       if (ce && /duplicate|unique/i.test(ce.message || '')) return { error: { message: `Number ${n} was just taken by someone else — please pick a different number.` }, order };
     }
   }
+  if (buyer.email) sendOrderEmail({ store, order, cart, buyer, shipping, total });
   return { order };
 }
 
@@ -712,6 +760,7 @@ function OrderStatusPage({ store, theme, orderId }) {
   );
 }
 
+const qtyBtn = (disabled) => ({ width: 32, height: 32, border: 'none', background: disabled ? '#f8fafc' : '#fff', color: disabled ? '#cbd5e1' : '#0b1220', fontSize: 18, fontWeight: 700, cursor: disabled ? 'not-allowed' : 'pointer', lineHeight: 1 });
 const inp = { width: '100%', padding: '11px 12px', borderRadius: 8, border: '2px solid #e2e8f0', fontSize: 14, fontFamily: 'inherit', boxSizing: 'border-box' };
 const methodBtn = (t, sel) => ({ flex: 1, padding: '12px', borderRadius: t.radius, border: `2px solid ${sel ? t.accent : '#e2e8f0'}`, background: sel ? t.accent : '#fff', color: sel ? '#fff' : '#0b1220', fontWeight: 800, fontSize: 13, cursor: 'pointer' });
 function Field({ label, children }) { return <div style={{ marginBottom: 12, flex: 1 }}><div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', marginBottom: 4 }}>{label}</div>{children}</div>; }
