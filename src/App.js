@@ -2784,6 +2784,11 @@ export default function App(){
   // Edited DTF print art (recolored / knocked-out SVG), keyed by art id.
   const[dtfArt,setDTFArt]=useState(()=>loadState('dtf_art',{}));
   const[dtfEditor,setDTFEditor]=useState(null);// {artId,artName,sourceUrl}
+  // How each transfer is sourced, keyed by art id: gang (in-house) / stahls /
+  // vendor (other outside) / press (no order). heat_press is a mixed bucket, so
+  // only 'gang' transfers belong on a gang sheet; stahls/vendor go via an
+  // Outside Deco PO; press needs no ordering.
+  const[dtfSource,setDTFSource]=useState(()=>loadState('dtf_source',{}));
   const[batchScan,setBatchScan]=useState('');// scan/lookup field
   const[editingBatchId,setEditingBatchId]=useState(null);// batch PO id being edited in queue
   const[sanmarPreview,setSanMarPreview]=useState(null);// {poNumber,batchPOs,vendorName} — SanMar dry-run preview modal
@@ -3796,6 +3801,7 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('dtf_batches',dtfBatches)},[dtfBatches]);
   React.useEffect(()=>{_saveAppState('dtf_sheet_counter',dtfSheetCounter)},[dtfSheetCounter]);
   React.useEffect(()=>{_saveAppState('dtf_art',dtfArt)},[dtfArt]);
+  React.useEffect(()=>{_saveAppState('dtf_source',dtfSource)},[dtfSource]);
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
   // Boot-time snapshot regression scan: walk each SO's snapshot history and flag any whose latest
@@ -8780,8 +8786,15 @@ export default function App(){
     const groups={};
     queue.forEach(l=>{const g=groups[l.art_id]||(groups[l.art_id]={art_id:l.art_id,art_name:l.art_name,art_size:l.art_size,preview_url:l.preview_url,ai_ready:true,qty:0,lines:[],ai_files:[]});g.qty+=l.qty;g.lines.push(l);if(!l.ai_ready)g.ai_ready=false;if(!g.preview_url&&l.preview_url)g.preview_url=l.preview_url;if(!g.art_size&&l.art_size)g.art_size=l.art_size;(l.ai_files||[]).forEach(f=>{if(f.url&&!g.ai_files.some(x=>x.url===f.url))g.ai_files.push(f)});});
     const groupList=Object.values(groups).sort((a,b)=>a.art_name.localeCompare(b.art_name));
-    const ready=groupList.filter(g=>g.ai_ready);
-    const needsAi=groupList.filter(g=>!g.ai_ready);
+    groupList.forEach(g=>{g.source=dtfSource[g.art_id]||''});
+    const SOURCE_OPTS=[['gang','Gang sheet (in-house)'],['stahls','Stahls'],['vendor','Other vendor'],['press','Press only (no order)']];
+    const setSrc=(artId,v)=>setDTFSource(prev=>{const n={...prev};if(v)n[artId]=v;else delete n[artId];return n});
+    // Only in-house 'gang' transfers go on a gang sheet.
+    const gang=groupList.filter(g=>g.source==='gang');
+    const ready=gang.filter(g=>g.ai_ready);
+    const needsAi=gang.filter(g=>!g.ai_ready);
+    const unassigned=groupList.filter(g=>!g.source);
+    const outside=groupList.filter(g=>g.source==='stahls'||g.source==='vendor');
     const selReady=ready.filter(g=>dtfSel.has(g.art_id));
     const selTransfers=selReady.reduce((a,g)=>a+g.qty,0);
     const toggle=id=>setDTFSel(prev=>{const n=new Set(prev);if(n.has(id))n.delete(id);else n.add(id);return n});
@@ -8810,7 +8823,7 @@ export default function App(){
     const deleteBatch=id=>{if(!window.confirm('Delete gang sheet '+id+'? Its transfers return to the queue.'))return;setDTFBatches(prev=>prev.filter(b=>b.id!==id))};
     const card={background:'#fff',borderRadius:8,border:'1px solid #e2e8f0',marginBottom:16};
     const GroupRow=({g})=>{const sel=dtfSel.has(g.art_id);return <tr style={sel?{background:'#eff6ff'}:undefined}>
-      <td style={{textAlign:'center'}}>{g.ai_ready?<input type="checkbox" checked={sel} onChange={()=>toggle(g.art_id)} style={{cursor:'pointer'}}/>:<span title="Needs a .ai production file before it can be ganged">🚫</span>}</td>
+      <td style={{textAlign:'center'}}>{(g.source==='gang'&&g.ai_ready)?<input type="checkbox" checked={sel} onChange={()=>toggle(g.art_id)} style={{cursor:'pointer'}}/>:!g.ai_ready?<span title="Needs a .ai production file before it can be ganged">🚫</span>:<span style={{color:'#cbd5e1'}}>·</span>}</td>
       <td style={{padding:4}}>{g.preview_url?<img src={g.preview_url} alt="" style={{width:40,height:40,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0'}}/>:<span style={{color:'#cbd5e1',fontSize:18}}>🎨</span>}</td>
       <td style={{fontWeight:600,fontSize:12}}>{g.art_name}
         <div><button onClick={()=>setDTFEditor({artId:g.art_id,artName:g.art_name,sourceUrl:g.preview_url})} style={{fontSize:10,color:'#7c3aed',fontWeight:700,border:'none',background:'none',padding:0,cursor:'pointer'}}>🎨 Colors / knockout</button>{dtfArt[g.art_id]?.svg&&<span title="Print art color-prepped" style={{marginLeft:6,fontSize:9,fontWeight:700,color:'#7c3aed',background:'#f3e8ff',padding:'1px 5px',borderRadius:4}}>prepped</span>}</div>
@@ -8818,12 +8831,15 @@ export default function App(){
       <td style={{fontSize:11,color:'#64748b'}}>{g.art_size||'—'}</td>
       <td style={{textAlign:'right',fontWeight:700}}>{g.qty}</td>
       <td style={{fontSize:11,color:'#64748b'}}>{g.lines.length} item{g.lines.length>1?'s':''} · {[...new Set(g.lines.map(l=>l.customer).filter(Boolean))].slice(0,2).join(', ')||'—'}</td>
+      <td><select value={g.source||''} onChange={e=>setSrc(g.art_id,e.target.value)} title="How is this transfer ordered?" style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid '+(g.source?'#cbd5e1':'#f59e0b'),background:g.source?'#fff':'#fffbeb'}}>
+        <option value="">⚠️ Set source…</option>{SOURCE_OPTS.map(([v,l])=><option key={v} value={v}>{l}</option>)}
+      </select></td>
       <td>{g.ai_ready?<span style={{display:'inline-flex',alignItems:'center',gap:6}}><span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'2px 6px',borderRadius:4}}>.ai ready</span>{(g.ai_files||[]).map((f,fi)=><a key={fi} href={f.url} target="_blank" rel="noopener noreferrer" title={f.name} style={{color:'#1d4ed8',fontWeight:700,fontSize:10}}>⬇ .ai</a>)}</span>:<span style={{fontSize:10,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'2px 6px',borderRadius:4}}>needs .ai</span>}</td>
     </tr>;};
     const Th=({children,style})=><th style={{textAlign:'left',fontSize:10,textTransform:'uppercase',color:'#94a3b8',padding:'6px 8px',...style}}>{children}</th>;
     return <div>
       <div style={{...card,padding:16}}>
-        <div style={{fontSize:13,color:'#475569'}}>Collects every <b>DTF (heat transfer)</b> decoration across sales orders and OMG stores. A transfer is ready once its art file has a <b>.ai</b> production file. Build a weekly batch, then <b>print/copy the manifest</b> (design · size · qty) and grab the <b>.ai</b> files to send your printer. <span style={{color:'#94a3b8'}}>Automated gang-sheet layout / nesting comes next.</span></div>
+        <div style={{fontSize:13,color:'#475569'}}>Collects every <b>heat-transfer</b> decoration across sales orders and OMG stores. Tag each design's <b>source</b> — only <b>Gang sheet (in-house)</b> transfers go on a gang sheet; <b>Stahls / other vendor</b> get ordered via an Outside Deco PO, and <b>Press only</b> needs no order. A gang transfer is ready once its art has a <b>.ai</b>. Build a weekly batch, then <b>print/copy the manifest</b> and grab the <b>.ai</b> files for your printer. <span style={{color:'#94a3b8'}}>Automated gang-sheet layout / nesting comes next.</span></div>
       </div>
 
       <div style={card}>
@@ -8834,10 +8850,10 @@ export default function App(){
             <button className="btn btn-primary" disabled={selReady.length===0} style={{opacity:selReady.length===0?0.5:1}} onClick={buildSheet}>Build gang sheet</button>
           </div>
         </div>
-        {ready.length===0?<div className="empty" style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No DTF transfers ready to gang. Assign DTF logos with a .ai file on the art.</div>:
+        {ready.length===0?<div className="empty" style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No transfers ready to gang. Tag a design's source as <b>Gang sheet</b> {unassigned.length>0?'(see "Set transfer source" below) ':''}and make sure its art has a .ai file.</div>:
         <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
           <Th style={{width:32,textAlign:'center'}}><input type="checkbox" checked={selReady.length===ready.length&&ready.length>0} ref={el=>{if(el)el.indeterminate=selReady.length>0&&selReady.length<ready.length}} onChange={e=>setDTFSel(e.target.checked?new Set(ready.map(g=>g.art_id)):new Set())} style={{cursor:'pointer'}}/></Th>
-          <Th style={{width:48}}></Th><Th>Art</Th><Th>Size</Th><Th style={{textAlign:'right'}}>Qty</Th><Th>Sources</Th><Th>Status</Th>
+          <Th style={{width:48}}></Th><Th>Art</Th><Th>Size</Th><Th style={{textAlign:'right'}}>Qty</Th><Th>Used on</Th><Th>Source</Th><Th>Status</Th>
         </tr></thead><tbody>{ready.map(g=><GroupRow key={g.art_id} g={g}/>)}</tbody></table>}
       </div>
 
@@ -8845,8 +8861,24 @@ export default function App(){
         <div style={{padding:'12px 16px',borderBottom:'1px solid #e2e8f0'}}><h2 style={{margin:0,fontSize:15,color:'#92400e'}}>⚠️ Needs .ai file <span style={{color:'#94a3b8',fontWeight:400}}>({needsAi.length} art)</span></h2>
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>These DTF transfers can't be ganged until a properly set-up .ai is added to the art file's production files.</div></div>
         <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
-          <Th style={{width:32}}></Th><Th style={{width:48}}></Th><Th>Art</Th><Th>Size</Th><Th style={{textAlign:'right'}}>Qty</Th><Th>Sources</Th><Th>Status</Th>
+          <Th style={{width:32}}></Th><Th style={{width:48}}></Th><Th>Art</Th><Th>Size</Th><Th style={{textAlign:'right'}}>Qty</Th><Th>Used on</Th><Th>Source</Th><Th>Status</Th>
         </tr></thead><tbody>{needsAi.map(g=><GroupRow key={g.art_id} g={g}/>)}</tbody></table>
+      </div>}
+
+      {unassigned.length>0&&<div style={card}>
+        <div style={{padding:'12px 16px',borderBottom:'1px solid #e2e8f0'}}><h2 style={{margin:0,fontSize:15,color:'#b45309'}}>⚠️ Set transfer source <span style={{color:'#94a3b8',fontWeight:400}}>({unassigned.length} art)</span></h2>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Heat-transfer designs not yet classified. Pick a source so they route correctly — only <b>Gang sheet</b> ones go on a gang sheet here.</div></div>
+        <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+          <Th style={{width:32}}></Th><Th style={{width:48}}></Th><Th>Art</Th><Th>Size</Th><Th style={{textAlign:'right'}}>Qty</Th><Th>Used on</Th><Th>Source</Th><Th>Status</Th>
+        </tr></thead><tbody>{unassigned.map(g=><GroupRow key={g.art_id} g={g}/>)}</tbody></table>
+      </div>}
+
+      {outside.length>0&&<div style={card}>
+        <div style={{padding:'12px 16px',borderBottom:'1px solid #e2e8f0'}}><h2 style={{margin:0,fontSize:15,color:'#6d28d9'}}>🏷️ Stahls / outside vendor <span style={{color:'#94a3b8',fontWeight:400}}>({outside.length} art · {outside.reduce((a,g)=>a+g.qty,0)} transfers)</span></h2>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>These transfers are purchased from an outside vendor — order them on the sales order via <b>+ Outside Deco</b> (creates an Outside Deco PO), not on a gang sheet.</div></div>
+        <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+          <Th style={{width:32}}></Th><Th style={{width:48}}></Th><Th>Art</Th><Th>Size</Th><Th style={{textAlign:'right'}}>Qty</Th><Th>Used on</Th><Th>Source</Th><Th>Status</Th>
+        </tr></thead><tbody>{outside.map(g=><GroupRow key={g.art_id} g={g}/>)}</tbody></table>
       </div>}
 
       <div style={card}>
