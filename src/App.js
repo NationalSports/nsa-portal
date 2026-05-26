@@ -5192,7 +5192,15 @@ export default function App(){
   // Shared data builder for warehouse + deco + dashboard pages
   function buildWarehouseData(){
     const pullTasks=[];const shipTasks=[];const decoTasks=[];const deliverTasks=[];
-    sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
+    sos.filter(so=>{
+      const st=calcSOStatus(so);
+      if(st==='booking')return false;
+      if(st!=='complete')return true;
+      // A promo order can be financially "closed" (status='complete') while its blanks are
+      // received but not yet decorated/shipped. Keep such orders visible to the warehouse so
+      // their still-active jobs can be pulled, moved to deco, and shipped.
+      return safeJobs(so).some(j=>j.prod_status!=='completed'&&j.prod_status!=='shipped'&&j.prod_status!=='draft');
+    }).forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
@@ -8871,19 +8879,41 @@ export default function App(){
                   // the NSA-#### scan also finds the source POs (PO-####-TAG) grouped under it.
                   const lcPoId=poId.toLowerCase();
                   const matchedLines=allPOLines.filter(pl=>pl.poId.toLowerCase()===lcPoId||(pl.poLine?.batch_po_number||'').toLowerCase()===lcPoId);
-                  matchedLines.forEach(ml=>{
-                    const so=sos.find(s=>s.id===ml.soId);if(!so)return;
+                  // Group matched lines by SO so multiple received lines on the same SO are applied
+                  // together (a per-line savSO would read a stale SO each time and clobber prior updates).
+                  const linesBySO={};
+                  matchedLines.forEach(ml=>{(linesBySO[ml.soId]=linesBySO[ml.soId]||[]).push(ml)});
+                  Object.keys(linesBySO).forEach(soId=>{
+                    const so=sos.find(s=>s.id===soId);if(!so)return;
                     const updItems=[...safeItems(so)];
-                    const it=updItems[ml.itemIdx];if(!it)return;
-                    const pls=[...(it.po_lines||[])];
-                    if(pls[ml.poLineIdx]){
-                      const rcv={};
-                      Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k)){
-                        const el=document.getElementById('rcv-'+allPOLines.indexOf(ml)+'-'+k);rcv[k]=el?parseInt(el.value)||0:v}});
-                      pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:'received',received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
-                      updItems[ml.itemIdx]={...it,po_lines:pls};
-                    }
-                    savSO({...so,items:updItems,updated_at:new Date().toLocaleString()});
+                    linesBySO[soId].forEach(ml=>{
+                      const it=updItems[ml.itemIdx];if(!it)return;
+                      const pls=[...(it.po_lines||[])];
+                      if(pls[ml.poLineIdx]){
+                        const rcv={};
+                        Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k)){
+                          const el=document.getElementById('rcv-'+allPOLines.indexOf(ml)+'-'+k);rcv[k]=el?parseInt(el.value)||0:v}});
+                        pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:'received',received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
+                        updItems[ml.itemIdx]={...it,po_lines:pls};
+                      }
+                    });
+                    // Recalculate job item_status/fulfilled_units after receiving — mirrors the warehouse
+                    // stock-pull flow so the Production dashboard and "Ready for Deco" tab reflect received stock.
+                    const updatedJobs=safeJobs(so).map(j=>{
+                      let total=0,fulfilled=0;
+                      (j.items||[]).forEach(gi=>{const it=updItems[gi.item_idx];if(!it)return;
+                        Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
+                          total+=v;
+                          const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+                          const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+                          fulfilled+=Math.min(v,pQ+rQ);
+                        });
+                      });
+                      const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
+                      if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
+                      return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
+                    });
+                    savSO({...so,items:updItems,jobs:updatedJobs,updated_at:new Date().toLocaleString()});
                   });
                   nf('✅ '+poId+' received — '+totalUnits+' units. SO items updated.');
                   // Print label(s) after receiving — separate per source PO for batches
