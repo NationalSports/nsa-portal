@@ -68,11 +68,10 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
   const [imgOverride, setImgOverride] = useState({});
   const [busy, setBusy] = useState(false);
   const [imgLoading, setImgLoading] = useState(false);
-  // Recolor targeting: when pickedColor is set, recolor only replaces pixels/fills
-  // matching it (so one color in a multi-color logo can be changed). pickMode arms
-  // the eyedropper for the next canvas click.
-  const [pickMode, setPickMode] = useState(false);
+  // Recolor targeting: artColors holds the distinct colors detected in the selected
+  // art; pickedColor is the one the user chose to change (null = recolor everything).
   const [pickedColor, setPickedColor] = useState(null);
+  const [artColors, setArtColors] = useState([]);
 
   const garment = garments[gi] || {};
   const baseUrl = side === 'back' ? garment.backUrl : garment.frontUrl;
@@ -201,6 +200,45 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
 
   const fabricColorToHex = c => { try { return '#' + new fabric.Color(c).toHex(); } catch (e) { return null; } };
   const COLOR_TOL = 70; // sum-of-abs RGB distance for matching the picked color
+  const rgbDist = (a, b) => Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b);
+
+  // Extract the distinct colors in an art object. SVG: collect fills/strokes. Raster:
+  // quantize pixels into buckets, keep the ones covering a meaningful share, and merge
+  // near-duplicates (anti-aliasing) so the user gets a short, real palette to pick from.
+  const computePalette = obj => {
+    if (!obj) return [];
+    if (typeof obj.getObjects === 'function') {
+      const set = new Set();
+      const walk = o => { if (typeof o.getObjects === 'function') { o.getObjects().forEach(walk); return; } [o.fill, o.stroke].forEach(c => { if (c && c !== 'transparent' && c !== '') { const hx = fabricColorToHex(c); if (hx) set.add(hx.toLowerCase()); } }); };
+      walk(obj);
+      return [...set].slice(0, 12);
+    }
+    try {
+      const el = obj.getElement();
+      const w = el.naturalWidth || el.width, h = el.naturalHeight || el.height;
+      if (!w || !h) return [];
+      const sc = Math.min(1, 160 / Math.max(w, h));
+      const cw = Math.max(1, Math.round(w * sc)), ch = Math.max(1, Math.round(h * sc));
+      const off = document.createElement('canvas'); off.width = cw; off.height = ch;
+      const ctx = off.getContext('2d', {willReadFrequently: true}); ctx.drawImage(el, 0, 0, cw, ch);
+      const d = ctx.getImageData(0, 0, cw, ch).data;
+      const buckets = {}; let total = 0; const STEP = 32;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] < 128) continue;
+        total++;
+        const key = Math.round(d[i] / STEP) + ',' + Math.round(d[i + 1] / STEP) + ',' + Math.round(d[i + 2] / STEP);
+        const bk = buckets[key] || (buckets[key] = {count: 0, r: 0, g: 0, b: 0});
+        bk.count++; bk.r += d[i]; bk.g += d[i + 1]; bk.b += d[i + 2];
+      }
+      if (!total) return [];
+      const reps = Object.values(buckets).filter(b => b.count / total >= 0.02)
+        .sort((a, b) => b.count - a.count).slice(0, 8)
+        .map(b => '#' + [b.r, b.g, b.b].map(s => Math.round(s / b.count).toString(16).padStart(2, '0')).join(''));
+      const out = [];
+      reps.forEach(hx => { const rgb = hexToRgb(hx); if (!out.some(o => rgbDist(hexToRgb(o), rgb) < 40)) out.push(hx); });
+      return out;
+    } catch (e) { return []; }
+  };
 
   // Recolor the selected art. With no picked color this flips the whole design to one
   // ink (per-fill for SVG, flat pixel tint for rasterized .ai/.eps/.pdf/.png). With a
@@ -211,7 +249,8 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
     const obj = canvas.getActiveObject();
     if (!obj || !obj._isArt) { nf && nf('Select an art element to recolor', 'error'); return; }
     const src = pickedColor ? hexToRgb(pickedColor) : null;
-    const near = rgb => !src || (Math.abs(rgb.r - src.r) + Math.abs(rgb.g - src.g) + Math.abs(rgb.b - src.b) <= COLOR_TOL);
+    const near = rgb => !src || rgbDist(rgb, src) <= COLOR_TOL;
+    const done = () => { setArtColors(computePalette(obj)); if (src) setPickedColor(hex); };
     if (typeof obj.getObjects === 'function') {
       const match = c => { if (!c || c === 'transparent' || c === '') return false; const hx = fabricColorToHex(c); return hx ? near(hexToRgb(hx)) : !src; };
       const apply = o => {
@@ -219,7 +258,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
         if (match(o.fill)) o.set('fill', hex);
         if (match(o.stroke)) o.set('stroke', hex);
       };
-      apply(obj); obj.dirty = true; canvas.requestRenderAll();
+      apply(obj); obj.dirty = true; canvas.requestRenderAll(); done();
       return;
     }
     try {
@@ -233,30 +272,22 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
         if (src && !near({r: d[i], g: d[i + 1], b: d[i + 2]})) continue;
         d[i] = r; d[i + 1] = g; d[i + 2] = b;
       }
-      ctx.putImageData(id, 0, 0); obj.setElement(off); canvas.requestRenderAll();
+      ctx.putImageData(id, 0, 0); obj.setElement(off); canvas.requestRenderAll(); done();
     } catch (e) { nf && nf('Could not recolor this art — try re-placing it', 'error'); }
   };
 
-  // Eyedropper: while armed, the next canvas click samples the pixel under the cursor
-  // (from the composited canvas) and stores it as the color to target on recolor.
+  // Detect the art's colors whenever an art layer is selected, so the user can pick
+  // which one to change. Clearing the selection resets the palette.
   useEffect(() => {
-    if (!canvas || !pickMode) return;
-    canvas.defaultCursor = 'crosshair';
-    const handler = opt => {
-      try {
-        const p = canvas.getPointer(opt.e);
-        const retina = canvas.getRetinaScaling ? canvas.getRetinaScaling() : (window.devicePixelRatio || 1);
-        const ctx = canvas.lowerCanvasEl.getContext('2d', {willReadFrequently: true});
-        const px = ctx.getImageData(Math.round(p.x * retina), Math.round(p.y * retina), 1, 1).data;
-        const hex = '#' + [px[0], px[1], px[2]].map(n => n.toString(16).padStart(2, '0')).join('');
-        setPickedColor(hex);
-        nf && nf('Picked that color — now choose what to change it to');
-      } catch (e) { nf && nf('Could not sample that spot — try again', 'error'); }
-      setPickMode(false);
-    };
-    canvas.on('mouse:down', handler);
-    return () => { try { canvas.off('mouse:down', handler); canvas.defaultCursor = 'default'; } catch (e) {} };
-  }, [canvas, pickMode, nf]);
+    if (!canvas) return;
+    const onSel = () => { const o = canvas.getActiveObject(); if (o && o._isArt) setArtColors(computePalette(o)); };
+    const onClear = () => { setArtColors([]); setPickedColor(null); };
+    canvas.on('selection:created', onSel);
+    canvas.on('selection:updated', onSel);
+    canvas.on('selection:cleared', onClear);
+    return () => { try { canvas.off('selection:created', onSel); canvas.off('selection:updated', onSel); canvas.off('selection:cleared', onClear); } catch (e) {} };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canvas]);
 
   const uploadLayerFile = useCallback(async (idx, file) => {
     const ext = (file.name.split('.').pop() || '').toLowerCase();
@@ -387,12 +418,13 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
                 <button className="btn btn-sm btn-secondary" style={{fontSize: 10}} title="Delete selected" onClick={() => { if (!canvas) return; const sel = canvas.getActiveObject(); if (sel && sel._isArt) { canvas.remove(sel); canvas.discardActiveObject(); canvas.renderAll(); } else nf && nf('Select an art element to delete', 'error'); }}>
                   <Icon name="trash" size={11} /> Delete
                 </button>
-                <div style={{display: 'flex', alignItems: 'center', gap: 4}} title="Recolor selected art. Use Pick to change only one color of a multi-color logo.">
-                  <span style={{fontSize: 10, color: '#475569', fontWeight: 600}}>Recolor:</span>
-                  <button onClick={() => setPickMode(m => !m)} title="Pick a color from the logo, then choose what to change it to — only that color changes" style={{fontSize: 9, padding: '2px 6px', borderRadius: 4, border: '1px solid ' + (pickMode ? '#7c3aed' : '#cbd5e1'), background: pickMode ? '#ede9fe' : '#fff', color: pickMode ? '#6d28d9' : '#475569', cursor: 'pointer', fontWeight: 600}}>{pickMode ? 'Click the logo…' : 'Pick'}</button>
-                  {pickedColor && <span style={{display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 9, color: '#475569'}}>only<span style={{width: 14, height: 14, borderRadius: 3, border: '1px solid #cbd5e1', background: pickedColor, display: 'inline-block'}} /><button onClick={() => setPickedColor(null)} title="Clear — recolor everything" style={{background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: 12, padding: 0, lineHeight: 1}}>×</button></span>}
-                  <button onClick={() => recolorActive('#ffffff')} title={pickedColor ? 'Change picked color to White' : 'Recolor all to White'} style={{width: 18, height: 18, borderRadius: '50%', background: '#fff', border: '1px solid #cbd5e1', cursor: 'pointer', padding: 0}} />
-                  <button onClick={() => recolorActive('#111827')} title={pickedColor ? 'Change picked color to Black' : 'Recolor all to Black'} style={{width: 18, height: 18, borderRadius: '50%', background: '#111827', border: '1px solid #cbd5e1', cursor: 'pointer', padding: 0}} />
+                <div style={{display: 'flex', alignItems: 'center', gap: 4}} title="Pick which color of the logo to change, then pick what to change it to.">
+                  <span style={{fontSize: 10, color: '#475569', fontWeight: 600}}>Change:</span>
+                  <button onClick={() => setPickedColor(null)} title="Recolor the whole design" style={{fontSize: 9, padding: '2px 6px', borderRadius: 4, border: '1px solid ' + (!pickedColor ? '#7c3aed' : '#cbd5e1'), background: !pickedColor ? '#ede9fe' : '#fff', color: !pickedColor ? '#6d28d9' : '#475569', cursor: 'pointer', fontWeight: 600}}>All</button>
+                  {artColors.map(c => { const sel = pickedColor && rgbDist(hexToRgb(pickedColor), hexToRgb(c)) < 8; return <button key={c} onClick={() => setPickedColor(c)} title={'Change this color (' + c + ')'} style={{width: 18, height: 18, borderRadius: '50%', background: c, cursor: 'pointer', padding: 0, border: sel ? '2px solid #7c3aed' : '1px solid #cbd5e1', boxShadow: sel ? '0 0 0 2px #ede9fe' : 'none'}} />; })}
+                  <span style={{fontSize: 10, color: '#475569', fontWeight: 600, marginLeft: 4}}>to:</span>
+                  <button onClick={() => recolorActive('#ffffff')} title="White" style={{width: 18, height: 18, borderRadius: '50%', background: '#fff', border: '1px solid #cbd5e1', cursor: 'pointer', padding: 0}} />
+                  <button onClick={() => recolorActive('#111827')} title="Black" style={{width: 18, height: 18, borderRadius: '50%', background: '#111827', border: '1px solid #cbd5e1', cursor: 'pointer', padding: 0}} />
                   <input type="color" onChange={e => recolorActive(e.target.value)} title="Custom color" style={{width: 22, height: 20, padding: 0, border: '1px solid #cbd5e1', borderRadius: 4, cursor: 'pointer', background: '#fff'}} />
                 </div>
                 <button className="btn btn-sm btn-primary" style={{fontSize: 10, marginLeft: 'auto'}} disabled={busy} onClick={saveColorMock}>
