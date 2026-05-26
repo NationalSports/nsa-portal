@@ -4038,7 +4038,8 @@ export default function App(){
   const[aiInvPoWizOpen,setAiInvPoWizOpen]=useState(false);
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
   // OMG Team Stores
-  const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);
+  const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);const[omgBulkSel,setOmgBulkSel]=useState(()=>new Set());const[omgBulkArt,setOmgBulkArt]=useState('');
+  React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
   const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);
 
   // Import products from an OMG shared report URL.
@@ -13212,6 +13213,31 @@ export default function App(){
       const custArt=_artLib.list;
       const custArtById=_artLib.byId;
       const setStoreCustomer=(cid)=>{const upd={...s,customer_id:cid||null};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
+      const _applyStoreProds=newProds=>{const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
+      const _decoFields=decos=>({decorations:decos,deco_type:decos.length>0?decos.map(d=>d.type).join('|'):'',art_group:decos.map(d=>d.art_group).join('|')});
+      const applyBulkArt=()=>{
+        if(!omgBulkArt||omgBulkSel.size===0)return;
+        let deco=null;
+        if(omgBulkArt.startsWith('lib:')){const a=custArtById[omgBulkArt.slice(4)];if(!a)return;deco={type:a.deco_type||'screen_print',art_group:a.name||'Logo',_cust_art_id:a.id};}
+        else if(omgBulkArt.startsWith('new:')){const type=omgBulkArt.slice(4);const pfx=type==='embroidery'?'EMB':type==='heat_press'?'HTV':'SP';const existing=[...new Set((s.products||[]).flatMap(pr=>(pr.decorations||[]).filter(d=>d.type===type).map(d=>d.art_group)).filter(Boolean))];const nums=existing.filter(g=>g.startsWith(pfx+'-')).map(g=>parseInt(g.split('-')[1])||0);deco={type,art_group:`${pfx}-${nums.length?Math.max(...nums)+1:1}`};}
+        if(!deco)return;
+        const newProds=(s.products||[]).map((pr,j)=>{
+          if(!omgBulkSel.has(j))return pr;
+          const decos=pr.decorations||[];
+          const dup=deco._cust_art_id?decos.some(d=>d._cust_art_id===deco._cust_art_id):decos.some(d=>d.art_group===deco.art_group&&d.type===deco.type);
+          return{...pr,no_deco:false,..._decoFields(dup?decos:[...decos,{...deco}])};
+        });
+        _applyStoreProds(newProds);
+        nf(`Applied “${deco.art_group}” to ${omgBulkSel.size} item${omgBulkSel.size>1?'s':''}`);
+        setOmgBulkSel(new Set());setOmgBulkArt('');
+      };
+      const bulkNoDeco=()=>{
+        if(omgBulkSel.size===0)return;
+        _applyStoreProds((s.products||[]).map((pr,j)=>omgBulkSel.has(j)?{...pr,no_deco:true,decorations:[],deco_type:'no_deco',art_group:''}:pr));
+        nf(`Marked ${omgBulkSel.size} item${omgBulkSel.size>1?'s':''} as No Deco`);
+        setOmgBulkSel(new Set());
+      };
+      const _toggleRow=j=>setOmgBulkSel(prev=>{const n=new Set(prev);if(n.has(j))n.delete(j);else n.add(j);return n});
       const _custOpts=[...cust].filter(cc=>cc&&cc.id).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
       const totalCost=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
       const totalRetail=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
@@ -13523,8 +13549,25 @@ export default function App(){
                 <div style={{fontSize:40,marginBottom:8}}>📦</div>
                 <div style={{fontSize:13,color:'#94a3b8'}}>Products will appear here after importing the OMG report.</div>
               </div>
-            ) : (
-            <table><thead><tr><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Art Group</th><th>Retail</th><th>Cost</th><th>Sizes</th><th>Units</th><th>Revenue</th></tr></thead>
+            ) : (<>
+            <div style={{padding:'10px 16px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+              <span style={{fontSize:12,fontWeight:800,color:'#0f172a'}}>⚡ Bulk assign art</span>
+              <select value={omgBulkArt} onChange={e=>setOmgBulkArt(e.target.value)} style={{fontSize:12,padding:'4px 8px',borderRadius:5,border:'1px solid #cbd5e1',maxWidth:240}}>
+                <option value="">Choose a logo…</option>
+                {custArt.length>0&&<optgroup label="Customer logos">{custArt.map(a=><option key={a.id} value={'lib:'+a.id}>{a.name||'Untitled'} ({(a.deco_type||'').replace(/_/g,' ')})</option>)}</optgroup>}
+                <optgroup label="New logo">
+                  <option value="new:screen_print">+ New Screen Print group</option>
+                  <option value="new:embroidery">+ New Embroidery group</option>
+                  <option value="new:heat_press">+ New HTV group</option>
+                </optgroup>
+              </select>
+              <button className="btn btn-sm btn-primary" disabled={!omgBulkArt||omgBulkSel.size===0} onClick={applyBulkArt} style={{opacity:(!omgBulkArt||omgBulkSel.size===0)?0.5:1}}>Apply to {omgBulkSel.size} selected</button>
+              <button className="btn btn-sm" disabled={omgBulkSel.size===0} onClick={bulkNoDeco} style={{fontSize:11,opacity:omgBulkSel.size===0?0.5:1}}>Mark No Deco</button>
+              <span style={{width:1,height:18,background:'#cbd5e1'}}/>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{const ns=new Set();(s.products||[]).forEach((p,j)=>{if(!p.no_deco&&(p.decorations||[]).length===0)ns.add(j)});setOmgBulkSel(ns)}}>Select items needing art</button>
+              {omgBulkSel.size>0&&<button className="btn btn-sm" style={{fontSize:11,color:'#64748b'}} onClick={()=>setOmgBulkSel(new Set())}>Clear ({omgBulkSel.size})</button>}
+            </div>
+            <table><thead><tr><th style={{width:28}}><input type="checkbox" title="Select all" checked={(s.products||[]).length>0&&omgBulkSel.size===(s.products||[]).length} ref={el=>{if(el)el.indeterminate=omgBulkSel.size>0&&omgBulkSel.size<(s.products||[]).length}} onChange={e=>{if(e.target.checked)setOmgBulkSel(new Set((s.products||[]).map((_,j)=>j)));else setOmgBulkSel(new Set())}} style={{cursor:'pointer'}}/></th><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Art Group</th><th>Retail</th><th>Cost</th><th>Sizes</th><th>Units</th><th>Revenue</th></tr></thead>
             <tbody>{(s.products||[]).map((p,i)=>{const q=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);
               const updateDecos=(newDecos)=>{
                 const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,decorations:newDecos,deco_type:newDecos.length>0?newDecos.map(d=>d.type).join('|'):'',art_group:newDecos.map(d=>d.art_group).join('|'),...(newDecos.length>0?{no_deco:false}:{})}:pr);
@@ -13545,7 +13588,8 @@ export default function App(){
               // sets the flag on all of its products at once.
               const groupReady=(g)=>{const ps=(s.products||[]).filter(pr=>(pr.decorations||[]).some(d=>d.art_group===g));return ps.length>0&&ps.every(pr=>pr.art_ready);};
               const setGroupReady=(g,val)=>{const newProds=(s.products||[]).map(pr=>(pr.decorations||[]).some(d=>d.art_group===g)?{...pr,art_ready:val}:pr);const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);};
-              return<tr key={i}>
+              return<tr key={i} style={omgBulkSel.has(i)?{background:'#eff6ff'}:undefined}>
+                <td style={{textAlign:'center'}}><input type="checkbox" checked={omgBulkSel.has(i)} onChange={()=>_toggleRow(i)} style={{cursor:'pointer'}}/></td>
                 <td style={{padding:4}}>{p.image_url?<img src={p.image_url} alt="" title="Hover to preview · click for full size" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',cursor:'pointer'}}
                   onMouseEnter={e=>{
                     const old=document.getElementById('omg-hover-preview');if(old)old.remove();
@@ -13668,7 +13712,7 @@ export default function App(){
                 <td style={{fontWeight:700,textAlign:'center'}}>{q}</td>
                 <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>${rev.toLocaleString()}</td>
               </tr>})}</tbody></table>
-            )}
+            </>)}
           </div>
         </div>
 
