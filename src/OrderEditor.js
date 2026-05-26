@@ -5379,7 +5379,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       }
       // TOPSTAR DIGITIZING / VECTOR PO — file creation vendor, billed back to the customer as a line item
       if(showPO==='topstar'){
-        const TOPSTAR={dst:{label:'DST Embroidery File',cost:15,sell:25,deco_type:'embroidery'},vector:{label:'Vector Logo',cost:10,sell:15,deco_type:'vector'}};
+        const TOPSTAR={dst:{label:'DST Embroidery File',cost:15,sell:25,deco_type:'embroidery',orderType:'Digitizing',emailService:'Digitizing — DST File'},vector:{label:'Vector Logo',cost:10,sell:15,deco_type:'vector',orderType:'Vector',emailService:'Vector'}};
         const svc=TOPSTAR[topstarService]||TOPSTAR.dst;
         const tsPoId='TS '+poCounter+(cust?.alpha_tag?' '+cust.alpha_tag:'');
         return<div className="modal-overlay" onClick={()=>!topstarSending&&setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640,maxHeight:'90vh',overflow:'auto'}}>
@@ -5423,8 +5423,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const custName=cust?.name||cust?.alpha_tag||'';
               const imgList=topstarImgs.map((u,i)=>'<li><a href="'+u+'">Image '+(i+1)+'</a></li>').join('');
               const html='<div style="font-family:Arial,sans-serif;font-size:14px;color:#1e293b">'+
-                '<h2 style="color:#0891b2">New Digitizing Order — '+tsPoIdFinal+'</h2>'+
-                '<p><strong>Service:</strong> '+svc.label+' ($'+svc.cost.toFixed(2)+')</p>'+
+                '<h2 style="color:#0891b2">New '+svc.orderType+' Order — '+tsPoIdFinal+'</h2>'+
+                '<p><strong>Service:</strong> '+svc.emailService+' ($'+svc.cost.toFixed(2)+')</p>'+
                 (custName?'<p><strong>Customer:</strong> '+custName+'</p>':'')+
                 '<p><strong>PO #:</strong> '+tsPoIdFinal+'</p>'+
                 '<p><strong>Instructions:</strong><br/>'+(topstarNotes?topstarNotes.replace(/\n/g,'<br/>'):'(none provided)')+'</p>'+
@@ -5432,7 +5432,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 '<p style="color:#64748b;font-size:12px">Sent from the National Sports Apparel portal. Reply to this email to reach the rep.</p></div>';
               let r={ok:false,error:'not sent'};
               try{r=await sendBrevoEmail({to:[{email:'info@topstardigitizing.com'}],
-                subject:'New Digitizing Order — '+tsPoIdFinal+' ('+svc.label+')',
+                subject:'New '+svc.orderType+' Order — '+tsPoIdFinal+' ('+svc.emailService+')',
                 htmlContent:html,
                 senderName:_ci?.name||'National Sports Apparel',
                 replyTo:cuEmail?{email:cuEmail,name:cu?.name||undefined}:undefined,
