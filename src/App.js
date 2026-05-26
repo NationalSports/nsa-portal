@@ -2202,6 +2202,147 @@ function dP(d,q,artFiles,cq){
   if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
 
+// ── DTF color editor helpers (SVG-based) ──
+// Browsers can't render/edit .ai, so the editor works on SVG (sourced via the
+// vectorizer); the .ai stays the archival master. "Knock out" removes a color
+// so the garment shows through — e.g. dropping black on a black garment.
+const _normColor=(c)=>{
+  if(!c)return'';let s=String(c).trim().toLowerCase();
+  if(s==='none'||s==='transparent'||s.startsWith('url('))return'';
+  const named={black:'#000000',white:'#ffffff',red:'#ff0000',lime:'#00ff00',green:'#008000',blue:'#0000ff',yellow:'#ffff00',navy:'#000080',gray:'#808080',grey:'#808080',silver:'#c0c0c0'};
+  if(named[s])return named[s];
+  const m=s.match(/^rgba?\(([^)]+)\)/);
+  if(m){const p=m[1].split(',').map(x=>parseFloat(x));if(p.length>=3)return'#'+p.slice(0,3).map(n=>Math.max(0,Math.min(255,Math.round(n))).toString(16).padStart(2,'0')).join('')}
+  if(/^#[0-9a-f]{3}$/.test(s))return'#'+s.slice(1).split('').map(ch=>ch+ch).join('');
+  if(/^#[0-9a-f]{6}$/.test(s))return s;
+  return s;
+};
+const _svgColorProps=['fill','stroke'];
+const extractSvgColors=(svgStr)=>{
+  if(!svgStr)return[];
+  let doc;try{doc=new DOMParser().parseFromString(svgStr,'image/svg+xml')}catch{return[]}
+  if(doc.querySelector('parsererror'))return[];
+  const set=new Set();
+  doc.querySelectorAll('*').forEach(el=>{
+    _svgColorProps.forEach(p=>{
+      const attr=_normColor(el.getAttribute(p));if(attr)set.add(attr);
+      const st=el.getAttribute('style');if(st){const mm=new RegExp(p+'\\s*:\\s*([^;]+)').exec(st);if(mm){const c=_normColor(mm[1]);if(c)set.add(c)}}
+    });
+  });
+  return[...set];
+};
+const applySvgEdits=(svgStr,edits)=>{
+  if(!svgStr||!edits)return svgStr;
+  let doc;try{doc=new DOMParser().parseFromString(svgStr,'image/svg+xml')}catch{return svgStr}
+  if(doc.querySelector('parsererror'))return svgStr;
+  const apply=(orig)=>{const e=edits[orig];if(!e)return null;return e.knockout?'none':(e.to||orig)};
+  doc.querySelectorAll('*').forEach(el=>{
+    _svgColorProps.forEach(p=>{
+      const cur=_normColor(el.getAttribute(p));
+      if(cur){const nv=apply(cur);if(nv!=null)el.setAttribute(p,nv)}
+      const st=el.getAttribute('style');
+      if(st){const re=new RegExp('('+p+'\\s*:\\s*)([^;]+)');const mm=re.exec(st);if(mm){const c=_normColor(mm[2]);const nv=apply(c);if(nv!=null)el.setAttribute('style',st.replace(re,'$1'+nv))}}
+    });
+  });
+  return new XMLSerializer().serializeToString(doc.documentElement);
+};
+const _svgViewSize=(svgStr)=>{
+  try{const d=new DOMParser().parseFromString(svgStr,'image/svg+xml');const s=d.documentElement;
+    const vb=(s.getAttribute('viewBox')||'').split(/[\s,]+/).map(Number).filter(n=>!isNaN(n));
+    let w=parseFloat(s.getAttribute('width'))||(vb.length===4?vb[2]:0);
+    let h=parseFloat(s.getAttribute('height'))||(vb.length===4?vb[3]:0);
+    return{w:w||1000,h:h||1000}}catch{return{w:1000,h:1000}}
+};
+
+// SVG recolor + color-knockout editor. Source SVG via the vectorizer (from the
+// art preview) or upload; recolor or drop out colors; preview against a garment
+// color; export SVG/PNG/PDF and save the print art back.
+function DTFColorEditor({artId,artName,sourceUrl,initialSvg,onSave,onClose,nf}){
+  const [svg,setSvg]=React.useState(initialSvg||'');
+  const [busy,setBusy]=React.useState(false);
+  const [garment,setGarment]=React.useState('#0f172a');
+  const [maxColors,setMaxColors]=React.useState(6);
+  const [testMode,setTestMode]=React.useState(true);
+  const [edits,setEdits]=React.useState({});
+  const colors=React.useMemo(()=>extractSvgColors(svg),[svg]);
+  const outSvg=React.useMemo(()=>applySvgEdits(svg,edits),[svg,edits]);
+  const setEdit=(c,patch)=>setEdits(p=>({...p,[c]:{...(p[c]||{}),...patch}}));
+  const _vectorizeData=async(base64)=>{
+    const r=await fetch('/.netlify/functions/vectorizer-proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageBase64:base64,mode:testMode?'test':'production',outputFormat:'svg',maxColors:maxColors||0})});
+    const data=await r.json();
+    if(!r.ok||data.error)throw new Error(data.error||('HTTP '+r.status));
+    return data.svg;
+  };
+  const vectorize=async()=>{
+    if(!sourceUrl){nf&&nf('No preview image to vectorize — use Upload instead','error');return}
+    setBusy(true);
+    try{
+      const resp=await fetch(sourceUrl);const blob=await resp.blob();
+      const dataUrl=await new Promise((res,rej)=>{const r=new FileReader();r.onloadend=()=>res(r.result);r.onerror=rej;r.readAsDataURL(blob)});
+      const base64=String(dataUrl).split(',')[1];
+      const s=await _vectorizeData(base64);setSvg(s);setEdits({});
+      nf&&nf('Vectorized'+(testMode?' (test — watermarked)':''));
+    }catch(e){nf&&nf('Vectorize from preview failed ('+e.message+'). Try Upload.','error')}
+    setBusy(false);
+  };
+  const upload=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.jpg,.jpeg,.svg';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;
+    if(f.name.toLowerCase().endsWith('.svg')){const t=await f.text();setSvg(t);setEdits({});return}
+    setBusy(true);try{const dataUrl=await new Promise(res=>{const r=new FileReader();r.onloadend=()=>res(r.result);r.readAsDataURL(f)});const s=await _vectorizeData(String(dataUrl).split(',')[1]);setSvg(s);setEdits({})}catch(e){nf&&nf('Vectorize failed: '+e.message,'error')}setBusy(false)};inp.click()};
+  const dlSvg=()=>{const b=new Blob([outSvg],{type:'image/svg+xml'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=(artName||'dtf')+'.svg';a.click();URL.revokeObjectURL(u)};
+  const dlPng=()=>{const {w,h}=_svgViewSize(outSvg);const b=new Blob([outSvg],{type:'image/svg+xml;charset=utf-8'});const u=URL.createObjectURL(b);const img=new Image();img.onload=()=>{const sc=Math.max(1,2400/Math.max(w,h));const c=document.createElement('canvas');c.width=Math.round(w*sc);c.height=Math.round(h*sc);c.getContext('2d').drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(u);c.toBlob(bl=>{const uu=URL.createObjectURL(bl);const a=document.createElement('a');a.href=uu;a.download=(artName||'dtf')+'.png';a.click();URL.revokeObjectURL(uu)},'image/png')};img.onerror=()=>{URL.revokeObjectURL(u);nf&&nf('PNG export failed','error')};img.src=u};
+  const dlPdf=async()=>{let holder=null;try{const doc=new DOMParser().parseFromString(outSvg,'image/svg+xml');if(doc.querySelector('parsererror'))throw new Error('Invalid SVG');const svgEl=doc.documentElement;const {w,h}=_svgViewSize(outSvg);holder=document.createElement('div');holder.style.cssText='position:fixed;left:-99999px;top:0;opacity:0;';const live=document.importNode(svgEl,true);holder.appendChild(live);document.body.appendChild(holder);const pdf=new jsPDF({orientation:w>=h?'landscape':'portrait',unit:'pt',format:[w,h]});await svg2pdf(live,pdf,{width:w,height:h});pdf.save((artName||'dtf')+'.pdf')}catch(e){nf&&nf('PDF export failed: '+(e?.message||e),'error')}finally{if(holder&&holder.parentNode)holder.parentNode.removeChild(holder)}};
+  const garmentSwatches=[['Black','#0f172a'],['Navy','#1e293b'],['Royal','#1d4ed8'],['Red','#b91c1c'],['Maroon','#7f1d1d'],['Green','#166534'],['Gray','#6b7280'],['White','#ffffff']];
+  return <div className="modal-overlay" onMouseDown={e=>{if(e.target===e.currentTarget)onClose&&onClose()}} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:10000,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+    <div className="modal" onMouseDown={e=>e.stopPropagation()} style={{background:'#fff',borderRadius:10,width:'min(960px,96vw)',maxHeight:'92vh',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <div style={{padding:'12px 16px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+        <div style={{fontWeight:800}}>🎨 DTF Color Editor — {artName||'Logo'}</div>
+        <button className="btn btn-sm" onClick={onClose} style={{fontSize:16,lineHeight:1}}>×</button>
+      </div>
+      <div style={{display:'flex',gap:0,flex:1,minHeight:0}}>
+        <div style={{flex:1,minWidth:0,padding:16,borderRight:'1px solid #e2e8f0',display:'flex',flexDirection:'column',gap:10,overflow:'auto'}}>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
+            <span style={{fontSize:11,fontWeight:700,color:'#64748b'}}>Garment:</span>
+            {garmentSwatches.map(([n,hex])=><button key={hex} title={n} onClick={()=>setGarment(hex)} style={{width:22,height:22,borderRadius:4,background:hex,border:garment===hex?'2px solid #2563eb':'1px solid #cbd5e1',cursor:'pointer'}}/>)}
+            <input type="color" value={garment} onChange={e=>setGarment(e.target.value)} style={{width:24,height:24,padding:0,border:'none',background:'none',cursor:'pointer'}}/>
+          </div>
+          <div style={{flex:1,minHeight:240,borderRadius:8,background:garment,display:'flex',alignItems:'center',justifyContent:'center',overflow:'auto',padding:16,backgroundImage:garment==='#ffffff'?'linear-gradient(45deg,#eee 25%,transparent 25%,transparent 75%,#eee 75%),linear-gradient(45deg,#eee 25%,transparent 25%,transparent 75%,#eee 75%)':undefined,backgroundSize:'16px 16px',backgroundPosition:'0 0,8px 8px'}}>
+            {outSvg?<div style={{maxWidth:'100%',maxHeight:'100%'}} dangerouslySetInnerHTML={{__html:outSvg.replace(/<svg /,'<svg style="max-width:100%;max-height:46vh;height:auto" ')}}/>:<div style={{color:'#94a3b8',fontSize:13,textAlign:'center'}}>No vector art yet — vectorize the preview or upload an image/SVG.</div>}
+          </div>
+        </div>
+        <div style={{width:300,flexShrink:0,padding:16,overflow:'auto',display:'flex',flexDirection:'column',gap:10}}>
+          {!svg&&<div style={{display:'flex',flexDirection:'column',gap:8}}>
+            <div style={{fontSize:12,color:'#64748b'}}>Get a vector to edit:</div>
+            <label style={{fontSize:11,color:'#64748b'}}>Max colors <input type="number" min={0} max={32} value={maxColors} onChange={e=>setMaxColors(parseInt(e.target.value)||0)} style={{width:54,marginLeft:6,padding:'2px 4px',border:'1px solid #cbd5e1',borderRadius:4}}/></label>
+            <label style={{fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:6}}><input type="checkbox" checked={testMode} onChange={e=>setTestMode(e.target.checked)}/>Test mode (free, watermarked)</label>
+            {sourceUrl&&<button className="btn btn-primary btn-sm" disabled={busy} onClick={vectorize}>{busy?'Vectorizing…':'Vectorize from preview'}</button>}
+            <button className="btn btn-secondary btn-sm" disabled={busy} onClick={upload}>Upload image / SVG</button>
+          </div>}
+          {svg&&<>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <span style={{fontSize:12,fontWeight:700}}>Colors ({colors.length})</span>
+              <button className="btn btn-sm" style={{fontSize:10}} onClick={()=>setEdits({})}>Reset all</button>
+            </div>
+            {colors.length===0&&<div style={{fontSize:11,color:'#94a3b8'}}>No editable fill colors found in this art.</div>}
+            {colors.map(c=>{const e=edits[c]||{};const ko=!!e.knockout;return <div key={c} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 0',borderBottom:'1px solid #f1f5f9'}}>
+              <span style={{width:22,height:22,borderRadius:4,border:'1px solid #cbd5e1',background:ko?'transparent':(e.to||c),backgroundImage:ko?'linear-gradient(45deg,#ddd 25%,transparent 25%,transparent 75%,#ddd 75%),linear-gradient(45deg,#ddd 25%,transparent 25%,transparent 75%,#ddd 75%)':undefined,backgroundSize:'8px 8px',backgroundPosition:'0 0,4px 4px',flexShrink:0}}/>
+              <span style={{fontSize:10,fontFamily:'monospace',color:'#64748b',width:60}}>{c}</span>
+              <input type="color" value={/^#[0-9a-f]{6}$/i.test(e.to||c)?(e.to||c):'#000000'} disabled={ko} onChange={ev=>setEdit(c,{to:ev.target.value,knockout:false})} style={{width:28,height:24,padding:0,border:'none',background:'none',cursor:ko?'not-allowed':'pointer',opacity:ko?0.4:1}} title="Recolor"/>
+              <button onClick={()=>setEdit(c,{knockout:!ko})} title="Drop out this color (garment shows through)" style={{marginLeft:'auto',fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:4,cursor:'pointer',border:'1px solid '+(ko?'#dc2626':'#cbd5e1'),background:ko?'#fef2f2':'#fff',color:ko?'#dc2626':'#475569'}}>{ko?'Knocked out':'Knock out'}</button>
+            </div>})}
+          </>}
+        </div>
+      </div>
+      <div style={{padding:'10px 16px',borderTop:'1px solid #e2e8f0',display:'flex',gap:8,justifyContent:'flex-end',flexWrap:'wrap'}}>
+        {svg&&<><button className="btn btn-sm btn-secondary" onClick={dlSvg}>SVG</button>
+        <button className="btn btn-sm btn-secondary" onClick={dlPng}>PNG</button>
+        <button className="btn btn-sm btn-secondary" onClick={dlPdf}>PDF</button>
+        <button className="btn btn-sm btn-primary" onClick={()=>onSave&&onSave(outSvg)}>Save print art</button></>}
+        <button className="btn btn-sm" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  </div>;
+}
+
 // Magic-link landing page. When an admin sends an invite, the email link includes
 // a Supabase access token in the URL hash; supabase-js auto-detects it because
 // detectSessionInUrl is enabled. We just need to confirm a session exists and
@@ -2640,6 +2781,9 @@ export default function App(){
   const[dtfBatches,setDTFBatches]=useState(()=>loadState('dtf_batches',[]));
   const[dtfSheetCounter,setDTFSheetCounter]=useState(()=>loadState('dtf_sheet_counter',1));
   const[dtfSel,setDTFSel]=useState(()=>new Set());
+  // Edited DTF print art (recolored / knocked-out SVG), keyed by art id.
+  const[dtfArt,setDTFArt]=useState(()=>loadState('dtf_art',{}));
+  const[dtfEditor,setDTFEditor]=useState(null);// {artId,artName,sourceUrl}
   const[batchScan,setBatchScan]=useState('');// scan/lookup field
   const[editingBatchId,setEditingBatchId]=useState(null);// batch PO id being edited in queue
   const[sanmarPreview,setSanMarPreview]=useState(null);// {poNumber,batchPOs,vendorName} — SanMar dry-run preview modal
@@ -3651,6 +3795,7 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('batch_counter',batchCounter)},[batchCounter]);
   React.useEffect(()=>{_saveAppState('dtf_batches',dtfBatches)},[dtfBatches]);
   React.useEffect(()=>{_saveAppState('dtf_sheet_counter',dtfSheetCounter)},[dtfSheetCounter]);
+  React.useEffect(()=>{_saveAppState('dtf_art',dtfArt)},[dtfArt]);
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
   // Boot-time snapshot regression scan: walk each SO's snapshot history and flag any whose latest
@@ -8667,7 +8812,9 @@ export default function App(){
     const GroupRow=({g})=>{const sel=dtfSel.has(g.art_id);return <tr style={sel?{background:'#eff6ff'}:undefined}>
       <td style={{textAlign:'center'}}>{g.ai_ready?<input type="checkbox" checked={sel} onChange={()=>toggle(g.art_id)} style={{cursor:'pointer'}}/>:<span title="Needs a .ai production file before it can be ganged">🚫</span>}</td>
       <td style={{padding:4}}>{g.preview_url?<img src={g.preview_url} alt="" style={{width:40,height:40,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0'}}/>:<span style={{color:'#cbd5e1',fontSize:18}}>🎨</span>}</td>
-      <td style={{fontWeight:600,fontSize:12}}>{g.art_name}</td>
+      <td style={{fontWeight:600,fontSize:12}}>{g.art_name}
+        <div><button onClick={()=>setDTFEditor({artId:g.art_id,artName:g.art_name,sourceUrl:g.preview_url})} style={{fontSize:10,color:'#7c3aed',fontWeight:700,border:'none',background:'none',padding:0,cursor:'pointer'}}>🎨 Colors / knockout</button>{dtfArt[g.art_id]?.svg&&<span title="Print art color-prepped" style={{marginLeft:6,fontSize:9,fontWeight:700,color:'#7c3aed',background:'#f3e8ff',padding:'1px 5px',borderRadius:4}}>prepped</span>}</div>
+      </td>
       <td style={{fontSize:11,color:'#64748b'}}>{g.art_size||'—'}</td>
       <td style={{textAlign:'right',fontWeight:700}}>{g.qty}</td>
       <td style={{fontSize:11,color:'#64748b'}}>{g.lines.length} item{g.lines.length>1?'s':''} · {[...new Set(g.lines.map(l=>l.customer).filter(Boolean))].slice(0,2).join(', ')||'—'}</td>
@@ -8723,6 +8870,10 @@ export default function App(){
           <div style={{marginTop:8,display:'flex',flexWrap:'wrap',gap:6}}>{(b.groups||[]).map((g,gi)=><span key={gi} style={{fontSize:11,background:'#f1f5f9',borderRadius:4,padding:'2px 8px',color:'#475569',display:'inline-flex',alignItems:'center',gap:6}}>{g.art_name} ×{g.qty}{g.art_size?' ('+g.art_size+')':''}{(g.ai_files||[]).length>0?(g.ai_files).map((f,fi)=><a key={fi} href={f.url} target="_blank" rel="noopener noreferrer" title={f.name} style={{color:'#1d4ed8',fontWeight:700}}>⬇ .ai</a>):<span title="No .ai production file" style={{color:'#b91c1c',fontWeight:700}}>⚠ no .ai</span>}</span>)}</div>
         </div>)}</div>}
       </div>
+      {dtfEditor&&<DTFColorEditor artId={dtfEditor.artId} artName={dtfEditor.artName} sourceUrl={dtfEditor.sourceUrl}
+        initialSvg={dtfArt[dtfEditor.artId]?.svg||''}
+        onSave={svgStr=>{setDTFArt(p=>({...p,[dtfEditor.artId]:{svg:svgStr,updated_at:new Date().toISOString(),by:cu?.name||''}}));nf('Saved print art for '+(dtfEditor.artName||'logo'));setDTFEditor(null)}}
+        onClose={()=>setDTFEditor(null)} nf={nf}/>}
     </div>;
   }
   function rBatchPOs(){
