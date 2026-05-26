@@ -249,8 +249,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(prodItems.length){
             // SanMar nests image fields in productImageInfo — flatten before reading (same fields as the catalog builder).
             const raw=prodItems[0];const it={...(raw.productBasicInfo||{}),...(raw.productImageInfo||{}),...raw};
-            front=it.colorProductImageThumbnail||it.colorProductImage||it.colorSwatchImage||it.productImage||it.thumbnailImage||'';
-            back=it.colorProductImageBackThumbnail||it.colorProductImageBack||it.colorProductBackImage||'';
+            // Prefer the full-resolution product image over the thumbnail — the mock canvas is large.
+            front=it.colorProductImage||it.productImage||it.colorProductImageThumbnail||it.thumbnailImage||it.colorSwatchImage||'';
+            back=it.colorProductImageBack||it.colorProductBackImage||it.colorProductImageBackThumbnail||'';
           }
         }catch(e){console.warn('[SM] Image fetch error for',sku,e.message)}
       }else if(isMT){
