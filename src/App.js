@@ -13546,8 +13546,20 @@ export default function App(){
               const groupReady=(g)=>{const ps=(s.products||[]).filter(pr=>(pr.decorations||[]).some(d=>d.art_group===g));return ps.length>0&&ps.every(pr=>pr.art_ready);};
               const setGroupReady=(g,val)=>{const newProds=(s.products||[]).map(pr=>(pr.decorations||[]).some(d=>d.art_group===g)?{...pr,art_ready:val}:pr);const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);};
               return<tr key={i}>
-                <td style={{padding:4}}>{p.image_url?<img src={p.image_url} alt="" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',cursor:'pointer'}} onClick={e=>{
-                  e.stopPropagation();const overlay=document.createElement('div');
+                <td style={{padding:4}}>{p.image_url?<img src={p.image_url} alt="" title="Hover to preview · click for full size" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',cursor:'pointer'}}
+                  onMouseEnter={e=>{
+                    const old=document.getElementById('omg-hover-preview');if(old)old.remove();
+                    const r=e.currentTarget.getBoundingClientRect();const size=280;
+                    const pop=document.createElement('div');pop.id='omg-hover-preview';
+                    let left=r.right+12;if(left+size>window.innerWidth)left=r.left-size-12;left=Math.max(8,left);
+                    let top=r.top+r.height/2-size/2;top=Math.max(8,Math.min(top,window.innerHeight-size-8));
+                    pop.style.cssText=`position:fixed;z-index:9998;pointer-events:none;left:${left}px;top:${top}px;width:${size}px;height:${size}px;border-radius:8px;overflow:hidden;background:#fff;border:1px solid #e2e8f0;box-shadow:0 8px 32px rgba(0,0,0,0.35)`;
+                    pop.innerHTML=`<img src="${p.image_url}" style="width:100%;height:100%;object-fit:contain;background:#fff"/>`;
+                    document.body.appendChild(pop);
+                  }}
+                  onMouseLeave={()=>{const el=document.getElementById('omg-hover-preview');if(el)el.remove()}}
+                  onClick={e=>{
+                  e.stopPropagation();const hp=document.getElementById('omg-hover-preview');if(hp)hp.remove();const overlay=document.createElement('div');
                   overlay.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;cursor:pointer';
                   overlay.innerHTML=`<img src="${p.image_url}" style="max-width:90vw;max-height:90vh;object-fit:contain;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.5)"/>`;
                   overlay.onclick=()=>overlay.remove();document.body.appendChild(overlay);
