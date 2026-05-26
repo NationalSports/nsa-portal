@@ -1605,10 +1605,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Build a set of (item_idx, deco_idx) pairs already covered by a released
     // job so we can skip them when assembling itemSigs below.
     const releasedJobs=safeJobs(o).filter(j=>j._released);
-    const releasedItemDecos=new Set();
-    releasedJobs.forEach(j=>(j.items||[]).forEach(gi=>{
+    // Manually merged jobs combine several decoration signatures into one job by hand. Like
+    // released jobs, their item/deco pairs must not be re-grouped or re-split by the auto-builder.
+    // (Unlike released jobs, their unit counts are still refreshed below as item sizes change.)
+    const mergedJobs=safeJobs(o).filter(j=>j._merged&&!j._released);
+    const frozenItemDecos=new Set();
+    [...releasedJobs,...mergedJobs].forEach(j=>(j.items||[]).forEach(gi=>{
       const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx];
-      dis.forEach(di=>releasedItemDecos.add(gi.item_idx+'::'+di));
+      dis.forEach(di=>frozenItemDecos.add(gi.item_idx+'::'+di));
     }));
     // Step 1: Build decoration entries per item, grouped by deco type
     // Each item may produce multiple entries if it has decorations with different deco types
@@ -1623,7 +1627,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // First, classify each decoration by its resolved deco type
       const decosByType={};
       safeDecos(it).forEach((d,di)=>{
-        if(releasedItemDecos.has(ii+'::'+di))return;
+        if(frozenItemDecos.has(ii+'::'+di))return;
         if(d.kind==='art'){
           const artF=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
           const dt=artF?.deco_type||d.deco_type||'screen_print';
@@ -1789,11 +1793,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Gate: a job that was already submitted to art must not fall off the SO just because its item
     // decoration went missing (e.g. a decoration that was dropped on a bad save). As long as the job's
     // artwork still exists in the SO's Art Library, keep the job so it stays visible and isn't lost.
-    const _kept=[...newJobs,...splitJobs,...releasedJobs];
+    // Merged jobs are preserved as-is except for refreshed unit counts so their totals track
+    // item size/receiving edits — without re-splitting the hand-merged grouping.
+    const recalcedMerged=mergedJobs.map(j=>{
+      let total=0,fulfilled=0;
+      (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{total+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)})});
+      const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
+      return{...j,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
+    });
+    const _kept=[...newJobs,...splitJobs,...releasedJobs,...recalcedMerged];
     const _keptIds=new Set(_kept.map(j=>j.id));
     const _keptKeys=new Set(_kept.map(j=>j.key));
     const orphanedSubmitted=safeJobs(o).filter(j=>{
-      if(!j||j._released||j.split_from)return false;// already handled above
+      if(!j||j._released||j._merged||j.split_from)return false;// already handled above
       if(_keptIds.has(j.id)||_keptKeys.has(j.key))return false;// already represented by a rebuilt job
       const artIds=(Array.isArray(j._art_ids)&&j._art_ids.length?j._art_ids:[j.art_file_id]).filter(Boolean);
       const hasRealArt=artIds.some(aid=>aid&&aid!=='__tbd'&&af.some(a=>a.id===aid));
@@ -1803,28 +1815,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return[..._kept,...orphanedSubmitted];
   },[o,af]);// eslint-disable-line
 
-  // Auto-sync jobs whenever decorations or items change (does NOT mark dirty — auto-sync is not a user edit)
+  // Auto-sync jobs whenever decorations or items change (does NOT mark dirty — auto-sync is not a user edit).
+  // syncJobs preserves manually merged/split/released jobs, so it's safe to run on every change — newly
+  // added items (e.g. a different deco type) always spawn their own job here.
   React.useEffect(()=>{
     if(!isSO)return;
     const currentJobs=safeJobs(o);
-    // If any jobs were manually merged, only recalculate their units — don't re-split them
-    if(currentJobs.some(j=>j._merged)){
-      const updatedJobs=currentJobs.map(j=>{
-        let total=0,fulfilled=0;
-        (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{total+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)});});
-        const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-        if(j.total_units===total&&j.fulfilled_units===fulfilled&&j.item_status===itemSt)return j;
-        return{...j,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
-      });
-      if(updatedJobs.some((j,i)=>j!==currentJobs[i]))setO(e=>({...e,jobs:updatedJobs}));
-      return;
-    }
     const synced=syncJobs();
-    const currentKeys=currentJobs.map(j=>j.key).sort().join(',');
-    const newKeys=synced.map(j=>j.key).sort().join(',');
-    const currentUnits=currentJobs.map(j=>j.total_units+'-'+j.fulfilled_units).join(',');
-    const newUnits=synced.map(j=>j.total_units+'-'+j.fulfilled_units).join(',');
-    if(currentKeys!==newKeys||currentUnits!==newUnits){
+    const _keySig=js=>js.map(j=>j.key).sort().join(',');
+    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units).sort().join(',');
+    if(_keySig(currentJobs)!==_keySig(synced)||_unitSig(currentJobs)!==_unitSig(synced)){
       setO(e=>({...e,jobs:synced}));// don't bump updated_at for auto-sync — avoids false dirty/conflict detection
     }
   },[syncJobs]);// eslint-disable-line
@@ -5931,8 +5931,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {isSO&&tab==='jobs'&&(()=>{
       const jobs=safeJobs(o);
 
-      // Manual refresh recalculates everything
-      const refreshJobs=()=>{sv('jobs',syncJobs());nf('Jobs synced')};
+      // Manual refresh — rebuild jobs from current items/decorations and persist. Preserves
+      // merged/split/released jobs; picks up any newly added items that don't yet have a job.
+      const refreshJobs=()=>{const synced=syncJobs();const updated={...o,jobs:synced,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('🔄 Jobs synced — '+synced.length+' job'+(synced.length===1?'':'s'))};
 
       // Split job modal state
       // Split job modal state is at component level (splitModal/setSplitModal)
@@ -7430,6 +7431,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>Production Jobs ({activeJobs.length}{hasDrafts?' + '+draftJobs.length+' drafts':''})</h2>
         <div style={{display:'flex',gap:6}}>
+          <button className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={refreshJobs} title="Rebuild jobs from current line items & decorations — picks up newly added items. Keeps merges, splits & submitted art.">🔄 Sync Jobs</button>
           {jobs.some(j=>j.art_status==='needs_art')&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={openJobWizard}>Submit to Art</button>}
           {jobs.length>1&&!mergeMode&&<button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={()=>setMergeMode({selected:[]})}>Merge Jobs</button>}
           {mergeMode&&<><button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} disabled={mergeMode.selected.length<2} onClick={()=>{
