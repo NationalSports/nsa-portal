@@ -448,9 +448,26 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     if (!sel || !detail || !onCreateSO) return;
     const open = (detail.orders || []).filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled');
     if (!open.length) { flash('No unbatched orders to send'); return; }
-    if (!window.confirm(`Create a Sales Order from ${open.length} order${open.length === 1 ? '' : 's'}?`)) return;
     const openIds = new Set(open.map((o) => o.id));
     const lines = (detail.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent);
+
+    // Inventory check: compare demand for this batch against our warehouse +
+    // Adidas vendor stock and surface any shortfalls before creating the SO.
+    const stockByPid = {};
+    (detail.catalog || []).forEach((c) => { if (c.product_id && detail.stockByWp?.[c.id]) stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    const demand = {};
+    lines.forEach((i) => { if (!i.product_id) return; const k = i.product_id + '|' + (i.size || 'OS'); demand[k] = (demand[k] || 0) + (i.qty || 1); });
+    const shortages = [];
+    Object.entries(demand).forEach(([k, q]) => {
+      const [pid, size] = k.split('|'); const st = stockByPid[pid]; if (!st) return;
+      const wh = Number((st.size_stock || {})[size]) || 0;
+      const ven = Number((st.vendor_size_stock || {})[size]) || 0;
+      const avail = wh + ven;
+      if (q > avail) shortages.push(`• ${st.name || pid} ${size}: need ${q}, have ${avail} (${wh} ours + ${ven} Adidas)${(st.on_order_qty || st.vendor_eta) ? ' — more on order' : ''}`);
+    });
+    const head = `Create a Sales Order from ${open.length} order${open.length === 1 ? '' : 's'}?`;
+    const msg = shortages.length ? `${head}\n\n⚠️ Inventory shortfalls for this batch:\n${shortages.join('\n')}\n\nThese may need a PO or backorder. Create the Sales Order anyway?` : head;
+    if (!window.confirm(msg)) return;
 
     // Which products collect a number / name (from catalog singles + bundle components).
     const personalize = {};
