@@ -1780,6 +1780,16 @@ const _persistFailedIds=()=>{_lsSet('nsa_save_failed_ids',JSON.stringify([..._db
 _dbDuplicateSkuIds.forEach(id=>{_dbSaveFailedIds.delete(id)});if(_dbDuplicateSkuIds.size)_persistFailedIds();
 // Track IDs with unsaved local changes (diffSave skipped because DB not ready) — protects from reload overwrite
 const _dbSavePendingIds=new Set();
+// Merge freshly-loaded assigned_todos with the local copy. Keeps the local version of any todo whose
+// save is still in-flight or failed (and any local-only todo not yet persisted), so a background
+// realtime/poll reload never drops a task the user just created or completed before it round-trips.
+const _mergeAssignedTodos=(dbTodos,localTodos)=>{
+  const prot=id=>_dbSavePendingIds.has(id)||_dbSaveFailedIds.has(id);
+  const dbIds=new Set(dbTodos.map(t=>t.id));
+  const merged=dbTodos.map(t=>prot(t.id)?((localTodos||[]).find(p=>p.id===t.id)||t):t);
+  const localOnly=(localTodos||[]).filter(t=>!dbIds.has(t.id)&&prot(t.id));
+  return localOnly.length?[...localOnly,...merged]:merged;
+};
 // Track recent saves by this client — prevents false "modified by another user" conflicts from own realtime echo
 const _dbRecentSaves={};// {id: timestamp}
 // Retry a network-flaky upsert/select promise factory. Only retries transport errors (TypeError: Failed to fetch),
@@ -2996,7 +3006,8 @@ export default function App(){
         const prodMerge=_mergeProtected(d.products,'prod');
         // Update snapshot before state — auto-save effects will diff against this.
         // Merge into existing snap so non-reloaded keys (assignedTodos, repCsr, etc.) aren't wiped.
-        _dbSnap.current={..._dbSnap.current,ests:estMerge.snap,sos:soMerge.snap,invs:invMerge.snap,msgs:msgMerge.snap,cust:custMerge.snap,prod:prodMerge.snap,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
+        const todoMerge=_mergeAssignedTodos(d.assignedTodos||[],_dbSnap.current.assignedTodos||[]);
+        _dbSnap.current={..._dbSnap.current,ests:estMerge.snap,sos:soMerge.snap,invs:invMerge.snap,msgs:msgMerge.snap,cust:custMerge.snap,prod:prodMerge.snap,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues,assignedTodos:todoMerge};
         // Use change detection to avoid triggering save effects needlessly
         if(d.team.length)setREPS(prev=>_jsonEq(prev,d.team)?prev:d.team);
         setEsts(estMerge.apply);
@@ -3008,6 +3019,7 @@ export default function App(){
         if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
         if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
         setIssues(prev=>{const v=d.issues||[];return _jsonEq(prev,v)?prev:v});
+        setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return _jsonEq(prev,v)?prev:v});
         if(d.decoVendors)setDecoVendors(prev=>_jsonEq(prev,d.decoVendors)?prev:d.decoVendors);
         if(d.decoVendorPricing)setDecoVendorPricing(prev=>_jsonEq(prev,d.decoVendorPricing)?prev:d.decoVendorPricing);
         // Refresh app_state keys
@@ -3023,7 +3035,7 @@ export default function App(){
       const debouncedReload=()=>{if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,2000)};
       // Subscribe to core tables + pick_lines for instant warehouse sync
       let _rtErrorLogged=false;
-      ['estimates','sales_orders','invoices','messages','customers','products','so_item_pick_lines'].forEach(table=>{
+      ['estimates','sales_orders','invoices','messages','customers','products','so_item_pick_lines','assigned_todos','todo_comments'].forEach(table=>{
         const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload()}).subscribe((status,err)=>{
           if(status==='SUBSCRIBED')return;
           if(status==='CHANNEL_ERROR'||status==='TIMED_OUT'){
@@ -3099,7 +3111,7 @@ export default function App(){
           team:d._coreOnly?_prevSnap.team:d.team,
           omg:d._coreOnly?_prevSnap.omg:d.omg_stores,
           issues:d._coreOnly?_prevSnap.issues:d.issues,
-          assignedTodos:_prevSnap.assignedTodos||[]};
+          assignedTodos:d._coreOnly?(_prevSnap.assignedTodos||[]):_mergeAssignedTodos(d.assignedTodos||[],_prevSnap.assignedTodos||[])};
         setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(prev.find(p=>p.id===e.id)||e):mergeEst(e));return changed(prev,merged)?merged:prev}const merged2=d.estimates.map(mergeEst);return changed(prev,merged2)?merged2:prev});
         setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;
           // If DB has empty items/jobs (mid-save transient state), keep local entirely
@@ -3129,6 +3141,7 @@ export default function App(){
         setCust(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
+        if(!d._coreOnly)setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return changed(prev,v)?v:prev});
         if(d.products.length)setProd(prev=>{const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;if(!changed(prev,base))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,_cleanupDuplicateProducts)});
         // Refresh app_state keys (batch POs, inventory POs, etc.)
         const as=d.appState||{};
