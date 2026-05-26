@@ -190,13 +190,14 @@ Findings below are *in addition* to the engine review above. Items marked
   Corrupts fulfillment/short-ship tracking. (Single-line POs happen to line up;
   the invoice-PO receive at `:25793/:25808` uses a consistent scheme and is fine.)
 
-- **"Apply Credit" can be spent more than once** — `OrderEditor.js:2236`
-  **(verified)**. Applying a customer credit only stamps `credit_applied` /
-  `credit_amount` on the order; it never decrements the customer's credit ledger
-  (`customer_credits` / `customer_credit_usage`). The same balance can be applied
-  to multiple orders. (The promo path *does* record usage — this path doesn't.)
-  Recommend verifying whether consumption is recorded at invoicing; on its face
-  it is not.
+- **~~"Apply Credit" can be spent more than once~~ — NOT A BUG (verified).**
+  Initial read of `OrderEditor.js:2236` suggested applying a credit never
+  decrements the ledger. On verification, the deduction happens at estimate→SO
+  conversion (`App.js:4583–4598`): `credit_applied`/`credit_amount` is consumed
+  via `_dbSaveCreditUsage`/`_dbSaveCredit` against the *current* balance, so an
+  exhausted credit can't be re-spent on a later order. The editor click only sets
+  the flag; consumption is recorded at conversion. No fix needed. (Left here as a
+  record of the false positive.)
 
 - **Final invoice closes the SO even if the invoice didn't save** —
   `OrderEditor.js:4869–4871` **(verified)**. `onInv(prev=>[...prev,inv])` then,
