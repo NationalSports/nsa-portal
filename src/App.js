@@ -637,7 +637,16 @@ const _dbLoad = async (opts={}) => {
       const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,uploaded:a.uploaded,_version:a._version}));
       const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
       const jobs=soJobs.filter(j=>j.so_id===so.id).map(j=>{const{so_id:_,...rest}=j;return rest});
-      const items=soItems.filter(i=>i.so_id===so.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
+      // Dedup orphaned duplicate so_items sharing an item_index. These arise when an "insert-new-then-delete-old"
+      // save swap was interrupted after the child (deco/pick) deletes but before the parent so_items delete — leaving
+      // an empty phantom row alongside the real one. If both reach the client the phantom can land at the canonical
+      // index and trip the per-item decoration safety guard ("had N decos in DB but client has 0"), blocking every
+      // subsequent save. Keep, per item_index, the row carrying the most children (the real one; newest id breaks ties).
+      const _soItemsRaw=soItems.filter(i=>i.so_id===so.id);
+      const _itemChildCount=it=>soDecos.filter(d=>d.so_item_id===it.id).length+soPicks.filter(p=>p.so_item_id===it.id).length+soPOs.filter(p=>p.so_item_id===it.id).length;
+      const _itemByIdx=new Map();
+      _soItemsRaw.forEach(it=>{const cur=_itemByIdx.get(it.item_index);if(!cur){_itemByIdx.set(it.item_index,it);return}const a=_itemChildCount(it),b=_itemChildCount(cur);if(a>b||(a===b&&it.id>cur.id))_itemByIdx.set(it.item_index,it)});
+      const items=[..._itemByIdx.values()].sort((a,b)=>a.item_index-b.item_index).map(item=>{
         const decorations=soDecos.filter(d=>d.so_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,so_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
         const pick_lines=soPicks.filter(pk=>pk.so_item_id===item.id).map(pk=>{const{id:_,so_item_id:__,...rest}=pk;const sizes=rest.sizes||{};delete rest.sizes;return{...rest,...sizes}});
         const po_lines=soPOs.filter(po=>po.so_item_id===item.id).map(po=>{const{id:_,so_item_id:__,...rest}=po;const sizes=rest.sizes||{};delete rest.sizes;
