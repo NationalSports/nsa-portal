@@ -3667,13 +3667,23 @@ export default function App(){
       const lastGoodCount=lastGood.snapshot.items.length;
       if(liveCount<lastGoodCount){flagged.push({soId,liveCount,lastGoodCount,lastGoodTs:lastGood.ts})}
     });
-    if(flagged.length){
+    // Admin-only: reps and other users should never see this internal data-integrity alert.
+    const _isAdminRole=cu?.role==='admin'||cu?.role==='super_admin';
+    if(flagged.length&&_isAdminRole){
       console.warn('[boot-scan] '+flagged.length+' SO(s) have fewer items than their last snapshot:',flagged);
-      const summary=flagged.slice(0,3).map(f=>f.soId+' ('+f.liveCount+'/'+f.lastGoodCount+')').join(', ');
-      nf('⚠️ '+flagged.length+' SO(s) appear to have lost items vs. snapshot history: '+summary+(flagged.length>3?'…':'')+' — see Change Log','error');
-      flagged.forEach(f=>{
-        logChange('snapshot_regression','SO',f.soId,'Live: '+f.liveCount+' items, last good snapshot ('+f.lastGoodTs+'): '+f.lastGoodCount+' items');
-      });
+      // File each flagged SO as a system issue with a stable id so it's created once and
+      // doesn't nag on every login. Already-filed (open or resolved) SOs are skipped.
+      const newIssues=flagged
+        .filter(f=>!issues.some(i=>i.id==='ISS-SNAPREG-'+f.soId))
+        .map(f=>({id:'ISS-SNAPREG-'+f.soId,status:'open',priority:'high',
+          description:f.soId+' appears to have lost items: '+f.liveCount+' live vs. '+f.lastGoodCount+' in last good snapshot ('+f.lastGoodTs+'). Review the SO and its snapshot history.',
+          page:'Sales Orders',viewing:f.soId,reported_by:'System',role:'system',
+          timestamp:new Date().toISOString(),recent_errors:[],resolved_at:null,resolution:null}));
+      if(newIssues.length){
+        setIssues(prev=>{const add=newIssues.filter(n=>!prev.some(i=>i.id===n.id));return add.length?[...add,...prev]:prev});
+        newIssues.forEach(n=>logChange('snapshot_regression','SO',n.viewing,n.description));
+        nf('⚠️ '+newIssues.length+' SO(s) may have lost items vs. snapshot history — logged to the Issues page','error');
+      }
     }
   },[sos,soHistory]);
   React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
