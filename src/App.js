@@ -2276,6 +2276,147 @@ function dP(d,q,artFiles,cq){
   if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
 
+// ── DTF color editor helpers (SVG-based) ──
+// Browsers can't render/edit .ai, so the editor works on SVG (sourced via the
+// vectorizer); the .ai stays the archival master. "Knock out" removes a color
+// so the garment shows through — e.g. dropping black on a black garment.
+const _normColor=(c)=>{
+  if(!c)return'';let s=String(c).trim().toLowerCase();
+  if(s==='none'||s==='transparent'||s.startsWith('url('))return'';
+  const named={black:'#000000',white:'#ffffff',red:'#ff0000',lime:'#00ff00',green:'#008000',blue:'#0000ff',yellow:'#ffff00',navy:'#000080',gray:'#808080',grey:'#808080',silver:'#c0c0c0'};
+  if(named[s])return named[s];
+  const m=s.match(/^rgba?\(([^)]+)\)/);
+  if(m){const p=m[1].split(',').map(x=>parseFloat(x));if(p.length>=3)return'#'+p.slice(0,3).map(n=>Math.max(0,Math.min(255,Math.round(n))).toString(16).padStart(2,'0')).join('')}
+  if(/^#[0-9a-f]{3}$/.test(s))return'#'+s.slice(1).split('').map(ch=>ch+ch).join('');
+  if(/^#[0-9a-f]{6}$/.test(s))return s;
+  return s;
+};
+const _svgColorProps=['fill','stroke'];
+const extractSvgColors=(svgStr)=>{
+  if(!svgStr)return[];
+  let doc;try{doc=new DOMParser().parseFromString(svgStr,'image/svg+xml')}catch{return[]}
+  if(doc.querySelector('parsererror'))return[];
+  const set=new Set();
+  doc.querySelectorAll('*').forEach(el=>{
+    _svgColorProps.forEach(p=>{
+      const attr=_normColor(el.getAttribute(p));if(attr)set.add(attr);
+      const st=el.getAttribute('style');if(st){const mm=new RegExp(p+'\\s*:\\s*([^;]+)').exec(st);if(mm){const c=_normColor(mm[1]);if(c)set.add(c)}}
+    });
+  });
+  return[...set];
+};
+const applySvgEdits=(svgStr,edits)=>{
+  if(!svgStr||!edits)return svgStr;
+  let doc;try{doc=new DOMParser().parseFromString(svgStr,'image/svg+xml')}catch{return svgStr}
+  if(doc.querySelector('parsererror'))return svgStr;
+  const apply=(orig)=>{const e=edits[orig];if(!e)return null;return e.knockout?'none':(e.to||orig)};
+  doc.querySelectorAll('*').forEach(el=>{
+    _svgColorProps.forEach(p=>{
+      const cur=_normColor(el.getAttribute(p));
+      if(cur){const nv=apply(cur);if(nv!=null)el.setAttribute(p,nv)}
+      const st=el.getAttribute('style');
+      if(st){const re=new RegExp('('+p+'\\s*:\\s*)([^;]+)');const mm=re.exec(st);if(mm){const c=_normColor(mm[2]);const nv=apply(c);if(nv!=null)el.setAttribute('style',st.replace(re,'$1'+nv))}}
+    });
+  });
+  return new XMLSerializer().serializeToString(doc.documentElement);
+};
+const _svgViewSize=(svgStr)=>{
+  try{const d=new DOMParser().parseFromString(svgStr,'image/svg+xml');const s=d.documentElement;
+    const vb=(s.getAttribute('viewBox')||'').split(/[\s,]+/).map(Number).filter(n=>!isNaN(n));
+    let w=parseFloat(s.getAttribute('width'))||(vb.length===4?vb[2]:0);
+    let h=parseFloat(s.getAttribute('height'))||(vb.length===4?vb[3]:0);
+    return{w:w||1000,h:h||1000}}catch{return{w:1000,h:1000}}
+};
+
+// SVG recolor + color-knockout editor. Source SVG via the vectorizer (from the
+// art preview) or upload; recolor or drop out colors; preview against a garment
+// color; export SVG/PNG/PDF and save the print art back.
+function DTFColorEditor({artId,artName,sourceUrl,initialSvg,onSave,onClose,nf}){
+  const [svg,setSvg]=React.useState(initialSvg||'');
+  const [busy,setBusy]=React.useState(false);
+  const [garment,setGarment]=React.useState('#0f172a');
+  const [maxColors,setMaxColors]=React.useState(6);
+  const [testMode,setTestMode]=React.useState(true);
+  const [edits,setEdits]=React.useState({});
+  const colors=React.useMemo(()=>extractSvgColors(svg),[svg]);
+  const outSvg=React.useMemo(()=>applySvgEdits(svg,edits),[svg,edits]);
+  const setEdit=(c,patch)=>setEdits(p=>({...p,[c]:{...(p[c]||{}),...patch}}));
+  const _vectorizeData=async(base64)=>{
+    const r=await fetch('/.netlify/functions/vectorizer-proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageBase64:base64,mode:testMode?'test':'production',outputFormat:'svg',maxColors:maxColors||0})});
+    const data=await r.json();
+    if(!r.ok||data.error)throw new Error(data.error||('HTTP '+r.status));
+    return data.svg;
+  };
+  const vectorize=async()=>{
+    if(!sourceUrl){nf&&nf('No preview image to vectorize — use Upload instead','error');return}
+    setBusy(true);
+    try{
+      const resp=await fetch(sourceUrl);const blob=await resp.blob();
+      const dataUrl=await new Promise((res,rej)=>{const r=new FileReader();r.onloadend=()=>res(r.result);r.onerror=rej;r.readAsDataURL(blob)});
+      const base64=String(dataUrl).split(',')[1];
+      const s=await _vectorizeData(base64);setSvg(s);setEdits({});
+      nf&&nf('Vectorized'+(testMode?' (test — watermarked)':''));
+    }catch(e){nf&&nf('Vectorize from preview failed ('+e.message+'). Try Upload.','error')}
+    setBusy(false);
+  };
+  const upload=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.jpg,.jpeg,.svg';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;
+    if(f.name.toLowerCase().endsWith('.svg')){const t=await f.text();setSvg(t);setEdits({});return}
+    setBusy(true);try{const dataUrl=await new Promise(res=>{const r=new FileReader();r.onloadend=()=>res(r.result);r.readAsDataURL(f)});const s=await _vectorizeData(String(dataUrl).split(',')[1]);setSvg(s);setEdits({})}catch(e){nf&&nf('Vectorize failed: '+e.message,'error')}setBusy(false)};inp.click()};
+  const dlSvg=()=>{const b=new Blob([outSvg],{type:'image/svg+xml'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=(artName||'dtf')+'.svg';a.click();URL.revokeObjectURL(u)};
+  const dlPng=()=>{const {w,h}=_svgViewSize(outSvg);const b=new Blob([outSvg],{type:'image/svg+xml;charset=utf-8'});const u=URL.createObjectURL(b);const img=new Image();img.onload=()=>{const sc=Math.max(1,2400/Math.max(w,h));const c=document.createElement('canvas');c.width=Math.round(w*sc);c.height=Math.round(h*sc);c.getContext('2d').drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(u);c.toBlob(bl=>{const uu=URL.createObjectURL(bl);const a=document.createElement('a');a.href=uu;a.download=(artName||'dtf')+'.png';a.click();URL.revokeObjectURL(uu)},'image/png')};img.onerror=()=>{URL.revokeObjectURL(u);nf&&nf('PNG export failed','error')};img.src=u};
+  const dlPdf=async()=>{let holder=null;try{const doc=new DOMParser().parseFromString(outSvg,'image/svg+xml');if(doc.querySelector('parsererror'))throw new Error('Invalid SVG');const svgEl=doc.documentElement;const {w,h}=_svgViewSize(outSvg);holder=document.createElement('div');holder.style.cssText='position:fixed;left:-99999px;top:0;opacity:0;';const live=document.importNode(svgEl,true);holder.appendChild(live);document.body.appendChild(holder);const pdf=new jsPDF({orientation:w>=h?'landscape':'portrait',unit:'pt',format:[w,h]});await svg2pdf(live,pdf,{width:w,height:h});pdf.save((artName||'dtf')+'.pdf')}catch(e){nf&&nf('PDF export failed: '+(e?.message||e),'error')}finally{if(holder&&holder.parentNode)holder.parentNode.removeChild(holder)}};
+  const garmentSwatches=[['Black','#0f172a'],['Navy','#1e293b'],['Royal','#1d4ed8'],['Red','#b91c1c'],['Maroon','#7f1d1d'],['Green','#166534'],['Gray','#6b7280'],['White','#ffffff']];
+  return <div className="modal-overlay" onMouseDown={e=>{if(e.target===e.currentTarget)onClose&&onClose()}} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:10000,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+    <div className="modal" onMouseDown={e=>e.stopPropagation()} style={{background:'#fff',borderRadius:10,width:'min(960px,96vw)',maxHeight:'92vh',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <div style={{padding:'12px 16px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+        <div style={{fontWeight:800}}>🎨 DTF Color Editor — {artName||'Logo'}</div>
+        <button className="btn btn-sm" onClick={onClose} style={{fontSize:16,lineHeight:1}}>×</button>
+      </div>
+      <div style={{display:'flex',gap:0,flex:1,minHeight:0}}>
+        <div style={{flex:1,minWidth:0,padding:16,borderRight:'1px solid #e2e8f0',display:'flex',flexDirection:'column',gap:10,overflow:'auto'}}>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
+            <span style={{fontSize:11,fontWeight:700,color:'#64748b'}}>Garment:</span>
+            {garmentSwatches.map(([n,hex])=><button key={hex} title={n} onClick={()=>setGarment(hex)} style={{width:22,height:22,borderRadius:4,background:hex,border:garment===hex?'2px solid #2563eb':'1px solid #cbd5e1',cursor:'pointer'}}/>)}
+            <input type="color" value={garment} onChange={e=>setGarment(e.target.value)} style={{width:24,height:24,padding:0,border:'none',background:'none',cursor:'pointer'}}/>
+          </div>
+          <div style={{flex:1,minHeight:240,borderRadius:8,background:garment,display:'flex',alignItems:'center',justifyContent:'center',overflow:'auto',padding:16,backgroundImage:garment==='#ffffff'?'linear-gradient(45deg,#eee 25%,transparent 25%,transparent 75%,#eee 75%),linear-gradient(45deg,#eee 25%,transparent 25%,transparent 75%,#eee 75%)':undefined,backgroundSize:'16px 16px',backgroundPosition:'0 0,8px 8px'}}>
+            {outSvg?<div style={{maxWidth:'100%',maxHeight:'100%'}} dangerouslySetInnerHTML={{__html:outSvg.replace(/<svg /,'<svg style="max-width:100%;max-height:46vh;height:auto" ')}}/>:<div style={{color:'#94a3b8',fontSize:13,textAlign:'center'}}>No vector art yet — vectorize the preview or upload an image/SVG.</div>}
+          </div>
+        </div>
+        <div style={{width:300,flexShrink:0,padding:16,overflow:'auto',display:'flex',flexDirection:'column',gap:10}}>
+          {!svg&&<div style={{display:'flex',flexDirection:'column',gap:8}}>
+            <div style={{fontSize:12,color:'#64748b'}}>Get a vector to edit:</div>
+            <label style={{fontSize:11,color:'#64748b'}}>Max colors <input type="number" min={0} max={32} value={maxColors} onChange={e=>setMaxColors(parseInt(e.target.value)||0)} style={{width:54,marginLeft:6,padding:'2px 4px',border:'1px solid #cbd5e1',borderRadius:4}}/></label>
+            <label style={{fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:6}}><input type="checkbox" checked={testMode} onChange={e=>setTestMode(e.target.checked)}/>Test mode (free, watermarked)</label>
+            {sourceUrl&&<button className="btn btn-primary btn-sm" disabled={busy} onClick={vectorize}>{busy?'Vectorizing…':'Vectorize from preview'}</button>}
+            <button className="btn btn-secondary btn-sm" disabled={busy} onClick={upload}>Upload image / SVG</button>
+          </div>}
+          {svg&&<>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <span style={{fontSize:12,fontWeight:700}}>Colors ({colors.length})</span>
+              <button className="btn btn-sm" style={{fontSize:10}} onClick={()=>setEdits({})}>Reset all</button>
+            </div>
+            {colors.length===0&&<div style={{fontSize:11,color:'#94a3b8'}}>No editable fill colors found in this art.</div>}
+            {colors.map(c=>{const e=edits[c]||{};const ko=!!e.knockout;return <div key={c} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 0',borderBottom:'1px solid #f1f5f9'}}>
+              <span style={{width:22,height:22,borderRadius:4,border:'1px solid #cbd5e1',background:ko?'transparent':(e.to||c),backgroundImage:ko?'linear-gradient(45deg,#ddd 25%,transparent 25%,transparent 75%,#ddd 75%),linear-gradient(45deg,#ddd 25%,transparent 25%,transparent 75%,#ddd 75%)':undefined,backgroundSize:'8px 8px',backgroundPosition:'0 0,4px 4px',flexShrink:0}}/>
+              <span style={{fontSize:10,fontFamily:'monospace',color:'#64748b',width:60}}>{c}</span>
+              <input type="color" value={/^#[0-9a-f]{6}$/i.test(e.to||c)?(e.to||c):'#000000'} disabled={ko} onChange={ev=>setEdit(c,{to:ev.target.value,knockout:false})} style={{width:28,height:24,padding:0,border:'none',background:'none',cursor:ko?'not-allowed':'pointer',opacity:ko?0.4:1}} title="Recolor"/>
+              <button onClick={()=>setEdit(c,{knockout:!ko})} title="Drop out this color (garment shows through)" style={{marginLeft:'auto',fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:4,cursor:'pointer',border:'1px solid '+(ko?'#dc2626':'#cbd5e1'),background:ko?'#fef2f2':'#fff',color:ko?'#dc2626':'#475569'}}>{ko?'Knocked out':'Knock out'}</button>
+            </div>})}
+          </>}
+        </div>
+      </div>
+      <div style={{padding:'10px 16px',borderTop:'1px solid #e2e8f0',display:'flex',gap:8,justifyContent:'flex-end',flexWrap:'wrap'}}>
+        {svg&&<><button className="btn btn-sm btn-secondary" onClick={dlSvg}>SVG</button>
+        <button className="btn btn-sm btn-secondary" onClick={dlPng}>PNG</button>
+        <button className="btn btn-sm btn-secondary" onClick={dlPdf}>PDF</button>
+        <button className="btn btn-sm btn-primary" onClick={()=>onSave&&onSave(outSvg)}>Save print art</button></>}
+        <button className="btn btn-sm" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  </div>;
+}
+
 // Magic-link landing page. When an admin sends an invite, the email link includes
 // a Supabase access token in the URL hash; supabase-js auto-detects it because
 // detectSessionInUrl is enabled. We just need to confirm a session exists and
@@ -2709,6 +2850,19 @@ export default function App(){
   const[batchPOs,setBatchPOs]=useState(()=>loadState('batch_pos',[]));// pending queue
   const[submittedBatches,setSubmittedBatches]=useState(()=>loadState('submitted_batches',[]));// submitted batches for scan lookup
   const[batchCounter,setBatchCounter]=useState(()=>loadState('batch_counter',4501));// sequential PO numbers: NSA 4501, NSA 4502...
+  // DTF gang sheets: weekly batches of heat-transfer (heat_press) decorations
+  // collected across sales orders + OMG stores. Mirrors the Batch PO model.
+  const[dtfBatches,setDTFBatches]=useState(()=>loadState('dtf_batches',[]));
+  const[dtfSheetCounter,setDTFSheetCounter]=useState(()=>loadState('dtf_sheet_counter',1));
+  const[dtfSel,setDTFSel]=useState(()=>new Set());
+  // Edited DTF print art (recolored / knocked-out SVG), keyed by art id.
+  const[dtfArt,setDTFArt]=useState(()=>loadState('dtf_art',{}));
+  const[dtfEditor,setDTFEditor]=useState(null);// {artId,artName,sourceUrl}
+  // How each transfer is sourced, keyed by art id: gang (in-house) / stahls /
+  // vendor (other outside) / press (no order). heat_press is a mixed bucket, so
+  // only 'gang' transfers belong on a gang sheet; stahls/vendor go via an
+  // Outside Deco PO; press needs no ordering.
+  const[dtfSource,setDTFSource]=useState(()=>loadState('dtf_source',{}));
   const[batchScan,setBatchScan]=useState('');// scan/lookup field
   const[editingBatchId,setEditingBatchId]=useState(null);// batch PO id being edited in queue
   const[sanmarPreview,setSanMarPreview]=useState(null);// {poNumber,batchPOs,vendorName} — SanMar dry-run preview modal
@@ -3718,6 +3872,10 @@ export default function App(){
   React.useEffect(()=>{const cur=JSON.stringify(batchPOs);if(_batchPosApplied.current!==cur)_batchPosDirtyUntil=Date.now()+12000;_saveAppState('batch_pos',batchPOs)},[batchPOs]);
   React.useEffect(()=>{_saveAppState('submitted_batches',submittedBatches)},[submittedBatches]);
   React.useEffect(()=>{_saveAppState('batch_counter',batchCounter)},[batchCounter]);
+  React.useEffect(()=>{_saveAppState('dtf_batches',dtfBatches)},[dtfBatches]);
+  React.useEffect(()=>{_saveAppState('dtf_sheet_counter',dtfSheetCounter)},[dtfSheetCounter]);
+  React.useEffect(()=>{_saveAppState('dtf_art',dtfArt)},[dtfArt]);
+  React.useEffect(()=>{_saveAppState('dtf_source',dtfSource)},[dtfSource]);
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
   // Boot-time snapshot regression scan: walk each SO's snapshot history and flag any whose latest
@@ -3988,7 +4146,7 @@ export default function App(){
       const p=new URLSearchParams(window.location.search);
       const pgId=p.get('pg');
       if(!pgId||p.get('so'))return;
-      const allowed=new Set(['dashboard','estimates','orders','jobs','art','production','warehouse','purchase_orders','batch_pos','customers','vendors','team','products','inventory','messages','invoices','commissions','omg','reports','issues','import','qb','backup','settings','sales_tools','sales_history']);
+      const allowed=new Set(['dashboard','estimates','orders','jobs','art','production','warehouse','purchase_orders','batch_pos','dtf_sheets','customers','vendors','team','products','inventory','messages','invoices','commissions','omg','reports','issues','import','qb','backup','settings','sales_tools','sales_history']);
       if(allowed.has(pgId))setPg(pgId);
       const anchor=window.location.hash;
       const u=new URL(window.location);u.searchParams.delete('pg');window.history.replaceState({},'',u.pathname+u.search+anchor);
@@ -4472,7 +4630,7 @@ export default function App(){
   // ─── PAGE ACCESS CONTROL ───
   // Pages whose access is admin-controlled per-user (match the 22 checkboxes in the Team edit modal).
   // Pages NOT in this set (purchase_orders, issues, settings) fall through to role-level gates in `nav`.
-  const RESTRICTED_PAGES=useMemo(()=>new Set(['dashboard','estimates','orders','invoices','omg','jobs','art','production','warehouse','batch_pos','customers','vendors','products','inventory','messages','commissions','reports','team','import','qb','backup','sales_tools','sales_history']),[]);
+  const RESTRICTED_PAGES=useMemo(()=>new Set(['dashboard','estimates','orders','invoices','omg','jobs','art','production','warehouse','batch_pos','dtf_sheets','customers','vendors','products','inventory','messages','commissions','reports','team','import','qb','backup','sales_tools','sales_history']),[]);
   // Role-based defaults used when a team member has no explicit access array.
   const DEFAULT_ACCESS_BY_ROLE=useMemo(()=>({
     super_admin:Array.from(RESTRICTED_PAGES),
@@ -4480,10 +4638,10 @@ export default function App(){
     rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','import'],
     csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import'],
     accounting:['dashboard','invoices','customers','reports','qb','import'],
-    warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
-    prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
-    prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','reports'],
-    production:['dashboard','orders','jobs','art','production','warehouse','inventory','reports'],
+    warehouse:['dashboard','orders','warehouse','batch_pos','dtf_sheets','inventory','production'],
+    prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','dtf_sheets','reports'],
+    prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','dtf_sheets','reports'],
+    production:['dashboard','orders','jobs','art','production','warehouse','inventory','dtf_sheets','reports'],
     artist:['dashboard','orders','art','jobs','production'],
   }),[RESTRICTED_PAGES]);
   const effectiveAccess=useMemo(()=>{
@@ -8681,6 +8839,171 @@ export default function App(){
       </div></div>
     </>;
   };
+  function rDTFSheets(){
+    // A DTF transfer is any decoration whose method is heat_press (= DTF here).
+    // The queue is DERIVED live from sales orders + OMG stores; a transfer is
+    // "gang-ready" once its art file carries a .ai production file. Batches
+    // (gang sheets) are stored in app_state. Bin-packing/sheet layout is the
+    // next step — this scaffold collects and batches the transfers.
+    const isAiFile=f=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.ai')};
+    const aiReady=af=>!!af&&(af.prod_files||[]).some(isAiFile);
+    const fileInfo=f=>{const url=typeof f==='string'?f:(f?.url||'');const name=(typeof f==='object'&&f?.name)?f.name:(url?decodeURIComponent(url.split('/').pop().split('?')[0]):'file');return{name,url}};
+    const aiFilesOf=af=>!af?[]:(af.prod_files||[]).filter(isAiFile).map(fileInfo);
+    const _esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    const sumSizes=o=>Object.values(o||{}).reduce((a,v)=>a+(+v||0),0);
+    // Keys already committed to a batch (any status) are out of the live queue.
+    const batchedKeys=new Set((dtfBatches||[]).flatMap(b=>(b.lines||[]).map(l=>l.key)));
+    const lines=[];
+    (sos||[]).forEach(so=>{
+      if(so.status==='cancelled'||so.status==='void')return;
+      const c=cust.find(x=>x.id===so.customer_id);
+      (so.items||[]).forEach((it,ii)=>{
+        const qty=sumSizes(it.sizes)||it.qty||0;
+        (it.decorations||[]).filter(d=>d.type==='heat_press').forEach((d,di)=>{
+          const af=(so.art_files||[]).find(a=>a.id===d.art_file_id);
+          lines.push({key:`so:${so.id}:${ii}:${di}`,source:'so',source_id:so.id,source_label:so.id+(so.memo?' · '+so.memo:''),customer:c?.name||'',art_id:af?.id||d._cust_art_id||d.art_group||'(none)',art_name:af?.name||d.art_group||'(unnamed)',art_size:af?.art_size||d.art_size||'',preview_url:af?.preview_url||'',qty,position:d.position||'',sku:it.sku||'',item_name:it.name||'',color:it.color||'',ai_ready:aiReady(af),ai_files:aiFilesOf(af)});
+        });
+      });
+    });
+    (omgStores||[]).forEach(store=>{
+      if((sos||[]).some(so=>so.omg_store_id===store.id))return; // already pulled into an SO above
+      const c=cust.find(x=>x.id===store.customer_id);
+      const lib={};if(c){const ids=c.parent_id?[c.parent_id,c.id]:[c.id];ids.forEach(id=>{const cc=cust.find(x=>x.id===id);(cc?.art_files||[]).forEach(a=>{if(a&&a.id)lib[a.id]=a})})}
+      (store.products||[]).forEach((p,pi)=>{
+        const qty=sumSizes(p.sizes);
+        (p.decorations||[]).filter(d=>d.type==='heat_press').forEach((d,di)=>{
+          const af=d._cust_art_id?lib[d._cust_art_id]:null;
+          lines.push({key:`store:${store.id}:${pi}:${di}`,source:'store',source_id:store.id,source_label:'Store · '+store.store_name,customer:c?.name||'',art_id:af?.id||d._cust_art_id||d.art_group||'(none)',art_name:af?.name||d.art_group||'(unnamed)',art_size:af?.art_size||'',preview_url:af?.preview_url||'',qty,position:'',sku:p.sku||'',item_name:p.name||'',color:p.color||'',ai_ready:aiReady(af),ai_files:aiFilesOf(af)});
+        });
+      });
+    });
+    const queue=lines.filter(l=>!batchedKeys.has(l.key));
+    // Group queue by art identity to show one row per transfer with total qty.
+    const groups={};
+    queue.forEach(l=>{const g=groups[l.art_id]||(groups[l.art_id]={art_id:l.art_id,art_name:l.art_name,art_size:l.art_size,preview_url:l.preview_url,ai_ready:true,qty:0,lines:[],ai_files:[]});g.qty+=l.qty;g.lines.push(l);if(!l.ai_ready)g.ai_ready=false;if(!g.preview_url&&l.preview_url)g.preview_url=l.preview_url;if(!g.art_size&&l.art_size)g.art_size=l.art_size;(l.ai_files||[]).forEach(f=>{if(f.url&&!g.ai_files.some(x=>x.url===f.url))g.ai_files.push(f)});});
+    const groupList=Object.values(groups).sort((a,b)=>a.art_name.localeCompare(b.art_name));
+    groupList.forEach(g=>{g.source=dtfSource[g.art_id]||''});
+    const SOURCE_OPTS=[['gang','Gang sheet (in-house)'],['stahls','Stahls'],['vendor','Other vendor'],['press','Press only (no order)']];
+    const setSrc=(artId,v)=>setDTFSource(prev=>{const n={...prev};if(v)n[artId]=v;else delete n[artId];return n});
+    // Only in-house 'gang' transfers go on a gang sheet.
+    const gang=groupList.filter(g=>g.source==='gang');
+    const ready=gang.filter(g=>g.ai_ready);
+    const needsAi=gang.filter(g=>!g.ai_ready);
+    const unassigned=groupList.filter(g=>!g.source);
+    const outside=groupList.filter(g=>g.source==='stahls'||g.source==='vendor');
+    const selReady=ready.filter(g=>dtfSel.has(g.art_id));
+    const selTransfers=selReady.reduce((a,g)=>a+g.qty,0);
+    const toggle=id=>setDTFSel(prev=>{const n=new Set(prev);if(n.has(id))n.delete(id);else n.add(id);return n});
+    const buildSheet=()=>{
+      if(selReady.length===0)return;
+      const batchLines=queue.filter(l=>dtfSel.has(l.art_id));
+      const id='DTF-'+String(dtfSheetCounter).padStart(4,'0');
+      const batch={id,created_at:new Date().toISOString(),created_by:cu?.name||'',status:'queued',art_count:selReady.length,total_transfers:selTransfers,groups:selReady.map(g=>({art_id:g.art_id,art_name:g.art_name,art_size:g.art_size,qty:g.qty,ai_files:g.ai_files||[]})),lines:batchLines};
+      setDTFBatches(prev=>[batch,...prev]);setDTFSheetCounter(n=>n+1);setDTFSel(new Set());
+      nf(`Created gang sheet ${id} — ${selReady.length} art / ${selTransfers} transfers`);
+    };
+    // Manifest = what we send the printer this week: each design, its print
+    // size, the quantity, and the .ai production file(s). (Gang-sheet layout
+    // comes later; for now this list + the files is the deliverable.)
+    const printManifest=(b)=>{
+      const allAi=[];(b.groups||[]).forEach(g=>(g.ai_files||[]).forEach(f=>{if(f.url&&!allAi.some(x=>x.url===f.url))allAi.push(f)}));
+      const rows=(b.groups||[]).map(g=>`<tr><td>${_esc(g.art_name)}</td><td>${_esc(g.art_size||'—')}</td><td style="text-align:right">${g.qty}</td><td>${(g.ai_files||[]).map(f=>_esc(f.name)).join('<br>')||'<span style="color:#b91c1c">— no .ai —</span>'}</td></tr>`).join('');
+      const html=`<html><head><title>${_esc(b.id)} — DTF Manifest</title><style>body{font-family:Arial,Helvetica,sans-serif;color:#0f172a;padding:32px;max-width:820px;margin:0 auto}h1{font-size:20px;margin:0 0 4px}.sub{color:#64748b;font-size:13px;margin-bottom:20px}table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;border-bottom:2px solid #0f172a;padding:6px 8px;font-size:11px;text-transform:uppercase;color:#475569}td{padding:6px 8px;border-bottom:1px solid #e2e8f0}tfoot td{font-weight:800;border-top:2px solid #0f172a}a{color:#1d4ed8}h3{margin:24px 0 6px;font-size:14px}ul{font-size:12px;line-height:1.7}@media print{a{color:#0f172a;text-decoration:none}}</style></head><body><h1>DTF Gang Sheet Manifest — ${_esc(b.id)}</h1><div class="sub">Created ${new Date(b.created_at).toLocaleString()} · ${b.art_count} designs · ${b.total_transfers} transfers</div><table><thead><tr><th>Design</th><th>Print Size</th><th style="text-align:right">Qty</th><th>Production File (.ai)</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td>TOTAL</td><td></td><td style="text-align:right">${b.total_transfers}</td><td></td></tr></tfoot></table><h3>Production files (${allAi.length})</h3><ul>${allAi.map(f=>`<li><a href="${_esc(f.url)}">${_esc(f.name)}</a></li>`).join('')||'<li style="color:#b91c1c">No .ai files attached</li>'}</ul></body></html>`;
+      const w=window.open('','_blank');if(w){w.document.write(html);w.document.close();}else{nf('Pop-up blocked — allow pop-ups to print the manifest','error')}
+    };
+    const copyManifest=(b)=>{
+      const text=['Design\tPrint Size\tQty',...(b.groups||[]).map(g=>`${g.art_name}\t${g.art_size||'—'}\t${g.qty}`),`TOTAL\t\t${b.total_transfers}`].join('\n');
+      if(navigator.clipboard?.writeText){navigator.clipboard.writeText(text).then(()=>nf('Manifest copied to clipboard')).catch(()=>nf('Copy failed','error'))}else nf('Clipboard not available','error');
+    };
+    const setBatchStatus=(id,status)=>setDTFBatches(prev=>prev.map(b=>b.id===id?{...b,status,...(status==='sent'?{sent_at:new Date().toISOString(),sent_by:cu?.name||''}:{}),...(status==='received'?{received_at:new Date().toISOString(),received_by:cu?.name||''}:{})}:b));
+    const deleteBatch=id=>{if(!window.confirm('Delete gang sheet '+id+'? Its transfers return to the queue.'))return;setDTFBatches(prev=>prev.filter(b=>b.id!==id))};
+    const card={background:'#fff',borderRadius:8,border:'1px solid #e2e8f0',marginBottom:16};
+    const GroupRow=({g})=>{const sel=dtfSel.has(g.art_id);return <tr style={sel?{background:'#eff6ff'}:undefined}>
+      <td style={{textAlign:'center'}}>{(g.source==='gang'&&g.ai_ready)?<input type="checkbox" checked={sel} onChange={()=>toggle(g.art_id)} style={{cursor:'pointer'}}/>:!g.ai_ready?<span title="Needs a .ai production file before it can be ganged">🚫</span>:<span style={{color:'#cbd5e1'}}>·</span>}</td>
+      <td style={{padding:4}}>{g.preview_url?<img src={g.preview_url} alt="" style={{width:40,height:40,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0'}}/>:<span style={{color:'#cbd5e1',fontSize:18}}>🎨</span>}</td>
+      <td style={{fontWeight:600,fontSize:12}}>{g.art_name}
+        <div><button onClick={()=>setDTFEditor({artId:g.art_id,artName:g.art_name,sourceUrl:g.preview_url})} style={{fontSize:10,color:'#7c3aed',fontWeight:700,border:'none',background:'none',padding:0,cursor:'pointer'}}>🎨 Colors / knockout</button>{dtfArt[g.art_id]?.svg&&<span title="Print art color-prepped" style={{marginLeft:6,fontSize:9,fontWeight:700,color:'#7c3aed',background:'#f3e8ff',padding:'1px 5px',borderRadius:4}}>prepped</span>}</div>
+      </td>
+      <td style={{fontSize:11,color:'#64748b'}}>{g.art_size||'—'}</td>
+      <td style={{textAlign:'right',fontWeight:700}}>{g.qty}</td>
+      <td style={{fontSize:11,color:'#64748b'}}>{g.lines.length} item{g.lines.length>1?'s':''} · {[...new Set(g.lines.map(l=>l.customer).filter(Boolean))].slice(0,2).join(', ')||'—'}</td>
+      <td><select value={g.source||''} onChange={e=>setSrc(g.art_id,e.target.value)} title="How is this transfer ordered?" style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid '+(g.source?'#cbd5e1':'#f59e0b'),background:g.source?'#fff':'#fffbeb'}}>
+        <option value="">⚠️ Set source…</option>{SOURCE_OPTS.map(([v,l])=><option key={v} value={v}>{l}</option>)}
+      </select></td>
+      <td>{g.ai_ready?<span style={{display:'inline-flex',alignItems:'center',gap:6}}><span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'2px 6px',borderRadius:4}}>.ai ready</span>{(g.ai_files||[]).map((f,fi)=><a key={fi} href={f.url} target="_blank" rel="noopener noreferrer" title={f.name} style={{color:'#1d4ed8',fontWeight:700,fontSize:10}}>⬇ .ai</a>)}</span>:<span style={{fontSize:10,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'2px 6px',borderRadius:4}}>needs .ai</span>}</td>
+    </tr>;};
+    const Th=({children,style})=><th style={{textAlign:'left',fontSize:10,textTransform:'uppercase',color:'#94a3b8',padding:'6px 8px',...style}}>{children}</th>;
+    return <div>
+      <div style={{...card,padding:16}}>
+        <div style={{fontSize:13,color:'#475569'}}>Collects every <b>heat-transfer</b> decoration across sales orders and OMG stores. Tag each design's <b>source</b> — only <b>Gang sheet (in-house)</b> transfers go on a gang sheet; <b>Stahls / other vendor</b> get ordered via an Outside Deco PO, and <b>Press only</b> needs no order. A gang transfer is ready once its art has a <b>.ai</b>. Build a weekly batch, then <b>print/copy the manifest</b> and grab the <b>.ai</b> files for your printer. <span style={{color:'#94a3b8'}}>Automated gang-sheet layout / nesting comes next.</span></div>
+      </div>
+
+      <div style={card}>
+        <div style={{padding:'12px 16px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}}>
+          <h2 style={{margin:0,fontSize:15}}>🎬 Ready to gang <span style={{color:'#94a3b8',fontWeight:400}}>({ready.length} art · {ready.reduce((a,g)=>a+g.qty,0)} transfers)</span></h2>
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            <span style={{fontSize:12,color:'#64748b'}}>{selReady.length} selected · {selTransfers} transfers</span>
+            <button className="btn btn-primary" disabled={selReady.length===0} style={{opacity:selReady.length===0?0.5:1}} onClick={buildSheet}>Build gang sheet</button>
+          </div>
+        </div>
+        {ready.length===0?<div className="empty" style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No transfers ready to gang. Tag a design's source as <b>Gang sheet</b> {unassigned.length>0?'(see "Set transfer source" below) ':''}and make sure its art has a .ai file.</div>:
+        <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+          <Th style={{width:32,textAlign:'center'}}><input type="checkbox" checked={selReady.length===ready.length&&ready.length>0} ref={el=>{if(el)el.indeterminate=selReady.length>0&&selReady.length<ready.length}} onChange={e=>setDTFSel(e.target.checked?new Set(ready.map(g=>g.art_id)):new Set())} style={{cursor:'pointer'}}/></Th>
+          <Th style={{width:48}}></Th><Th>Art</Th><Th>Size</Th><Th style={{textAlign:'right'}}>Qty</Th><Th>Used on</Th><Th>Source</Th><Th>Status</Th>
+        </tr></thead><tbody>{ready.map(g=><GroupRow key={g.art_id} g={g}/>)}</tbody></table>}
+      </div>
+
+      {needsAi.length>0&&<div style={card}>
+        <div style={{padding:'12px 16px',borderBottom:'1px solid #e2e8f0'}}><h2 style={{margin:0,fontSize:15,color:'#92400e'}}>⚠️ Needs .ai file <span style={{color:'#94a3b8',fontWeight:400}}>({needsAi.length} art)</span></h2>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>These DTF transfers can't be ganged until a properly set-up .ai is added to the art file's production files.</div></div>
+        <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+          <Th style={{width:32}}></Th><Th style={{width:48}}></Th><Th>Art</Th><Th>Size</Th><Th style={{textAlign:'right'}}>Qty</Th><Th>Used on</Th><Th>Source</Th><Th>Status</Th>
+        </tr></thead><tbody>{needsAi.map(g=><GroupRow key={g.art_id} g={g}/>)}</tbody></table>
+      </div>}
+
+      {unassigned.length>0&&<div style={card}>
+        <div style={{padding:'12px 16px',borderBottom:'1px solid #e2e8f0'}}><h2 style={{margin:0,fontSize:15,color:'#b45309'}}>⚠️ Set transfer source <span style={{color:'#94a3b8',fontWeight:400}}>({unassigned.length} art)</span></h2>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Heat-transfer designs not yet classified. Pick a source so they route correctly — only <b>Gang sheet</b> ones go on a gang sheet here.</div></div>
+        <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+          <Th style={{width:32}}></Th><Th style={{width:48}}></Th><Th>Art</Th><Th>Size</Th><Th style={{textAlign:'right'}}>Qty</Th><Th>Used on</Th><Th>Source</Th><Th>Status</Th>
+        </tr></thead><tbody>{unassigned.map(g=><GroupRow key={g.art_id} g={g}/>)}</tbody></table>
+      </div>}
+
+      {outside.length>0&&<div style={card}>
+        <div style={{padding:'12px 16px',borderBottom:'1px solid #e2e8f0'}}><h2 style={{margin:0,fontSize:15,color:'#6d28d9'}}>🏷️ Stahls / outside vendor <span style={{color:'#94a3b8',fontWeight:400}}>({outside.length} art · {outside.reduce((a,g)=>a+g.qty,0)} transfers)</span></h2>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>These transfers are purchased from an outside vendor — order them on the sales order via <b>+ Outside Deco</b> (creates an Outside Deco PO), not on a gang sheet.</div></div>
+        <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+          <Th style={{width:32}}></Th><Th style={{width:48}}></Th><Th>Art</Th><Th>Size</Th><Th style={{textAlign:'right'}}>Qty</Th><Th>Used on</Th><Th>Source</Th><Th>Status</Th>
+        </tr></thead><tbody>{outside.map(g=><GroupRow key={g.art_id} g={g}/>)}</tbody></table>
+      </div>}
+
+      <div style={card}>
+        <div style={{padding:'12px 16px',borderBottom:'1px solid #e2e8f0'}}><h2 style={{margin:0,fontSize:15}}>📦 Gang sheets <span style={{color:'#94a3b8',fontWeight:400}}>({(dtfBatches||[]).length})</span></h2></div>
+        {(dtfBatches||[]).length===0?<div className="empty" style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No gang sheets yet. Select ready transfers above and click “Build gang sheet”.</div>:
+        <div style={{padding:8}}>{(dtfBatches||[]).map(b=><div key={b.id} style={{border:'1px solid #e2e8f0',borderRadius:6,padding:12,marginBottom:8}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+            <div>
+              <span style={{fontWeight:800,fontFamily:'monospace'}}>{b.id}</span>
+              <span style={{marginLeft:8,fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:4,background:b.status==='received'?'#dcfce7':b.status==='sent'?'#dbeafe':'#fef3c7',color:b.status==='received'?'#166534':b.status==='sent'?'#1e40af':'#92400e'}}>{(b.status||'queued').toUpperCase()}</span>
+              <span style={{marginLeft:10,fontSize:12,color:'#64748b'}}>{b.art_count} art · {b.total_transfers} transfers · {new Date(b.created_at).toLocaleDateString()}</span>
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-sm btn-secondary" onClick={()=>printManifest(b)}>🖨 Print manifest</button>
+              <button className="btn btn-sm btn-secondary" onClick={()=>copyManifest(b)}>📋 Copy</button>
+              {b.status==='queued'&&<button className="btn btn-sm btn-secondary" onClick={()=>setBatchStatus(b.id,'sent')}>Mark sent to printer</button>}
+              {b.status==='sent'&&<button className="btn btn-sm btn-primary" onClick={()=>setBatchStatus(b.id,'received')}>Mark received</button>}
+              <button className="btn btn-sm" style={{color:'#dc2626'}} onClick={()=>deleteBatch(b.id)}>Delete</button>
+            </div>
+          </div>
+          <div style={{marginTop:8,display:'flex',flexWrap:'wrap',gap:6}}>{(b.groups||[]).map((g,gi)=><span key={gi} style={{fontSize:11,background:'#f1f5f9',borderRadius:4,padding:'2px 8px',color:'#475569',display:'inline-flex',alignItems:'center',gap:6}}>{g.art_name} ×{g.qty}{g.art_size?' ('+g.art_size+')':''}{(g.ai_files||[]).length>0?(g.ai_files).map((f,fi)=><a key={fi} href={f.url} target="_blank" rel="noopener noreferrer" title={f.name} style={{color:'#1d4ed8',fontWeight:700}}>⬇ .ai</a>):<span title="No .ai production file" style={{color:'#b91c1c',fontWeight:700}}>⚠ no .ai</span>}</span>)}</div>
+        </div>)}</div>}
+      </div>
+      {dtfEditor&&<DTFColorEditor artId={dtfEditor.artId} artName={dtfEditor.artName} sourceUrl={dtfEditor.sourceUrl}
+        initialSvg={dtfArt[dtfEditor.artId]?.svg||''}
+        onSave={svgStr=>{setDTFArt(p=>({...p,[dtfEditor.artId]:{svg:svgStr,updated_at:new Date().toISOString(),by:cu?.name||''}}));nf('Saved print art for '+(dtfEditor.artName||'logo'));setDTFEditor(null)}}
+        onClose={()=>setDTFEditor(null)} nf={nf}/>}
+    </div>;
+  }
   function rBatchPOs(){
     const byVendor={};
     batchPOs.forEach(bp=>{if(!byVendor[bp.vendor_key])byVendor[bp.vendor_key]={name:bp.vendor_name,threshold:BATCH_VENDORS[bp.vendor_key]?.threshold||200,pos:[]};byVendor[bp.vendor_key].pos.push(bp)});
@@ -23605,6 +23928,7 @@ export default function App(){
       {id:'production',label:'Production Board'},
       {id:'warehouse',label:'Warehouse'},
       {id:'batch_pos',label:'Batch POs'},
+      {id:'dtf_sheets',label:'DTF Gang Sheets'},
       {id:'customers',label:'Customers'},
       {id:'vendors',label:'Vendors'},
       {id:'products',label:'Products'},
@@ -23624,10 +23948,10 @@ export default function App(){
       rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','import'],
       csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import'],
       accounting:['dashboard','invoices','customers','reports','qb','import'],
-      warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
-      prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
-      prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','reports'],
-      production:['dashboard','orders','jobs','art','production','warehouse','inventory','reports'],
+      warehouse:['dashboard','orders','warehouse','batch_pos','dtf_sheets','inventory','production'],
+      prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','dtf_sheets','reports'],
+      prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','dtf_sheets','reports'],
+      production:['dashboard','orders','jobs','art','production','warehouse','inventory','dtf_sheets','reports'],
       artist:['dashboard','orders','art','jobs','production'],
     };
 
@@ -25675,8 +25999,8 @@ export default function App(){
   }
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{id:'dtf_sheets',label:'DTF Gang Sheets',icon:'image'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',dtf_sheets:'DTF Gang Sheets',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
   // ─── SCAN RESULT HANDLER ───
   function handleScanResult(val){
     if(!val)return;
@@ -25953,7 +26277,7 @@ export default function App(){
           })()}
         </div>}
       </div>}
-      <div className={`content${pg==='production'?' content-wide':''}`}>{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
+      <div className={`content${pg==='production'?' content-wide':''}`}>{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='dtf_sheets'&&rDTFSheets()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
     {/* Assignment Modal — global, triggered from warehouse or production board */}
     {assignModal&&<div className="modal-overlay" onClick={()=>setAssignModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
         <div className="modal-header" style={{background:'#fffbeb'}}><h2>📋 Assign to Machine / Person</h2><button className="modal-close" onClick={()=>setAssignModal(null)}>×</button></div>
