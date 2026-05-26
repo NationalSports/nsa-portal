@@ -14108,6 +14108,15 @@ export default function App(){
     })();
     const readyForDeco=decoTasks.filter(t=>t.isReady&&(t.prodStatus==='hold'||t.prodStatus==='draft')&&t.prodStatus!=='ready');const fDeco=filt(readyForDeco);
     const openStockPOs=invPOs.filter(p=>p.status!=='received'&&p.status!=='cancelled');
+    // Warehouse task delegation — open tasks for this user, plus tasks they delegated (managers/leads).
+    const _whCanDelegate=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||WAREHOUSE_LEAD_IDS.includes(cu.id);
+    const _whTodayStr=(()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`})();
+    const _whDueSort=t=>t.due_date?String(t.due_date).slice(0,10):'9999-12-31';
+    const _whFmtDue=(d)=>{if(!d)return'';const ds=String(d).slice(0,10);if(ds===_whTodayStr)return'Today';try{const dt=new Date(ds+'T00:00:00');const days=Math.round((dt-new Date(_whTodayStr+'T00:00:00'))/864e5);if(days===1)return'Tomorrow';if(days===-1)return'Yesterday';if(days<0)return Math.abs(days)+'d overdue';return(dt.getMonth()+1)+'/'+dt.getDate()}catch{return ds}};
+    const _whDueColor=(d)=>{if(!d)return'#64748b';const ds=String(d).slice(0,10);if(ds<_whTodayStr)return'#dc2626';if(ds===_whTodayStr)return'#d97706';return'#2563eb'};
+    const myWhTasks=assignedTodos.filter(t=>t.status==='open'&&t.assigned_to===cu.id).sort((a,b)=>_whDueSort(a).localeCompare(_whDueSort(b))||(a.priority??2)-(b.priority??2));
+    const delegatedWhTasks=_whCanDelegate?assignedTodos.filter(t=>t.status==='open'&&t.created_by===cu.id&&t.assigned_to!==cu.id).sort((a,b)=>_whDueSort(a).localeCompare(_whDueSort(b))||(a.priority??2)-(b.priority??2)):[];
+    const _whTodoComplete=(id)=>{const ts=new Date().toISOString();const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,...upd}:x));_dbSnap.current.assignedTodos=(_dbSnap.current.assignedTodos||[]).map(x=>x.id===id?{...x,...upd}:x);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));nf('Task completed!')};
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)c++})});return c})();
     const tabs=[
@@ -14117,6 +14126,7 @@ export default function App(){
       {id:'deliver',label:'Deliver',icon:'🚚',count:fDeliver.length,color:'#d97706'},
       {id:'pickup',label:'Awaiting Pickup',icon:'🚚',count:awaitingPickupCount,color:'#d97706'},
       {id:'stockpo',label:'Stock POs',icon:'📋',count:openStockPOs.length,color:'#6366f1'},
+      {id:'tasks',label:'My Tasks',icon:'📌',count:myWhTasks.length,color:'#0891b2'},
       {id:'recent',label:'Recent Actions',icon:'🕐',count:whRecentActions.filter(a=>(a.ts||0)>=Date.now()-7*86400000).length,color:'#475569'},
     ];
 
@@ -14561,6 +14571,8 @@ export default function App(){
           onClick={()=>setWhTab('receive')}>📱 Scan to Receive</button>
         <button className="btn btn-sm" style={{fontSize:10,background:'#92400e',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
           onClick={()=>setManualShipModal({soSearch:'',so:null,cust:null,carrier:'fedex',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}>⚡ Manual Ship</button>
+        {_whCanDelegate&&<button className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
+          onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_whTodayStr,doc_label:''})}>📌 Assign Task</button>}
       </div>
 
       {/* ── SCAN TO RECEIVE ── */}
@@ -16410,6 +16422,31 @@ export default function App(){
           </div>
         </div></div>}
       </>}
+
+      {whTab==='tasks'&&(()=>{
+        const _row=(t,mine)=>{const creator=REPS.find(r=>r.id===t.created_by);const assignee=REPS.find(r=>r.id===t.assigned_to);const overdue=t.due_date&&String(t.due_date).slice(0,10)<=_whTodayStr;
+          return<div key={t.id} style={{padding:'12px 14px',borderBottom:'1px solid #f1f5f9',background:mine&&overdue?'#fffbeb':'white',display:'flex',alignItems:'center',gap:10}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:14,fontWeight:600}}>{t.title}</div>
+              {t.description&&<div style={{fontSize:12,color:'#475569',marginTop:2}}>{t.description}</div>}
+              <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(assignee?.name||'—')}{t.so_id?' · '+t.so_id:''}</div>
+            </div>
+            {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>{const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
+            {t.due_date&&<span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:8,whiteSpace:'nowrap',color:_whDueColor(t.due_date),background:'#f1f5f9'}}>📅 {_whFmtDue(t.due_date)}</span>}
+            <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{['Urgent','High','Normal','Low'][t.priority]||'Normal'}</span>
+            {mine&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700,borderRadius:4,whiteSpace:'nowrap'}} onClick={()=>_whTodoComplete(t.id)}>✓ Done</button>}
+          </div>};
+        return<div className="card">
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h2>📌 My Tasks ({myWhTasks.length})</h2>
+            {_whCanDelegate&&<button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_whTodayStr,doc_label:''})}>+ Assign Task</button>}
+          </div>
+          <div className="card-body" style={{padding:0}}>
+            {myWhTasks.length===0?<div className="empty" style={{padding:20}}>No tasks assigned to you. {_whCanDelegate?'Use “+ Assign Task” to delegate work to the warehouse crew.':'All clear!'}</div>:myWhTasks.map(t=>_row(t,true))}
+            {delegatedWhTasks.length>0&&<><div style={{padding:'8px 14px',fontSize:11,fontWeight:700,color:'#64748b',background:'#f8fafc',borderTop:'1px solid #e2e8f0',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>Assigned to others ({delegatedWhTasks.length})</div>{delegatedWhTasks.map(t=>_row(t,false))}</>}
+          </div>
+        </div>;
+      })()}
 
       {whTab==='recent'&&(()=>{
         const cutoff=whActionRange==='7d'?Date.now()-7*86400000:whActionRange==='30d'?Date.now()-30*86400000:0;
