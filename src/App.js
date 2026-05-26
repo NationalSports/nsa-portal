@@ -4044,6 +4044,31 @@ export default function App(){
   // Import products from an OMG shared report URL.
   // Fetches report JSON via Netlify proxy, parses products with SKUs, sizes,
   // quantities, prices, and mockup images. Replaces the broken V1 API sync.
+  // Best-effort match of an OMG store name (e.g. "Dana Hills Football 2026")
+  // to a customer. Strips year/season/store-type noise, then prefers an exact
+  // normalized match, else a customer whose every word appears in the store
+  // name (≥2 words, to avoid generic single-word mislinks). Returns null when
+  // not confident, so we never silently link the wrong account.
+  const _omgMatchCustomer=(storeName)=>{
+    const norm=str=>(str||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ')
+      .replace(/\b(20\d{2}|19\d{2}|fall|spring|summer|winter|fundraiser|webstore|web|online|store|shop|spiritwear|spirit|wear|apparel|gear|team|popup|pop|up|preorder|pre|order)\b/g,' ')
+      .replace(/\s+/g,' ').trim();
+    const sN=norm(storeName);if(!sN)return null;
+    const sToks=new Set(sN.split(' ').filter(Boolean));
+    let best=null,bestScore=0,bestLen=0;
+    for(const c of cust){
+      if(!c||!c.name)continue;
+      const cN=norm(c.name);if(!cN)continue;
+      const cToks=cN.split(' ').filter(Boolean);if(!cToks.length)continue;
+      const inCount=cToks.filter(t=>sToks.has(t)).length;
+      let score;
+      if(sN===cN)score=1;
+      else if(inCount===cToks.length&&cToks.length>=2)score=0.9;
+      else score=(inCount/cToks.length)*0.6;
+      if(score>bestScore||(score===bestScore&&cToks.length>bestLen)){best=c;bestScore=score;bestLen=cToks.length}
+    }
+    return bestScore>=0.9?best:null;
+  };
   const importOMGReport = async (store, reportUrl) => {
     // Extract UUID from various URL formats
     const urlStr = (reportUrl || '').trim();
@@ -4224,10 +4249,17 @@ export default function App(){
       if (!updated._omg_tax && store._omg_tax) updated._omg_tax = store._omg_tax;
       if (!updated._omg_fundraise && store._omg_fundraise) updated._omg_fundraise = store._omg_fundraise;
       if (!updated._omg_grand_total && store._omg_grand_total) updated._omg_grand_total = store._omg_grand_total;
+      // Auto-link a customer when none is set, so the art library and SO
+      // creation work without a manual link. Never override an existing link.
+      let _autoLinked = null;
+      if (!updated.customer_id) {
+        const m = _omgMatchCustomer(store.store_name);
+        if (m) { updated.customer_id = m.id; if (!updated.rep_id) updated.rep_id = m.primary_rep_id || updated.rep_id; _autoLinked = m; }
+      }
 
       setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
       setOmgSel(updated);
-      nf(`Imported ${products.length} products from OMG report (${totalQty} total items)`);
+      nf(`Imported ${products.length} products from OMG report (${totalQty} total items)${_autoLinked ? ` · linked to ${_autoLinked.name}` : ''}`);
       return updated;
     } catch (e) {
       console.error('[OMG Report] Import failed:', e);
@@ -4880,6 +4912,10 @@ export default function App(){
         const saleOrders = ordersBySale[store.id] || [];
         const basic = { data: store, included: omgStoresData.included || [], orders: saleOrders, orderProducts: [] };
         const converted = convertOMGStore(basic, cust);
+        if (!converted.customer_id) {
+          const m = _omgMatchCustomer(converted.store_name);
+          if (m) { converted.customer_id = m.id; if (!converted.rep_id) converted.rep_id = m.primary_rep_id || converted.rep_id; }
+        }
         const totals = saleTotals[store.id];
         if (totals) {
           if (totals.orderCount > 0) converted.orders = totals.orderCount;
