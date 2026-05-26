@@ -8600,6 +8600,9 @@ export default function App(){
     // next step — this scaffold collects and batches the transfers.
     const isAiFile=f=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.ai')};
     const aiReady=af=>!!af&&(af.prod_files||[]).some(isAiFile);
+    const fileInfo=f=>{const url=typeof f==='string'?f:(f?.url||'');const name=(typeof f==='object'&&f?.name)?f.name:(url?decodeURIComponent(url.split('/').pop().split('?')[0]):'file');return{name,url}};
+    const aiFilesOf=af=>!af?[]:(af.prod_files||[]).filter(isAiFile).map(fileInfo);
+    const _esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
     const sumSizes=o=>Object.values(o||{}).reduce((a,v)=>a+(+v||0),0);
     // Keys already committed to a batch (any status) are out of the live queue.
     const batchedKeys=new Set((dtfBatches||[]).flatMap(b=>(b.lines||[]).map(l=>l.key)));
@@ -8611,7 +8614,7 @@ export default function App(){
         const qty=sumSizes(it.sizes)||it.qty||0;
         (it.decorations||[]).filter(d=>d.type==='heat_press').forEach((d,di)=>{
           const af=(so.art_files||[]).find(a=>a.id===d.art_file_id);
-          lines.push({key:`so:${so.id}:${ii}:${di}`,source:'so',source_id:so.id,source_label:so.id+(so.memo?' · '+so.memo:''),customer:c?.name||'',art_id:af?.id||d._cust_art_id||d.art_group||'(none)',art_name:af?.name||d.art_group||'(unnamed)',art_size:af?.art_size||d.art_size||'',preview_url:af?.preview_url||'',qty,position:d.position||'',sku:it.sku||'',item_name:it.name||'',color:it.color||'',ai_ready:aiReady(af)});
+          lines.push({key:`so:${so.id}:${ii}:${di}`,source:'so',source_id:so.id,source_label:so.id+(so.memo?' · '+so.memo:''),customer:c?.name||'',art_id:af?.id||d._cust_art_id||d.art_group||'(none)',art_name:af?.name||d.art_group||'(unnamed)',art_size:af?.art_size||d.art_size||'',preview_url:af?.preview_url||'',qty,position:d.position||'',sku:it.sku||'',item_name:it.name||'',color:it.color||'',ai_ready:aiReady(af),ai_files:aiFilesOf(af)});
         });
       });
     });
@@ -8623,14 +8626,14 @@ export default function App(){
         const qty=sumSizes(p.sizes);
         (p.decorations||[]).filter(d=>d.type==='heat_press').forEach((d,di)=>{
           const af=d._cust_art_id?lib[d._cust_art_id]:null;
-          lines.push({key:`store:${store.id}:${pi}:${di}`,source:'store',source_id:store.id,source_label:'Store · '+store.store_name,customer:c?.name||'',art_id:af?.id||d._cust_art_id||d.art_group||'(none)',art_name:af?.name||d.art_group||'(unnamed)',art_size:af?.art_size||'',preview_url:af?.preview_url||'',qty,position:'',sku:p.sku||'',item_name:p.name||'',color:p.color||'',ai_ready:aiReady(af)});
+          lines.push({key:`store:${store.id}:${pi}:${di}`,source:'store',source_id:store.id,source_label:'Store · '+store.store_name,customer:c?.name||'',art_id:af?.id||d._cust_art_id||d.art_group||'(none)',art_name:af?.name||d.art_group||'(unnamed)',art_size:af?.art_size||'',preview_url:af?.preview_url||'',qty,position:'',sku:p.sku||'',item_name:p.name||'',color:p.color||'',ai_ready:aiReady(af),ai_files:aiFilesOf(af)});
         });
       });
     });
     const queue=lines.filter(l=>!batchedKeys.has(l.key));
     // Group queue by art identity to show one row per transfer with total qty.
     const groups={};
-    queue.forEach(l=>{const g=groups[l.art_id]||(groups[l.art_id]={art_id:l.art_id,art_name:l.art_name,art_size:l.art_size,preview_url:l.preview_url,ai_ready:true,qty:0,lines:[]});g.qty+=l.qty;g.lines.push(l);if(!l.ai_ready)g.ai_ready=false;if(!g.preview_url&&l.preview_url)g.preview_url=l.preview_url;if(!g.art_size&&l.art_size)g.art_size=l.art_size;});
+    queue.forEach(l=>{const g=groups[l.art_id]||(groups[l.art_id]={art_id:l.art_id,art_name:l.art_name,art_size:l.art_size,preview_url:l.preview_url,ai_ready:true,qty:0,lines:[],ai_files:[]});g.qty+=l.qty;g.lines.push(l);if(!l.ai_ready)g.ai_ready=false;if(!g.preview_url&&l.preview_url)g.preview_url=l.preview_url;if(!g.art_size&&l.art_size)g.art_size=l.art_size;(l.ai_files||[]).forEach(f=>{if(f.url&&!g.ai_files.some(x=>x.url===f.url))g.ai_files.push(f)});});
     const groupList=Object.values(groups).sort((a,b)=>a.art_name.localeCompare(b.art_name));
     const ready=groupList.filter(g=>g.ai_ready);
     const needsAi=groupList.filter(g=>!g.ai_ready);
@@ -8641,9 +8644,22 @@ export default function App(){
       if(selReady.length===0)return;
       const batchLines=queue.filter(l=>dtfSel.has(l.art_id));
       const id='DTF-'+String(dtfSheetCounter).padStart(4,'0');
-      const batch={id,created_at:new Date().toISOString(),created_by:cu?.name||'',status:'queued',art_count:selReady.length,total_transfers:selTransfers,groups:selReady.map(g=>({art_id:g.art_id,art_name:g.art_name,art_size:g.art_size,qty:g.qty})),lines:batchLines};
+      const batch={id,created_at:new Date().toISOString(),created_by:cu?.name||'',status:'queued',art_count:selReady.length,total_transfers:selTransfers,groups:selReady.map(g=>({art_id:g.art_id,art_name:g.art_name,art_size:g.art_size,qty:g.qty,ai_files:g.ai_files||[]})),lines:batchLines};
       setDTFBatches(prev=>[batch,...prev]);setDTFSheetCounter(n=>n+1);setDTFSel(new Set());
       nf(`Created gang sheet ${id} — ${selReady.length} art / ${selTransfers} transfers`);
+    };
+    // Manifest = what we send the printer this week: each design, its print
+    // size, the quantity, and the .ai production file(s). (Gang-sheet layout
+    // comes later; for now this list + the files is the deliverable.)
+    const printManifest=(b)=>{
+      const allAi=[];(b.groups||[]).forEach(g=>(g.ai_files||[]).forEach(f=>{if(f.url&&!allAi.some(x=>x.url===f.url))allAi.push(f)}));
+      const rows=(b.groups||[]).map(g=>`<tr><td>${_esc(g.art_name)}</td><td>${_esc(g.art_size||'—')}</td><td style="text-align:right">${g.qty}</td><td>${(g.ai_files||[]).map(f=>_esc(f.name)).join('<br>')||'<span style="color:#b91c1c">— no .ai —</span>'}</td></tr>`).join('');
+      const html=`<html><head><title>${_esc(b.id)} — DTF Manifest</title><style>body{font-family:Arial,Helvetica,sans-serif;color:#0f172a;padding:32px;max-width:820px;margin:0 auto}h1{font-size:20px;margin:0 0 4px}.sub{color:#64748b;font-size:13px;margin-bottom:20px}table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;border-bottom:2px solid #0f172a;padding:6px 8px;font-size:11px;text-transform:uppercase;color:#475569}td{padding:6px 8px;border-bottom:1px solid #e2e8f0}tfoot td{font-weight:800;border-top:2px solid #0f172a}a{color:#1d4ed8}h3{margin:24px 0 6px;font-size:14px}ul{font-size:12px;line-height:1.7}@media print{a{color:#0f172a;text-decoration:none}}</style></head><body><h1>DTF Gang Sheet Manifest — ${_esc(b.id)}</h1><div class="sub">Created ${new Date(b.created_at).toLocaleString()} · ${b.art_count} designs · ${b.total_transfers} transfers</div><table><thead><tr><th>Design</th><th>Print Size</th><th style="text-align:right">Qty</th><th>Production File (.ai)</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td>TOTAL</td><td></td><td style="text-align:right">${b.total_transfers}</td><td></td></tr></tfoot></table><h3>Production files (${allAi.length})</h3><ul>${allAi.map(f=>`<li><a href="${_esc(f.url)}">${_esc(f.name)}</a></li>`).join('')||'<li style="color:#b91c1c">No .ai files attached</li>'}</ul></body></html>`;
+      const w=window.open('','_blank');if(w){w.document.write(html);w.document.close();}else{nf('Pop-up blocked — allow pop-ups to print the manifest','error')}
+    };
+    const copyManifest=(b)=>{
+      const text=['Design\tPrint Size\tQty',...(b.groups||[]).map(g=>`${g.art_name}\t${g.art_size||'—'}\t${g.qty}`),`TOTAL\t\t${b.total_transfers}`].join('\n');
+      if(navigator.clipboard?.writeText){navigator.clipboard.writeText(text).then(()=>nf('Manifest copied to clipboard')).catch(()=>nf('Copy failed','error'))}else nf('Clipboard not available','error');
     };
     const setBatchStatus=(id,status)=>setDTFBatches(prev=>prev.map(b=>b.id===id?{...b,status,...(status==='sent'?{sent_at:new Date().toISOString(),sent_by:cu?.name||''}:{}),...(status==='received'?{received_at:new Date().toISOString(),received_by:cu?.name||''}:{})}:b));
     const deleteBatch=id=>{if(!window.confirm('Delete gang sheet '+id+'? Its transfers return to the queue.'))return;setDTFBatches(prev=>prev.filter(b=>b.id!==id))};
@@ -8655,12 +8671,12 @@ export default function App(){
       <td style={{fontSize:11,color:'#64748b'}}>{g.art_size||'—'}</td>
       <td style={{textAlign:'right',fontWeight:700}}>{g.qty}</td>
       <td style={{fontSize:11,color:'#64748b'}}>{g.lines.length} item{g.lines.length>1?'s':''} · {[...new Set(g.lines.map(l=>l.customer).filter(Boolean))].slice(0,2).join(', ')||'—'}</td>
-      <td>{g.ai_ready?<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'2px 6px',borderRadius:4}}>.ai ready</span>:<span style={{fontSize:10,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'2px 6px',borderRadius:4}}>needs .ai</span>}</td>
+      <td>{g.ai_ready?<span style={{display:'inline-flex',alignItems:'center',gap:6}}><span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'2px 6px',borderRadius:4}}>.ai ready</span>{(g.ai_files||[]).map((f,fi)=><a key={fi} href={f.url} target="_blank" rel="noopener noreferrer" title={f.name} style={{color:'#1d4ed8',fontWeight:700,fontSize:10}}>⬇ .ai</a>)}</span>:<span style={{fontSize:10,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'2px 6px',borderRadius:4}}>needs .ai</span>}</td>
     </tr>;};
     const Th=({children,style})=><th style={{textAlign:'left',fontSize:10,textTransform:'uppercase',color:'#94a3b8',padding:'6px 8px',...style}}>{children}</th>;
     return <div>
       <div style={{...card,padding:16}}>
-        <div style={{fontSize:13,color:'#475569'}}>Collects every <b>DTF (heat transfer)</b> decoration across sales orders and OMG stores into weekly gang sheets for your DTF printer. A transfer is gang-ready once its art file has a <b>.ai</b> production file. <span style={{color:'#94a3b8'}}>Sheet layout / bin-packing is the next step — this builds the queue and batches.</span></div>
+        <div style={{fontSize:13,color:'#475569'}}>Collects every <b>DTF (heat transfer)</b> decoration across sales orders and OMG stores. A transfer is ready once its art file has a <b>.ai</b> production file. Build a weekly batch, then <b>print/copy the manifest</b> (design · size · qty) and grab the <b>.ai</b> files to send your printer. <span style={{color:'#94a3b8'}}>Automated gang-sheet layout / nesting comes next.</span></div>
       </div>
 
       <div style={card}>
@@ -8697,12 +8713,14 @@ export default function App(){
               <span style={{marginLeft:10,fontSize:12,color:'#64748b'}}>{b.art_count} art · {b.total_transfers} transfers · {new Date(b.created_at).toLocaleDateString()}</span>
             </div>
             <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-sm btn-secondary" onClick={()=>printManifest(b)}>🖨 Print manifest</button>
+              <button className="btn btn-sm btn-secondary" onClick={()=>copyManifest(b)}>📋 Copy</button>
               {b.status==='queued'&&<button className="btn btn-sm btn-secondary" onClick={()=>setBatchStatus(b.id,'sent')}>Mark sent to printer</button>}
               {b.status==='sent'&&<button className="btn btn-sm btn-primary" onClick={()=>setBatchStatus(b.id,'received')}>Mark received</button>}
               <button className="btn btn-sm" style={{color:'#dc2626'}} onClick={()=>deleteBatch(b.id)}>Delete</button>
             </div>
           </div>
-          <div style={{marginTop:8,display:'flex',flexWrap:'wrap',gap:6}}>{(b.groups||[]).map((g,gi)=><span key={gi} style={{fontSize:11,background:'#f1f5f9',borderRadius:4,padding:'2px 8px',color:'#475569'}}>{g.art_name} ×{g.qty}{g.art_size?' ('+g.art_size+')':''}</span>)}</div>
+          <div style={{marginTop:8,display:'flex',flexWrap:'wrap',gap:6}}>{(b.groups||[]).map((g,gi)=><span key={gi} style={{fontSize:11,background:'#f1f5f9',borderRadius:4,padding:'2px 8px',color:'#475569',display:'inline-flex',alignItems:'center',gap:6}}>{g.art_name} ×{g.qty}{g.art_size?' ('+g.art_size+')':''}{(g.ai_files||[]).length>0?(g.ai_files).map((f,fi)=><a key={fi} href={f.url} target="_blank" rel="noopener noreferrer" title={f.name} style={{color:'#1d4ed8',fontWeight:700}}>⬇ .ai</a>):<span title="No .ai production file" style={{color:'#b91c1c',fontWeight:700}}>⚠ no .ai</span>}</span>)}</div>
         </div>)}</div>}
       </div>
     </div>;
