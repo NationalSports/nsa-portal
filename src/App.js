@@ -5162,7 +5162,15 @@ export default function App(){
   // Shared data builder for warehouse + deco + dashboard pages
   function buildWarehouseData(){
     const pullTasks=[];const shipTasks=[];const decoTasks=[];const deliverTasks=[];
-    sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
+    sos.filter(so=>{
+      const st=calcSOStatus(so);
+      if(st==='booking')return false;
+      if(st!=='complete')return true;
+      // A promo order can be financially "closed" (status='complete') while its blanks are
+      // received but not yet decorated/shipped. Keep such orders visible to the warehouse so
+      // their still-active jobs can be pulled, moved to deco, and shipped.
+      return safeJobs(so).some(j=>j.prod_status!=='completed'&&j.prod_status!=='shipped'&&j.prod_status!=='draft');
+    }).forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
