@@ -281,6 +281,42 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     flash('Store created'); return { data };
   }, [sel, flash]);
 
+  const duplicateStore = useCallback(async (src) => {
+    if (!window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return;
+    // Unique slug: <slug>-copy, then -copy-2, -copy-3…
+    const taken = new Set(stores.map((s) => s.slug));
+    let slug = slugify(src.name) + '-copy';
+    if (taken.has(slug)) { let n = 2; while (taken.has(`${slug}-${n}`)) n++; slug = `${slug}-${n}`; }
+    const { id, created_at, updated_at, ...rest } = src;
+    const payload = { ...rest, name: src.name + ' (Copy)', slug, status: 'draft', open_at: null, close_at: null };
+    flash('Duplicating store…');
+    const { data: store, error } = await supabase.from('webstores').insert(payload).select().single();
+    if (error) { flash('Could not duplicate: ' + error.message); return; }
+
+    const { data: srcProducts } = await supabase.from('webstore_products').select('*').eq('store_id', src.id).order('sort_order');
+    const idMap = {}; // old webstore_product id -> new id
+    for (const p of (srcProducts || [])) {
+      const { id: pid, created_at: pc, updated_at: pu, store_id, ...prest } = p;
+      const { data: np, error: pe } = await supabase.from('webstore_products').insert({ ...prest, store_id: store.id }).select('id').single();
+      if (pe) { flash('Catalog copy failed: ' + pe.message); break; }
+      idMap[pid] = np.id;
+    }
+    const bundleIds = (srcProducts || []).filter((p) => p.kind === 'bundle').map((p) => p.id);
+    if (bundleIds.length) {
+      const { data: items } = await supabase.from('webstore_bundle_items').select('*').in('bundle_id', bundleIds);
+      const rows = (items || []).map((it) => { const { id: iid, created_at: ic, updated_at: iu, bundle_id, ...irest } = it; return { ...irest, bundle_id: idMap[bundle_id] }; }).filter((r) => r.bundle_id);
+      if (rows.length) { const { error: be } = await supabase.from('webstore_bundle_items').insert(rows); if (be) flash('Package items copy failed: ' + be.message); }
+    }
+    const { data: srcTransfers } = await supabase.from('webstore_transfers').select('*').eq('store_id', src.id);
+    if ((srcTransfers || []).length) {
+      const trows = srcTransfers.map((t) => { const { id: tid, created_at: tc, updated_at: tu, store_id, ...trest } = t; return { ...trest, store_id: store.id, on_hand: 0 }; });
+      const { error: te } = await supabase.from('webstore_transfers').insert(trows);
+      if (te) flash('Transfer setup copy failed: ' + te.message);
+    }
+    setStores((prev) => [store, ...prev]);
+    flash('Store duplicated as a draft');
+  }, [stores, flash]);
+
   const addSingle = useCallback(async ({ product, price, fundraise, image_url, takes_number, takes_name, name_upcharge, transfer_code }) => {
     const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, takes_number: !!takes_number, takes_name: !!takes_name, name_upcharge: Number(name_upcharge) || 0, transfer_code: transfer_code || null, active: true, sort_order: (detail?.catalog?.length || 0) };
     const { error } = await supabase.from('webstore_products').insert(row);
@@ -438,7 +474,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
           onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} onUpdateItem={updateCatalogItem}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} />
+        <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} />
       )}
     </>
   );
@@ -458,7 +494,7 @@ function MigrationNotice({ onRetry }) {
   );
 }
 
-function ListView({ stores, custName, repName, onOpen, onNew }) {
+function ListView({ stores, custName, repName, onOpen, onNew, onDuplicate }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
@@ -476,7 +512,10 @@ function ListView({ stores, custName, repName, onOpen, onNew }) {
               <div style={{ padding: 16 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                   <div style={{ fontSize: 16, fontWeight: 800, color: '#1e293b' }}>{s.name}</div>
-                  <StatusBadge status={s.status} />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {onDuplicate && <button className="btn btn-sm btn-secondary" title="Duplicate this store" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }} style={{ padding: '2px 8px' }}>Duplicate</button>}
+                    <StatusBadge status={s.status} />
+                  </div>
                 </div>
                 <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>{custName(s.customer_id)} · Rep: {repName(s.rep_id)}</div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
