@@ -46,6 +46,37 @@ function printPayout(store, t) {
   </body></html>`);
 }
 
+// Printable warehouse pull sheet: exact design transfers + numbers (grouped by
+// size/color) with a count and a check box for each line.
+function printPullSheet(store, soLabel, designs, numbers, pulledNote) {
+  const row = (label, qty, sub) => `<tr><td class="ck">☐</td><td>${label}${sub ? `<div class="sub">${sub}</div>` : ''}</td><td class="q">${qty}</td></tr>`;
+  // Group numbers by "size · color".
+  const groups = {};
+  (numbers || []).forEach((n) => { const [digit, size, color] = n.code.split('|'); const k = `${size || '?'} · ${color || '?'}`; (groups[k] = groups[k] || []).push({ digit, qty: n.qty }); });
+  const designRows = (designs || []).map((d) => row(d.label, d.qty)).join('');
+  const numberBlocks = Object.entries(groups).map(([k, digs]) => {
+    digs.sort((a, b) => a.digit.localeCompare(b.digit));
+    const tot = digs.reduce((a, d) => a + d.qty, 0);
+    return `<h3>Numbers — ${k} <span class="tot">${tot} total</span></h3><table>${digs.map((d) => row(`Digit ${d.digit}`, d.qty)).join('')}</table>`;
+  }).join('');
+  printHtml(`<!doctype html><html><head><title>Pull sheet — ${soLabel}</title><style>
+    body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:640px;margin:32px auto;padding:0 24px}
+    h1{font-size:20px;margin:0 0 2px}.meta{color:#64748b;font-size:13px;margin-bottom:18px}
+    h3{font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:#475569;margin:18px 0 6px;border-bottom:2px solid #0b1220;padding-bottom:4px}
+    h3 .tot{float:right;color:#94a3b8;font-weight:600}
+    table{width:100%;border-collapse:collapse;margin-bottom:6px}
+    td{padding:8px 6px;border-bottom:1px solid #eef1f5;font-size:14px}
+    td.ck{width:24px;font-size:18px;color:#94a3b8}td.q{text-align:right;font-weight:800;width:60px}
+    .sub{font-size:11px;color:#94a3b8}.pulled{background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;display:inline-block;padding:3px 10px;border-radius:6px;font-size:12px;font-weight:700;margin-bottom:14px}
+  </style></head><body>
+    <h1>Transfer Pull Sheet</h1>
+    <div class="meta">${store.name} · Batch ${soLabel} · ${new Date().toLocaleDateString()}</div>
+    ${pulledNote ? `<div class="pulled">✓ Already pulled — reference copy</div>` : ''}
+    ${designRows ? `<h3>Design transfers</h3><table>${designRows}</table>` : ''}
+    ${numberBlocks || (designRows ? '' : '<div class="meta">No transfers needed for this batch.</div>')}
+  </body></html>`);
+}
+
 // Render base64 PDF labels into one printable window.
 function printLabels(labels) {
   const embeds = labels.map((b64) => `<div class="lp"><embed src="data:application/pdf;base64,${b64}" type="application/pdf" width="100%" height="100%"></div>`).join('');
@@ -1609,9 +1640,10 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
                 <div style={{ marginTop: 12, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b' }}>Transfers to pull for this batch</div>
+                    <button onClick={() => printPullSheet(store, String(o.id).slice(0, 8), all.designs, all.numbers, pulled)} style={{ marginLeft: 'auto', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 6, padding: '5px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer', color: '#475569' }}>🖨️ Pull sheet</button>
                     {pulled
                       ? <span style={{ fontSize: 11, fontWeight: 700, color: '#047857', background: '#ecfdf5', border: '1px solid #a7f3d0', padding: '2px 8px', borderRadius: 6 }}>✓ Pulled — in process</span>
-                      : onPullTransfers && pendingAny ? <button onClick={doPull} style={{ marginLeft: 'auto', background: '#6d28d9', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Pull transfers</button> : null}
+                      : onPullTransfers && pendingAny ? <button onClick={doPull} style={{ background: '#6d28d9', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Pull transfers</button> : null}
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     {all.designs.map((d) => <span key={d.code} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#ede9fe', color: '#6d28d9' }}>{d.label}: {d.qty}</span>)}
