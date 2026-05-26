@@ -586,7 +586,7 @@ const _dbLoad = async (opts={}) => {
     const is404=r=>r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204');
     const errs=coreResults.filter(({r})=>r.error&&!is404(r)&&r.status!==0);
     const fetchErrs=coreResults.filter(({r})=>r.status===0);// network/CORS failures already logged by _safeQuery
-    if(errs.length){console.error('[DB] Load errors:',errs.map(({n,r})=>`${n}: ${r.error.message}`));return null}
+    if(errs.length){console.error('[DB] Load errors:',errs.map(({n,r})=>`${n}: ${r.error.message}`));if(errs.some(({r})=>_isAuthError(r.error)))_recoverSession();return null}
     if(fetchErrs.length&&!errs.length){return null}// silently return null — _safeQuery already logged the fetch error
     // Helper: return data or empty array (safe for 404 / missing tables)
     const d=r=>r.data||[];
@@ -1187,7 +1187,7 @@ const _dbSaveSOInner = async (so) => {
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+fdErr.message)}}
     if(!items?.length){
-      if(saveFailed){_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
+      if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
       // Intentional removal of all items (validated by the safety guards above). Since we no longer delete
       // upfront, remove the old item rows and their children here.
       if(oldItemIds.length){
@@ -1311,12 +1311,12 @@ const _dbSaveSOInner = async (so) => {
     if(finalUpdatedAt!==existingSO?.updated_at){
       await supabase.from('sales_orders').update({updated_at:finalUpdatedAt}).eq('id',so.id);
     }
-    if(saveFailed){_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
+    if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
     _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();
     // Bump local version to match server (DB trigger increments on UPDATE)
     if(so._version)so._version=so._version+1;
     return true;
-  }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
+  }catch(e){console.error('[DB] save SO:',e);if(_isAuthError(e))return _handleAuthSaveFailure(so.id);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
 const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','shipping_name','shipping_address'];
@@ -1407,6 +1407,43 @@ const _dbSaveInvoice = async (inv) => {
 };
 let _dbNotify=null; // set by App component for visible error toasts
 let _dataLossAlert=null; // set by App component — logs + emails on item-wipe attempts/events
+// ─── Session-expiry recovery ───
+// When a write fails with a 401 / JWT-expired / row-level-security error it means our Supabase auth
+// session degraded to the anon role (RLS allows anon SELECT but not INSERT). Retrying the write as-is
+// loops forever, so instead we attempt a one-shot session refresh; if that fails the session is truly
+// dead and we force a re-login. Without this, a stale session silently spams RLS/401 errors and bogus
+// "save incomplete" toasts on every poll/tab-focus regardless of which page the user is on.
+let _forceReauth=null; // set by App component — clears the cached user and shows the login screen
+let _sessionDead=false; // latched once the session is judged unrecoverable; prevents retry spam + repeat prompts
+let _refreshInFlight=null; // de-dupes concurrent refresh attempts
+const _isAuthError=(err)=>{
+  if(!err)return false;
+  const code=err.code||err.status;
+  if(code===401||code==='401'||code==='42501'||code==='PGRST301')return true;
+  const m=(err.message||'').toLowerCase();
+  return m.includes('row-level security')||m.includes('jwt expired')||m.includes('jwt is expired')||m.includes('invalid jwt')||m.includes('not authenticated')||m.includes('no api key');
+};
+// Returns true if the session is healthy/refreshed (caller may retry), false if it's dead.
+const _recoverSession=async()=>{
+  if(_sessionDead||!supabase)return false;
+  if(!_refreshInFlight){
+    _refreshInFlight=(async()=>{
+      try{const{data,error}=await supabase.auth.refreshSession();if(!error&&data?.session)return true}catch{}
+      return false;
+    })();
+    _refreshInFlight.finally(()=>{setTimeout(()=>{_refreshInFlight=null},2000)});
+  }
+  const ok=await _refreshInFlight;
+  if(ok){_sessionDead=false;return true}
+  _sessionDead=true;if(_forceReauth)_forceReauth();return false;
+};
+// Routes an auth-related save failure: keeps the entity queued (so it auto-flushes once the session is
+// restored) and triggers recovery, but suppresses the misleading per-save error toast. Always returns false.
+const _handleAuthSaveFailure=(id)=>{
+  if(id){_dbSaveFailedIds.add(id);_recordSaveError(id,'session expired — sign in again to save');_persistFailedIds()}
+  _recoverSession();
+  return false;
+};
 const _dbSaveCustomer = async (c) => {
   if(!supabase){console.warn('[DB] save customer skipped — no supabase');return false}
   // Optimistic locking: check version before saving
@@ -4344,8 +4381,15 @@ export default function App(){
     nf('Snoozed for '+days+' day'+(days!==1?'s':''));
   };
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
-  const handleLogin=(user)=>{setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
+  const handleLogin=(user)=>{_sessionDead=false;setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
+  // Called from the save layer when a session refresh fails: clear the dead session and bounce to login
+  // (the queued saves auto-flush after the user signs back in). Same path as the mount-time stale-session guard.
+  _forceReauth=()=>{
+    setCu(null);try{localStorage.removeItem('nsa_user')}catch{}
+    try{_sbSignOut()}catch{}
+    setTimeout(()=>{if(typeof nf==='function')nf('Your session expired. Please sign in again so your changes can save to the cloud.','error')},150);
+  };
 
   // Detect stale legacy sessions — users with nsa_user in localStorage from before Supabase
   // auth was added bypass LoginGate but have no JWT, so every write to an RLS-protected
