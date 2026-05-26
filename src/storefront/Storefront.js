@@ -560,7 +560,7 @@ async function verifyStock(store, cart) {
 }
 
 // ── Order confirmation email (server-side Brevo proxy keeps the key secret) ──
-async function sendOrderEmail({ store, order, cart, buyer, shipping, total }) {
+async function sendOrderEmail({ store, order, cart, buyer, shipping, total, discount = 0 }) {
   try {
     const link = `${window.location.origin}/shop/${store.slug}/order/${order.id}`;
     const rows = cart.map((l) => {
@@ -576,6 +576,7 @@ async function sendOrderEmail({ store, order, cart, buyer, shipping, total }) {
       <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:22px 24px">
         <p style="margin:0 0 14px">Thanks, ${buyer.name}! ${order.payment_mode === 'paid' ? "We've received your payment." : 'Your order has been placed and will be invoiced to the team.'}</p>
         <table style="width:100%;border-collapse:collapse;font-size:14px">${rows}
+          ${discount > 0 ? `<tr><td style="padding:8px 0;color:#16a34a">Discount${order.coupon_code ? ` (${order.coupon_code})` : ''}</td><td style="padding:8px 0;text-align:right;color:#16a34a">−${money(discount)}</td></tr>` : ''}
           ${shipping > 0 ? `<tr><td style="padding:8px 0;color:#475569">Shipping</td><td style="padding:8px 0;text-align:right">${money(shipping)}</td></tr>` : ''}
           <tr><td style="padding:12px 0 0;font-weight:800;font-size:16px">Total</td><td style="padding:12px 0 0;text-align:right;font-weight:800;font-size:16px">${money(total)}</td></tr>
         </table>
@@ -595,16 +596,18 @@ async function sendOrderEmail({ store, order, cart, buyer, shipping, total }) {
 }
 
 // ── Checkout ─────────────────────────────────────────────────────────
-async function placeOrder({ store, cart, buyer, ship, payMode, stripePiId, status, sendEmail = true }) {
+async function placeOrder({ store, cart, buyer, ship, payMode, stripePiId, status, sendEmail = true, coupon = null }) {
   const subtotal = cart.reduce((a, l) => a + (Number(l.unit_price) || 0) * (l.qty || 1), 0);
   const fundraise = cart.reduce((a, l) => a + ((Number(l.fundraise) || 0) + (Number(l.name_extra) || 0)) * (l.qty || 1), 0);
-  const shipping = shipFee(store);
-  const total = cartTotal(cart) + shipping;
+  const discount = couponDiscount(coupon, cart);
+  const shipping = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
+  const total = Math.max(0, cartTotal(cart) - discount) + shipping;
   const { data: order, error } = await supabase.from('webstore_orders').insert({
     store_id: store.id, status: status || (payMode === 'paid' ? 'paid' : 'unpaid'), payment_mode: payMode, order_kind: 'individual',
     buyer_name: buyer.name, buyer_email: buyer.email, buyer_phone: buyer.phone || null,
     ship_address: store.delivery_mode === 'ship_home' ? ship : null, ship_method: store.delivery_mode,
     subtotal, fundraise_amt: fundraise, shipping_fee: shipping, total, stripe_pi_id: stripePiId || null,
+    coupon_code: coupon ? coupon.code : null, discount_amt: discount,
   }).select().single();
   if (error) return { error };
 
@@ -629,8 +632,16 @@ async function placeOrder({ store, cart, buyer, ship, payMode, stripePiId, statu
       if (ce && /duplicate|unique/i.test(ce.message || '')) return { error: { message: `Number ${n} was just taken by someone else — please pick a different number.` }, order };
     }
   }
-  if (sendEmail && buyer.email) sendOrderEmail({ store, order, cart, buyer, shipping, total });
+  if (coupon && coupon.id) { try { await supabase.from('webstore_coupons').update({ used_count: (coupon.used_count || 0) + 1 }).eq('id', coupon.id); } catch {} }
+  if (sendEmail && buyer.email) sendOrderEmail({ store, order, cart, buyer, shipping, total, discount });
   return { order, shipping, total };
+}
+
+// Percent coupons discount the cart total (products + fundraising); free
+// shipping is handled separately by zeroing the shipping fee.
+function couponDiscount(coupon, cart) {
+  if (!coupon || coupon.kind !== 'percent') return 0;
+  return Math.round(cartTotal(cart) * (Number(coupon.value) || 0) / 100 * 100) / 100;
 }
 
 function CheckoutPage({ store, theme, cart, onClear }) {
@@ -643,18 +654,35 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const [err, setErr] = useState('');
   const [clientSecret, setClientSecret] = useState(null);
   const [pendingOrder, setPendingOrder] = useState(null);
+  const [couponInput, setCouponInput] = useState('');
+  const [coupon, setCoupon] = useState(null);
+  const [couponErr, setCouponErr] = useState('');
   const needAddr = store.delivery_mode === 'ship_home';
 
   if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} /><Splash>Your cart is empty.</Splash></div>;
 
   const validBuyer = buyer.name.trim() && /.+@.+\..+/.test(buyer.email) && (!needAddr || (ship.street1 && ship.city && ship.state && ship.zip));
+  const discount = couponDiscount(coupon, cart);
+  const ship_ = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
+  const payable = Math.max(0, cartTotal(cart) - discount) + ship_;
+  const comped = payable <= 0; // fully covered by a code → no card, invoice the program
+
+  const applyCoupon = async () => {
+    setCouponErr(''); const code = couponInput.trim(); if (!code) return;
+    const { data } = await supabase.from('webstore_coupons').select('*').eq('store_id', store.id).ilike('code', code).limit(1);
+    const c = data && data[0];
+    if (!c || !c.active) { setCoupon(null); setCouponErr('That code isn’t valid for this store.'); return; }
+    if (c.expires_at && new Date(c.expires_at) < new Date(new Date().toDateString())) { setCoupon(null); setCouponErr('That code has expired.'); return; }
+    if (c.max_uses != null && (c.used_count || 0) >= c.max_uses) { setCoupon(null); setCouponErr('That code has already been used.'); return; }
+    setCoupon(c); setCouponErr('');
+  };
 
   const submitUnpaid = async () => {
     setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
     setBusy(true);
     const stockErr = await verifyStock(store, cart);
     if (stockErr) { setErr(stockErr); setBusy(false); return; }
-    const r = await placeOrder({ store, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid' });
+    const r = await placeOrder({ store, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', coupon });
     setBusy(false);
     if (r.error) { setErr(r.error.message); return; }
     onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
@@ -669,10 +697,10 @@ function CheckoutPage({ store, theme, cart, onClear }) {
     const stockErr = await verifyStock(store, cart);
     if (stockErr) { setErr(stockErr); setBusy(false); return; }
     try {
-      const res = await fetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create_intent', amount_cents: Math.round(grandTotal(store, cart) * 100), customer_name: buyer.name, customer_email: buyer.email, invoice_id: store.slug, invoice_memo: store.name + ' webstore' }) });
+      const res = await fetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create_intent', amount_cents: Math.round(payable * 100), customer_name: buyer.name, customer_email: buyer.email, invoice_id: store.slug, invoice_memo: store.name + ' webstore' }) });
       const data = await res.json();
       if (!data.clientSecret) { setErr(data.error || 'Could not start payment.'); setBusy(false); return; }
-      const r = await placeOrder({ store, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', stripePiId: data.intentId, status: 'pending_payment', sendEmail: false });
+      const r = await placeOrder({ store, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', stripePiId: data.intentId, status: 'pending_payment', sendEmail: false, coupon });
       if (r.error) { setErr(r.error.message); setBusy(false); return; }
       setPendingOrder(r.order);
       setClientSecret(data.clientSecret);
@@ -683,7 +711,7 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const confirmPaid = async () => {
     if (!pendingOrder) { setErr('Order reference lost — your card was charged. Please contact us and we’ll confirm your order.'); return; }
     await supabase.from('webstore_orders').update({ status: 'paid', confirmation_sent: true }).eq('id', pendingOrder.id);
-    if (buyer.email) sendOrderEmail({ store, order: { ...pendingOrder, status: 'paid', payment_mode: 'paid' }, cart, buyer, shipping: shipFee(store), total: grandTotal(store, cart) });
+    if (buyer.email) sendOrderEmail({ store, order: { ...pendingOrder, status: 'paid', payment_mode: 'paid' }, cart, buyer, shipping: ship_, total: payable, discount });
     onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}`);
   };
 
@@ -710,13 +738,34 @@ function CheckoutPage({ store, theme, cart, onClear }) {
         </div></>
       ) : <div style={{ background: '#eff6ff', color: '#1e40af', padding: '10px 14px', borderRadius: 8, fontSize: 13, margin: '12px 0' }}>Orders for this store are <b>delivered to the club</b> — no shipping address needed.</div>}
 
-      {shipFee(store) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: 14 }}><span>Shipping (flat)</span><span>{money(shipFee(store))}</span></div>}
-      <div style={{ borderTop: '1px solid #eef1f5', margin: shipFee(store) > 0 ? '10px 0 0' : '18px 0', paddingTop: 14, display: 'flex', justifyContent: 'space-between', fontSize: 20, fontWeight: 900 }}>
-        <span>Total</span><span>{money(grandTotal(store, cart))}</span>
+      {/* Coupon / scholarship code */}
+      <div style={{ marginTop: 16 }}>
+        {coupon ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 12px', fontSize: 13 }}>
+            <span style={{ color: '#166534', fontWeight: 700 }}>Code {coupon.code} applied{coupon.kind === 'free_shipping' ? ' — free shipping' : ` — ${coupon.value}% off`}</span>
+            <button onClick={() => { setCoupon(null); setCouponInput(''); }} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 12 }}>Remove</button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input style={{ ...inp, maxWidth: 220 }} placeholder="Discount / scholarship code" value={couponInput} onChange={(e) => setCouponInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') applyCoupon(); }} />
+            <button onClick={applyCoupon} style={{ background: '#fff', border: '2px solid #e2e8f0', borderRadius: 8, padding: '10px 18px', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}>Apply</button>
+          </div>
+        )}
+        {couponErr && <div style={{ color: '#b91c1c', fontSize: 12, marginTop: 6 }}>{couponErr}</div>}
       </div>
 
+      {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#16a34a', marginTop: 14 }}><span>Discount ({coupon.code})</span><span>−{money(discount)}</span></div>}
+      {ship_ > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#475569', marginTop: discount > 0 ? 6 : 14 }}><span>Shipping (flat)</span><span>{money(ship_)}</span></div>}
+      {coupon && coupon.kind === 'free_shipping' && shipFee(store) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#16a34a', marginTop: 14 }}><span>Shipping</span><span>Free</span></div>}
+      <div style={{ borderTop: '1px solid #eef1f5', margin: (discount > 0 || ship_ > 0) ? '10px 0 0' : '18px 0', paddingTop: 14, display: 'flex', justifyContent: 'space-between', fontSize: 20, fontWeight: 900 }}>
+        <span>Total</span><span>{money(payable)}</span>
+      </div>
+
+      {comped ? (
+        <button className="sf-btn" onClick={submitUnpaid} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1 }}>{busy ? 'Placing…' : 'Place order — covered by code'}</button>
+      ) : (<>
       {store.payment_mode === 'either' && (
-        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14, marginTop: 14 }}>
           {allowPaid && _stripePromise && <button onClick={() => { setMethod('paid'); setClientSecret(null); }} style={methodBtn(theme, method === 'paid')}>Pay by card</button>}
           {allowUnpaid && <button onClick={() => { setMethod('unpaid'); setClientSecret(null); }} style={methodBtn(theme, method === 'unpaid')}>Put on team tab</button>}
         </div>
@@ -728,11 +777,12 @@ function CheckoutPage({ store, theme, cart, onClear }) {
             <Elements stripe={_stripePromise} options={{ clientSecret, appearance: { theme: 'stripe' } }}>
               <CardForm theme={theme} onPaid={confirmPaid} />
             </Elements>
-          ) : <button className="sf-btn" onClick={startCard} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1 }}>{busy ? 'Starting…' : 'Continue to payment'}</button>
+          ) : <button className="sf-btn" onClick={startCard} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1, marginTop: store.payment_mode === 'either' ? 0 : 14 }}>{busy ? 'Starting…' : 'Continue to payment'}</button>
         ) : <div style={{ color: '#b91c1c', fontSize: 13 }}>Card payment isn’t configured for this store.</div>
       ) : (
         <button className="sf-btn" onClick={submitUnpaid} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1 }}>{busy ? 'Placing…' : 'Place order — invoice the team'}</button>
       )}
+      </>)}
     </div>
   );
 }

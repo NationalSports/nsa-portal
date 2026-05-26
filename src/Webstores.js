@@ -264,7 +264,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
   const loadDetail = useCallback(async (store) => {
     setDetailLoading(true);
     const sid = store.id;
-    const [catRes, bundleRes, stockRes, ordRes, itemRes, rosterRes, claimRes, transferRes] = await Promise.all([
+    const [catRes, bundleRes, stockRes, ordRes, itemRes, rosterRes, claimRes, transferRes, couponRes] = await Promise.all([
       supabase.from('webstore_products').select('*').eq('store_id', sid).order('sort_order'),
       supabase.from('webstore_bundle_items').select('*').order('sort_order'),
       supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,available_sizes,vendor_eta,name,color,category,image_front_url').eq('store_id', sid),
@@ -273,6 +273,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
       supabase.from('webstore_roster').select('*').eq('store_id', sid).order('player_name'),
       supabase.from('webstore_number_claims').select('*').eq('store_id', sid).order('player_number'),
       supabase.from('webstore_transfers').select('*').eq('store_id', sid).order('kind').order('code'),
+      supabase.from('webstore_coupons').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
     ]);
     const catalog = catRes.data || [];
     const catIds = new Set(catalog.map((c) => c.id));
@@ -288,6 +289,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
       roster: rosterRes.data || [],
       claims: claimRes.data || [],
       transfers: transferRes.data || [],
+      coupons: couponRes.data || [],
     });
     setDetailLoading(false);
   }, []);
@@ -395,6 +397,36 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
 
   const removeTransfer = useCallback(async (id) => {
     const { error } = await supabase.from('webstore_transfers').delete().eq('id', id);
+    if (error) { flash('Error: ' + error.message); return; }
+    loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
+  // Generate `count` coupon codes (or insert a single explicit code).
+  const createCoupons = useCallback(async ({ kind, value, count, single, prefix, batch_label, expires_at, code }) => {
+    const rand = () => Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+    const rows = [];
+    const n = code ? 1 : Math.max(1, Math.min(500, Number(count) || 1));
+    const seen = new Set();
+    for (let i = 0; i < n; i++) {
+      let c = code ? code.toUpperCase().trim() : `${(prefix || '').toUpperCase().replace(/[^A-Z0-9]/g, '')}${rand()}`;
+      while (seen.has(c)) c = `${(prefix || '').toUpperCase().replace(/[^A-Z0-9]/g, '')}${rand()}`;
+      seen.add(c);
+      rows.push({ store_id: sel.id, code: c, kind, value: kind === 'percent' ? Number(value) || 0 : 0, max_uses: single ? 1 : null, batch_label: batch_label || null, expires_at: expires_at || null, active: true });
+    }
+    const { data, error } = await supabase.from('webstore_coupons').insert(rows).select();
+    if (error) { flash('Could not create codes: ' + error.message); return { error }; }
+    flash(`Created ${rows.length} code${rows.length === 1 ? '' : 's'}`); loadDetail(sel);
+    return { data };
+  }, [sel, flash, loadDetail]);
+
+  const updateCoupon = useCallback(async (id, fields) => {
+    const { error } = await supabase.from('webstore_coupons').update(fields).eq('id', id);
+    if (error) { flash('Error: ' + error.message); return; }
+    loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
+  const removeCoupon = useCallback(async (id) => {
+    const { error } = await supabase.from('webstore_coupons').delete().eq('id', id);
     if (error) { flash('Error: ' + error.message); return; }
     loadDetail(sel);
   }, [sel, flash, loadDetail]);
@@ -516,7 +548,8 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO}
           onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} onUpdateItem={updateCatalogItem}
-          onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers} />
+          onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
+          onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} />
       )}
@@ -774,7 +807,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon }) {
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
   const catalog = detail?.catalog || [];
@@ -798,6 +831,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
     { id: 'orders', label: `Orders (${orders.length})` },
     { id: 'batches', label: soSummary.length ? `Batches (${soSummary.length})` : 'Batches' },
     { id: 'inventory', label: 'Inventory' },
+    { id: 'coupons', label: (detail?.coupons || []).length ? `Coupons (${(detail.coupons || []).length})` : 'Coupons' },
     { id: 'analytics', label: 'Analytics' },
     { id: 'roster', label: roster.length ? `Roster (${roster.length})` : 'Roster' },
     { id: 'settings', label: 'Settings' },
@@ -852,6 +886,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
+          {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
           {tab === 'analytics' && <AnalyticsTab orders={orders} orderItems={orderItems} stockByWp={stockByWp} />}
           {tab === 'roster' && <RosterTab roster={roster} notOrdered={notOrdered} />}
           {tab === 'settings' && <SettingsTab store={s} />}
@@ -1215,6 +1250,85 @@ function BundleBuilder({ storeItems = [], designOptions = [], numberSets = [], o
         <button className="btn btn-sm btn-secondary" style={{ marginTop: 8 }} onClick={() => setPicking(true)}>+ Search all products</button>}
       <div style={{ marginTop: 14 }}><button className="btn btn-primary" disabled={!valid} onClick={() => onCreate({ name: name.trim(), price: Number(price), fundraise: Number(fundraise) || 0, image_url: image, components })}>Create package</button></div>
     </div></div>
+  );
+}
+
+// Coupons / scholarship codes. Bulk-generate single-use % codes for coaches,
+// or free-shipping promos. Redemption count is tracked per code.
+function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRemove }) {
+  const [adding, setAdding] = useState(false);
+  const [kind, setKind] = useState('percent');
+  const [value, setValue] = useState(100);
+  const [count, setCount] = useState(10);
+  const [single, setSingle] = useState(true);
+  const [prefix, setPrefix] = useState('');
+  const [label, setLabel] = useState('');
+  const [expires, setExpires] = useState('');
+  const [generated, setGenerated] = useState(null); // codes from the last batch
+
+  // Live redemption count = orders that used the code (more reliable than a counter).
+  const usedByCode = {};
+  orders.forEach((o) => { if (o.coupon_code && o.status !== 'cancelled' && o.status !== 'pending_payment') { const k = o.coupon_code.toUpperCase(); usedByCode[k] = (usedByCode[k] || 0) + 1; } });
+
+  const submit = async () => {
+    const r = await onCreate({ kind, value, count, single, prefix, batch_label: label, expires_at: expires || null });
+    if (r && r.data) { setGenerated(r.data.map((c) => c.code)); setAdding(false); }
+  };
+  const copyAll = () => { if (generated) navigator.clipboard?.writeText(generated.join('\n')); };
+
+  const sorted = [...coupons].sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ fontSize: 13, color: '#64748b' }}>Codes apply a discount at checkout. Single-use codes (one order each) are ideal for comping a player — the discounted order still gets batched and invoiced to the program.</div>
+        <button className="btn btn-sm btn-primary" style={{ marginLeft: 'auto' }} onClick={() => { setAdding((v) => !v); setGenerated(null); }}>+ Create codes</button>
+      </div>
+
+      {adding && <div className="card"><div style={{ padding: 16, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <Row label="Type"><select className="form-select" value={kind} onChange={(e) => setKind(e.target.value)}><option value="percent">Percent off</option><option value="free_shipping">Free shipping</option></select></Row>
+        {kind === 'percent' && <Row label="Percent off"><input className="form-input" type="number" min={1} max={100} value={value} onChange={(e) => setValue(e.target.value)} style={{ width: 90 }} /></Row>}
+        <Row label="How many codes"><input className="form-input" type="number" min={1} max={500} value={count} onChange={(e) => setCount(e.target.value)} style={{ width: 90 }} /></Row>
+        <Row label="Code prefix (optional)"><input className="form-input" value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder="SCHOL" style={{ width: 120 }} /></Row>
+        <Row label="Batch label (optional)"><input className="form-input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="2026 scholarships" /></Row>
+        <Row label="Expires (optional)"><input className="form-input" type="date" value={expires} onChange={(e) => setExpires(e.target.value)} /></Row>
+        <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}><input type="checkbox" checked={single} onChange={(e) => setSingle(e.target.checked)} /> Single-use (one order per code)</label>
+        <button className="btn btn-primary" onClick={submit}>Generate</button>
+        <button className="btn btn-secondary" onClick={() => setAdding(false)}>Cancel</button>
+      </div></div>}
+
+      {generated && <div className="card" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}><div style={{ padding: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+          <div style={{ fontWeight: 700, color: '#166534' }}>{generated.length} code{generated.length === 1 ? '' : 's'} created — send to the coach</div>
+          <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={copyAll}>Copy all</button>
+        </div>
+        <div style={{ fontFamily: 'monospace', fontSize: 13, columnWidth: 120, color: '#0b1220' }}>{generated.map((c) => <div key={c}>{c}</div>)}</div>
+      </div></div>}
+
+      {sorted.length === 0 ? <Empty msg="No coupon codes yet." /> : (
+        <div className="card"><div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Code</th><th style={th}>Discount</th><th style={th}>Batch</th><th style={th}>Used</th><th style={th}>Expires</th><th style={th}>Active</th><th style={th}></th></tr></thead>
+            <tbody>
+              {sorted.map((c) => {
+                const used = usedByCode[(c.code || '').toUpperCase()] || 0;
+                const exhausted = c.max_uses != null && used >= c.max_uses;
+                return (
+                  <tr key={c.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                    <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700 }}>{c.code}</td>
+                    <td style={td}>{c.kind === 'free_shipping' ? 'Free shipping' : `${c.value}% off`}</td>
+                    <td style={{ ...td, color: '#64748b' }}>{c.batch_label || '—'}</td>
+                    <td style={td}>{used}{c.max_uses != null ? ` / ${c.max_uses}` : ''}{exhausted && <span style={{ color: '#b91c1c', fontWeight: 700 }}> ·used up</span>}</td>
+                    <td style={{ ...td, color: '#64748b' }}>{c.expires_at || '—'}</td>
+                    <td style={td}><button onClick={() => onUpdate(c.id, { active: !c.active })} style={{ background: c.active ? '#dcfce7' : '#f1f5f9', color: c.active ? '#166534' : '#94a3b8', border: 'none', borderRadius: 6, padding: '3px 10px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>{c.active ? 'Active' : 'Off'}</button></td>
+                    <td style={{ ...td, textAlign: 'right' }}><button onClick={() => onRemove(c.id)} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 12 }}>delete</button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div></div>
+      )}
+    </div>
   );
 }
 
