@@ -414,7 +414,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
   // SO creation path (onCreateSO), then link each order back to the new SO id.
   const batchOrders = useCallback(async () => {
     if (!sel || !detail || !onCreateSO) return;
-    const open = (detail.orders || []).filter((o) => !o.so_id);
+    const open = (detail.orders || []).filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled');
     if (!open.length) { flash('No unbatched orders to send'); return; }
     if (!window.confirm(`Create a Sales Order from ${open.length} order${open.length === 1 ? '' : 's'}?`)) return;
     const openIds = new Set(open.map((o) => o.id));
@@ -1219,7 +1219,9 @@ function BundleBuilder({ storeItems = [], designOptions = [], numberSets = [], o
 }
 
 // Store analytics — computed live from orders.
-function AnalyticsTab({ orders, orderItems, stockByWp }) {
+function AnalyticsTab({ orders: allOrders, orderItems, stockByWp }) {
+  // Exclude abandoned pre-payment carts and cancellations from analytics.
+  const orders = allOrders.filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
   if (!orders.length) return <Empty msg="No orders yet — analytics will appear once shoppers start ordering." />;
   const nameBySku = {}; Object.values(stockByWp).forEach((s) => { if (s.sku) nameBySku[s.sku] = s.name; });
   const revenue = orders.reduce((a, o) => a + (Number(o.total) || 0), 0);
@@ -1307,7 +1309,7 @@ function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orde
   const maps = buildTransferMaps(catalog, bundleItems);
   const itemsByOrder = {}; orderItems.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
   const orderDone = (o) => { const its = (itemsByOrder[o.id] || []).filter((i) => !i.is_bundle_parent); return its.length > 0 && its.every((i) => ['shipped', 'complete'].includes(i.line_status)); };
-  const active = orders.filter((o) => o.status !== 'cancelled');
+  const active = orders.filter((o) => o.status !== 'cancelled' && o.status !== 'pending_payment');
   const onOrderIds = new Set(active.filter((o) => !o.transfers_pulled).map((o) => o.id));
   const inProcIds = new Set(active.filter((o) => o.transfers_pulled && !orderDone(o)).map((o) => o.id));
   const onOrderUse = transferUsage(orderItems.filter((i) => onOrderIds.has(i.order_id)), maps);
@@ -1677,7 +1679,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch }) {
     const items = itemsByOrder[o.id] || [];
     return { o, items, players: [...new Set(items.map((i) => i.player_name).filter(Boolean))], numbers: [...new Set(items.map((i) => i.player_number).filter(Boolean))], lineStatus: items[0]?.line_status || 'pending' };
   };
-  const unbatchedCount = orders.filter((o) => !o.so_id).length;
+  const unbatchedCount = orders.filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled').length;
 
   const filtered = orders.map(enrich).filter(({ o, players, numbers, lineStatus }) => {
     if (fStatus !== 'all' && lineStatus !== fStatus) return false;

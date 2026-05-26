@@ -595,13 +595,13 @@ async function sendOrderEmail({ store, order, cart, buyer, shipping, total }) {
 }
 
 // ── Checkout ─────────────────────────────────────────────────────────
-async function placeOrder({ store, cart, buyer, ship, payMode, stripePiId }) {
+async function placeOrder({ store, cart, buyer, ship, payMode, stripePiId, status, sendEmail = true }) {
   const subtotal = cart.reduce((a, l) => a + (Number(l.unit_price) || 0) * (l.qty || 1), 0);
   const fundraise = cart.reduce((a, l) => a + ((Number(l.fundraise) || 0) + (Number(l.name_extra) || 0)) * (l.qty || 1), 0);
   const shipping = shipFee(store);
   const total = cartTotal(cart) + shipping;
   const { data: order, error } = await supabase.from('webstore_orders').insert({
-    store_id: store.id, status: payMode === 'paid' ? 'paid' : 'unpaid', payment_mode: payMode, order_kind: 'individual',
+    store_id: store.id, status: status || (payMode === 'paid' ? 'paid' : 'unpaid'), payment_mode: payMode, order_kind: 'individual',
     buyer_name: buyer.name, buyer_email: buyer.email, buyer_phone: buyer.phone || null,
     ship_address: store.delivery_mode === 'ship_home' ? ship : null, ship_method: store.delivery_mode,
     subtotal, fundraise_amt: fundraise, shipping_fee: shipping, total, stripe_pi_id: stripePiId || null,
@@ -629,8 +629,8 @@ async function placeOrder({ store, cart, buyer, ship, payMode, stripePiId }) {
       if (ce && /duplicate|unique/i.test(ce.message || '')) return { error: { message: `Number ${n} was just taken by someone else — please pick a different number.` }, order };
     }
   }
-  if (buyer.email) sendOrderEmail({ store, order, cart, buyer, shipping, total });
-  return { order };
+  if (sendEmail && buyer.email) sendOrderEmail({ store, order, cart, buyer, shipping, total });
+  return { order, shipping, total };
 }
 
 function CheckoutPage({ store, theme, cart, onClear }) {
@@ -642,6 +642,7 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [clientSecret, setClientSecret] = useState(null);
+  const [pendingOrder, setPendingOrder] = useState(null);
   const needAddr = store.delivery_mode === 'ship_home';
 
   if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} /><Splash>Your cart is empty.</Splash></div>;
@@ -659,6 +660,9 @@ function CheckoutPage({ store, theme, cart, onClear }) {
     onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
   };
 
+  // Order-first: create the PaymentIntent, persist the order as pending_payment
+  // (so number claims/stock are committed before charging), then show the card
+  // form. A Stripe webhook flips it to paid even if the buyer closes the tab.
   const startCard = async () => {
     setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
     setBusy(true);
@@ -667,10 +671,20 @@ function CheckoutPage({ store, theme, cart, onClear }) {
     try {
       const res = await fetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create_intent', amount_cents: Math.round(grandTotal(store, cart) * 100), customer_name: buyer.name, customer_email: buyer.email, invoice_id: store.slug, invoice_memo: store.name + ' webstore' }) });
       const data = await res.json();
-      if (data.clientSecret) setClientSecret(data.clientSecret);
-      else setErr(data.error || 'Could not start payment.');
+      if (!data.clientSecret) { setErr(data.error || 'Could not start payment.'); setBusy(false); return; }
+      const r = await placeOrder({ store, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', stripePiId: data.intentId, status: 'pending_payment', sendEmail: false });
+      if (r.error) { setErr(r.error.message); setBusy(false); return; }
+      setPendingOrder(r.order);
+      setClientSecret(data.clientSecret);
     } catch (e) { setErr('Payment setup failed: ' + e.message); }
     setBusy(false);
+  };
+
+  const confirmPaid = async () => {
+    if (!pendingOrder) { setErr('Order reference lost — your card was charged. Please contact us and we’ll confirm your order.'); return; }
+    await supabase.from('webstore_orders').update({ status: 'paid' }).eq('id', pendingOrder.id);
+    if (buyer.email) sendOrderEmail({ store, order: { ...pendingOrder, status: 'paid', payment_mode: 'paid' }, cart, buyer, shipping: shipFee(store), total: grandTotal(store, cart) });
+    onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}`);
   };
 
   return (
@@ -712,7 +726,7 @@ function CheckoutPage({ store, theme, cart, onClear }) {
         _stripePromise ? (
           clientSecret ? (
             <Elements stripe={_stripePromise} options={{ clientSecret, appearance: { theme: 'stripe' } }}>
-              <CardForm theme={theme} onPaid={async (piId) => { const r = await placeOrder({ store, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', stripePiId: piId }); if (r.error) { setErr(r.error.message); return; } onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`); }} />
+              <CardForm theme={theme} onPaid={confirmPaid} />
             </Elements>
           ) : <button className="sf-btn" onClick={startCard} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1 }}>{busy ? 'Starting…' : 'Continue to payment'}</button>
         ) : <div style={{ color: '#b91c1c', fontSize: 13 }}>Card payment isn’t configured for this store.</div>
