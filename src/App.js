@@ -637,7 +637,16 @@ const _dbLoad = async (opts={}) => {
       const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
       const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
       const jobs=soJobs.filter(j=>j.so_id===so.id).map(j=>{const{so_id:_,...rest}=j;return rest});
-      const items=soItems.filter(i=>i.so_id===so.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
+      // Dedup orphaned duplicate so_items sharing an item_index. These arise when an "insert-new-then-delete-old"
+      // save swap was interrupted after the child (deco/pick) deletes but before the parent so_items delete — leaving
+      // an empty phantom row alongside the real one. If both reach the client the phantom can land at the canonical
+      // index and trip the per-item decoration safety guard ("had N decos in DB but client has 0"), blocking every
+      // subsequent save. Keep, per item_index, the row carrying the most children (the real one; newest id breaks ties).
+      const _soItemsRaw=soItems.filter(i=>i.so_id===so.id);
+      const _itemChildCount=it=>soDecos.filter(d=>d.so_item_id===it.id).length+soPicks.filter(p=>p.so_item_id===it.id).length+soPOs.filter(p=>p.so_item_id===it.id).length;
+      const _itemByIdx=new Map();
+      _soItemsRaw.forEach(it=>{const cur=_itemByIdx.get(it.item_index);if(!cur){_itemByIdx.set(it.item_index,it);return}const a=_itemChildCount(it),b=_itemChildCount(cur);if(a>b||(a===b&&it.id>cur.id))_itemByIdx.set(it.item_index,it)});
+      const items=[..._itemByIdx.values()].sort((a,b)=>a.item_index-b.item_index).map(item=>{
         const decorations=soDecos.filter(d=>d.so_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,so_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
         const pick_lines=soPicks.filter(pk=>pk.so_item_id===item.id).map(pk=>{const{id:_,so_item_id:__,...rest}=pk;const sizes=rest.sizes||{};delete rest.sizes;return{...rest,...sizes}});
         const po_lines=soPOs.filter(po=>po.so_item_id===item.id).map(po=>{const{id:_,so_item_id:__,...rest}=po;const sizes=rest.sizes||{};delete rest.sizes;
@@ -17093,12 +17102,12 @@ export default function App(){
         const _mockKey=(sku,color)=>sku+'|'+(color||'');
         // Read with fallback to the legacy plain-SKU key so existing data still renders.
         const _getMocks=(artF,sku,color)=>{const m=artF?.item_mockups||{};const v=m[_mockKey(sku,color)];return v&&v.length>0?v:(m[sku]||[]);};
-        const handleMockupUploadForItem=async(files,sku,color,targetArtId)=>{
+        const handleMockupUploadForItem=async(files,sku,color,targetArtId,slotKey)=>{
           if(!files||files.length===0)return;
           setArtJobDetailUploading(true);
           try{
             const artId=targetArtId||resolveItemArtId(sku);
-            const mk=_mockKey(sku,color);
+            const mk=slotKey||_mockKey(sku,color);
             const uploaded=[];
             for(const f of files){
               if(typeof nf==='function')nf('Uploading '+f.name+' for '+sku+'...');
@@ -17112,8 +17121,9 @@ export default function App(){
             if(hasMatch){
               const liveAf=existingArt.find(a=>a.id===artId);
               const curItemMockups=liveAf?.item_mockups||{};
-              // Migrate any legacy plain-SKU entry onto the composite key while preserving it.
-              const existing=curItemMockups[mk]||curItemMockups[sku]||[];
+              // Migrate any legacy plain-SKU entry onto the composite key while preserving it — but only for the
+              // primary (bare sku|color) slot, so a per-decoration slot doesn't inherit the legacy mockup.
+              const existing=curItemMockups[mk]||(mk===_mockKey(sku,color)?(curItemMockups[sku]||[]):[]);
               const updItemMockups={...curItemMockups,[mk]:[...existing,...uploaded]};
               updArt=existingArt.map(a=>a.id===artId?{...a,item_mockups:updItemMockups,status:'uploaded'}:a);
             }else{
@@ -17210,7 +17220,7 @@ export default function App(){
                   const key=(it.sku||gi.sku)+'|'+(it.color||gi.color||'');
                   if(!repPerItemDecos[key])repPerItemDecos[key]=[];
                   safeDecos(it).forEach(d=>{
-                    if(d.kind==='art'){const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';const cwObj2=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;const dColors=cwObj2?cwObj2.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);repPerItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,underbase:d.underbase||false,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||'',cwLabel:cwObj2?.garment_color||''});}
+                    if(d.kind==='art'){const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';const cwObj2=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;const dColors=cwObj2?cwObj2.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);repPerItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,underbase:d.underbase||false,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||'',cwLabel:cwObj2?.garment_color||'',colorWayId:d.color_way_id||null});}
                     else if(d.kind==='numbers')repPerItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),numSize:d.num_size||'—',numFont:d.num_font||'block',twoColor:d.two_color||false,frontAndBack:d.front_and_back||false,numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,printColor:d.print_color||''});
                     else if(d.kind==='names')repPerItemDecos[key].push({kind:'names',position:d.position||'Back Center',frontAndBack:d.front_and_back||false});
                   });
@@ -17227,9 +17237,14 @@ export default function App(){
                   const effectiveArtDecos=artDecos.length>0?artDecos:repPosList.length>0?repPosList.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:'',cwLabel:''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''}]:[];
                   // Production files for this item's art
                   const repItemPFs=artDecos.filter(d=>d.artFile).flatMap(d=>(d.artFile?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f)})));
-                  // Unique arts on this item — one labeled mockup drop zone per art (side by side).
-                  const _repItemArts=[...new Map(artDecos.filter(d=>d.artFile&&d.artFile.id).map(d=>[d.artFile.id,d.artFile])).values()];
-                  const _repArts=_repItemArts.length>0?_repItemArts:(af?[af]:[]);
+                  // One mockup slot per decoration (reversible color ways + numbers/names each get a box).
+                  // Slot keys are computed identically to the artist modal so uploads from either side line up.
+                  const _repSkBase=_mockKey(gi.sku,gi.color);
+                  const _repSlots=[];
+                  effectiveArtDecos.forEach((d,i)=>{const disc=i===0?'':(d.colorWayId||('d'+i));_repSlots.push({key:_repSkBase+(disc?('|'+disc):''),primary:!disc,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,d.cwLabel?('CW: '+d.cwLabel):'',d.reversible?'Reversible':''].filter(Boolean).join(' · ')})});
+                  numDecos.forEach((d,i)=>_repSlots.push({key:_repSkBase+'|numbers'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
+                  nameDecos.forEach((d,i)=>_repSlots.push({key:_repSkBase+'|names'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
+                  if(_repSlots.length===0&&af)_repSlots.push({key:_repSkBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                   return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?16:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'white'}}>
                     {/* Item header */}
                     <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
@@ -17254,13 +17269,13 @@ export default function App(){
                     {/* Per-item mockup — one labeled drop zone per art on this item (side by side) */}
                     <div style={{padding:12,borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
                       <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',marginBottom:6}}>🖼️ Mockup</div>
-                      {_repArts.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
-                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repArts.map(a=>{
-                        const mocks=_getMocks(a,gi.sku,gi.color);const primary=mocks[0]||null;const extra=mocks.slice(1);
+                      {_repSlots.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
+                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=>{const a=slot.artFile;
+                        const mocks=slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]);const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
-                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)handleMockupUploadForItem(files,gi.sku,gi.color,a.id)};
+                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)handleMockupUploadForItem(files,gi.sku,gi.color,slot.artId,slot.key)};
                         const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
-                        return<div key={a.id} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
+                        return<div key={slot.key} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
                           <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':'2px dashed #a78bfa',background:primary?'white':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:primary?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
                             onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';if(!primary)e.currentTarget.style.background='#ede9fe'}}
                             onDragLeave={e=>{e.currentTarget.style.borderColor=primary?'#7c3aed':'#a78bfa';if(!primary)e.currentTarget.style.background='#faf5ff'}}
@@ -17281,8 +17296,8 @@ export default function App(){
                              :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div></div>}
                           </div>
                           <div style={{marginTop:6,textAlign:'center'}}>
-                            <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{a.name||'Unnamed art'}</div>
-                            <div style={{fontSize:9,color:'#64748b'}}>{(a.deco_type||'').replace(/_/g,' ')}{a.art_size?' · '+a.art_size:''}</div>
+                            <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{slot.label||'Unnamed art'}</div>
+                            {slot.sub&&<div style={{fontSize:9,color:'#64748b'}}>{slot.sub}</div>}
                           </div>
                         </div>;})}</div>}
                     </div>
@@ -17575,7 +17590,7 @@ export default function App(){
         // Upload handler for per-item mockups.
         // targetArtId: which art_file this mockup applies to. If omitted, derives from the SKU's decorations
         // (the first art_file used on this SKU), falling back to the job's primary art.
-        const handleItemMockupUpload=async(files,sku,color,targetArtId)=>{
+        const handleItemMockupUpload=async(files,sku,color,targetArtId,slotKey)=>{
           setArtJobDetailUploading(true);
           try{
             // Derive art_file_id from the SKU's decorations if not explicitly passed
@@ -17589,7 +17604,7 @@ export default function App(){
               // If this SKU uses exactly one art, route there. Otherwise fall back to job primary.
               artId=uniqueSkuArts.length===1?uniqueSkuArts[0]:j.art_file_id;
             }
-            const mk=_mockKey(sku,color);
+            const mk=slotKey||_mockKey(sku,color);
             const uploaded=[];
             for(const f of files){
               nf('Uploading '+f.name+' for '+sku+'...');
@@ -17601,8 +17616,9 @@ export default function App(){
             const hasMatch=artId&&existingArt.some(a=>a.id===artId);
             const liveAf=hasMatch?existingArt.find(a=>a.id===artId):af;
             const curItemMockups=liveAf?.item_mockups||{};
-            // Migrate any legacy plain-SKU entry onto the composite key while preserving it.
-            const existing=curItemMockups[mk]||curItemMockups[sku]||[];
+            // Migrate any legacy plain-SKU entry onto the composite key while preserving it — but only for the
+            // primary (bare sku|color) slot, so a per-decoration slot doesn't inherit the legacy mockup.
+            const existing=curItemMockups[mk]||(mk===_mockKey(sku,color)?(curItemMockups[sku]||[]):[]);
             const updItemMockups={...curItemMockups,[mk]:[...existing,...uploaded]};
             let updArt;
             let newArtFileId=artId;
@@ -17628,20 +17644,19 @@ export default function App(){
           finally{setArtJobDetailUploading(false)}
         };
 
-        // Delete a per-item mockup
-        const handleItemMockupDelete=(fileUrl,sku,color)=>{
+        // Delete a per-item mockup. Scans every art file on the SO and removes the URL from all
+        // mockup slots so a mockup stored under any per-decoration slot key (or on a non-primary art
+        // file) is reliably cleared regardless of which box it was uploaded to.
+        const handleItemMockupDelete=(fileUrl,sku,color,slotKey)=>{
           const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-          const liveAf=safeArt(liveSO).find(a=>a.id===j.art_file_id)||af;
-          const curItemMockups=liveAf?.item_mockups||{};
           const _fUrl=f=>(typeof f==='string'?f:(f?.url||''));
-          // Filter the URL out of both the composite-key entry and the legacy plain-SKU entry.
-          const mk=_mockKey(sku,color);
-          const updItemMockups={...curItemMockups};
-          if(updItemMockups[mk])updItemMockups[mk]=updItemMockups[mk].filter(f=>_fUrl(f)!==fileUrl);
-          if(updItemMockups[sku])updItemMockups[sku]=updItemMockups[sku].filter(f=>_fUrl(f)!==fileUrl);
-          // Also remove from mockup_files
-          const curFiles=(liveAf?.mockup_files||liveAf?.files||[]);
-          const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,item_mockups:updItemMockups,mockup_files:curFiles.filter(f=>_fUrl(f)!==fileUrl)}:a);
+          const updArt=safeArt(liveSO).map(a=>{
+            const im=a.item_mockups||{};const updIm={};let changed=false;
+            Object.keys(im).forEach(k=>{const filtered=(im[k]||[]).filter(f=>_fUrl(f)!==fileUrl);if(filtered.length!==(im[k]||[]).length)changed=true;updIm[k]=filtered});
+            const curFiles=a.mockup_files||a.files||[];const updFiles=curFiles.filter(f=>_fUrl(f)!==fileUrl);
+            if(updFiles.length!==curFiles.length)changed=true;
+            return changed?{...a,item_mockups:updIm,mockup_files:updFiles}:a;
+          });
           savSO({...liveSO,art_files:updArt});
           const updatedAf=updArt.find(a=>a.id===j.art_file_id);
           setArtJobDetailModal({...j,artFile:updatedAf});
@@ -17690,10 +17705,10 @@ export default function App(){
 
         // Kick off per-item mockup upload: auto-route to the art used by the SKU's decorations.
         // If the SKU uses multiple arts (multi-art decoration), open a picker so the artist tags which art the mockup shows.
-        const startMockupUpload=(files,sku,color,targetArtId)=>{
+        const startMockupUpload=(files,sku,color,targetArtId,slotKey)=>{
           if(!files||files.length===0)return;
           // When the drop happened on an art-specific zone we already know the target art — skip the picker.
-          if(targetArtId){handleItemMockupUpload(files,sku,color,targetArtId);return;}
+          if(targetArtId){handleItemMockupUpload(files,sku,color,targetArtId,slotKey);return;}
           const skuItem=(j.items||[]).find(gi=>gi.sku===sku);
           const itIdx=skuItem?.item_idx;
           const decos=itIdx!=null?safeDecos(safeItems(so)[itIdx]||{}):[];
@@ -17820,15 +17835,22 @@ export default function App(){
                   {/* Mockup display + upload zone — one labeled drop zone per art on this item (side by side) */}
                   <div style={{padding:10}}>
                     {(()=>{
-                      const _itemArts=[...new Map(_artDecos.filter(d=>d.artFile&&d.artFile.id).map(d=>[d.artFile.id,d.artFile])).values()];
-                      const _arts=_itemArts.length>0?_itemArts:(af?[af]:[]);
-                      if(_arts.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
-                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_arts.map(a=>{
-                        const mocks=_getMocks(a,gi.sku,gi.color);const primary=mocks[0]||null;const extra=mocks.slice(1);
+                      const _skBase=_mockKey(gi.sku,gi.color);
+                      // One mockup slot per decoration so reversibles (same logo on different color ways) and
+                      // numbers/names each get their own labeled box. The first art deco keeps the bare sku|color
+                      // key (backward-compatible + drives the approval gate); others get a suffixed key.
+                      const _slots=[];
+                      _effectiveArtDecos.forEach((d,i)=>{const disc=i===0?'':(d.colorWayId||('d'+i));_slots.push({key:_skBase+(disc?('|'+disc):''),primary:!disc,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,d.cwLabel?('CW: '+d.cwLabel):'',d.reversible?'Reversible':''].filter(Boolean).join(' · ')})});
+                      _numDecos.forEach((d,i)=>_slots.push({key:_skBase+'|numbers'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
+                      _nameDecos.forEach((d,i)=>_slots.push({key:_skBase+'|names'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
+                      if(_slots.length===0&&af)_slots.push({key:_skBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
+                      if(_slots.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
+                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=>{const a=slot.artFile;
+                        const mocks=slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]);const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
-                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)startMockupUpload(files,gi.sku,gi.color,a.id)};
+                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)startMockupUpload(files,gi.sku,gi.color,slot.artId,slot.key)};
                         const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
-                        return<div key={a.id} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
+                        return<div key={slot.key} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
                           <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':'2px dashed #a78bfa',background:primary?'white':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:primary?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
                             onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';if(!primary)e.currentTarget.style.background='#ede9fe'}}
                             onDragLeave={e=>{e.currentTarget.style.borderColor=primary?'#7c3aed':'#a78bfa';if(!primary)e.currentTarget.style.background='#faf5ff'}}
@@ -17843,15 +17865,15 @@ export default function App(){
                                <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4}}>
                                  <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}{extra.length>0?' (+'+extra.length+')':''}</span>
                                  <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
-                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} onClick={()=>{if(window.confirm('Remove this mockup?'))handleItemMockupDelete(url,gi.sku,gi.color)}} title="Remove">×</button>
+                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} onClick={()=>{if(window.confirm('Remove this mockup?'))handleItemMockupDelete(url,gi.sku,gi.color,slot.key)}} title="Remove">×</button>
                                </div>
                                <div style={{padding:'4px 8px',borderTop:'1px solid #f1f5f9',textAlign:'center',fontSize:10,color:'#7c3aed',fontWeight:600,cursor:'pointer'}} onClick={pick}>+ Add / replace</div>
                              </>
                              :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div></div>}
                           </div>
                           <div style={{marginTop:6,textAlign:'center'}}>
-                            <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{a.name||'Unnamed art'}</div>
-                            <div style={{fontSize:9,color:'#64748b'}}>{(a.deco_type||'').replace(/_/g,' ')}{a.art_size?' · '+a.art_size:''}</div>
+                            <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{slot.label||'Unnamed art'}</div>
+                            {slot.sub&&<div style={{fontSize:9,color:'#64748b'}}>{slot.sub}</div>}
                           </div>
                         </div>;})}</div>;
                     })()}
