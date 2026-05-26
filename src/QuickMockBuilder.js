@@ -54,6 +54,9 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
   const [side, setSide] = useState('front');
   const [canvas, setCanvas] = useState(null);
   const wrapRef = useRef(null);
+  // Serialized art per "gi|side" so switching garment color / side (which rebuilds the
+  // fabric canvas) restores the art the user already placed instead of showing blank.
+  const sceneRef = useRef({});
   // Each location is a layer. preview = renderable art to place on the canvas (may come
   // from the artwork already on file). source = a NEW file to append to the artwork on save.
   const [layers, setLayers] = useState(() => locations.map(l => ({
@@ -96,6 +99,18 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
     };
     document.addEventListener('keydown', delHandler);
 
+    // Restore art previously placed for this garment/side (the garment loads below and
+    // is sent to the back, so restored art stays on top regardless of load order).
+    const sceneKey = gi + '|' + side;
+    const savedScene = sceneRef.current[sceneKey];
+    if (savedScene && savedScene.length) {
+      fabric.util.enlivenObjects(savedScene).then(objs => {
+        if (disposed) return;
+        objs.forEach(o => { styleArt(o); c.add(o); });
+        c.renderAll();
+      }).catch(() => {});
+    }
+
     if (!garmentUrl) {
       setImgLoading(false);
     } else {
@@ -122,6 +137,15 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
     return () => {
       disposed = true;
       document.removeEventListener('keydown', delHandler);
+      // Snapshot the placed art before disposing so it can be restored on return.
+      // Force crossOrigin so reloaded images stay canvas-exportable (no taint on re-save).
+      try {
+        sceneRef.current[gi + '|' + side] = c.getObjects().filter(o => o._isArt).map(o => {
+          const j = o.toObject(['_isArt', '_layerId']);
+          if (j.type && /image/i.test(j.type)) j.crossOrigin = 'anonymous';
+          return j;
+        });
+      } catch (e) {}
       try { c.dispose(); } catch (e) {}
       try { wrap.innerHTML = ''; } catch (e) {}
     };
