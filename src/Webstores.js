@@ -431,6 +431,40 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     loadDetail(sel);
   }, [sel, flash, loadDetail]);
 
+  // Edit an order's line items (size/qty/remove), then recompute its totals.
+  const saveOrderEdits = useCallback(async (order, edited) => {
+    for (const it of edited) {
+      if (it._removed) await supabase.from('webstore_order_items').delete().eq('id', it.id);
+      else await supabase.from('webstore_order_items').update({ size: it.size || null, qty: Number(it.qty) || 1 }).eq('id', it.id);
+    }
+    const remaining = edited.filter((i) => !i._removed);
+    const subtotal = remaining.reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0);
+    const fundraise = remaining.reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0);
+    const total = Math.max(0, subtotal + fundraise - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0);
+    const { error } = await supabase.from('webstore_orders').update({ subtotal, fundraise_amt: fundraise, total }).eq('id', order.id);
+    if (error) { flash('Save failed: ' + error.message); return { error }; }
+    flash('Order updated'); loadDetail(sel); return { ok: true };
+  }, [sel, flash, loadDetail]);
+
+  // Refund: Stripe for card orders, recorded credit for team-tab orders.
+  const refundOrder = useCallback(async (order, amount) => {
+    const cents = Math.round((Number(amount) || 0) * 100);
+    if (cents <= 0) return { error: 'Enter an amount' };
+    if (order.stripe_pi_id) {
+      try {
+        const res = await fetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'refund', payment_intent_id: order.stripe_pi_id, amount_cents: cents }) });
+        const d = await res.json();
+        if (d.error) { flash('Stripe refund failed: ' + d.error); return { error: d.error }; }
+      } catch (e) { flash('Refund failed: ' + e.message); return { error: e.message }; }
+    }
+    const refunded = (Number(order.refunded_amt) || 0) + cents / 100;
+    const status = refunded >= (Number(order.total) || 0) - 0.005 ? 'refunded' : order.status;
+    const { error } = await supabase.from('webstore_orders').update({ refunded_amt: refunded, status }).eq('id', order.id);
+    if (error) { flash('Refund record failed: ' + error.message); return { error: error.message }; }
+    flash(order.stripe_pi_id ? `Refunded ${money(cents / 100)} to card` : `Recorded ${money(cents / 100)} credit`);
+    loadDetail(sel); return { ok: true };
+  }, [sel, flash, loadDetail]);
+
   const createBundle = useCallback(async ({ name, price, fundraise, image_url, components }) => {
     const { data: bundle, error } = await supabase.from('webstore_products').insert({ store_id: sel.id, kind: 'bundle', display_name: name, retail_price: price, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, active: true, sort_order: (detail?.catalog?.length || 0) }).select().single();
     if (error) { flash('Error: ' + error.message); return; }
@@ -566,7 +600,8 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO}
           onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} onUpdateItem={updateCatalogItem}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
-          onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon} />
+          onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
+          onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} />
       )}
@@ -824,7 +859,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder }) {
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
   const catalog = detail?.catalog || [];
@@ -856,6 +891,9 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
   // product_id -> stock (warehouse + Adidas) for the batch health check.
   const productStock = {};
   Object.values(stockByWp).forEach((s) => { if (s.product_id) productStock[s.product_id] = s; });
+  // product_id -> available sizes, for the order editor's size dropdown.
+  const availSizes = {};
+  Object.values(stockByWp).forEach((s) => { if (s.product_id && Array.isArray(s.available_sizes)) availSizes[s.product_id] = s.available_sizes; });
 
   return (
     <>
@@ -900,7 +938,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
       {loading ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onUpdateItem={onUpdateItem} />}
-          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} />}
+          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
@@ -1799,11 +1837,12 @@ function DecoStat({ label, value }) {
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 7px', borderRadius: 5, background: done ? '#dcfce7' : '#f1f5f9', color: done ? '#166534' : '#475569' }}>{label}: {v}</span>;
 }
 
-function OrdersTab({ orders, orderItems, numbersEnabled, onBatch }) {
+function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, availSizes = {}, onSaveOrderEdits, onRefundOrder }) {
   const [q, setQ] = useState('');
   const [fStatus, setFStatus] = useState('all');   // all | pending | in_production | shipped | complete
   const [fPay, setFPay] = useState('all');         // all | paid | unpaid
   const [fBatch, setFBatch] = useState('all');     // all | unbatched | batched
+  const [editId, setEditId] = useState(null);
   const itemsByOrder = {};
   orderItems.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
   const enrich = (o) => {
@@ -1842,7 +1881,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch }) {
       <div className="card"><div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
-            <th style={th}>Buyer / Player</th>{numbersEnabled && <th style={th}>#</th>}<th style={th}>Items</th><th style={th}>Kind</th><th style={th}>Paid?</th><th style={th}>Total</th><th style={th}>Status</th><th style={th}>SO</th>
+            <th style={th}>Buyer / Player</th>{numbersEnabled && <th style={th}>#</th>}<th style={th}>Items</th><th style={th}>Kind</th><th style={th}>Paid?</th><th style={th}>Total</th><th style={th}>Status</th><th style={th}>SO</th><th style={th}></th>
           </tr></thead>
           <tbody>
             {filtered.map(({ o, items, players, numbers, lineStatus }) => (
@@ -1851,16 +1890,80 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch }) {
                 {numbersEnabled && <td style={td}>{numbers.join(', ') || '—'}</td>}
                 <td style={td}>{items.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (i.qty || 0), 0)}</td>
                 <td style={td}>{o.order_kind === 'bulk' ? <Chip label="Bulk" tone="blue" /> : <Chip label="Individual" />}</td>
-                <td style={td}>{o.payment_mode === 'paid' ? <Chip label="Paid" tone="green" /> : <Chip label="Team tab" />}</td>
+                <td style={td}>{o.payment_mode === 'paid' ? <Chip label="Paid" tone="green" /> : <Chip label="Team tab" />}{Number(o.refunded_amt) > 0 && <div style={{ fontSize: 10, color: '#b45309' }}>−{money(o.refunded_amt)} refunded</div>}{Number(o.discount_amt) > 0 && <div style={{ fontSize: 10, color: '#16a34a' }}>{o.coupon_code} −{money(o.discount_amt)}</div>}</td>
                 <td style={td}>{money(o.total)}</td>
-                <td style={td}><Chip label={(lineStatus || 'pending').replace(/_/g, ' ')} tone={lineStatus === 'complete' ? 'green' : lineStatus === 'shipped' ? 'blue' : 'slate'} /></td>
+                <td style={td}><Chip label={(o.status === 'refunded' ? 'refunded' : lineStatus || 'pending').replace(/_/g, ' ')} tone={o.status === 'refunded' ? 'gray' : lineStatus === 'complete' ? 'green' : lineStatus === 'shipped' ? 'blue' : 'slate'} /></td>
                 <td style={td}>{o.so_id ? <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#1e40af' }}>{o.so_id}</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+                <td style={{ ...td, textAlign: 'right' }}>{(onSaveOrderEdits || onRefundOrder) && <button className="btn btn-sm btn-secondary" onClick={() => setEditId(o.id)}>Manage</button>}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div></div>
+      {editId && (() => { const o = orders.find((x) => x.id === editId); if (!o) return null; return <OrderManageModal order={o} items={itemsByOrder[o.id] || []} availSizes={availSizes} onSave={onSaveOrderEdits} onRefund={onRefundOrder} onClose={() => setEditId(null)} />; })()}
     </>
+  );
+}
+
+// Edit an order's line items (size/qty/remove) and issue refunds.
+function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onClose }) {
+  const editable = items.filter((i) => !i.is_bundle_parent);
+  const [rows, setRows] = useState(() => editable.map((i) => ({ id: i.id, sku: i.sku, size: i.size || '', qty: i.qty || 1, unit_price: i.unit_price, unit_fundraise: i.unit_fundraise, product_id: i.product_id, player_number: i.player_number, player_name: i.player_name, _removed: false })));
+  const [refundAmt, setRefundAmt] = useState('');
+  const [busy, setBusy] = useState(false);
+  const upd = (id, k, v) => setRows((r) => r.map((x) => (x.id === id ? { ...x, [k]: v } : x)));
+  const remaining = (Number(order.total) || 0) - (Number(order.refunded_amt) || 0);
+  const newSubtotal = rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_price) || 0) * (Number(r.qty) || 1), 0);
+  const newFund = rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_fundraise) || 0) * (Number(r.qty) || 1), 0);
+  const newTotal = Math.max(0, newSubtotal + newFund - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0);
+
+  const save = async () => { setBusy(true); const r = await onSave(order, rows); setBusy(false); if (r && r.ok) onClose(); };
+  const refund = async () => { setBusy(true); const r = await onRefund(order, Number(refundAmt)); setBusy(false); if (r && r.ok) { setRefundAmt(''); onClose(); } };
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 24, overflow: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} className="card" style={{ maxWidth: 620, width: '100%', marginTop: 24 }}>
+        <div style={{ padding: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 4 }}>
+            <h3 style={{ margin: 0, fontSize: 18 }}>Manage order — {order.buyer_name || order.buyer_email}</h3>
+            <button onClick={onClose} style={{ marginLeft: 'auto', background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8', lineHeight: 1 }}>×</button>
+          </div>
+          {order.so_id && <div style={{ background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', fontSize: 12, padding: '8px 12px', borderRadius: 8, margin: '8px 0 14px' }}>⚠️ This order is already batched into Sales Order <b>{order.so_id}</b>. Edits here won't automatically update that production order — adjust the SO too if needed.</div>}
+
+          <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', margin: '10px 0 6px' }}>Items</div>
+          {rows.map((r) => {
+            const sizes = availSizes[r.product_id] || [];
+            return (
+              <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #f1f5f9', opacity: r._removed ? 0.4 : 1 }}>
+                <div style={{ flex: 1, fontSize: 13 }}><div style={{ fontWeight: 600 }}>{r.sku || 'Item'}</div>{(r.player_number || r.player_name) && <div style={{ fontSize: 11, color: '#94a3b8' }}>{[r.player_number && '#' + r.player_number, r.player_name].filter(Boolean).join(' · ')}</div>}</div>
+                {sizes.length > 0
+                  ? <select value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }}><option value="">size</option>{sizes.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+                  : <input value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} placeholder="size" style={{ width: 64, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />}
+                <input type="number" min={1} value={r.qty} disabled={r._removed} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 56, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />
+                <button onClick={() => upd(r.id, '_removed', !r._removed)} style={{ background: 'none', border: 'none', color: r._removed ? '#2563eb' : '#b91c1c', cursor: 'pointer', fontSize: 12 }}>{r._removed ? 'undo' : 'remove'}</button>
+              </div>
+            );
+          })}
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontSize: 14 }}>
+            <span style={{ color: '#64748b' }}>New total {Number(order.discount_amt) > 0 ? `(after ${money(order.discount_amt)} discount)` : ''}</span>
+            <span style={{ fontWeight: 800 }}>{money(newTotal)} {newTotal !== (Number(order.total) || 0) && <span style={{ color: '#94a3b8', fontWeight: 400, textDecoration: 'line-through' }}>{money(order.total)}</span>}</span>
+          </div>
+          <button className="btn btn-primary" disabled={busy} onClick={save} style={{ marginTop: 12 }}>Save item changes</button>
+
+          <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', margin: '22px 0 6px', borderTop: '1px solid #eef1f5', paddingTop: 16 }}>Refund</div>
+          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>
+            {order.stripe_pi_id ? 'Refunds the buyer’s card via Stripe.' : 'Team-tab order — records a credit/adjustment (no card to refund).'}
+            {Number(order.refunded_amt) > 0 && <> Already refunded {money(order.refunded_amt)}; up to <b>{money(remaining)}</b> remaining.</>}
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span style={{ color: '#64748b' }}>$</span>
+            <input type="number" min={0} step="0.01" value={refundAmt} onChange={(e) => setRefundAmt(e.target.value)} placeholder={remaining.toFixed(2)} style={{ width: 120, padding: '8px 10px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 14 }} />
+            <button className="btn btn-sm btn-secondary" onClick={() => setRefundAmt(remaining.toFixed(2))}>Full ({money(remaining)})</button>
+            <button className="btn btn-primary" disabled={busy || !(Number(refundAmt) > 0)} onClick={refund} style={{ background: '#b91c1c', borderColor: '#b91c1c' }}>{order.stripe_pi_id ? 'Refund to card' : 'Record credit'}</button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
