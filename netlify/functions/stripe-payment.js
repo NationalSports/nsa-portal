@@ -53,6 +53,19 @@ exports.handler = async (event) => {
       };
     }
 
+    if (action === 'refund') {
+      // Refund a PaymentIntent — full when amount_cents omitted, else partial.
+      const { payment_intent_id, amount_cents } = body;
+      if (!payment_intent_id) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'payment_intent_id required' }) };
+      }
+      const refund = await client.refunds.create({
+        payment_intent: payment_intent_id,
+        ...(amount_cents ? { amount: Math.round(amount_cents) } : {}),
+      });
+      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ id: refund.id, status: refund.status, amount: refund.amount }) };
+    }
+
     if (action === 'get_intent') {
       // Retrieve intent status (for verification after payment)
       const { intent_id } = body;

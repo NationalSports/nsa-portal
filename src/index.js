@@ -2,6 +2,11 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 
+// Public club storefront lives at /shop/<slug>. Shoppers should never load the
+// full portal bundle or hit the login gate, so we branch on the path here.
+const Storefront = React.lazy(() => import('./storefront/Storefront'));
+const isStorefront = typeof window !== 'undefined' && window.location.pathname.startsWith('/shop/');
+
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -56,4 +61,12 @@ class ErrorBoundary extends React.Component {
 }
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<React.StrictMode><ErrorBoundary><App /></ErrorBoundary></React.StrictMode>);
+root.render(
+  <React.StrictMode>
+    <ErrorBoundary>
+      {isStorefront
+        ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading store…</div>}><Storefront /></React.Suspense>
+        : <App />}
+    </ErrorBoundary>
+  </React.StrictMode>
+);
