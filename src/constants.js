@@ -223,6 +223,8 @@ export const _issueCols=['id','status','description','priority','page','viewing'
 export const _omgStoreCols=['id','store_name','customer_id','rep_id','status','open_date','close_date','orders','total_sales','fundraise_total','items_sold','unique_buyers','_omg_source','_omg_id','_omg_sale_code','_last_synced','subdomain','channel_type','_report_url','_report_id','_report_imported_at','_omg_shipping','_omg_processing','_omg_tax','_omg_fundraise','_omg_grand_total'];
 
 // ─── Team & Company Defaults ───
+// Warehouse staff who can delegate tasks to other warehouse workers (in addition to admins/GM).
+export const WAREHOUSE_LEAD_IDS=['00000000-0000-0000-0000-000000000050']; // Kellen Coates
 export const DEFAULT_REPS=[
   // Admins
   {id:'00000000-0000-0000-0000-000000000001',name:'Steve Peterson',role:'admin'},
