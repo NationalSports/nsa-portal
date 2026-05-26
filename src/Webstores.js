@@ -309,13 +309,26 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     }
     const { data: srcTransfers } = await supabase.from('webstore_transfers').select('*').eq('store_id', src.id);
     if ((srcTransfers || []).length) {
-      const trows = srcTransfers.map((t) => { const { id: tid, created_at: tc, updated_at: tu, store_id, ...trest } = t; return { ...trest, store_id: store.id, on_hand: 0 }; });
+      const trows = srcTransfers.map((t) => { const { id: tid, created_at: tc, updated_at: tu, store_id, ...trest } = t; return { ...trest, store_id: store.id, on_hand: 0, incoming: 0, incoming_eta: null }; });
       const { error: te } = await supabase.from('webstore_transfers').insert(trows);
       if (te) flash('Transfer setup copy failed: ' + te.message);
     }
     setStores((prev) => [store, ...prev]);
     flash('Store duplicated as a draft');
   }, [stores, flash]);
+
+  // Pull a batch's transfers: deduct physical on-hand by the counts used and
+  // flag the batch's orders as pulled (they move from On order → In process).
+  const pullBatchTransfers = useCallback(async (soId, neededByCode) => {
+    const list = detail?.transfers || [];
+    for (const t of list) {
+      const need = neededByCode[t.code];
+      if (need) await supabase.from('webstore_transfers').update({ on_hand: Math.max(0, (t.on_hand || 0) - need) }).eq('id', t.id);
+    }
+    const { error } = await supabase.from('webstore_orders').update({ transfers_pulled: true, transfers_pulled_at: new Date().toISOString() }).eq('store_id', sel.id).eq('so_id', soId);
+    if (error) { flash('Pull failed: ' + error.message); return; }
+    flash('Transfers pulled — moved to In process'); loadDetail(sel);
+  }, [detail, sel, flash, loadDetail]);
 
   const addSingle = useCallback(async ({ product, price, fundraise, image_url, takes_number, takes_name, name_upcharge, transfer_code }) => {
     const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, takes_number: !!takes_number, takes_name: !!takes_name, name_upcharge: Number(name_upcharge) || 0, transfer_code: transfer_code || null, active: true, sort_order: (detail?.catalog?.length || 0) };
@@ -472,7 +485,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO}
           onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} onUpdateItem={updateCatalogItem}
-          onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} />
+          onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} />
       )}
@@ -730,7 +743,7 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers }) {
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
   const catalog = detail?.catalog || [];
@@ -806,7 +819,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
         <>
           {tab === 'catalog' && <CatalogTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} onAddSingle={onAddSingle} onCreateBundle={onCreateBundle} onRemove={onRemove} onUpdateImage={onUpdateImage} onReorder={onReorder} onUpdateItem={onUpdateItem} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} />}
-          {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} />}
+          {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'analytics' && <AnalyticsTab orders={orders} orderItems={orderItems} stockByWp={stockByWp} />}
           {tab === 'roster' && <RosterTab roster={roster} notOrdered={notOrdered} />}
@@ -1258,19 +1271,30 @@ function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orde
   const [openRows, setOpenRows] = useState(() => new Set());
   const toggleRow = (id) => setOpenRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
-  // Used per transfer = committed across all non-cancelled orders.
+  // Transfer demand splits by lifecycle: On order = placed but not yet pulled;
+  // In process = pulled & decorating (auto-clears once the order ships).
   const maps = buildTransferMaps(catalog, bundleItems);
-  const activeOrderIds = new Set(orders.filter((o) => o.status !== 'cancelled').map((o) => o.id));
-  const used = transferUsage(orderItems.filter((i) => activeOrderIds.has(i.order_id)), maps);
+  const itemsByOrder = {}; orderItems.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
+  const orderDone = (o) => { const its = (itemsByOrder[o.id] || []).filter((i) => !i.is_bundle_parent); return its.length > 0 && its.every((i) => ['shipped', 'complete'].includes(i.line_status)); };
+  const active = orders.filter((o) => o.status !== 'cancelled');
+  const onOrderIds = new Set(active.filter((o) => !o.transfers_pulled).map((o) => o.id));
+  const inProcIds = new Set(active.filter((o) => o.transfers_pulled && !orderDone(o)).map((o) => o.id));
+  const onOrderUse = transferUsage(orderItems.filter((i) => onOrderIds.has(i.order_id)), maps);
+  const inProcUse = transferUsage(orderItems.filter((i) => inProcIds.has(i.order_id)), maps);
 
   const designs = transfers.filter((t) => t.kind === 'design');
   const numbers = transfers.filter((t) => t.kind === 'number');
   const sets = {}; numbers.forEach((t) => { const k = `${t.tsize || ''}|${t.color || ''}`; (sets[k] = sets[k] || []).push(t); });
   const ordered = [...catalog].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
 
-  // Remaining = in-house − used (committed by orders). "Incoming" shows on-order.
-  const Remaining = ({ t }) => { const u = used[t.code] || 0; const r = (t.on_hand || 0) - u; return <span style={{ fontWeight: 700, color: r < 0 ? '#b91c1c' : r < 10 ? '#92400e' : '#166534' }}>{r}{r < 0 && (t.on_order || 0) > 0 ? ` (+${t.on_order} inbound)` : ''}</span>; };
-  const NumCell = ({ t, field }) => <input defaultValue={t[field] || 0} type="number" key={t[field]} onBlur={(e) => { const v = Number(e.target.value) || 0; if (v !== (t[field] || 0)) onUpdateTransfer(t.id, { [field]: v }); }} style={{ width: 70, padding: '4px 6px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 13 }} />;
+  // Available = physical on hand − pending (unpulled) demand.
+  const Avail = ({ t }) => { const r = (t.on_hand || 0) - (onOrderUse[t.code] || 0); return <span style={{ fontWeight: 700, color: r < 0 ? '#b91c1c' : r < 10 ? '#92400e' : '#166534' }}>{r}</span>; };
+  const InProc = ({ t }) => { const v = inProcUse[t.code] || 0; return <span style={{ color: v ? '#6d28d9' : '#cbd5e1', fontWeight: v ? 600 : 400 }}>{v}</span>; };
+  const OnOrder = ({ t }) => { const v = onOrderUse[t.code] || 0; return <span style={{ color: v ? '#92400e' : '#cbd5e1', fontWeight: v ? 600 : 400 }}>{v}</span>; };
+  const NumCell = ({ t, field }) => <input defaultValue={t[field] || 0} type="number" key={t[field]} onBlur={(e) => { const v = Number(e.target.value) || 0; if (v !== (t[field] || 0)) onUpdateTransfer(t.id, { [field]: v }); }} style={{ width: 64, padding: '4px 6px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 13 }} />;
+  const receiveRow = (t) => { if (!(t.incoming > 0)) return; onUpdateTransfer(t.id, { on_hand: (t.on_hand || 0) + (t.incoming || 0), incoming: 0, incoming_eta: null }); };
+  const Recv = ({ t }) => t.incoming > 0 ? <button onClick={() => receiveRow(t)} title="Mark incoming as received into On hand" style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', color: '#047857', cursor: 'pointer', fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6 }}>Receive</button> : <span style={{ color: '#cbd5e1' }}>—</span>;
+  const EtaCell = ({ t }) => <input type="date" defaultValue={t.incoming_eta || ''} key={t.incoming_eta || ''} onBlur={(e) => { const v = e.target.value || null; if (v !== (t.incoming_eta || null)) onUpdateTransfer(t.id, { incoming_eta: v }); }} style={{ padding: '4px 6px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12 }} />;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -1318,16 +1342,17 @@ function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orde
         </div>
         {addDesign && <AddDesignTransfer onAdd={(row) => { onAddTransfers([row]); setAddDesign(false); }} onClose={() => setAddDesign(false)} />}
         {addSet && <AddNumberSet onAdd={(rows) => { onAddTransfers(rows); setAddSet(false); }} onClose={() => setAddSet(false)} />}
-        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}><b>Used</b> = committed by orders placed (each order deducts as it comes in). <b>Remaining</b> = in-house − used. <b>On order</b> is tracked separately and shown as inbound.</div>
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}><b>On hand</b> = physically in the warehouse. <b>Incoming</b> = ordered from a supplier, not yet here (set an ETA, then "Receive" when it arrives). <b>On order</b> = needed by placed orders not yet pulled. <b>In process</b> = pulled & being decorated. <b>Available</b> = on hand − on order. Pull a batch's transfers from the <b>Batches</b> tab.</div>
 
         {designs.length > 0 && <div className="card" style={{ marginBottom: 12 }}><div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Design transfer</th><th style={th}>In‑house</th><th style={th}>On order</th><th style={th}>Used</th><th style={th}>Remaining</th><th style={th}></th></tr></thead>
+            <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Design transfer</th><th style={th}>On hand</th><th style={th}>Incoming</th><th style={th}>ETA</th><th style={th}></th><th style={th}>On order</th><th style={th}>In process</th><th style={th}>Available</th><th style={th}></th></tr></thead>
             <tbody>
               {designs.map((t) => (
                 <tr key={t.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                   <td style={td}><div style={{ fontWeight: 600 }}>{t.label}</div><div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{t.code}</div></td>
-                  <td style={td}><NumCell t={t} field="on_hand" /></td><td style={td}><NumCell t={t} field="on_order" /></td><td style={td}>{used[t.code] || 0}</td><td style={td}><Remaining t={t} /></td>
+                  <td style={td}><NumCell t={t} field="on_hand" /></td><td style={td}><NumCell t={t} field="incoming" /></td><td style={td}><EtaCell t={t} /></td><td style={td}><Recv t={t} /></td>
+                  <td style={td}><OnOrder t={t} /></td><td style={td}><InProc t={t} /></td><td style={td}><Avail t={t} /></td>
                   <td style={{ ...td, textAlign: 'right' }}><button onClick={() => onRemoveTransfer(t.id)} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 12 }}>remove</button></td>
                 </tr>
               ))}
@@ -1338,14 +1363,24 @@ function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orde
         {Object.entries(sets).map(([key, rows]) => {
           const [sz, col] = key.split('|');
           const sorted = [...rows].sort((a, b) => (a.digit || '').localeCompare(b.digit || ''));
+          const setEta = sorted.find((t) => t.incoming_eta)?.incoming_eta || '';
+          const setIncoming = sorted.reduce((a, t) => a + (Number(t.incoming) || 0), 0);
+          const setAllEta = (v) => sorted.forEach((t) => onUpdateTransfer(t.id, { incoming_eta: v || null }));
+          const receiveAll = () => sorted.forEach((t) => { if (t.incoming > 0) onUpdateTransfer(t.id, { on_hand: (t.on_hand || 0) + (t.incoming || 0), incoming: 0, incoming_eta: null }); });
           return (
-            <div key={key} className="card" style={{ marginBottom: 12 }}><div style={{ padding: '10px 16px 0', fontWeight: 700, fontSize: 13 }}>Numbers · {sz || '?'} · {col || '?'}</div><div style={{ overflowX: 'auto', padding: '6px 0 4px' }}>
+            <div key={key} className="card" style={{ marginBottom: 12 }}>
+              <div style={{ padding: '10px 16px 0', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>Numbers · {sz || '?'} · {col || '?'}</div>
+                <label style={{ fontSize: 12, color: '#64748b', display: 'flex', alignItems: 'center', gap: 6 }}>Incoming ETA <input type="date" defaultValue={setEta} key={setEta} onBlur={(e) => { if ((e.target.value || '') !== setEta) setAllEta(e.target.value); }} style={{ padding: '3px 6px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12 }} /></label>
+                {setIncoming > 0 && <button onClick={receiveAll} style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', color: '#047857', cursor: 'pointer', fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 6 }}>Receive all ({setIncoming})</button>}
+              </div>
+              <div style={{ overflowX: 'auto', padding: '6px 0 4px' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Digit</th><th style={th}>In‑house</th><th style={th}>On order</th><th style={th}>Used</th><th style={th}>Remaining</th></tr></thead>
+                <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Digit</th><th style={th}>On hand</th><th style={th}>Incoming</th><th style={th}>On order</th><th style={th}>In process</th><th style={th}>Available</th></tr></thead>
                 <tbody>
                   {sorted.map((t) => (
                     <tr key={t.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                      <td style={{ ...td, fontWeight: 700 }}>{t.digit}</td><td style={td}><NumCell t={t} field="on_hand" /></td><td style={td}><NumCell t={t} field="on_order" /></td><td style={td}>{used[t.code] || 0}</td><td style={td}><Remaining t={t} /></td>
+                      <td style={{ ...td, fontWeight: 700 }}>{t.digit}</td><td style={td}><NumCell t={t} field="on_hand" /></td><td style={td}><NumCell t={t} field="incoming" /></td><td style={td}><OnOrder t={t} /></td><td style={td}><InProc t={t} /></td><td style={td}><Avail t={t} /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -1371,26 +1406,26 @@ function AddDesignTransfer({ onAdd, onClose }) {
   );
 }
 function AddNumberSet({ onAdd, onClose }) {
-  const [size, setSize] = useState('8in'); const [color, setColor] = useState(''); const [onHand, setOnHand] = useState(0);
+  const [size, setSize] = useState('8in'); const [color, setColor] = useState('');
   const create = () => {
     const rows = [];
-    for (let d = 0; d <= 9; d++) rows.push({ code: `${d}|${size}|${color}`, label: `Number ${d} · ${size} · ${color}`, kind: 'number', digit: String(d), tsize: size, color, on_hand: Number(onHand) || 0 });
+    for (let d = 0; d <= 9; d++) rows.push({ code: `${d}|${size}|${color}`, label: `Number ${d} · ${size} · ${color}`, kind: 'number', digit: String(d), tsize: size, color, on_hand: 0, incoming: 0 });
     onAdd(rows);
   };
   return (
     <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 14, display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
       <Row label="Size"><input className="form-input" value={size} onChange={(e) => setSize(e.target.value)} placeholder="8in" /></Row>
       <Row label="Color"><input className="form-input" value={color} onChange={(e) => setColor(e.target.value)} placeholder="White" /></Row>
-      <Row label="On hand (each digit)"><input className="form-input" type="number" value={onHand} onChange={(e) => setOnHand(e.target.value)} /></Row>
-      <button className="btn btn-primary" disabled={!size.trim() || !color.trim()} onClick={create}>Add 0–9</button>
+      <button className="btn btn-primary" disabled={!size.trim() || !color.trim()} onClick={create}>Add digits 0–9</button>
       <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+      <div style={{ flexBasis: '100%', fontSize: 12, color: '#94a3b8' }}>Creates a row per digit (0–9). Enter the quantity for each digit individually below — you rarely stock the same count of every digit.</div>
     </div></div>
   );
 }
 
 // Batches: the Sales Orders created from this store, with full fulfillment
 // status — ordered qty, picked qty, and stock health per line item.
-function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems = [], orders = [], orderItems = [], transfers = [] }) {
+function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems = [], orders = [], orderItems = [], transfers = [], onPullTransfers }) {
   const [sos, setSos] = useState(null);
   const [err, setErr] = useState('');
   const [ssMsg, setSsMsg] = useState({}); // soId -> status message
@@ -1434,16 +1469,18 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   };
   const maps = buildTransferMaps(catalog, bundleItems);
   const transferLabel = (code) => { const t = transfers.find((x) => x.code === code); if (t) return t.label; const [d, s, c] = code.split('|'); return s ? `#${d} · ${s} · ${c}` : code; };
-  // Transfers needed for one SO = usage across the webstore orders linked to it.
-  const batchTransfers = (soId) => {
-    const linked = new Set(orders.filter((o) => o.so_id === soId).map((o) => o.id));
-    const lines = orderItems.filter((i) => linked.has(i.order_id));
-    const used = transferUsage(lines, maps);
-    const designs = []; const numbers = [];
-    Object.entries(used).forEach(([code, qty]) => { (code.includes('|') ? numbers : designs).push({ code, qty, label: transferLabel(code) }); });
+  // Transfers needed for one SO. By default counts only the orders whose
+  // transfers haven't been pulled yet (so re-pulling won't double-deduct).
+  const batchTransfers = (soId, onlyUnpulled = true) => {
+    const linked = orders.filter((o) => o.so_id === soId && (!onlyUnpulled || !o.transfers_pulled));
+    const ids = new Set(linked.map((o) => o.id));
+    const used = transferUsage(orderItems.filter((i) => ids.has(i.order_id)), maps);
+    const designs = []; const numbers = []; const byCode = {};
+    Object.entries(used).forEach(([code, qty]) => { byCode[code] = qty; (code.includes('|') ? numbers : designs).push({ code, qty, label: transferLabel(code) }); });
     numbers.sort((a, b) => a.label.localeCompare(b.label));
-    return { designs, numbers };
+    return { designs, numbers, byCode };
   };
+  const batchPulled = (soId) => { const linked = orders.filter((o) => o.so_id === soId); return linked.length > 0 && linked.every((o) => o.transfers_pulled); };
   useEffect(() => {
     (async () => {
       setSos(null); setErr('');
@@ -1558,15 +1595,31 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
                 </div>
               ))}
             </div>}
-            {(() => { const bt = batchTransfers(o.id); const any = bt.designs.length || bt.numbers.length; if (!any) return null; return (
-              <div style={{ marginTop: 12, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Transfers to pull for this batch</div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {bt.designs.map((d) => <span key={d.code} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#ede9fe', color: '#6d28d9' }}>{d.label}: {d.qty}</span>)}
-                  {bt.numbers.map((n) => <span key={n.code} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#dcfce7', color: '#166534' }}>{n.label}: {n.qty}</span>)}
+            {(() => {
+              const all = batchTransfers(o.id, false); const hasAny = all.designs.length || all.numbers.length;
+              if (!hasAny) return null;
+              const pulled = batchPulled(o.id);
+              const bt = batchTransfers(o.id, true); const pendingAny = bt.designs.length || bt.numbers.length;
+              const doPull = () => {
+                const total = Object.values(bt.byCode).reduce((a, n) => a + n, 0);
+                if (!window.confirm(`Pull ${total} transfers for this batch? This deducts them from On hand and moves the batch to In process.`)) return;
+                onPullTransfers && onPullTransfers(o.id, bt.byCode);
+              };
+              return (
+                <div style={{ marginTop: 12, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b' }}>Transfers to pull for this batch</div>
+                    {pulled
+                      ? <span style={{ fontSize: 11, fontWeight: 700, color: '#047857', background: '#ecfdf5', border: '1px solid #a7f3d0', padding: '2px 8px', borderRadius: 6 }}>✓ Pulled — in process</span>
+                      : onPullTransfers && pendingAny ? <button onClick={doPull} style={{ marginLeft: 'auto', background: '#6d28d9', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Pull transfers</button> : null}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {all.designs.map((d) => <span key={d.code} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#ede9fe', color: '#6d28d9' }}>{d.label}: {d.qty}</span>)}
+                    {all.numbers.map((n) => <span key={n.code} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#dcfce7', color: '#166534' }}>{n.label}: {n.qty}</span>)}
+                  </div>
                 </div>
-              </div>
-            ); })()}
+              );
+            })()}
             {o._tracking_number && <div style={{ fontSize: 12, color: '#1e40af', marginTop: 8 }}>Tracking: {o._tracking_number}</div>}
           </div></div>
         );
