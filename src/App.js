@@ -6025,60 +6025,7 @@ export default function App(){
       <button className="btn btn-secondary" onClick={()=>setPg('customers')}>👥 Customers</button></div></div>
     </>}
 
-    {/* ═══ CREATE TODO MODAL ═══ */}
-    {todoModal.open&&<div className="modal-overlay" onClick={()=>setTodoModal(m=>({...m,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
-      <div className="modal-header"><h2>📌 Assign Task</h2><button className="modal-close" onClick={()=>setTodoModal(m=>({...m,open:false}))}>×</button></div>
-      <div className="modal-body">
-        <div style={{marginBottom:12}}><label className="form-label">Title *</label>
-          <input className="form-input" value={todoModal.title} onChange={e=>setTodoModal(m=>({...m,title:e.target.value}))} placeholder="e.g. Order blanks for CSM"/></div>
-        <div style={{marginBottom:12}}><label className="form-label">Description</label>
-          <textarea className="form-input" rows={3} value={todoModal.description} onChange={e=>setTodoModal(m=>({...m,description:e.target.value}))} placeholder="Details..."/></div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
-          <div><label className="form-label">Assign To *</label>
-            <select className="form-select" value={todoModal.assigned_to} onChange={e=>setTodoModal(m=>({...m,assigned_to:e.target.value}))}>
-              <option value="">Select person...</option>
-              {(()=>{
-                const isAdminGm=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
-                if(isAdminGm){return REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name} ({r.role}){getPrimaryCsrForRep(cu.id)===r.id?' ★':''}</option>)}
-                const myCsrIds=getCsrsForRep(cu.id);
-                const myCsrs=REPS.filter(r=>myCsrIds.includes(r.id)&&r.is_active!==false);
-                const otherCsrs=REPS.filter(r=>r.is_active!==false&&r.role==='csr'&&!myCsrIds.includes(r.id));
-                return[
-                  myCsrs.length>0&&<optgroup key="my-csrs" label="My CSRs">{myCsrs.map(r=><option key={r.id} value={r.id}>{r.name}{getPrimaryCsrForRep(cu.id)===r.id?' ★ Primary':''}</option>)}</optgroup>,
-                  otherCsrs.length>0&&<optgroup key="other-csrs" label="Other CSRs">{otherCsrs.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>
-                ];
-              })()}
-            </select></div>
-          <div><label className="form-label">Priority</label>
-            <select className="form-select" value={todoModal.priority} onChange={e=>setTodoModal(m=>({...m,priority:+e.target.value}))}>
-              <option value={0}>Urgent</option><option value={1}>High</option><option value={2}>Normal</option><option value={3}>Low</option>
-            </select></div>
-        </div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
-          <div><label className="form-label">SO # (optional)</label>
-            <select className="form-select" value={todoModal.so_id} onChange={e=>{const soId=e.target.value;const so=sos.find(s=>s.id===soId);setTodoModal(m=>({...m,so_id:soId,customer_id:so?so.customer_id:m.customer_id}))}}>
-              <option value="">None</option>
-              {sos.filter(s=>calcSOStatus(s)!=='complete').slice(0,50).map(s=>{const sc=cust.find(c=>c.id===s.customer_id);return<option key={s.id} value={s.id}>{s.id} — {sc?.alpha_tag||sc?.name||''}{s.memo?' · '+s.memo:''}</option>})}
-            </select></div>
-          <div><label className="form-label">Customer{todoModal.so_id?' (from SO)':' (optional)'}</label>
-            {todoModal.so_id?<input className="form-input" disabled value={(()=>{const sc=cust.find(c=>c.id===todoModal.customer_id);return sc?(sc.alpha_tag||sc.name):''})()}/>:
-            <select className="form-select" value={todoModal.customer_id} onChange={e=>setTodoModal(m=>({...m,customer_id:e.target.value}))}>
-              <option value="">None</option>
-              {cust.filter(c=>c.is_active!==false).sort((a,b)=>(a.alpha_tag||a.name).localeCompare(b.alpha_tag||b.name)).map(c=><option key={c.id} value={c.id}>{c.alpha_tag||c.name}</option>)}
-            </select>}
-          </div>
-        </div>
-      </div>
-      <div className="modal-footer" style={{display:'flex',gap:8,justifyContent:'flex-end',padding:'12px 20px',borderTop:'1px solid #e2e8f0'}}>
-        <button className="btn btn-secondary" onClick={()=>setTodoModal(m=>({...m,open:false}))}>Cancel</button>
-        <button className="btn btn-primary" disabled={!todoModal.title.trim()||!todoModal.assigned_to} onClick={()=>{
-          const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,priority:todoModal.priority,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
-          setAssignedTodos(prev=>[newTodo,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2});
-          nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
-        }}>Assign Task</button>
-      </div>
-    </div></div>}
+    {/* CREATE TODO MODAL — rendered globally below so it works from every page */}
 
     {/* ═══ TODO DETAIL MODAL (view, comment, complete) ═══ */}
     {todoDetailId&&(()=>{const td=assignedTodos.find(t=>t.id===todoDetailId);if(!td)return null;
@@ -25954,6 +25901,60 @@ export default function App(){
         </div>}
       </div>}
       <div className={`content${pg==='production'?' content-wide':''}`}>{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
+    {/* ═══ CREATE TODO MODAL (global) ═══ */}
+    {todoModal.open&&<div className="modal-overlay" onClick={()=>setTodoModal(m=>({...m,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+      <div className="modal-header"><h2>📌 Assign Task</h2><button className="modal-close" onClick={()=>setTodoModal(m=>({...m,open:false}))}>×</button></div>
+      <div className="modal-body">
+        <div style={{marginBottom:12}}><label className="form-label">Title *</label>
+          <input className="form-input" value={todoModal.title} onChange={e=>setTodoModal(m=>({...m,title:e.target.value}))} placeholder="e.g. Order blanks for CSM"/></div>
+        <div style={{marginBottom:12}}><label className="form-label">Description</label>
+          <textarea className="form-input" rows={3} value={todoModal.description} onChange={e=>setTodoModal(m=>({...m,description:e.target.value}))} placeholder="Details..."/></div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
+          <div><label className="form-label">Assign To *</label>
+            <select className="form-select" value={todoModal.assigned_to} onChange={e=>setTodoModal(m=>({...m,assigned_to:e.target.value}))}>
+              <option value="">Select person...</option>
+              {(()=>{
+                const isAdminGm=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
+                if(isAdminGm){return REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name} ({r.role}){getPrimaryCsrForRep(cu.id)===r.id?' ★':''}</option>)}
+                const myCsrIds=getCsrsForRep(cu.id);
+                const myCsrs=REPS.filter(r=>myCsrIds.includes(r.id)&&r.is_active!==false);
+                const otherCsrs=REPS.filter(r=>r.is_active!==false&&r.role==='csr'&&!myCsrIds.includes(r.id));
+                return[
+                  myCsrs.length>0&&<optgroup key="my-csrs" label="My CSRs">{myCsrs.map(r=><option key={r.id} value={r.id}>{r.name}{getPrimaryCsrForRep(cu.id)===r.id?' ★ Primary':''}</option>)}</optgroup>,
+                  otherCsrs.length>0&&<optgroup key="other-csrs" label="Other CSRs">{otherCsrs.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>
+                ];
+              })()}
+            </select></div>
+          <div><label className="form-label">Priority</label>
+            <select className="form-select" value={todoModal.priority} onChange={e=>setTodoModal(m=>({...m,priority:+e.target.value}))}>
+              <option value={0}>Urgent</option><option value={1}>High</option><option value={2}>Normal</option><option value={3}>Low</option>
+            </select></div>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
+          <div><label className="form-label">SO # (optional)</label>
+            <select className="form-select" value={todoModal.so_id} onChange={e=>{const soId=e.target.value;const so=sos.find(s=>s.id===soId);setTodoModal(m=>({...m,so_id:soId,customer_id:so?so.customer_id:m.customer_id}))}}>
+              <option value="">None</option>
+              {sos.filter(s=>calcSOStatus(s)!=='complete').slice(0,50).map(s=>{const sc=cust.find(c=>c.id===s.customer_id);return<option key={s.id} value={s.id}>{s.id} — {sc?.alpha_tag||sc?.name||''}{s.memo?' · '+s.memo:''}</option>})}
+            </select></div>
+          <div><label className="form-label">Customer{todoModal.so_id?' (from SO)':' (optional)'}</label>
+            {todoModal.so_id?<input className="form-input" disabled value={(()=>{const sc=cust.find(c=>c.id===todoModal.customer_id);return sc?(sc.alpha_tag||sc.name):''})()}/>:
+            <select className="form-select" value={todoModal.customer_id} onChange={e=>setTodoModal(m=>({...m,customer_id:e.target.value}))}>
+              <option value="">None</option>
+              {cust.filter(c=>c.is_active!==false).sort((a,b)=>(a.alpha_tag||a.name).localeCompare(b.alpha_tag||b.name)).map(c=><option key={c.id} value={c.id}>{c.alpha_tag||c.name}</option>)}
+            </select>}
+          </div>
+        </div>
+      </div>
+      <div className="modal-footer" style={{display:'flex',gap:8,justifyContent:'flex-end',padding:'12px 20px',borderTop:'1px solid #e2e8f0'}}>
+        <button className="btn btn-secondary" onClick={()=>setTodoModal(m=>({...m,open:false}))}>Cancel</button>
+        <button className="btn btn-primary" disabled={!todoModal.title.trim()||!todoModal.assigned_to} onClick={()=>{
+          const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,priority:todoModal.priority,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
+          setAssignedTodos(prev=>[newTodo,...prev]);
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2});
+          nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
+        }}>Assign Task</button>
+      </div>
+    </div></div>}
     {/* Assignment Modal — global, triggered from warehouse or production board */}
     {assignModal&&<div className="modal-overlay" onClick={()=>setAssignModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
         <div className="modal-header" style={{background:'#fffbeb'}}><h2>📋 Assign to Machine / Person</h2><button className="modal-close" onClick={()=>setAssignModal(null)}>×</button></div>
