@@ -18,6 +18,34 @@ const cartTotal = (items) => items.reduce((a, l) => a + lineUnit(l) * (l.qty || 
 const shipFee = (store) => store && store.delivery_mode === 'ship_home' ? (Number(store.flat_shipping) || 0) : 0;
 const grandTotal = (store, items) => cartTotal(items) + shipFee(store);
 
+// Bold athletic type system: condensed display for headlines, Inter for body.
+const DISPLAY = "'Anton','Oswald','Helvetica Neue',Impact,sans-serif";
+const BODY = "'Inter','Helvetica Neue',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif";
+
+function StoreStyles() {
+  return (
+    <>
+      <link rel="preconnect" href="https://fonts.googleapis.com" />
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+      <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+      <style>{`
+        .sf-root *{box-sizing:border-box}
+        .sf-root{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+        .sf-root ::selection{background:var(--sf-accent,#e11d2a);color:#fff}
+        html{scroll-behavior:smooth}
+        .sf-btn{transition:transform .15s ease, filter .15s ease, box-shadow .15s ease}
+        .sf-btn:hover{transform:translateY(-2px);filter:brightness(1.06)}
+        .sf-btn:active{transform:translateY(0)}
+        .sf-card{transition:transform .16s ease, box-shadow .16s ease}
+        .sf-card .sf-img{transition:transform .35s ease}
+        .sf-card:hover{transform:translateY(-5px);box-shadow:0 18px 40px rgba(11,18,32,.16)}
+        .sf-card:hover .sf-img{transform:scale(1.07)}
+        .sf-card:hover .sf-bar{transform:scaleX(1)}
+      `}</style>
+    </>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Public club storefront — /shop/<slug>
 //   /shop/<slug>            landing + product grid
@@ -125,7 +153,8 @@ export default function Storefront() {
 
   const isOpen = store.status === 'open';
   return (
-    <div style={{ fontFamily: '"Helvetica Neue",system-ui,-apple-system,Segoe UI,Roboto,sans-serif', color: '#0b1220', minHeight: '100vh', background: '#fff', display: 'flex', flexDirection: 'column' }}>
+    <div className="sf-root" style={{ '--sf-accent': theme.accent, '--sf-primary': theme.primary, fontFamily: BODY, color: '#0b1220', minHeight: '100vh', background: '#fff', display: 'flex', flexDirection: 'column' }}>
+      <StoreStyles />
       <Header store={store} theme={theme} cartCount={cartCount(cart)} />
       {!isOpen && <PreviewBanner status={store.status} />}
       <main style={{ flex: 1 }}>
@@ -146,16 +175,16 @@ const Wrap = ({ children }) => <div style={{ maxWidth: 1180, margin: '0 auto', p
 // ── Header ───────────────────────────────────────────────────────────
 function Header({ store, theme, cartCount = 0 }) {
   return (
-    <header style={{ position: 'sticky', top: 0, zIndex: 20, background: theme.primary, color: '#fff', borderBottom: `3px solid ${theme.accent}` }}>
-      <div style={{ maxWidth: 1180, margin: '0 auto', padding: '14px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer' }} onClick={() => navTo('/shop/' + store.slug)}>
+    <header style={{ position: 'sticky', top: 0, zIndex: 20, background: `linear-gradient(120deg, ${theme.primary}, ${shade(theme.primary, -10)})`, color: '#fff', borderBottom: `3px solid ${theme.accent}`, boxShadow: '0 2px 14px rgba(11,18,32,.18)' }}>
+      <div style={{ maxWidth: 1180, margin: '0 auto', padding: '13px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 13, cursor: 'pointer' }} onClick={() => navTo('/shop/' + store.slug)}>
           {store.logo_url
-            ? <img src={store.logo_url} alt="" style={{ height: 44, width: 44, objectFit: 'contain', borderRadius: 8, background: '#fff', padding: 3 }} />
-            : <div style={{ height: 44, width: 44, borderRadius: 8, background: theme.accent, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: 20 }}>{(store.name || '?')[0]}</div>}
-          <div style={{ fontWeight: 900, fontSize: 19, letterSpacing: 1, textTransform: 'uppercase' }}>{store.name}</div>
+            ? <img src={store.logo_url} alt="" style={{ height: 46, width: 46, objectFit: 'contain', borderRadius: 10, background: '#fff', padding: 4, boxShadow: '0 2px 8px rgba(0,0,0,.25)' }} />
+            : <div style={{ height: 46, width: 46, borderRadius: 10, background: theme.accent, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: DISPLAY, fontSize: 26, boxShadow: '0 2px 8px rgba(0,0,0,.25)' }}>{(store.name || '?')[0].toUpperCase()}</div>}
+          <div style={{ fontFamily: DISPLAY, fontSize: 24, letterSpacing: 0.5, textTransform: 'uppercase', lineHeight: 1 }}>{store.name}</div>
         </div>
-        <button onClick={() => navTo('/shop/' + store.slug + '/cart')} style={{ marginLeft: 'auto', background: 'rgba(255,255,255,0.14)', color: '#fff', border: 'none', borderRadius: 999, padding: '9px 18px', fontWeight: 800, fontSize: 13, cursor: 'pointer', letterSpacing: 0.5 }}>
-          CART{cartCount > 0 ? ` · ${cartCount}` : ''}
+        <button className="sf-btn" onClick={() => navTo('/shop/' + store.slug + '/cart')} style={{ marginLeft: 'auto', background: cartCount > 0 ? theme.accent : 'rgba(255,255,255,0.14)', color: '#fff', border: 'none', borderRadius: 999, padding: '10px 20px', fontWeight: 800, fontSize: 13, cursor: 'pointer', letterSpacing: 0.8, textTransform: 'uppercase' }}>
+          Cart{cartCount > 0 ? ` · ${cartCount}` : ''}
         </button>
       </div>
     </header>
@@ -171,26 +200,35 @@ function PreviewBanner({ status }) {
 // ── Home: hero + grid ────────────────────────────────────────────────
 function Home({ store, theme, products }) {
   const closes = closesLabel(store.close_at);
+  const stripes = `repeating-linear-gradient(115deg, rgba(255,255,255,0.05) 0 2px, transparent 2px 26px)`;
   const heroBg = store.banner_url
-    ? `linear-gradient(180deg, rgba(0,0,0,0.45), rgba(0,0,0,0.72)), url(${store.banner_url}) center/cover`
-    : `linear-gradient(135deg, ${theme.primary} 0%, ${shade(theme.primary, -18)} 55%, ${theme.accent} 140%)`;
+    ? `linear-gradient(180deg, rgba(0,0,0,0.42), rgba(0,0,0,0.74)), url(${store.banner_url}) center/cover`
+    : `${stripes}, radial-gradient(120% 130% at 85% -10%, ${theme.accent} 0%, transparent 45%), linear-gradient(135deg, ${theme.primary} 0%, ${shade(theme.primary, -16)} 70%)`;
   return (
     <>
-      <section style={{ background: heroBg, color: '#fff', position: 'relative' }}>
-        <div style={{ maxWidth: 1180, margin: '0 auto', padding: '72px 20px 64px' }}>
-          {closes && <div style={{ display: 'inline-block', background: closes.urgent ? theme.accent : 'rgba(255,255,255,0.16)', color: '#fff', fontSize: 12, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', padding: '6px 14px', borderRadius: 999, marginBottom: 18 }}>{closes.text}</div>}
-          <h1 style={{ margin: 0, fontSize: 'clamp(34px,6vw,64px)', fontWeight: 900, letterSpacing: -1, textTransform: 'uppercase', lineHeight: 0.98, maxWidth: 880 }}>{store.name}</h1>
-          {store.hero_blurb && <p style={{ margin: '18px 0 0', maxWidth: 560, fontSize: 17, lineHeight: 1.55, opacity: 0.92 }}>{store.hero_blurb}</p>}
-          <button onClick={() => document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' })}
-            style={{ marginTop: 26, background: theme.accent, color: '#fff', border: 'none', padding: '14px 30px', borderRadius: theme.radius, fontWeight: 800, fontSize: 14, letterSpacing: 1, textTransform: 'uppercase', cursor: 'pointer' }}>Shop now</button>
+      <section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden' }}>
+        {/* angled accent slash */}
+        <div style={{ position: 'absolute', top: 0, bottom: 0, right: -120, width: 220, background: theme.accent, opacity: store.banner_url ? 0.85 : 0.9, transform: 'skewX(-12deg)', boxShadow: '0 0 60px rgba(0,0,0,.25)' }} />
+        <div style={{ position: 'relative', maxWidth: 1180, margin: '0 auto', padding: 'clamp(56px,9vw,96px) 20px clamp(56px,8vw,84px)' }}>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, marginBottom: 18 }}>
+            <span style={{ width: 30, height: 4, background: theme.accent, borderRadius: 2 }} />
+            <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: 2.5, textTransform: 'uppercase', opacity: 0.92 }}>Official Team Store</span>
+          </div>
+          {closes && <div style={{ display: 'inline-block', marginLeft: 0, marginBottom: 16, background: closes.urgent ? theme.accent : 'rgba(255,255,255,0.16)', color: '#fff', fontSize: 12, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', padding: '6px 14px', borderRadius: 999, boxShadow: closes.urgent ? '0 4px 14px rgba(0,0,0,.2)' : 'none' }}>{closes.text}</div>}
+          <h1 style={{ fontFamily: DISPLAY, margin: 0, fontSize: 'clamp(44px,8vw,92px)', letterSpacing: -0.5, textTransform: 'uppercase', lineHeight: 0.88, maxWidth: 900, textShadow: store.banner_url ? '0 2px 20px rgba(0,0,0,.4)' : 'none' }}>{store.name}</h1>
+          {store.hero_blurb && <p style={{ margin: '20px 0 0', maxWidth: 560, fontSize: 17, lineHeight: 1.55, opacity: 0.92, fontWeight: 500 }}>{store.hero_blurb}</p>}
+          <button className="sf-btn" onClick={() => document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' })}
+            style={{ marginTop: 28, background: theme.accent, color: '#fff', border: 'none', padding: '15px 38px', borderRadius: theme.radius, fontFamily: DISPLAY, fontSize: 16, letterSpacing: 1.5, textTransform: 'uppercase', cursor: 'pointer', boxShadow: '0 8px 22px rgba(0,0,0,.25)' }}>Shop the Collection</button>
         </div>
       </section>
 
-      <div id="shop-grid" style={{ maxWidth: 1180, margin: '0 auto', padding: '44px 20px 72px' }}>
+      <TrustStrip store={store} theme={theme} />
+
+      <div id="shop-grid" style={{ maxWidth: 1180, margin: '0 auto', padding: '48px 20px 80px' }}>
         <SectionTitle theme={theme}>The Collection</SectionTitle>
         {products.length === 0
           ? <Splash>No products in this store yet.</Splash>
-          : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(240px,1fr))', gap: 22 }}>
+          : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(238px,1fr))', gap: 22 }}>
               {products.map((p) => <Card key={p.webstore_product_id} store={store} theme={theme} p={p} />)}
             </div>}
       </div>
@@ -198,10 +236,26 @@ function Home({ store, theme, products }) {
   );
 }
 
+function TrustStrip({ store, theme }) {
+  const deliver = store.delivery_mode === 'ship_home' ? 'Ships to your door' : 'Delivered to the club';
+  const items = [['★', 'Official team apparel'], ['⚡', 'Quality custom decoration'], ['📦', deliver], ['♥', 'Supports the team']];
+  return (
+    <div style={{ background: '#0b1220', color: '#fff' }}>
+      <div style={{ maxWidth: 1180, margin: '0 auto', padding: '16px 20px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12 }}>
+        {items.map(([icon, label]) => (
+          <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'center', fontSize: 13, fontWeight: 600, letterSpacing: 0.3 }}>
+            <span style={{ color: theme.accent, fontSize: 16 }}>{icon}</span>{label}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SectionTitle({ children, theme }) {
-  return <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 26 }}>
-    <span style={{ width: 6, height: 28, background: theme.accent, borderRadius: 2 }} />
-    <h2 style={{ margin: 0, fontSize: 26, fontWeight: 900, letterSpacing: -0.5, textTransform: 'uppercase' }}>{children}</h2>
+  return <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 28 }}>
+    <span style={{ width: 7, height: 30, background: theme.accent, borderRadius: 2 }} />
+    <h2 style={{ fontFamily: DISPLAY, margin: 0, fontSize: 'clamp(26px,4vw,36px)', letterSpacing: 0.3, textTransform: 'uppercase', lineHeight: 1 }}>{children}</h2>
   </div>;
 }
 
@@ -217,28 +271,31 @@ function Card({ store, theme, p }) {
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   const go = () => navTo(`/shop/${store.slug}/${p.kind === 'bundle' ? 'b' : 'p'}/${p.webstore_product_id}`);
   return (
-    <div onClick={go} style={{ cursor: 'pointer', display: 'flex', flexDirection: 'column', background: '#fff', borderRadius: theme.radius, overflow: 'hidden', border: '1px solid #eef1f5', transition: 'transform .14s, box-shadow .14s' }}
-      onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-4px)'; e.currentTarget.style.boxShadow = '0 14px 32px rgba(11,18,32,0.14)'; const im = e.currentTarget.querySelector('img'); if (im) im.style.transform = 'scale(1.06)'; }}
-      onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; const im = e.currentTarget.querySelector('img'); if (im) im.style.transform = 'none'; }}>
+    <div className="sf-card" onClick={go} style={{ cursor: 'pointer', display: 'flex', flexDirection: 'column', background: '#fff', borderRadius: theme.radius, overflow: 'hidden', border: '1px solid #eef1f5', boxShadow: '0 1px 3px rgba(11,18,32,.05)' }}>
       <div style={{ position: 'relative', aspectRatio: '4/5', background: '#f4f6f9', overflow: 'hidden' }}>
         {p.image_front_url
-          ? <img src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover', transition: 'transform .3s' }} />
-          : <Placeholder theme={theme} label={store.name} />}
-        <span style={{ position: 'absolute', top: 10, left: 10, fontSize: 10, fontWeight: 800, letterSpacing: 0.6, textTransform: 'uppercase', padding: '4px 9px', borderRadius: 999, background: b.bg, color: b.color }}>{b.text}</span>
+          ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          : <Placeholder theme={theme} label={p.name || store.name} />}
+        <span style={{ position: 'absolute', top: 10, left: 10, fontSize: 10, fontWeight: 800, letterSpacing: 0.6, textTransform: 'uppercase', padding: '5px 10px', borderRadius: 999, background: b.bg, color: b.color, boxShadow: '0 2px 6px rgba(0,0,0,.15)' }}>{b.text}</span>
       </div>
-      <div style={{ padding: '14px 14px 16px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <div style={{ position: 'relative', padding: '15px 15px 17px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+        <span className="sf-bar" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: theme.accent, transform: 'scaleX(0)', transformOrigin: 'left', transition: 'transform .2s ease' }} />
         <div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.3, minHeight: 36 }}>{p.name}</div>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-          <span style={{ fontWeight: 900, fontSize: 18 }}>{money(priceOf(p))}</span>
+          <span style={{ fontFamily: DISPLAY, fontSize: 22, letterSpacing: 0.3 }}>{money(priceOf(p))}</span>
         </div>
-        {showFund && <div style={{ fontSize: 11, color: '#16a34a', fontWeight: 700 }}>{money(p.fundraise_amount)} supports the team</div>}
+        {showFund && <div style={{ fontSize: 11, color: '#16a34a', fontWeight: 700 }}>♥ {money(p.fundraise_amount)} supports the team</div>}
       </div>
     </div>
   );
 }
 
 function Placeholder({ theme, label }) {
-  return <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: `linear-gradient(135deg, ${theme.primary}, ${theme.accent})`, color: 'rgba(255,255,255,0.85)', fontWeight: 900, fontSize: 30, letterSpacing: 1 }}>{(label || '?')[0]}</div>;
+  const stripes = `repeating-linear-gradient(125deg, rgba(255,255,255,0.06) 0 2px, transparent 2px 22px)`;
+  return <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, padding: 18, textAlign: 'center', background: `${stripes}, linear-gradient(135deg, ${theme.primary}, ${shade(theme.primary, -14)})` }}>
+    <div style={{ width: 56, height: 56, borderRadius: '50%', background: theme.accent, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: DISPLAY, fontSize: 30, color: '#fff', boxShadow: '0 4px 14px rgba(0,0,0,.25)' }}>{(label || '?')[0].toUpperCase()}</div>
+    <div style={{ color: 'rgba(255,255,255,0.92)', fontWeight: 700, fontSize: 12, letterSpacing: 1, textTransform: 'uppercase', lineHeight: 1.3, maxWidth: 160 }}>{label}</div>
+  </div>;
 }
 
 // ── Single product ───────────────────────────────────────────────────
@@ -285,9 +342,9 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
           </div>}
         </div>
         <div style={{ paddingTop: 4 }}>
-          <h1 style={{ fontSize: 30, fontWeight: 900, margin: '0 0 8px', letterSpacing: -0.5, lineHeight: 1.05 }}>{p.name}</h1>
+          <h1 style={{ fontFamily: DISPLAY, fontSize: 'clamp(30px,4vw,42px)', margin: '0 0 8px', letterSpacing: 0.2, lineHeight: 0.98, textTransform: 'uppercase' }}>{p.name}</h1>
           <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16, textTransform: 'uppercase', letterSpacing: 0.5 }}>{[p.color, p.category].filter(Boolean).join(' · ')}</div>
-          <div style={{ fontSize: 30, fontWeight: 900, marginBottom: showFund ? 4 : 18 }}>{money(priceOf(p))}</div>
+          <div style={{ fontFamily: DISPLAY, fontSize: 34, marginBottom: showFund ? 4 : 18, letterSpacing: 0.3 }}>{money(priceOf(p))}</div>
           {showFund && <div style={{ fontSize: 13, color: '#16a34a', fontWeight: 700, marginBottom: 18 }}>Includes {money(p.fundraise_amount)} that supports the team</div>}
 
           <StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} />
@@ -317,7 +374,7 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
           )}
 
           {p.takes_name && nameUp > 0 && pname.trim() ? <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 10 }}>Total: {money(total)}</div> : null}
-          <button onClick={addToCart} disabled={!canAdd} style={{ ...cta(theme), opacity: canAdd ? 1 : 0.5, cursor: canAdd ? 'pointer' : 'not-allowed', marginTop: 8 }}>
+          <button className="sf-btn" onClick={addToCart} disabled={!canAdd} style={{ ...cta(theme), opacity: canAdd ? 1 : 0.5, cursor: canAdd ? 'pointer' : 'not-allowed', marginTop: 8 }}>
             {!isOpen ? 'Store not open yet' : added ? '✓ Added to cart' : needSize && !size ? 'Select a size' : needNumber && !num.trim() ? 'Enter a number' : 'Add to cart'}
           </button>
         </div>
@@ -379,9 +436,9 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpe
               : <div style={{ aspectRatio: '4/5', background: '#f4f6f9', borderRadius: theme.radius, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Placeholder theme={theme} label={store.name} /></div>}
         </div>
         <div style={{ paddingTop: 4 }}>
-          <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', padding: '4px 12px', borderRadius: 999, background: '#1e40af', color: '#fff' }}>Package Deal</span>
-          <h1 style={{ fontSize: 30, fontWeight: 900, margin: '12px 0 8px', letterSpacing: -0.5, lineHeight: 1.05 }}>{p.name}</h1>
-          <div style={{ fontSize: 30, fontWeight: 900, marginBottom: showFund ? 4 : 8 }}>{money(priceOf(p))}</div>
+          <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', padding: '5px 13px', borderRadius: 999, background: theme.accent, color: '#fff', boxShadow: '0 2px 8px rgba(0,0,0,.12)' }}>Package Deal</span>
+          <h1 style={{ fontFamily: DISPLAY, fontSize: 'clamp(30px,4vw,42px)', margin: '12px 0 8px', letterSpacing: 0.2, lineHeight: 0.98, textTransform: 'uppercase' }}>{p.name}</h1>
+          <div style={{ fontFamily: DISPLAY, fontSize: 34, marginBottom: showFund ? 4 : 8, letterSpacing: 0.3 }}>{money(priceOf(p))}</div>
           {showFund && <div style={{ fontSize: 13, color: '#16a34a', fontWeight: 700, marginBottom: 8 }}>Includes {money(p.fundraise_amount)} that supports the team</div>}
           <div style={{ fontSize: 14, color: '#64748b', marginBottom: 20 }}>One price — pick a size for each item below.</div>
 
@@ -426,7 +483,7 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, isOpe
             })}
 
           {nameExtra > 0 && <div style={{ fontSize: 14, fontWeight: 700, marginTop: 16 }}>Total with personalization: {money(priceOf(p) + nameExtra)}</div>}
-          <button onClick={addToCart} disabled={!canAdd} style={{ ...cta(theme), opacity: canAdd ? 1 : 0.5, cursor: canAdd ? 'pointer' : 'not-allowed', marginTop: 16 }}>
+          <button className="sf-btn" onClick={addToCart} disabled={!canAdd} style={{ ...cta(theme), opacity: canAdd ? 1 : 0.5, cursor: canAdd ? 'pointer' : 'not-allowed', marginTop: 16 }}>
             {!isOpen ? 'Store not open yet' : added ? '✓ Added to cart' : missingSize ? 'Pick a size for each item' : missingNum ? 'Enter a number' : 'Add package to cart'}
           </button>
         </div>
@@ -446,7 +503,7 @@ function CartPage({ store, theme, cart, onUpdate }) {
   return (
     <div style={{ paddingTop: 26 }}>
       <BackLink store={store} />
-      <h1 style={{ fontSize: 28, fontWeight: 900, textTransform: 'uppercase', letterSpacing: -0.5, margin: '0 0 20px' }}>Your cart</h1>
+      <h1 style={{ fontFamily: DISPLAY, fontSize: 'clamp(30px,5vw,44px)', textTransform: 'uppercase', letterSpacing: 0.3, margin: '0 0 20px', lineHeight: 0.95 }}>Your cart</h1>
       {cart.map((l) => (
         <div key={l.key} style={{ display: 'flex', gap: 14, padding: '14px 0', borderBottom: '1px solid #eef1f5' }}>
           <div style={{ width: 64, height: 64, borderRadius: 8, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0 }}>{l.image && <img src={l.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}</div>
@@ -460,8 +517,8 @@ function CartPage({ store, theme, cart, onUpdate }) {
       ))}
       {shipFee(store) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16, fontSize: 13, color: '#475569' }}><span>Shipping (flat)</span><span>{money(shipFee(store))}</span></div>}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: shipFee(store) > 0 ? 8 : 20 }}>
-        <div style={{ fontSize: 20, fontWeight: 900 }}>Total: {money(grandTotal(store, cart))}</div>
-        <button onClick={() => navTo('/shop/' + store.slug + '/checkout')} style={{ ...cta(theme), width: 'auto', padding: '14px 40px' }}>Checkout</button>
+        <div style={{ fontFamily: DISPLAY, fontSize: 24, letterSpacing: 0.3 }}>Total: {money(grandTotal(store, cart))}</div>
+        <button className="sf-btn" onClick={() => navTo('/shop/' + store.slug + '/checkout')} style={{ ...cta(theme), width: 'auto', padding: '15px 44px' }}>Checkout</button>
       </div>
     </div>
   );
@@ -544,7 +601,7 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   return (
     <div style={{ paddingTop: 26, maxWidth: 640 }}>
       <BackLink store={store} />
-      <h1 style={{ fontSize: 28, fontWeight: 900, textTransform: 'uppercase', letterSpacing: -0.5, margin: '0 0 20px' }}>Checkout</h1>
+      <h1 style={{ fontFamily: DISPLAY, fontSize: 'clamp(30px,5vw,44px)', textTransform: 'uppercase', letterSpacing: 0.3, margin: '0 0 20px', lineHeight: 0.95 }}>Checkout</h1>
       {err && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}>{err}</div>}
 
       <Field label="Your name"><input style={inp} value={buyer.name} onChange={(e) => setBuyer({ ...buyer, name: e.target.value })} /></Field>
@@ -582,10 +639,10 @@ function CheckoutPage({ store, theme, cart, onClear }) {
             <Elements stripe={_stripePromise} options={{ clientSecret, appearance: { theme: 'stripe' } }}>
               <CardForm theme={theme} onPaid={async (piId) => { const r = await placeOrder({ store, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', stripePiId: piId }); if (r.error) { setErr(r.error.message); return; } onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`); }} />
             </Elements>
-          ) : <button onClick={startCard} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1 }}>{busy ? 'Starting…' : 'Continue to payment'}</button>
+          ) : <button className="sf-btn" onClick={startCard} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1 }}>{busy ? 'Starting…' : 'Continue to payment'}</button>
         ) : <div style={{ color: '#b91c1c', fontSize: 13 }}>Card payment isn’t configured for this store.</div>
       ) : (
-        <button onClick={submitUnpaid} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1 }}>{busy ? 'Placing…' : 'Place order — invoice the team'}</button>
+        <button className="sf-btn" onClick={submitUnpaid} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1 }}>{busy ? 'Placing…' : 'Place order — invoice the team'}</button>
       )}
     </div>
   );
@@ -608,7 +665,7 @@ function CardForm({ theme, onPaid }) {
     <div>
       <PaymentElement />
       {err && <div style={{ color: '#b91c1c', fontSize: 13, marginTop: 8 }}>{err}</div>}
-      <button onClick={pay} disabled={busy} style={{ ...cta(theme), opacity: busy ? 0.5 : 1, marginTop: 14 }}>{busy ? 'Processing…' : 'Pay now'}</button>
+      <button className="sf-btn" onClick={pay} disabled={busy} style={{ ...cta(theme), opacity: busy ? 0.5 : 1, marginTop: 14 }}>{busy ? 'Processing…' : 'Pay now'}</button>
     </div>
   );
 }
@@ -638,7 +695,7 @@ function OrderStatusPage({ store, theme, orderId }) {
       <div style={{ background: '#dcfce7', color: '#166534', padding: '14px 18px', borderRadius: theme.radius, fontWeight: 800, marginBottom: 18 }}>
         ✓ Order confirmed{order.payment_mode === 'paid' ? ' & paid' : ' — invoiced to the team'}. A confirmation was recorded for {order.buyer_email}.
       </div>
-      <h1 style={{ fontSize: 22, fontWeight: 900, margin: '0 0 14px' }}>Order status</h1>
+      <h1 style={{ fontFamily: DISPLAY, fontSize: 28, letterSpacing: 0.3, textTransform: 'uppercase', margin: '0 0 14px' }}>Order status</h1>
       <div style={{ display: 'flex', gap: 6, marginBottom: 20, flexWrap: 'wrap' }}>
         {['Ordered', 'In production', 'Shipped', 'Complete'].map((s, i) => (
           <div key={s} style={{ flex: 1, minWidth: 110, textAlign: 'center', padding: '10px 6px', borderRadius: 8, fontSize: 12, fontWeight: 700, background: i <= curIdx ? theme.accent : '#f1f5f9', color: i <= curIdx ? '#fff' : '#94a3b8' }}>{s}</div>
@@ -668,14 +725,17 @@ function StockLine({ onHand, incoming, eta, onOrder }) {
 // ── atoms ────────────────────────────────────────────────────────────
 function Pill({ children, bg, fg }) { return <span style={{ display: 'inline-block', fontSize: 13, fontWeight: 700, padding: '7px 13px', borderRadius: 8, background: bg, color: fg }}>{children}</span>; }
 function BackLink({ store }) { return <button onClick={() => navTo('/shop/' + store.slug)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 13, fontWeight: 600, padding: 0, marginBottom: 20, textTransform: 'uppercase', letterSpacing: 0.5 }}>← Back to store</button>; }
-function Splash({ children }) { return <div style={{ minHeight: '40vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: '#64748b', fontSize: 15, padding: '60px 20px', fontFamily: 'system-ui,sans-serif' }}>{children}</div>; }
+function Splash({ children }) { return <div style={{ minHeight: '40vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: '#64748b', fontSize: 15, padding: '60px 20px', fontFamily: BODY }}>{children}</div>; }
 function Footer({ theme }) {
-  return <footer style={{ background: theme.primary, color: 'rgba(255,255,255,0.7)', textAlign: 'center', fontSize: 12, padding: '26px 20px', borderTop: `3px solid ${theme.accent}`, letterSpacing: 0.5 }}>Powered by National Sports Apparel</footer>;
+  return <footer style={{ background: `linear-gradient(120deg, ${theme.primary}, ${shade(theme.primary, -10)})`, color: 'rgba(255,255,255,0.82)', textAlign: 'center', padding: '34px 20px', borderTop: `3px solid ${theme.accent}` }}>
+    <div style={{ fontFamily: DISPLAY, fontSize: 20, letterSpacing: 1, textTransform: 'uppercase', color: '#fff' }}>National Sports Apparel</div>
+    <div style={{ fontSize: 12, letterSpacing: 0.5, marginTop: 6, opacity: 0.7 }}>Custom team apparel · Powered by NSA</div>
+  </footer>;
 }
 
 const sizeBtn = (t, sel) => ({ minWidth: 52, padding: '12px 14px', borderRadius: t.radius, border: `2px solid ${sel ? t.accent : '#e2e8f0'}`, background: sel ? t.accent : '#fff', color: sel ? '#fff' : '#0b1220', fontWeight: 800, fontSize: 14 });
 const thumbBtn = (t, sel) => ({ padding: '8px 18px', borderRadius: t.radius, border: `2px solid ${sel ? t.accent : '#e2e8f0'}`, background: sel ? t.accent : '#fff', color: sel ? '#fff' : '#475569', fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, cursor: 'pointer' });
-const cta = (t) => ({ width: '100%', padding: '16px 20px', borderRadius: t.radius, border: 'none', background: t.accent, color: '#fff', fontWeight: 900, fontSize: 15, letterSpacing: 1, textTransform: 'uppercase' });
+const cta = (t) => ({ width: '100%', padding: '16px 20px', borderRadius: t.radius, border: 'none', background: t.accent, color: '#fff', fontFamily: DISPLAY, fontSize: 17, letterSpacing: 1.2, textTransform: 'uppercase', cursor: 'pointer', boxShadow: '0 8px 20px rgba(11,18,32,.16)' });
 const fieldStyle = (t, w) => ({ width: w, padding: '11px 12px', borderRadius: t.radius, border: '2px solid #e2e8f0', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', boxSizing: 'border-box' });
 
 // Darken/lighten a hex color by pct (−100..100) for hero gradients.
