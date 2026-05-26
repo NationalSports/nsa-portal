@@ -23,7 +23,6 @@
 // Without style: { fetchedAt, count, styles:['110','112',...] }
 
 const DEFAULT_USER = 'CustFeed';
-const DEFAULT_KEY = 'A9fK2Qm8ZxP7L4R3WcH6D';
 const DEFAULT_URL = 'https://reports.richardsonsports.com/reportserver/reportserver/httpauthexport?key=StockInventory&format=JSON&download=false';
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -33,7 +32,8 @@ let _inflight = null;
 const buildFeedUrl = () => {
   if (process.env.RICHARDSON_FEED_URL) return process.env.RICHARDSON_FEED_URL;
   const user = process.env.RICHARDSON_FEED_USER || DEFAULT_USER;
-  const key = process.env.RICHARDSON_FEED_KEY || DEFAULT_KEY;
+  const key = process.env.RICHARDSON_FEED_KEY;
+  if (!key) throw new Error('Richardson feed not configured — set the RICHARDSON_FEED_KEY environment variable');
   return `${DEFAULT_URL}&user=${encodeURIComponent(user)}&apikey=${encodeURIComponent(key)}`;
 };
 
