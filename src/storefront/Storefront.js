@@ -682,7 +682,7 @@ function CheckoutPage({ store, theme, cart, onClear }) {
 
   const confirmPaid = async () => {
     if (!pendingOrder) { setErr('Order reference lost — your card was charged. Please contact us and we’ll confirm your order.'); return; }
-    await supabase.from('webstore_orders').update({ status: 'paid' }).eq('id', pendingOrder.id);
+    await supabase.from('webstore_orders').update({ status: 'paid', confirmation_sent: true }).eq('id', pendingOrder.id);
     if (buyer.email) sendOrderEmail({ store, order: { ...pendingOrder, status: 'paid', payment_mode: 'paid' }, cart, buyer, shipping: shipFee(store), total: grandTotal(store, cart) });
     onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}`);
   };
