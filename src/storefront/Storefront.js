@@ -536,6 +536,29 @@ function CartPage({ store, theme, cart, onUpdate }) {
   );
 }
 
+// Soft oversell guard: re-check live stock for plain (non-bundle) sized items
+// right before placing the order. Backorder-OK items (incoming) always pass.
+// Not fully atomic — shrinks the window, doesn't eliminate a simultaneous race.
+async function verifyStock(store, cart) {
+  const singles = cart.filter((l) => l.kind !== 'bundle' && l.webstore_product_id && l.size);
+  if (!singles.length) return null;
+  const ids = [...new Set(singles.map((l) => l.webstore_product_id))];
+  const { data, error } = await supabase.from('webstore_storefront_products')
+    .select('webstore_product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta')
+    .eq('store_id', store.id).in('webstore_product_id', ids);
+  if (error) return null; // don't block checkout on a lookup failure
+  const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
+  const need = {}; singles.forEach((l) => { const k = l.webstore_product_id + '|' + l.size; need[k] = (need[k] || 0) + (l.qty || 1); });
+  const short = [];
+  Object.entries(need).forEach(([k, q]) => {
+    const [wid, size] = k.split('|'); const p = byId[wid]; if (!p) return;
+    if (isIncoming(p)) return; // backorder allowed
+    if (effSizeQty(p, size) < q) short.push(`${p.name || 'item'} (size ${size})`);
+  });
+  if (short.length) return `Sorry — these just sold out while you were shopping: ${short.join(', ')}. Please remove or change them and try again.`;
+  return null;
+}
+
 // ── Order confirmation email (server-side Brevo proxy keeps the key secret) ──
 async function sendOrderEmail({ store, order, cart, buyer, shipping, total }) {
   try {
@@ -628,6 +651,8 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const submitUnpaid = async () => {
     setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
     setBusy(true);
+    const stockErr = await verifyStock(store, cart);
+    if (stockErr) { setErr(stockErr); setBusy(false); return; }
     const r = await placeOrder({ store, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid' });
     setBusy(false);
     if (r.error) { setErr(r.error.message); return; }
@@ -637,6 +662,8 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const startCard = async () => {
     setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
     setBusy(true);
+    const stockErr = await verifyStock(store, cart);
+    if (stockErr) { setErr(stockErr); setBusy(false); return; }
     try {
       const res = await fetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create_intent', amount_cents: Math.round(grandTotal(store, cart) * 100), customer_name: buyer.name, customer_email: buyer.email, invoice_id: store.slug, invoice_memo: store.name + ' webstore' }) });
       const data = await res.json();
