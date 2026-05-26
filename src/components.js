@@ -272,6 +272,21 @@ function calcSOStatus(ord){
     // Partial shipment — jobs marked shipped but units remain
     return isPromo?'complete':'ready_to_invoice';
   }
+  // Delivery-preference orders: delivery is the terminal fulfillment step (the equivalent of
+  // shipping). Once production is done, all goods are in, and every deliverable is marked in the
+  // delivered map, the order is complete — it never passes through a 'shipped' job state.
+  const isDeliveryPref=ord.ship_preference==='warehouse_delivery'||ord.ship_preference==='deliver_on_date';
+  if(isDeliveryPref){
+    const dlv=ord.delivered||{};
+    const noActiveJobs=!hasJobs||allJobsDone;
+    const allJobsDelivered=boardJobs.every(j=>dlv['job|'+j.id]);
+    const noDecoDelivered=safeItems(ord).every((it,idx)=>{
+      if(!it.no_deco&&safeDecos(it).length>0)return true;
+      const units=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+      return units<=0||!!dlv['nd|'+idx];
+    });
+    if(noActiveJobs&&fulfilledSz>=totalSz&&allJobsDelivered&&noDecoDelivered)return'complete';
+  }
   // No-deco orders: all items fulfilled → ready_to_invoice (or complete for promo)
   if(!hasAnyDeco&&!hasJobs&&fulfilledSz>=totalSz)return(ord.status==='complete'||isPromo)?'complete':'ready_to_invoice';
   // If all jobs completed → ready to invoice (or complete for promo)

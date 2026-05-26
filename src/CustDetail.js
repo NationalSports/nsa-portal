@@ -9,7 +9,7 @@ import { StripePaymentModal } from './modals';
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveArtFiles,REPS,prod,onCopy,onDelete,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveArtFiles,REPS,prod,onCopy,onDelete,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[rR,setRR]=useState('thisyear');
   const[expSOs,setExpSOs]=useState(()=>new Set());
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
@@ -54,6 +54,16 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const rmContact=(idx)=>{const newContacts=(customer.contacts||[]).filter((_,i)=>i!==idx);const newCust={...customer,contacts:newContacts};setCustLocal(newCust);onEdit(newCust)};
   // Unread messages for this customer
   const custUnread=(msgs||[]).filter(m=>custSOs.some(s=>s.id===m.so_id)&&!(m.read_by||[]).includes(cu?.id||'')).length;
+  // Messages grouped by sales order — groups with unread float to the top, then by most recent message
+  const isUnread=m=>!(m.read_by||[]).includes(cu?.id||'');
+  const msgTs=m=>m.ts||m.created_at||'';
+  const msgGroups=custSOs.map(so=>{
+    const gm=(msgs||[]).filter(m=>m.so_id===so.id).slice().sort((a,b)=>(msgTs(a)||'').localeCompare(msgTs(b)||''));
+    return{so,msgs:gm,unread:gm.filter(isUnread).length,last:gm.reduce((mx,m)=>{const t=msgTs(m);return t>mx?t:mx},'')};
+  }).filter(g=>g.msgs.length>0)
+    .sort((a,b)=>((b.unread>0)-(a.unread>0))||(b.last||'').localeCompare(a.last||''));
+  const authorName=id=>{const r=(REPS||[]).find(x=>x.id===id);return r?.name||'Unknown'};
+  const markGroupRead=gm=>{const ids=gm.filter(isUnread).map(m=>m.id);if(ids.length&&onMarkRead)onMarkRead(ids)};
 
   return(<div>
   {/* ── Mockup lightbox overlay ── */}
@@ -114,7 +124,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {subs.map(sub=><div key={sub.id} style={{padding:'10px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>onSelCust(sub)}>
     <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontWeight:600,color:'#1e40af'}}>{sub.name}</span><span className="badge badge-gray">{sub.alpha_tag}</span><div style={{flex:1}}/>
     {(sub._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${sub._ob.toLocaleString()}</span>}</div>)}</div>}</div>}
-  <div className="tabs">{['activity','contacts','overview','promo','artwork','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length||((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?' ('+(customer.promo_programs?.length?customer.promo_programs.length+' promo':'')+(customer.promo_programs?.length&&(customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0?' · ':'')+(((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?'$'+((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)).toLocaleString()+' credit':'')+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
+  <div className="tabs">{['activity','messages','contacts','overview','promo','artwork','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='messages'?'Messages'+(custUnread>0?' ('+custUnread+')':''):t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length||((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?' ('+(customer.promo_programs?.length?customer.promo_programs.length+' promo':'')+(customer.promo_programs?.length&&(customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0?' · ':'')+(((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?'$'+((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)).toLocaleString()+' credit':'')+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
 
   {/* ORDERS TAB — with live SO status */}
   {tab==='activity'&&<>
@@ -238,6 +248,24 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <td><span className={`badge ${statusBadge(t.status)}`}>{t.status?.replace(/_/g,' ')||'—'}</span></td>
         </tr>)}</tbody></table></div></div>})()}
   </>}
+
+  {/* MESSAGES TAB — grouped by sales order, unread groups first */}
+  {tab==='messages'&&<div className="card"><div className="card-header"><h2>Messages{custUnread>0?' — '+custUnread+' unread':''}</h2>{custUnread>0&&<button className="btn btn-sm btn-secondary" onClick={()=>markGroupRead(msgGroups.flatMap(g=>g.msgs))}>Mark all read</button>}</div><div className="card-body">
+    {msgGroups.length===0?<div style={{fontSize:13,color:'#94a3b8',fontStyle:'italic',padding:'8px 4px'}}>No messages on this customer's orders yet.</div>:
+    msgGroups.map(g=><div key={g.so.id} style={{border:'1px solid #e2e8f0',borderRadius:8,marginBottom:12,overflow:'hidden'}}>
+      <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 12px',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',flexWrap:'wrap'}}>
+        <span style={{fontWeight:700,fontSize:13,color:'#1e40af',cursor:onOpenSO?'pointer':'default',textDecoration:onOpenSO?'underline':'none'}} onClick={()=>onOpenSO&&onOpenSO(g.so)}>{g.so.id}</span>
+        {g.so.memo&&<span style={{fontSize:12,color:'#64748b'}}>{g.so.memo}</span>}
+        <span style={{fontSize:11,color:'#94a3b8'}}>{g.msgs.length} message{g.msgs.length!==1?'s':''}</span>
+        {g.unread>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'2px 8px',fontSize:10,fontWeight:700}}>{g.unread} unread</span>}
+        {g.unread>0&&<button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11}} onClick={()=>markGroupRead(g.msgs)}>Mark read</button>}
+      </div>
+      <div>{g.msgs.map((m,mi)=>{const un=isUnread(m);return<div key={m.id||mi} style={{padding:'8px 12px',borderBottom:mi<g.msgs.length-1?'1px solid #f1f5f9':'none',borderLeft:un?'3px solid #dc2626':'3px solid transparent',background:un?'#fef2f2':'white'}}>
+        <div style={{fontSize:11,fontWeight:700,color:'#1e40af'}}>{m.is_system?'System':authorName(m.author_id)} <span style={{fontWeight:400,color:'#94a3b8',fontSize:9}}>{msgTs(m)?new Date(msgTs(m)).toLocaleString():''}</span>{un&&<span style={{marginLeft:6,fontSize:9,color:'#dc2626',fontWeight:700}}>● NEW</span>}</div>
+        <div style={{fontSize:12,color:'#334155',marginTop:2,whiteSpace:'pre-wrap'}}>{m.text}</div>
+      </div>})}</div>
+    </div>)}
+  </div></div>}
 
   {/* CONTACTS TAB — editable */}
   {tab==='contacts'&&(()=>{

@@ -53,39 +53,62 @@ exports.handler = async (event) => {
     const products = [];
     let totalQty = 0, totalSales = 0;
 
+    // Pull a SKU out of a string like "Black/White (KB9093)" → KB9093
+    const extractSku = (str) => {
+      const m = (str || '').match(/\(([A-Za-z0-9]{4,10})\)/);
+      return m ? m[1].toUpperCase() : '';
+    };
+
     (report.reports || []).forEach(r => {
       (r.sections || []).forEach(section => {
         const meta = section.meta || {};
         const rows = section.rows || [];
-        const sizes = {};
-        let productQty = 0, productPaid = 0;
-        const colors = new Set();
+        const artworkList = meta.artwork || [];
+        const sectionSku = meta.sku || '';
+        const sectionSkuOk = sectionSku && !sectionSku.includes(' ') && sectionSku.length <= 15;
 
+        // Same product can ship multiple SKUs (one per color), e.g. KB9093 in
+        // black and KB9097 in grey — split each SKU into its own product row.
+        const groups = {};
         rows.forEach(row => {
           const sz = row.size || 'OS';
           const qty = row.quantity || 0;
-          sizes[sz] = (sizes[sz] || 0) + qty;
-          productQty += qty;
-          productPaid += (row.paid || 0);
-          if (row.color) colors.add(row.color);
+          const rowSku = extractSku(row.color) || (sectionSkuOk ? sectionSku.toUpperCase() : '');
+          const key = rowSku || '__nosku__';
+          if (!groups[key]) groups[key] = { sku: rowSku, sizes: {}, qty: 0, paid: 0, colors: new Set() };
+          const g = groups[key];
+          g.sizes[sz] = (g.sizes[sz] || 0) + qty;
+          g.qty += qty;
+          g.paid += (row.paid || 0);
+          if (row.color) g.colors.add(row.color);
         });
 
-        const artwork = (meta.artwork || [])[0];
-        products.push({
-          store_id: storeId,
-          sku: meta.sku || '',
-          name: meta.name || '',
-          color: [...colors].join(', '),
-          retail: meta.base_price || 0,
-          cost: meta.cogs || 0,
-          deco_type: '',
-          deco_cost: 0,
-          sizes,
-          image_url: artwork?.link || artwork?.thumbnail || '',
-        });
+        Object.values(groups).forEach(g => {
+          let sku = g.sku;
+          if (!sku) {
+            const fromText = extractSku([...g.colors].join(' ') + ' ' + (meta.name || ''));
+            sku = fromText || sectionSku;
+          }
+          const matchedArt = sku
+            ? artworkList.filter(a => `${a.caption||''} ${a.color||''} ${a.name||''} ${a.label||''}`.toUpperCase().includes(sku))
+            : [];
+          const artwork = (matchedArt.length ? matchedArt : artworkList)[0];
+          products.push({
+            store_id: storeId,
+            sku,
+            name: meta.name || '',
+            color: [...g.colors].join(', '),
+            retail: meta.base_price || 0,
+            cost: meta.cogs || 0,
+            deco_type: '',
+            deco_cost: 0,
+            sizes: g.sizes,
+            image_url: artwork?.link || artwork?.thumbnail || '',
+          });
 
-        totalQty += productQty;
-        totalSales += productPaid;
+          totalQty += g.qty;
+          totalSales += g.paid;
+        });
       });
     });
 

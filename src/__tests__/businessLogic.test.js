@@ -557,6 +557,42 @@ describe('Job Building — buildJobs()', () => {
     };
     expect(BL.buildJobs(o)).toEqual([]);
   });
+
+  test('approved embroidery without prod files → upload_emb_files', () => {
+    const o = {
+      id: 'SO-100',
+      items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] }],
+      art_files: [{ id: 'a1', name: 'Logo', deco_type: 'embroidery', status: 'approved', prod_files: [] }]
+    };
+    expect(BL.buildJobs(o)[0].art_status).toBe('upload_emb_files');
+  });
+
+  test('approved DTF without prod files → order_dtf_transfers', () => {
+    const o = {
+      id: 'SO-100',
+      items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] }],
+      art_files: [{ id: 'a1', name: 'Logo', deco_type: 'dtf', status: 'approved', prod_files: [] }]
+    };
+    expect(BL.buildJobs(o)[0].art_status).toBe('order_dtf_transfers');
+  });
+
+  test('approved screen print without prod files stays production_files_needed', () => {
+    const o = {
+      id: 'SO-100',
+      items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] }],
+      art_files: [{ id: 'a1', name: 'Logo', deco_type: 'screen_print', status: 'approved', prod_files: [] }]
+    };
+    expect(BL.buildJobs(o)[0].art_status).toBe('production_files_needed');
+  });
+
+  test('approved embroidery with a .dst in files → art_complete (DST auto-detected)', () => {
+    const o = {
+      id: 'SO-100',
+      items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] }],
+      art_files: [{ id: 'a1', name: 'Logo', deco_type: 'embroidery', status: 'approved', prod_files: [], files: [{ name: 'logo.DST', url: 'http://x/logo.dst' }] }]
+    };
+    expect(BL.buildJobs(o)[0].art_status).toBe('art_complete');
+  });
 });
 
 // ═══════════════════════════════════════════════
@@ -600,6 +636,15 @@ describe('Job Readiness — isJobReady()', () => {
     const o = {
       items: [{ sizes: { S: 10 }, pick_lines: [], po_lines: [{ S: 10, received: { S: 10 } }] }],
       art_files: [{ id: 'a1', prod_files: ['sep.ai'] }]
+    };
+    expect(BL.isJobReady(j, o)).toBe(true);
+  });
+
+  test('embroidery ready via a .dst in files even without prod_files', () => {
+    const j = { art_status: 'art_complete', art_file_id: 'a1', items: [{ item_idx: 0 }] };
+    const o = {
+      items: [{ sizes: { S: 5 }, pick_lines: [{ S: 5, status: 'pulled' }], po_lines: [] }],
+      art_files: [{ id: 'a1', deco_type: 'embroidery', prod_files: [], files: [{ name: 'logo.dst' }] }]
     };
     expect(BL.isJobReady(j, o)).toBe(true);
   });
