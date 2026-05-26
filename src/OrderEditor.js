@@ -9,6 +9,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
+import QuickMockBuilder from './QuickMockBuilder';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
@@ -108,6 +109,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
   const[mergeMode,setMergeMode]=useState(null);// {selected:[jobIdx,...]} — select jobs to merge
   const[jobWizard,setJobWizard]=useState(null);// {groups: [{name,deco_type,items:[...]},...]} — Job Setup Wizard
+  const[mockBuilder,setMockBuilder]=useState(null);// {gi} — Quick Mock Builder open for jobWizard group index
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
   const[artRevisionNote,setArtRevisionNote]=useState('');
@@ -255,7 +257,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }catch(e){console.warn('[MT] Image fetch error for',sku,e.message)}
       }
       const result={front,back};
-      vendorImgCache.current[cacheKey]=result;
+      // Don't cache an empty result — a failed/blocked fetch should be retryable on the next request.
+      if(front||back)vendorImgCache.current[cacheKey]=result;
       setVendorImgs(prev=>({...prev,[cacheKey]:result}));
     }catch(e){console.warn('[Vendor] Image fetch failed for',sku,e)}
     finally{delete vendorImgFetching.current[cacheKey]}
@@ -3592,7 +3595,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // even if one source (e.g. a library copy saved before the seps were uploaded) is missing some.
       const _fKey=f=>typeof f==='string'?f:(f?.url||'');
       const _mergeFiles=(a=[],b=[])=>{const seen=new Set((a||[]).map(_fKey));const out=[...(a||[])];(b||[]).forEach(f=>{const k=_fKey(f);if(k&&!seen.has(k)){seen.add(k);out.push(f)}});return out};
-      const _pushArt=(art,meta)=>{const k=_dedupKey(art);
+      const _pushArt=(art,meta)=>{if(art.archived)return;const k=_dedupKey(art);
         if(_byKey.has(k)){const cur=_byKey.get(k);
           cur.prod_files=_mergeFiles(cur.prod_files,art.prod_files);
           cur.mockup_files=_mergeFiles(cur.mockup_files,art.mockup_files);
@@ -7123,10 +7126,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           let artStatus=allApproved&&allProdFiles?'art_complete':allApproved?prodFilesStatusFor(_actDeco):anyUploaded?'waiting_approval':'needs_art';
           // Skip artist — rep approved the art directly
           if(g.skipArtist&&activateAll){artStatus='art_complete'}
+          // Quick mock — rep built the mockup themselves; send to coach for approval,
+          // skipping the artist on the mockup phase. Artist still does separations after approval.
+          if(g.quickMock&&activateAll){artStatus='waiting_approval'}
           // When releasing for art with an assigned artist, create a proper art request
-          const hasArtist=activateAll&&g.artist&&!g.skipArtist;
+          const hasArtist=activateAll&&g.artist&&!g.skipArtist&&!g.quickMock;
           const allArtTbd=artIds.length===0||artIds.every(aid=>aid==='__tbd');
-          const autoArtRequest=activateAll&&!g.skipArtist&&artStatus==='needs_art'&&!allArtTbd;
+          const autoArtRequest=activateAll&&!g.skipArtist&&!g.quickMock&&artStatus==='needs_art'&&!allArtTbd;
           if(autoArtRequest)artStatus='art_requested';
           const totalUnits=releaseItems.reduce((a,it)=>a+it.units,0);
           const positions=[...new Set(releaseItems.map(it=>it.position))].join(', ');
@@ -7150,6 +7156,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             _released:activateAll?true:false,
             ...(g._merged?{_merged:true}:{}),
             created_at:new Date().toLocaleDateString(),
+            ...(g.quickMock&&activateAll?{sent_to_coach_at:new Date().toISOString(),quick_mock:true}:{}),
             assigned_artist:g.artist||'',
             rep_notes:g.notes||'',
             ...(autoArtRequest?{art_requests:[{id:'AR-'+Date.now()+'-'+gi,artist:g.artist||'',artist_name:artistObj?.name||'',instructions:g.notes||'Requested on release',files:g.files||[],status:'requested',created_at:new Date().toISOString(),created_by:cu?.name||'System',auto:false}]}:{}),
@@ -7183,12 +7190,47 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               });
             });
           }
+          // Quick mock: persist the rep-built mockups (per garment color) and the source art
+          // files onto the artwork records, then mark them pending the coach's approval.
+          if(g.quickMock&&activateAll){
+            const mocksByGarment=g.qmMocks||{};// {sku|color:[{url,name,sku}]}
+            const filesByLocation=g.qmFiles||{};// {artFileId:[{name,url,size,type}]}
+            const realArtIds=artIds.filter(aid=>aid&&aid!=='__tbd');
+            let targetIds=realArtIds;
+            // No real artwork record yet — create one so the mockups have somewhere to live.
+            if(targetIds.length===0){
+              const newAf={id:'af'+Date.now()+'-qm',name:g.name||'Quick Mock',deco_type:g.deco_type,ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],item_mockups:{},sample_art:[],prod_files:[],preview_url:'',notes:'',status:'needs_approval',uploaded:new Date().toLocaleDateString()};
+              updArtFiles=[...updArtFiles,newAf];
+              targetIds=[newAf.id];
+              nj.art_file_id=newAf.id;nj._art_ids=[newAf.id];
+            }
+            const primaryId=targetIds[0];
+            updArtFiles=updArtFiles.map(a=>{
+              if(!targetIds.includes(a.id))return a;
+              let upd={...a,status:'needs_approval'};
+              // Attach each location's source file to its own artwork so it persists for separations.
+              const locFiles=filesByLocation[a.id]||[];
+              if(locFiles.length>0)upd.files=[...(a.files||[]),...locFiles];
+              // Composite per-color mockups live on the job's primary artwork.
+              if(a.id===primaryId){
+                const im={...(a.item_mockups||{})};
+                Object.entries(mocksByGarment).forEach(([key,arr])=>{
+                  if(!arr||!arr.length)return;
+                  const tagged=arr.map(m=>({...m,art_file_id:primaryId}));
+                  im[key]=[...(im[key]||[]),...tagged];
+                });
+                upd.item_mockups=im;
+              }
+              return upd;
+            });
+          }
         });
         const updated={...o,jobs:[...preservedJobs,...newJobs],art_files:updArtFiles,updated_at:new Date().toLocaleString()};
         setO(updated);onSave(updated);setDirty(false);setJobWizard(null);
         const artSent=activateAll?newJobs.filter(j=>j.art_status==='art_requested'&&(j.art_requests||[]).length>0).length:0;
         const artSkipped=activateAll?newJobs.filter(j=>j.art_status==='art_complete').length:0;
-        const msgs=[];if(artSent>0)msgs.push(artSent+' art job'+(artSent!==1?'s':'')+' sent to Art Dashboard');if(artSkipped>0)msgs.push(artSkipped+' job'+(artSkipped!==1?'s':'')+' marked art complete');
+        const quickMocked=activateAll?newJobs.filter(j=>j.quick_mock).length:0;
+        const msgs=[];if(artSent>0)msgs.push(artSent+' art job'+(artSent!==1?'s':'')+' sent to Art Dashboard');if(quickMocked>0)msgs.push(quickMocked+' quick mock'+(quickMocked!==1?'s':'')+' sent to coach for approval');if(artSkipped>0)msgs.push(artSkipped+' job'+(artSkipped!==1?'s':'')+' marked art complete');
         if(heldItemCount>0)msgs.push(heldItemCount+' item'+(heldItemCount!==1?'s':'')+' kept on hold');
         nf(activateAll?(msgs.length>0?'Jobs released! '+msgs.join(', '):'Jobs released for art!'):'Draft jobs saved — activate when ready');
       };
@@ -7205,9 +7247,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#f1f5f9',border:'1px solid #cbd5e1',borderRadius:4,color:'#475569',fontWeight:600,cursor:'pointer'}} onClick={()=>setAll(false)}>Deselect All</button>
         </div>})()}
         {/* Single artist selector — applies to all non-skip groups in this submission */}
-        {(()=>{const nonSkip=jobWizard.groups.filter(g=>!g.skipArtist&&g.items.some(it=>!it._excluded));if(nonSkip.length===0)return null;const distinct=[...new Set(nonSkip.map(g=>g.artist||''))];const cur=distinct.length===1?distinct[0]:'';return<div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14,padding:10,background:'#faf5ff',borderRadius:6,border:'1px solid #e9d5ff'}}>
+        {(()=>{const nonSkip=jobWizard.groups.filter(g=>!g.skipArtist&&!g.quickMock&&g.items.some(it=>!it._excluded));if(nonSkip.length===0)return null;const distinct=[...new Set(nonSkip.map(g=>g.artist||''))];const cur=distinct.length===1?distinct[0]:'';return<div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14,padding:10,background:'#faf5ff',borderRadius:6,border:'1px solid #e9d5ff'}}>
           <div style={{fontSize:11,fontWeight:700,color:'#6d28d9',whiteSpace:'nowrap'}}>Artist *</div>
-          <select className="form-select" style={{fontSize:12,minWidth:220,flex:1,maxWidth:320}} value={cur} onChange={e=>{const v=e.target.value;setJobWizard(w=>({...w,groups:w.groups.map(g=>g.skipArtist?g:({...g,artist:v}))}))}}>
+          <select className="form-select" style={{fontSize:12,minWidth:220,flex:1,maxWidth:320}} value={cur} onChange={e=>{const v=e.target.value;setJobWizard(w=>({...w,groups:w.groups.map(g=>(g.skipArtist||g.quickMock)?g:({...g,artist:v}))}))}}>
             <option value="">Select artist...</option>
             {wizArtists.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
@@ -7264,19 +7306,39 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </tr>)}</tbody>
           </table>}
           {/* Per-job artist selection and notes */}
-          {g.items.length>0&&<div style={{marginTop:10,padding:10,background:g.skipArtist?'#f0fdf4':'white',borderRadius:6,border:'1px solid '+(g.skipArtist?'#86efac':'#e2e8f0')}}>
-            <div style={{marginBottom:8}}>
-              <label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:11,fontWeight:700,color:g.skipArtist?'#166534':'#475569'}}>
-                <input type="checkbox" checked={!!g.skipArtist} onChange={e=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],skipArtist:e.target.checked};setJobWizard({...jobWizard,groups:gs})}} style={{width:14,height:14,accentColor:'#166534'}}/>
-                Skip Artist — I already have approved artwork for this job
-              </label>
-              {g.skipArtist&&<div style={{fontSize:10,color:'#166534',marginTop:3,marginLeft:20}}>Art status will be set to complete. Upload sample art below if you have files to attach.</div>}
+          {g.items.length>0&&(()=>{const qmCount=Object.values(g.qmMocks||{}).filter(a=>(a||[]).length>0).length;const greenMode=g.skipArtist||g.quickMock;return<div style={{marginTop:10,padding:10,background:greenMode?'#f0fdf4':'white',borderRadius:6,border:'1px solid '+(greenMode?'#86efac':'#e2e8f0')}}>
+            <div style={{marginBottom:10}}>
+              <div style={{fontSize:10,fontWeight:800,color:'#64748b',marginBottom:5,textTransform:'uppercase',letterSpacing:0.4}}>How should art be handled for this job?</div>
+              <div style={{display:'flex',gap:6}}>
+                {[{k:'artist',label:'Send to Artist',desc:'Artist builds the mockup',accent:'#7c3aed',bg:'#faf5ff',txt:'#6d28d9'},
+                  {k:'skip',label:'Skip Artist',desc:'Art already approved',accent:'#16a34a',bg:'#f0fdf4',txt:'#166534'},
+                  {k:'quick',label:'⚡ Quick Mock',desc:"I'll build it myself",accent:'#16a34a',bg:'#f0fdf4',txt:'#166534'}].map(opt=>{
+                  const active=(opt.k==='skip'&&g.skipArtist)||(opt.k==='quick'&&g.quickMock)||(opt.k==='artist'&&!g.skipArtist&&!g.quickMock);
+                  return<button key={opt.k} type="button" onClick={()=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],skipArtist:opt.k==='skip',quickMock:opt.k==='quick'};setJobWizard({...jobWizard,groups:gs})}}
+                    style={{flex:1,padding:'8px 10px',borderRadius:8,border:'2px solid '+(active?opt.accent:'#e2e8f0'),background:active?opt.bg:'#fff',cursor:'pointer',textAlign:'left',transition:'all 0.12s'}}>
+                    <div style={{fontSize:12,fontWeight:800,color:active?opt.txt:'#475569'}}>{opt.label}</div>
+                    <div style={{fontSize:10,color:active?opt.accent:'#94a3b8',marginTop:1}}>{opt.desc}</div>
+                  </button>;
+                })}
+              </div>
             </div>
-            {!g.skipArtist&&<div>
+            {g.skipArtist&&<div style={{fontSize:10,color:'#166534',marginBottom:8,marginLeft:2}}>Art status will be set to complete. Upload sample art below if you have files to attach.</div>}
+            {g.quickMock&&<div style={{marginBottom:8,padding:10,background:'#f0fdf4',borderRadius:6,border:'1px solid #bbf7d0'}}>
+              <div style={{fontSize:10,color:'#166534',marginBottom:6}}>Build a mockup per garment color and send it straight to the coach for approval. Your source art stays on each artwork — the artist still makes separation files after approval.</div>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
+                  const seenImg=new Set();
+                  g.items.filter(it=>!it._excluded).forEach(it=>{const full=safeItems(o)[it.item_idx];if(!full)return;const k=(full.sku||'')+'|'+(full.color||'');if(seenImg.has(k))return;seenImg.add(k);fetchVendorImage(full.sku,full.color,full.vendor_id,full)});
+                  setMockBuilder({gi});
+                }}>{qmCount>0?'Edit Mockups':'⚡ Build Mockups'}</button>
+                {(()=>{const colors=[...new Set(g.items.filter(it=>!it._excluded).map(it=>it.sku+'|'+(it.color||'')))].length;return<span style={{fontSize:11,color:qmCount>0?'#166534':'#d97706',fontWeight:700}}>{qmCount}/{colors} color{colors===1?'':'s'} mocked{qmCount===0?' — none yet':''}</span>})()}
+              </div>
+            </div>}
+            {!g.skipArtist&&!g.quickMock&&<div>
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>Notes for Artist</div>
               <textarea className="form-input" rows={2} style={{fontSize:11,width:'100%',resize:'vertical'}} placeholder="Mockup details, color notes, placement instructions..." value={g.notes||''} onChange={e=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],notes:e.target.value};setJobWizard({...jobWizard,groups:gs})}}/>
             </div>}
-            <div style={{marginTop:6}}>
+            {!g.quickMock&&<div style={{marginTop:6}}>
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>Sample Art / Reference Files</div>
               {(()=>{const uploadFiles=async(fileList)=>{for(const f of Array.from(fileList||[])){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-requests');const gs=[...jobWizard.groups];gs[gi]={...gs[gi],files:[...(gs[gi].files||[]),{name:f.name,size:f.size,type:f.type,url}]};setJobWizard({...jobWizard,groups:gs})}catch(err){nf('Upload failed: '+err.message,'error')}}};
               return<div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',padding:'4px 6px',border:'1px dashed #cbd5e1',borderRadius:4,background:'#fafafa',transition:'border-color 0.15s, background 0.15s'}}
@@ -7287,8 +7349,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontSize:10,color:'#94a3b8'}}>or drop files here</span>
                 {(g.files||[]).map((f,fi)=><span key={fi} style={{fontSize:10,padding:'2px 6px',background:'#ede9fe',borderRadius:3,color:'#6d28d9',fontWeight:600,display:'flex',alignItems:'center',gap:3}}>{f.name}<button style={{background:'none',border:'none',color:'#dc2626',cursor:'pointer',fontSize:12,padding:0,lineHeight:1}} onClick={()=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],files:(gs[gi].files||[]).filter((_,i)=>i!==fi)};setJobWizard({...jobWizard,groups:gs})}}>×</button></span>)}
               </div>})()}
-            </div>
-          </div>}
+            </div>}
+          </div>})()}
         </div>)}
         <div style={{display:'flex',gap:6,marginBottom:16}}>
           <button className="btn btn-sm btn-secondary" onClick={()=>{
@@ -7296,15 +7358,45 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setJobWizard({...jobWizard,groups:gs});
           }}>+ Add Group</button>
         </div>
-        {(()=>{const activeGroups=jobWizard.groups.filter(g=>g.items.some(it=>!it._excluded));const allReady=activeGroups.length>0&&activeGroups.every(g=>g.skipArtist||g.artist);const notReady=!allReady;
+        {(()=>{const activeGroups=jobWizard.groups.filter(g=>g.items.some(it=>!it._excluded));const qmReady=g=>Object.values(g.qmMocks||{}).filter(a=>(a||[]).length>0).length>0;const allReady=activeGroups.length>0&&activeGroups.every(g=>g.skipArtist||(g.quickMock?qmReady(g):g.artist));const notReady=!allReady;const qmPending=activeGroups.some(g=>g.quickMock&&!qmReady(g));
           return<div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12,alignItems:'center'}}>
           <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534',fontWeight:800,opacity:notReady?0.5:1}} disabled={notReady}
             onClick={()=>wizActivate(jobWizard.groups,true)}>Release Jobs for Art</button>
           <button className="btn btn-secondary" style={{fontWeight:700}}
             onClick={()=>wizActivate(jobWizard.groups,false)}>Save as Drafts</button>
           <button className="btn btn-secondary" onClick={()=>setJobWizard(null)}>Cancel</button>
-          {notReady&&<span style={{fontSize:11,color:'#dc2626',fontWeight:600}}>Select an artist or mark "Skip Artist" for each job</span>}
+          {notReady&&<span style={{fontSize:11,color:'#dc2626',fontWeight:600}}>{qmPending?'Build at least one mockup for each Quick Mock job':'Select an artist, "Skip Artist", or "Quick Mock" for each job'}</span>}
         </div>})()}
+        {mockBuilder&&(()=>{
+          const g=jobWizard.groups[mockBuilder.gi];if(!g)return null;
+          const rel=g.items.filter(it=>!it._excluded);
+          const _back=full=>{const prd=products.find(pp=>pp.id===full?.product_id||pp.sku===full?.sku);return prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
+          const garments=[];const seenG=new Set();
+          rel.forEach(it=>{const key=it.sku+'|'+(it.color||'');if(seenG.has(key))return;seenG.add(key);const full=safeItems(o)[it.item_idx];const front=_itemImg(full),back=_back(full);const vendorItem=!!(full&&(isSSItem(full)||isSanMarItem(full)||isMomentecItem(full)));const vKey=(it.sku+'|'+(it.color||'')).toLowerCase();const pending=vendorItem&&!front&&vendorImgs[vKey]===undefined;garments.push({key,sku:it.sku,color:it.color||'',name:it.name||'',frontUrl:front,backUrl:back,pending})});
+          const locations=[];const seenL=new Set();
+          const _renderable=f=>{const u=typeof f==='string'?f:(f?.url||'');return !!u&&(_isImgUrl(u)||/\.svg(\?|$)/i.test(u))};
+          // One location per distinct artwork on the included items. An item can carry several
+          // art decorations (e.g. front + back), so scan the items' decorations rather than the
+          // group's single art reference — otherwise a second piece of art wouldn't show up.
+          rel.forEach(it=>{const full=safeItems(o)[it.item_idx];if(!full)return;
+            safeDecos(full).forEach(d=>{
+              if(d.kind!=='art'||!d.art_file_id||d.art_file_id==='__tbd')return;
+              const aid=d.art_file_id;if(seenL.has(aid))return;
+              const art=safeArt(o).find(a=>a.id===aid);
+              if(art&&art.deco_type&&art.deco_type!==g.deco_type)return;// keep this job's deco type only
+              seenL.add(aid);
+              // Source art a rep already attached lives in prod_files (Art Library uploads) and files.
+              const _onfile=(art?[...(art.files||[]),...(art.prod_files||[])]:[]).filter(f=>typeof f==='string'||f?.url);
+              const cand=[art?.preview_url,...(art?.mockup_files||[]),..._onfile].find(_renderable);
+              let preview=cand?{url:(typeof cand==='string'?cand:cand.url)}:null;
+              // No directly-renderable art on file — rasterize an on-file .ai/.eps/.pdf to PNG via Cloudinary.
+              if(!preview){const conv=[..._onfile,...(art?.mockup_files||[])].map(f=>typeof f==='string'?f:f?.url).find(u=>u&&u.includes('cloudinary.com')&&/\.(ai|eps|pdf)(\?|$)/i.test(u));if(conv){const png=_cloudinaryPdfThumb(conv);if(png)preview={url:png,vectorSrc:conv}}}
+              locations.push({artFileId:aid,name:art?.name||it.art_name||DECO_LABELS_W[g.deco_type]||g.name,position:d.position||'',existingFiles:_onfile,preview});
+            });});
+          return<QuickMockBuilder garments={garments} locations={locations} initialMocks={g.qmMocks} initialFiles={g.qmFiles} nf={nf}
+            onClose={()=>setMockBuilder(null)}
+            onSave={({mocksByGarment,filesByLocation})=>{const gs=[...jobWizard.groups];gs[mockBuilder.gi]={...gs[mockBuilder.gi],qmMocks:mocksByGarment,qmFiles:filesByLocation};setJobWizard({...jobWizard,groups:gs});setMockBuilder(null);nf('Mockups attached — release the job to send to the coach')}}/>;
+        })()}
       </div></div>;
 
       // Draft jobs banner
