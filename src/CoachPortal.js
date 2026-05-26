@@ -1,10 +1,10 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
-import { SZ_ORD, pantoneHex, NSA } from './constants';
+import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP } from './pricing';
-import { sendBrevoEmail, _brevoKey, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, getBillingContacts } from './utils';
+import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, getBillingContacts } from './utils';
 import { StripePaymentModal } from './modals';
 import { supabase } from './lib/supabase';
 
@@ -83,7 +83,7 @@ function CoachStore({ customer }) {
   );
 }
 
-function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs,onUpdateSOs,onUpdateEsts,savSOFn,portalSettings,dbSaveEstimate:_dbSaveEstimate}){
+function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs,onUpdateSOs,onUpdateEsts,savSOFn,portalSettings}){
   const _portalDisclaimer=portalSettings?.disclaimer||'';
   const[jobView,setJobView]=useState(null);
   const[invView,setInvView]=useState(null);
@@ -118,7 +118,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const ccDisabled=!!(customer.disable_cc_pay||(_parentForCC&&_parentForCC.disable_cc_pay));
   // Artwork awaiting coach approval — surface at top of portal
   const waitingArtJobs=allPortalJobs.filter(j=>j.art_status==='waiting_approval');
-  const artLabelsP={needs_art:'Art Needed',art_requested:'Art Requested',art_in_progress:'Art In Progress',waiting_approval:'Awaiting Your Approval',production_files_needed:'Finalizing Files',art_complete:'Approved'};
+  const artLabelsP={needs_art:'Art Needed',art_requested:'Art Requested',art_in_progress:'Art In Progress',waiting_approval:'Awaiting Your Approval',production_files_needed:'Art Approved — Waiting',art_complete:'Approved'};
   const prodLabelsP={hold:'On Hold',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
   const contactEmail=(customer.contacts||[])[0]?.email||'';
 
@@ -273,35 +273,47 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <span style={{fontWeight:800,fontSize:16}}>Estimated Total</span><span style={{fontWeight:800,fontSize:18,color:'#92400e'}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
             </div>
           </div>
-          {canApprove&&<button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',marginBottom:10}} onClick={()=>{
-            const _approvedEst={...est,status:'approved',approved_by:'Coach',approved_at:new Date().toISOString(),updated_at:new Date().toLocaleString()};
+          {canApprove&&<button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',marginBottom:10}} onClick={async()=>{
+            const _approvedAt=new Date().toISOString();const _updatedAt=new Date().toLocaleString();
+            const _approvedEst={...est,status:'approved',approved_by:'Coach',approved_at:_approvedAt,updated_at:_updatedAt};
             if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?_approvedEst:e))}
-            _dbSaveEstimate(_approvedEst);
             setEstView({...est,status:'approved'});
-            // Email the assigned rep when coach approves estimate
-            const rep=REPS.find(r=>r.id===est.created_by);
-            if(rep?.email&&_brevoKey){const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));sendBrevoEmail({to:[{email:rep.email}],cc:_accCc,subject:'✅ Estimate approved by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><p>This estimate is ready to be converted to a sales order.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:rep.email?{email:rep.email,name:rep.name}:undefined})}
+            // Email the assigned rep when coach approves estimate. Fall back to the
+            // customer's primary rep, then a monitored admin inbox, so a rep missing
+            // an email on file never silently swallows the approval notification.
+            const _apprRep=REPS.find(r=>r.id===est.created_by)||REPS.find(r=>r.id===customer.primary_rep_id);
+            const _apprTo=_apprRep?.email||'steve@nationalsportsapparel.com';
+            const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
+            // Persist via the serverless endpoint — the public portal's anon role can't write under RLS
+            const _res=await _portalAction({
+              estimates:[{id:est.id,status:'approved',approved_by:'Coach',approved_at:_approvedAt,updated_at:_updatedAt}],
+              email:{to:[{email:_apprTo}],cc:_accCc,subject:'✅ Estimate approved by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><p>This estimate is ready to be converted to a sales order.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:_apprRep?.email?{email:_apprRep.email,name:_apprRep.name}:undefined},
+            });
+            if(!_res.ok)alert('Could not save your approval — please try again or contact your rep.\n\n'+(_res.error||''));
           }}>✅ Approve This Estimate</button>}
           {canApprove&&<div style={{border:'1px solid #e2e8f0',borderRadius:10,padding:16,marginBottom:10}}>
             <div style={{fontSize:13,fontWeight:700,color:'#1e3a5f',marginBottom:8}}>Need changes? Request updates from your rep</div>
             {updateRequestSent?<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:600}}>Your update request has been sent to your rep!</div>
             :<>
               <textarea style={{width:'100%',border:'1px solid #d1d5db',borderRadius:8,padding:10,fontSize:13,resize:'vertical',minHeight:60,fontFamily:'inherit',boxSizing:'border-box'}} placeholder="Tell your rep what you'd like changed (sizes, items, pricing, etc.)..." value={updateRequestText} onChange={e=>setUpdateRequestText(e.target.value)} rows={3}/>
-              <button style={{width:'100%',marginTop:8,padding:'12px 20px',background:updateRequestText.trim()?'#d97706':'#e5e7eb',color:updateRequestText.trim()?'white':'#9ca3af',border:'none',borderRadius:10,fontSize:14,fontWeight:700,cursor:updateRequestText.trim()?'pointer':'not-allowed'}} disabled={!updateRequestText.trim()} onClick={()=>{
+              <button style={{width:'100%',marginTop:8,padding:'12px 20px',background:updateRequestText.trim()?'#d97706':'#e5e7eb',color:updateRequestText.trim()?'white':'#9ca3af',border:'none',borderRadius:10,fontSize:14,fontWeight:700,cursor:updateRequestText.trim()?'pointer':'not-allowed'}} disabled={!updateRequestText.trim()} onClick={async()=>{
                 if(!updateRequestText.trim())return;
                 const _reqText=updateRequestText.trim();
                 const req={id:'UR-'+Date.now(),text:_reqText,from:'Coach',at:new Date().toISOString(),status:'pending'};
-                const _updatedEst={...est,update_requests:[...(est.update_requests||[]),req],updated_at:new Date().toLocaleString()};
+                const _newReqs=[...(est.update_requests||[]),req];const _updatedAt=new Date().toLocaleString();
+                const _updatedEst={...est,update_requests:_newReqs,updated_at:_updatedAt};
                 if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?_updatedEst:e))}
-                _dbSaveEstimate(_updatedEst);
-                setEstView({...est,update_requests:[...(est.update_requests||[]),req]});
+                setEstView({...est,update_requests:_newReqs});
                 // Notify the assigned rep that the coach requested changes
                 const _urRep=REPS.find(r=>r.id===est.created_by)||REPS.find(r=>r.id===customer.primary_rep_id);
-                if(_urRep?.email&&_brevoKey){
-                  const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
-                  const _safeText=_reqText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br/>');
-                  sendBrevoEmail({to:[{email:_urRep.email}],cc:_accCc,subject:'📝 Estimate update requested by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><div style="margin:12px 0;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;color:#78350f"><div style="font-size:11px;font-weight:700;color:#92400e;text-transform:uppercase;margin-bottom:4px">Coach\'s request</div>'+_safeText+'</div><p>Please update the estimate and resend it to the coach.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:_urRep.email?{email:_urRep.email,name:_urRep.name}:undefined});
-                }
+                const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
+                const _safeText=_reqText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br/>');
+                // Persist via the serverless endpoint — the public portal's anon role can't write under RLS
+                const _res=await _portalAction({
+                  estimates:[{id:est.id,update_requests:_newReqs,updated_at:_updatedAt}],
+                  email:_urRep?.email?{to:[{email:_urRep.email}],cc:_accCc,subject:'📝 Estimate update requested by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><div style="margin:12px 0;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;color:#78350f"><div style="font-size:11px;font-weight:700;color:#92400e;text-transform:uppercase;margin-bottom:4px">Coach\'s request</div>'+_safeText+'</div><p>Please update the estimate and resend it to the coach.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:{email:_urRep.email,name:_urRep.name}}:undefined,
+                });
+                if(!_res.ok){alert('Could not send your request — please try again or contact your rep.\n\n'+(_res.error||''));return}
                 setUpdateRequestText('');setUpdateRequestSent(true);
               }}>Request Updates</button>
             </>}
@@ -435,7 +447,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                     <div style={{fontWeight:600,fontSize:13}}>{j.art_name}</div>
                     <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
                   </div>
-                  <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',color:j.art_status==='art_complete'?'#166534':j.art_status==='waiting_approval'?'#92400e':'#dc2626'}}>{artLabelsP[j.art_status]}</span>
+                  <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:(j.art_status==='art_complete'||j.art_status==='production_files_needed')?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',color:(j.art_status==='art_complete'||j.art_status==='production_files_needed')?'#166534':j.art_status==='waiting_approval'?'#92400e':'#dc2626'}}>{artLabelsP[j.art_status]}</span>
                   <span style={{color:'#94a3b8',fontSize:14}}>›</span>
                 </div>
               </div>})}
@@ -648,27 +660,56 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
                 const jArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
                 const coachComment=comment.trim();
-                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed',coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||undefined}:jj),art_files:safeArt(liveSO).map(a=>jArtIds.includes(a.id)?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
+                const _apDeco=(safeArt(liveSO).find(a=>jArtIds.includes(a.id))?.deco_type)||j.deco_type;const _apSt=prodFilesStatusFor(_apDeco);
+                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||undefined}:jj),art_files:safeArt(liveSO).map(a=>jArtIds.includes(a.id)?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 // Email the assigned rep
                 const rep=REPS.find(r=>r.id===liveSO.created_by);
                 const commentHtml=coachComment?'<p style="margin-top:12px;padding:10px 14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px"><strong>Coach\'s note:</strong> '+coachComment+'</p>':'';
-                if(rep?.email&&_brevoKey){const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));sendBrevoEmail({to:[{email:rep.email}],cc:_accCc,subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p>'+commentHtml+'<p>The job is now ready for production file prep.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:rep.email?{email:rep.email,name:rep.name}:undefined})}
-                setComment('');setJobView(null);
+                const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
+                // Persist via the serverless endpoint — the public portal's anon role can't write under RLS
+                const _res=await _portalAction({
+                  jobs:[{so_id:liveSO.id,id:j.id,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||null}],
+                  artFiles:jArtIds.map(aid=>({so_id:liveSO.id,id:aid,status:'approved'})),
+                  touchSO:liveSO.id,
+                  email:rep?.email?{to:[{email:rep.email}],cc:_accCc,subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p>'+commentHtml+'<p>The job is now ready for production file prep.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:{email:rep.email,name:rep.name}}:undefined,
+                });
+                if(!_res.ok){alert('Could not save your approval — please try again or contact your rep.\n\n'+(_res.error||''));return}
+                setComment('');// stay on the job view — it re-renders from live state to show the "approved" banner
               }}>✅ Approve Artwork</button>
-              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={()=>{
+              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={async()=>{
                 if(!comment.trim()){alert('Please describe what changes you need.');return}
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
-                const rej={reason:comment.trim(),by:'Coach',at:new Date().toISOString()};
+                const _fb=comment.trim();
+                const rej={reason:_fb,by:'Coach',at:new Date().toISOString()};
                 const rArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
-                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:[...(jj.rejections||[]),rej]}:jj),art_files:safeArt(liveSO).map(a=>rArtIds.includes(a.id)?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+comment.trim()}:a),updated_at:new Date().toLocaleString()};
+                const _curJob=(liveSO.jobs||safeJobs(liveSO)).find(jj=>jj.id===j.id);
+                const _newRejections=[...((_curJob&&_curJob.rejections)||[]),rej];
+                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:_newRejections}:jj),art_files:safeArt(liveSO).map(a=>rArtIds.includes(a.id)?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+_fb}:a),updated_at:new Date().toLocaleString()};
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
-                setComment('');setJobView(null);
+                const rep=REPS.find(r=>r.id===liveSO.created_by);
+                const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
+                const _safeText=_fb.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br/>');
+                const _res=await _portalAction({
+                  jobs:[{so_id:liveSO.id,id:j.id,art_status:'art_requested',coach_rejected:true,rejections:_newRejections}],
+                  artFiles:rArtIds.map(aid=>{const a=safeArt(liveSO).find(x=>x.id===aid);return{so_id:liveSO.id,id:aid,status:'waiting_for_art',notes:((a&&a.notes)?a.notes+'\n':'')+'Coach feedback: '+_fb}}),
+                  touchSO:liveSO.id,
+                  email:rep?.email?{to:[{email:rep.email}],cc:_accCc,subject:'📝 Art changes requested by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p><div style="margin:12px 0;padding:12px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#991b1b"><div style="font-size:11px;font-weight:700;color:#dc2626;text-transform:uppercase;margin-bottom:4px">Coach\'s feedback</div>'+_safeText+'</div><p>Please revise the artwork and resend it for approval.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:{email:rep.email,name:rep.name}}:undefined,
+                });
+                if(!_res.ok){alert('Could not send your request — please try again or contact your rep.\n\n'+(_res.error||''));return}
+                setComment('');// stay on the job view — it re-renders from live state to show the "changes requested" banner
               }}>❌ Request Changes</button>
             </div>
           </div>}
           {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&<div style={{background:'#f0fdf4',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#166534',fontWeight:600}}>✅ You approved this artwork{j.coach_approval_comment&&<div style={{fontWeight:400,marginTop:6,color:'#15803d'}}>Your note: "{j.coach_approval_comment}"</div>}</div>}
           {(j.art_status==='art_requested'&&j.coach_rejected)&&<div style={{background:'#fef2f2',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#dc2626',fontWeight:600}}>🔄 Changes requested — your artist is working on revisions</div>}
+          {(j.art_status==='art_complete'||j.art_status==='production_files_needed'||(j.art_status==='art_requested'&&j.coach_rejected))&&(()=>{
+            const _next=waitingArtJobs.find(w=>!(w.so&&w.so.id===so.id&&w.id===j.id));
+            return<div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
+              {_next&&<button style={{width:'100%',padding:'12px 16px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:14,fontWeight:800,cursor:'pointer'}} onClick={()=>{setSoView(_next.so);setJobView({job:_next,so:_next.so});setComment('')}}>Review next artwork ({waitingArtJobs.length} still need{waitingArtJobs.length===1?'s':''} approval) →</button>}
+              <button style={{width:'100%',padding:'12px 16px',background:'#1e3a5f',color:'white',border:'none',borderRadius:10,fontSize:14,fontWeight:700,cursor:'pointer'}} onClick={()=>{setJobView(null);setSoView(null);setComment('')}}>← Back to all artwork</button>
+            </div>;
+          })()}
           {j.prod_status!=='hold'&&<div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:16}}>
             <div style={{fontSize:10,color:'#64748b',fontWeight:600}}>PRODUCTION STATUS</div>
             <div style={{fontSize:14,fontWeight:700,color:'#1e40af',marginTop:2}}>{prodLabelsP[j.prod_status]||j.prod_status}</div>

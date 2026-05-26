@@ -3,27 +3,27 @@
 
 export const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
 export const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','deleted_at','promo_applied','promo_amount','update_requests','approved_by','approved_at','credit_applied','credit_amount'];
-export const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','deliver_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount','deco_pos','source','webstore_id'];
+export const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','deliver_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount','deco_pos','source','webstore_id','delivered','_omg_processing','_omg_shipping','_omg_tax','_omg_fundraise','_omg_grand_total'];
 // Session-only underscore fields (_ss_live, _colorImage, _sizeCosts, etc.) are
 // intentionally excluded — they're set by vendor inventory hooks and live in
 // React state only. Including them here would cause batch inserts to fail on
 // schemas that don't have those columns, and the retry-with-extras-stripped
 // path silently drops est_qty / qty_only along with them — losing user input.
-export const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','notes','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','qty_only','size_availability','is_footwear'];
+export const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','notes','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','est_qty','qty_only','size_availability','is_footwear'];
 export const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','vendor','deco_type','notes','custom_font_art_id','print_color','print_color_b','front_and_back','reversible','num_qty','name_qty','color_way_id','color_way_id_b'];
 // NOTE: names_list (jsonb) and _cost_locked (boolean) exist in DB but PostgREST schema cache hasn't picked them up yet — add back here once Supabase refreshes
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
-export const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','est_qty','qty_only','size_availability','notes','is_footwear']);
+export const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','est_qty','qty_only','size_availability','notes','is_footwear']);
 export const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','approved_by','approved_at','credit_applied','credit_amount']);
-export const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','deliver_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount','deco_pos']);
+export const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','deliver_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount','deco_pos','delivered']);
 export const _decoExtraCols=new Set(['print_color','print_color_b','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id','color_way_id_b','_cost_locked','names_list']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 export const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
 export const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members','entity_type','entity_id','thread_id'];
 export const _msgExtraCols=new Set(['tagged_members','entity_type','entity_id','thread_id']);
-export const _artCols=['id','name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','files','mockup_files','item_mockups','sample_art','prod_files','preview_url','notes','status','uploaded'];
+export const _artCols=['id','name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','files','mockup_files','item_mockups','sample_art','prod_files','preview_url','notes','status','archived','uploaded'];
 // Columns that may not exist in art file tables — stripped on retry
-export const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','color_ways','preview_url','sample_art','stitches']);
+export const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','color_ways','preview_url','sample_art','stitches','archived']);
 // Columns that may not exist in so_jobs — stripped on retry
 export const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','art_hidden','numbers_done']);
 export const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged','art_hidden','numbers_done'];
@@ -217,7 +217,7 @@ export const THREAD_COLORS={'cardinal':'#8C1515','navy':'#001f3f','gold':'#FFD70
 'denim':'#1560BD','indigo':'#4B0082','eggplant':'#614051','heather':'#B7A99A'};
 export const threadHex=(name)=>{if(!name)return null;const n=name.toLowerCase().trim();if(THREAD_COLORS[n])return THREAD_COLORS[n];const match=Object.entries(THREAD_COLORS).find(([k])=>n.includes(k)||k.includes(n));return match?match[1]:null};
 
-export const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes'];
+export const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes','b2b_url','b2b_username','b2b_password','catalog_files'];
 export const _firmDateCols=['item_desc','date','approved'];
 export const _issueCols=['id','status','description','priority','page','viewing','reported_by','role','timestamp','resolved_at','resolution'];
 export const _omgStoreCols=['id','store_name','customer_id','rep_id','status','open_date','close_date','orders','total_sales','fundraise_total','items_sold','unique_buyers','_omg_source','_omg_id','_omg_sale_code','_last_synced','subdomain','channel_type','_report_url','_report_id','_report_imported_at','_omg_shipping','_omg_processing','_omg_tax','_omg_fundraise','_omg_grand_total'];
@@ -270,7 +270,14 @@ export const NSA_DEFAULTS={name:'National Sports Apparel',legal:'National Sports
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
 export const NSA={...NSA_DEFAULTS};
 
-export const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',art_complete:'Art Complete'};
+export const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Art Approved — Waiting',order_dtf_transfers:'Order DTF Transfers',upload_emb_files:'Upload EMB Files',art_complete:'Art Complete'};
+// Post-approval production-file stage. Screen print etc. stay 'production_files_needed' (artist uploads seps);
+// embroidery/DTF get rep-owned statuses so they read clearly and filter on their own.
+export const PROD_FILES_STATUSES=['production_files_needed','order_dtf_transfers','upload_emb_files'];
+export const prodFilesStatusFor=(deco)=>deco==='dtf'?'order_dtf_transfers':deco==='embroidery'?'upload_emb_files':'production_files_needed';
+// A .dst IS the embroidery production file — if one is attached anywhere on the art, prod files are effectively done.
+export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.dst')};
+export const artProdFilesReady=(af)=>{if(!af)return false;if((af.prod_files||[]).length>0)return true;if((af.deco_type||'')==='embroidery')return(af.files||[]).some(isDstFile);return false};
 export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files'};
 export const ART_FILE_SC={waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'}};
 
@@ -324,12 +331,15 @@ export let CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Foot
 export const COLOR_CATEGORIES=['Black','White','Red','Navy','Royal','Dark Green','Cardinal','Maroon','Light Grey','Dark Grey','Vegas Gold','Athletic Gold','Orange'];
 
 export const EXTRA_SIZES=['XXS','XS','3XL','4XL','5XL','6XL','LT','XLT','2XLT','3XLT','OSFA'];
-// Footwear sizes — men's whole + half from 6 to 17
-export const FOOTWEAR_SIZES=['6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','12.5','13','13.5','14','14.5','15','15.5','16','16.5','17'];
+// Full apparel size pool for the "+ Size" picker — includes the standard S–2XL so a sized item that's
+// missing a core size (e.g. imported with only S/M/L) can have XL/2XL added back, not just the extra sizes.
+export const APPAREL_SIZES=['XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','LT','XLT','2XLT','3XLT','OSFA'];
+// Footwear sizes — men's whole + half from 4.5 to 17
+export const FOOTWEAR_SIZES=['4.5','5','5.5','6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','12.5','13','13.5','14','14.5','15','15.5','16','16.5','17'];
 export const FOOTWEAR_DEFAULT_SIZES=['8','8.5','9','9.5','10','10.5','11','11.5','12'];
 export const SZ_ORD=['YXS','YS','YM','YL','YXL','YOUTH','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','LT','XLT','2XLT','3XLT','OSFA',
   'XS-SM','S-M','SM-MD','MD-LG','L-XL','LG-XL','XL-2XL',
-  '6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','12.5','13','13.5','14','14.5','15','15.5','16','16.5','17',
+  '4.5','5','5.5','6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','12.5','13','13.5','14','14.5','15','15.5','16','16.5','17',
   '28','30','32','34','36','38','40','42','44','46','48','50','52','54'];
 export const SZ_NORM={'XXS':'XXS','2XS':'XXS','SM':'S','SML':'S','SMALL':'S','MD':'M','MED':'M','MEDIUM':'M','LG':'L','LRG':'L','LARGE':'L',
   'XLG':'XL','XLARGE':'XL','X-LARGE':'XL','XXL':'2XL','2X':'2XL','2XLARGE':'2XL','2X-LARGE':'2XL',
@@ -350,7 +360,7 @@ export const SC={
   // Job production statuses
   draft:{bg:'#fef9c3',c:'#a16207'},ready:{bg:'#dcfce7',c:'#166534'},staging:{bg:'#fef3c7',c:'#92400e'},in_process:{bg:'#dbeafe',c:'#1e40af'},completed:{bg:'#dcfce7',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'},
   // Job art statuses
-  needs_art:{bg:'#fef2f2',c:'#dc2626'},art_requested:{bg:'#fce7f3',c:'#be185d'},art_in_progress:{bg:'#dbeafe',c:'#1e40af'},waiting_approval:{bg:'#fef3c7',c:'#92400e'},production_files_needed:{bg:'#fef9c3',c:'#854d0e'},art_complete:{bg:'#dcfce7',c:'#166534'},
+  needs_art:{bg:'#fef2f2',c:'#dc2626'},art_requested:{bg:'#fce7f3',c:'#be185d'},art_in_progress:{bg:'#dbeafe',c:'#1e40af'},waiting_approval:{bg:'#fef3c7',c:'#92400e'},production_files_needed:{bg:'#fef9c3',c:'#854d0e'},order_dtf_transfers:{bg:'#cffafe',c:'#155e75'},upload_emb_files:{bg:'#ede9fe',c:'#6d28d9'},art_complete:{bg:'#dcfce7',c:'#166534'},
   // Art file statuses
   waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},
   // Legacy

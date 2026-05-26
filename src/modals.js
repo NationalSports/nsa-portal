@@ -8,6 +8,42 @@ import { Icon, Bg, calcSOStatus, SortHeader, PantoneAdder, SearchSelect } from '
 import { CONTACT_ROLES } from './pricing';
 import { invokeEdgeFn, getBillingContacts } from './utils';
 
+function VendorB2BPanel({vendor}){
+  const[showPw,setShowPw]=useState(false);
+  const copyToClip=(v,label)=>{try{navigator.clipboard?.writeText(v||'')}catch{}};
+  const catalogs=Array.isArray(vendor.catalog_files)?vendor.catalog_files:[];
+  return<div className="card" style={{marginBottom:16}}><div style={{padding:'14px 18px'}}>
+    <div style={{fontSize:11,fontWeight:800,color:'#475569',textTransform:'uppercase',letterSpacing:0.4,marginBottom:10}}>B2B Login &amp; Catalogs</div>
+    {(vendor.b2b_url||vendor.b2b_username||vendor.b2b_password)&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:catalogs.length>0?12:0}}>
+      {vendor.b2b_url&&<div>
+        <div style={{fontSize:10,color:'#94a3b8',fontWeight:600,textTransform:'uppercase',marginBottom:2}}>Login URL</div>
+        <a href={vendor.b2b_url} target="_blank" rel="noreferrer" style={{fontSize:12,color:'#1e40af',fontWeight:600,textDecoration:'none'}}>Open B2B portal ↗</a>
+      </div>}
+      {vendor.b2b_username&&<div>
+        <div style={{fontSize:10,color:'#94a3b8',fontWeight:600,textTransform:'uppercase',marginBottom:2}}>Username</div>
+        <div style={{display:'flex',gap:4,alignItems:'center'}}>
+          <span style={{fontSize:12,fontFamily:'monospace',background:'#f8fafc',padding:'2px 6px',borderRadius:4,border:'1px solid #e2e8f0'}}>{vendor.b2b_username}</span>
+          <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} title="Copy username" onClick={()=>copyToClip(vendor.b2b_username)}>📋</button>
+        </div>
+      </div>}
+      {vendor.b2b_password&&<div>
+        <div style={{fontSize:10,color:'#94a3b8',fontWeight:600,textTransform:'uppercase',marginBottom:2}}>Password</div>
+        <div style={{display:'flex',gap:4,alignItems:'center'}}>
+          <span style={{fontSize:12,fontFamily:'monospace',background:'#f8fafc',padding:'2px 6px',borderRadius:4,border:'1px solid #e2e8f0',minWidth:80}}>{showPw?vendor.b2b_password:'••••••••'}</span>
+          <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} title={showPw?'Hide':'Show'} onClick={()=>setShowPw(s=>!s)}>{showPw?'🙈':'👁️'}</button>
+          <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} title="Copy password" onClick={()=>copyToClip(vendor.b2b_password)}>📋</button>
+        </div>
+      </div>}
+    </div>}
+    {catalogs.length>0&&<div>
+      <div style={{fontSize:10,color:'#94a3b8',fontWeight:600,textTransform:'uppercase',marginBottom:6}}>Catalogs ({catalogs.length})</div>
+      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+        {catalogs.map((c,i)=><a key={i} href={c.url} target="_blank" rel="noreferrer" style={{display:'inline-flex',alignItems:'center',gap:6,padding:'6px 10px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,fontSize:12,color:'#1e40af',fontWeight:600,textDecoration:'none'}} title={c.name+(c.size?' — '+(c.size/1024/1024).toFixed(1)+' MB':'')}>📄 <span style={{maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.name}</span></a>)}
+      </div>
+    </div>}
+  </div></div>;
+}
+
 function VendDetail({vendor,products,onUpdateProducts,onBack}){
   const[syncing,setSyncing]=React.useState(false);
   const syncSSPricing=async()=>{
@@ -97,6 +133,7 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
     }}>{syncing?'Syncing...':'Sync Pricing Now'}</button>
   </div>}
   </div></div>
+  {(vendor.b2b_url||vendor.b2b_username||(vendor.catalog_files||[]).length>0)&&<VendorB2BPanel vendor={vendor}/>}
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{vendor._oi||0}</div></div><div className="stat-card"><div className="stat-label">Current</div><div className="stat-value" style={{color:'#166534'}}>${(vendor._ac||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">30 Day</div><div className="stat-value" style={{color:(vendor._a3||0)>0?'#d97706':''}}>${(vendor._a3||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">60+</div><div className="stat-value" style={{color:(vendor._a6||0)>0?'#dc2626':''}}>${((vendor._a6||0)+(vendor._a9||0)).toLocaleString()}</div></div></div>
   <div className="card"><div className="card-header"><h2>Purchase Orders</h2></div><div className="card-body"><div className="empty">PO tracking — Phase 4</div></div></div></div>)}
 
@@ -741,12 +778,30 @@ function QuoteForm({token,supabaseClient}){
 // ─── VENDOR MODAL (create / edit) ───
 
 function VendorModal({isOpen,onClose,onSave,vendor,allVendors}){
-  const baseV={id:null,name:'',vendor_type:'upload',api_provider:'',contact_name:'',contact_email:'',contact_phone:'',website:'',rep_name:'',payment_terms:'net30',nsa_carries_inventory:false,click_automation:false,invoice_scan_enabled:false,notes:'',is_active:true};
+  const baseV={id:null,name:'',vendor_type:'upload',api_provider:'',contact_name:'',contact_email:'',contact_phone:'',website:'',rep_name:'',payment_terms:'net30',nsa_carries_inventory:false,click_automation:false,invoice_scan_enabled:false,notes:'',is_active:true,b2b_url:'',b2b_username:'',b2b_password:'',catalog_files:[]};
   const[f,setF]=useState(baseV);
   const[err,setErr]=useState('');
-  useEffect(()=>{if(isOpen){setF(vendor?{...baseV,...vendor}:baseV);setErr('')}},[isOpen,vendor]);
+  const[showPw,setShowPw]=useState(false);
+  const[uploadingCatalog,setUploadingCatalog]=useState(false);
+  useEffect(()=>{if(isOpen){setF(vendor?{...baseV,...vendor,catalog_files:Array.isArray(vendor.catalog_files)?vendor.catalog_files:[]}:baseV);setErr('');setShowPw(false)}},[isOpen,vendor]);
   if(!isOpen)return null;
   const sv=(k,v)=>setF(x=>({...x,[k]:v}));
+  const uploadCatalog=async(file)=>{
+    if(!file)return;
+    if(file.size>25*1024*1024){setErr('Catalog file too large (max 25MB)');return}
+    setUploadingCatalog(true);setErr('');
+    try{
+      const CLOUDINARY_CLOUD=process.env.REACT_APP_CLOUDINARY_CLOUD;
+      const CLOUDINARY_PRESET=process.env.REACT_APP_CLOUDINARY_PRESET;
+      const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder','nsa-vendor-catalogs');
+      const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{method:'POST',body:fd});
+      const d=await r.json();
+      if(d.error)throw new Error(d.error.message);
+      setF(x=>({...x,catalog_files:[...(x.catalog_files||[]),{name:file.name,url:d.secure_url,size:file.size,uploaded_at:new Date().toISOString()}]}));
+    }catch(e){setErr('Catalog upload failed: '+e.message)}finally{setUploadingCatalog(false)}
+  };
+  const removeCatalog=(idx)=>setF(x=>({...x,catalog_files:(x.catalog_files||[]).filter((_,i)=>i!==idx)}));
+  const copyToClip=(v)=>{try{navigator.clipboard?.writeText(v||'')}catch{}};
   const save=()=>{
     const name=(f.name||'').trim();
     if(!name){setErr('Vendor name is required');return}
@@ -795,6 +850,47 @@ function VendorModal({isOpen,onClose,onSave,vendor,allVendors}){
         <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13}}><input type="checkbox" checked={!!f.click_automation} onChange={e=>sv('click_automation',e.target.checked)}/>Click automation enabled</label>
         <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13}}><input type="checkbox" checked={!!f.invoice_scan_enabled} onChange={e=>sv('invoice_scan_enabled',e.target.checked)}/>Invoice scan enabled</label>
         <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13}}><input type="checkbox" checked={f.is_active!==false} onChange={e=>sv('is_active',e.target.checked)}/>Active</label>
+      </div>
+      <div style={{marginTop:14,padding:12,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
+        <div style={{fontSize:11,fontWeight:800,color:'#475569',textTransform:'uppercase',letterSpacing:0.4,marginBottom:10}}>B2B Login &amp; Catalogs</div>
+        <div><label className="form-label">B2B Login URL</label>
+          <div style={{display:'flex',gap:6,alignItems:'center'}}>
+            <input className="form-input" value={f.b2b_url||''} onChange={e=>sv('b2b_url',e.target.value)} placeholder="https://b2b.vendor.com/login" style={{flex:1}}/>
+            {f.b2b_url&&<a href={f.b2b_url} target="_blank" rel="noreferrer" className="btn btn-sm btn-secondary" style={{fontSize:11,whiteSpace:'nowrap'}}>Open ↗</a>}
+          </div>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginTop:8}}>
+          <div><label className="form-label">B2B Username</label>
+            <div style={{display:'flex',gap:4}}>
+              <input className="form-input" value={f.b2b_username||''} onChange={e=>sv('b2b_username',e.target.value)} placeholder="username or email" style={{flex:1}} autoComplete="off"/>
+              {f.b2b_username&&<button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'4px 8px'}} title="Copy" onClick={()=>copyToClip(f.b2b_username)}>📋</button>}
+            </div>
+          </div>
+          <div><label className="form-label">B2B Password</label>
+            <div style={{display:'flex',gap:4}}>
+              <input className="form-input" type={showPw?'text':'password'} value={f.b2b_password||''} onChange={e=>sv('b2b_password',e.target.value)} placeholder="••••••••" style={{flex:1,fontFamily:showPw?'inherit':'monospace'}} autoComplete="new-password"/>
+              <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'4px 8px'}} title={showPw?'Hide':'Show'} onClick={()=>setShowPw(s=>!s)}>{showPw?'🙈':'👁️'}</button>
+              {f.b2b_password&&<button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'4px 8px'}} title="Copy" onClick={()=>copyToClip(f.b2b_password)}>📋</button>}
+            </div>
+          </div>
+        </div>
+        <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>⚠️ Visible to anyone with admin access to the portal — don't reuse personal passwords.</div>
+        <div style={{marginTop:12}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+            <label className="form-label" style={{margin:0}}>Catalogs (PDFs)</label>
+            <label className="btn btn-sm btn-secondary" style={{fontSize:11,cursor:uploadingCatalog?'wait':'pointer',margin:0}}>
+              {uploadingCatalog?'Uploading...':'+ Upload catalog'}
+              <input type="file" accept=".pdf,application/pdf" disabled={uploadingCatalog} onChange={e=>{const file=e.target.files?.[0];if(file)uploadCatalog(file);e.target.value=''}} style={{display:'none'}}/>
+            </label>
+          </div>
+          {(f.catalog_files||[]).length===0&&<div style={{padding:'10px 12px',fontSize:11,color:'#94a3b8',background:'white',border:'1px dashed #cbd5e1',borderRadius:6,textAlign:'center'}}>No catalogs uploaded yet</div>}
+          {(f.catalog_files||[]).map((c,i)=><div key={i} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6,marginBottom:4,fontSize:12}}>
+            <span style={{fontSize:14}}>📄</span>
+            <a href={c.url} target="_blank" rel="noreferrer" style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#1e40af',fontWeight:600,textDecoration:'none'}}>{c.name}</a>
+            {c.size>0&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{(c.size/1024/1024).toFixed(1)} MB</span>}
+            <button type="button" className="btn btn-sm" onClick={()=>removeCatalog(i)} style={{fontSize:10,padding:'2px 6px',background:'none',border:'1px solid #fecaca',color:'#dc2626'}} title="Remove">×</button>
+          </div>)}
+        </div>
       </div>
       <div style={{marginTop:12}}>
         <label className="form-label">Notes</label>

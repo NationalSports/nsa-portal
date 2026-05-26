@@ -976,5 +976,113 @@ const testMomentecConnection = async () => {
   catch (error) { console.error('[Momentec] Connection test failed:', error); return false; }
 };
 
+// ─── Cross-vendor SKU resolver (for order import fallback) ───
+// Given a style/SKU not found in the local catalog, query SanMar, S&S, and
+// Momentec in parallel and return the most complete normalized match, or null.
+// Used by the NetSuite order import to enrich line items that don't match an
+// existing catalog SKU. Returns { vendor, brand, name, color, rate } | null.
+const _scoreVendorHit = (h) => (h.brand ? 1 : 0) + (h.rate > 0 ? 1 : 0) + (h.color ? 1 : 0) + (h.name ? 1 : 0);
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection };
+const sanmarResolveSku = async (sku) => {
+  try {
+    const data = await sanmarGetProduct(String(sku).toUpperCase().trim());
+    const raw = (data?.items || []).find((r) => {
+      const bi = r.productBasicInfo || r; const pi = r.productPriceInfo || r;
+      return !!(bi.brandName) && parseFloat(pi.piecePrice || pi.casePrice || 0) > 0;
+    });
+    if (!raw) return null;
+    const bi = raw.productBasicInfo || {}; const pi = raw.productPriceInfo || {};
+    const it = { ...bi, ...pi, ...raw };
+    const brand = it.brandName || it.brand || '';
+    const title = it.productTitle || it.styleName || it.productDescription || '';
+    return {
+      vendor: 'SanMar',
+      brand,
+      name: (brand + ' ' + title).trim() || title,
+      color: it.catalogColor || it.color || it.colorName || '',
+      rate: parseFloat(it.piecePrice || it.pieceSalePrice || it.casePrice || 0) || 0,
+    };
+  } catch (e) { console.warn('[Import] SanMar resolve failed for', sku, e.message); return null; }
+};
+
+const ssResolveSku = async (sku) => {
+  try {
+    const styles = await ssApiCall('/Styles?search=' + encodeURIComponent(sku));
+    const sa = Array.isArray(styles) ? styles : styles ? [styles] : [];
+    if (!sa.length) return null;
+    const exact = sa.find((s) => String(s.partNumber || s.styleName || '').toLowerCase() === String(sku).toLowerCase()) || sa[0];
+    let prod = {};
+    if (exact.styleID) {
+      try {
+        const d = await ssApiCall('/Products/?style=' + encodeURIComponent(exact.styleID));
+        const items = Array.isArray(d) ? d : d ? [d] : [];
+        prod = items[0] || {};
+      } catch { /* product fetch optional */ }
+    }
+    const brand = exact.brandName || prod.brandName || '';
+    const title = exact.title || prod.styleName || String(sku);
+    return {
+      vendor: 'S&S',
+      brand,
+      name: exact.title || (brand ? (brand + ' ' + title).trim() : title),
+      color: prod.colorName || '',
+      rate: parseFloat(prod.customerPrice || prod.piecePrice || 0) || 0,
+    };
+  } catch (e) { console.warn('[Import] S&S resolve failed for', sku, e.message); return null; }
+};
+
+const momentecResolveSku = async (sku) => {
+  try {
+    const d = await momentecGetProductByPartNumber(sku).catch(() => null);
+    let e = d?.CatalogEntryView?.[0];
+    if (!e) {
+      const s = await momentecSearchProducts(sku, 10, 1).catch(() => null);
+      const entries = (s?.CatalogEntryView || []).filter((x) => String(x.partNumber || '').toLowerCase().startsWith(String(sku).toLowerCase()));
+      e = entries[0];
+    }
+    if (!e) return null;
+    let color = '';
+    const attrs = e.Attributes || e.attributes || e.definingAttributes || [];
+    if (Array.isArray(attrs)) {
+      for (const a of attrs) {
+        const n = (a.name || a.identifier || '').toLowerCase();
+        if (n === 'color' || n === 'colour' || n === 'asgswatchcolor') {
+          const vals = a.values || a.Values || [];
+          if (vals.length) { color = vals.map((v) => v.values || v.value || v.identifier || v).join('/'); break; }
+        }
+      }
+    }
+    let rate = 0;
+    const prices = e.Price || e.price || [];
+    if (prices.length) {
+      for (const p of prices) {
+        const u = (p.usage || p.priceUsage || '').toLowerCase();
+        const v = parseFloat(p.SKUPriceValue || p.priceValue || 0);
+        if (v > 0 && (u === 'offer' || u === 'sale')) { rate = v; break; }
+      }
+    }
+    return {
+      vendor: 'Momentec',
+      brand: e.manufacturer || 'Momentec',
+      name: e.title || e.name || String(sku),
+      color,
+      rate,
+    };
+  } catch (e) { console.warn('[Import] Momentec resolve failed for', sku, e.message); return null; }
+};
+
+const resolveSkuAcrossVendors = async (sku) => {
+  if (!sku) return null;
+  const results = await Promise.all([
+    sanmarResolveSku(sku),
+    ssResolveSku(sku),
+    momentecResolveSku(sku),
+  ]);
+  const hits = results.filter(Boolean);
+  if (!hits.length) return null;
+  hits.sort((a, b) => _scoreVendorHit(b) - _scoreVendorHit(a));
+  return hits[0];
+};
+
+
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, resolveSkuAcrossVendors };

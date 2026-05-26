@@ -60,8 +60,8 @@ function $In({value,onChange,w=70}){const[raw,setRaw]=React.useState(String(valu
 
 function EmailBadge({e}){if(!e.email_status)return null;const s=e.email_status;return<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,padding:'2px 8px',borderRadius:10,background:s==='sent'?'#fef3c7':s==='opened'?'#dbeafe':'#dcfce7',color:s==='sent'?'#92400e':s==='opened'?'#1e40af':'#166534'}}>{s==='sent'?'✉️ Sent':s==='opened'?`👁️ Opened ${e.email_opened_at||''}`:`🔗 Viewed`}</span>}
 
-function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_line1||c.shipping_city)a.push({id:c.id,label:`${l}: ${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''}`.trim(),addr:`${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''}`.trim()})};
-  const addAlts=(c)=>{(c.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city)).forEach(ab=>{a.push({id:c.id,label:`${ab.label||'Alt Shipping'}: ${ab.street||''} ${ab.city||''}, ${ab.state||''}`.trim(),addr:`${ab.street||''} ${ab.city||''}, ${ab.state||''}`.trim()})})};
+function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_line1||c.shipping_city)a.push({id:c.id,label:`${l}: ${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''} ${c.shipping_zip||''}`.trim(),addr:`${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''} ${c.shipping_zip||''}`.trim()})};
+  const addAlts=(c)=>{(c.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city)).forEach(ab=>{a.push({id:c.id,label:`${ab.label||'Alt Shipping'}: ${ab.street||''} ${ab.city||''}, ${ab.state||''} ${ab.zip||''}`.trim(),addr:`${ab.street||''} ${ab.city||''}, ${ab.state||''} ${ab.zip||''}`.trim()})})};
   if(!cu)return a;add(cu,'Default');addAlts(cu);if(cu.parent_id){const par=all.find(x=>x.id===cu.parent_id);if(par){add(par,par.alpha_tag);addAlts(par)}}
   return a}
 
@@ -271,6 +271,21 @@ function calcSOStatus(ord){
     if(shippedUnits>=totalJobUnits||!ord._shipments)return'complete';
     // Partial shipment — jobs marked shipped but units remain
     return isPromo?'complete':'ready_to_invoice';
+  }
+  // Delivery-preference orders: delivery is the terminal fulfillment step (the equivalent of
+  // shipping). Once production is done, all goods are in, and every deliverable is marked in the
+  // delivered map, the order is complete — it never passes through a 'shipped' job state.
+  const isDeliveryPref=ord.ship_preference==='warehouse_delivery'||ord.ship_preference==='deliver_on_date';
+  if(isDeliveryPref){
+    const dlv=ord.delivered||{};
+    const noActiveJobs=!hasJobs||allJobsDone;
+    const allJobsDelivered=boardJobs.every(j=>dlv['job|'+j.id]);
+    const noDecoDelivered=safeItems(ord).every((it,idx)=>{
+      if(!it.no_deco&&safeDecos(it).length>0)return true;
+      const units=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+      return units<=0||!!dlv['nd|'+idx];
+    });
+    if(noActiveJobs&&fulfilledSz>=totalSz&&allJobsDelivered&&noDecoDelivered)return'complete';
   }
   // No-deco orders: all items fulfilled → ready_to_invoice (or complete for promo)
   if(!hasAnyDeco&&!hasJobs&&fulfilledSz>=totalSz)return(ord.status==='complete'||isPromo)?'complete':'ready_to_invoice';
