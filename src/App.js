@@ -842,7 +842,7 @@ const _dbSaveEstimateInner = async (est) => {
       const _staleSkipped=art_files.length-_freshArt.length;
       if(_staleSkipped)console.warn('[DB]',_staleSkipped,'art file(s) for',est.id,'left untouched — DB copy is newer (concurrent edit)');
       if(_freshArt.length){
-        let afRows=_freshArt.map(a=>({..._pick(a,_artCols),estimate_id:est.id}));
+        let afRows=_freshArt.map(a=>({..._pick(a,_artCols),archived:!!a.archived,estimate_id:est.id}));
         const{error:afErr}=await supabase.from('estimate_art_files').upsert(afRows,{onConflict:'estimate_id,id'});
         if(afErr){
           if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
@@ -1168,7 +1168,7 @@ const _dbSaveSOInner = async (so) => {
       const _staleSkipped=art_files.length-_freshArt.length;
       if(_staleSkipped)console.warn('[DB]',_staleSkipped,'art file(s) for',so.id,'left untouched — DB copy is newer (concurrent edit)');
       if(_freshArt.length){
-        let soAfRows=_freshArt.map(a=>({..._pick(a,_artCols),so_id:so.id}));
+        let soAfRows=_freshArt.map(a=>({..._pick(a,_artCols),archived:!!a.archived,so_id:so.id}));
         const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
         if(afErr){
           if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
@@ -1343,7 +1343,7 @@ const _dbSaveArtFilesInner = async (so) => {
     if(art_files.length){
       const _freshArt=art_files.filter(a=>{const dbv=_dbAfVerById.get(a.id);return dbv==null||(a._version||0)>=dbv});
       if(_freshArt.length){
-        const soAfRows=_freshArt.map(a=>({..._pick(a,_artCols),so_id:so.id}));
+        const soAfRows=_freshArt.map(a=>({..._pick(a,_artCols),archived:!!a.archived,so_id:so.id}));
         const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
         if(afErr){
           if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
