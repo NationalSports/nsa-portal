@@ -7513,7 +7513,7 @@ export default function App(){
   const[prodJobLightbox,setProdJobLightbox]=useState(false);// lightbox for mockup image
   const[prodLightboxIdx,setProdLightboxIdx]=useState(0);// index of current mockup in lightbox gallery
   const[prodLightboxZoom,setProdLightboxZoom]=useState(1);// zoom level for lightbox
-  const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
+  const[prodView,_setProdView]=useState(()=>loadState('prod_view','board'));const setProdView=v=>{_setProdView(v);try{localStorage.setItem('nsa_prod_view',JSON.stringify(v))}catch(e){}};const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
   const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');const[prodDecoF,setProdDecoF]=useState('all');
   const PROD_LIST_DEFAULT_COLS=['status','job','customer','expected','qty','deco','rep','so','actions'];
   const[prodListCols,_setProdListCols]=useState(()=>loadState('prod_list_cols',PROD_LIST_DEFAULT_COLS));
@@ -7795,7 +7795,7 @@ export default function App(){
     const readyOnly=byDeco.filter(j=>(j.prod_status!=='hold'||isJobReady(j,j.so))).filter(j=>j.prod_status!=='shipped');
     // Decorator filtering: decorators see all Ready for Prod, but only their assigned jobs in In Line/In Process/Completed
     const roleFiltered=isDecorator?readyOnly.filter(j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'||j.assigned_to===cu?.name):readyOnly;
-    const byStatus=prodStatF==='active'?roleFiltered:prodStatF==='all'?roleFiltered:prodStatF==='hold'?roleFiltered.filter(j=>j.prod_status==='hold'||j.prod_status==='ready'):roleFiltered.filter(j=>j.prod_status===prodStatF);
+    const byStatus=prodStatF==='active'?roleFiltered.filter(j=>j.prod_status!=='completed'):prodStatF==='all'?roleFiltered:prodStatF==='hold'?roleFiltered.filter(j=>j.prod_status==='hold'||j.prod_status==='ready'):roleFiltered.filter(j=>j.prod_status===prodStatF);
     const totalUnits=byStatus.reduce((a,j)=>a+j.total_units,0);
     const fulfilledUnits=byStatus.reduce((a,j)=>a+j.fulfilled_units,0);
     const needsArt=byStatus.filter(j=>j.art_status!=='art_complete').length;
