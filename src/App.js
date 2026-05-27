@@ -7489,6 +7489,7 @@ export default function App(){
   const[artDashView,setArtDashView]=useState('artist');// 'artist' | 'rep'
   const[artCompletedOpen,setArtCompletedOpen]=useState(false);// toggle completed jobs dropdown
   const[artHiddenOpen,setArtHiddenOpen]=useState(false);// toggle hidden jobs dropdown
+  const[artInProductionOpen,setArtInProductionOpen]=useState(false);// toggle in-production jobs dropdown
   const[artCompletedSearch,setArtCompletedSearch]=useState('');// search within completed jobs
   const[artRejectModal,setArtRejectModal]=useState(null);// {job, reason:''}
   const[artEditModal,setArtEditModal]=useState(null);// {job, instructions:'', notes:''}
@@ -16787,9 +16788,11 @@ export default function App(){
       {id:'waiting_for_art',label:'Waiting for Art',color:'#dc2626',bg:'#fef2f2',desc:'Needs artist attention'},
       {id:'needs_approval',label:'Needs Approval',color:'#92400e',bg:'#fef3c7',desc:'Waiting for rep/customer approval'},
       {id:'approved',label:'Approved / Needs Files',color:'#166534',bg:'#dcfce7',desc:'Approved — upload production files'},
-      {id:'in_production',label:'In Production',color:'#2563eb',bg:'#eff6ff',desc:'Art done — being decorated'},
     ];
-    const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=c.id==='in_production'?inProductionJobs.length:artistJobs.filter(j=>getArtFileStatus(j)===c.id).length});
+    const inProductionCol={id:'in_production',label:'In Production',color:'#2563eb',bg:'#eff6ff',desc:'Art done — being decorated'};
+    const sortByDaysOut=(a,b)=>{if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0};
+    const sortedInProductionJobs=[...inProductionJobs].sort(sortByDaysOut);
+    const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=artistJobs.filter(j=>getArtFileStatus(j)===c.id).length});
 
     // ─── Rep view data — all jobs grouped by rep ───
     const repJobs=filtered.filter(j=>!j.art_hidden).filter(j=>artDashView==='rep'?(cu.role==='admin'||cu.role==='super_admin'||j.repId===cu.id||artFilter!=='all'):true);
@@ -16976,16 +16979,12 @@ export default function App(){
       {artDashView==='artist'&&<>
         <div className="stats-row">
           {artistCols.map(c=><div key={c.id} className="stat-card"><div className="stat-label">{c.label}</div><div className="stat-value" style={{color:c.color}}>{artistCounts[c.id]}</div></div>)}
+          <div className="stat-card"><div className="stat-label">{inProductionCol.label}</div><div className="stat-value" style={{color:inProductionCol.color}}>{inProductionJobs.length}</div></div>
           <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value">{artistJobs.length+inProductionJobs.length}</div></div>
         </div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:10,alignItems:'flex-start'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:10,alignItems:'flex-start'}}>
           {artistCols.map(col=>{
-            const colJobs=col.id==='in_production'?inProductionJobs.sort((a,b)=>{
-              if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;
-              if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0})
-              :artistJobs.filter(j=>getArtFileStatus(j)===col.id).sort((a,b)=>{
-              if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;
-              if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0});
+            const colJobs=artistJobs.filter(j=>getArtFileStatus(j)===col.id).sort(sortByDaysOut);
             return<div key={col.id} style={{background:col.bg,borderRadius:10,padding:8,minHeight:200}}>
               <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'4px 6px'}}>
                 <div style={{width:10,height:10,borderRadius:5,background:col.color}}/>
@@ -16997,8 +16996,24 @@ export default function App(){
             </div>})}
         </div>
 
-        {/* ═══ COMPLETED JOBS — collapsible reference section ═══ */}
+        {/* ═══ IN PRODUCTION — collapsible section (art done, being decorated) ═══ */}
         <div style={{marginTop:16}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:inProductionCol.bg,borderRadius:artInProductionOpen?'10px 10px 0 0':'10px',border:'1px solid #bfdbfe',cursor:'pointer'}} onClick={()=>setArtInProductionOpen(v=>!v)}>
+            <span style={{fontSize:16,color:inProductionCol.color,transform:artInProductionOpen?'rotate(90deg)':'rotate(0deg)',transition:'transform 0.2s'}}>&#9654;</span>
+            <span style={{fontSize:13,fontWeight:800,color:inProductionCol.color}}>{inProductionCol.label}</span>
+            <span style={{fontSize:11,fontWeight:700,color:inProductionCol.color,background:'white',borderRadius:10,padding:'1px 8px'}}>{sortedInProductionJobs.length}</span>
+            <span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>{inProductionCol.desc}</span>
+          </div>
+          {artInProductionOpen&&<div style={{border:'1px solid #bfdbfe',borderTop:'none',borderRadius:'0 0 10px 10px',padding:12,background:'white'}}>
+            {sortedInProductionJobs.length===0&&<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:11}}>No jobs in production</div>}
+            {sortedInProductionJobs.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:8}}>
+              {sortedInProductionJobs.map(j=>renderArtCard(j,'artist',inProductionCol))}
+            </div>}
+          </div>}
+        </div>
+
+        {/* ═══ COMPLETED JOBS — collapsible reference section ═══ */}
+        <div style={{marginTop:8}}>
           <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:'#f8fafc',borderRadius:artCompletedOpen?'10px 10px 0 0':'10px',border:'1px solid #e2e8f0',cursor:'pointer'}} onClick={()=>setArtCompletedOpen(v=>!v)}>
             <span style={{fontSize:16,transform:artCompletedOpen?'rotate(90deg)':'rotate(0deg)',transition:'transform 0.2s'}}>&#9654;</span>
             <span style={{fontSize:13,fontWeight:800,color:'#475569'}}>Completed Jobs</span>
