@@ -139,7 +139,7 @@ function buildPackingLists(store, label, groups) {
 function webstoreToShipStation(order, items, store) {
   const a = order.ship_address || {};
   return {
-    orderNumber: 'WS-' + String(order.id).slice(0, 8), orderKey: 'ws-' + order.id,
+    orderNumber: 'WS-' + order.id, orderKey: 'ws-' + order.id,
     orderDate: order.created_at, orderStatus: 'awaiting_shipment',
     customerUsername: store.name, customerEmail: order.buyer_email || '',
     billTo: { name: order.buyer_name || a.name || 'Customer' },
