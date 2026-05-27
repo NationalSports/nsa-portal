@@ -18,7 +18,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
-import { calcOrderTotals } from './pricing';
+import { calcOrderTotals, auTierDisc } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
@@ -139,6 +139,7 @@ const AiOrderWizard = lazyRetry(() => import('./AiOrderWizard').then(m => ({ def
 const AiInventoryPoWizard = lazyRetry(() => import('./AiInventoryPoWizard').then(m => ({ default: m.AiInventoryPoWizard })));
 const CustDetail = lazyRetry(() => import('./CustDetail'));
 const CoachPortal = lazyRetry(() => import('./CoachPortal'));
+const Webstores = lazyRetry(() => import('./Webstores'));
 const SalesHistory = lazyRetry(() => import('./SalesHistory'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
@@ -586,7 +587,7 @@ const _dbLoad = async (opts={}) => {
     const is404=r=>r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204');
     const errs=coreResults.filter(({r})=>r.error&&!is404(r)&&r.status!==0);
     const fetchErrs=coreResults.filter(({r})=>r.status===0);// network/CORS failures already logged by _safeQuery
-    if(errs.length){console.error('[DB] Load errors:',errs.map(({n,r})=>`${n}: ${r.error.message}`));return null}
+    if(errs.length){console.error('[DB] Load errors:',errs.map(({n,r})=>`${n}: ${r.error.message}`));if(errs.some(({r})=>_isAuthError(r.error)))_recoverSession();return null}
     if(fetchErrs.length&&!errs.length){return null}// silently return null — _safeQuery already logged the fetch error
     // Helper: return data or empty array (safe for 404 / missing tables)
     const d=r=>r.data||[];
@@ -625,7 +626,7 @@ const _dbLoad = async (opts={}) => {
     const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});const _pimg=_pimgMap[p.id];return{...p,image_url:p.image_url||p.image_front_url||(_pimg&&_pimg.front)||'',back_image_url:p.back_image_url||p.image_back_url||(_pimg&&_pimg.back)||'',images:p.images||(_pimg&&_pimg.gallery)||[],_sizeCosts:(p.size_costs&&Object.keys(p.size_costs).length)?p.size_costs:undefined,_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
-      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,uploaded:a.uploaded,_version:a._version}));
+      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
       const items=estItems.filter(i=>i.estimate_id===est.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
         const decorations=estDecos.filter(d=>d.estimate_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,estimate_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
         const{id:_,estimate_id:__,item_index:___,...rest}=item;return{...rest,decorations}});
@@ -634,10 +635,32 @@ const _dbLoad = async (opts={}) => {
       return{...est,items,art_files,_itemsHydrated:!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
-      const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,uploaded:a.uploaded,_version:a._version}));
+      // Recycled-number carry-over guard: a reused SO id can inherit jobs/art from the order that
+      // previously held it (e.g. after a purge/re-import). Such children were created before this SO's
+      // row existed, so a job whose created_at predates the SO's created_at (24h margin to absorb clock
+      // skew) is stale carry-over — drop it from state so it can't surface on the art dashboard / order
+      // or get re-saved. Drop an art file too when it's referenced only by such carry-over jobs and by no
+      // live decoration. Fail safe (keep) whenever a date is missing/unparseable.
+      const _soCreatedMs=(()=>{const t=Date.parse(so.created_at);return Number.isNaN(t)?null:t})();
+      const _isCarryJob=ca=>{if(_soCreatedMs==null)return false;const t=Date.parse(ca);if(Number.isNaN(t))return false;return t<_soCreatedMs-864e5;};
+      const _myItemIds=new Set(soItems.filter(i=>i.so_id===so.id).map(i=>i.id));
+      const _liveArtIds=new Set(soDecos.filter(d=>_myItemIds.has(d.so_item_id)&&d.art_file_id).map(d=>d.art_file_id));
+      const _rawJobs=soJobs.filter(j=>j.so_id===so.id);
+      const _carryArtIds=new Set();
+      _rawJobs.forEach(j=>{if(_isCarryJob(j.created_at))(Array.isArray(j._art_ids)&&j._art_ids.length?j._art_ids:[j.art_file_id]).forEach(aid=>{if(aid)_carryArtIds.add(aid)})});
+      const art_files=soArt.filter(a=>a.so_id===so.id&&!(_carryArtIds.has(a.id)&&!_liveArtIds.has(a.id))).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
       const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
-      const jobs=soJobs.filter(j=>j.so_id===so.id).map(j=>{const{so_id:_,...rest}=j;return rest});
-      const items=soItems.filter(i=>i.so_id===so.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
+      const jobs=_rawJobs.filter(j=>!_isCarryJob(j.created_at)).map(j=>{const{so_id:_,...rest}=j;return rest});
+      // Dedup orphaned duplicate so_items sharing an item_index. These arise when an "insert-new-then-delete-old"
+      // save swap was interrupted after the child (deco/pick) deletes but before the parent so_items delete — leaving
+      // an empty phantom row alongside the real one. If both reach the client the phantom can land at the canonical
+      // index and trip the per-item decoration safety guard ("had N decos in DB but client has 0"), blocking every
+      // subsequent save. Keep, per item_index, the row carrying the most children (the real one; newest id breaks ties).
+      const _soItemsRaw=soItems.filter(i=>i.so_id===so.id);
+      const _itemChildCount=it=>soDecos.filter(d=>d.so_item_id===it.id).length+soPicks.filter(p=>p.so_item_id===it.id).length+soPOs.filter(p=>p.so_item_id===it.id).length;
+      const _itemByIdx=new Map();
+      _soItemsRaw.forEach(it=>{const cur=_itemByIdx.get(it.item_index);if(!cur){_itemByIdx.set(it.item_index,it);return}const a=_itemChildCount(it),b=_itemChildCount(cur);if(a>b||(a===b&&it.id>cur.id))_itemByIdx.set(it.item_index,it)});
+      const items=[..._itemByIdx.values()].sort((a,b)=>a.item_index-b.item_index).map(item=>{
         const decorations=soDecos.filter(d=>d.so_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,so_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
         const pick_lines=soPicks.filter(pk=>pk.so_item_id===item.id).map(pk=>{const{id:_,so_item_id:__,...rest}=pk;const sizes=rest.sizes||{};delete rest.sizes;return{...rest,...sizes}});
         const po_lines=soPOs.filter(po=>po.so_item_id===item.id).map(po=>{const{id:_,so_item_id:__,...rest}=po;const sizes=rest.sizes||{};delete rest.sizes;
@@ -687,7 +710,7 @@ const _dbLoad = async (opts={}) => {
     // Messages: attach read_by array and parse tagged_members
     const messages=msgRaw.map(m=>{const tm=m.tagged_members;const mapped={...m,text:m.body||m.text,ts:m.created_at||m.ts};delete mapped.body;return{...mapped,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
-    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>{const dt=(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||''}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,_artwork:p._artwork||[]}})}));
+    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>{const noDeco=p.deco_type==='no_deco';const dt=noDeco?[]:(p.deco_type||'').split('|').filter(Boolean);const ag=(p.art_group||'').split('|');const ci=(p.art_cust_ids||'').split('|');const decorations=dt.map((t,i)=>({type:t,art_group:ag[i]||'',...(ci[i]?{_cust_art_id:ci[i]}:{})}));return{sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',_cost_source:p._cost_source||'',vendor_id:p.vendor_id||'',art_group:p.art_group||'',decorations,no_deco:noDeco,art_ready:!!p.art_ready,_artwork:p._artwork||[]}})}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
     // True if any SO/estimate child-row query timed out — used to skip polls and warn on initial load
@@ -737,7 +760,7 @@ const _dbSeed = async (d) => {
   // Seed OMG stores
   if(d.omg_stores?.length){
     await supabase.from('omg_stores').upsert(d.omg_stores.map(s=>_pick(s,_omgStoreCols)),{onConflict:'id'});
-    const allProds=[];d.omg_stores.forEach(s=>(s.products||[]).forEach(p=>allProds.push({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes,image_url:p.image_url||'',manufacturer:p.manufacturer||''})));
+    const allProds=[];d.omg_stores.forEach(s=>(s.products||[]).forEach(p=>allProds.push({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes,image_url:p.image_url||'',manufacturer:p.manufacturer||'',art_ready:!!p.art_ready,art_cust_ids:(p.decorations||[]).map(d=>d._cust_art_id||'').join('|')})));
     if(allProds.length) await supabase.from('omg_store_products').upsert(allProds,{onConflict:'store_id,sku'});
   }
 };
@@ -832,7 +855,7 @@ const _dbSaveEstimateInner = async (est) => {
       const _staleSkipped=art_files.length-_freshArt.length;
       if(_staleSkipped)console.warn('[DB]',_staleSkipped,'art file(s) for',est.id,'left untouched — DB copy is newer (concurrent edit)');
       if(_freshArt.length){
-        let afRows=_freshArt.map(a=>({..._pick(a,_artCols),estimate_id:est.id}));
+        let afRows=_freshArt.map(a=>({..._pick(a,_artCols),archived:!!a.archived,estimate_id:est.id}));
         const{error:afErr}=await supabase.from('estimate_art_files').upsert(afRows,{onConflict:'estimate_id,id'});
         if(afErr){
           if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
@@ -1158,7 +1181,7 @@ const _dbSaveSOInner = async (so) => {
       const _staleSkipped=art_files.length-_freshArt.length;
       if(_staleSkipped)console.warn('[DB]',_staleSkipped,'art file(s) for',so.id,'left untouched — DB copy is newer (concurrent edit)');
       if(_freshArt.length){
-        let soAfRows=_freshArt.map(a=>({..._pick(a,_artCols),so_id:so.id}));
+        let soAfRows=_freshArt.map(a=>({..._pick(a,_artCols),archived:!!a.archived,so_id:so.id}));
         const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
         if(afErr){
           if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
@@ -1187,7 +1210,7 @@ const _dbSaveSOInner = async (so) => {
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+fdErr.message)}}
     if(!items?.length){
-      if(saveFailed){_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
+      if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
       // Intentional removal of all items (validated by the safety guards above). Since we no longer delete
       // upfront, remove the old item rows and their children here.
       if(oldItemIds.length){
@@ -1311,14 +1334,51 @@ const _dbSaveSOInner = async (so) => {
     if(finalUpdatedAt!==existingSO?.updated_at){
       await supabase.from('sales_orders').update({updated_at:finalUpdatedAt}).eq('id',so.id);
     }
-    if(saveFailed){_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
+    if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
     _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();
     // Bump local version to match server (DB trigger increments on UPDATE)
     if(so._version)so._version=so._version+1;
     return true;
-  }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
+  }catch(e){console.error('[DB] save SO:',e);if(_isAuthError(e))return _handleAuthSaveFailure(so.id);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
+// Lightweight save for art-file-only edits (add/remove/tag a mockup or production file). Syncs ONLY so_art_files —
+// never deletes/reinserts items, decorations, or PO lines — so a simple file change can't trip the order-save
+// data-loss guards or partially re-persist line items. Mirrors the art_files sync in _dbSaveSOInner.
+const _dbSaveArtFilesInner = async (so) => {
+  if(!supabase)return false;
+  return _dbSavingGuard(async()=>{try{
+    const art_files=so.art_files;
+    if(!Array.isArray(art_files))return true;// nothing hydrated to sync
+    const{data:_dbAf,error:_dbAfErr}=await _retryNet(()=>supabase.from('so_art_files').select('id,_version').eq('so_id',so.id));
+    if(_dbAfErr){console.error('[DB] so_art_files read failed:',_dbAfErr.message);if(_dbNotify)_dbNotify('Could not save artwork file change: '+_dbAfErr.message,'error');return false}
+    const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
+    if(art_files.length){
+      const _freshArt=art_files.filter(a=>{const dbv=_dbAfVerById.get(a.id);return dbv==null||(a._version||0)>=dbv});
+      if(_freshArt.length){
+        const soAfRows=_freshArt.map(a=>({..._pick(a,_artCols),archived:!!a.archived,so_id:so.id}));
+        const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
+        if(afErr){
+          if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
+            const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
+            const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
+            if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+afErr2.message,'error');return false}
+          }else{console.error('[DB] so_art_files upsert failed:',afErr.message);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+afErr.message,'error');return false}
+        }
+        _freshArt.forEach(a=>{a._version=(a._version||0)+1});
+      }
+      const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
+      const _knownArtIds=new Set(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]);
+      const toDeleteAf=(_dbAf||[]).filter(ea=>!currentAfIds.has(ea.id)&&_knownArtIds.has(ea.id)).map(ea=>ea.id);
+      if(toDeleteAf.length)await _retryNet(()=>supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',toDeleteAf));
+    }else if(so._artHydrated!==false){
+      const _knownArtIds=(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]).filter(id=>_dbAfVerById.has(id));
+      if(_knownArtIds.length)await _retryNet(()=>supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',_knownArtIds));
+    }
+    return true;
+  }catch(e){console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
+};
+const _dbSaveArtFiles = (so) => _queuedEntitySave(so.id, so, _dbSaveArtFilesInner);
 const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','shipping_name','shipping_address'];
 const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','shipping_name','shipping_address']);
 const _dbSaveInvoice = async (inv) => {
@@ -1407,6 +1467,43 @@ const _dbSaveInvoice = async (inv) => {
 };
 let _dbNotify=null; // set by App component for visible error toasts
 let _dataLossAlert=null; // set by App component — logs + emails on item-wipe attempts/events
+// ─── Session-expiry recovery ───
+// When a write fails with a 401 / JWT-expired / row-level-security error it means our Supabase auth
+// session degraded to the anon role (RLS allows anon SELECT but not INSERT). Retrying the write as-is
+// loops forever, so instead we attempt a one-shot session refresh; if that fails the session is truly
+// dead and we force a re-login. Without this, a stale session silently spams RLS/401 errors and bogus
+// "save incomplete" toasts on every poll/tab-focus regardless of which page the user is on.
+let _forceReauth=null; // set by App component — clears the cached user and shows the login screen
+let _sessionDead=false; // latched once the session is judged unrecoverable; prevents retry spam + repeat prompts
+let _refreshInFlight=null; // de-dupes concurrent refresh attempts
+const _isAuthError=(err)=>{
+  if(!err)return false;
+  const code=err.code||err.status;
+  if(code===401||code==='401'||code==='42501'||code==='PGRST301')return true;
+  const m=(err.message||'').toLowerCase();
+  return m.includes('row-level security')||m.includes('jwt expired')||m.includes('jwt is expired')||m.includes('invalid jwt')||m.includes('not authenticated')||m.includes('no api key');
+};
+// Returns true if the session is healthy/refreshed (caller may retry), false if it's dead.
+const _recoverSession=async()=>{
+  if(_sessionDead||!supabase)return false;
+  if(!_refreshInFlight){
+    _refreshInFlight=(async()=>{
+      try{const{data,error}=await supabase.auth.refreshSession();if(!error&&data?.session)return true}catch{}
+      return false;
+    })();
+    _refreshInFlight.finally(()=>{setTimeout(()=>{_refreshInFlight=null},2000)});
+  }
+  const ok=await _refreshInFlight;
+  if(ok){_sessionDead=false;return true}
+  _sessionDead=true;if(_forceReauth)_forceReauth();return false;
+};
+// Routes an auth-related save failure: keeps the entity queued (so it auto-flushes once the session is
+// restored) and triggers recovery, but suppresses the misleading per-save error toast. Always returns false.
+const _handleAuthSaveFailure=(id)=>{
+  if(id){_dbSaveFailedIds.add(id);_recordSaveError(id,'session expired — sign in again to save');_persistFailedIds()}
+  _recoverSession();
+  return false;
+};
 const _dbSaveCustomer = async (c) => {
   if(!supabase){console.warn('[DB] save customer skipped — no supabase');return false}
   // Optimistic locking: check version before saving
@@ -1696,6 +1793,16 @@ const _persistFailedIds=()=>{_lsSet('nsa_save_failed_ids',JSON.stringify([..._db
 _dbDuplicateSkuIds.forEach(id=>{_dbSaveFailedIds.delete(id)});if(_dbDuplicateSkuIds.size)_persistFailedIds();
 // Track IDs with unsaved local changes (diffSave skipped because DB not ready) — protects from reload overwrite
 const _dbSavePendingIds=new Set();
+// Merge freshly-loaded assigned_todos with the local copy. Keeps the local version of any todo whose
+// save is still in-flight or failed (and any local-only todo not yet persisted), so a background
+// realtime/poll reload never drops a task the user just created or completed before it round-trips.
+const _mergeAssignedTodos=(dbTodos,localTodos)=>{
+  const prot=id=>_dbSavePendingIds.has(id)||_dbSaveFailedIds.has(id);
+  const dbIds=new Set(dbTodos.map(t=>t.id));
+  const merged=dbTodos.map(t=>prot(t.id)?((localTodos||[]).find(p=>p.id===t.id)||t):t);
+  const localOnly=(localTodos||[]).filter(t=>!dbIds.has(t.id)&&prot(t.id));
+  return localOnly.length?[...localOnly,...merged]:merged;
+};
 // Track recent saves by this client — prevents false "modified by another user" conflicts from own realtime echo
 const _dbRecentSaves={};// {id: timestamp}
 // Retry a network-flaky upsert/select promise factory. Only retries transport errors (TypeError: Failed to fetch),
@@ -1716,7 +1823,7 @@ const _isDisplayableFile=(u,f)=>_isImgUrl(u,f)||_isPdfUrl(u,f);
 const _filterDisplayable=files=>(files||[]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');return u&&_isDisplayableFile(u,f)});
 const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)){if(_isPdfUrl(u,f)){window.open(u,'_blank')}else if(_isDownloadOnly(u)){const a=document.createElement('a');a.href=u;a.download=typeof f==='object'&&f?.name?f.name:decodeURIComponent(u.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(u,'_blank')}}else if(u){if(_dbNotify)_dbNotify('Legacy file: '+u+' — re-upload to enable downloads')}};
 const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
-const _isImgUrl=(u,f)=>{if(_isPdfUrl(u,f))return false;const e=_urlExt(u);if(_isDownloadOnly(u))return false;if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;return false};
+const _isImgUrl=(u,f)=>{if(_isPdfUrl(u,f))return false;const e=_urlExt(u);if(_isDownloadOnly(u))return false;if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;if(u&&typeof u==='string'&&/(?:assetly|assets)\.ordermygear\.com\//.test(u))return true;return false};
 const _isPdfUrl=(u,f)=>{if(_urlExt(u)==='pdf')return true;if(typeof f==='object'&&f?.type==='application/pdf')return true;if(typeof f==='string'&&f.endsWith('.pdf'))return true;return false};
 const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;
   // Force Cloudinary to render page 1 as PNG via /image/upload/ with pg_1,f_png transform
@@ -2731,7 +2838,12 @@ export default function App(){
   // Rep-CSR assignments and assigned todos
   const[repCsrAssignments,setRepCsrAssignments]=useState([]);
   const[assignedTodos,setAssignedTodos]=useState([]);
-  const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2});
+  // When each OMG store was first brought into the portal, keyed by store id:
+  // {at:ISO, baseline:bool}. Drives the 4-week "apply OMG funds" accounting
+  // reminder. baseline=true marks stores already present when this shipped, so
+  // we don't backfill tasks for the entire history.
+  const[omgFirstSeen,setOmgFirstSeen]=useState(()=>loadState('omg_first_seen',{}));
+  const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,doc_label:''});
   const[todoDetailId,setTodoDetailId]=useState(null);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
@@ -2799,6 +2911,7 @@ export default function App(){
           if(as.wh_recent_actions)setWhRecentActions(as.wh_recent_actions);
           if(as.job_time_logs)setJobTimeLogs(as.job_time_logs);
           if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:{..._qbDef.mapping,...(as.qb_config.mapping||{})},syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
+          if(as.omg_first_seen)setOmgFirstSeen(as.omg_first_seen);
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(as.inv_adj_log);
           if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
@@ -2912,7 +3025,8 @@ export default function App(){
         const prodMerge=_mergeProtected(d.products,'prod');
         // Update snapshot before state — auto-save effects will diff against this.
         // Merge into existing snap so non-reloaded keys (assignedTodos, repCsr, etc.) aren't wiped.
-        _dbSnap.current={..._dbSnap.current,ests:estMerge.snap,sos:soMerge.snap,invs:invMerge.snap,msgs:msgMerge.snap,cust:custMerge.snap,prod:prodMerge.snap,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
+        const todoMerge=_mergeAssignedTodos(d.assignedTodos||[],_dbSnap.current.assignedTodos||[]);
+        _dbSnap.current={..._dbSnap.current,ests:estMerge.snap,sos:soMerge.snap,invs:invMerge.snap,msgs:msgMerge.snap,cust:custMerge.snap,prod:prodMerge.snap,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues,assignedTodos:todoMerge};
         // Use change detection to avoid triggering save effects needlessly
         if(d.team.length)setREPS(prev=>_jsonEq(prev,d.team)?prev:d.team);
         setEsts(estMerge.apply);
@@ -2924,6 +3038,7 @@ export default function App(){
         if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
         if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
         setIssues(prev=>{const v=d.issues||[];return _jsonEq(prev,v)?prev:v});
+        setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return _jsonEq(prev,v)?prev:v});
         if(d.decoVendors)setDecoVendors(prev=>_jsonEq(prev,d.decoVendors)?prev:d.decoVendors);
         if(d.decoVendorPricing)setDecoVendorPricing(prev=>_jsonEq(prev,d.decoVendorPricing)?prev:d.decoVendorPricing);
         // Refresh app_state keys
@@ -2939,7 +3054,7 @@ export default function App(){
       const debouncedReload=()=>{if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,2000)};
       // Subscribe to core tables + pick_lines for instant warehouse sync
       let _rtErrorLogged=false;
-      ['estimates','sales_orders','invoices','messages','customers','products','so_item_pick_lines'].forEach(table=>{
+      ['estimates','sales_orders','invoices','messages','customers','products','so_item_pick_lines','assigned_todos','todo_comments'].forEach(table=>{
         const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload()}).subscribe((status,err)=>{
           if(status==='SUBSCRIBED')return;
           if(status==='CHANNEL_ERROR'||status==='TIMED_OUT'){
@@ -3015,7 +3130,7 @@ export default function App(){
           team:d._coreOnly?_prevSnap.team:d.team,
           omg:d._coreOnly?_prevSnap.omg:d.omg_stores,
           issues:d._coreOnly?_prevSnap.issues:d.issues,
-          assignedTodos:_prevSnap.assignedTodos||[]};
+          assignedTodos:d._coreOnly?(_prevSnap.assignedTodos||[]):_mergeAssignedTodos(d.assignedTodos||[],_prevSnap.assignedTodos||[])};
         setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(prev.find(p=>p.id===e.id)||e):mergeEst(e));return changed(prev,merged)?merged:prev}const merged2=d.estimates.map(mergeEst);return changed(prev,merged2)?merged2:prev});
         setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;
           // If DB has empty items/jobs (mid-save transient state), keep local entirely
@@ -3045,6 +3160,7 @@ export default function App(){
         setCust(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
+        if(!d._coreOnly)setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return changed(prev,v)?v:prev});
         if(d.products.length)setProd(prev=>{const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;if(!changed(prev,base))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,_cleanupDuplicateProducts)});
         // Refresh app_state keys (batch POs, inventory POs, etc.)
         const as=d.appState||{};
@@ -3207,7 +3323,7 @@ export default function App(){
     const oldProds=JSON.stringify((old?.products||[]).map(p=>p.sku+p.cost+(p.decorations||[]).map(d=>d.type+':'+d.art_group).join('|')+p.vendor_id).sort());
     const newProds=JSON.stringify((s.products||[]).map(p=>p.sku+p.cost+(p.decorations||[]).map(d=>d.type+':'+d.art_group).join('|')+p.vendor_id).sort());
     if(oldProds!==newProds&&(s.products||[]).length>0){
-      const prods=(s.products||[]).map(p=>({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:(p.decorations||[]).map(d=>d.type).join('|')||'',deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',vendor_id:p.vendor_id||'',art_group:(p.decorations||[]).map(d=>d.art_group).join('|')||'',_cost_source:p._cost_source||''}));
+      const prods=(s.products||[]).map(p=>({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.no_deco?'no_deco':((p.decorations||[]).map(d=>d.type).join('|')||''),deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',vendor_id:p.vendor_id||'',art_group:(p.decorations||[]).map(d=>d.art_group).join('|')||'',art_cust_ids:(p.decorations||[]).map(d=>d._cust_art_id||'').join('|'),_cost_source:p._cost_source||'',art_ready:!!p.art_ready}));
       // Delete old products and insert fresh (handles SKU changes)
       if(supabase){supabase.from('omg_store_products').delete().eq('store_id',s.id).then(()=>{supabase.from('omg_store_products').insert(prods).then(r=>{if(r.error)console.error('[DB] omg products save:',r.error.message)})})}
     }
@@ -3636,6 +3752,41 @@ export default function App(){
       return t;
     }));
   },[sos,ests]);
+  React.useEffect(()=>{_saveAppState('omg_first_seen',omgFirstSeen)},[omgFirstSeen]);
+  // OMG stores are settled from store deposit funds (not a coach payment), so
+  // 4 weeks after a store is brought into the portal, remind accounting (Andrea
+  // Jung) to apply those funds to its invoice. Stores already present when this
+  // shipped are baselined (no retroactive backlog); tasks are deduped by the
+  // [store-id] tag in the title.
+  React.useEffect(()=>{
+    if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;
+    if(!(omgStores&&omgStores.length))return;
+    const now=Date.now();
+    const seen={...omgFirstSeen};
+    const firstAdoption=Object.keys(seen).length===0;
+    let seenChanged=false;
+    omgStores.forEach(s=>{if(s&&s.id&&!seen[s.id]){seen[s.id]={at:new Date().toISOString(),baseline:firstAdoption};seenChanged=true}});
+    if(seenChanged)setOmgFirstSeen(seen);
+    const FOUR_WEEKS=28*24*60*60*1000;
+    const andrea=REPS.find(r=>r&&/andrea\s+jung/i.test(r.name||''));
+    const toAdd=[];
+    omgStores.forEach(s=>{
+      if(!s||!s.id)return;
+      const rec=seen[s.id];
+      if(!rec||rec.baseline)return;
+      if(now-new Date(rec.at).getTime()<FOUR_WEEKS)return;
+      const tag='['+s.id+']';
+      if(assignedTodos.some(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag)))return;
+      const so=sos.find(x=>x.omg_store_id===s.id);
+      const $=n=>'$'+(+n||0).toLocaleString(undefined,{maximumFractionDigits:2});
+      const grand=s._omg_grand_total||0,fund=s._omg_fundraise||0,fees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);
+      const desc=`OMG store "${s.store_name||s.id}" was brought into the portal on ${new Date(rec.at).toLocaleDateString()}. Apply the collected store deposit funds to its invoice (OMG orders are paid from store funds, not a coach).\n`
+        +`Collected per OMG — Grand total: ${$(grand)} · Fundraise: ${$(fund)} · Fees (ship/proc/tax): ${$(fees)}.`
+        +(so?`\nSales order: ${so.id}`:'\n(No sales order created from this store yet.)');
+      toAdd.push({id:'todo-omg-'+s.id+'-'+now,title:`Apply OMG funds — ${s.store_name||s.id} ${tag}`,description:desc,created_by:cu?.id||null,assigned_to:andrea?.id||'',so_id:so?.id||null,customer_id:s.customer_id||null,priority:2,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]});
+    });
+    if(toAdd.length)setAssignedTodos(prev=>[...toAdd,...prev]);
+  },[omgStores,assignedTodos,REPS,sos,omgFirstSeen]);
   // Batch POs, submitted batches, changelog, SO history — sync to Supabase app_state table.
   // Unbounded log keys (change_log, so_history, inv_adj_log) skip localStorage — cloud-only to avoid quota pressure.
   // Other keys still cache locally for fast cold-start.
@@ -3667,13 +3818,23 @@ export default function App(){
       const lastGoodCount=lastGood.snapshot.items.length;
       if(liveCount<lastGoodCount){flagged.push({soId,liveCount,lastGoodCount,lastGoodTs:lastGood.ts})}
     });
-    if(flagged.length){
+    // Admin-only: reps and other users should never see this internal data-integrity alert.
+    const _isAdminRole=cu?.role==='admin'||cu?.role==='super_admin';
+    if(flagged.length&&_isAdminRole){
       console.warn('[boot-scan] '+flagged.length+' SO(s) have fewer items than their last snapshot:',flagged);
-      const summary=flagged.slice(0,3).map(f=>f.soId+' ('+f.liveCount+'/'+f.lastGoodCount+')').join(', ');
-      nf('⚠️ '+flagged.length+' SO(s) appear to have lost items vs. snapshot history: '+summary+(flagged.length>3?'…':'')+' — see Change Log','error');
-      flagged.forEach(f=>{
-        logChange('snapshot_regression','SO',f.soId,'Live: '+f.liveCount+' items, last good snapshot ('+f.lastGoodTs+'): '+f.lastGoodCount+' items');
-      });
+      // File each flagged SO as a system issue with a stable id so it's created once and
+      // doesn't nag on every login. Already-filed (open or resolved) SOs are skipped.
+      const newIssues=flagged
+        .filter(f=>!issues.some(i=>i.id==='ISS-SNAPREG-'+f.soId))
+        .map(f=>({id:'ISS-SNAPREG-'+f.soId,status:'open',priority:'high',
+          description:f.soId+' appears to have lost items: '+f.liveCount+' live vs. '+f.lastGoodCount+' in last good snapshot ('+f.lastGoodTs+'). Review the SO and its snapshot history.',
+          page:'Sales Orders',viewing:f.soId,reported_by:'System',role:'system',
+          timestamp:new Date().toISOString(),recent_errors:[],resolved_at:null,resolution:null}));
+      if(newIssues.length){
+        setIssues(prev=>{const add=newIssues.filter(n=>!prev.some(i=>i.id===n.id));return add.length?[...add,...prev]:prev});
+        newIssues.forEach(n=>logChange('snapshot_regression','SO',n.viewing,n.description));
+        nf('⚠️ '+newIssues.length+' SO(s) may have lost items vs. snapshot history — logged to the Issues page','error');
+      }
     }
   },[sos,soHistory]);
   React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
@@ -4048,12 +4209,38 @@ export default function App(){
   const[aiInvPoWizOpen,setAiInvPoWizOpen]=useState(false);
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
   // OMG Team Stores
-  const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);
+  const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);const[omgBulkSel,setOmgBulkSel]=useState(()=>new Set());const[omgBulkArt,setOmgBulkArt]=useState('');
+  React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
   const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);
 
   // Import products from an OMG shared report URL.
   // Fetches report JSON via Netlify proxy, parses products with SKUs, sizes,
   // quantities, prices, and mockup images. Replaces the broken V1 API sync.
+  // Best-effort match of an OMG store name (e.g. "Dana Hills Football 2026")
+  // to a customer. Strips year/season/store-type noise, then prefers an exact
+  // normalized match, else a customer whose every word appears in the store
+  // name (≥2 words, to avoid generic single-word mislinks). Returns null when
+  // not confident, so we never silently link the wrong account.
+  const _omgMatchCustomer=(storeName)=>{
+    const norm=str=>(str||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ')
+      .replace(/\b(20\d{2}|19\d{2}|fall|spring|summer|winter|fundraiser|webstore|web|online|store|shop|spiritwear|spirit|wear|apparel|gear|team|popup|pop|up|preorder|pre|order)\b/g,' ')
+      .replace(/\s+/g,' ').trim();
+    const sN=norm(storeName);if(!sN)return null;
+    const sToks=new Set(sN.split(' ').filter(Boolean));
+    let best=null,bestScore=0,bestLen=0;
+    for(const c of cust){
+      if(!c||!c.name)continue;
+      const cN=norm(c.name);if(!cN)continue;
+      const cToks=cN.split(' ').filter(Boolean);if(!cToks.length)continue;
+      const inCount=cToks.filter(t=>sToks.has(t)).length;
+      let score;
+      if(sN===cN)score=1;
+      else if(inCount===cToks.length&&cToks.length>=2)score=0.9;
+      else score=(inCount/cToks.length)*0.6;
+      if(score>bestScore||(score===bestScore&&cToks.length>bestLen)){best=c;bestScore=score;bestLen=cToks.length}
+    }
+    return bestScore>=0.9?best:null;
+  };
   const importOMGReport = async (store, reportUrl) => {
     // Extract UUID from various URL formats
     const urlStr = (reportUrl || '').trim();
@@ -4071,62 +4258,85 @@ export default function App(){
       // Parse all sections → products
       const products = [];
       let totalQty = 0, totalSales = 0;
+      // Pull a SKU out of a string like "Black/White (KB9093)" → KB9093
+      const extractSku = (str) => {
+        const m = (str || '').match(/\(([A-Za-z0-9]{4,10})\)/);
+        return m ? m[1].toUpperCase() : '';
+      };
       (report.reports || []).forEach(r => {
         (r.sections || []).forEach(section => {
           const meta = section.meta || {};
           const rows = section.rows || [];
-          // Aggregate sizes across all rows for this product
-          const sizes = {};
-          let productQty = 0, productPaid = 0;
-          const colors = new Set();
+          const artworkList = meta.artwork || [];
+          // The section's own SKU is a usable fallback only when it looks
+          // like a real SKU (no spaces, not absurdly long) — otherwise it's
+          // a product name and we rely on the per-row color SKU instead.
+          const sectionSku = meta.sku || '';
+          const sectionSkuOk = sectionSku && !sectionSku.includes(' ') && sectionSku.length <= 15;
+
+          // Same product can ship multiple SKUs (one per color), e.g. the
+          // 3-stripe short is KB9093 in black and KB9097 in grey. Split each
+          // distinct SKU into its own product row instead of merging them.
+          const groups = {};
           rows.forEach(row => {
             const rawSz = (row.size || 'OS').trim().replace(/["''″]+$/,'');
             const sz = SZ_NORM[rawSz.toUpperCase()] || (/^adult\b/i.test(rawSz)?'OSFA':rawSz);
             const qty = row.quantity || 0;
-            sizes[sz] = (sizes[sz] || 0) + qty;
-            productQty += qty;
-            productPaid += (row.paid || 0);
-            if (row.color) colors.add(row.color);
+            const rowSku = extractSku(row.color) || (sectionSkuOk ? sectionSku.toUpperCase() : '');
+            const key = rowSku || '__nosku__';
+            if (!groups[key]) groups[key] = { sku: rowSku, sizes: {}, qty: 0, paid: 0, colors: new Set() };
+            const g = groups[key];
+            g.sizes[sz] = (g.sizes[sz] || 0) + qty;
+            g.qty += qty;
+            g.paid += (row.paid || 0);
+            if (row.color) g.colors.add(row.color);
           });
-          // Get artwork image
-          const artwork = (meta.artwork || [])[0];
-          const imageUrl = artwork?.link || artwork?.thumbnail || '';
 
-          // Skip items with 0 sales — no one ordered them
-          if (productQty === 0) return;
+          Object.values(groups).forEach(g => {
+            // Skip items with 0 sales — no one ordered them
+            if (g.qty === 0) return;
 
-          // Fix bad SKUs: if SKU looks like a product name (has spaces or
-          // is very long), try to extract a real SKU from parentheses in
-          // the color or name fields, e.g. "Black/White (HT3973)" → HT3973
-          let sku = meta.sku || '';
-          const skuLooksBad = sku.includes(' ') || sku.length > 15;
-          if (skuLooksBad) {
-            const colorStr = [...colors].join(' ');
-            const nameStr = meta.name || '';
-            const parenMatch = (colorStr + ' ' + nameStr).match(/\(([A-Za-z0-9]{4,10})\)/);
-            if (parenMatch) sku = parenMatch[1].toUpperCase();
-          }
+            // Resolve a SKU: prefer the per-row color SKU, then any SKU in
+            // the grouped colors/name, then the section SKU.
+            let sku = g.sku;
+            if (!sku) {
+              const fromText = extractSku([...g.colors].join(' ') + ' ' + (meta.name || ''));
+              sku = fromText || (sectionSkuOk ? sectionSku.toUpperCase() : sectionSku);
+            }
 
-          products.push({
-            sku,
-            name: meta.name || '',
-            manufacturer: meta.manufacturer || '',
-            category: meta.category || '',
-            color: [...colors].join(', '),
-            retail: meta.base_price || 0,
-            cost: meta.cogs || 0,
-            deco_type: '',
-            deco_cost: 0,
-            art_group: '',
-            decorations: [],
-            sizes,
-            image_url: imageUrl,
-            _omg_product_id: meta.id,
-            _original_sku: sku,
-            _artwork: meta.artwork || [],
+            // Match this SKU's mockup image (each color has its own art),
+            // falling back to the section's first artwork.
+            // The OMG report labels each mockup with its color+SKU in the
+            // `caption` (e.g. "Black/White (KB9093)"); match on that so each
+            // SKU gets its own mock rather than the section's first image.
+            const matchedArt = sku
+              ? artworkList.filter(a => `${a.caption||''} ${a.color||''} ${a.name||''} ${a.label||''}`.toUpperCase().includes(sku))
+              : [];
+            const artForSku = matchedArt.length ? matchedArt : artworkList;
+            const artwork = artForSku[0];
+            const imageUrl = artwork?.link || artwork?.thumbnail || '';
+
+            products.push({
+              sku,
+              name: meta.name || '',
+              manufacturer: meta.manufacturer || '',
+              category: meta.category || '',
+              color: [...g.colors].join(', '),
+              retail: meta.base_price || 0,
+              cost: meta.cogs || 0,
+              deco_type: '',
+              deco_cost: 0,
+              art_group: '',
+              decorations: [],
+              sizes: g.sizes,
+              image_url: imageUrl,
+              _omg_product_id: meta.id,
+              _original_sku: sku,
+              _artwork: artForSku,
+            });
+            totalQty += g.qty;
+            totalSales += g.paid;
           });
-          totalQty += productQty;
-          totalSales += productPaid;
         });
       });
 
@@ -4162,26 +4372,34 @@ export default function App(){
 
       // Merge with existing data — preserve manual edits (SKU corrections,
       // costs, deco types, art groups, vendors) from previous imports.
-      // Match by _omg_product_id (stable) or original SKU position.
+      // Match by OMG product id + SKU, then by SKU. NEVER fall back to array
+      // position: a single OMG product now spans multiple SKU rows, so the
+      // product list changes shape between imports and a positional match
+      // would graft an unrelated product's name/SKU onto a row.
       const existingProducts = store.products || [];
-      const mergedProducts = products.map((p, idx) => {
-        // Find existing product by OMG product ID or by position
-        const existing = existingProducts.find(ep => ep._omg_product_id && ep._omg_product_id === p._omg_product_id)
-          || existingProducts[idx];
+      const mergedProducts = products.map((p) => {
+        const existing = existingProducts.find(ep => ep._omg_product_id && ep._omg_product_id === p._omg_product_id && (ep._original_sku || ep.sku) === p.sku)
+          || existingProducts.find(ep => (ep._original_sku || ep.sku) === p.sku);
         if (!existing) return p;
         // Preserve manual edits, take fresh data for quantities
         return {
           ...p,
-          // Preserve user edits if they were changed from the original
-          sku: existing.sku !== existing._original_sku && existing.sku ? existing.sku : p.sku,
+          // Keep a user-edited SKU only when we actually tracked an original
+          // to compare against — otherwise trust the freshly parsed SKU.
+          sku: (existing._original_sku && existing.sku && existing.sku !== existing._original_sku) ? existing.sku : p.sku,
           name: existing.name || p.name,
           cost: existing.cost > 0 ? existing.cost : p.cost,
           _cost_source: existing.cost > 0 ? existing._cost_source : p._cost_source,
           vendor_id: existing.vendor_id || p.vendor_id,
           deco_type: existing.deco_type || p.deco_type,
           art_group: existing.art_group || p.art_group,
+          no_deco: existing.no_deco || p.no_deco || false,
+          art_ready: existing.art_ready || p.art_ready || false,
           decorations: (existing.decorations||[]).length>0 ? existing.decorations : p.decorations || [],
-          // Fresh from report: sizes, quantities, retail, colors, images
+          // Keep an image already on the row if the fresh parse has none
+          // (the shared report JSON carries no artwork for many stores).
+          image_url: p.image_url || existing.image_url || '',
+          // Fresh from report: sizes, quantities, retail, colors
           _original_sku: p.sku, // track original for detecting user edits
         };
       });
@@ -4203,10 +4421,17 @@ export default function App(){
       if (!updated._omg_tax && store._omg_tax) updated._omg_tax = store._omg_tax;
       if (!updated._omg_fundraise && store._omg_fundraise) updated._omg_fundraise = store._omg_fundraise;
       if (!updated._omg_grand_total && store._omg_grand_total) updated._omg_grand_total = store._omg_grand_total;
+      // Auto-link a customer when none is set, so the art library and SO
+      // creation work without a manual link. Never override an existing link.
+      let _autoLinked = null;
+      if (!updated.customer_id) {
+        const m = _omgMatchCustomer(store.store_name);
+        if (m) { updated.customer_id = m.id; if (!updated.rep_id) updated.rep_id = m.primary_rep_id || updated.rep_id; _autoLinked = m; }
+      }
 
       setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
       setOmgSel(updated);
-      nf(`Imported ${products.length} products from OMG report (${totalQty} total items)`);
+      nf(`Imported ${products.length} products from OMG report (${totalQty} total items)${_autoLinked ? ` · linked to ${_autoLinked.name}` : ''}`);
       return updated;
     } catch (e) {
       console.error('[OMG Report] Import failed:', e);
@@ -4270,8 +4495,15 @@ export default function App(){
     nf('Snoozed for '+days+' day'+(days!==1?'s':''));
   };
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
-  const handleLogin=(user)=>{setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
+  const handleLogin=(user)=>{_sessionDead=false;setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
+  // Called from the save layer when a session refresh fails: clear the dead session and bounce to login
+  // (the queued saves auto-flush after the user signs back in). Same path as the mount-time stale-session guard.
+  _forceReauth=()=>{
+    setCu(null);try{localStorage.removeItem('nsa_user')}catch{}
+    try{_sbSignOut()}catch{}
+    setTimeout(()=>{if(typeof nf==='function')nf('Your session expired. Please sign in again so your changes can save to the cloud.','error')},150);
+  };
 
   // Detect stale legacy sessions — users with nsa_user in localStorage from before Supabase
   // auth was added bypass LoginGate but have no JWT, so every write to an RLS-protected
@@ -4363,6 +4595,22 @@ export default function App(){
   const _r=cu?.role==='super_admin'?'admin':cu?.role;
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id),[cust]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
   const cols=useMemo(()=>COLOR_CATEGORIES,[]);
+  // Webstore → Sales Order batch. Builds an SO the same way the OMG flow does
+  // (items array persisted to so_items by the normal SO save path) and tags it
+  // source='webstore'. Returns the new SO id so the caller can link orders.
+  const webstoreCreateSO=({customer_id,memo,production_notes,items,webstore_id})=>{
+    const id=nextSOId(sos);
+    const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
+      created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
+      expected_date:'',production_notes:production_notes||'',shipping_type:'flat',shipping_value:0,
+      ship_to_id:'default',tax_rate:0,firm_dates:[],art_files:[],jobs:[],items:items||[],
+      source:'webstore',webstore_id:webstore_id||null};
+    setSOs(prev=>[newSO,...prev]);
+    // Jump the user straight into the new SO in the Sales Orders editor.
+    setESO(newSO);setESOC(cust.find(c=>c.id===customer_id)||null);setPg('orders');
+    nf('Created '+id+' from webstore — '+(items||[]).length+' line(s)');
+    return id;
+  };
   const savV=v=>{setVend(p=>{const e=p.find(x=>x.id===v.id);return e?p.map(x=>x.id===v.id?{...x,...v}:x):[...p,v]});nf(vend.some(x=>x.id===v.id)?'Vendor updated':'Vendor created')};
   const savC=c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});
     let subCount=0;let tagCount=0;let shipCount=0;let contactCount=0;
@@ -4492,6 +4740,21 @@ export default function App(){
     // Invoices are created explicitly via the Create Invoice modal — no auto-generation on status change.
     return sl;
   };
+  // Lightweight art-file-only update for the artwork library (add/remove/tag a mockup or production file).
+  // Persists ONLY so_art_files — never re-persists items/decorations/PO lines — so a file change can't trip the
+  // order-save data-loss guards or partially re-save line items when this SO's items aren't hydrated in the view.
+  const savArtFiles=(so)=>{
+    const upd=so.updated_at||new Date().toLocaleString();
+    const prev=sos.find(x=>x.id===so.id);
+    const merged=prev?{...prev,art_files:so.art_files,updated_at:upd}:{...so,updated_at:upd};
+    setSOs(p=>{const ex=p.find(x=>x.id===merged.id);return ex?p.map(x=>x.id===merged.id?merged:x):[...p,merged]});
+    // Keep the diff-snapshot in sync so the [sos] effect sees no change for this SO and won't also fire a full
+    // _dbSaveSO. We persist the art files ourselves via the lightweight path below.
+    const snap=_dbSnap.current?.sos;
+    if(Array.isArray(snap)&&snap.some(x=>x.id===merged.id))_dbSnap.current.sos=snap.map(x=>x.id===merged.id?merged:x);
+    _dbSaveArtFiles(merged);
+    return merged;
+  };
   const savI=(pid,inv,deltas,reason,adjType)=>{
     const p=prod.find(x=>x.id===pid);
     if(deltas&&p){
@@ -4505,8 +4768,8 @@ export default function App(){
     setProd(pp=>pp.map(x=>x.id===pid?{...x,_inv:inv}:x));nf('Inventory updated');
   };
   const newE=(c,product,seedItems)=>{const mk=c?.catalog_markup||1.65;const items=[];
-    if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-(({A:0.4,B:0.35,C:0.3})[c?.adidas_ua_tier||'B']||0.35))):rQ(repCost*mk);
-      items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
+    if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-auTierDisc(c?.adidas_ua_tier||'B',product.pricing_group))):rQ(repCost*mk);
+      items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,vendor_id:product.vendor_id||null,pricing_group:product.pricing_group||null,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
     if(Array.isArray(seedItems)&&seedItems.length)items.push(...seedItems);
     const e={id:nextEstId(ests),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
   // Create a blank Sales Order directly (skipping the estimate stage). Reps still pick a
@@ -4601,6 +4864,16 @@ export default function App(){
     const clonedItems=safeItems(est).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;return clone});
     const ne={id:nextEstId(ests),customer_id:est.customer_id,memo:(est.memo||'')+' (copy)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,email_status:null,art_files:JSON.parse(JSON.stringify(est.art_files||[])),items:clonedItems};
     setEsts(prev=>[ne,...prev]);const c=cust.find(x=>x.id===ne.customer_id);setEEst(ne);setEEstC(c);setPg('estimates');nf(`${ne.id} copied from ${est.id}`)};
+  const copySalesOrder=so=>{
+    const clonedItems=safeItems(so).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;
+      // Preserve qty-only lines: the count lives in est_qty (sizes is empty). Keep qty_only=true so the
+      // quantity isn't silently dropped to 0 on the copy. (Lines that carry their count in the size grid
+      // are left untouched.)
+      const _szTotal=Object.values(clone.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
+      if(_szTotal===0&&safeNum(clone.est_qty)>0)clone.qty_only=true;
+      return clone});
+    const ns={id:nextSOId(sos),customer_id:so.customer_id,estimate_id:null,memo:(so.memo||'')+' (copy)',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,expected_date:so.expected_date,production_notes:so.production_notes||'',shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,ship_to_custom:so.ship_to_custom,firm_dates:[],art_files:JSON.parse(JSON.stringify(so.art_files||[])),items:clonedItems,order_type:so.order_type||'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:so.booking_alert_days||100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:so.tax_rate||0,tax_exempt:so.tax_exempt||false};
+    setSOs(prev=>[ns,...prev]);_dbSaveSO(ns);const c=cust.find(x=>x.id===ns.customer_id);setESO(ns);setESOC(c);setPg('orders');nf(`${ns.id} copied from ${so.id}`)};
   const revertSOToEst=so=>{
     // Check for open POs or IFs (pick lines) — if any exist, block the revert
     const hasOpenPOs=safeItems(so).some(it=>safePOs(it).some(po=>po.status!=='cancelled'));
@@ -4859,6 +5132,10 @@ export default function App(){
         const saleOrders = ordersBySale[store.id] || [];
         const basic = { data: store, included: omgStoresData.included || [], orders: saleOrders, orderProducts: [] };
         const converted = convertOMGStore(basic, cust);
+        if (!converted.customer_id) {
+          const m = _omgMatchCustomer(converted.store_name);
+          if (m) { converted.customer_id = m.id; if (!converted.rep_id) converted.rep_id = m.primary_rep_id || converted.rep_id; }
+        }
         const totals = saleTotals[store.id];
         if (totals) {
           if (totals.orderCount > 0) converted.orders = totals.orderCount;
@@ -4975,7 +5252,17 @@ export default function App(){
   // Shared data builder for warehouse + deco + dashboard pages
   function buildWarehouseData(){
     const pullTasks=[];const shipTasks=[];const decoTasks=[];const deliverTasks=[];
-    sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
+    sos.filter(so=>{
+      const st=calcSOStatus(so);
+      if(st==='booking')return false;
+      if(st!=='complete')return true;
+      // A promo order can be financially "closed" (status='complete') while its blanks are
+      // received but not yet decorated/shipped. Keep such orders visible to the warehouse so
+      // their still-active jobs can be pulled, moved to deco, and shipped. A 'completed' job is
+      // decorated but not yet shipped, so it still belongs in Ready to Ship — only treat a job
+      // as done-for-warehouse once it is actually 'shipped' (or never left 'draft').
+      return safeJobs(so).some(j=>j.prod_status!=='shipped'&&j.prod_status!=='draft');
+    }).forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
@@ -5418,12 +5705,12 @@ export default function App(){
         <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2})}>+ New Task</button>
       </div>
       <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
-        {myAssignedTodos.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;
+        {myAssignedTodos.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));
           return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:isAssignedToMe?'#fef3c7':'white',cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:600}}>{t.title}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:'Assigned to: '+assignee?.name}{t.so_id?' · '+t.so_id:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:assignee?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
               </div>
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
@@ -5502,12 +5789,12 @@ export default function App(){
       </div>
       <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
         {myAssignedTodos.length===0?<div className="empty" style={{padding:20}}>No open tasks</div>:
-        myAssignedTodos.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;
+        myAssignedTodos.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));
           return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:isAssignedToMe?'#fef3c7':'white',cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:600}}>{t.title}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:'Assigned to: '+assignee?.name}{t.so_id?' · '+t.so_id:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:assignee?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
               </div>
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
@@ -5810,12 +6097,12 @@ export default function App(){
     {myAssignedTodos.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #0891b2'}}>
       <div className="card-header"><h2>📌 My Assigned Tasks ({myAssignedTodos.length})</h2></div>
       <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
-        {myAssignedTodos.map(t=>{const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;
+        {myAssignedTodos.map(t=>{const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));
           return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:isAssignedToMe?'#ecfdf5':'white',cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:700,color:t.priority<=1?'#dc2626':'#1e293b'}}>{t.priority<=1?'! ':''}{t.title}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>From: {creator?.name}{t.so_id?' · '+t.so_id:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}{t.description?' — '+t.description.slice(0,60):''}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>From: {creator?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}{t.description?' — '+t.description.slice(0,60):''}</div>
               </div>
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               {t.comments?.length>0&&<span style={{fontSize:10,color:'#3b82f6',fontWeight:600}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
@@ -5851,60 +6138,7 @@ export default function App(){
       <button className="btn btn-secondary" onClick={()=>setPg('customers')}>👥 Customers</button></div></div>
     </>}
 
-    {/* ═══ CREATE TODO MODAL ═══ */}
-    {todoModal.open&&<div className="modal-overlay" onClick={()=>setTodoModal(m=>({...m,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
-      <div className="modal-header"><h2>📌 Assign Task</h2><button className="modal-close" onClick={()=>setTodoModal(m=>({...m,open:false}))}>×</button></div>
-      <div className="modal-body">
-        <div style={{marginBottom:12}}><label className="form-label">Title *</label>
-          <input className="form-input" value={todoModal.title} onChange={e=>setTodoModal(m=>({...m,title:e.target.value}))} placeholder="e.g. Order blanks for CSM"/></div>
-        <div style={{marginBottom:12}}><label className="form-label">Description</label>
-          <textarea className="form-input" rows={3} value={todoModal.description} onChange={e=>setTodoModal(m=>({...m,description:e.target.value}))} placeholder="Details..."/></div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
-          <div><label className="form-label">Assign To *</label>
-            <select className="form-select" value={todoModal.assigned_to} onChange={e=>setTodoModal(m=>({...m,assigned_to:e.target.value}))}>
-              <option value="">Select person...</option>
-              {(()=>{
-                const isAdminGm=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
-                if(isAdminGm){return REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name} ({r.role}){getPrimaryCsrForRep(cu.id)===r.id?' ★':''}</option>)}
-                const myCsrIds=getCsrsForRep(cu.id);
-                const myCsrs=REPS.filter(r=>myCsrIds.includes(r.id)&&r.is_active!==false);
-                const otherCsrs=REPS.filter(r=>r.is_active!==false&&r.role==='csr'&&!myCsrIds.includes(r.id));
-                return[
-                  myCsrs.length>0&&<optgroup key="my-csrs" label="My CSRs">{myCsrs.map(r=><option key={r.id} value={r.id}>{r.name}{getPrimaryCsrForRep(cu.id)===r.id?' ★ Primary':''}</option>)}</optgroup>,
-                  otherCsrs.length>0&&<optgroup key="other-csrs" label="Other CSRs">{otherCsrs.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>
-                ];
-              })()}
-            </select></div>
-          <div><label className="form-label">Priority</label>
-            <select className="form-select" value={todoModal.priority} onChange={e=>setTodoModal(m=>({...m,priority:+e.target.value}))}>
-              <option value={0}>Urgent</option><option value={1}>High</option><option value={2}>Normal</option><option value={3}>Low</option>
-            </select></div>
-        </div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
-          <div><label className="form-label">SO # (optional)</label>
-            <select className="form-select" value={todoModal.so_id} onChange={e=>{const soId=e.target.value;const so=sos.find(s=>s.id===soId);setTodoModal(m=>({...m,so_id:soId,customer_id:so?so.customer_id:m.customer_id}))}}>
-              <option value="">None</option>
-              {sos.filter(s=>calcSOStatus(s)!=='complete').slice(0,50).map(s=>{const sc=cust.find(c=>c.id===s.customer_id);return<option key={s.id} value={s.id}>{s.id} — {sc?.alpha_tag||sc?.name||''}{s.memo?' · '+s.memo:''}</option>})}
-            </select></div>
-          <div><label className="form-label">Customer{todoModal.so_id?' (from SO)':' (optional)'}</label>
-            {todoModal.so_id?<input className="form-input" disabled value={(()=>{const sc=cust.find(c=>c.id===todoModal.customer_id);return sc?(sc.alpha_tag||sc.name):''})()}/>:
-            <select className="form-select" value={todoModal.customer_id} onChange={e=>setTodoModal(m=>({...m,customer_id:e.target.value}))}>
-              <option value="">None</option>
-              {cust.filter(c=>c.is_active!==false).sort((a,b)=>(a.alpha_tag||a.name).localeCompare(b.alpha_tag||b.name)).map(c=><option key={c.id} value={c.id}>{c.alpha_tag||c.name}</option>)}
-            </select>}
-          </div>
-        </div>
-      </div>
-      <div className="modal-footer" style={{display:'flex',gap:8,justifyContent:'flex-end',padding:'12px 20px',borderTop:'1px solid #e2e8f0'}}>
-        <button className="btn btn-secondary" onClick={()=>setTodoModal(m=>({...m,open:false}))}>Cancel</button>
-        <button className="btn btn-primary" disabled={!todoModal.title.trim()||!todoModal.assigned_to} onClick={()=>{
-          const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,priority:todoModal.priority,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
-          setAssignedTodos(prev=>[newTodo,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2});
-          nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
-        }}>Assign Task</button>
-      </div>
-    </div></div>}
+    {/* CREATE TODO MODAL — rendered globally below so it works from every page */}
 
     {/* ═══ TODO DETAIL MODAL (view, comment, complete) ═══ */}
     {todoDetailId&&(()=>{const td=assignedTodos.find(t=>t.id===todoDetailId);if(!td)return null;
@@ -5966,7 +6200,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,doc_label:t.doc_label||eEst?.id||''})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -6023,7 +6257,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,doc_label:t.doc_label||eSO?.id||''})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -6106,7 +6340,7 @@ export default function App(){
   };
   // CUSTOMERS
   function rCust(){
-    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} REPS={REPS} prod={prod}
+    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} onSaveArtFiles={savArtFiles} REPS={REPS} prod={prod}
       onMarkRead={ids=>{const s=new Set(ids);setMsgs(msgs.map(m=>s.has(m.id)?{...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]}:m))}}
       onSavePromoProgram={async(prog)=>{await _dbSavePromoProgram(prog);const isFamily=c=>c.id===prog.customer_id||c.parent_id===prog.customer_id;const upd=c=>({...c,promo_programs:[...(c.promo_programs||[]).filter(p=>p.id!==prog.id),prog]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s);nf('Promo program saved')}}
       onDeletePromoProgram={async(id)=>{await _dbDeletePromoProgram(id);const upd=c=>({...c,promo_programs:(c.promo_programs||[]).filter(p=>p.id!==id)});setCust(prev=>prev.map(c=>(c.promo_programs||[]).some(p=>p.id===id)?upd(c):c));setSelC(s=>s&&(s.promo_programs||[]).some(p=>p.id===id)?upd(s):s);nf('Promo program removed')}}
@@ -6118,7 +6352,7 @@ export default function App(){
       onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}}
       onReceivePayment={c=>{const portalOpen=(invs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&safeNum(i.total)>safeNum(i.paid));const histOpen=(histInvs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&i.status!=='void'&&safeNum(i.total)>0);if(portalOpen.length+histOpen.length===0){nf('No open invoices for this customer','error');return}setPg('invoices');setInvF(f=>({...f,search:c.name||'',status:'open',group:'list',aging:'all',rep:'all'}))}}
       nf={nf}
-      onCopy={c=>{const{_version,created_at,updated_at,...rest}=c;const copy={...rest,id:'c'+Date.now(),name:c.name+' (Copy)',alpha_tag:'',netsuite_internal_id:null,contacts:(c.contacts||[]).map(ct=>({...ct})),_oe:0,_os:0,_oi:0,_ob:0};setCM({open:true,c:copy})}}
+      onCopy={c=>{const{_version,created_at,updated_at,...rest}=c;const copy={...rest,id:'c'+Date.now(),name:c.name,alpha_tag:'',netsuite_internal_id:null,contacts:(c.contacts||[]).map(ct=>({...ct})),_oe:0,_os:0,_oi:0,_ob:0};setCM({open:true,c:copy})}}
       onDelete={c=>{const hasOrders=aO.some(o=>o.customer_id===c.id);const kids=cust.filter(ch=>ch.parent_id===c.id);if(hasOrders){alert('Cannot delete — this customer has existing orders. Deactivate instead.');return}if(kids.length>0&&!window.confirm(c.name+' has '+kids.length+' sub-account(s) that will also be deleted. Continue?'))return;if(!window.confirm('Delete "'+c.name+'"? This cannot be undone.'))return;const idsToDelete=[c.id,...kids.map(k=>k.id)];setCust(prev=>prev.filter(x=>!idsToDelete.includes(x.id)));idsToDelete.forEach(id=>{if(supabase){supabase.from('customer_contacts').delete().eq('customer_id',id).then(()=>supabase.from('customers').delete().eq('id',id))}});setSelC(null);nf('Customer deleted')}}/></React.Suspense></ComponentErrorBoundary>;
     // Use server-side results when searching/filtering, fall back to client-side
     const f=custServerResults&&(q||rF!=='all')?custServerResults.customers.filter(c=>!c.parent_id):pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF&&!gK(p.id).some(c=>c.primary_rep_id===rF))return false;if(q){const s=q.toLowerCase();const toks=s.split(/\s+/).filter(Boolean);const pHay=((p.name||'')+' '+(p.alpha_tag||'')+' '+((p.search_tags||[]).join(' '))).toLowerCase();const childHays=gK(p.id).map(c=>((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))+' '+((p.search_tags||[]).join(' '))).toLowerCase());return toks.every(t=>pHay.includes(t))||childHays.some(h=>toks.every(t=>h.includes(t)))}return true});
@@ -6371,9 +6605,9 @@ export default function App(){
                 <span>Cost: <strong>${ep.nsa_cost?.toFixed(2)}</strong></span>
                 <span>Retail: <strong>${ep.retail_price?.toFixed(2)}</strong></span>
                 {(ep.brand==='Adidas'||ep.brand==='Under Armour'||ep.brand==='New Balance')?<>
-                  <span>Tier A: <strong>${rQ((ep.retail_price||0)*0.6).toFixed(2)}</strong></span>
-                  <span>Tier B: <strong>${rQ((ep.retail_price||0)*0.65).toFixed(2)}</strong></span>
-                  <span>Tier C: <strong>${rQ((ep.retail_price||0)*0.7).toFixed(2)}</strong></span>
+                  <span>Tier A: <strong>${rQ((ep.retail_price||0)*(1-auTierDisc('A',ep.pricing_group))).toFixed(2)}</strong></span>
+                  <span>Tier B: <strong>${rQ((ep.retail_price||0)*(1-auTierDisc('B',ep.pricing_group))).toFixed(2)}</strong></span>
+                  <span>Tier C: <strong>${rQ((ep.retail_price||0)*(1-auTierDisc('C',ep.pricing_group))).toFixed(2)}</strong></span>
                 </>:<span>Sell: <strong>${rQ(ep.nsa_cost*1.65).toFixed(2)}</strong></span>}
               </div>
               <div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
@@ -6384,7 +6618,7 @@ export default function App(){
             </>:<>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
                 <div><label className="form-label">SKU</label><input className="form-input" value={ep.sku} onChange={e=>setEp(x=>({...x,sku:e.target.value}))}/></div>
-                <div><label className="form-label">Brand</label><select className="form-select" value={ep.vendor_id} onChange={e=>{const vn=D_V.find(x=>x.id===e.target.value);setEp(x=>({...x,vendor_id:e.target.value,brand:vn?.name||x.brand}))}}><option value="">Select...</option>{D_V.map(vv=><option key={vv.id} value={vv.id}>{vv.name}</option>)}</select></div>
+                <div><label className="form-label">Vendor</label><select className="form-select" value={ep.vendor_id} onChange={e=>{const vn=D_V.find(x=>x.id===e.target.value);setEp(x=>({...x,vendor_id:e.target.value,brand:vn?.name||x.brand}))}}><option value="">Select...</option>{D_V.map(vv=><option key={vv.id} value={vv.id}>{vv.name}</option>)}</select></div>
                 <div style={{gridColumn:'1/3'}}><label className="form-label">Name</label><input className="form-input" value={ep.name} onChange={e=>setEp(x=>({...x,name:e.target.value}))}/></div>
                 <div><label className="form-label">Color</label><input className="form-input" value={ep.color} onChange={e=>setEp(x=>({...x,color:e.target.value}))}/></div>
                 <div><label className="form-label">Color Category</label><select className="form-select" value={ep.color_category||''} onChange={e=>setEp(x=>({...x,color_category:e.target.value}))}><option value="">Select...</option>{COLOR_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
@@ -6453,10 +6687,10 @@ export default function App(){
       {/* ORDER HISTORY (ALL) */}
       {tab==='history'&&<div className="card"><div className="card-header"><h3>All Orders</h3></div><div className="card-body" style={{padding:0}}>
         <table><thead><tr><th>Type</th><th>ID</th><th>Customer</th><th>Memo</th><th>Qty</th><th>Status</th><th>Date</th></tr></thead><tbody>
-        {[...pEsts.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const it=e.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const qty=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;
+        {[...pEsts.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const it=e.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const _sq=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;const qty=it?(_sq>0?_sq:safeNum(it.est_qty)):0;
           return{type:'Estimate',id:e.id,cust:c,memo:e.memo,qty,status:e.status,date:e.created_at,badge:e.status==='open'||e.status==='draft'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':'badge-gray',
             onClick:()=>{setEEst(e);setEEstC(c);setPg('estimates');setSelP(null)}}}),
-        ...pSOs.map(s=>{const c=cust.find(x=>x.id===s.customer_id);const it=s.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const qty=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;
+        ...pSOs.map(s=>{const c=cust.find(x=>x.id===s.customer_id);const it=s.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const _sq=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;const qty=it?(_sq>0?_sq:safeNum(it.est_qty)):0;
           return{type:'SO',id:s.id,cust:c,memo:s.memo,qty,status:calcSOStatus(s),date:s.created_at,badge:'badge-blue',
             onClick:()=>{setESO(s);setESOC(c);setPg('orders');setSelP(null)}}}),
         ...pPOs.map(po=>({type:'PO',id:po.po_id,cust:po.customer,memo:'→ '+po.soId,qty:Object.values(po.received||{}).reduce((a,v2)=>a+v2,0),status:po.status,date:po.created_at,badge:po.status==='received'?'badge-green':po.status==='ordered'?'badge-amber':'badge-gray',
@@ -7311,6 +7545,7 @@ export default function App(){
   const[artDashView,setArtDashView]=useState('artist');// 'artist' | 'rep'
   const[artCompletedOpen,setArtCompletedOpen]=useState(false);// toggle completed jobs dropdown
   const[artHiddenOpen,setArtHiddenOpen]=useState(false);// toggle hidden jobs dropdown
+  const[artInProductionOpen,setArtInProductionOpen]=useState(false);// toggle in-production jobs dropdown
   const[artCompletedSearch,setArtCompletedSearch]=useState('');// search within completed jobs
   const[artRejectModal,setArtRejectModal]=useState(null);// {job, reason:''}
   const[artEditModal,setArtEditModal]=useState(null);// {job, instructions:'', notes:''}
@@ -7334,7 +7569,7 @@ export default function App(){
   const[prodJobLightbox,setProdJobLightbox]=useState(false);// lightbox for mockup image
   const[prodLightboxIdx,setProdLightboxIdx]=useState(0);// index of current mockup in lightbox gallery
   const[prodLightboxZoom,setProdLightboxZoom]=useState(1);// zoom level for lightbox
-  const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
+  const[prodView,_setProdView]=useState(()=>loadState('prod_view','board'));const setProdView=v=>{_setProdView(v);try{localStorage.setItem('nsa_prod_view',JSON.stringify(v))}catch(e){}};const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
   const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');const[prodDecoF,setProdDecoF]=useState('all');
   const PROD_LIST_DEFAULT_COLS=['status','job','customer','expected','qty','deco','rep','so','actions'];
   const[prodListCols,_setProdListCols]=useState(()=>loadState('prod_list_cols',PROD_LIST_DEFAULT_COLS));
@@ -7616,7 +7851,7 @@ export default function App(){
     const readyOnly=byDeco.filter(j=>(j.prod_status!=='hold'||isJobReady(j,j.so))).filter(j=>j.prod_status!=='shipped');
     // Decorator filtering: decorators see all Ready for Prod, but only their assigned jobs in In Line/In Process/Completed
     const roleFiltered=isDecorator?readyOnly.filter(j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'||j.assigned_to===cu?.name):readyOnly;
-    const byStatus=prodStatF==='active'?roleFiltered:prodStatF==='all'?roleFiltered:prodStatF==='hold'?roleFiltered.filter(j=>j.prod_status==='hold'||j.prod_status==='ready'):roleFiltered.filter(j=>j.prod_status===prodStatF);
+    const byStatus=prodStatF==='active'?roleFiltered.filter(j=>j.prod_status!=='completed'):prodStatF==='all'?roleFiltered:prodStatF==='hold'?roleFiltered.filter(j=>j.prod_status==='hold'||j.prod_status==='ready'):roleFiltered.filter(j=>j.prod_status===prodStatF);
     const totalUnits=byStatus.reduce((a,j)=>a+j.total_units,0);
     const fulfilledUnits=byStatus.reduce((a,j)=>a+j.fulfilled_units,0);
     const needsArt=byStatus.filter(j=>j.art_status!=='art_complete').length;
@@ -7834,7 +8069,14 @@ export default function App(){
           items_count:{label:'# Items',align:'right',render:j=><span style={{fontSize:11}}>{(j.items||[]).length}</span>},
           notes:{label:'Notes',render:j=><div style={{fontSize:11,maxWidth:280,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.notes||j.so?.production_notes||'—'}</div>},
           progress:{label:'Progress',align:'right',render:j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;return<span style={{fontSize:11,whiteSpace:'nowrap'}}>{pct}%</span>}},
-          actions:{label:'',render:j=><button className="btn btn-sm" style={{fontSize:14,padding:'6px 12px',background:'#d97706',color:'white',border:'none'}} title="Production sheet" onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋</button>},
+          actions:{label:'Prod Sheet',align:'center',render:j=>{
+            const flow={hold:{to:'staging',label:'📦 → In Line',c:'#6366f1'},ready:{to:'staging',label:'→ In Line',c:'#d97706'},staging:{to:'in_process',label:'→ In Process',c:'#2563eb'},in_process:{to:'completed',label:'✓ Done',c:'#166534'}};
+            const nx=flow[j.prod_status];
+            return<div style={{display:'flex',gap:8,justifyContent:'center',alignItems:'center',whiteSpace:'nowrap'}}>
+              <div style={{width:116,display:'flex',justifyContent:'flex-end'}}>{nx&&<button className="btn btn-sm" style={{fontSize:10,padding:'5px 10px',background:nx.c,color:'white',border:'none',fontWeight:600}} title={'Move to '+statusLabel[nx.to]} onClick={e=>{e.stopPropagation();moveJobStatus(j,nx.to)}}>{nx.label}</button>}</div>
+              <button className="btn btn-sm" style={{fontSize:14,padding:'6px 12px',background:'#d97706',color:'white',border:'none'}} title="Production sheet" onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋</button>
+            </div>;
+          }},
         };
         const visibleCols=prodListCols.filter(id=>ALL_COLS[id]);
         const sortVal=(j,key)=>{
@@ -8707,23 +8949,45 @@ export default function App(){
                   // the NSA-#### scan also finds the source POs (PO-####-TAG) grouped under it.
                   const lcPoId=poId.toLowerCase();
                   const matchedLines=allPOLines.filter(pl=>pl.poId.toLowerCase()===lcPoId||(pl.poLine?.batch_po_number||'').toLowerCase()===lcPoId);
-                  matchedLines.forEach(ml=>{
-                    const so=sos.find(s=>s.id===ml.soId);if(!so)return;
+                  // Group matched lines by SO so multiple received lines on the same SO are applied
+                  // together (a per-line savSO would read a stale SO each time and clobber prior updates).
+                  const linesBySO={};
+                  matchedLines.forEach(ml=>{(linesBySO[ml.soId]=linesBySO[ml.soId]||[]).push(ml)});
+                  Object.keys(linesBySO).forEach(soId=>{
+                    const so=sos.find(s=>s.id===soId);if(!so)return;
                     const updItems=[...safeItems(so)];
-                    const it=updItems[ml.itemIdx];if(!it)return;
-                    const pls=[...(it.po_lines||[])];
-                    if(pls[ml.poLineIdx]){
-                      const rcv={};
-                      Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k)){
-                        // Receive inputs are rendered keyed by poItems index, not the global allPOLines index.
-                        // Map this line back to its rendered row via _pl (non-batch); batch rows have no _pl, so
-                        // the lookup misses and we fall back to the ordered qty v — unchanged from prior behavior.
-                        const _ri=poItems.findIndex(pi=>pi._pl===ml);
-                        const el=_ri>=0?document.getElementById('rcv-'+_ri+'-'+k):null;rcv[k]=el?parseInt(el.value)||0:v}});
-                      pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:'received',received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
-                      updItems[ml.itemIdx]={...it,po_lines:pls};
-                    }
-                    savSO({...so,items:updItems,updated_at:new Date().toLocaleString()});
+                    linesBySO[soId].forEach(ml=>{
+                      const it=updItems[ml.itemIdx];if(!it)return;
+                      const pls=[...(it.po_lines||[])];
+                      if(pls[ml.poLineIdx]){
+                        const rcv={};
+                        Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k)){
+                          // Receive inputs are rendered keyed by poItems index, not the global allPOLines index.
+                          // Map this line back to its rendered row via _pl (non-batch); batch rows have no _pl, so
+                          // the lookup misses and we fall back to the ordered qty v — unchanged from prior behavior.
+                          const _ri=poItems.findIndex(pi=>pi._pl===ml);
+                          const el=_ri>=0?document.getElementById('rcv-'+_ri+'-'+k):null;rcv[k]=el?parseInt(el.value)||0:v}});
+                        pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:'received',received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
+                        updItems[ml.itemIdx]={...it,po_lines:pls};
+                      }
+                    });
+                    // Recalculate job item_status/fulfilled_units after receiving — mirrors the warehouse
+                    // stock-pull flow so the Production dashboard and "Ready for Deco" tab reflect received stock.
+                    const updatedJobs=safeJobs(so).map(j=>{
+                      let total=0,fulfilled=0;
+                      (j.items||[]).forEach(gi=>{const it=updItems[gi.item_idx];if(!it)return;
+                        Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
+                          total+=v;
+                          const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+                          const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+                          fulfilled+=Math.min(v,pQ+rQ);
+                        });
+                      });
+                      const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
+                      if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
+                      return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
+                    });
+                    savSO({...so,items:updItems,jobs:updatedJobs,updated_at:new Date().toLocaleString()});
                   });
                   nf('✅ '+poId+' received — '+totalUnits+' units. SO items updated.');
                   // Print label(s) after receiving — separate per source PO for batches
@@ -8908,6 +9172,7 @@ export default function App(){
                     bp.items.forEach(bpIt=>{
                       const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
                       const poLine={po_id:poNum,vendor:vg.name,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+vg.pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
+                      if(bpIt.drop_ship)poLine.drop_ship=true;
                       Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
                       updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
                     });
@@ -9193,7 +9458,7 @@ export default function App(){
         const poNum=inv._po_number||so?.po_number;
         const pRows=[];let pSubTotal=0;
         const pSoItems=so?safeItems(so):[];const pSoArt=so?safeArt(so):[];
-        const _pAQ2={};pSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ2[d.art_file_id]=(_pAQ2[d.art_file_id]||0)+q2}})});
+        const _pAQ2={};pSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ2[d.art_file_id]=(_pAQ2[d.art_file_id]||0)+q2}})});
         const pIsDeposit=inv.inv_type==='deposit';const pDepPct=pIsDeposit?(inv.deposit_pct||50)/100:1;
         if(pSoItems.length>0){
           pSoItems.forEach(it=>{
@@ -10000,7 +10265,7 @@ export default function App(){
                 // Build rows with decoration detail from SO items
                 const siRows=[];let siSubTotal=0;
                 const siSoItems=siSo?safeItems(siSo):[];const siSoArt=siSo?safeArt(siSo):[];
-                const _siAQ={};siSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_siAQ[d.art_file_id]=(_siAQ[d.art_file_id]||0)+q2}})});
+                const _siAQ={};siSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_siAQ[d.art_file_id]=(_siAQ[d.art_file_id]||0)+q2}})});
                 const siIsDeposit=siInv.inv_type==='deposit';const siDepPct=siIsDeposit?(siInv.deposit_pct||50)/100:1;
                 const siStoredLi=siInv.line_items||[];
                 if(siSoItems.length>0){
@@ -10295,7 +10560,7 @@ export default function App(){
                 // Build rows with decoration detail from SO items
                 const fRows=[];let fSubTotal=0;
                 const fSoItems=so?safeItems(so):[];const fSoArt=so?safeArt(so):[];
-                const _fAQ={};fSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_fAQ[d.art_file_id]=(_fAQ[d.art_file_id]||0)+q2}})});
+                const _fAQ={};fSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_fAQ[d.art_file_id]=(_fAQ[d.art_file_id]||0)+q2}})});
                 const fIsDeposit=inv.inv_type==='deposit';const fDepPct=fIsDeposit?(inv.deposit_pct||50)/100:1;
                 const fStoredLi=inv.line_items||[];
                 const shipAmt=inv.shipping!=null?inv.shipping:so?(()=>{const fLi2=fStoredLi.length>0?fStoredLi:fSoItems.map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{amount:qty*safeNum(it.unit_sell)}});const sub=fLi2.reduce((a,l)=>a+(l.amount||0),0);return(so.shipping_type==='pct'?sub*(so.shipping_value||0)/100:so.shipping_value||0)})():0;
@@ -13135,6 +13400,57 @@ export default function App(){
     // Store detail view
     if(omgSel){
       const s=omgSel;const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
+      // Customer art library — mirrors the customer Artwork tab: the account's
+      // (and parent's) saved logos PLUS art aggregated from their past SOs and
+      // estimates, since most existing logos live on prior orders, not the
+      // library column. De-duped by name+deco_type, preferring the most
+      // production-ready instance (library > files-on-hand > approved > other).
+      const _artLib=(()=>{
+        if(!c)return{list:[],byId:{}};
+        const isP=!c.parent_id;
+        const subs=isP?cust.filter(x=>x.parent_id===c.id):[];
+        const parentC=c.parent_id?cust.find(x=>x.id===c.parent_id):null;
+        const orderIds=[c.id,...subs.map(x=>x.id),c.parent_id].filter(Boolean);
+        const pool=[];
+        (c.art_files||[]).forEach(a=>pool.push({a,pref:4,label:'Library'}));
+        if(parentC)(parentC.art_files||[]).forEach(a=>pool.push({a,pref:4,label:'Parent library'}));
+        (sos||[]).filter(o=>orderIds.includes(o.customer_id)).forEach(o=>(o.art_files||[]).forEach(a=>pool.push({a,pref:(a.prod_files||[]).length?3:(a.status==='approved'?2:1),label:o.id})));
+        (ests||[]).filter(e=>orderIds.includes(e.customer_id)).forEach(e=>(e.art_files||[]).forEach(a=>pool.push({a,pref:1,label:e.id})));
+        const byId={};pool.forEach(({a})=>{if(a&&a.id&&!byId[a.id])byId[a.id]=a});
+        const byKey=new Map();
+        pool.forEach(({a,pref,label})=>{if(!a||!a.id||!(a.name||'').trim())return;const key=(a.name||'').toLowerCase()+'||'+(a.deco_type||'');const ex=byKey.get(key);if(!ex||pref>ex.pref)byKey.set(key,{a,pref,label})});
+        const list=[...byKey.values()].map(({a,label})=>({...a,_srcLabel:label})).sort((x,y)=>(x.name||'').localeCompare(y.name||''));
+        return{list,byId};
+      })();
+      const custArt=_artLib.list;
+      const custArtById=_artLib.byId;
+      const setStoreCustomer=(cid)=>{const upd={...s,customer_id:cid||null};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
+      const _applyStoreProds=newProds=>{const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
+      const _decoFields=decos=>({decorations:decos,deco_type:decos.length>0?decos.map(d=>d.type).join('|'):'',art_group:decos.map(d=>d.art_group).join('|')});
+      const applyBulkArt=()=>{
+        if(!omgBulkArt||omgBulkSel.size===0)return;
+        let deco=null;
+        if(omgBulkArt.startsWith('lib:')){const a=custArtById[omgBulkArt.slice(4)];if(!a)return;deco={type:a.deco_type||'screen_print',art_group:a.name||'Logo',_cust_art_id:a.id};}
+        else if(omgBulkArt.startsWith('new:')){const type=omgBulkArt.slice(4);const pfx=type==='embroidery'?'EMB':type==='heat_press'?'DTF':'SP';const existing=[...new Set((s.products||[]).flatMap(pr=>(pr.decorations||[]).filter(d=>d.type===type).map(d=>d.art_group)).filter(Boolean))];const nums=existing.filter(g=>g.startsWith(pfx+'-')).map(g=>parseInt(g.split('-')[1])||0);deco={type,art_group:`${pfx}-${nums.length?Math.max(...nums)+1:1}`};}
+        if(!deco)return;
+        const newProds=(s.products||[]).map((pr,j)=>{
+          if(!omgBulkSel.has(j))return pr;
+          const decos=pr.decorations||[];
+          const dup=deco._cust_art_id?decos.some(d=>d._cust_art_id===deco._cust_art_id):decos.some(d=>d.art_group===deco.art_group&&d.type===deco.type);
+          return{...pr,no_deco:false,..._decoFields(dup?decos:[...decos,{...deco}])};
+        });
+        _applyStoreProds(newProds);
+        nf(`Applied “${deco.art_group}” to ${omgBulkSel.size} item${omgBulkSel.size>1?'s':''}`);
+        setOmgBulkSel(new Set());setOmgBulkArt('');
+      };
+      const bulkNoDeco=()=>{
+        if(omgBulkSel.size===0)return;
+        _applyStoreProds((s.products||[]).map((pr,j)=>omgBulkSel.has(j)?{...pr,no_deco:true,decorations:[],deco_type:'no_deco',art_group:''}:pr));
+        nf(`Marked ${omgBulkSel.size} item${omgBulkSel.size>1?'s':''} as No Deco`);
+        setOmgBulkSel(new Set());
+      };
+      const _toggleRow=j=>setOmgBulkSel(prev=>{const n=new Set(prev);if(n.has(j))n.delete(j);else n.add(j);return n});
+      const _custOpts=[...cust].filter(cc=>cc&&cc.id).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
       const totalCost=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
       const totalRetail=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
       const storeFees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);
@@ -13147,7 +13463,33 @@ export default function App(){
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
             <div>
               <div style={{fontSize:20,fontWeight:800}}>{s.store_name}</div>
-              <div style={{fontSize:13,color:'#64748b'}}>{s._omg_sale_code&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',marginRight:6}}>{s._omg_sale_code}</span>}{c?.name} ({c?.alpha_tag}) · Rep: {rep?.name} · {s.id}</div>
+              <div style={{fontSize:13,color:'#64748b',display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                {s._omg_sale_code&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{s._omg_sale_code}</span>}
+                {(()=>{
+                  if(omgCustEdit===null)return <button onClick={()=>setOmgCustEdit('')}
+                    title="Link / change the customer for this store — enables the art library and sets the customer on any sales order created from this store"
+                    style={{fontSize:12,fontWeight:700,padding:'2px 8px',borderRadius:4,border:`1px solid ${c?'#cbd5e1':'#fca5a5'}`,background:c?'#fff':'#fef2f2',color:c?'#0f172a':'#dc2626',cursor:'pointer'}}>
+                    {c?`${c.name}${c.alpha_tag?' ('+c.alpha_tag+')':''}`:'⚠ Link a customer…'} ▾
+                  </button>;
+                  const toks=omgCustEdit.toLowerCase().split(/\s+/).filter(Boolean);
+                  const matches=_custOpts.filter(cc=>{const hay=((cc.name||'')+' '+(cc.alpha_tag||'')).toLowerCase();return toks.every(t=>hay.includes(t))}).slice(0,12);
+                  return <span style={{position:'relative',display:'inline-block'}}>
+                    <input autoFocus value={omgCustEdit} onChange={e=>setOmgCustEdit(e.target.value)} placeholder="Search customers…"
+                      onKeyDown={e=>{if(e.key==='Escape')setOmgCustEdit(null)}} onBlur={()=>setTimeout(()=>setOmgCustEdit(null),150)}
+                      style={{fontSize:12,padding:'3px 8px',borderRadius:4,border:'1px solid #2563eb',width:220,outline:'none'}}/>
+                    {matches.length>0&&<div style={{position:'absolute',top:'100%',left:0,zIndex:50,background:'#fff',border:'1px solid #cbd5e1',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.12)',maxHeight:260,overflowY:'auto',minWidth:240,marginTop:2}}>
+                      {matches.map(cc=><div key={cc.id} onMouseDown={e=>{e.preventDefault();setStoreCustomer(cc.id);setOmgCustEdit(null)}}
+                        onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='#fff'}
+                        style={{padding:'6px 10px',fontSize:12,cursor:'pointer',borderBottom:'1px solid #f1f5f9',whiteSpace:'nowrap',display:'flex',justifyContent:'space-between',gap:12}}>
+                        <span style={{fontWeight:600,color:'#0f172a'}}>{cc.name}</span>
+                        <span style={{color:'#94a3b8'}}>{cc.alpha_tag||''}{!cc.parent_id?' · parent':''}</span>
+                      </div>)}
+                    </div>}
+                    {c&&<button onMouseDown={e=>{e.preventDefault();setStoreCustomer(null);setOmgCustEdit(null)}} title="Unlink customer" style={{marginLeft:4,fontSize:11,color:'#94a3b8',border:'none',background:'none',cursor:'pointer'}}>unlink</button>}
+                  </span>;
+                })()}
+                · Rep: {rep?.name} · {s.id}
+              </div>
               {s._omg_id&&<div style={{fontSize:12,marginTop:2,display:'flex',gap:10}}>
                 <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" style={{color:'#2563eb',textDecoration:'none',fontWeight:600}}>🔗 OMG Admin</a>
                 {s.subdomain&&<a href={`https://${s.subdomain}.ordermygear.com`} target="_blank" rel="noopener noreferrer" style={{color:'#64748b',textDecoration:'none'}}>🌐 {s.subdomain}.ordermygear.com</a>}
@@ -13160,14 +13502,44 @@ export default function App(){
             </div>
             {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
               if(sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
+              if(!s.customer_id){nf('Link this store to a customer first (top of the page).','error');return}
               const generatedId=nextSOId(sos);
+              // Every product must be assigned an art group or explicitly marked
+              // "No Deco" (shoes, socks, equipment) before it can become an SO.
+              const needArt=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);
+              if(needArt.length){nf(`${needArt.length} item(s) need an art group or "No Deco": ${needArt.slice(0,6).map(p=>p.sku).join(', ')}${needArt.length>6?'…':''}`,'error');return;}
               // Build art files from unique art_group labels across all decorations
-              const artGroups=[...new Set((s.products||[]).flatMap(p=>(p.decorations||[]).map(d=>d.art_group)).filter(Boolean))];
-              const artFiles=artGroups.map((g,idx)=>{
-                const sampleDeco=(s.products||[]).flatMap(p=>(p.decorations||[]).filter(d=>d.art_group===g))[0];
-                return{id:'af_omg_'+idx,name:g,deco_type:sampleDeco?.type||'screen_print',
-                  ink_colors:'',thread_colors:'',art_size:'',files:[],mockup_files:[],prod_files:[],
-                  notes:'From OMG store '+s.store_name,status:'pending',uploaded:new Date().toLocaleDateString()};
+              // Each distinct art is either a customer-library logo (keyed by its
+              // saved art id) or a new named group. Build one art file per identity.
+              const artKeyOf=d=>d._cust_art_id?'lib:'+d._cust_art_id:(d.art_group?'name:'+d.art_group:null);
+              const artKeys=[];const seenArtKey=new Set();
+              (s.products||[]).forEach(p=>(p.decorations||[]).forEach(d=>{const k=artKeyOf(d);if(k&&!seenArtKey.has(k)){seenArtKey.add(k);artKeys.push({key:k,deco:d})}}));
+              const artKeyToId={};
+              const artFiles=artKeys.map(({key,deco},idx)=>{
+                const id='af_omg_'+idx;artKeyToId[key]=id;
+                const groupProds=(s.products||[]).filter(p=>(p.decorations||[]).some(d=>artKeyOf(d)===key));
+                // OMG mockup per SKU in this group, keyed sku|color.
+                const omgMocks={};let preview='';
+                groupProds.forEach(p=>{const img=p.image_url||'';if(!img)return;if(!preview)preview=img;omgMocks[p.sku+'|'+(p.color||'')]=[img]});
+                const src=deco._cust_art_id?custArtById[deco._cust_art_id]:null;
+                if(src){
+                  // Apply the customer's saved logo — its files, color ways, and
+                  // approval/production status come with it (so a fully-prepped
+                  // logo lands art-complete) — then layer in the OMG mockups.
+                  const copy=JSON.parse(JSON.stringify(src));
+                  const item_mockups={...(copy.item_mockups||{})};
+                  Object.entries(omgMocks).forEach(([k2,v])=>{if(!item_mockups[k2])item_mockups[k2]=v});
+                  return{...copy,id,item_mockups,preview_url:copy.preview_url||preview,uploaded:new Date().toLocaleDateString(),
+                    notes:(copy.notes?copy.notes+' · ':'')+'Applied from customer library — OMG store '+s.store_name};
+                }
+                // New logo: the OMG mockup is the approved proof, so the art file
+                // starts approved and the job lands in the "needs files" stage.
+                // "On file" adds the standard production marker → art-complete.
+                const ready=groupProds.length>0&&groupProds.every(p=>p.art_ready);
+                const prod_files=ready?[{name:'Existing art on file',on_file:true,at:new Date().toISOString(),by:cu?.name||'Rep'}]:[];
+                return{id,name:deco.art_group,deco_type:deco.type||'screen_print',
+                  ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],item_mockups:omgMocks,preview_url:preview,prod_files,
+                  notes:'From OMG store '+s.store_name+(ready?' — logo on file, art ready':' — mockup is the approved proof'),status:'approved',approved_at:new Date().toISOString(),uploaded:new Date().toLocaleDateString()};
               });
               // Build SO items from imported products
               const soItems=(s.products||[]).map(p=>{
@@ -13183,8 +13555,8 @@ export default function App(){
                   sizes:p.sizes||{},
                   available_sizes:Object.keys(p.sizes||{}),
                   _colorImage:p.image_url||'',
-                  no_deco:decos.length===0,
-                  decorations:decos.map((d,di)=>{const artFileId=d.art_group?artFiles.find(af=>af.name===d.art_group)?.id||null:null;return{kind:'art',position:positions[di]||'Position '+(di+1),type:d.type,art_file_id:artFileId,sell_override:0,sell_each:0,cost_each:0}}),
+                  no_deco:p.no_deco||decos.length===0,
+                  decorations:decos.map((d,di)=>{const k=artKeyOf(d);const artFileId=k?artKeyToId[k]||null:null;return{kind:'art',position:positions[di]||'Position '+(di+1),type:d.type||(d._cust_art_id&&custArtById[d._cust_art_id]?.deco_type)||'screen_print',art_file_id:artFileId,sell_override:0,sell_each:0,cost_each:0}}),
                   pick_lines:[],po_lines:[],
                 };
               });
@@ -13192,17 +13564,37 @@ export default function App(){
                 created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
                 expected_date:'',production_notes:'OMG Store '+s.store_name+' — '+soItems.length+' items imported from report. Deco cost is $0 (bundled in store price).'
                   +(s._omg_shipping?'\nShipping collected: $'+s._omg_shipping.toFixed(2):'')
-                  +(s._omg_processing?'\nProcessing fees: $'+s._omg_processing.toFixed(2):'')
-                  +(s._omg_tax?'\nSales tax collected: $'+s._omg_tax.toFixed(2):'')
+                  +(s._omg_processing?'\nProcessing fees (counted as NSA cost): $'+s._omg_processing.toFixed(2):'')
+                  +(s._omg_tax?'\nSales tax collected & remitted by OMG: $'+s._omg_tax.toFixed(2)+' (SO tax left at $0)':'')
+                  +(s._omg_fundraise?'\nFundraising added to customer as promo credit: $'+s._omg_fundraise.toFixed(2):'')
                   +(s._omg_grand_total?'\nGrand total: $'+s._omg_grand_total.toFixed(2):''),
                 shipping_type:'flat',shipping_value:s._omg_shipping||0,
-                tax_rate:0,
+                tax_rate:0,tax_exempt:true,
                 ship_to_id:'default',firm_dates:[],art_files:artFiles,
                 jobs:[],items:soItems,omg_store_id:s.id,
-                _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_grand_total:s._omg_grand_total||0};
+                _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_fundraise:s._omg_fundraise||0,_omg_grand_total:s._omg_grand_total||0};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
-              nf(`Created SO with ${soItems.length} items from ${s.store_name}`);
+              // OMG store fundraising profit becomes a promo credit the school can
+              // spend on future NSA orders. Add to (or create) the customer's
+              // current promo period so the existing apply-promo flow can use it.
+              const _fund=s._omg_fundraise||0;
+              if(_fund>0&&c){
+                const promoOwnerId=c.parent_id||c.id;
+                const isFamily=cc=>cc.id===promoOwnerId||cc.parent_id===promoOwnerId;
+                const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
+                const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
+                const owner=cust.find(x=>x.id===promoOwnerId)||c;
+                const existing=(owner.promo_periods||[]).find(p=>p.period_start===_pStart);
+                const note='OMG fundraising: '+s.store_name;
+                const savedPeriod=existing
+                  ?{...existing,allocated:(existing.allocated||0)+_fund,notes:existing.notes?existing.notes+' · '+note:note}
+                  :{id:'pp_'+Date.now(),customer_id:promoOwnerId,program_id:null,period_start:_pStart,period_end:_pEnd,allocated:_fund,used:0,notes:note,created_at:new Date().toISOString()};
+                _dbSavePromoPeriod(savedPeriod);
+                setCust(prev=>prev.map(cc=>{if(!isFamily(cc))return cc;const has=(cc.promo_periods||[]).some(p=>p.id===savedPeriod.id);const periods=has?(cc.promo_periods||[]).map(p=>p.id===savedPeriod.id?savedPeriod:p):[...(cc.promo_periods||[]),savedPeriod];return{...cc,promo_periods:periods}}));
+              }
+              nf(`Created SO with ${soItems.length} items from ${s.store_name}`+(_fund>0?` · $${_fund.toFixed(2)} fundraising added as promo credit`:''));
             }}>📋 Create Sales Order ({(s.products||[]).length} items)</button>}
+            {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&(()=>{const na=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);return na.length>0?<div style={{marginTop:6,padding:'6px 10px',background:'#fef3c7',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⚠️ {na.length} item{na.length>1?'s':''} need an art group or “No Deco” before creating the SO</div>:null})()}
             {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
               ✅ Already pulled → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>}
             {s.status!=='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -13210,6 +13602,10 @@ export default function App(){
                 onClick={()=>{const so=sos.find(x=>x.omg_store_id===s.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}}>
                 📋 View SO → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>
             </div>}
+            {(()=>{const rec=omgFirstSeen[s.id];const tag='['+s.id+']';const task=assignedTodos.find(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag));
+              if(task){const who=REPS.find(r=>r.id===task.assigned_to)?.name||'accounting';return<div style={{marginTop:6,padding:'6px 12px',background:task.status==='completed'?'#f0fdf4':'#faf5ff',borderRadius:6,fontSize:11,color:task.status==='completed'?'#166534':'#6d28d9',fontWeight:600}}>{task.status==='completed'?'✅ OMG funds applied':`💰 ${who} reminded to apply OMG funds`}</div>}
+              if(rec&&!rec.baseline){const days=Math.ceil((28*864e5-(Date.now()-new Date(rec.at).getTime()))/864e5);return<div style={{marginTop:6,padding:'6px 12px',background:'#fffbeb',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⏳ Accounting will be reminded to apply OMG funds in {Math.max(0,days)} day{days===1?'':'s'}</div>}
+              return null})()}
           </div>
         </div></div>
 
@@ -13388,11 +13784,33 @@ export default function App(){
                 <div style={{fontSize:40,marginBottom:8}}>📦</div>
                 <div style={{fontSize:13,color:'#94a3b8'}}>Products will appear here after importing the OMG report.</div>
               </div>
-            ) : (
-            <table><thead><tr><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Art Group</th><th>Retail</th><th>Cost</th><th>Sizes</th><th>Units</th><th>Revenue</th></tr></thead>
+            ) : (<>
+            <div style={{padding:'10px 16px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+              <span style={{fontSize:12,fontWeight:800,color:'#0f172a'}}>⚡ Bulk assign art</span>
+              <select value={omgBulkArt} onChange={e=>setOmgBulkArt(e.target.value)} style={{fontSize:12,padding:'4px 8px',borderRadius:5,border:'1px solid #cbd5e1',maxWidth:240}}>
+                <option value="">Choose a logo…</option>
+                {custArt.length>0&&<optgroup label="Customer logos">{custArt.map(a=><option key={a.id} value={'lib:'+a.id}>{a.name||'Untitled'} ({(a.deco_type||'').replace(/_/g,' ')})</option>)}</optgroup>}
+                <optgroup label="New logo">
+                  <option value="new:screen_print">+ New Screen Print group</option>
+                  <option value="new:embroidery">+ New Embroidery group</option>
+                  <option value="new:heat_press">+ New DTF group</option>
+                </optgroup>
+              </select>
+              <button className="btn btn-sm btn-primary" disabled={!omgBulkArt||omgBulkSel.size===0} onClick={applyBulkArt} style={{opacity:(!omgBulkArt||omgBulkSel.size===0)?0.5:1}}>Apply to {omgBulkSel.size} selected</button>
+              <button className="btn btn-sm" disabled={omgBulkSel.size===0} onClick={bulkNoDeco} style={{fontSize:11,opacity:omgBulkSel.size===0?0.5:1}}>Mark No Deco</button>
+              <span style={{width:1,height:18,background:'#cbd5e1'}}/>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{const ns=new Set();(s.products||[]).forEach((p,j)=>{if(!p.no_deco&&(p.decorations||[]).length===0)ns.add(j)});setOmgBulkSel(ns)}}>Select items needing art</button>
+              {omgBulkSel.size>0&&<button className="btn btn-sm" style={{fontSize:11,color:'#64748b'}} onClick={()=>setOmgBulkSel(new Set())}>Clear ({omgBulkSel.size})</button>}
+            </div>
+            <table><thead><tr><th style={{width:28}}><input type="checkbox" title="Select all" checked={(s.products||[]).length>0&&omgBulkSel.size===(s.products||[]).length} ref={el=>{if(el)el.indeterminate=omgBulkSel.size>0&&omgBulkSel.size<(s.products||[]).length}} onChange={e=>{if(e.target.checked)setOmgBulkSel(new Set((s.products||[]).map((_,j)=>j)));else setOmgBulkSel(new Set())}} style={{cursor:'pointer'}}/></th><th style={{width:50}}></th><th>SKU</th><th>Product</th><th>Color</th><th style={{width:140}}>Deco</th><th>Art Group</th><th>Retail</th><th>Cost</th><th>Sizes</th><th>Units</th><th>Revenue</th></tr></thead>
             <tbody>{(s.products||[]).map((p,i)=>{const q=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);
               const updateDecos=(newDecos)=>{
-                const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,decorations:newDecos,deco_type:newDecos.map(d=>d.type).join('|'),art_group:newDecos.map(d=>d.art_group).join('|')}:pr);
+                const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,decorations:newDecos,deco_type:newDecos.length>0?newDecos.map(d=>d.type).join('|'):'',art_group:newDecos.map(d=>d.art_group).join('|'),...(newDecos.length>0?{no_deco:false}:{})}:pr);
+                const upd={...s,products:newProds};
+                setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
+              };
+              const setNoDeco=(v)=>{
+                const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,no_deco:v,...(v?{decorations:[],deco_type:'no_deco',art_group:''}:{deco_type:''})}:pr);
                 const upd={...s,products:newProds};
                 setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
               };
@@ -13400,9 +13818,27 @@ export default function App(){
                 const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,[key]:val}:pr);
                 const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
               };
-              return<tr key={i}>
-                <td style={{padding:4}}>{p.image_url?<img src={p.image_url} alt="" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',cursor:'pointer'}} onClick={e=>{
-                  e.stopPropagation();const overlay=document.createElement('div');
+              // "Art ready" is tracked per product; an art group counts as ready
+              // when every product carrying that group is marked. Toggling a group
+              // sets the flag on all of its products at once.
+              const groupReady=(g)=>{const ps=(s.products||[]).filter(pr=>(pr.decorations||[]).some(d=>d.art_group===g));return ps.length>0&&ps.every(pr=>pr.art_ready);};
+              const setGroupReady=(g,val)=>{const newProds=(s.products||[]).map(pr=>(pr.decorations||[]).some(d=>d.art_group===g)?{...pr,art_ready:val}:pr);const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);};
+              return<tr key={i} style={omgBulkSel.has(i)?{background:'#eff6ff'}:undefined}>
+                <td style={{textAlign:'center'}}><input type="checkbox" checked={omgBulkSel.has(i)} onChange={()=>_toggleRow(i)} style={{cursor:'pointer'}}/></td>
+                <td style={{padding:4}}>{p.image_url?<img src={p.image_url} alt="" title="Hover to preview · click for full size" style={{width:44,height:44,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',cursor:'pointer'}}
+                  onMouseEnter={e=>{
+                    const old=document.getElementById('omg-hover-preview');if(old)old.remove();
+                    const r=e.currentTarget.getBoundingClientRect();const size=280;
+                    const pop=document.createElement('div');pop.id='omg-hover-preview';
+                    let left=r.right+12;if(left+size>window.innerWidth)left=r.left-size-12;left=Math.max(8,left);
+                    let top=r.top+r.height/2-size/2;top=Math.max(8,Math.min(top,window.innerHeight-size-8));
+                    pop.style.cssText=`position:fixed;z-index:9998;pointer-events:none;left:${left}px;top:${top}px;width:${size}px;height:${size}px;border-radius:8px;overflow:hidden;background:#fff;border:1px solid #e2e8f0;box-shadow:0 8px 32px rgba(0,0,0,0.35)`;
+                    pop.innerHTML=`<img src="${p.image_url}" style="width:100%;height:100%;object-fit:contain;background:#fff"/>`;
+                    document.body.appendChild(pop);
+                  }}
+                  onMouseLeave={()=>{const el=document.getElementById('omg-hover-preview');if(el)el.remove()}}
+                  onClick={e=>{
+                  e.stopPropagation();const hp=document.getElementById('omg-hover-preview');if(hp)hp.remove();const overlay=document.createElement('div');
                   overlay.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;cursor:pointer';
                   overlay.innerHTML=`<img src="${p.image_url}" style="max-width:90vw;max-height:90vh;object-fit:contain;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.5)"/>`;
                   overlay.onclick=()=>overlay.remove();document.body.appendChild(overlay);
@@ -13419,15 +13855,26 @@ export default function App(){
                     </span>}
                   </div></td>
                 <td style={{fontSize:11}}>{p.color}</td>
-                <td><div style={{display:'flex',flexDirection:'column',gap:2}}>
-                  {(p.decorations||[]).map((d,di)=>{const [label,bg,fg]=d.type==='screen_print'?['SP','#dbeafe','#1e40af']:d.type==='embroidery'?['EMB','#ede9fe','#6d28d9']:['HTV','#fef3c7','#92400e'];
+                <td>{p.no_deco?(
+                  <div style={{display:'flex',alignItems:'center',gap:4}}>
+                    <span style={{padding:'2px 8px',borderRadius:3,fontSize:9,fontWeight:800,background:'#f1f5f9',color:'#64748b',border:'2px solid #cbd5e1'}}>NO DECO</span>
+                    <button onClick={()=>setNoDeco(false)} title="Clear — this item gets decoration" style={{fontSize:12,color:'#94a3b8',cursor:'pointer',border:'none',background:'none',padding:'0 2px',lineHeight:1}}>&times;</button>
+                  </div>
+                ):(
+                <div style={{display:'flex',flexDirection:'column',gap:2}}>
+                  {(p.decorations||[]).map((d,di)=>{const [label,bg,fg]=d.type==='screen_print'?['SP','#dbeafe','#1e40af']:d.type==='embroidery'?['EMB','#ede9fe','#6d28d9']:['DTF','#fef3c7','#92400e'];
                     return <div key={di} style={{display:'flex',alignItems:'center',gap:2}}>
-                      <span style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:800,background:bg,color:fg,border:`2px solid ${fg}`}}>{d.art_group||label}</span>
+                      <span title={d._cust_art_id?'From customer art library':''} style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:800,background:bg,color:fg,border:`2px solid ${fg}`}}>{d._cust_art_id?'📁 ':''}{d.art_group||label}</span>
                       <button onClick={()=>updateDecos((p.decorations||[]).filter((_,j)=>j!==di))} style={{fontSize:12,color:'#94a3b8',cursor:'pointer',border:'none',background:'none',padding:'0 2px',lineHeight:1}}>&times;</button>
                     </div>})}
-                  <div style={{display:'flex',gap:2}}>
-                    {[['SP','screen_print'],['EMB','embroidery'],['HTV','heat_press']].map(([label,type])=>{
-                      const pfx=type==='screen_print'?'SP':type==='embroidery'?'EMB':'HTV';
+                  <div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
+                    {custArt.length>0&&<select value="" title="Apply a logo already on this customer" onChange={e=>{if(!e.target.value)return;const a=custArtById[e.target.value];if(a)updateDecos([...(p.decorations||[]),{type:a.deco_type||'screen_print',art_group:a.name||'Logo',_cust_art_id:a.id}]);e.target.value=''}}
+                      style={{padding:'2px 4px',borderRadius:3,fontSize:9,fontWeight:700,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer',maxWidth:120,appearance:'none'}}>
+                      <option value="">📁 Customer logo…</option>
+                      {custArt.map(a=><option key={a.id} value={a.id}>{a.name||'Untitled'} ({(a.deco_type||'').replace(/_/g,' ')})</option>)}
+                    </select>}
+                    {[['SP','screen_print'],['EMB','embroidery'],['DTF','heat_press']].map(([label,type])=>{
+                      const pfx=type==='screen_print'?'SP':type==='embroidery'?'EMB':'DTF';
                       const existing=[...new Set((s.products||[]).flatMap(pr=>(pr.decorations||[]).filter(d=>d.type===type).map(d=>d.art_group)).filter(Boolean))].sort();
                       const prefixed=existing.filter(g=>g.startsWith(pfx));
                       const nums=prefixed.map(g=>parseInt(g.split('-')[1])||0);
@@ -13441,18 +13888,29 @@ export default function App(){
                         </select>
                       </div>}
                     )}
+                    <button onClick={()=>setNoDeco(true)} title="Mark as no decoration (shoes, socks, equipment)" style={{padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:700,border:'1px dashed #cbd5e1',background:'#f8fafc',color:'#94a3b8',cursor:'pointer'}}>No Deco</button>
                   </div>
-                </div></td>
+                </div>)}</td>
                 <td>{(()=>{
                   const decos=p.decorations||[];
                   if(decos.length===0)return <span style={{fontSize:11,color:'#94a3b8'}}>—</span>;
                   return <div style={{display:'flex',flexDirection:'column',gap:2}}>
                     {decos.map((d,di)=>{
                       const color=d.type==='screen_print'?'#1e40af':d.type==='embroidery'?'#6d28d9':'#92400e';
-                      return <input key={di} type="text" value={d.art_group||''} placeholder="name..."
-                        onChange={e=>{const val=e.target.value;updateDecos((p.decorations||[]).map((dd,j)=>j===di?{...dd,art_group:val}:dd))}}
-                        style={{width:80,padding:'2px 5px',borderRadius:3,fontSize:9,fontWeight:700,border:`1px solid ${color}40`,color,background:'transparent',outline:'none'}}
-                        onFocus={e=>{e.target.style.borderColor=color}} onBlur={e=>{e.target.style.borderColor=color+'40'}}/>;
+                      // Library-linked logos carry their own name + production status,
+                      // so the name is read-only and there's no "on file" toggle.
+                      if(d._cust_art_id)return <div key={di} title="From customer art library — art & files come from the saved logo" style={{display:'flex',alignItems:'center',gap:3,fontSize:9,fontWeight:700,color}}>
+                        <span>📁 {d.art_group||'Logo'}</span>
+                      </div>;
+                      return <div key={di} style={{display:'flex',alignItems:'center',gap:4}}>
+                        <input type="text" value={d.art_group||''} placeholder="name..."
+                          onChange={e=>{const val=e.target.value;updateDecos((p.decorations||[]).map((dd,j)=>j===di?{...dd,art_group:val}:dd))}}
+                          style={{width:80,padding:'2px 5px',borderRadius:3,fontSize:9,fontWeight:700,border:`1px solid ${color}40`,color,background:'transparent',outline:'none'}}
+                          onFocus={e=>{e.target.style.borderColor=color}} onBlur={e=>{e.target.style.borderColor=color+'40'}}/>
+                        {d.art_group&&<label title="Logo already on file — art is ready, skip straight to production" style={{display:'flex',alignItems:'center',gap:2,fontSize:8,fontWeight:700,color:groupReady(d.art_group)?'#166534':'#94a3b8',cursor:'pointer',whiteSpace:'nowrap'}}>
+                          <input type="checkbox" checked={groupReady(d.art_group)} onChange={e=>setGroupReady(d.art_group,e.target.checked)} style={{margin:0,cursor:'pointer'}}/>on file
+                        </label>}
+                      </div>;
                     })}
                   </div>;
                 })()}</td>
@@ -13489,7 +13947,7 @@ export default function App(){
                 <td style={{fontWeight:700,textAlign:'center'}}>{q}</td>
                 <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>${rev.toLocaleString()}</td>
               </tr>})}</tbody></table>
-            )}
+            </>)}
           </div>
         </div>
 
@@ -16402,9 +16860,11 @@ export default function App(){
       {id:'waiting_for_art',label:'Waiting for Art',color:'#dc2626',bg:'#fef2f2',desc:'Needs artist attention'},
       {id:'needs_approval',label:'Needs Approval',color:'#92400e',bg:'#fef3c7',desc:'Waiting for rep/customer approval'},
       {id:'approved',label:'Approved / Needs Files',color:'#166534',bg:'#dcfce7',desc:'Approved — upload production files'},
-      {id:'in_production',label:'In Production',color:'#2563eb',bg:'#eff6ff',desc:'Art done — being decorated'},
     ];
-    const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=c.id==='in_production'?inProductionJobs.length:artistJobs.filter(j=>getArtFileStatus(j)===c.id).length});
+    const inProductionCol={id:'in_production',label:'In Production',color:'#2563eb',bg:'#eff6ff',desc:'Art done — being decorated'};
+    const sortByDaysOut=(a,b)=>{if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0};
+    const sortedInProductionJobs=[...inProductionJobs].sort(sortByDaysOut);
+    const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=artistJobs.filter(j=>getArtFileStatus(j)===c.id).length});
 
     // ─── Rep view data — all jobs grouped by rep ───
     const repJobs=filtered.filter(j=>!j.art_hidden).filter(j=>artDashView==='rep'?(cu.role==='admin'||cu.role==='super_admin'||j.repId===cu.id||artFilter!=='all'):true);
@@ -16428,7 +16888,7 @@ export default function App(){
           </div>
           <div style={{display:'flex',gap:5,alignItems:'center',marginBottom:2,minWidth:0}}>
             <span style={{fontSize:11,fontWeight:600,color:'#475569',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.art_name}</span>
-            {af&&(()=>{const fSt=af.status==='uploaded'?'needs_approval':af.status||'waiting_for_art';return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
+            {af&&(()=>{const fSt=getArtFileStatus(j);return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
           </div>
           <div style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
             <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.id} · {j.soId} · {j.total_units}u · {j.rep}</span>
@@ -16591,16 +17051,12 @@ export default function App(){
       {artDashView==='artist'&&<>
         <div className="stats-row">
           {artistCols.map(c=><div key={c.id} className="stat-card"><div className="stat-label">{c.label}</div><div className="stat-value" style={{color:c.color}}>{artistCounts[c.id]}</div></div>)}
+          <div className="stat-card"><div className="stat-label">{inProductionCol.label}</div><div className="stat-value" style={{color:inProductionCol.color}}>{inProductionJobs.length}</div></div>
           <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value">{artistJobs.length+inProductionJobs.length}</div></div>
         </div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:10,alignItems:'flex-start'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:10,alignItems:'flex-start'}}>
           {artistCols.map(col=>{
-            const colJobs=col.id==='in_production'?inProductionJobs.sort((a,b)=>{
-              if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;
-              if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0})
-              :artistJobs.filter(j=>getArtFileStatus(j)===col.id).sort((a,b)=>{
-              if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;
-              if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0});
+            const colJobs=artistJobs.filter(j=>getArtFileStatus(j)===col.id).sort(sortByDaysOut);
             return<div key={col.id} style={{background:col.bg,borderRadius:10,padding:8,minHeight:200}}>
               <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'4px 6px'}}>
                 <div style={{width:10,height:10,borderRadius:5,background:col.color}}/>
@@ -16612,8 +17068,24 @@ export default function App(){
             </div>})}
         </div>
 
-        {/* ═══ COMPLETED JOBS — collapsible reference section ═══ */}
+        {/* ═══ IN PRODUCTION — collapsible section (art done, being decorated) ═══ */}
         <div style={{marginTop:16}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:inProductionCol.bg,borderRadius:artInProductionOpen?'10px 10px 0 0':'10px',border:'1px solid #bfdbfe',cursor:'pointer'}} onClick={()=>setArtInProductionOpen(v=>!v)}>
+            <span style={{fontSize:16,color:inProductionCol.color,transform:artInProductionOpen?'rotate(90deg)':'rotate(0deg)',transition:'transform 0.2s'}}>&#9654;</span>
+            <span style={{fontSize:13,fontWeight:800,color:inProductionCol.color}}>{inProductionCol.label}</span>
+            <span style={{fontSize:11,fontWeight:700,color:inProductionCol.color,background:'white',borderRadius:10,padding:'1px 8px'}}>{sortedInProductionJobs.length}</span>
+            <span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>{inProductionCol.desc}</span>
+          </div>
+          {artInProductionOpen&&<div style={{border:'1px solid #bfdbfe',borderTop:'none',borderRadius:'0 0 10px 10px',padding:12,background:'white'}}>
+            {sortedInProductionJobs.length===0&&<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:11}}>No jobs in production</div>}
+            {sortedInProductionJobs.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:8}}>
+              {sortedInProductionJobs.map(j=>renderArtCard(j,'artist',inProductionCol))}
+            </div>}
+          </div>}
+        </div>
+
+        {/* ═══ COMPLETED JOBS — collapsible reference section ═══ */}
+        <div style={{marginTop:8}}>
           <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:'#f8fafc',borderRadius:artCompletedOpen?'10px 10px 0 0':'10px',border:'1px solid #e2e8f0',cursor:'pointer'}} onClick={()=>setArtCompletedOpen(v=>!v)}>
             <span style={{fontSize:16,transform:artCompletedOpen?'rotate(90deg)':'rotate(0deg)',transition:'transform 0.2s'}}>&#9654;</span>
             <span style={{fontSize:13,fontWeight:800,color:'#475569'}}>Completed Jobs</span>
@@ -16787,12 +17259,12 @@ export default function App(){
         const _mockKey=(sku,color)=>sku+'|'+(color||'');
         // Read with fallback to the legacy plain-SKU key so existing data still renders.
         const _getMocks=(artF,sku,color)=>{const m=artF?.item_mockups||{};const v=m[_mockKey(sku,color)];return v&&v.length>0?v:(m[sku]||[]);};
-        const handleMockupUploadForItem=async(files,sku,color,targetArtId)=>{
+        const handleMockupUploadForItem=async(files,sku,color,targetArtId,slotKey)=>{
           if(!files||files.length===0)return;
           setArtJobDetailUploading(true);
           try{
             const artId=targetArtId||resolveItemArtId(sku);
-            const mk=_mockKey(sku,color);
+            const mk=slotKey||_mockKey(sku,color);
             const uploaded=[];
             for(const f of files){
               if(typeof nf==='function')nf('Uploading '+f.name+' for '+sku+'...');
@@ -16806,8 +17278,9 @@ export default function App(){
             if(hasMatch){
               const liveAf=existingArt.find(a=>a.id===artId);
               const curItemMockups=liveAf?.item_mockups||{};
-              // Migrate any legacy plain-SKU entry onto the composite key while preserving it.
-              const existing=curItemMockups[mk]||curItemMockups[sku]||[];
+              // Migrate any legacy plain-SKU entry onto the composite key while preserving it — but only for the
+              // primary (bare sku|color) slot, so a per-decoration slot doesn't inherit the legacy mockup.
+              const existing=curItemMockups[mk]||(mk===_mockKey(sku,color)?(curItemMockups[sku]||[]):[]);
               const updItemMockups={...curItemMockups,[mk]:[...existing,...uploaded]};
               updArt=existingArt.map(a=>a.id===artId?{...a,item_mockups:updItemMockups,status:'uploaded'}:a);
             }else{
@@ -16904,7 +17377,7 @@ export default function App(){
                   const key=(it.sku||gi.sku)+'|'+(it.color||gi.color||'');
                   if(!repPerItemDecos[key])repPerItemDecos[key]=[];
                   safeDecos(it).forEach(d=>{
-                    if(d.kind==='art'){const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';const cwObj2=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;const dColors=cwObj2?cwObj2.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);repPerItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,underbase:d.underbase||false,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||'',cwLabel:cwObj2?.garment_color||''});}
+                    if(d.kind==='art'){const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';const cwObj2=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;const dColors=cwObj2?cwObj2.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);repPerItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,underbase:d.underbase||false,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||'',cwLabel:cwObj2?.garment_color||'',colorWayId:d.color_way_id||null});}
                     else if(d.kind==='numbers')repPerItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),numSize:d.num_size||'—',numFont:d.num_font||'block',twoColor:d.two_color||false,frontAndBack:d.front_and_back||false,numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,printColor:d.print_color||''});
                     else if(d.kind==='names')repPerItemDecos[key].push({kind:'names',position:d.position||'Back Center',frontAndBack:d.front_and_back||false});
                   });
@@ -16921,9 +17394,14 @@ export default function App(){
                   const effectiveArtDecos=artDecos.length>0?artDecos:repPosList.length>0?repPosList.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:'',cwLabel:''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''}]:[];
                   // Production files for this item's art
                   const repItemPFs=artDecos.filter(d=>d.artFile).flatMap(d=>(d.artFile?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f)})));
-                  // Unique arts on this item — one labeled mockup drop zone per art (side by side).
-                  const _repItemArts=[...new Map(artDecos.filter(d=>d.artFile&&d.artFile.id).map(d=>[d.artFile.id,d.artFile])).values()];
-                  const _repArts=_repItemArts.length>0?_repItemArts:(af?[af]:[]);
+                  // One mockup slot per decoration (reversible color ways + numbers/names each get a box).
+                  // Slot keys are computed identically to the artist modal so uploads from either side line up.
+                  const _repSkBase=_mockKey(gi.sku,gi.color);
+                  const _repSlots=[];
+                  effectiveArtDecos.forEach((d,i)=>{const disc=i===0?'':(d.colorWayId||('d'+i));_repSlots.push({key:_repSkBase+(disc?('|'+disc):''),primary:!disc,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,d.cwLabel?('CW: '+d.cwLabel):'',d.reversible?'Reversible':''].filter(Boolean).join(' · ')})});
+                  numDecos.forEach((d,i)=>_repSlots.push({key:_repSkBase+'|numbers'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
+                  nameDecos.forEach((d,i)=>_repSlots.push({key:_repSkBase+'|names'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
+                  if(_repSlots.length===0&&af)_repSlots.push({key:_repSkBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                   return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?16:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'white'}}>
                     {/* Item header */}
                     <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
@@ -16948,13 +17426,13 @@ export default function App(){
                     {/* Per-item mockup — one labeled drop zone per art on this item (side by side) */}
                     <div style={{padding:12,borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
                       <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',marginBottom:6}}>🖼️ Mockup</div>
-                      {_repArts.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
-                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repArts.map(a=>{
-                        const mocks=_getMocks(a,gi.sku,gi.color);const primary=mocks[0]||null;const extra=mocks.slice(1);
+                      {_repSlots.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
+                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=>{const a=slot.artFile;
+                        const mocks=slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]);const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
-                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)handleMockupUploadForItem(files,gi.sku,gi.color,a.id)};
+                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)handleMockupUploadForItem(files,gi.sku,gi.color,slot.artId,slot.key)};
                         const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
-                        return<div key={a.id} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
+                        return<div key={slot.key} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
                           <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':'2px dashed #a78bfa',background:primary?'white':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:primary?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
                             onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';if(!primary)e.currentTarget.style.background='#ede9fe'}}
                             onDragLeave={e=>{e.currentTarget.style.borderColor=primary?'#7c3aed':'#a78bfa';if(!primary)e.currentTarget.style.background='#faf5ff'}}
@@ -16975,8 +17453,8 @@ export default function App(){
                              :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div></div>}
                           </div>
                           <div style={{marginTop:6,textAlign:'center'}}>
-                            <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{a.name||'Unnamed art'}</div>
-                            <div style={{fontSize:9,color:'#64748b'}}>{(a.deco_type||'').replace(/_/g,' ')}{a.art_size?' · '+a.art_size:''}</div>
+                            <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{slot.label||'Unnamed art'}</div>
+                            {slot.sub&&<div style={{fontSize:9,color:'#64748b'}}>{slot.sub}</div>}
                           </div>
                         </div>;})}</div>}
                     </div>
@@ -17269,7 +17747,7 @@ export default function App(){
         // Upload handler for per-item mockups.
         // targetArtId: which art_file this mockup applies to. If omitted, derives from the SKU's decorations
         // (the first art_file used on this SKU), falling back to the job's primary art.
-        const handleItemMockupUpload=async(files,sku,color,targetArtId)=>{
+        const handleItemMockupUpload=async(files,sku,color,targetArtId,slotKey)=>{
           setArtJobDetailUploading(true);
           try{
             // Derive art_file_id from the SKU's decorations if not explicitly passed
@@ -17283,7 +17761,7 @@ export default function App(){
               // If this SKU uses exactly one art, route there. Otherwise fall back to job primary.
               artId=uniqueSkuArts.length===1?uniqueSkuArts[0]:j.art_file_id;
             }
-            const mk=_mockKey(sku,color);
+            const mk=slotKey||_mockKey(sku,color);
             const uploaded=[];
             for(const f of files){
               nf('Uploading '+f.name+' for '+sku+'...');
@@ -17295,8 +17773,9 @@ export default function App(){
             const hasMatch=artId&&existingArt.some(a=>a.id===artId);
             const liveAf=hasMatch?existingArt.find(a=>a.id===artId):af;
             const curItemMockups=liveAf?.item_mockups||{};
-            // Migrate any legacy plain-SKU entry onto the composite key while preserving it.
-            const existing=curItemMockups[mk]||curItemMockups[sku]||[];
+            // Migrate any legacy plain-SKU entry onto the composite key while preserving it — but only for the
+            // primary (bare sku|color) slot, so a per-decoration slot doesn't inherit the legacy mockup.
+            const existing=curItemMockups[mk]||(mk===_mockKey(sku,color)?(curItemMockups[sku]||[]):[]);
             const updItemMockups={...curItemMockups,[mk]:[...existing,...uploaded]};
             let updArt;
             let newArtFileId=artId;
@@ -17322,20 +17801,19 @@ export default function App(){
           finally{setArtJobDetailUploading(false)}
         };
 
-        // Delete a per-item mockup
-        const handleItemMockupDelete=(fileUrl,sku,color)=>{
+        // Delete a per-item mockup. Scans every art file on the SO and removes the URL from all
+        // mockup slots so a mockup stored under any per-decoration slot key (or on a non-primary art
+        // file) is reliably cleared regardless of which box it was uploaded to.
+        const handleItemMockupDelete=(fileUrl,sku,color,slotKey)=>{
           const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-          const liveAf=safeArt(liveSO).find(a=>a.id===j.art_file_id)||af;
-          const curItemMockups=liveAf?.item_mockups||{};
           const _fUrl=f=>(typeof f==='string'?f:(f?.url||''));
-          // Filter the URL out of both the composite-key entry and the legacy plain-SKU entry.
-          const mk=_mockKey(sku,color);
-          const updItemMockups={...curItemMockups};
-          if(updItemMockups[mk])updItemMockups[mk]=updItemMockups[mk].filter(f=>_fUrl(f)!==fileUrl);
-          if(updItemMockups[sku])updItemMockups[sku]=updItemMockups[sku].filter(f=>_fUrl(f)!==fileUrl);
-          // Also remove from mockup_files
-          const curFiles=(liveAf?.mockup_files||liveAf?.files||[]);
-          const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,item_mockups:updItemMockups,mockup_files:curFiles.filter(f=>_fUrl(f)!==fileUrl)}:a);
+          const updArt=safeArt(liveSO).map(a=>{
+            const im=a.item_mockups||{};const updIm={};let changed=false;
+            Object.keys(im).forEach(k=>{const filtered=(im[k]||[]).filter(f=>_fUrl(f)!==fileUrl);if(filtered.length!==(im[k]||[]).length)changed=true;updIm[k]=filtered});
+            const curFiles=a.mockup_files||a.files||[];const updFiles=curFiles.filter(f=>_fUrl(f)!==fileUrl);
+            if(updFiles.length!==curFiles.length)changed=true;
+            return changed?{...a,item_mockups:updIm,mockup_files:updFiles}:a;
+          });
           savSO({...liveSO,art_files:updArt});
           const updatedAf=updArt.find(a=>a.id===j.art_file_id);
           setArtJobDetailModal({...j,artFile:updatedAf});
@@ -17384,10 +17862,10 @@ export default function App(){
 
         // Kick off per-item mockup upload: auto-route to the art used by the SKU's decorations.
         // If the SKU uses multiple arts (multi-art decoration), open a picker so the artist tags which art the mockup shows.
-        const startMockupUpload=(files,sku,color,targetArtId)=>{
+        const startMockupUpload=(files,sku,color,targetArtId,slotKey)=>{
           if(!files||files.length===0)return;
           // When the drop happened on an art-specific zone we already know the target art — skip the picker.
-          if(targetArtId){handleItemMockupUpload(files,sku,color,targetArtId);return;}
+          if(targetArtId){handleItemMockupUpload(files,sku,color,targetArtId,slotKey);return;}
           const skuItem=(j.items||[]).find(gi=>gi.sku===sku);
           const itIdx=skuItem?.item_idx;
           const decos=itIdx!=null?safeDecos(safeItems(so)[itIdx]||{}):[];
@@ -17514,15 +17992,22 @@ export default function App(){
                   {/* Mockup display + upload zone — one labeled drop zone per art on this item (side by side) */}
                   <div style={{padding:10}}>
                     {(()=>{
-                      const _itemArts=[...new Map(_artDecos.filter(d=>d.artFile&&d.artFile.id).map(d=>[d.artFile.id,d.artFile])).values()];
-                      const _arts=_itemArts.length>0?_itemArts:(af?[af]:[]);
-                      if(_arts.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
-                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_arts.map(a=>{
-                        const mocks=_getMocks(a,gi.sku,gi.color);const primary=mocks[0]||null;const extra=mocks.slice(1);
+                      const _skBase=_mockKey(gi.sku,gi.color);
+                      // One mockup slot per decoration so reversibles (same logo on different color ways) and
+                      // numbers/names each get their own labeled box. The first art deco keeps the bare sku|color
+                      // key (backward-compatible + drives the approval gate); others get a suffixed key.
+                      const _slots=[];
+                      _effectiveArtDecos.forEach((d,i)=>{const disc=i===0?'':(d.colorWayId||('d'+i));_slots.push({key:_skBase+(disc?('|'+disc):''),primary:!disc,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,d.cwLabel?('CW: '+d.cwLabel):'',d.reversible?'Reversible':''].filter(Boolean).join(' · ')})});
+                      _numDecos.forEach((d,i)=>_slots.push({key:_skBase+'|numbers'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
+                      _nameDecos.forEach((d,i)=>_slots.push({key:_skBase+'|names'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
+                      if(_slots.length===0&&af)_slots.push({key:_skBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
+                      if(_slots.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
+                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=>{const a=slot.artFile;
+                        const mocks=slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]);const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
-                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)startMockupUpload(files,gi.sku,gi.color,a.id)};
+                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)startMockupUpload(files,gi.sku,gi.color,slot.artId,slot.key)};
                         const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
-                        return<div key={a.id} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
+                        return<div key={slot.key} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
                           <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':'2px dashed #a78bfa',background:primary?'white':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:primary?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
                             onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';if(!primary)e.currentTarget.style.background='#ede9fe'}}
                             onDragLeave={e=>{e.currentTarget.style.borderColor=primary?'#7c3aed':'#a78bfa';if(!primary)e.currentTarget.style.background='#faf5ff'}}
@@ -17537,15 +18022,15 @@ export default function App(){
                                <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4}}>
                                  <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}{extra.length>0?' (+'+extra.length+')':''}</span>
                                  <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
-                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} onClick={()=>{if(window.confirm('Remove this mockup?'))handleItemMockupDelete(url,gi.sku,gi.color)}} title="Remove">×</button>
+                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} onClick={()=>{if(window.confirm('Remove this mockup?'))handleItemMockupDelete(url,gi.sku,gi.color,slot.key)}} title="Remove">×</button>
                                </div>
                                <div style={{padding:'4px 8px',borderTop:'1px solid #f1f5f9',textAlign:'center',fontSize:10,color:'#7c3aed',fontWeight:600,cursor:'pointer'}} onClick={pick}>+ Add / replace</div>
                              </>
                              :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div></div>}
                           </div>
                           <div style={{marginTop:6,textAlign:'center'}}>
-                            <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{a.name||'Unnamed art'}</div>
-                            <div style={{fontSize:9,color:'#64748b'}}>{(a.deco_type||'').replace(/_/g,' ')}{a.art_size?' · '+a.art_size:''}</div>
+                            <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{slot.label||'Unnamed art'}</div>
+                            {slot.sub&&<div style={{fontSize:9,color:'#64748b'}}>{slot.sub}</div>}
                           </div>
                         </div>;})}</div>;
                     })()}
@@ -23241,6 +23726,7 @@ export default function App(){
       {id:'orders',label:'Sales Orders'},
       {id:'invoices',label:'Invoices'},
       {id:'omg',label:'OMG Stores'},
+      {id:'webstores',label:'Webstores'},
       {id:'jobs',label:'Jobs'},
       {id:'art',label:'Art Dashboard'},
       {id:'production',label:'Production Board'},
@@ -25316,8 +25802,8 @@ export default function App(){
   }
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',webstores:'Club Webstores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
   // ─── SCAN RESULT HANDLER ───
   function handleScanResult(val){
     if(!val)return;
@@ -25594,7 +26080,62 @@ export default function App(){
           })()}
         </div>}
       </div>}
-      <div className={`content${pg==='production'?' content-wide':''}`}>{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
+      <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
+    {/* ═══ CREATE TODO MODAL (global) ═══ */}
+    {todoModal.open&&<div className="modal-overlay" onClick={()=>setTodoModal(m=>({...m,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+      <div className="modal-header"><h2>📌 Assign Task</h2><button className="modal-close" onClick={()=>setTodoModal(m=>({...m,open:false}))}>×</button></div>
+      <div className="modal-body">
+        <div style={{marginBottom:12}}><label className="form-label">Title *</label>
+          <input className="form-input" value={todoModal.title} onChange={e=>setTodoModal(m=>({...m,title:e.target.value}))} placeholder="e.g. Order blanks for CSM"/></div>
+        <div style={{marginBottom:12}}><label className="form-label">Description</label>
+          <textarea className="form-input" rows={3} value={todoModal.description} onChange={e=>setTodoModal(m=>({...m,description:e.target.value}))} placeholder="Details..."/></div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
+          <div><label className="form-label">Assign To *</label>
+            <select className="form-select" value={todoModal.assigned_to} onChange={e=>setTodoModal(m=>({...m,assigned_to:e.target.value}))}>
+              <option value="">Select person...</option>
+              {(()=>{
+                const isAdminGm=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
+                if(isAdminGm){return REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name} ({r.role}){getPrimaryCsrForRep(cu.id)===r.id?' ★':''}</option>)}
+                const myCsrIds=getCsrsForRep(cu.id);
+                const myCsrs=REPS.filter(r=>myCsrIds.includes(r.id)&&r.is_active!==false);
+                const otherCsrs=REPS.filter(r=>r.is_active!==false&&r.role==='csr'&&!myCsrIds.includes(r.id));
+                return[
+                  myCsrs.length>0&&<optgroup key="my-csrs" label="My CSRs">{myCsrs.map(r=><option key={r.id} value={r.id}>{r.name}{getPrimaryCsrForRep(cu.id)===r.id?' ★ Primary':''}</option>)}</optgroup>,
+                  otherCsrs.length>0&&<optgroup key="other-csrs" label="Other CSRs">{otherCsrs.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>
+                ];
+              })()}
+            </select></div>
+          <div><label className="form-label">Priority</label>
+            <select className="form-select" value={todoModal.priority} onChange={e=>setTodoModal(m=>({...m,priority:+e.target.value}))}>
+              <option value={0}>Urgent</option><option value={1}>High</option><option value={2}>Normal</option><option value={3}>Low</option>
+            </select></div>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
+          <div><label className="form-label">{todoModal.doc_label?'Document #':'SO # (optional)'}</label>
+            {todoModal.doc_label?<input className="form-input" disabled value={todoModal.doc_label}/>:
+            <select className="form-select" value={todoModal.so_id} onChange={e=>{const soId=e.target.value;const so=sos.find(s=>s.id===soId);setTodoModal(m=>({...m,so_id:soId,customer_id:so?so.customer_id:m.customer_id}))}}>
+              <option value="">None</option>
+              {sos.filter(s=>calcSOStatus(s)!=='complete').slice(0,50).map(s=>{const sc=cust.find(c=>c.id===s.customer_id);return<option key={s.id} value={s.id}>{s.id} — {sc?.alpha_tag||sc?.name||''}{s.memo?' · '+s.memo:''}</option>})}
+            </select>}</div>
+          <div><label className="form-label">Customer{todoModal.so_id?' (from SO)':' (optional)'}</label>
+            {todoModal.so_id?<input className="form-input" disabled value={(()=>{const sc=cust.find(c=>c.id===todoModal.customer_id);return sc?(sc.alpha_tag||sc.name):''})()}/>:
+            <select className="form-select" value={todoModal.customer_id} onChange={e=>setTodoModal(m=>({...m,customer_id:e.target.value}))}>
+              <option value="">None</option>
+              {cust.filter(c=>c.is_active!==false).sort((a,b)=>(a.alpha_tag||a.name).localeCompare(b.alpha_tag||b.name)).map(c=><option key={c.id} value={c.id}>{c.alpha_tag||c.name}</option>)}
+            </select>}
+          </div>
+        </div>
+      </div>
+      <div className="modal-footer" style={{display:'flex',gap:8,justifyContent:'flex-end',padding:'12px 20px',borderTop:'1px solid #e2e8f0'}}>
+        <button className="btn btn-secondary" onClick={()=>setTodoModal(m=>({...m,open:false}))}>Cancel</button>
+        <button className="btn btn-primary" disabled={!todoModal.title.trim()||!todoModal.assigned_to} onClick={()=>{
+          const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,priority:todoModal.priority,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
+          setAssignedTodos(prev=>[newTodo,...prev]);
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2});
+          nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
+        }}>Assign Task</button>
+      </div>
+    </div></div>}
     {/* Assignment Modal — global, triggered from warehouse or production board */}
     {assignModal&&<div className="modal-overlay" onClick={()=>setAssignModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
         <div className="modal-header" style={{background:'#fffbeb'}}><h2>📋 Assign to Machine / Person</h2><button className="modal-close" onClick={()=>setAssignModal(null)}>×</button></div>

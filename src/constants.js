@@ -3,7 +3,7 @@
 
 export const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
 export const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','deleted_at','promo_applied','promo_amount','update_requests','approved_by','approved_at','credit_applied','credit_amount'];
-export const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','deliver_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount','deco_pos','delivered'];
+export const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','deliver_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount','deco_pos','source','webstore_id','delivered','_omg_processing','_omg_shipping','_omg_tax','_omg_fundraise','_omg_grand_total'];
 // Session-only underscore fields (_ss_live, _colorImage, _sizeCosts, etc.) are
 // intentionally excluded — they're set by vendor inventory hooks and live in
 // React state only. Including them here would cause batch inserts to fail on
@@ -21,9 +21,9 @@ export const _decoExtraCols=new Set(['print_color','print_color_b','front_and_ba
 export const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
 export const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members','entity_type','entity_id','thread_id'];
 export const _msgExtraCols=new Set(['tagged_members','entity_type','entity_id','thread_id']);
-export const _artCols=['id','name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','files','mockup_files','item_mockups','sample_art','prod_files','preview_url','notes','status','uploaded'];
+export const _artCols=['id','name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','files','mockup_files','item_mockups','sample_art','prod_files','preview_url','notes','status','archived','uploaded'];
 // Columns that may not exist in art file tables — stripped on retry
-export const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','color_ways','preview_url','sample_art','stitches']);
+export const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','color_ways','preview_url','sample_art','stitches','archived']);
 // Columns that may not exist in so_jobs — stripped on retry
 export const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','art_hidden','numbers_done']);
 export const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged','art_hidden','numbers_done'];
@@ -278,8 +278,8 @@ export const prodFilesStatusFor=(deco)=>deco==='dtf'?'order_dtf_transfers':deco=
 // A .dst IS the embroidery production file — if one is attached anywhere on the art, prod files are effectively done.
 export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.dst')};
 export const artProdFilesReady=(af)=>{if(!af)return false;if((af.prod_files||[]).length>0)return true;if((af.deco_type||'')==='embroidery')return(af.files||[]).some(isDstFile);return false};
-export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files'};
-export const ART_FILE_SC={waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'}};
+export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files',art_complete:'Art Complete'};
+export const ART_FILE_SC={waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'},art_complete:{bg:'#dcfce7',c:'#166534'}};
 
 // ═══════════════════════════════════════════════
 // PRINT DOCUMENT HELPER — CSS string
