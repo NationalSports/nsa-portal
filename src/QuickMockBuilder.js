@@ -88,6 +88,10 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
   const garment = garments[gi] || {};
   const baseUrl = side === 'back' ? garment.backUrl : garment.frontUrl;
   const garmentUrl = imgOverride[garment.key] || baseUrl;
+  // Names of the art locations placed on a mock (by their layer/artFileId), so the job view can
+  // label each mockup with the logo(s) it shows rather than just the filename.
+  const _artLabels = layerIds => [...new Set((layerIds || []).filter(Boolean))]
+    .map(id => (layers.find(l => l.artFileId === id) || {}).name).filter(Boolean).join(' + ');
 
   // Build the fabric canvas imperatively inside a wrapper div React owns. Fabric wraps
   // the <canvas> in its own container, so we never let React manage the canvas element
@@ -379,7 +383,8 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
       const fname = 'mock-' + (safe(garment.sku) || 'item') + '-' + (safe(garment.color) || 'default') + '-' + side + '.png';
       const fileObj = new File([blob], fname, {type: 'image/png'});
       const url = await fileUpload(fileObj, 'nsa-mockups');
-      const entry = {url, name: fname, sku: garment.sku};
+      const art_label = _artLabels(canvas.getObjects().filter(o => o._isArt).map(o => o._layerId));
+      const entry = {url, name: fname, sku: garment.sku, side, art_label};
       const key = garment.key;
       setMocks(prev => {
         const cur = (prev[key] || []).filter(m => m.name !== fname);
@@ -434,7 +439,8 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
       const blob = await (await fetch(dataUrl)).blob();
       const fname = _mockFname(g, sd);
       const url = await fileUpload(new File([blob], fname, {type: 'image/png'}), 'nsa-mockups');
-      return {key: g.key, entry: {url, name: fname, sku: g.sku}};
+      const art_label = _artLabels((sceneObjs || []).map(o => o._layerId));
+      return {key: g.key, entry: {url, name: fname, sku: g.sku, side: sd, art_label}};
     } catch (e) { return null; }
     finally { try { c.dispose(); } catch (e2) {} }
   };
