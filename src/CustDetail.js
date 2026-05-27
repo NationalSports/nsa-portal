@@ -368,7 +368,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const fixedProgs=programs.filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
       const totalFixed=fixedProgs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
       if(totalFixed>0){
-        const newPd={id:'pp_'+Date.now(),customer_id:parentId,period_start:curPeriod.start,period_end:curPeriod.end,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+        const newPd={id:'pp_'+parentId+'_'+curPeriod.start,customer_id:parentId,period_start:curPeriod.start,period_end:curPeriod.end,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
         onSavePromoPeriod(newPd);curPeriods=[newPd];periods=[...periods,newPd];
       }
     }
