@@ -293,19 +293,20 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
   // ink (per-fill for SVG, flat pixel tint for rasterized .ai/.eps/.pdf/.png). With a
   // picked color it recolors ONLY the matching fills/pixels — so one color in a
   // multi-color logo can be changed without touching the rest.
-  const recolorActive = hex => {
+  const recolorActive = (hex, remove) => {
     if (!canvas) return;
     const obj = canvas.getActiveObject();
     if (!obj || !obj._isArt) { nf && nf('Select an art element to recolor', 'error'); return; }
+    if (remove && !pickedColor) { nf && nf('Pick which color to remove first', 'error'); return; }
     const src = pickedColor ? hexToRgb(pickedColor) : null;
     const near = rgb => !src || rgbDist(rgb, src) <= COLOR_TOL;
-    const done = () => { markDirty(); setArtColors(computePalette(obj)); if (src) setPickedColor(hex); };
+    const done = () => { markDirty(); setArtColors(computePalette(obj)); if (remove) setPickedColor(null); else if (src) setPickedColor(hex); };
     if (typeof obj.getObjects === 'function') {
       const match = c => { if (!c || c === 'transparent' || c === '') return false; const hx = fabricColorToHex(c); return hx ? near(hexToRgb(hx)) : !src; };
       const apply = o => {
         if (typeof o.getObjects === 'function') { o.getObjects().forEach(apply); return; }
-        if (match(o.fill)) o.set('fill', hex);
-        if (match(o.stroke)) o.set('stroke', hex);
+        if (match(o.fill)) o.set('fill', remove ? 'transparent' : hex);
+        if (match(o.stroke)) o.set('stroke', remove ? 'transparent' : hex);
       };
       apply(obj); obj.dirty = true; canvas.requestRenderAll(); done();
       return;
@@ -315,10 +316,11 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
       const w = el.naturalWidth || el.width, h = el.naturalHeight || el.height;
       const off = document.createElement('canvas'); off.width = w; off.height = h;
       const ctx = off.getContext('2d', {willReadFrequently: true}); ctx.drawImage(el, 0, 0, w, h);
-      const id = ctx.getImageData(0, 0, w, h); const d = id.data; const {r, g, b} = hexToRgb(hex);
+      const id = ctx.getImageData(0, 0, w, h); const d = id.data; const {r, g, b} = hexToRgb(hex || '#000000');
       for (let i = 0; i < d.length; i += 4) {
         if (d[i + 3] === 0) continue;
         if (src && !near({r: d[i], g: d[i + 1], b: d[i + 2]})) continue;
+        if (remove) { d[i + 3] = 0; continue; }
         d[i] = r; d[i + 1] = g; d[i + 2] = b;
       }
       ctx.putImageData(id, 0, 0); obj.setElement(off); canvas.requestRenderAll(); done();
@@ -562,6 +564,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
                   <button onClick={() => recolorActive('#ffffff')} title="White" style={{width: 18, height: 18, borderRadius: '50%', background: '#fff', border: '1px solid #cbd5e1', cursor: 'pointer', padding: 0}} />
                   <button onClick={() => recolorActive('#111827')} title="Black" style={{width: 18, height: 18, borderRadius: '50%', background: '#111827', border: '1px solid #cbd5e1', cursor: 'pointer', padding: 0}} />
                   <input type="color" onChange={e => recolorActive(e.target.value)} title="Custom color" style={{width: 22, height: 20, padding: 0, border: '1px solid #cbd5e1', borderRadius: 4, cursor: 'pointer', background: '#fff'}} />
+                  <button onClick={() => recolorActive(null, true)} disabled={!pickedColor} title={pickedColor ? 'Remove this color (make it transparent)' : 'Pick a color above first, then remove it'} style={{fontSize: 9, padding: '2px 6px', borderRadius: 4, border: '1px solid #cbd5e1', background: pickedColor ? '#fff' : '#f1f5f9', color: pickedColor ? '#b91c1c' : '#94a3b8', cursor: pickedColor ? 'pointer' : 'not-allowed', fontWeight: 600, marginLeft: 2}}>Remove</button>
                 </div>
                 <button className="btn btn-sm btn-primary" style={{fontSize: 10, marginLeft: 'auto'}} disabled={busy} onClick={saveColorMock}>
                   <Icon name="save" size={11} /> Save Mock for {garment.color || garment.sku}

@@ -137,14 +137,15 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const renderSORow=(so)=>{
         const st=calcSOStatus(so);const stL={booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         let totalU=0,fulU=0;
-        safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
+        // Count units from the size grid; for qty-only lines (no size breakdown) the count lives in est_qty.
+        safeItems(so).forEach(it=>{const _szEntries=Object.entries(safeSizes(it)).filter(([,v])=>v>0);if(_szEntries.length){_szEntries.forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})}else{totalU+=safeNum(it.est_qty)}});
         const pct=totalU>0?Math.round(fulU/totalU*100):0;
         const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
         const jobs=so.jobs||[];
         const subC=allCustomers.find(c=>c.id===so.customer_id);
         const rep=REPS.find(r=>r.id===(subC?.primary_rep_id||so.created_by));
-        const af=safeArt(so);const aq={};safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it2).forEach(d=>{if(d.kind==='art'&&d.art_file_id){aq[d.art_file_id]=(aq[d.art_file_id]||0)+q2}})});
-        let soRev=0;safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);if(!q2)return;soRev+=q2*safeNum(it2.unit_sell);safeDecos(it2).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?aq[d.art_file_id]:q2;const dp2=dP(d,q2,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?q2*2:q2);soRev+=eq*dp2.sell})});
+        const af=safeArt(so);const aq={};safeItems(so).forEach(it2=>{const sq2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it2.est_qty);safeDecos(it2).forEach(d=>{if(d.kind==='art'&&d.art_file_id){aq[d.art_file_id]=(aq[d.art_file_id]||0)+q2}})});
+        let soRev=0;safeItems(so).forEach(it2=>{const sq2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it2.est_qty);if(!q2)return;soRev+=q2*safeNum(it2.unit_sell);safeDecos(it2).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?aq[d.art_file_id]:q2;const dp2=dP(d,q2,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?q2*2:q2);soRev+=eq*dp2.sell})});
         const soShip=so.shipping_type==='pct'?soRev*(so.shipping_value||0)/100:(so.shipping_value||0);const soTax=soRev*(subC?.tax_exempt?0:(subC?.tax_rate||0));const soGrand=soRev+soShip+soTax;
         const jobArtLabels={needs_art:'Needs Art',waiting_approval:'Wait Approval',art_complete:'Art ✓'};
         const jobProdLabels={hold:'Ready',staging:'In Line',in_process:'In Process',completed:'Done',shipped:'Shipped'};
@@ -367,7 +368,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const fixedProgs=programs.filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
       const totalFixed=fixedProgs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
       if(totalFixed>0){
-        const newPd={id:'pp_'+Date.now(),customer_id:parentId,period_start:curPeriod.start,period_end:curPeriod.end,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+        const newPd={id:'pp_'+parentId+'_'+curPeriod.start,customer_id:parentId,period_start:curPeriod.start,period_end:curPeriod.end,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
         onSavePromoPeriod(newPd);curPeriods=[newPd];periods=[...periods,newPd];
       }
     }
