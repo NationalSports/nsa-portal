@@ -20,9 +20,9 @@ function labelWeightLbs(items, store, weightByPid = {}) {
   return Number(store.label_weight_lbs) || 1;
 }
 
-async function createWebstoreLabel(order, items, store, weightByPid = {}) {
+async function createWebstoreLabel(order, items, store, weightByPid = {}, imageByPid = {}) {
   const a = order.ship_address || {};
-  const ss = await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(webstoreToShipStation(order, items, store)) });
+  const ss = await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(webstoreToShipStation(order, items, store, imageByPid)) });
   const orderId = ss && ss.orderId;
   if (!orderId) throw new Error('ShipStation order not created');
   if (Number(store.shipstation_tag_id)) { try { await shipStationCall('/orders/addtag', { method: 'POST', body: JSON.stringify({ orderId, tagId: Number(store.shipstation_tag_id) }) }); } catch {} }
@@ -136,10 +136,10 @@ function buildPackingLists(store, label, groups) {
 }
 
 // Convert a webstore order to a ShipStation order (ship-to-home label).
-function webstoreToShipStation(order, items, store) {
+function webstoreToShipStation(order, items, store, imageByPid = {}) {
   const a = order.ship_address || {};
   return {
-    orderNumber: 'WS-' + String(order.id).slice(0, 8), orderKey: 'ws-' + order.id,
+    orderNumber: 'WS-' + order.id, orderKey: 'ws-' + order.id,
     orderDate: order.created_at, orderStatus: 'awaiting_shipment',
     customerUsername: store.name, customerEmail: order.buyer_email || '',
     billTo: { name: order.buyer_name || a.name || 'Customer' },
@@ -147,6 +147,7 @@ function webstoreToShipStation(order, items, store) {
     items: items.filter((i) => !i.is_bundle_parent).map((i) => ({
       sku: i.sku || '', name: [i.sku, i.size && ('Size ' + i.size), i.player_number && ('#' + i.player_number), i.player_name].filter(Boolean).join(' · '),
       quantity: i.qty || 1, unitPrice: Number(i.unit_price) || 0,
+      imageUrl: imageByPid[i.product_id] || undefined,
       options: [i.size && { name: 'Size', value: i.size }, i.player_number && { name: 'Number', value: String(i.player_number) }, i.player_name && { name: 'Name', value: i.player_name }].filter(Boolean),
     })),
     amountPaid: order.payment_mode === 'paid' ? (Number(order.total) || 0) : 0,
@@ -1717,6 +1718,10 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   };
   const printPacking = (soId, soLabel) => printHtml(buildPackingLists(store, soLabel, batchGroups(soId)));
   const homeGroups = (soId) => batchGroups(soId).filter((g) => (g.order.ship_method || store.delivery_mode) !== 'deliver_club' && g.order.ship_address);
+  // product_id -> image, so ShipStation orders (and the ship email) carry thumbnails.
+  const imageByPid = {};
+  Object.values(productStock || {}).forEach((s) => { if (s.product_id && s.image_front_url) imageByPid[s.product_id] = s.image_front_url; });
+  (catalog || []).forEach((c) => { if (c.product_id && c.image_url) imageByPid[c.product_id] = c.image_url; });
   const sendToShipStation = async (soId) => {
     const groups = homeGroups(soId);
     if (!groups.length) { setSsMsg((m) => ({ ...m, [soId]: 'No ship-to-home orders with addresses.' })); return; }
@@ -1725,7 +1730,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     const tagId = Number(store.shipstation_tag_id) || null;
     for (const g of groups) {
       try {
-        const res = await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(webstoreToShipStation(g.order, g.items, store)) });
+        const res = await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(webstoreToShipStation(g.order, g.items, store, imageByPid)) });
         if (tagId && res && res.orderId) { try { await shipStationCall('/orders/addtag', { method: 'POST', body: JSON.stringify({ orderId: res.orderId, tagId }) }); } catch {} }
         ok++;
       } catch { fail++; }
@@ -1740,7 +1745,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     const labels = []; let fail = 0;
     for (const g of groups) {
       try {
-        const { labelData, trackingNumber, carrier, cost } = await createWebstoreLabel(g.order, g.items, store, weightByPid);
+        const { labelData, trackingNumber, carrier, cost } = await createWebstoreLabel(g.order, g.items, store, weightByPid, imageByPid);
         if (labelData) labels.push(labelData);
         if (trackingNumber || cost != null) { try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber, carrier, label_cost: cost }).eq('id', g.order.id); } catch {} }
       } catch { fail++; }

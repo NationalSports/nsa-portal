@@ -565,21 +565,35 @@ async function sendOrderEmail({ store, order, cart, buyer, shipping, total, disc
     const link = `${window.location.origin}/shop/${store.slug}/order/${order.id}`;
     const rows = cart.map((l) => {
       const det = lineDetail(l).join(' · ');
-      return `<tr><td style="padding:8px 0;border-bottom:1px solid #eef1f5">${l.name}${l.kind === 'bundle' ? ' (package)' : ''}${l.qty > 1 ? ` ×${l.qty}` : ''}${det ? `<div style="font-size:12px;color:#64748b">${det}</div>` : ''}</td><td style="padding:8px 0;border-bottom:1px solid #eef1f5;text-align:right;font-weight:700;white-space:nowrap">${money(lineUnit(l) * (l.qty || 1))}</td></tr>`;
+      const img = l.image
+        ? `<td style="width:56px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"><img src="${l.image}" width="48" height="48" style="width:48px;height:48px;object-fit:cover;border-radius:6px;display:block;background:#f4f6f9"></td>`
+        : `<td style="width:56px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"></td>`;
+      return `<tr>${img}<td style="padding:8px 0;border-bottom:1px solid #eef1f5">${l.name}${l.kind === 'bundle' ? ' (package)' : ''}${l.qty > 1 ? ` ×${l.qty}` : ''}${det ? `<div style="font-size:12px;color:#64748b">${det}</div>` : ''}</td><td style="padding:8px 0;border-bottom:1px solid #eef1f5;text-align:right;font-weight:700;white-space:nowrap">${money(lineUnit(l) * (l.qty || 1))}</td></tr>`;
     }).join('');
     const accent = store.accent_color || '#e11d2a';
+    const a = order.ship_address || null;
+    const addrBlock = (order.ship_method === 'ship_home' && a) ? `<div style="margin-top:18px"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#64748b;margin-bottom:4px">Shipping to</div><div style="font-size:14px;line-height:1.5">${a.name ? a.name + '<br>' : ''}${a.street1 || ''}${a.street2 ? ', ' + a.street2 : ''}<br>${a.city || ''}${a.city ? ', ' : ''}${a.state || ''} ${a.zip || ''}</div><div style="font-size:12px;color:#94a3b8;margin-top:4px">Need to fix this? Use the “Track your order” link below to update your address before it ships.</div></div>` : '';
+    const nsaLogo = `${window.location.origin}/NEW%20NSA%20Logo%20on%20white.png`;
+    const logoBar = `<table width="100%" style="border-collapse:collapse">
+        <tr>
+          <td align="left" style="padding:12px 20px;background:#fff;border:1px solid #eef1f5;border-bottom:none;border-radius:10px 0 0 0"><img src="${nsaLogo}" alt="National Sports Apparel" height="32" style="height:32px;display:block"></td>
+          <td align="right" style="padding:12px 20px;background:#fff;border:1px solid #eef1f5;border-bottom:none;border-left:none;border-radius:0 10px 0 0">${store.logo_url ? `<img src="${store.logo_url}" alt="${store.name}" height="40" style="height:40px;max-width:130px;object-fit:contain;display:inline-block">` : `<span style="font-weight:800;color:#0b1220">${store.name}</span>`}</td>
+        </tr>
+      </table>`;
     const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:560px;margin:0 auto">
-      <div style="background:${store.primary_color || '#0b1f3a'};color:#fff;padding:20px 24px;border-radius:10px 10px 0 0">
+      ${logoBar}
+      <div style="background:${store.primary_color || '#0b1f3a'};color:#fff;padding:18px 24px">
         <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;opacity:.85">${store.name}</div>
         <div style="font-size:22px;font-weight:800;margin-top:4px">Order confirmed${order.payment_mode === 'paid' ? ' &amp; paid' : ''}</div>
       </div>
       <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:22px 24px">
         <p style="margin:0 0 14px">Thanks, ${buyer.name}! ${order.payment_mode === 'paid' ? "We've received your payment." : 'Your order has been placed and will be invoiced to the team.'}</p>
         <table style="width:100%;border-collapse:collapse;font-size:14px">${rows}
-          ${discount > 0 ? `<tr><td style="padding:8px 0;color:#16a34a">Discount${order.coupon_code ? ` (${order.coupon_code})` : ''}</td><td style="padding:8px 0;text-align:right;color:#16a34a">−${money(discount)}</td></tr>` : ''}
-          ${shipping > 0 ? `<tr><td style="padding:8px 0;color:#475569">Shipping</td><td style="padding:8px 0;text-align:right">${money(shipping)}</td></tr>` : ''}
-          <tr><td style="padding:12px 0 0;font-weight:800;font-size:16px">Total</td><td style="padding:12px 0 0;text-align:right;font-weight:800;font-size:16px">${money(total)}</td></tr>
+          ${discount > 0 ? `<tr><td></td><td style="padding:8px 0;color:#16a34a">Discount${order.coupon_code ? ` (${order.coupon_code})` : ''}</td><td style="padding:8px 0;text-align:right;color:#16a34a">−${money(discount)}</td></tr>` : ''}
+          ${shipping > 0 ? `<tr><td></td><td style="padding:8px 0;color:#475569">Shipping</td><td style="padding:8px 0;text-align:right">${money(shipping)}</td></tr>` : ''}
+          <tr><td></td><td style="padding:12px 0 0;font-weight:800;font-size:16px">Total</td><td style="padding:12px 0 0;text-align:right;font-weight:800;font-size:16px">${money(total)}</td></tr>
         </table>
+        ${addrBlock}
         <a href="${link}" style="display:inline-block;margin-top:20px;background:${accent};color:#fff;text-decoration:none;padding:13px 26px;border-radius:8px;font-weight:700">Track your order</a>
         <p style="font-size:12px;color:#94a3b8;margin-top:18px">Save this email — the link above is how you check your order status anytime.</p>
       </div></div>`;
@@ -847,6 +861,57 @@ function OrderStatusPage({ store, theme, orderId }) {
         </div>
       ))}
       <div style={{ marginTop: 18, fontWeight: 900, fontSize: 18 }}>Total: {money(order.total)}</div>
+      {order.ship_method === 'ship_home' && <ShippingBlock theme={theme} order={order} shipped={!!order.shipped_at || ['shipped', 'complete'].includes(cur)} onSaved={(addr) => setOrder((o) => ({ ...o, ship_address: addr }))} />}
+    </div>
+  );
+}
+
+// Shows the order's shipping address and — until it ships — lets the buyer fix it.
+function ShippingBlock({ theme, order, shipped, onSaved }) {
+  const a = order.ship_address || {};
+  const [editing, setEditing] = useState(false);
+  const [f, setF] = useState({ name: a.name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', zip: a.zip || '' });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const save = async () => {
+    if (!f.street1 || !f.city || !f.state || !f.zip) { setMsg('Please complete street, city, state and ZIP.'); return; }
+    setBusy(true); setMsg('');
+    const addr = { ...a, ...f };
+    const { error } = await supabase.from('webstore_orders').update({ ship_address: addr }).eq('id', order.id);
+    setBusy(false);
+    if (error) { setMsg('Could not save — please try again.'); return; }
+    onSaved(addr); setEditing(false);
+  };
+  return (
+    <div style={{ marginTop: 22, borderTop: '1px solid #eef1f5', paddingTop: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b' }}>Shipping to</div>
+        {!shipped && !editing && <button onClick={() => setEditing(true)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: theme.accent, cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>Edit address</button>}
+      </div>
+      {editing ? (
+        <div>
+          <Field label="Name"><input style={inp} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+          <Field label="Street"><input style={inp} value={f.street1} onChange={(e) => setF({ ...f, street1: e.target.value })} /></Field>
+          <Field label="Apt / unit (optional)"><input style={inp} value={f.street2} onChange={(e) => setF({ ...f, street2: e.target.value })} /></Field>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <Field label="City"><input style={inp} value={f.city} onChange={(e) => setF({ ...f, city: e.target.value })} /></Field>
+            <Field label="State"><input style={inp} value={f.state} onChange={(e) => setF({ ...f, state: e.target.value })} /></Field>
+            <Field label="ZIP"><input style={inp} value={f.zip} onChange={(e) => setF({ ...f, zip: e.target.value })} /></Field>
+          </div>
+          {msg && <div style={{ color: '#b91c1c', fontSize: 13, marginBottom: 8 }}>{msg}</div>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="sf-btn" onClick={save} disabled={busy} style={{ ...cta(theme), width: 'auto', padding: '12px 28px', fontSize: 14 }}>{busy ? 'Saving…' : 'Save address'}</button>
+            <button onClick={() => { setEditing(false); setMsg(''); }} style={{ background: 'none', border: '2px solid #e2e8f0', borderRadius: theme.radius, padding: '12px 22px', fontWeight: 800, cursor: 'pointer' }}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize: 14, color: '#0b1220', lineHeight: 1.5 }}>
+          {a.name && <div>{a.name}</div>}
+          <div>{a.street1}{a.street2 ? ', ' + a.street2 : ''}</div>
+          <div>{a.city}{a.city ? ', ' : ''}{a.state} {a.zip}</div>
+          {shipped && <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>This order has shipped, so the address can no longer be changed.</div>}
+        </div>
+      )}
     </div>
   );
 }
