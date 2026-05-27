@@ -557,12 +557,12 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {/* ARTWORK TAB — customer library + aggregated from SOs/Estimates */}
   {tab==='artwork'&&(()=>{
     // Aggregate art: customer-level library + parent library + SO/Estimate art
-    const custOwnArt=(customer.art_files||[]).map(a=>({...a,_src:'library',_srcLabel:'Customer Library'}));
+    const custOwnArt=(customer.art_files||[]).map(a=>({...a,_src:'library',_srcLabel:'Customer Library',_srcCustId:customer.id}));
     const parentCust2=customer.parent_id?allCustomers.find(c=>c.id===customer.parent_id):null;
     const parentArt=parentCust2?(parentCust2.art_files||[]).map(a=>({...a,_src:'parent',_srcLabel:parentCust2.alpha_tag||parentCust2.name||'Parent'})):[];
     const orderArt=[];
-    custSOs.forEach(so=>{(so.art_files||[]).forEach(art=>{orderArt.push({...art,_src:'so',_srcLabel:so.id+(so.memo?' — '+so.memo:''),_so_id:so.id,_so_memo:so.memo||''})})});
-    custEsts.forEach(est=>{(est.art_files||[]).forEach(art=>{if(!orderArt.some(a=>a.name===art.name&&a.deco_type===art.deco_type))orderArt.push({...art,_src:'est',_srcLabel:est.id+(est.memo?' — '+est.memo:''),_est_id:est.id,_est_memo:est.memo||''})})});
+    custSOs.forEach(so=>{(so.art_files||[]).forEach(art=>{orderArt.push({...art,_src:'so',_srcLabel:so.id+(so.memo?' — '+so.memo:''),_so_id:so.id,_so_memo:so.memo||'',_srcCustId:so.customer_id})})});
+    custEsts.forEach(est=>{(est.art_files||[]).forEach(art=>{if(!orderArt.some(a=>a.name===art.name&&a.deco_type===art.deco_type))orderArt.push({...art,_src:'est',_srcLabel:est.id+(est.memo?' — '+est.memo:''),_est_id:est.id,_est_memo:est.memo||'',_srcCustId:est.customer_id})})});
     const allArt=[...custOwnArt,...parentArt,...orderArt];
     // Group by art name+deco_type to find usage across orders
     const artGroups={};allArt.forEach(a=>{const key=(a.name||'').toLowerCase()+'||'+(a.deco_type||'');if(!artGroups[key])artGroups[key]={art:a,instances:[]};artGroups[key].instances.push(a)});
@@ -600,6 +600,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       rep._usedOnSOs=insts.reduce((m,x)=>(x._usedOnSOs||[]).length>m.length?x._usedOnSOs:m,[]);
       rep._imgUrl=insts.map(x=>x._imgUrl).find(u=>u&&_isImgUrl(u))||rep._imgUrl||(rep._allMockups[0]?.url)||'';
       rep._archived=insts.length>0&&insts.every(x=>x.archived);
+      // Cascading parent art = lives in the parent's own library; everything else is tied to a sub-account's orders/estimates.
+      rep._appliesToAll=insts.some(x=>x._src==='library');
+      rep._srcCustIds=[...new Set(insts.map(x=>x._srcCustId).filter(Boolean))];
       return rep;
     });
     // Archive/unarchive a logo across every order it's on plus the customer library copy.
@@ -624,9 +627,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             cursor:'pointer',marginBottom:-2,borderRadius:'6px 6px 0 0'}}>{label}{ct>0?' ('+ct+')':''}</button>})}
       </div>
       {/* Unified art list */}
-      {filtered.length===0?<div className="empty">{custArtFilter==='all'?'No artwork found. Click "Add Art" to create art groups.':'No artwork with this status.'}</div>:
-      <div style={{display:'flex',flexDirection:'column',gap:8}}>
-        {filtered.map((art,i)=>{const isEditable=art._ownIdx>=0;const isExp=custArtExpanded===art.id;const oi=art._ownIdx;
+      {(()=>{
+        const renderArtCard=(art,i)=>{const isEditable=art._ownIdx>=0;const isExp=custArtExpanded===art.id;const oi=art._ownIdx;
+          const _subLabel=isP&&!art._appliesToAll?(art._srcCustIds||[]).map(id=>teamName(id)).filter(Boolean).join(', '):'';
           return<div key={art.id+'-'+art._src+'-'+i} style={{background:'#f8fafc',borderRadius:8,border:art._st==='approved'?'2px solid #22c55e':art._st==='needs_approval'?'2px solid #f59e0b':'1px solid #e2e8f0',overflow:'hidden'}}>
             {/* Summary row */}
             <div style={{display:'flex',gap:10,alignItems:'center',padding:'10px 14px',cursor:'pointer'}} onClick={()=>{if(isEditable)setCustArtExpanded(isExp?null:art.id);else setCustArtDetail({...art,_usedOnSOs:art._usedOnSOs,_allMockups:art._allMockups,_allProd:art._allProd})}}>
@@ -635,6 +638,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <div style={{flex:1}}>
                 <div style={{fontWeight:700,fontSize:13}}>{art.name||'Untitled'}</div>
                 <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{(art.color_ways||[]).length>0?' · '+art.color_ways.length+' CW'+(art.color_ways.length>1?'s':''):art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':art.thread_colors?' · '+art.thread_colors:''}{art.art_size?' · '+art.art_size:''}</div>
+                {isP&&art._appliesToAll&&<div style={{marginTop:3}}><span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:9,fontWeight:700,background:'#dbeafe',color:'#1e40af',borderRadius:8,padding:'1px 7px'}}>↓ All sub-customers</span></div>}
+                {isP&&!art._appliesToAll&&_subLabel&&<div style={{marginTop:3}}><span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:9,fontWeight:700,background:'#f3e8ff',color:'#6d28d9',borderRadius:8,padding:'1px 7px'}}>{_subLabel}</span></div>}
                 <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{art._src==='so'||art._src==='est'?art._srcLabel:art._src==='parent'?parentCust2?.alpha_tag||parentCust2?.name:''}</div>
               </div>
               <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:3}}>
@@ -712,8 +717,24 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               </div>
               <input className="form-input" value={art.notes||''} onChange={e=>uCustArt(oi,'notes',e.target.value)} placeholder="Notes..." style={{fontSize:12}}/>
             </div>}
-          </div>})}
-      </div>}
+          </div>};
+        if(filtered.length===0)return<div className="empty">{custArtFilter==='all'?'No artwork found. Click "Add Art" to create art groups.':'No artwork with this status.'}</div>;
+        if(!isP)return<div style={{display:'flex',flexDirection:'column',gap:8}}>{filtered.map(renderArtCard)}</div>;
+        const _parentArt=filtered.filter(a=>a._appliesToAll);
+        const _subArt=filtered.filter(a=>!a._appliesToAll);
+        const _sect=(title,subtitle,items,accent)=>items.length>0&&<div style={{marginBottom:18}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+            <span style={{fontSize:13,fontWeight:800,color:accent}}>{title}</span>
+            <span style={{fontSize:11,fontWeight:700,color:'#fff',background:accent,borderRadius:10,padding:'1px 8px'}}>{items.length}</span>
+            <span style={{fontSize:11,color:'#94a3b8'}}>{subtitle}</span>
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>{items.map(renderArtCard)}</div>
+        </div>;
+        return<>
+          {_sect('Applies to All Sub-Customers','Parent library — cascades to every sub-customer',_parentArt,'#2563eb')}
+          {_sect('Sub-Customer Artwork','From individual sub-account orders & estimates',_subArt,'#7c3aed')}
+        </>;
+      })()}
       </div>
     </div>})()}
   {/* ART DETAIL MODAL */}
