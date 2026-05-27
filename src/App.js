@@ -8013,11 +8013,11 @@ export default function App(){
           items_count:{label:'# Items',align:'right',render:j=><span style={{fontSize:11}}>{(j.items||[]).length}</span>},
           notes:{label:'Notes',render:j=><div style={{fontSize:11,maxWidth:280,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.notes||j.so?.production_notes||'—'}</div>},
           progress:{label:'Progress',align:'right',render:j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;return<span style={{fontSize:11,whiteSpace:'nowrap'}}>{pct}%</span>}},
-          actions:{label:'',align:'center',render:j=>{
+          actions:{label:'Prod Sheet',align:'center',render:j=>{
             const flow={hold:{to:'staging',label:'📦 → In Line',c:'#6366f1'},ready:{to:'staging',label:'→ In Line',c:'#d97706'},staging:{to:'in_process',label:'→ In Process',c:'#2563eb'},in_process:{to:'completed',label:'✓ Done',c:'#166534'}};
             const nx=flow[j.prod_status];
-            return<div style={{display:'flex',gap:4,justifyContent:'center',alignItems:'center',whiteSpace:'nowrap'}}>
-              {nx&&<button className="btn btn-sm" style={{fontSize:10,padding:'5px 10px',background:nx.c,color:'white',border:'none',fontWeight:600}} title={'Move to '+statusLabel[nx.to]} onClick={e=>{e.stopPropagation();moveJobStatus(j,nx.to)}}>{nx.label}</button>}
+            return<div style={{display:'flex',gap:8,justifyContent:'center',alignItems:'center',whiteSpace:'nowrap'}}>
+              <div style={{width:116,display:'flex',justifyContent:'flex-end'}}>{nx&&<button className="btn btn-sm" style={{fontSize:10,padding:'5px 10px',background:nx.c,color:'white',border:'none',fontWeight:600}} title={'Move to '+statusLabel[nx.to]} onClick={e=>{e.stopPropagation();moveJobStatus(j,nx.to)}}>{nx.label}</button>}</div>
               <button className="btn btn-sm" style={{fontSize:14,padding:'6px 12px',background:'#d97706',color:'white',border:'none'}} title="Production sheet" onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋</button>
             </div>;
           }},
