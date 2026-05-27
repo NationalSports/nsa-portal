@@ -16829,7 +16829,7 @@ export default function App(){
           </div>
           <div style={{display:'flex',gap:5,alignItems:'center',marginBottom:2,minWidth:0}}>
             <span style={{fontSize:11,fontWeight:600,color:'#475569',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.art_name}</span>
-            {af&&(()=>{const fSt=af.status==='uploaded'?'needs_approval':af.status||'waiting_for_art';return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
+            {af&&(()=>{const fSt=getArtFileStatus(j);return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
           </div>
           <div style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
             <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.id} · {j.soId} · {j.total_units}u · {j.rep}</span>
