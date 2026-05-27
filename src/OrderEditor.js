@@ -1811,6 +1811,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _kept=[...newJobs,...splitJobs,...releasedJobs,...recalcedMerged];
     const _keptIds=new Set(_kept.map(j=>j.id));
     const _keptKeys=new Set(_kept.map(j=>j.key));
+    // Recycled-number carry-over guard: when an SO number is reused (e.g. after a purge/re-import),
+    // jobs+art from the order that previously held this id can stay attached by so_id. Such a job was
+    // created before this order's row existed, so its created_at predates the SO's created_at. A real
+    // dropped-deco job (the case the preservation below protects) is always created during this order's
+    // life, so it parses as same-day-or-later. Use a 24h margin to absorb clock/timezone skew, and fail
+    // safe (keep the job) whenever either date is missing/unparseable.
+    const _soCreatedMs=(()=>{const t=Date.parse(o?.created_at);return Number.isNaN(t)?null:t})();
+    const _isCarryOver=j=>{if(_soCreatedMs==null)return false;const jt=Date.parse(j?.created_at);if(Number.isNaN(jt))return false;return jt<_soCreatedMs-864e5;};
     // Decoration coverage of the current jobs — every (item_idx, deco_idx) pair a kept job
     // already produces. Used to drop stale "submitted" auto-jobs whose decorations are now
     // represented by another job (e.g. an art-location change rebuilt the job under a new
@@ -1822,6 +1830,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const orphanedSubmitted=safeJobs(o).filter(j=>{
       if(!j||j._released||j._merged||j.split_from)return false;// already handled above
       if(_keptIds.has(j.id)||_keptKeys.has(j.key))return false;// already represented by a rebuilt job
+      if(_isCarryOver(j))return false;// stale job from a prior order that reused this SO number
       // Stale duplicate — its decorations are already covered by a current job. Only the
       // orphan-preservation case (decoration genuinely missing) should fall through below.
       const pairs=_jobDecoPairs(j);
