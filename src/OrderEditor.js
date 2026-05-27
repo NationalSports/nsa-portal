@@ -423,11 +423,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const pid=inv.productId||inv.inventoryAvailabilityByProductId||'';
                     const status=(inv.inventoryStatus||'').toLowerCase();
                     const isAvail=status==='available'||status==='instock'||status==='in stock';
-                    // Momentec returns MAX_DOUBLE for availableQuantity — treat as "in stock" flag
+                    // Momentec only publishes a binary in-stock flag (availableQuantity comes back
+                    // as MAX_DOUBLE), never a real count. Map available→999 ("In Stock"), out→0 ("Out").
+                    // Use max so any in-stock SKU wins for a size, and so duplicates don't sum.
                     const rawQty=parseFloat(inv.availableQuantity||0);
                     const qty=(rawQty>999999||isAvail)?999:parseInt(rawQty)||0;
                     const match=childParts.find(x=>(x.skuUid||x.uid)===pid);
-                    if(match&&qty>0)sizeQty[match.sz]=(sizeQty[match.sz]||0)+qty;
+                    if(match)sizeQty[match.sz]=Math.max(sizeQty[match.sz]||0,qty);
                   }
                 }catch(e){console.warn('[Momentec] Inventory error:',e.message)}
               }
@@ -1306,6 +1308,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   // State for expanded style in search results (shows color picker)
   const[expandedStyle,setExpandedStyle]=useState(null);// {key:'ss-0', style:{...}}
+  const[expandColorQ,setExpandColorQ]=useState('');// color filter for the expanded style's swatch list
+  useEffect(()=>{setExpandColorQ('')},[expandedStyle]);
+  const filterExpColors=(arr)=>{const q=expandColorQ.trim().toLowerCase();return q?(arr||[]).filter(c=>(c.colorName||'').toLowerCase().includes(q)):(arr||[])};
+  const expColorSearchInput=(borderColor)=><input value={expandColorQ} onChange={e=>setExpandColorQ(e.target.value)} onClick={e=>e.stopPropagation()} placeholder="Search colors..." autoFocus style={{flexBasis:'100%',padding:'4px 8px',fontSize:11,border:'1px solid '+borderColor,borderRadius:4,marginBottom:4}}/>;
+  const expColorNoMatch=<div style={{fontSize:11,color:'#94a3b8',padding:'4px 2px',flexBasis:'100%'}}>No colors match "{expandColorQ}"</div>;
   const sv=(k,v)=>{setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));setDirty(true)};
   const isAU=b=>{const l=(b||'').toLowerCase();return l==='adidas'||l==='under armour'||l==='new balance'};const tD={A:0.4,B:0.35,C:0.3};
   // AU footwear gets 5% less discount than apparel (school pays more for shoes)
@@ -2534,7 +2541,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <input value={sizingDraft[idx+'_'+sz]??(item.sizes[sz]||'')} onChange={e=>{const k=idx+'_'+sz;const v=e.target.value;setSizingDraft(d=>({...d,[k]:v}))}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraft))return;const v=sizingDraft[k];React.startTransition(()=>{uSz(idx,sz,v);setSizingDraft(d=>{const n={...d};delete n[k];return n})})}} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:((idx+'_'+sz) in sizingDraft?(parseInt(sizingDraft[idx+'_'+sz])||0):(item.sizes[sz]||0))>0?'#0f172a':'#cbd5e1'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
-              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:9,color:'#a78bfa',minHeight:12}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'mt':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#d97706':vi.source==='sm'?'#0891b2':'#7c3aed';const sizeNext=vi.source==='rs'?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'&&vStk>=999?'✓':(vi.source==='rs'&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=srcName+' stock: '+(vStk>=999&&vi.source==='mt'?'Available':vStk.toLocaleString())+((vi.source==='rs'&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):'');return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:vStk<=0?(vi.source==='rs'&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
+              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:9,color:'#a78bfa',minHeight:12}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#16a34a':vi.source==='sm'?'#0891b2':'#7c3aed';const sizeNext=vi.source==='rs'?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'?(vStk>0?'✓ In Stock':'✗ Out'):(vi.source==='rs'&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=vi.source==='mt'?('Momentec: '+(vStk>0?'In stock':'Out of stock')+' — Momentec does not publish exact quantities'):(srcName+' stock: '+vStk.toLocaleString()+((vi.source==='rs'&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):''));return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:vStk<=0?(vi.source==='rs'&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
               {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:9,color:'#059669',minHeight:12}}>...</div>:null;const b2bStk=ai.sizes?.[sz]?.qty;if(b2bStk==null)return<div style={{fontSize:9,color:'transparent',minHeight:12}}>&nbsp;</div>;const need=item.sizes[sz]||0;const color=b2bStk<=0?'#dc2626':(need>0&&b2bStk<need)?'#ca8a04':'#166534';return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:color}} title={'Adidas B2B stock: '+b2bStk+(ai.sizes[sz]?.futureDate?' (restock '+ai.sizes[sz].futureDate+')':'')}>{b2bStk.toLocaleString()}</div>})()}
               {(()=>{
                 // Per-size cost upcharge ($X.XX under larger sizes). Prefer the item's
@@ -3026,14 +3033,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </span>
                 <span style={{fontSize:12,color:'#7c3aed'}}>{isExp?'▲':'▼'}</span>
               </div>
-              {isExp&&<div style={{background:'#faf8ff',borderBottom:'2px solid #ddd6fe',padding:'6px 12px',display:'flex',flexWrap:'wrap',gap:4,maxHeight:200,overflowY:'auto'}}>
-                {ss.colors.map((c,ci)=><div key={ci} style={{padding:'4px 8px',borderRadius:4,border:'1px solid #ddd6fe',background:'white',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0}} onClick={()=>addSearchProduct(ss,c,'ss')} title={c.colorName+' — $'+c.customerPrice?.toFixed(2)+' ('+c.totalQty+' avail)'}>
+              {isExp&&(()=>{const fc=filterExpColors(ss.colors);return<div style={{background:'#faf8ff',borderBottom:'2px solid #ddd6fe',padding:'6px 12px',display:'flex',flexWrap:'wrap',gap:4,maxHeight:200,overflowY:'auto'}}>
+                {ss.colors.length>6&&expColorSearchInput('#ddd6fe')}
+                {fc.map((c,ci)=><div key={ci} style={{padding:'4px 8px',borderRadius:4,border:'1px solid #ddd6fe',background:'white',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0}} onClick={()=>addSearchProduct(ss,c,'ss')} title={c.colorName+' — $'+c.customerPrice?.toFixed(2)+' ('+c.totalQty+' avail)'}>
                   {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:20,height:20,objectFit:'contain',borderRadius:2}} onError={e=>{e.target.style.display='none'}}/>}
                   <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:120}}>{c.colorName||'Default'}</span>
                   <span style={{fontSize:9,color:'#7c3aed',whiteSpace:'nowrap'}}>${c.customerPrice?.toFixed(2)}</span>
                   <span style={{fontSize:8,color:c.totalQty>0?'#22c55e':'#dc2626'}}>{c.totalQty>0?c.totalQty.toLocaleString():'OOS'}</span>
                 </div>)}
-              </div>}
+                {fc.length===0&&expColorNoMatch}
+              </div>})()}
             </div>})}
             {!ssSearching&&ssResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No S&S results for "{pS}"</div>}
           </>}
@@ -3057,14 +3066,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </span>
                 <span style={{fontSize:12,color:'#0891b2'}}>{isExp?'▲':'▼'}</span>
               </div>
-              {isExp&&<div style={{background:'#f0fdfa',borderBottom:'2px solid #a5f3fc',padding:'6px 12px',display:'flex',flexWrap:'wrap',gap:4,maxHeight:200,overflowY:'auto'}}>
-                {sm.colors.map((c,ci)=><div key={ci} style={{padding:'4px 8px',borderRadius:4,border:'1px solid #a5f3fc',background:'white',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0}} onClick={()=>addSearchProduct(sm,c,'sm')} title={c.colorName+' — $'+c.customerPrice?.toFixed(2)+' ('+c.totalQty+' avail)'}>
+              {isExp&&(()=>{const fc=filterExpColors(sm.colors);return<div style={{background:'#f0fdfa',borderBottom:'2px solid #a5f3fc',padding:'6px 12px',display:'flex',flexWrap:'wrap',gap:4,maxHeight:200,overflowY:'auto'}}>
+                {sm.colors.length>6&&expColorSearchInput('#a5f3fc')}
+                {fc.map((c,ci)=><div key={ci} style={{padding:'4px 8px',borderRadius:4,border:'1px solid #a5f3fc',background:'white',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0}} onClick={()=>addSearchProduct(sm,c,'sm')} title={c.colorName+' — $'+c.customerPrice?.toFixed(2)+' ('+c.totalQty+' avail)'}>
                   {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:20,height:20,objectFit:'contain',borderRadius:2}} onError={e=>{e.target.style.display='none'}}/>}
                   <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:120}}>{c.colorName||'Default'}</span>
                   <span style={{fontSize:9,color:'#0891b2',whiteSpace:'nowrap'}}>${c.customerPrice?.toFixed(2)}</span>
                   <span style={{fontSize:8,color:c.totalQty>0?'#22c55e':'#dc2626'}}>{c.totalQty>0?c.totalQty.toLocaleString():'OOS'}</span>
                 </div>)}
-              </div>}
+                {fc.length===0&&expColorNoMatch}
+              </div>})()}
             </div>})}
             {!smSearching&&smResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No SanMar results for "{pS}"</div>}
           </>}
@@ -3085,12 +3096,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontWeight:700,color:'#b45309',fontSize:13,marginLeft:'auto'}}>{mt._mtPrice>0?`from $${mt._mtPrice.toFixed(2)}`:'Price TBD'}</span>
                 <span style={{fontSize:14,color:'#d97706'}}>{isExp?'▲':'▼'}</span>
               </div>
-              {isExp&&<div style={{background:'#fffbeb',borderBottom:'2px solid #fcd34d',padding:'6px 12px',display:'flex',flexWrap:'wrap',gap:4,maxHeight:200,overflowY:'auto'}}>
-                {mt.colors.map((c,ci)=><div key={ci} style={{padding:'4px 8px',borderRadius:4,border:'1px solid #fcd34d',background:'white',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0}} onClick={()=>addSearchProduct(mt,c,'mt')} title={c.colorName+' — $'+c.customerPrice?.toFixed(2)}>
+              {isExp&&(()=>{const fc=filterExpColors(mt.colors);return<div style={{background:'#fffbeb',borderBottom:'2px solid #fcd34d',padding:'6px 12px',display:'flex',flexWrap:'wrap',gap:4,maxHeight:200,overflowY:'auto'}}>
+                {mt.colors.length>6&&expColorSearchInput('#fcd34d')}
+                {fc.map((c,ci)=><div key={ci} style={{padding:'4px 8px',borderRadius:4,border:'1px solid #fcd34d',background:'white',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0}} onClick={()=>addSearchProduct(mt,c,'mt')} title={c.colorName+' — $'+c.customerPrice?.toFixed(2)}>
                   <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:120}}>{c.colorName||'Default'}</span>
                   <span style={{fontSize:9,color:'#b45309',whiteSpace:'nowrap'}}>{c.customerPrice>0?`$${c.customerPrice.toFixed(2)}`:'TBD'}</span>
                 </div>)}
-              </div>}
+                {fc.length===0&&expColorNoMatch}
+              </div>})()}
             </div>})}
             {!mtSearching&&mtResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No Momentec results for "{pS}"</div>}
           </>}
@@ -3114,13 +3127,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </span>
                 <span style={{fontSize:12,color:'#dc2626'}}>{isExp?'▲':'▼'}</span>
               </div>
-              {isExp&&<div style={{background:'#fff5f5',borderBottom:'2px solid #fca5a5',padding:'6px 12px',display:'flex',flexWrap:'wrap',gap:4,maxHeight:200,overflowY:'auto'}}>
-                {rs.colors.map((c,ci)=><div key={ci} style={{padding:'4px 8px',borderRadius:4,border:'1px solid #fca5a5',background:'white',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0}} onClick={()=>addSearchProduct(rs,c,'rs')} title={c.colorName+(c.totalQty>0?' — '+c.totalQty.toLocaleString()+' avail':' — out of stock')+(c.nextAvail?' • next '+c.nextAvail:'')}>
+              {isExp&&(()=>{const fc=filterExpColors(rs.colors);return<div style={{background:'#fff5f5',borderBottom:'2px solid #fca5a5',padding:'6px 12px',display:'flex',flexWrap:'wrap',gap:4,maxHeight:200,overflowY:'auto'}}>
+                {rs.colors.length>6&&expColorSearchInput('#fca5a5')}
+                {fc.map((c,ci)=><div key={ci} style={{padding:'4px 8px',borderRadius:4,border:'1px solid #fca5a5',background:'white',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0}} onClick={()=>addSearchProduct(rs,c,'rs')} title={c.colorName+(c.totalQty>0?' — '+c.totalQty.toLocaleString()+' avail':' — out of stock')+(c.nextAvail?' • next '+c.nextAvail:'')}>
                   <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:140}}>{c.colorName||'Default'}</span>
                   <span style={{fontSize:8,color:c.totalQty>0?'#16a34a':'#dc2626',fontWeight:700}}>{c.totalQty>0?c.totalQty.toLocaleString():'OOS'}</span>
                   {c.nextAvail&&<span style={{fontSize:8,color:'#b45309'}}>↻{c.nextAvail.slice(0,5)}</span>}
                 </div>)}
-              </div>}
+                {fc.length===0&&expColorNoMatch}
+              </div>})()}
             </div>})}
             {!rsSearching&&rsResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No Richardson results for "{pS}"</div>}
           </>}
@@ -9081,18 +9096,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
             {searching&&colors.length===0&&<div style={{textAlign:'center',padding:16,color:'#94a3b8',fontSize:12}}>Loading colors from {label}...</div>}
             {!searching&&colors.length===0&&<div style={{textAlign:'center',padding:16,color:'#94a3b8',fontSize:12}}>No colors available for this SKU.</div>}
-            {colors.length>0&&<>
-              <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>{colors.length} color{colors.length!==1?'s':''} available</div>
+            {colors.length>0&&(()=>{const q=(colorPickerModal.q||'').toLowerCase().trim();const shown=q?colors.filter(c=>(c.colorName||'').toLowerCase().includes(q)):colors;return<>
+              <input className="form-input" placeholder="Search colors..." value={colorPickerModal.q||''} onChange={e=>{const v=e.target.value;setColorPickerModal(m=>m&&{...m,q:v})}} style={{fontSize:12,marginBottom:8}} autoFocus/>
+              <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>{q?shown.length+' of '+colors.length+' color'+(colors.length!==1?'s':'')+' match':colors.length+' color'+(colors.length!==1?'s':'')+' available'}</div>
               <div style={{display:'flex',flexWrap:'wrap',gap:6,maxHeight:360,overflowY:'auto'}}>
-                {colors.map((c,ci)=>{const isCurrent=(c.colorName||'').toLowerCase()===(item.color||'').toLowerCase();return<button key={ci} onClick={()=>!isCurrent&&changeItemVendorColor(itemIdx,style,c)} disabled={isCurrent} style={{padding:'6px 10px',borderRadius:6,border:'1px solid '+(isCurrent?accent:bg),background:isCurrent?bg:'white',cursor:isCurrent?'default':'pointer',fontSize:11,display:'flex',alignItems:'center',gap:6,minWidth:0,opacity:isCurrent?0.7:1}} title={c.colorName+(c.customerPrice?' — $'+c.customerPrice.toFixed(2):'')+(c.totalQty?' · '+c.totalQty.toLocaleString()+' avail':'')}>
+                {shown.map((c,ci)=>{const isCurrent=(c.colorName||'').toLowerCase()===(item.color||'').toLowerCase();return<button key={ci} onClick={()=>!isCurrent&&changeItemVendorColor(itemIdx,style,c)} disabled={isCurrent} style={{padding:'6px 10px',borderRadius:6,border:'1px solid '+(isCurrent?accent:bg),background:isCurrent?bg:'white',cursor:isCurrent?'default':'pointer',fontSize:11,display:'flex',alignItems:'center',gap:6,minWidth:0,opacity:isCurrent?0.7:1}} title={c.colorName+(c.customerPrice?' — $'+c.customerPrice.toFixed(2):'')+(c.totalQty?' · '+c.totalQty.toLocaleString()+' avail':'')}>
                   {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:24,height:24,objectFit:'contain',borderRadius:2}} onError={e=>{e.target.style.display='none'}}/>}
                   <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:130}}>{c.colorName||'Default'}</span>
                   {c.customerPrice>0&&<span style={{fontSize:9,color:accent}}>${c.customerPrice.toFixed(2)}</span>}
                   {c.totalQty>0&&<span style={{fontSize:9,color:'#22c55e'}}>{c.totalQty.toLocaleString()}</span>}
                   {isCurrent&&<span style={{fontSize:9,color:accent,fontWeight:700}}>✓</span>}
                 </button>})}
+                {shown.length===0&&<div style={{padding:12,color:'#94a3b8',fontSize:12,width:'100%',textAlign:'center'}}>No colors match "{colorPickerModal.q}"</div>}
               </div>
-            </>}
+            </>})()}
           </div>
         </div></div>})()}
 
