@@ -1539,6 +1539,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // writing back a stale snapshot would clobber unsaved color ways / size.
   const addArt=()=>{setO(e=>({...e,art_files:[...(e.art_files||[]),{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}],updated_at:new Date().toLocaleString()}));setDirty(true)};
   const uArt=(i,k,v)=>{setO(e=>({...e,art_files:(e.art_files||[]).map((f,x)=>x===i?{...f,[k]:v}:f),updated_at:new Date().toLocaleString()}));setDirty(true)};
+  // Remove a single mockup image (by URL) from the artwork's item_mockups / mockup_files so a rep
+  // can clear stale or wrong mockups from a job. Source art (files/prod_files) is left untouched.
+  const removeMockupUrl=url=>{if(!url)return;const _u=f=>typeof f==='string'?f:(f&&f.url)||'';const _strip=arr=>(arr||[]).filter(f=>_u(f)!==url);setO(e=>({...e,art_files:safeArt(e).map(a=>{const im={...(a.item_mockups||{})};let changed=false;Object.keys(im).forEach(k=>{const before=im[k]||[];const after=_strip(before);if(after.length!==before.length){im[k]=after;changed=true}});const mf=_strip(a.mockup_files);if(mf.length!==(a.mockup_files||[]).length)changed=true;if(!changed)return a;return{...a,item_mockups:im,mockup_files:mf}}),updated_at:new Date().toLocaleString()}));setDirty(true);nf&&nf('Mockup removed')};
   const rmArt=i=>{setO(e=>{const arr=e.art_files||[];const removedId=arr[i]?.id||null;const newAf=arr.filter((_,x)=>x!==i);const newItems=removedId?safeItems(e).map(it=>({...it,decorations:safeDecos(it).map(d=>d.art_file_id===removedId?{...d,art_file_id:null}:d)})):e.items;return{...e,art_files:newAf,items:newItems,updated_at:new Date().toLocaleString()}});setDirty(true)};
 
   const addFileToArt=i=>{const a=af[i];if(!a)return;uArt(i,'files',[...(a.files||[]),'new_file_'+((a.files||[]).length+1)+'.ai'])};
@@ -6315,7 +6318,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       {itemMockups.length>0?<div style={{padding:10}}>
                         <div style={{display:'grid',gridTemplateColumns:itemMockups.length>1?'1fr 1fr':'1fr',gap:8}}>
                           {itemMockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                            return<div key={fi} style={{borderRadius:8,border:'2px solid #f59e0b',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
+                            return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px solid #f59e0b',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
+                              <button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this mockup from the job?\n\n'+name))removeMockupUrl(url)}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0,boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>
                               {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
                               :_isPdfUrl(url,f)?<div style={{position:'relative',height:280,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
                                 {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
@@ -6514,7 +6518,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       {itemMockups.length>0?<div style={{padding:10}}>
                         <div style={{display:'grid',gridTemplateColumns:itemMockups.length>1?'1fr 1fr':'1fr',gap:8}}>
                           {itemMockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                            return<div key={fi} style={{borderRadius:8,border:'2px solid #86efac',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
+                            return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px solid #86efac',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
+                              <button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this mockup from the job?\n\n'+name))removeMockupUrl(url)}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0,boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>
                               {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
                               :_isPdfUrl(url,f)?<div style={{position:'relative',height:280,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
                                 {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}

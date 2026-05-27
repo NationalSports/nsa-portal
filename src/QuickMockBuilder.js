@@ -403,17 +403,79 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
   const switchSide = useCallback(async s => { if (s === side || busy) return; await commitPending(); setSide(s); }, [side, busy, commitPending]);
   const switchGarment = useCallback(async i => { if (i === gi || busy) return; await commitPending(); setSide('front'); setGi(i); }, [gi, busy, commitPending]);
 
+  const _safeName = s => (s || '').toString().replace(/[\/\\?%*:|"<>\s]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  const _mockFname = (g, sd) => 'mock-' + (_safeName(g.sku) || 'item') + '-' + (_safeName(g.color) || 'default') + '-' + sd + '.png';
+
+  // Load a garment image CORS-clean (proxy first, direct fallback) for offscreen rendering.
+  const _loadImg = garmentUrl => new Promise(resolve => {
+    if (!garmentUrl) return resolve(null);
+    const proxyUrl = '/.netlify/functions/image-proxy?url=' + encodeURIComponent(garmentUrl);
+    const attempt = (src, onFail) => { const im = new Image(); im.crossOrigin = 'anonymous'; im.onload = () => resolve(im); im.onerror = onFail; im.src = src; };
+    attempt(proxyUrl, () => attempt(garmentUrl, () => resolve(null)));
+  });
+
+  // Render a stored scene (placed art for one garment+side) to a PNG and upload it as a mock.
+  const _renderSceneMock = async (g, sd, sceneObjs) => {
+    const el = document.createElement('canvas');
+    const c = new fabric.Canvas(el, {width: 460, height: 560, backgroundColor: '#ffffff'});
+    try {
+      const garmentUrl = imgOverride[g.key] || (sd === 'back' ? g.backUrl : g.frontUrl);
+      const imgEl = await _loadImg(garmentUrl);
+      if (imgEl) {
+        const garImg = new fabric.FabricImage(imgEl, {selectable: false, evented: false});
+        const scale = Math.min(460 / garImg.width, 560 / garImg.height);
+        garImg.set({scaleX: scale, scaleY: scale, left: (460 - garImg.width * scale) / 2, top: (560 - garImg.height * scale) / 2});
+        c.add(garImg); c.sendObjectToBack(garImg);
+      }
+      const objs = await fabric.util.enlivenObjects(sceneObjs);
+      objs.forEach(o => c.add(o));
+      c.renderAll();
+      const dataUrl = c.toDataURL({format: 'png', multiplier: 2});
+      const blob = await (await fetch(dataUrl)).blob();
+      const fname = _mockFname(g, sd);
+      const url = await fileUpload(new File([blob], fname, {type: 'image/png'}), 'nsa-mockups');
+      return {key: g.key, entry: {url, name: fname, sku: g.sku}};
+    } catch (e) { return null; }
+    finally { try { c.dispose(); } catch (e2) {} }
+  };
+
+  // Done renders & saves a mock for every garment+side the rep placed art on — not just the
+  // one on screen. The current canvas is snapshotted into the scene store first so it's included.
   const handleDone = async () => {
-    let finalMocks = mocks;
-    const just = await commitPending();
-    if (just) {
-      const cur = (finalMocks[just.key] || []).filter(m => m.name !== just.entry.name);
-      finalMocks = {...finalMocks, [just.key]: [...cur, just.entry]};
-    }
-    const filesByLocation = {};
-    // Only newly uploaded files get appended — art already on the artwork stays as-is.
-    layers.forEach(l => { if (l.source && l.artFileId) filesByLocation[l.artFileId] = [...(filesByLocation[l.artFileId] || []), l.source]; });
-    onSave({mocksByGarment: finalMocks, filesByLocation});
+    setBusy(true);
+    try {
+      if (canvas) {
+        try {
+          sceneRef.current[gi + '|' + side] = canvas.getObjects().filter(o => o._isArt).map(o => {
+            const j = o.toObject(['_isArt', '_layerId']);
+            if (j.type && /image/i.test(j.type)) j.crossOrigin = 'anonymous';
+            return j;
+          });
+        } catch (e) {}
+      }
+      let finalMocks = {...mocks};
+      const curKey = gi + '|' + side;
+      for (const [k, objs] of Object.entries(sceneRef.current)) {
+        if (!Array.isArray(objs) || !objs.length) continue;
+        const [giStr, sd] = k.split('|');
+        const g = garments[Number(giStr)];
+        if (!g) continue;
+        // Scenes left behind were auto-saved on exit; skip re-uploading an unchanged one. Always
+        // (re)render the current view so its latest positions win.
+        if (k !== curKey && (finalMocks[g.key] || []).some(m => m.name === _mockFname(g, sd))) continue;
+        const res = await _renderSceneMock(g, sd, objs);
+        if (res) {
+          const cur = (finalMocks[res.key] || []).filter(m => m.name !== res.entry.name);
+          finalMocks = {...finalMocks, [res.key]: [...cur, res.entry]};
+        }
+      }
+      setMocks(finalMocks);
+      clearDirty();
+      const filesByLocation = {};
+      // Only newly uploaded files get appended — art already on the artwork stays as-is.
+      layers.forEach(l => { if (l.source && l.artFileId) filesByLocation[l.artFileId] = [...(filesByLocation[l.artFileId] || []), l.source]; });
+      onSave({mocksByGarment: finalMocks, filesByLocation});
+    } finally { setBusy(false); }
   };
 
   const savedCount = Object.values(mocks).filter(a => (a || []).length > 0).length;
