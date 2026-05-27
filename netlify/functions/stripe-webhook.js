@@ -45,7 +45,7 @@ exports.handler = async (event) => {
         const { data: claimed } = await sb.from('webstore_orders')
           .update({ confirmation_sent: true })
           .eq('stripe_pi_id', pi.id).neq('confirmation_sent', true)
-          .select('id,store_id,buyer_email,buyer_name,total,shipping_fee').limit(1);
+          .select('id,store_id,buyer_email,buyer_name,total,shipping_fee,ship_method,ship_address').limit(1);
         const order = claimed && claimed[0];
         if (order && order.buyer_email) await sendConfirmation(sb, order);
       }
@@ -86,6 +86,8 @@ async function sendConfirmation(sb, order) {
   const link = `${portal}/shop/${store.slug}/order/${order.id}`;
   const accent = store.accent_color || '#e11d2a';
   const shipping = Number(order.shipping_fee) || 0;
+  const a = order.ship_address || null;
+  const addrBlock = (order.ship_method === 'ship_home' && a) ? `<div style="margin-top:18px"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#64748b;margin-bottom:4px">Shipping to</div><div style="font-size:14px;line-height:1.5">${a.name ? a.name + '<br>' : ''}${a.street1 || ''}${a.street2 ? ', ' + a.street2 : ''}<br>${a.city || ''}${a.city ? ', ' : ''}${a.state || ''} ${a.zip || ''}</div></div>` : '';
   const nsaLogo = `${portal}/NEW%20NSA%20Logo%20on%20white.png`;
   const logoBar = `<table width="100%" style="border-collapse:collapse"><tr>
       <td align="left" style="padding:12px 20px;background:#fff;border:1px solid #eef1f5;border-bottom:none;border-radius:10px 0 0 0"><img src="${nsaLogo}" alt="National Sports Apparel" height="32" style="height:32px;display:block"></td>
@@ -103,6 +105,7 @@ async function sendConfirmation(sb, order) {
         ${shipping > 0 ? `<tr><td></td><td style="padding:8px 0;color:#475569">Shipping</td><td style="padding:8px 0;text-align:right">${money(shipping)}</td></tr>` : ''}
         <tr><td></td><td style="padding:12px 0 0;font-weight:800;font-size:16px">Total</td><td style="padding:12px 0 0;text-align:right;font-weight:800;font-size:16px">${money(order.total)}</td></tr>
       </table>
+      ${addrBlock}
       <a href="${link}" style="display:inline-block;margin-top:20px;background:${accent};color:#fff;text-decoration:none;padding:13px 26px;border-radius:8px;font-weight:700">Track your order</a>
       <p style="font-size:12px;color:#94a3b8;margin-top:18px">Save this email — the link above is how you check your order status anytime.</p>
     </div></div>`;
