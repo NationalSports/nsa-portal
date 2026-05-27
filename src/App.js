@@ -18,7 +18,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
-import { calcOrderTotals } from './pricing';
+import { calcOrderTotals, auTierDisc } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
@@ -4727,8 +4727,8 @@ export default function App(){
     setProd(pp=>pp.map(x=>x.id===pid?{...x,_inv:inv}:x));nf('Inventory updated');
   };
   const newE=(c,product,seedItems)=>{const mk=c?.catalog_markup||1.65;const items=[];
-    if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-(({A:0.4,B:0.35,C:0.3})[c?.adidas_ua_tier||'B']||0.35))):rQ(repCost*mk);
-      items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
+    if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-auTierDisc(c?.adidas_ua_tier||'B',product.pricing_group))):rQ(repCost*mk);
+      items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,vendor_id:product.vendor_id||null,pricing_group:product.pricing_group||null,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
     if(Array.isArray(seedItems)&&seedItems.length)items.push(...seedItems);
     const e={id:nextEstId(ests),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
   // Create a blank Sales Order directly (skipping the estimate stage). Reps still pick a
@@ -6564,9 +6564,9 @@ export default function App(){
                 <span>Cost: <strong>${ep.nsa_cost?.toFixed(2)}</strong></span>
                 <span>Retail: <strong>${ep.retail_price?.toFixed(2)}</strong></span>
                 {(ep.brand==='Adidas'||ep.brand==='Under Armour'||ep.brand==='New Balance')?<>
-                  <span>Tier A: <strong>${rQ((ep.retail_price||0)*0.6).toFixed(2)}</strong></span>
-                  <span>Tier B: <strong>${rQ((ep.retail_price||0)*0.65).toFixed(2)}</strong></span>
-                  <span>Tier C: <strong>${rQ((ep.retail_price||0)*0.7).toFixed(2)}</strong></span>
+                  <span>Tier A: <strong>${rQ((ep.retail_price||0)*(1-auTierDisc('A',ep.pricing_group))).toFixed(2)}</strong></span>
+                  <span>Tier B: <strong>${rQ((ep.retail_price||0)*(1-auTierDisc('B',ep.pricing_group))).toFixed(2)}</strong></span>
+                  <span>Tier C: <strong>${rQ((ep.retail_price||0)*(1-auTierDisc('C',ep.pricing_group))).toFixed(2)}</strong></span>
                 </>:<span>Sell: <strong>${rQ(ep.nsa_cost*1.65).toFixed(2)}</strong></span>}
               </div>
               <div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
@@ -6577,7 +6577,7 @@ export default function App(){
             </>:<>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
                 <div><label className="form-label">SKU</label><input className="form-input" value={ep.sku} onChange={e=>setEp(x=>({...x,sku:e.target.value}))}/></div>
-                <div><label className="form-label">Brand</label><select className="form-select" value={ep.vendor_id} onChange={e=>{const vn=D_V.find(x=>x.id===e.target.value);setEp(x=>({...x,vendor_id:e.target.value,brand:vn?.name||x.brand}))}}><option value="">Select...</option>{D_V.map(vv=><option key={vv.id} value={vv.id}>{vv.name}</option>)}</select></div>
+                <div><label className="form-label">Vendor</label><select className="form-select" value={ep.vendor_id} onChange={e=>{const vn=D_V.find(x=>x.id===e.target.value);setEp(x=>({...x,vendor_id:e.target.value,brand:vn?.name||x.brand}))}}><option value="">Select...</option>{D_V.map(vv=><option key={vv.id} value={vv.id}>{vv.name}</option>)}</select></div>
                 <div style={{gridColumn:'1/3'}}><label className="form-label">Name</label><input className="form-input" value={ep.name} onChange={e=>setEp(x=>({...x,name:e.target.value}))}/></div>
                 <div><label className="form-label">Color</label><input className="form-input" value={ep.color} onChange={e=>setEp(x=>({...x,color:e.target.value}))}/></div>
                 <div><label className="form-label">Color Category</label><select className="form-select" value={ep.color_category||''} onChange={e=>setEp(x=>({...x,color_category:e.target.value}))}><option value="">Select...</option>{COLOR_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
@@ -6646,10 +6646,10 @@ export default function App(){
       {/* ORDER HISTORY (ALL) */}
       {tab==='history'&&<div className="card"><div className="card-header"><h3>All Orders</h3></div><div className="card-body" style={{padding:0}}>
         <table><thead><tr><th>Type</th><th>ID</th><th>Customer</th><th>Memo</th><th>Qty</th><th>Status</th><th>Date</th></tr></thead><tbody>
-        {[...pEsts.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const it=e.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const qty=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;
+        {[...pEsts.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const it=e.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const _sq=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;const qty=it?(_sq>0?_sq:safeNum(it.est_qty)):0;
           return{type:'Estimate',id:e.id,cust:c,memo:e.memo,qty,status:e.status,date:e.created_at,badge:e.status==='open'||e.status==='draft'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':'badge-gray',
             onClick:()=>{setEEst(e);setEEstC(c);setPg('estimates');setSelP(null)}}}),
-        ...pSOs.map(s=>{const c=cust.find(x=>x.id===s.customer_id);const it=s.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const qty=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;
+        ...pSOs.map(s=>{const c=cust.find(x=>x.id===s.customer_id);const it=s.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const _sq=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;const qty=it?(_sq>0?_sq:safeNum(it.est_qty)):0;
           return{type:'SO',id:s.id,cust:c,memo:s.memo,qty,status:calcSOStatus(s),date:s.created_at,badge:'badge-blue',
             onClick:()=>{setESO(s);setESOC(c);setPg('orders');setSelP(null)}}}),
         ...pPOs.map(po=>({type:'PO',id:po.po_id,cust:po.customer,memo:'→ '+po.soId,qty:Object.values(po.received||{}).reduce((a,v2)=>a+v2,0),status:po.status,date:po.created_at,badge:po.status==='received'?'badge-green':po.status==='ordered'?'badge-amber':'badge-gray',

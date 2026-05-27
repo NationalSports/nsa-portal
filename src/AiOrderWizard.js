@@ -8,10 +8,9 @@
 import React, { useState } from 'react';
 import { Icon, SearchSelect } from './components';
 import { invokeEdgeFn, enrichAiLinesWithVendors } from './utils';
-import { rQ } from './pricing';
+import { rQ, auTierDisc } from './pricing';
 
 const isAU = b => { const l = (b || '').toLowerCase(); return l === 'adidas' || l === 'under armour' || l === 'new balance'; };
-const tD = { A: 0.4, B: 0.35, C: 0.3 };
 
 const initialAi = () => ({
   inputMode: 'text', text: '', images: [], url: '',
@@ -92,7 +91,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       const cost = catMatch?.nsa_cost || p.vendor_price || 0;
       const retail = catMatch?.retail_price || p.vendor_retail || 0;
       const sell = au
-        ? rQ(retail * (1 - (tD[customer?.adidas_ua_tier || 'B'] || 0.35)))
+        ? rQ(retail * (1 - auTierDisc(customer?.adidas_ua_tier || 'B', catMatch?.pricing_group)))
         : rQ(cost * mk);
       const szKeys = Object.keys(p.sizes || {});
       return {
@@ -100,6 +99,8 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
         sku: sku || 'CUSTOM',
         name: catMatch?.name || p.name || '',
         brand,
+        vendor_id: catMatch?.vendor_id || null,
+        pricing_group: catMatch?.pricing_group || null,
         color: p.color || catMatch?.color || '',
         nsa_cost: cost,
         retail_price: retail,
