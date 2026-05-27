@@ -1895,18 +1895,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         [art.preview_url,...(art.mockup_files||[]),..._onfile].forEach(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenF.has(u))return;const pv=_filePreview(f);if(!pv)return;_seenF.add(u);files.push({name:_fileName(f),url:u,preview:pv})});
         locations.push({artFileId:aid,name:art.name||j2.art_name||'',position:j2.positions||'',existingFiles:_onfile,files,preview:files.length?files[0].preview:null});
       });
-      const initialMocks={};
-      artIds.forEach(aid=>{const art=safeArt(o).find(a=>a.id===aid);if(!art)return;Object.entries(art.item_mockups||{}).forEach(([k,arr])=>{if(arr&&arr.length)initialMocks[k]=[...(initialMocks[k]||[]),...arr]})});
-      return<QuickMockBuilder garments={garments} locations={locations} initialMocks={initialMocks} nf={nf}
+      const initialMocks={};const initialScene={};
+      artIds.forEach(aid=>{const art=safeArt(o).find(a=>a.id===aid);if(!art)return;Object.entries(art.item_mockups||{}).forEach(([k,arr])=>{if(arr&&arr.length)initialMocks[k]=[...(initialMocks[k]||[]),...arr]});Object.entries(art.qm_scenes||{}).forEach(([k,objs])=>{if(objs&&objs.length&&!initialScene[k])initialScene[k]=objs})});
+      return<QuickMockBuilder garments={garments} locations={locations} initialMocks={initialMocks} initialScene={initialScene} nf={nf}
         onClose={()=>setEditMockJob(null)}
-        onSave={({mocksByGarment,filesByLocation})=>{
+        onSave={({mocksByGarment,filesByLocation,sceneByGarment})=>{
           const _fUrl=f=>typeof f==='string'?f:(f?.url||'');
           const updArt=safeArt(o).map(a=>{
             if(!artIds.includes(a.id))return a;
             const upd={...a};
             const locFiles=(filesByLocation||{})[a.id]||[];
             if(locFiles.length){const have=new Set((a.files||[]).map(_fUrl));upd.files=[...(a.files||[]),...locFiles.filter(f=>!have.has(_fUrl(f)))]}
-            if(a.id===primaryId){const im={};Object.entries(mocksByGarment||{}).forEach(([k,arr])=>{if(arr&&arr.length)im[k]=arr.map(m=>({...m,art_file_id:primaryId}))});upd.item_mockups=im}
+            if(a.id===primaryId){const im={};Object.entries(mocksByGarment||{}).forEach(([k,arr])=>{if(arr&&arr.length)im[k]=arr.map(m=>({...m,art_file_id:primaryId}))});upd.item_mockups=im;if(sceneByGarment)upd.qm_scenes=sceneByGarment}
             return upd;
           });
           const updated={...o,art_files:updArt,updated_at:new Date().toLocaleString()};
@@ -7315,6 +7315,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   im[key]=[...(im[key]||[]),...tagged];
                 });
                 upd.item_mockups=im;
+                if(g.qmScene)upd.qm_scenes={...(a.qm_scenes||{}),...g.qmScene};
               }
               return upd;
             });
@@ -7491,9 +7492,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const preview=files.length?files[0].preview:null;
               locations.push({artFileId:aid,name:art?.name||it.art_name||DECO_LABELS_W[g.deco_type]||g.name,position:d.position||'',existingFiles:_onfile,files,preview});
             });});
-          return<QuickMockBuilder garments={garments} locations={locations} initialMocks={g.qmMocks} initialFiles={g.qmFiles} nf={nf}
+          return<QuickMockBuilder garments={garments} locations={locations} initialMocks={g.qmMocks} initialScene={g.qmScene} initialFiles={g.qmFiles} nf={nf}
             onClose={()=>setMockBuilder(null)}
-            onSave={({mocksByGarment,filesByLocation})=>{const gs=[...jobWizard.groups];gs[mockBuilder.gi]={...gs[mockBuilder.gi],qmMocks:mocksByGarment,qmFiles:filesByLocation};setJobWizard({...jobWizard,groups:gs});setMockBuilder(null);nf('Mockups attached — release the job to send to the coach')}}/>;
+            onSave={({mocksByGarment,filesByLocation,sceneByGarment})=>{const gs=[...jobWizard.groups];gs[mockBuilder.gi]={...gs[mockBuilder.gi],qmMocks:mocksByGarment,qmFiles:filesByLocation,qmScene:sceneByGarment};setJobWizard({...jobWizard,groups:gs});setMockBuilder(null);nf('Mockups attached — release the job to send to the coach')}}/>;
         })()}
       </div></div>;
 
