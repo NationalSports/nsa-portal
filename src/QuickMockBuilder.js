@@ -49,14 +49,21 @@ const hexToRgb = h => {
   return m ? {r: parseInt(m[0], 16), g: parseInt(m[1], 16), b: parseInt(m[2], 16)} : {r: 0, g: 0, b: 0};
 };
 
-export default function QuickMockBuilder({garments, locations, initialMocks, onSave, onClose, nf}){
+export default function QuickMockBuilder({garments, locations, initialMocks, initialScene, onSave, onClose, nf}){
   const [gi, setGi] = useState(0);
   const [side, setSide] = useState('front');
   const [canvas, setCanvas] = useState(null);
   const wrapRef = useRef(null);
   // Serialized art per "gi|side" so switching garment color / side (which rebuilds the
   // fabric canvas) restores the art the user already placed instead of showing blank.
-  const sceneRef = useRef({});
+  // Seeded from a previously-saved scene (keyed garmentKey|side) so re-editing a mock
+  // restores the placed art at its saved size/position instead of a blank canvas.
+  const sceneRef = useRef(null);
+  if (sceneRef.current === null) {
+    const seed = {};
+    if (initialScene) garments.forEach((g, i) => ['front', 'back'].forEach(s => { const k = g.key + '|' + s; if (initialScene[k] && initialScene[k].length) seed[i + '|' + s] = initialScene[k]; }));
+    sceneRef.current = seed;
+  }
   // Each location is a layer. preview = renderable art to place on the canvas (may come
   // from the artwork already on file). source = a NEW file to append to the artwork on save.
   const [layers, setLayers] = useState(() => locations.map(l => ({
@@ -375,7 +382,12 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
     const filesByLocation = {};
     // Only newly uploaded files get appended — art already on the artwork stays as-is.
     layers.forEach(l => { if (l.source && l.artFileId) filesByLocation[l.artFileId] = [...(filesByLocation[l.artFileId] || []), l.source]; });
-    onSave({mocksByGarment: mocks, filesByLocation});
+    // Snapshot the active canvas (other garment/sides were already snapshotted on switch),
+    // then re-key the scene by garmentKey|side so it can be restored on a later edit.
+    try { if (canvas) sceneRef.current[gi + '|' + side] = canvas.getObjects().filter(o => o._isArt).map(o => { const jj = o.toObject(['_isArt', '_layerId']); if (jj.type && /image/i.test(jj.type)) jj.crossOrigin = 'anonymous'; return jj; }); } catch (e) {}
+    const sceneByGarment = {};
+    Object.entries(sceneRef.current).forEach(([k, objs]) => { if (!objs || !objs.length) return; const sep = k.lastIndexOf('|'); const g = garments[+k.slice(0, sep)]; if (g) sceneByGarment[g.key + '|' + k.slice(sep + 1)] = objs; });
+    onSave({mocksByGarment: mocks, filesByLocation, sceneByGarment});
   };
 
   const savedCount = Object.values(mocks).filter(a => (a || []).length > 0).length;
