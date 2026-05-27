@@ -976,6 +976,63 @@ const testMomentecConnection = async () => {
   catch (error) { console.error('[Momentec] Connection test failed:', error); return false; }
 };
 
+// ─── CHAMPRO Sports API Integration (via Netlify proxy — REST/JSON) ───
+// Requires CHAMPRO_API_KEY in Netlify env vars (the "API Customer Key" UUID).
+// NOTE: CHAMPRO also requires IP whitelisting of the proxy's egress IP, or
+// requests fail with error code 15 ("IP Address is not allowed").
+// Docs: https://api.champrosports.com/
+const champroApiCall = async (path, options = {}) => {
+  try {
+    const method = options.method || 'GET';
+    const proxyUrl = `/.netlify/functions/champro-proxy?path=${encodeURIComponent(path)}`;
+    const response = await fetch(proxyUrl, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      ...(options.body ? { body: options.body } : {})
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      let msg; try { msg = JSON.parse(errText)?.error; } catch {}
+      throw new Error(msg || `CHAMPRO API error: ${response.status}`);
+    }
+    const data = await response.json();
+    console.log('[CHAMPRO] API response:', path, data);
+    return data;
+  } catch (error) { console.error('[CHAMPRO] API call failed:', path, error); throw error; }
+};
+
+// Product master info (MOQ, SKUs, fabric/color/size, lead times). GET.
+const champroGetProductInfo = async (productMaster) =>
+  await champroApiCall(`/api/Order/ProductInfo?ProductMaster=${encodeURIComponent(productMaster)}`);
+
+// Warehouse inventory (IL/CA/DR) for a list of SKUs. POST.
+// skus: array of SKU strings.
+const champroGetInventory = async (skus = []) => {
+  const body = JSON.stringify({
+    Orders: [{ OrderItems: skus.map((sku) => ({ SKU: sku })) }]
+  });
+  return await champroApiCall('/api/Order/Inventory', { method: 'POST', body });
+};
+
+// Submit a stock or custom order. POST.
+// order: the full Orders[] entry (PO, OrderType, ship-to fields, etc.).
+const champroPlaceOrder = async (order, { autoWarehouse = true } = {}) => {
+  const body = JSON.stringify({
+    Autowarehouse: autoWarehouse ? 'YES' : 'NO',
+    Orders: Array.isArray(order) ? order : [order]
+  });
+  return await champroApiCall('/api/Order/PlaceOrder', { method: 'POST', body });
+};
+
+// Order tracking + fulfillment status. GET.
+const champroGetOrderStatus = async (orderNumber) =>
+  await champroApiCall(`/api/Order/OrderStatus?OrderNumber=${encodeURIComponent(orderNumber)}`);
+
+const testChampProConnection = async () => {
+  try { await champroGetProductInfo('JSBJ8'); console.log('[CHAMPRO] Connection test successful'); return true; }
+  catch (error) { console.error('[CHAMPRO] Connection test failed:', error); return false; }
+};
+
 // ─── Cross-vendor SKU resolver (for order import fallback) ───
 // Given a style/SKU not found in the local catalog, query SanMar, S&S, and
 // Momentec in parallel and return the most complete normalized match, or null.
@@ -1071,12 +1128,39 @@ const momentecResolveSku = async (sku) => {
   } catch (e) { console.warn('[Import] Momentec resolve failed for', sku, e.message); return null; }
 };
 
+// CHAMPRO ProductInfo is keyed by ProductMaster. A SKU usually embeds the
+// master as a prefix, so try the SKU as-is first, then progressively shorter
+// prefixes. Field names are best-effort across likely response shapes.
+const champroResolveSku = async (sku) => {
+  try {
+    const s = String(sku).toUpperCase().trim();
+    const candidates = [s, s.slice(0, 5), s.slice(0, 4), s.slice(0, 3)].filter((v, i, a) => v && a.indexOf(v) === i);
+    let pm = null;
+    for (const c of candidates) {
+      const d = await champroApiCall(`/api/Order/ProductInfo?ProductMaster=${encodeURIComponent(c)}`).catch(() => null);
+      const master = d?.ProductMaster || d?.productMaster || (Array.isArray(d?.Products) ? d.Products[0] : d?.Product) || d;
+      if (master && (master.ProductName || master.Name || master.Description || master.ProductMaster)) { pm = master; break; }
+    }
+    if (!pm) return null;
+    const name = pm.ProductName || pm.Name || pm.Description || pm.ProductDescription || String(sku);
+    const rate = parseFloat(pm.Price || pm.ListPrice || pm.WholesalePrice || pm.UnitPrice || 0) || 0;
+    return {
+      vendor: 'CHAMPRO',
+      brand: 'CHAMPRO',
+      name,
+      color: pm.Color || pm.ColorName || '',
+      rate,
+    };
+  } catch (e) { console.warn('[Import] CHAMPRO resolve failed for', sku, e.message); return null; }
+};
+
 const resolveSkuAcrossVendors = async (sku) => {
   if (!sku) return null;
   const results = await Promise.all([
     sanmarResolveSku(sku),
     ssResolveSku(sku),
     momentecResolveSku(sku),
+    champroResolveSku(sku),
   ]);
   const hits = results.filter(Boolean);
   if (!hits.length) return null;
@@ -1085,4 +1169,4 @@ const resolveSkuAcrossVendors = async (sku) => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, resolveSkuAcrossVendors };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, champroApiCall, champroGetProductInfo, champroGetInventory, champroPlaceOrder, champroGetOrderStatus, testChampProConnection, resolveSkuAcrossVendors };
