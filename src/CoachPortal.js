@@ -8,8 +8,13 @@ import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinar
 import { StripePaymentModal } from './modals';
 import { supabase } from './lib/supabase';
 
-// Read-only team-store view for the coach: who ordered, their number, and the
-// live fulfillment status of each player's order. No editing.
+// Read-only team-store view for the coach: headline order/fundraising/batch
+// summary up top, with the per-player order list as a searchable, collapsible
+// section below. No editing.
+const _cpMoney = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const _cpStages = { pending: 'Ordered', in_production: 'In production', shipped: 'Shipped', complete: 'Complete' };
+const _cpTone = (s) => s === 'complete' ? '#166534' : s === 'shipped' ? '#1e40af' : s === 'in_production' ? '#92400e' : '#64748b';
+
 function CoachStore({ customer }) {
   const [stores, setStores] = useState([]);
   const [data, setData] = useState({}); // storeId -> {orders, items, roster}
@@ -40,45 +45,126 @@ function CoachStore({ customer }) {
   }, [customer.id, customer.parent_id]);
 
   if (!loaded || !stores.length) return null;
-  const STAGES = { pending: 'Ordered', in_production: 'In production', shipped: 'Shipped', complete: 'Complete' };
-  const stTone = (s) => s === 'complete' ? '#166534' : s === 'shipped' ? '#1e40af' : s === 'in_production' ? '#92400e' : '#64748b';
   return (
     <div style={{ marginBottom: 18 }}>
-      {stores.map((s) => {
-        const d = data[s.id] || { orders: [], items: [], roster: [] };
-        const itemsByOrder = {}; d.items.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
-        const players = new Set(d.items.map((i) => (i.player_name || '').trim().toLowerCase()).filter(Boolean));
-        const notOrdered = (d.roster || []).filter((r) => !r.ordered);
-        return (
-          <div key={s.id} style={{ border: '1px solid #e2e8f0', borderRadius: 12, marginBottom: 12, overflow: 'hidden' }}>
-            <div style={{ background: '#0b1f3a', color: '#fff', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-              <div style={{ fontWeight: 800 }}>🛍️ {s.name} <span style={{ fontWeight: 400, opacity: 0.7, fontSize: 12 }}>· team store</span></div>
-              <div style={{ fontSize: 12, opacity: 0.85 }}>{d.orders.length} orders · {players.size} players{notOrdered.length ? ` · ${notOrdered.length} not ordered` : ''}</div>
+      {stores.map((s) => <CoachStoreCard key={s.id} store={s} d={data[s.id] || { orders: [], items: [], roster: [] }} />)}
+    </div>
+  );
+}
+
+function CoachStoreCard({ store: s, d }) {
+  const [q, setQ] = useState('');
+  const [showOrders, setShowOrders] = useState(false);
+  const itemsByOrder = {}; d.items.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
+  // Active orders exclude abandoned pre-payment carts and cancellations.
+  const active = d.orders.filter((o) => o.status !== 'cancelled' && o.status !== 'pending_payment');
+  const players = new Set(d.items.map((i) => (i.player_name || '').trim().toLowerCase()).filter(Boolean));
+  const units = d.items.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (i.qty || 0), 0);
+  const fundraising = active.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+  const sales = active.reduce((a, o) => a + (Number(o.total) || 0), 0);
+  const paidCount = active.filter((o) => o.payment_mode === 'paid').length;
+  const notOrdered = (d.roster || []).filter((r) => !r.ordered);
+
+  // Group batched orders by Sales Order; derive a representative status.
+  const batchMap = {}; active.forEach((o) => { if (o.so_id) (batchMap[o.so_id] = batchMap[o.so_id] || []).push(o); });
+  const batchStatus = (ords) => {
+    const its = ords.flatMap((o) => itemsByOrder[o.id] || []).filter((i) => !i.is_bundle_parent);
+    const stages = its.map((i) => i.line_status || 'pending');
+    if (stages.length && stages.every((x) => x === 'complete')) return 'complete';
+    if (stages.some((x) => x === 'shipped' || x === 'complete')) return 'shipped';
+    if (stages.some((x) => x === 'in_production')) return 'in_production';
+    return 'pending';
+  };
+  const batches = Object.entries(batchMap).map(([soId, ords]) => ({ soId, count: ords.length, status: batchStatus(ords) }));
+  const unbatched = active.filter((o) => !o.so_id).length;
+
+  const orderRows = active.filter((o) => {
+    if (!q.trim()) return true;
+    const its = itemsByOrder[o.id] || [];
+    const hay = `${o.buyer_name || ''} ${o.buyer_email || ''} ${its.map((i) => i.player_name).filter(Boolean).join(' ')} ${its.map((i) => i.player_number).filter(Boolean).join(' ')}`.toLowerCase();
+    return hay.includes(q.toLowerCase());
+  });
+
+  const Kpi = ({ label, value, color }) => (
+    <div style={{ flex: '1 1 110px', minWidth: 110 }}>
+      <div style={{ fontSize: 22, fontWeight: 900, color: color || '#0b1220' }}>{value}</div>
+      <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700 }}>{label}</div>
+    </div>
+  );
+
+  return (
+    <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, marginBottom: 14, overflow: 'hidden' }}>
+      <div style={{ background: '#0b1f3a', color: '#fff', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ fontWeight: 800 }}>🛍️ {s.name} <span style={{ fontWeight: 400, opacity: 0.7, fontSize: 12 }}>· team store</span></div>
+        <a href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: '#bfdbfe', textDecoration: 'none' }}>Visit store ↗</a>
+      </div>
+      <div style={{ padding: 16 }}>
+        {/* Headline KPIs */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, paddingBottom: 14, borderBottom: '1px solid #f1f5f9' }}>
+          <Kpi label="Orders" value={active.length} />
+          <Kpi label="Players" value={players.size} />
+          <Kpi label="Items" value={units} />
+          <Kpi label="Sales" value={_cpMoney(sales)} />
+          <Kpi label="Fundraising" value={_cpMoney(fundraising)} color="#166534" />
+          <Kpi label="Paid / Tab" value={`${paidCount} / ${active.length - paidCount}`} />
+        </div>
+
+        {/* Store batches */}
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 8 }}>Production batches</div>
+          {batches.length === 0 ? (
+            <div style={{ fontSize: 13, color: '#64748b' }}>No batches yet{unbatched ? ` — ${unbatched} order${unbatched === 1 ? '' : 's'} waiting to be batched.` : '.'}</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {batches.map((b) => (
+                <div key={b.soId} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, padding: '8px 12px', background: '#f8fafc', borderRadius: 8 }}>
+                  <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#1e40af' }}>{b.soId}</span>
+                  <span style={{ color: '#64748b' }}>{b.count} order{b.count === 1 ? '' : 's'}</span>
+                  <span style={{ marginLeft: 'auto', fontWeight: 700, color: _cpTone(b.status) }}>{_cpStages[b.status]}</span>
+                </div>
+              ))}
+              {unbatched > 0 && <div style={{ fontSize: 12, color: '#92400e' }}>+ {unbatched} new order{unbatched === 1 ? '' : 's'} not yet batched.</div>}
             </div>
-            <div style={{ padding: 12 }}>
-              {d.orders.length === 0 ? <div style={{ fontSize: 13, color: '#64748b', padding: 8 }}>No orders yet.</div> : (
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                  <thead><tr style={{ textAlign: 'left', color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}><th style={{ padding: 6 }}>Player</th><th style={{ padding: 6 }}>#</th><th style={{ padding: 6 }}>Items</th><th style={{ padding: 6 }}>Paid?</th><th style={{ padding: 6 }}>Status</th></tr></thead>
-                  <tbody>
-                    {d.orders.map((o) => { const its = itemsByOrder[o.id] || []; const player = [...new Set(its.map((i) => i.player_name).filter(Boolean))].join(', '); const num = [...new Set(its.map((i) => i.player_number).filter(Boolean))].join(', '); const ls = its[0]?.line_status || 'pending'; const qty = its.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (i.qty || 0), 0); return (
-                      <tr key={o.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                        <td style={{ padding: 6 }}>{player || o.buyer_name || '—'}</td>
-                        <td style={{ padding: 6 }}>{num || '—'}</td>
-                        <td style={{ padding: 6 }}>{qty}</td>
-                        <td style={{ padding: 6 }}>{o.payment_mode === 'paid' ? 'Paid' : 'Team tab'}</td>
-                        <td style={{ padding: 6, fontWeight: 700, color: stTone(ls) }}>{STAGES[ls] || ls}</td>
-                      </tr>
-                    ); })}
-                  </tbody>
-                </table>
+          )}
+        </div>
+
+        {/* Not-yet-ordered roster */}
+        {notOrdered.length > 0 && <div style={{ marginTop: 14, fontSize: 12, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 10px' }}>
+          <b>Not yet ordered ({notOrdered.length}):</b> {notOrdered.map((r) => r.player_name + (r.player_number ? ' #' + r.player_number : '')).join(', ')}
+        </div>}
+
+        {/* Player orders — collapsible + searchable */}
+        <div style={{ marginTop: 14, borderTop: '1px solid #f1f5f9', paddingTop: 12 }}>
+          <button onClick={() => setShowOrders((v) => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#0b1220', padding: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ transform: showOrders ? 'rotate(90deg)' : 'none', transition: 'transform .15s', display: 'inline-block' }}>▶</span>
+            Player orders ({active.length})
+          </button>
+          {showOrders && (
+            <div style={{ marginTop: 10 }}>
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search player, parent, email or number…" style={{ width: '100%', maxWidth: 360, padding: '8px 12px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 13, marginBottom: 10, boxSizing: 'border-box' }} />
+              {active.length === 0 ? <div style={{ fontSize: 13, color: '#64748b' }}>No orders yet.</div> : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                    <thead><tr style={{ textAlign: 'left', color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}><th style={{ padding: 6 }}>Player</th><th style={{ padding: 6 }}>#</th><th style={{ padding: 6 }}>Items</th><th style={{ padding: 6 }}>Paid?</th><th style={{ padding: 6 }}>Status</th></tr></thead>
+                    <tbody>
+                      {orderRows.map((o) => { const its = itemsByOrder[o.id] || []; const player = [...new Set(its.map((i) => i.player_name).filter(Boolean))].join(', '); const num = [...new Set(its.map((i) => i.player_number).filter(Boolean))].join(', '); const ls = its[0]?.line_status || 'pending'; const qty = its.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (i.qty || 0), 0); return (
+                        <tr key={o.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                          <td style={{ padding: 6 }}>{player || o.buyer_name || '—'}</td>
+                          <td style={{ padding: 6 }}>{num || '—'}</td>
+                          <td style={{ padding: 6 }}>{qty}</td>
+                          <td style={{ padding: 6 }}>{o.payment_mode === 'paid' ? 'Paid' : 'Team tab'}</td>
+                          <td style={{ padding: 6, fontWeight: 700, color: _cpTone(ls) }}>{_cpStages[ls] || ls}</td>
+                        </tr>
+                      ); })}
+                      {orderRows.length === 0 && <tr><td colSpan={5} style={{ padding: 10, color: '#94a3b8' }}>No orders match “{q}”.</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
               )}
-              {notOrdered.length > 0 && <div style={{ marginTop: 10, fontSize: 12, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 10px' }}>
-                <b>Not yet ordered ({notOrdered.length}):</b> {notOrdered.map((r) => r.player_name + (r.player_number ? ' #' + r.player_number : '')).join(', ')}
-              </div>}
             </div>
-          </div>
-        );
-      })}
+          )}
+        </div>
+      </div>
     </div>
   );
 }

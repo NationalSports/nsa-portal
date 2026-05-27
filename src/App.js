@@ -18,7 +18,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
-import { calcOrderTotals } from './pricing';
+import { calcOrderTotals, auTierDisc } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
@@ -635,9 +635,22 @@ const _dbLoad = async (opts={}) => {
       return{...est,items,art_files,_itemsHydrated:!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
-      const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
+      // Recycled-number carry-over guard: a reused SO id can inherit jobs/art from the order that
+      // previously held it (e.g. after a purge/re-import). Such children were created before this SO's
+      // row existed, so a job whose created_at predates the SO's created_at (24h margin to absorb clock
+      // skew) is stale carry-over — drop it from state so it can't surface on the art dashboard / order
+      // or get re-saved. Drop an art file too when it's referenced only by such carry-over jobs and by no
+      // live decoration. Fail safe (keep) whenever a date is missing/unparseable.
+      const _soCreatedMs=(()=>{const t=Date.parse(so.created_at);return Number.isNaN(t)?null:t})();
+      const _isCarryJob=ca=>{if(_soCreatedMs==null)return false;const t=Date.parse(ca);if(Number.isNaN(t))return false;return t<_soCreatedMs-864e5;};
+      const _myItemIds=new Set(soItems.filter(i=>i.so_id===so.id).map(i=>i.id));
+      const _liveArtIds=new Set(soDecos.filter(d=>_myItemIds.has(d.so_item_id)&&d.art_file_id).map(d=>d.art_file_id));
+      const _rawJobs=soJobs.filter(j=>j.so_id===so.id);
+      const _carryArtIds=new Set();
+      _rawJobs.forEach(j=>{if(_isCarryJob(j.created_at))(Array.isArray(j._art_ids)&&j._art_ids.length?j._art_ids:[j.art_file_id]).forEach(aid=>{if(aid)_carryArtIds.add(aid)})});
+      const art_files=soArt.filter(a=>a.so_id===so.id&&!(_carryArtIds.has(a.id)&&!_liveArtIds.has(a.id))).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
       const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
-      const jobs=soJobs.filter(j=>j.so_id===so.id).map(j=>{const{so_id:_,...rest}=j;return rest});
+      const jobs=_rawJobs.filter(j=>!_isCarryJob(j.created_at)).map(j=>{const{so_id:_,...rest}=j;return rest});
       // Dedup orphaned duplicate so_items sharing an item_index. These arise when an "insert-new-then-delete-old"
       // save swap was interrupted after the child (deco/pick) deletes but before the parent so_items delete — leaving
       // an empty phantom row alongside the real one. If both reach the client the phantom can land at the canonical
@@ -842,7 +855,7 @@ const _dbSaveEstimateInner = async (est) => {
       const _staleSkipped=art_files.length-_freshArt.length;
       if(_staleSkipped)console.warn('[DB]',_staleSkipped,'art file(s) for',est.id,'left untouched — DB copy is newer (concurrent edit)');
       if(_freshArt.length){
-        let afRows=_freshArt.map(a=>({..._pick(a,_artCols),estimate_id:est.id}));
+        let afRows=_freshArt.map(a=>({..._pick(a,_artCols),archived:!!a.archived,estimate_id:est.id}));
         const{error:afErr}=await supabase.from('estimate_art_files').upsert(afRows,{onConflict:'estimate_id,id'});
         if(afErr){
           if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
@@ -1168,7 +1181,7 @@ const _dbSaveSOInner = async (so) => {
       const _staleSkipped=art_files.length-_freshArt.length;
       if(_staleSkipped)console.warn('[DB]',_staleSkipped,'art file(s) for',so.id,'left untouched — DB copy is newer (concurrent edit)');
       if(_freshArt.length){
-        let soAfRows=_freshArt.map(a=>({..._pick(a,_artCols),so_id:so.id}));
+        let soAfRows=_freshArt.map(a=>({..._pick(a,_artCols),archived:!!a.archived,so_id:so.id}));
         const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
         if(afErr){
           if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
@@ -1343,7 +1356,7 @@ const _dbSaveArtFilesInner = async (so) => {
     if(art_files.length){
       const _freshArt=art_files.filter(a=>{const dbv=_dbAfVerById.get(a.id);return dbv==null||(a._version||0)>=dbv});
       if(_freshArt.length){
-        const soAfRows=_freshArt.map(a=>({..._pick(a,_artCols),so_id:so.id}));
+        const soAfRows=_freshArt.map(a=>({..._pick(a,_artCols),archived:!!a.archived,so_id:so.id}));
         const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
         if(afErr){
           if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
@@ -1780,6 +1793,16 @@ const _persistFailedIds=()=>{_lsSet('nsa_save_failed_ids',JSON.stringify([..._db
 _dbDuplicateSkuIds.forEach(id=>{_dbSaveFailedIds.delete(id)});if(_dbDuplicateSkuIds.size)_persistFailedIds();
 // Track IDs with unsaved local changes (diffSave skipped because DB not ready) — protects from reload overwrite
 const _dbSavePendingIds=new Set();
+// Merge freshly-loaded assigned_todos with the local copy. Keeps the local version of any todo whose
+// save is still in-flight or failed (and any local-only todo not yet persisted), so a background
+// realtime/poll reload never drops a task the user just created or completed before it round-trips.
+const _mergeAssignedTodos=(dbTodos,localTodos)=>{
+  const prot=id=>_dbSavePendingIds.has(id)||_dbSaveFailedIds.has(id);
+  const dbIds=new Set(dbTodos.map(t=>t.id));
+  const merged=dbTodos.map(t=>prot(t.id)?((localTodos||[]).find(p=>p.id===t.id)||t):t);
+  const localOnly=(localTodos||[]).filter(t=>!dbIds.has(t.id)&&prot(t.id));
+  return localOnly.length?[...localOnly,...merged]:merged;
+};
 // Track recent saves by this client — prevents false "modified by another user" conflicts from own realtime echo
 const _dbRecentSaves={};// {id: timestamp}
 // Retry a network-flaky upsert/select promise factory. Only retries transport errors (TypeError: Failed to fetch),
@@ -2815,6 +2838,11 @@ export default function App(){
   // Rep-CSR assignments and assigned todos
   const[repCsrAssignments,setRepCsrAssignments]=useState([]);
   const[assignedTodos,setAssignedTodos]=useState([]);
+  // When each OMG store was first brought into the portal, keyed by store id:
+  // {at:ISO, baseline:bool}. Drives the 4-week "apply OMG funds" accounting
+  // reminder. baseline=true marks stores already present when this shipped, so
+  // we don't backfill tasks for the entire history.
+  const[omgFirstSeen,setOmgFirstSeen]=useState(()=>loadState('omg_first_seen',{}));
   const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',wh_only:false});
   const[todoDetailId,setTodoDetailId]=useState(null);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
@@ -2883,6 +2911,7 @@ export default function App(){
           if(as.wh_recent_actions)setWhRecentActions(as.wh_recent_actions);
           if(as.job_time_logs)setJobTimeLogs(as.job_time_logs);
           if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:{..._qbDef.mapping,...(as.qb_config.mapping||{})},syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
+          if(as.omg_first_seen)setOmgFirstSeen(as.omg_first_seen);
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(as.inv_adj_log);
           if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
@@ -2996,7 +3025,8 @@ export default function App(){
         const prodMerge=_mergeProtected(d.products,'prod');
         // Update snapshot before state — auto-save effects will diff against this.
         // Merge into existing snap so non-reloaded keys (assignedTodos, repCsr, etc.) aren't wiped.
-        _dbSnap.current={..._dbSnap.current,ests:estMerge.snap,sos:soMerge.snap,invs:invMerge.snap,msgs:msgMerge.snap,cust:custMerge.snap,prod:prodMerge.snap,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
+        const todoMerge=_mergeAssignedTodos(d.assignedTodos||[],_dbSnap.current.assignedTodos||[]);
+        _dbSnap.current={..._dbSnap.current,ests:estMerge.snap,sos:soMerge.snap,invs:invMerge.snap,msgs:msgMerge.snap,cust:custMerge.snap,prod:prodMerge.snap,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues,assignedTodos:todoMerge};
         // Use change detection to avoid triggering save effects needlessly
         if(d.team.length)setREPS(prev=>_jsonEq(prev,d.team)?prev:d.team);
         setEsts(estMerge.apply);
@@ -3008,6 +3038,7 @@ export default function App(){
         if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
         if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
         setIssues(prev=>{const v=d.issues||[];return _jsonEq(prev,v)?prev:v});
+        setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return _jsonEq(prev,v)?prev:v});
         if(d.decoVendors)setDecoVendors(prev=>_jsonEq(prev,d.decoVendors)?prev:d.decoVendors);
         if(d.decoVendorPricing)setDecoVendorPricing(prev=>_jsonEq(prev,d.decoVendorPricing)?prev:d.decoVendorPricing);
         // Refresh app_state keys
@@ -3023,7 +3054,7 @@ export default function App(){
       const debouncedReload=()=>{if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,2000)};
       // Subscribe to core tables + pick_lines for instant warehouse sync
       let _rtErrorLogged=false;
-      ['estimates','sales_orders','invoices','messages','customers','products','so_item_pick_lines'].forEach(table=>{
+      ['estimates','sales_orders','invoices','messages','customers','products','so_item_pick_lines','assigned_todos','todo_comments'].forEach(table=>{
         const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload()}).subscribe((status,err)=>{
           if(status==='SUBSCRIBED')return;
           if(status==='CHANNEL_ERROR'||status==='TIMED_OUT'){
@@ -3099,7 +3130,7 @@ export default function App(){
           team:d._coreOnly?_prevSnap.team:d.team,
           omg:d._coreOnly?_prevSnap.omg:d.omg_stores,
           issues:d._coreOnly?_prevSnap.issues:d.issues,
-          assignedTodos:_prevSnap.assignedTodos||[]};
+          assignedTodos:d._coreOnly?(_prevSnap.assignedTodos||[]):_mergeAssignedTodos(d.assignedTodos||[],_prevSnap.assignedTodos||[])};
         setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(prev.find(p=>p.id===e.id)||e):mergeEst(e));return changed(prev,merged)?merged:prev}const merged2=d.estimates.map(mergeEst);return changed(prev,merged2)?merged2:prev});
         setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;
           // If DB has empty items/jobs (mid-save transient state), keep local entirely
@@ -3129,6 +3160,7 @@ export default function App(){
         setCust(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
+        if(!d._coreOnly)setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return changed(prev,v)?v:prev});
         if(d.products.length)setProd(prev=>{const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;if(!changed(prev,base))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,_cleanupDuplicateProducts)});
         // Refresh app_state keys (batch POs, inventory POs, etc.)
         const as=d.appState||{};
@@ -3720,6 +3752,41 @@ export default function App(){
       return t;
     }));
   },[sos,ests]);
+  React.useEffect(()=>{_saveAppState('omg_first_seen',omgFirstSeen)},[omgFirstSeen]);
+  // OMG stores are settled from store deposit funds (not a coach payment), so
+  // 4 weeks after a store is brought into the portal, remind accounting (Andrea
+  // Jung) to apply those funds to its invoice. Stores already present when this
+  // shipped are baselined (no retroactive backlog); tasks are deduped by the
+  // [store-id] tag in the title.
+  React.useEffect(()=>{
+    if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;
+    if(!(omgStores&&omgStores.length))return;
+    const now=Date.now();
+    const seen={...omgFirstSeen};
+    const firstAdoption=Object.keys(seen).length===0;
+    let seenChanged=false;
+    omgStores.forEach(s=>{if(s&&s.id&&!seen[s.id]){seen[s.id]={at:new Date().toISOString(),baseline:firstAdoption};seenChanged=true}});
+    if(seenChanged)setOmgFirstSeen(seen);
+    const FOUR_WEEKS=28*24*60*60*1000;
+    const andrea=REPS.find(r=>r&&/andrea\s+jung/i.test(r.name||''));
+    const toAdd=[];
+    omgStores.forEach(s=>{
+      if(!s||!s.id)return;
+      const rec=seen[s.id];
+      if(!rec||rec.baseline)return;
+      if(now-new Date(rec.at).getTime()<FOUR_WEEKS)return;
+      const tag='['+s.id+']';
+      if(assignedTodos.some(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag)))return;
+      const so=sos.find(x=>x.omg_store_id===s.id);
+      const $=n=>'$'+(+n||0).toLocaleString(undefined,{maximumFractionDigits:2});
+      const grand=s._omg_grand_total||0,fund=s._omg_fundraise||0,fees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);
+      const desc=`OMG store "${s.store_name||s.id}" was brought into the portal on ${new Date(rec.at).toLocaleDateString()}. Apply the collected store deposit funds to its invoice (OMG orders are paid from store funds, not a coach).\n`
+        +`Collected per OMG — Grand total: ${$(grand)} · Fundraise: ${$(fund)} · Fees (ship/proc/tax): ${$(fees)}.`
+        +(so?`\nSales order: ${so.id}`:'\n(No sales order created from this store yet.)');
+      toAdd.push({id:'todo-omg-'+s.id+'-'+now,title:`Apply OMG funds — ${s.store_name||s.id} ${tag}`,description:desc,created_by:cu?.id||null,assigned_to:andrea?.id||'',so_id:so?.id||null,customer_id:s.customer_id||null,priority:2,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]});
+    });
+    if(toAdd.length)setAssignedTodos(prev=>[...toAdd,...prev]);
+  },[omgStores,assignedTodos,REPS,sos,omgFirstSeen]);
   // Batch POs, submitted batches, changelog, SO history — sync to Supabase app_state table.
   // Unbounded log keys (change_log, so_history, inv_adj_log) skip localStorage — cloud-only to avoid quota pressure.
   // Other keys still cache locally for fast cold-start.
@@ -4701,8 +4768,8 @@ export default function App(){
     setProd(pp=>pp.map(x=>x.id===pid?{...x,_inv:inv}:x));nf('Inventory updated');
   };
   const newE=(c,product,seedItems)=>{const mk=c?.catalog_markup||1.65;const items=[];
-    if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-(({A:0.4,B:0.35,C:0.3})[c?.adidas_ua_tier||'B']||0.35))):rQ(repCost*mk);
-      items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
+    if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-auTierDisc(c?.adidas_ua_tier||'B',product.pricing_group))):rQ(repCost*mk);
+      items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,vendor_id:product.vendor_id||null,pricing_group:product.pricing_group||null,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
     if(Array.isArray(seedItems)&&seedItems.length)items.push(...seedItems);
     const e={id:nextEstId(ests),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
   // Create a blank Sales Order directly (skipping the estimate stage). Reps still pick a
@@ -4798,7 +4865,13 @@ export default function App(){
     const ne={id:nextEstId(ests),customer_id:est.customer_id,memo:(est.memo||'')+' (copy)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,email_status:null,art_files:JSON.parse(JSON.stringify(est.art_files||[])),items:clonedItems};
     setEsts(prev=>[ne,...prev]);const c=cust.find(x=>x.id===ne.customer_id);setEEst(ne);setEEstC(c);setPg('estimates');nf(`${ne.id} copied from ${est.id}`)};
   const copySalesOrder=so=>{
-    const clonedItems=safeItems(so).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;return clone});
+    const clonedItems=safeItems(so).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;
+      // Preserve qty-only lines: the count lives in est_qty (sizes is empty). Keep qty_only=true so the
+      // quantity isn't silently dropped to 0 on the copy. (Lines that carry their count in the size grid
+      // are left untouched.)
+      const _szTotal=Object.values(clone.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
+      if(_szTotal===0&&safeNum(clone.est_qty)>0)clone.qty_only=true;
+      return clone});
     const ns={id:nextSOId(sos),customer_id:so.customer_id,estimate_id:null,memo:(so.memo||'')+' (copy)',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,expected_date:so.expected_date,production_notes:so.production_notes||'',shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,ship_to_custom:so.ship_to_custom,firm_dates:[],art_files:JSON.parse(JSON.stringify(so.art_files||[])),items:clonedItems,order_type:so.order_type||'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:so.booking_alert_days||100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:so.tax_rate||0,tax_exempt:so.tax_exempt||false};
     setSOs(prev=>[ns,...prev]);_dbSaveSO(ns);const c=cust.find(x=>x.id===ns.customer_id);setESO(ns);setESOC(c);setPg('orders');nf(`${ns.id} copied from ${so.id}`)};
   const revertSOToEst=so=>{
@@ -5179,7 +5252,17 @@ export default function App(){
   // Shared data builder for warehouse + deco + dashboard pages
   function buildWarehouseData(){
     const pullTasks=[];const shipTasks=[];const decoTasks=[];const deliverTasks=[];
-    sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
+    sos.filter(so=>{
+      const st=calcSOStatus(so);
+      if(st==='booking')return false;
+      if(st!=='complete')return true;
+      // A promo order can be financially "closed" (status='complete') while its blanks are
+      // received but not yet decorated/shipped. Keep such orders visible to the warehouse so
+      // their still-active jobs can be pulled, moved to deco, and shipped. A 'completed' job is
+      // decorated but not yet shipped, so it still belongs in Ready to Ship — only treat a job
+      // as done-for-warehouse once it is actually 'shipped' (or never left 'draft').
+      return safeJobs(so).some(j=>j.prod_status!=='shipped'&&j.prod_status!=='draft');
+    }).forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
@@ -6558,9 +6641,9 @@ export default function App(){
                 <span>Cost: <strong>${ep.nsa_cost?.toFixed(2)}</strong></span>
                 <span>Retail: <strong>${ep.retail_price?.toFixed(2)}</strong></span>
                 {(ep.brand==='Adidas'||ep.brand==='Under Armour'||ep.brand==='New Balance')?<>
-                  <span>Tier A: <strong>${rQ((ep.retail_price||0)*0.6).toFixed(2)}</strong></span>
-                  <span>Tier B: <strong>${rQ((ep.retail_price||0)*0.65).toFixed(2)}</strong></span>
-                  <span>Tier C: <strong>${rQ((ep.retail_price||0)*0.7).toFixed(2)}</strong></span>
+                  <span>Tier A: <strong>${rQ((ep.retail_price||0)*(1-auTierDisc('A',ep.pricing_group))).toFixed(2)}</strong></span>
+                  <span>Tier B: <strong>${rQ((ep.retail_price||0)*(1-auTierDisc('B',ep.pricing_group))).toFixed(2)}</strong></span>
+                  <span>Tier C: <strong>${rQ((ep.retail_price||0)*(1-auTierDisc('C',ep.pricing_group))).toFixed(2)}</strong></span>
                 </>:<span>Sell: <strong>${rQ(ep.nsa_cost*1.65).toFixed(2)}</strong></span>}
               </div>
               <div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
@@ -6571,7 +6654,7 @@ export default function App(){
             </>:<>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
                 <div><label className="form-label">SKU</label><input className="form-input" value={ep.sku} onChange={e=>setEp(x=>({...x,sku:e.target.value}))}/></div>
-                <div><label className="form-label">Brand</label><select className="form-select" value={ep.vendor_id} onChange={e=>{const vn=D_V.find(x=>x.id===e.target.value);setEp(x=>({...x,vendor_id:e.target.value,brand:vn?.name||x.brand}))}}><option value="">Select...</option>{D_V.map(vv=><option key={vv.id} value={vv.id}>{vv.name}</option>)}</select></div>
+                <div><label className="form-label">Vendor</label><select className="form-select" value={ep.vendor_id} onChange={e=>{const vn=D_V.find(x=>x.id===e.target.value);setEp(x=>({...x,vendor_id:e.target.value,brand:vn?.name||x.brand}))}}><option value="">Select...</option>{D_V.map(vv=><option key={vv.id} value={vv.id}>{vv.name}</option>)}</select></div>
                 <div style={{gridColumn:'1/3'}}><label className="form-label">Name</label><input className="form-input" value={ep.name} onChange={e=>setEp(x=>({...x,name:e.target.value}))}/></div>
                 <div><label className="form-label">Color</label><input className="form-input" value={ep.color} onChange={e=>setEp(x=>({...x,color:e.target.value}))}/></div>
                 <div><label className="form-label">Color Category</label><select className="form-select" value={ep.color_category||''} onChange={e=>setEp(x=>({...x,color_category:e.target.value}))}><option value="">Select...</option>{COLOR_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
@@ -6640,10 +6723,10 @@ export default function App(){
       {/* ORDER HISTORY (ALL) */}
       {tab==='history'&&<div className="card"><div className="card-header"><h3>All Orders</h3></div><div className="card-body" style={{padding:0}}>
         <table><thead><tr><th>Type</th><th>ID</th><th>Customer</th><th>Memo</th><th>Qty</th><th>Status</th><th>Date</th></tr></thead><tbody>
-        {[...pEsts.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const it=e.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const qty=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;
+        {[...pEsts.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const it=e.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const _sq=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;const qty=it?(_sq>0?_sq:safeNum(it.est_qty)):0;
           return{type:'Estimate',id:e.id,cust:c,memo:e.memo,qty,status:e.status,date:e.created_at,badge:e.status==='open'||e.status==='draft'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':'badge-gray',
             onClick:()=>{setEEst(e);setEEstC(c);setPg('estimates');setSelP(null)}}}),
-        ...pSOs.map(s=>{const c=cust.find(x=>x.id===s.customer_id);const it=s.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const qty=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;
+        ...pSOs.map(s=>{const c=cust.find(x=>x.id===s.customer_id);const it=s.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const _sq=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;const qty=it?(_sq>0?_sq:safeNum(it.est_qty)):0;
           return{type:'SO',id:s.id,cust:c,memo:s.memo,qty,status:calcSOStatus(s),date:s.created_at,badge:'badge-blue',
             onClick:()=>{setESO(s);setESOC(c);setPg('orders');setSelP(null)}}}),
         ...pPOs.map(po=>({type:'PO',id:po.po_id,cust:po.customer,memo:'→ '+po.soId,qty:Object.values(po.received||{}).reduce((a,v2)=>a+v2,0),status:po.status,date:po.created_at,badge:po.status==='received'?'badge-green':po.status==='ordered'?'badge-amber':'badge-gray',
@@ -7498,6 +7581,7 @@ export default function App(){
   const[artDashView,setArtDashView]=useState('artist');// 'artist' | 'rep'
   const[artCompletedOpen,setArtCompletedOpen]=useState(false);// toggle completed jobs dropdown
   const[artHiddenOpen,setArtHiddenOpen]=useState(false);// toggle hidden jobs dropdown
+  const[artInProductionOpen,setArtInProductionOpen]=useState(false);// toggle in-production jobs dropdown
   const[artCompletedSearch,setArtCompletedSearch]=useState('');// search within completed jobs
   const[artRejectModal,setArtRejectModal]=useState(null);// {job, reason:''}
   const[artEditModal,setArtEditModal]=useState(null);// {job, instructions:'', notes:''}
@@ -7521,7 +7605,7 @@ export default function App(){
   const[prodJobLightbox,setProdJobLightbox]=useState(false);// lightbox for mockup image
   const[prodLightboxIdx,setProdLightboxIdx]=useState(0);// index of current mockup in lightbox gallery
   const[prodLightboxZoom,setProdLightboxZoom]=useState(1);// zoom level for lightbox
-  const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
+  const[prodView,_setProdView]=useState(()=>loadState('prod_view','board'));const setProdView=v=>{_setProdView(v);try{localStorage.setItem('nsa_prod_view',JSON.stringify(v))}catch(e){}};const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
   const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');const[prodDecoF,setProdDecoF]=useState('all');
   const PROD_LIST_DEFAULT_COLS=['status','job','customer','expected','qty','deco','rep','so','actions'];
   const[prodListCols,_setProdListCols]=useState(()=>loadState('prod_list_cols',PROD_LIST_DEFAULT_COLS));
@@ -7803,7 +7887,7 @@ export default function App(){
     const readyOnly=byDeco.filter(j=>(j.prod_status!=='hold'||isJobReady(j,j.so))).filter(j=>j.prod_status!=='shipped');
     // Decorator filtering: decorators see all Ready for Prod, but only their assigned jobs in In Line/In Process/Completed
     const roleFiltered=isDecorator?readyOnly.filter(j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'||j.assigned_to===cu?.name):readyOnly;
-    const byStatus=prodStatF==='active'?roleFiltered:prodStatF==='all'?roleFiltered:prodStatF==='hold'?roleFiltered.filter(j=>j.prod_status==='hold'||j.prod_status==='ready'):roleFiltered.filter(j=>j.prod_status===prodStatF);
+    const byStatus=prodStatF==='active'?roleFiltered.filter(j=>j.prod_status!=='completed'):prodStatF==='all'?roleFiltered:prodStatF==='hold'?roleFiltered.filter(j=>j.prod_status==='hold'||j.prod_status==='ready'):roleFiltered.filter(j=>j.prod_status===prodStatF);
     const totalUnits=byStatus.reduce((a,j)=>a+j.total_units,0);
     const fulfilledUnits=byStatus.reduce((a,j)=>a+j.fulfilled_units,0);
     const needsArt=byStatus.filter(j=>j.art_status!=='art_complete').length;
@@ -8021,7 +8105,14 @@ export default function App(){
           items_count:{label:'# Items',align:'right',render:j=><span style={{fontSize:11}}>{(j.items||[]).length}</span>},
           notes:{label:'Notes',render:j=><div style={{fontSize:11,maxWidth:280,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.notes||j.so?.production_notes||'—'}</div>},
           progress:{label:'Progress',align:'right',render:j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;return<span style={{fontSize:11,whiteSpace:'nowrap'}}>{pct}%</span>}},
-          actions:{label:'',render:j=><button className="btn btn-sm" style={{fontSize:14,padding:'6px 12px',background:'#d97706',color:'white',border:'none'}} title="Production sheet" onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋</button>},
+          actions:{label:'Prod Sheet',align:'center',render:j=>{
+            const flow={hold:{to:'staging',label:'📦 → In Line',c:'#6366f1'},ready:{to:'staging',label:'→ In Line',c:'#d97706'},staging:{to:'in_process',label:'→ In Process',c:'#2563eb'},in_process:{to:'completed',label:'✓ Done',c:'#166534'}};
+            const nx=flow[j.prod_status];
+            return<div style={{display:'flex',gap:8,justifyContent:'center',alignItems:'center',whiteSpace:'nowrap'}}>
+              <div style={{width:116,display:'flex',justifyContent:'flex-end'}}>{nx&&<button className="btn btn-sm" style={{fontSize:10,padding:'5px 10px',background:nx.c,color:'white',border:'none',fontWeight:600}} title={'Move to '+statusLabel[nx.to]} onClick={e=>{e.stopPropagation();moveJobStatus(j,nx.to)}}>{nx.label}</button>}</div>
+              <button className="btn btn-sm" style={{fontSize:14,padding:'6px 12px',background:'#d97706',color:'white',border:'none'}} title="Production sheet" onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋</button>
+            </div>;
+          }},
         };
         const visibleCols=prodListCols.filter(id=>ALL_COLS[id]);
         const sortVal=(j,key)=>{
@@ -8894,19 +8985,45 @@ export default function App(){
                   // the NSA-#### scan also finds the source POs (PO-####-TAG) grouped under it.
                   const lcPoId=poId.toLowerCase();
                   const matchedLines=allPOLines.filter(pl=>pl.poId.toLowerCase()===lcPoId||(pl.poLine?.batch_po_number||'').toLowerCase()===lcPoId);
-                  matchedLines.forEach(ml=>{
-                    const so=sos.find(s=>s.id===ml.soId);if(!so)return;
+                  // Group matched lines by SO so multiple received lines on the same SO are applied
+                  // together (a per-line savSO would read a stale SO each time and clobber prior updates).
+                  const linesBySO={};
+                  matchedLines.forEach(ml=>{(linesBySO[ml.soId]=linesBySO[ml.soId]||[]).push(ml)});
+                  Object.keys(linesBySO).forEach(soId=>{
+                    const so=sos.find(s=>s.id===soId);if(!so)return;
                     const updItems=[...safeItems(so)];
-                    const it=updItems[ml.itemIdx];if(!it)return;
-                    const pls=[...(it.po_lines||[])];
-                    if(pls[ml.poLineIdx]){
-                      const rcv={};
-                      Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k)){
-                        const el=document.getElementById('rcv-'+allPOLines.indexOf(ml)+'-'+k);rcv[k]=el?parseInt(el.value)||0:v}});
-                      pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:'received',received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
-                      updItems[ml.itemIdx]={...it,po_lines:pls};
-                    }
-                    savSO({...so,items:updItems,updated_at:new Date().toLocaleString()});
+                    linesBySO[soId].forEach(ml=>{
+                      const it=updItems[ml.itemIdx];if(!it)return;
+                      const pls=[...(it.po_lines||[])];
+                      if(pls[ml.poLineIdx]){
+                        const rcv={};
+                        Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k)){
+                          // Receive inputs are rendered keyed by poItems index, not the global allPOLines index.
+                          // Map this line back to its rendered row via _pl (non-batch); batch rows have no _pl, so
+                          // the lookup misses and we fall back to the ordered qty v — unchanged from prior behavior.
+                          const _ri=poItems.findIndex(pi=>pi._pl===ml);
+                          const el=_ri>=0?document.getElementById('rcv-'+_ri+'-'+k):null;rcv[k]=el?parseInt(el.value)||0:v}});
+                        pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:'received',received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
+                        updItems[ml.itemIdx]={...it,po_lines:pls};
+                      }
+                    });
+                    // Recalculate job item_status/fulfilled_units after receiving — mirrors the warehouse
+                    // stock-pull flow so the Production dashboard and "Ready for Deco" tab reflect received stock.
+                    const updatedJobs=safeJobs(so).map(j=>{
+                      let total=0,fulfilled=0;
+                      (j.items||[]).forEach(gi=>{const it=updItems[gi.item_idx];if(!it)return;
+                        Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
+                          total+=v;
+                          const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+                          const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+                          fulfilled+=Math.min(v,pQ+rQ);
+                        });
+                      });
+                      const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
+                      if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
+                      return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
+                    });
+                    savSO({...so,items:updItems,jobs:updatedJobs,updated_at:new Date().toLocaleString()});
                   });
                   nf('✅ '+poId+' received — '+totalUnits+' units. SO items updated.');
                   // Print label(s) after receiving — separate per source PO for batches
@@ -9091,6 +9208,7 @@ export default function App(){
                     bp.items.forEach(bpIt=>{
                       const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
                       const poLine={po_id:poNum,vendor:vg.name,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+vg.pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
+                      if(bpIt.drop_ship)poLine.drop_ship=true;
                       Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
                       updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
                     });
@@ -9376,7 +9494,7 @@ export default function App(){
         const poNum=inv._po_number||so?.po_number;
         const pRows=[];let pSubTotal=0;
         const pSoItems=so?safeItems(so):[];const pSoArt=so?safeArt(so):[];
-        const _pAQ2={};pSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ2[d.art_file_id]=(_pAQ2[d.art_file_id]||0)+q2}})});
+        const _pAQ2={};pSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ2[d.art_file_id]=(_pAQ2[d.art_file_id]||0)+q2}})});
         const pIsDeposit=inv.inv_type==='deposit';const pDepPct=pIsDeposit?(inv.deposit_pct||50)/100:1;
         if(pSoItems.length>0){
           pSoItems.forEach(it=>{
@@ -10183,7 +10301,7 @@ export default function App(){
                 // Build rows with decoration detail from SO items
                 const siRows=[];let siSubTotal=0;
                 const siSoItems=siSo?safeItems(siSo):[];const siSoArt=siSo?safeArt(siSo):[];
-                const _siAQ={};siSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_siAQ[d.art_file_id]=(_siAQ[d.art_file_id]||0)+q2}})});
+                const _siAQ={};siSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_siAQ[d.art_file_id]=(_siAQ[d.art_file_id]||0)+q2}})});
                 const siIsDeposit=siInv.inv_type==='deposit';const siDepPct=siIsDeposit?(siInv.deposit_pct||50)/100:1;
                 const siStoredLi=siInv.line_items||[];
                 if(siSoItems.length>0){
@@ -10478,7 +10596,7 @@ export default function App(){
                 // Build rows with decoration detail from SO items
                 const fRows=[];let fSubTotal=0;
                 const fSoItems=so?safeItems(so):[];const fSoArt=so?safeArt(so):[];
-                const _fAQ={};fSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_fAQ[d.art_file_id]=(_fAQ[d.art_file_id]||0)+q2}})});
+                const _fAQ={};fSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_fAQ[d.art_file_id]=(_fAQ[d.art_file_id]||0)+q2}})});
                 const fIsDeposit=inv.inv_type==='deposit';const fDepPct=fIsDeposit?(inv.deposit_pct||50)/100:1;
                 const fStoredLi=inv.line_items||[];
                 const shipAmt=inv.shipping!=null?inv.shipping:so?(()=>{const fLi2=fStoredLi.length>0?fStoredLi:fSoItems.map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{amount:qty*safeNum(it.unit_sell)}});const sub=fLi2.reduce((a,l)=>a+(l.amount||0),0);return(so.shipping_type==='pct'?sub*(so.shipping_value||0)/100:so.shipping_value||0)})():0;
@@ -13520,6 +13638,10 @@ export default function App(){
                 onClick={()=>{const so=sos.find(x=>x.omg_store_id===s.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}}>
                 📋 View SO → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>
             </div>}
+            {(()=>{const rec=omgFirstSeen[s.id];const tag='['+s.id+']';const task=assignedTodos.find(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag));
+              if(task){const who=REPS.find(r=>r.id===task.assigned_to)?.name||'accounting';return<div style={{marginTop:6,padding:'6px 12px',background:task.status==='completed'?'#f0fdf4':'#faf5ff',borderRadius:6,fontSize:11,color:task.status==='completed'?'#166534':'#6d28d9',fontWeight:600}}>{task.status==='completed'?'✅ OMG funds applied':`💰 ${who} reminded to apply OMG funds`}</div>}
+              if(rec&&!rec.baseline){const days=Math.ceil((28*864e5-(Date.now()-new Date(rec.at).getTime()))/864e5);return<div style={{marginTop:6,padding:'6px 12px',background:'#fffbeb',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⏳ Accounting will be reminded to apply OMG funds in {Math.max(0,days)} day{days===1?'':'s'}</div>}
+              return null})()}
           </div>
         </div></div>
 
@@ -16824,9 +16946,11 @@ export default function App(){
       {id:'waiting_for_art',label:'Waiting for Art',color:'#dc2626',bg:'#fef2f2',desc:'Needs artist attention'},
       {id:'needs_approval',label:'Needs Approval',color:'#92400e',bg:'#fef3c7',desc:'Waiting for rep/customer approval'},
       {id:'approved',label:'Approved / Needs Files',color:'#166534',bg:'#dcfce7',desc:'Approved — upload production files'},
-      {id:'in_production',label:'In Production',color:'#2563eb',bg:'#eff6ff',desc:'Art done — being decorated'},
     ];
-    const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=c.id==='in_production'?inProductionJobs.length:artistJobs.filter(j=>getArtFileStatus(j)===c.id).length});
+    const inProductionCol={id:'in_production',label:'In Production',color:'#2563eb',bg:'#eff6ff',desc:'Art done — being decorated'};
+    const sortByDaysOut=(a,b)=>{if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0};
+    const sortedInProductionJobs=[...inProductionJobs].sort(sortByDaysOut);
+    const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=artistJobs.filter(j=>getArtFileStatus(j)===c.id).length});
 
     // ─── Rep view data — all jobs grouped by rep ───
     const repJobs=filtered.filter(j=>!j.art_hidden).filter(j=>artDashView==='rep'?(cu.role==='admin'||cu.role==='super_admin'||j.repId===cu.id||artFilter!=='all'):true);
@@ -16850,7 +16974,7 @@ export default function App(){
           </div>
           <div style={{display:'flex',gap:5,alignItems:'center',marginBottom:2,minWidth:0}}>
             <span style={{fontSize:11,fontWeight:600,color:'#475569',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.art_name}</span>
-            {af&&(()=>{const fSt=af.status==='uploaded'?'needs_approval':af.status||'waiting_for_art';return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
+            {af&&(()=>{const fSt=getArtFileStatus(j);return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
           </div>
           <div style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
             <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.id} · {j.soId} · {j.total_units}u · {j.rep}</span>
@@ -17013,16 +17137,12 @@ export default function App(){
       {artDashView==='artist'&&<>
         <div className="stats-row">
           {artistCols.map(c=><div key={c.id} className="stat-card"><div className="stat-label">{c.label}</div><div className="stat-value" style={{color:c.color}}>{artistCounts[c.id]}</div></div>)}
+          <div className="stat-card"><div className="stat-label">{inProductionCol.label}</div><div className="stat-value" style={{color:inProductionCol.color}}>{inProductionJobs.length}</div></div>
           <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value">{artistJobs.length+inProductionJobs.length}</div></div>
         </div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:10,alignItems:'flex-start'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:10,alignItems:'flex-start'}}>
           {artistCols.map(col=>{
-            const colJobs=col.id==='in_production'?inProductionJobs.sort((a,b)=>{
-              if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;
-              if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0})
-              :artistJobs.filter(j=>getArtFileStatus(j)===col.id).sort((a,b)=>{
-              if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;
-              if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0});
+            const colJobs=artistJobs.filter(j=>getArtFileStatus(j)===col.id).sort(sortByDaysOut);
             return<div key={col.id} style={{background:col.bg,borderRadius:10,padding:8,minHeight:200}}>
               <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'4px 6px'}}>
                 <div style={{width:10,height:10,borderRadius:5,background:col.color}}/>
@@ -17034,8 +17154,24 @@ export default function App(){
             </div>})}
         </div>
 
-        {/* ═══ COMPLETED JOBS — collapsible reference section ═══ */}
+        {/* ═══ IN PRODUCTION — collapsible section (art done, being decorated) ═══ */}
         <div style={{marginTop:16}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:inProductionCol.bg,borderRadius:artInProductionOpen?'10px 10px 0 0':'10px',border:'1px solid #bfdbfe',cursor:'pointer'}} onClick={()=>setArtInProductionOpen(v=>!v)}>
+            <span style={{fontSize:16,color:inProductionCol.color,transform:artInProductionOpen?'rotate(90deg)':'rotate(0deg)',transition:'transform 0.2s'}}>&#9654;</span>
+            <span style={{fontSize:13,fontWeight:800,color:inProductionCol.color}}>{inProductionCol.label}</span>
+            <span style={{fontSize:11,fontWeight:700,color:inProductionCol.color,background:'white',borderRadius:10,padding:'1px 8px'}}>{sortedInProductionJobs.length}</span>
+            <span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>{inProductionCol.desc}</span>
+          </div>
+          {artInProductionOpen&&<div style={{border:'1px solid #bfdbfe',borderTop:'none',borderRadius:'0 0 10px 10px',padding:12,background:'white'}}>
+            {sortedInProductionJobs.length===0&&<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:11}}>No jobs in production</div>}
+            {sortedInProductionJobs.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:8}}>
+              {sortedInProductionJobs.map(j=>renderArtCard(j,'artist',inProductionCol))}
+            </div>}
+          </div>}
+        </div>
+
+        {/* ═══ COMPLETED JOBS — collapsible reference section ═══ */}
+        <div style={{marginTop:8}}>
           <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:'#f8fafc',borderRadius:artCompletedOpen?'10px 10px 0 0':'10px',border:'1px solid #e2e8f0',cursor:'pointer'}} onClick={()=>setArtCompletedOpen(v=>!v)}>
             <span style={{fontSize:16,transform:artCompletedOpen?'rotate(90deg)':'rotate(0deg)',transition:'transform 0.2s'}}>&#9654;</span>
             <span style={{fontSize:13,fontWeight:800,color:'#475569'}}>Completed Jobs</span>
@@ -26030,7 +26166,7 @@ export default function App(){
           })()}
         </div>}
       </div>}
-      <div className={`content${pg==='production'?' content-wide':''}`}>{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
+      <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
     {/* ═══ CREATE TODO MODAL (global) ═══ */}
     {todoModal.open&&<div className="modal-overlay" onClick={()=>setTodoModal(m=>({...m,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
       <div className="modal-header"><h2>📌 Assign Task</h2><button className="modal-close" onClick={()=>setTodoModal(m=>({...m,open:false}))}>×</button></div>

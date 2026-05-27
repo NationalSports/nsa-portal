@@ -547,6 +547,7 @@ function StripeCheckoutForm({amount,feePct,onSuccess,onCancel}){
 
 function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct,paymentNote,onSuccess,onClose}){
   const[clientSecret,setClientSecret]=useState(null);
+  const[stripeReady,setStripeReady]=useState(null);
   const[loading,setLoading]=useState(true);
   const[error,setError]=useState(null);
   const _feePct=typeof feePct==='number'?feePct:CC_FEE_PORTAL_DEFAULT;
@@ -556,9 +557,21 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
   const invoiceIds=invoices.map(i=>i.id).join(', ');
 
   useEffect(()=>{
-    if(!stripePromise){setError('Stripe is not configured. Please contact NSA to set up payments.');setLoading(false);return}
+    let cancelled=false;
     (async()=>{
       try{
+        // Prefer the build-time key, but fall back to fetching it at runtime so a
+        // stale build (REACT_APP_STRIPE_PK empty at build) can't silently break payments.
+        let promise=stripePromise;
+        if(!promise){
+          const cfg=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'config'})}).then(r=>r.json()).catch(()=>({}));
+          if(cfg&&cfg.publishableKey)promise=loadStripe(cfg.publishableKey);
+        }
+        if(!promise){
+          if(!cancelled){setError('Stripe publishable key is missing. Add REACT_APP_STRIPE_PK (or STRIPE_PUBLISHABLE_KEY) in Netlify and redeploy.');setLoading(false)}
+          return;
+        }
+        if(!cancelled)setStripeReady(promise);
         const res=await fetch('/.netlify/functions/stripe-payment',{
           method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({
@@ -573,10 +586,11 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
         });
         const data=await res.json();
         if(!res.ok)throw new Error(data.error||'Failed to create payment');
-        setClientSecret(data.clientSecret);
-      }catch(e){setError(e.message)}
-      finally{setLoading(false)}
+        if(!cancelled)setClientSecret(data.clientSecret);
+      }catch(e){if(!cancelled)setError(e.message)}
+      finally{if(!cancelled)setLoading(false)}
     })();
+    return ()=>{cancelled=true};
   },[]);
 
   return<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:16}}>
@@ -600,7 +614,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
           <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Please try again or contact NSA for assistance.</div>
           <button className="btn btn-secondary" onClick={onClose}>Close</button>
         </div>}
-        {clientSecret&&stripePromise&&<Elements stripe={stripePromise} options={{clientSecret,appearance:{theme:'stripe',variables:{colorPrimary:'#22c55e',borderRadius:'8px'}}}}>
+        {clientSecret&&stripeReady&&<Elements stripe={stripeReady} options={{clientSecret,appearance:{theme:'stripe',variables:{colorPrimary:'#22c55e',borderRadius:'8px'}}}}>
           <StripeCheckoutForm amount={totalDue} feePct={_feePct} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
         </Elements>}
       </div>

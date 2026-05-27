@@ -137,14 +137,15 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const renderSORow=(so)=>{
         const st=calcSOStatus(so);const stL={booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         let totalU=0,fulU=0;
-        safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
+        // Count units from the size grid; for qty-only lines (no size breakdown) the count lives in est_qty.
+        safeItems(so).forEach(it=>{const _szEntries=Object.entries(safeSizes(it)).filter(([,v])=>v>0);if(_szEntries.length){_szEntries.forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})}else{totalU+=safeNum(it.est_qty)}});
         const pct=totalU>0?Math.round(fulU/totalU*100):0;
         const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
         const jobs=so.jobs||[];
         const subC=allCustomers.find(c=>c.id===so.customer_id);
         const rep=REPS.find(r=>r.id===(subC?.primary_rep_id||so.created_by));
-        const af=safeArt(so);const aq={};safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it2).forEach(d=>{if(d.kind==='art'&&d.art_file_id){aq[d.art_file_id]=(aq[d.art_file_id]||0)+q2}})});
-        let soRev=0;safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);if(!q2)return;soRev+=q2*safeNum(it2.unit_sell);safeDecos(it2).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?aq[d.art_file_id]:q2;const dp2=dP(d,q2,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?q2*2:q2);soRev+=eq*dp2.sell})});
+        const af=safeArt(so);const aq={};safeItems(so).forEach(it2=>{const sq2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it2.est_qty);safeDecos(it2).forEach(d=>{if(d.kind==='art'&&d.art_file_id){aq[d.art_file_id]=(aq[d.art_file_id]||0)+q2}})});
+        let soRev=0;safeItems(so).forEach(it2=>{const sq2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it2.est_qty);if(!q2)return;soRev+=q2*safeNum(it2.unit_sell);safeDecos(it2).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?aq[d.art_file_id]:q2;const dp2=dP(d,q2,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?q2*2:q2);soRev+=eq*dp2.sell})});
         const soShip=so.shipping_type==='pct'?soRev*(so.shipping_value||0)/100:(so.shipping_value||0);const soTax=soRev*(subC?.tax_exempt?0:(subC?.tax_rate||0));const soGrand=soRev+soShip+soTax;
         const jobArtLabels={needs_art:'Needs Art',waiting_approval:'Wait Approval',art_complete:'Art ✓'};
         const jobProdLabels={hold:'Ready',staging:'In Line',in_process:'In Process',completed:'Done',shipped:'Shipped'};
@@ -367,7 +368,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const fixedProgs=programs.filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
       const totalFixed=fixedProgs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
       if(totalFixed>0){
-        const newPd={id:'pp_'+Date.now(),customer_id:parentId,period_start:curPeriod.start,period_end:curPeriod.end,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+        const newPd={id:'pp_'+parentId+'_'+curPeriod.start,customer_id:parentId,period_start:curPeriod.start,period_end:curPeriod.end,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
         onSavePromoPeriod(newPd);curPeriods=[newPd];periods=[...periods,newPd];
       }
     }
@@ -557,12 +558,12 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {/* ARTWORK TAB — customer library + aggregated from SOs/Estimates */}
   {tab==='artwork'&&(()=>{
     // Aggregate art: customer-level library + parent library + SO/Estimate art
-    const custOwnArt=(customer.art_files||[]).map(a=>({...a,_src:'library',_srcLabel:'Customer Library'}));
+    const custOwnArt=(customer.art_files||[]).map(a=>({...a,_src:'library',_srcLabel:'Customer Library',_srcCustId:customer.id}));
     const parentCust2=customer.parent_id?allCustomers.find(c=>c.id===customer.parent_id):null;
     const parentArt=parentCust2?(parentCust2.art_files||[]).map(a=>({...a,_src:'parent',_srcLabel:parentCust2.alpha_tag||parentCust2.name||'Parent'})):[];
     const orderArt=[];
-    custSOs.forEach(so=>{(so.art_files||[]).forEach(art=>{orderArt.push({...art,_src:'so',_srcLabel:so.id+(so.memo?' — '+so.memo:''),_so_id:so.id,_so_memo:so.memo||''})})});
-    custEsts.forEach(est=>{(est.art_files||[]).forEach(art=>{if(!orderArt.some(a=>a.name===art.name&&a.deco_type===art.deco_type))orderArt.push({...art,_src:'est',_srcLabel:est.id+(est.memo?' — '+est.memo:''),_est_id:est.id,_est_memo:est.memo||''})})});
+    custSOs.forEach(so=>{(so.art_files||[]).forEach(art=>{orderArt.push({...art,_src:'so',_srcLabel:so.id+(so.memo?' — '+so.memo:''),_so_id:so.id,_so_memo:so.memo||'',_srcCustId:so.customer_id})})});
+    custEsts.forEach(est=>{(est.art_files||[]).forEach(art=>{if(!orderArt.some(a=>a.name===art.name&&a.deco_type===art.deco_type))orderArt.push({...art,_src:'est',_srcLabel:est.id+(est.memo?' — '+est.memo:''),_est_id:est.id,_est_memo:est.memo||'',_srcCustId:est.customer_id})})});
     const allArt=[...custOwnArt,...parentArt,...orderArt];
     // Group by art name+deco_type to find usage across orders
     const artGroups={};allArt.forEach(a=>{const key=(a.name||'').toLowerCase()+'||'+(a.deco_type||'');if(!artGroups[key])artGroups[key]={art:a,instances:[]};artGroups[key].instances.push(a)});
@@ -600,6 +601,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       rep._usedOnSOs=insts.reduce((m,x)=>(x._usedOnSOs||[]).length>m.length?x._usedOnSOs:m,[]);
       rep._imgUrl=insts.map(x=>x._imgUrl).find(u=>u&&_isImgUrl(u))||rep._imgUrl||(rep._allMockups[0]?.url)||'';
       rep._archived=insts.length>0&&insts.every(x=>x.archived);
+      // Cascading parent art = lives in the parent's own library; everything else is tied to a sub-account's orders/estimates.
+      rep._appliesToAll=insts.some(x=>x._src==='library');
+      rep._srcCustIds=[...new Set(insts.map(x=>x._srcCustId).filter(Boolean))];
       return rep;
     });
     // Archive/unarchive a logo across every order it's on plus the customer library copy.
@@ -624,9 +628,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             cursor:'pointer',marginBottom:-2,borderRadius:'6px 6px 0 0'}}>{label}{ct>0?' ('+ct+')':''}</button>})}
       </div>
       {/* Unified art list */}
-      {filtered.length===0?<div className="empty">{custArtFilter==='all'?'No artwork found. Click "Add Art" to create art groups.':'No artwork with this status.'}</div>:
-      <div style={{display:'flex',flexDirection:'column',gap:8}}>
-        {filtered.map((art,i)=>{const isEditable=art._ownIdx>=0;const isExp=custArtExpanded===art.id;const oi=art._ownIdx;
+      {(()=>{
+        const renderArtCard=(art,i)=>{const isEditable=art._ownIdx>=0;const isExp=custArtExpanded===art.id;const oi=art._ownIdx;
+          const _subLabel=isP&&!art._appliesToAll?(art._srcCustIds||[]).map(id=>teamName(id)).filter(Boolean).join(', '):'';
           return<div key={art.id+'-'+art._src+'-'+i} style={{background:'#f8fafc',borderRadius:8,border:art._st==='approved'?'2px solid #22c55e':art._st==='needs_approval'?'2px solid #f59e0b':'1px solid #e2e8f0',overflow:'hidden'}}>
             {/* Summary row */}
             <div style={{display:'flex',gap:10,alignItems:'center',padding:'10px 14px',cursor:'pointer'}} onClick={()=>{if(isEditable)setCustArtExpanded(isExp?null:art.id);else setCustArtDetail({...art,_usedOnSOs:art._usedOnSOs,_allMockups:art._allMockups,_allProd:art._allProd})}}>
@@ -635,6 +639,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <div style={{flex:1}}>
                 <div style={{fontWeight:700,fontSize:13}}>{art.name||'Untitled'}</div>
                 <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{(art.color_ways||[]).length>0?' · '+art.color_ways.length+' CW'+(art.color_ways.length>1?'s':''):art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':art.thread_colors?' · '+art.thread_colors:''}{art.art_size?' · '+art.art_size:''}</div>
+                {isP&&art._appliesToAll&&<div style={{marginTop:3}}><span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:9,fontWeight:700,background:'#dbeafe',color:'#1e40af',borderRadius:8,padding:'1px 7px'}}>↓ All sub-customers</span></div>}
+                {isP&&!art._appliesToAll&&_subLabel&&<div style={{marginTop:3}}><span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:9,fontWeight:700,background:'#f3e8ff',color:'#6d28d9',borderRadius:8,padding:'1px 7px'}}>{_subLabel}</span></div>}
                 <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{art._src==='so'||art._src==='est'?art._srcLabel:art._src==='parent'?parentCust2?.alpha_tag||parentCust2?.name:''}</div>
               </div>
               <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:3}}>
@@ -712,8 +718,24 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               </div>
               <input className="form-input" value={art.notes||''} onChange={e=>uCustArt(oi,'notes',e.target.value)} placeholder="Notes..." style={{fontSize:12}}/>
             </div>}
-          </div>})}
-      </div>}
+          </div>};
+        if(filtered.length===0)return<div className="empty">{custArtFilter==='all'?'No artwork found. Click "Add Art" to create art groups.':'No artwork with this status.'}</div>;
+        if(!isP)return<div style={{display:'flex',flexDirection:'column',gap:8}}>{filtered.map(renderArtCard)}</div>;
+        const _parentArt=filtered.filter(a=>a._appliesToAll);
+        const _subArt=filtered.filter(a=>!a._appliesToAll);
+        const _sect=(title,subtitle,items,accent)=>items.length>0&&<div style={{marginBottom:18}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+            <span style={{fontSize:13,fontWeight:800,color:accent}}>{title}</span>
+            <span style={{fontSize:11,fontWeight:700,color:'#fff',background:accent,borderRadius:10,padding:'1px 8px'}}>{items.length}</span>
+            <span style={{fontSize:11,color:'#94a3b8'}}>{subtitle}</span>
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>{items.map(renderArtCard)}</div>
+        </div>;
+        return<>
+          {_sect('Applies to All Sub-Customers','Parent library — cascades to every sub-customer',_parentArt,'#2563eb')}
+          {_sect('Sub-Customer Artwork','From individual sub-account orders & estimates',_subArt,'#7c3aed')}
+        </>;
+      })()}
       </div>
     </div>})()}
   {/* ART DETAIL MODAL */}

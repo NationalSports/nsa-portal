@@ -322,6 +322,20 @@ describe('Decoration Pricing — dP()', () => {
     expect(result.cost).toBeGreaterThan(0);
   });
 
+  test('TBD screen_print uses aggregated cq for volume break, not per-line flat total', () => {
+    // Regression: PDF/invoice builders must aggregate __tbd deco quantity across
+    // line items (cq) just like the on-screen totals. A single line of qty 4 lands
+    // in bracket 0, where spP returns the FLAT-TOTAL price (~$60) rather than a
+    // per-piece rate. Passing the combined cq (e.g. 14 across all line items)
+    // prices it per-piece in bracket 1 (~$6.40), matching the screen.
+    const d = { kind: 'art', art_file_id: '__tbd', art_tbd_type: 'screen_print', tbd_colors: 2, underbase: false };
+    const perLine = BL.dP(d, 4, [], undefined); // no aggregation → bracket 0 flat total
+    const aggregated = BL.dP(d, 4, [], 14);      // combined qty → bracket 1 per-piece
+    expect(perLine.sell).toBeCloseTo(60, 2);
+    expect(aggregated.sell).toBeCloseTo(6.4, 2);
+    expect(aggregated.cost).toBeCloseTo(4.25, 2);
+  });
+
   test('art kind with TBD embroidery', () => {
     const d = { kind: 'art', art_file_id: '__tbd', art_tbd_type: 'embroidery', tbd_stitches: 12000 };
     const result = BL.dP(d, 24, []);
