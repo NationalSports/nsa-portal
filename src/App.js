@@ -8962,7 +8962,11 @@ export default function App(){
                       if(pls[ml.poLineIdx]){
                         const rcv={};
                         Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k)){
-                          const el=document.getElementById('rcv-'+allPOLines.indexOf(ml)+'-'+k);rcv[k]=el?parseInt(el.value)||0:v}});
+                          // Receive inputs are rendered keyed by poItems index, not the global allPOLines index.
+                          // Map this line back to its rendered row via _pl (non-batch); batch rows have no _pl, so
+                          // the lookup misses and we fall back to the ordered qty v — unchanged from prior behavior.
+                          const _ri=poItems.findIndex(pi=>pi._pl===ml);
+                          const el=_ri>=0?document.getElementById('rcv-'+_ri+'-'+k):null;rcv[k]=el?parseInt(el.value)||0:v}});
                         pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:'received',received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
                         updItems[ml.itemIdx]={...it,po_lines:pls};
                       }
