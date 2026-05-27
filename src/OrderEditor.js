@@ -1811,9 +1811,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _kept=[...newJobs,...splitJobs,...releasedJobs,...recalcedMerged];
     const _keptIds=new Set(_kept.map(j=>j.id));
     const _keptKeys=new Set(_kept.map(j=>j.key));
+    // Decoration coverage of the current jobs — every (item_idx, deco_idx) pair a kept job
+    // already produces. Used to drop stale "submitted" auto-jobs whose decorations are now
+    // represented by another job (e.g. an art-location change rebuilt the job under a new
+    // signature, or a released/merged job absorbed the decoration). Without this, those
+    // duplicates linger as branched-off jobs covering the same items.
+    const _coveredPairs=new Set();
+    const _jobDecoPairs=j=>{const out=[];(j.items||[]).forEach(gi=>{const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:[]);dis.forEach(di=>out.push(gi.item_idx+'::'+di))});return out;};
+    _kept.forEach(j=>_jobDecoPairs(j).forEach(p=>_coveredPairs.add(p)));
     const orphanedSubmitted=safeJobs(o).filter(j=>{
       if(!j||j._released||j._merged||j.split_from)return false;// already handled above
       if(_keptIds.has(j.id)||_keptKeys.has(j.key))return false;// already represented by a rebuilt job
+      // Stale duplicate — its decorations are already covered by a current job. Only the
+      // orphan-preservation case (decoration genuinely missing) should fall through below.
+      const pairs=_jobDecoPairs(j);
+      if(pairs.length&&pairs.every(p=>_coveredPairs.has(p)))return false;
       const artIds=(Array.isArray(j._art_ids)&&j._art_ids.length?j._art_ids:[j.art_file_id]).filter(Boolean);
       const hasRealArt=artIds.some(aid=>aid&&aid!=='__tbd'&&af.some(a=>a.id===aid));
       const wasSubmitted=j.art_status&&j.art_status!=='needs_art';
