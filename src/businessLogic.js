@@ -181,7 +181,7 @@ const buildJobs = (o) => {
     });
     const items = grp.items.map(({ idx, it, decos }) => {
       const decoIdxs = decos.map(x => x.di);
-      return { item_idx: idx, deco_idx: decoIdxs[0] || 0, sku: it.sku, name: safeStr(it.name), color: it.color || '', units: Object.values(safeSizes(it)).reduce((a, v) => a + v, 0), fulfilled: 0 };
+      return { item_idx: idx, deco_idx: decoIdxs[0] || 0, deco_idxs: decoIdxs, sku: it.sku, name: safeStr(it.name), color: it.color || '', units: Object.values(safeSizes(it)).reduce((a, v) => a + v, 0), fulfilled: 0 };
     });
     const totalUnits = items.reduce((a, it) => a + it.units, 0);
     return { id: o.id.replace('SO-', 'JOB-') + '-' + (gi + 1 < 10 ? '0' : '') + (gi + 1), key: grp.sig, art_file_id: artIds[0] || null,
