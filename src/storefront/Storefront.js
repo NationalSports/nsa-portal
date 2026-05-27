@@ -565,7 +565,10 @@ async function sendOrderEmail({ store, order, cart, buyer, shipping, total, disc
     const link = `${window.location.origin}/shop/${store.slug}/order/${order.id}`;
     const rows = cart.map((l) => {
       const det = lineDetail(l).join(' · ');
-      return `<tr><td style="padding:8px 0;border-bottom:1px solid #eef1f5">${l.name}${l.kind === 'bundle' ? ' (package)' : ''}${l.qty > 1 ? ` ×${l.qty}` : ''}${det ? `<div style="font-size:12px;color:#64748b">${det}</div>` : ''}</td><td style="padding:8px 0;border-bottom:1px solid #eef1f5;text-align:right;font-weight:700;white-space:nowrap">${money(lineUnit(l) * (l.qty || 1))}</td></tr>`;
+      const img = l.image
+        ? `<td style="width:56px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"><img src="${l.image}" width="48" height="48" style="width:48px;height:48px;object-fit:cover;border-radius:6px;display:block;background:#f4f6f9"></td>`
+        : `<td style="width:56px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"></td>`;
+      return `<tr>${img}<td style="padding:8px 0;border-bottom:1px solid #eef1f5">${l.name}${l.kind === 'bundle' ? ' (package)' : ''}${l.qty > 1 ? ` ×${l.qty}` : ''}${det ? `<div style="font-size:12px;color:#64748b">${det}</div>` : ''}</td><td style="padding:8px 0;border-bottom:1px solid #eef1f5;text-align:right;font-weight:700;white-space:nowrap">${money(lineUnit(l) * (l.qty || 1))}</td></tr>`;
     }).join('');
     const accent = store.accent_color || '#e11d2a';
     const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:560px;margin:0 auto">
@@ -576,9 +579,9 @@ async function sendOrderEmail({ store, order, cart, buyer, shipping, total, disc
       <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:22px 24px">
         <p style="margin:0 0 14px">Thanks, ${buyer.name}! ${order.payment_mode === 'paid' ? "We've received your payment." : 'Your order has been placed and will be invoiced to the team.'}</p>
         <table style="width:100%;border-collapse:collapse;font-size:14px">${rows}
-          ${discount > 0 ? `<tr><td style="padding:8px 0;color:#16a34a">Discount${order.coupon_code ? ` (${order.coupon_code})` : ''}</td><td style="padding:8px 0;text-align:right;color:#16a34a">−${money(discount)}</td></tr>` : ''}
-          ${shipping > 0 ? `<tr><td style="padding:8px 0;color:#475569">Shipping</td><td style="padding:8px 0;text-align:right">${money(shipping)}</td></tr>` : ''}
-          <tr><td style="padding:12px 0 0;font-weight:800;font-size:16px">Total</td><td style="padding:12px 0 0;text-align:right;font-weight:800;font-size:16px">${money(total)}</td></tr>
+          ${discount > 0 ? `<tr><td></td><td style="padding:8px 0;color:#16a34a">Discount${order.coupon_code ? ` (${order.coupon_code})` : ''}</td><td style="padding:8px 0;text-align:right;color:#16a34a">−${money(discount)}</td></tr>` : ''}
+          ${shipping > 0 ? `<tr><td></td><td style="padding:8px 0;color:#475569">Shipping</td><td style="padding:8px 0;text-align:right">${money(shipping)}</td></tr>` : ''}
+          <tr><td></td><td style="padding:12px 0 0;font-weight:800;font-size:16px">Total</td><td style="padding:12px 0 0;text-align:right;font-weight:800;font-size:16px">${money(total)}</td></tr>
         </table>
         <a href="${link}" style="display:inline-block;margin-top:20px;background:${accent};color:#fff;text-decoration:none;padding:13px 26px;border-radius:8px;font-weight:700">Track your order</a>
         <p style="font-size:12px;color:#94a3b8;margin-top:18px">Save this email — the link above is how you check your order status anytime.</p>

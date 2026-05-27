@@ -67,10 +67,20 @@ async function sendConfirmation(sb, order) {
   const { data: stores } = await sb.from('webstores').select('name,slug,primary_color,accent_color').eq('id', order.store_id).limit(1);
   const store = stores && stores[0];
   if (!store) return;
-  const { data: items } = await sb.from('webstore_order_items').select('sku,size,qty,unit_price,player_name,player_number,is_bundle_parent,bundle_product_id').eq('order_id', order.id);
+  const { data: items } = await sb.from('webstore_order_items').select('sku,size,qty,unit_price,player_name,player_number,is_bundle_parent,bundle_product_id,product_id').eq('order_id', order.id);
+  // product_id -> image (catalog override, else the product's own image).
+  const imgByPid = {};
+  const { data: cat } = await sb.from('webstore_products').select('product_id,image_url').eq('store_id', order.store_id);
+  (cat || []).forEach((c) => { if (c.product_id && c.image_url) imgByPid[c.product_id] = c.image_url; });
+  const pids = [...new Set((items || []).map((i) => i.product_id).filter((p) => p && !imgByPid[p]))];
+  if (pids.length) { const { data: prods } = await sb.from('products').select('id,image_front_url').in('id', pids); (prods || []).forEach((p) => { if (p.image_front_url) imgByPid[p.id] = p.image_front_url; }); }
   const lines = (items || []).filter((i) => !i.bundle_product_id || i.is_bundle_parent).map((i) => {
     const det = [i.size && 'Size ' + i.size, i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ');
-    return `<tr><td style="padding:8px 0;border-bottom:1px solid #eef1f5">${i.sku || 'Item'}${i.qty > 1 ? ` ×${i.qty}` : ''}${det ? `<div style="font-size:12px;color:#64748b">${det}</div>` : ''}</td><td style="padding:8px 0;border-bottom:1px solid #eef1f5;text-align:right;font-weight:700;white-space:nowrap">${money((Number(i.unit_price) || 0) * (i.qty || 1))}</td></tr>`;
+    const im = imgByPid[i.product_id];
+    const imgCell = im
+      ? `<td style="width:56px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"><img src="${im}" width="48" height="48" style="width:48px;height:48px;object-fit:cover;border-radius:6px;display:block;background:#f4f6f9"></td>`
+      : `<td style="width:56px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"></td>`;
+    return `<tr>${imgCell}<td style="padding:8px 0;border-bottom:1px solid #eef1f5">${i.sku || 'Item'}${i.qty > 1 ? ` ×${i.qty}` : ''}${det ? `<div style="font-size:12px;color:#64748b">${det}</div>` : ''}</td><td style="padding:8px 0;border-bottom:1px solid #eef1f5;text-align:right;font-weight:700;white-space:nowrap">${money((Number(i.unit_price) || 0) * (i.qty || 1))}</td></tr>`;
   }).join('');
   const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
   const link = `${portal}/shop/${store.slug}/order/${order.id}`;
@@ -84,8 +94,8 @@ async function sendConfirmation(sb, order) {
     <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:22px 24px">
       <p style="margin:0 0 14px">Thanks, ${order.buyer_name || ''}! We've received your payment.</p>
       <table style="width:100%;border-collapse:collapse;font-size:14px">${lines}
-        ${shipping > 0 ? `<tr><td style="padding:8px 0;color:#475569">Shipping</td><td style="padding:8px 0;text-align:right">${money(shipping)}</td></tr>` : ''}
-        <tr><td style="padding:12px 0 0;font-weight:800;font-size:16px">Total</td><td style="padding:12px 0 0;text-align:right;font-weight:800;font-size:16px">${money(order.total)}</td></tr>
+        ${shipping > 0 ? `<tr><td></td><td style="padding:8px 0;color:#475569">Shipping</td><td style="padding:8px 0;text-align:right">${money(shipping)}</td></tr>` : ''}
+        <tr><td></td><td style="padding:12px 0 0;font-weight:800;font-size:16px">Total</td><td style="padding:12px 0 0;text-align:right;font-weight:800;font-size:16px">${money(order.total)}</td></tr>
       </table>
       <a href="${link}" style="display:inline-block;margin-top:20px;background:${accent};color:#fff;text-decoration:none;padding:13px 26px;border-radius:8px;font-weight:700">Track your order</a>
       <p style="font-size:12px;color:#94a3b8;margin-top:18px">Save this email — the link above is how you check your order status anytime.</p>

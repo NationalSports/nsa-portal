@@ -66,7 +66,7 @@ exports.handler = async (event) => {
         if (existing && existing.length) continue;
       }
 
-      const shipItems = (sh.shipmentItems || []).map((i) => ({ sku: i.sku, name: i.name, qty: i.quantity }));
+      const shipItems = (sh.shipmentItems || []).map((i) => ({ sku: i.sku, name: i.name, qty: i.quantity, image: i.imageUrl || null }));
       await sb.from('webstore_shipments').insert({
         order_id: order.id, store_id: order.store_id, tracking_number: tracking,
         carrier: sh.carrierCode || null, service: sh.serviceCode || null, ship_date: sh.shipDate || null,
@@ -98,7 +98,12 @@ async function sendShipEmail(sb, order, sh, shipItems, tracking) {
   const totalLines = (allItems || []).filter((i) => !i.is_bundle_parent).length;
   const partial = totalLines > 0 && shipItems.length > 0 && shipItems.length < totalLines;
 
-  const rows = shipItems.map((i) => `<tr><td style="padding:7px 0;border-bottom:1px solid #eef1f5">${i.name || i.sku || 'Item'}</td><td style="padding:7px 0;border-bottom:1px solid #eef1f5;text-align:right;color:#64748b">×${i.qty || 1}</td></tr>`).join('');
+  const rows = shipItems.map((i) => {
+    const img = i.image
+      ? `<td style="width:52px;padding:7px 10px 7px 0;border-bottom:1px solid #eef1f5"><img src="${i.image}" width="44" height="44" style="width:44px;height:44px;object-fit:cover;border-radius:6px;display:block;background:#f4f6f9"></td>`
+      : `<td style="width:52px;padding:7px 10px 7px 0;border-bottom:1px solid #eef1f5"></td>`;
+    return `<tr>${img}<td style="padding:7px 0;border-bottom:1px solid #eef1f5">${i.name || i.sku || 'Item'}</td><td style="padding:7px 0;border-bottom:1px solid #eef1f5;text-align:right;color:#64748b">×${i.qty || 1}</td></tr>`;
+  }).join('');
   const tUrl = trackingUrl(sh.carrierCode, tracking);
   const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
   const orderLink = `${portal}/shop/${store.slug}/order/${order.id}`;
