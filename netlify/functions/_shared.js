@@ -46,4 +46,27 @@ async function verifyAdmin(event) {
   return { ok: true, userId: userData.user.id, teamMemberId: tm.id, admin };
 }
 
-module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin };
+// Verify caller is signed in with an active team_members row (any role).
+// Lighter than verifyAdmin — use for actions any staff member may perform, where
+// the goal is simply to keep anonymous/public callers out.
+async function verifyStaff(event) {
+  const auth = event.headers?.authorization || event.headers?.Authorization;
+  if (!auth || !auth.startsWith('Bearer ')) return { ok: false, status: 401, error: 'Missing bearer token' };
+  const token = auth.substring(7);
+
+  const admin = getSupabaseAdmin();
+  const { data: userData, error } = await admin.auth.getUser(token);
+  if (error || !userData?.user) return { ok: false, status: 401, error: 'Invalid token' };
+
+  const { data: tm, error: tmErr } = await admin
+    .from('team_members')
+    .select('id, role, is_active')
+    .eq('auth_id', userData.user.id)
+    .maybeSingle();
+  if (tmErr) return { ok: false, status: 500, error: tmErr.message };
+  if (!tm || tm.is_active === false) return { ok: false, status: 403, error: 'Inactive or unknown account' };
+
+  return { ok: true, userId: userData.user.id, teamMemberId: tm.id, role: tm.role, admin };
+}
+
+module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyStaff };

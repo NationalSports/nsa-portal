@@ -1,6 +1,11 @@
 // Netlify serverless function for Stripe payment processing
 // Creates PaymentIntents for the coach portal checkout
 const stripe = require('stripe');
+const { verifyStaff } = require('./_shared');
+
+// Sanity ceiling for a single payment intent ($1,000,000). Real invoices never
+// approach this; it just blocks absurd/abusive amounts from an open endpoint.
+const MAX_AMOUNT_CENTS = 100000000;
 
 exports.handler = async (event) => {
   // Handle CORS preflight
@@ -46,6 +51,9 @@ exports.handler = async (event) => {
       if (!amount_cents || amount_cents < 50) {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Amount must be at least $0.50' }) };
       }
+      if (amount_cents > MAX_AMOUNT_CENTS) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Amount exceeds the maximum allowed' }) };
+      }
 
       const intent = await client.paymentIntents.create({
         amount: Math.round(amount_cents),
@@ -71,6 +79,12 @@ exports.handler = async (event) => {
 
     if (action === 'refund') {
       // Refund a PaymentIntent — full when amount_cents omitted, else partial.
+      // Refunds reverse money and must never be callable by anonymous/public clients,
+      // so require a signed-in staff account (the coach/storefront checkout never refunds).
+      const auth = await verifyStaff(event);
+      if (!auth.ok) {
+        return { statusCode: auth.status || 401, headers: corsHeaders(), body: JSON.stringify({ error: 'Refunds require a signed-in staff account.' }) };
+      }
       const { payment_intent_id, amount_cents } = body;
       if (!payment_intent_id) {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'payment_intent_id required' }) };
@@ -113,7 +127,7 @@ exports.handler = async (event) => {
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Content-Type': 'application/json',
   };

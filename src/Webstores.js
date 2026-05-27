@@ -508,7 +508,8 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     if (cents <= 0) return { error: 'Enter an amount' };
     if (order.stripe_pi_id) {
       try {
-        const res = await fetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'refund', payment_intent_id: order.stripe_pi_id, amount_cents: cents }) });
+        const { data: { session } = {} } = await supabase.auth.getSession();
+        const res = await fetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: 'Bearer ' + session.access_token } : {}) }, body: JSON.stringify({ action: 'refund', payment_intent_id: order.stripe_pi_id, amount_cents: cents }) });
         const d = await res.json();
         if (d.error) { flash('Stripe refund failed: ' + d.error); return { error: d.error }; }
       } catch (e) { flash('Refund failed: ' + e.message); return { error: e.message }; }
