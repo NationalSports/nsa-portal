@@ -64,7 +64,7 @@ const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumF
 async function sendConfirmation(sb, order) {
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
   if (!brevoKey) return;
-  const { data: stores } = await sb.from('webstores').select('name,slug,primary_color,accent_color').eq('id', order.store_id).limit(1);
+  const { data: stores } = await sb.from('webstores').select('name,slug,primary_color,accent_color,logo_url').eq('id', order.store_id).limit(1);
   const store = stores && stores[0];
   if (!store) return;
   const { data: items } = await sb.from('webstore_order_items').select('sku,size,qty,unit_price,player_name,player_number,is_bundle_parent,bundle_product_id,product_id').eq('order_id', order.id);
@@ -86,8 +86,14 @@ async function sendConfirmation(sb, order) {
   const link = `${portal}/shop/${store.slug}/order/${order.id}`;
   const accent = store.accent_color || '#e11d2a';
   const shipping = Number(order.shipping_fee) || 0;
+  const nsaLogo = `${portal}/NEW%20NSA%20Logo%20on%20white.png`;
+  const logoBar = `<table width="100%" style="border-collapse:collapse"><tr>
+      <td align="left" style="padding:12px 20px;background:#fff;border:1px solid #eef1f5;border-bottom:none;border-radius:10px 0 0 0"><img src="${nsaLogo}" alt="National Sports Apparel" height="32" style="height:32px;display:block"></td>
+      <td align="right" style="padding:12px 20px;background:#fff;border:1px solid #eef1f5;border-bottom:none;border-left:none;border-radius:0 10px 0 0">${store.logo_url ? `<img src="${store.logo_url}" alt="${store.name}" height="40" style="height:40px;max-width:130px;object-fit:contain;display:inline-block">` : `<span style="font-weight:800;color:#0b1220">${store.name}</span>`}</td>
+    </tr></table>`;
   const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:560px;margin:0 auto">
-    <div style="background:${store.primary_color || '#0b1f3a'};color:#fff;padding:20px 24px;border-radius:10px 10px 0 0">
+    ${logoBar}
+    <div style="background:${store.primary_color || '#0b1f3a'};color:#fff;padding:18px 24px">
       <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;opacity:.85">${store.name}</div>
       <div style="font-size:22px;font-weight:800;margin-top:4px">Order confirmed &amp; paid</div>
     </div>
