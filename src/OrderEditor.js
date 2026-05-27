@@ -5644,6 +5644,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse')}}>← Back</button><button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse')}}>Cancel</button>
           {poItems.length>0&&isBatchEligible&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={poItems.every((_,vi)=>poExcluded[vi])} onClick={()=>{
             // Build batch PO entry
+            const isDropShip=document.getElementById('po-dropship-'+autoPoId)?.checked||false;
             const batchItems=[];let totalCost=0;
             poItems.forEach((pit,vi)=>{
               if(poExcluded[vi])return;
@@ -5667,6 +5668,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               totalCost+=batchLineTotal;
               const bItem={sku:pit.sku,name:pit.name,color:pit.color,sizes,qty,unit_cost:batchUnitCost,item_idx:pit._idx};
               if(hasSizePrices&&new Set(Object.values(sizeCosts).map(v=>v.toFixed(2))).size>1)bItem._size_costs=sizeCosts;
+              if(isDropShip)bItem.drop_ship=true;
               batchItems.push(bItem);
             });
             const bpId='BPO '+Date.now();
@@ -5679,6 +5681,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const idx=bit.item_idx;if(idx==null||!updatedItems[idx])return;
               const poLine={po_id:autoPoId,vendor:vn,status:'queued',created_at:new Date().toLocaleDateString(),memo:'Batch queue — '+batchConfig.name,received:{},shipments:[],unit_cost:bit.unit_cost,batch_queue_id:bpId};
               if(bit._size_costs)poLine._size_costs=bit._size_costs;
+              if(bit.drop_ship)poLine.drop_ship=true;
               Object.entries(bit.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
               const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
               if(hasQty)updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];

@@ -9119,6 +9119,7 @@ export default function App(){
                     bp.items.forEach(bpIt=>{
                       const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
                       const poLine={po_id:poNum,vendor:vg.name,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+vg.pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
+                      if(bpIt.drop_ship)poLine.drop_ship=true;
                       Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
                       updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
                     });
