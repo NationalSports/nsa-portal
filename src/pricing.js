@@ -5,6 +5,13 @@ import { safeNum } from './safeHelpers';
 // ── Utility helpers ──
 export const rQ=v=>Math.round(v*4)/4;
 export const rT=v=>Math.round(v*10)/10;
+
+// ── Adidas/UA/NB tier discount off retail ──
+// Standard schedule is A=40% / B=35% / C=30% off. Items imported from Lockerroom
+// (products.pricing_group === 'lockerroom') use a reduced schedule: A=35% / B=30% / C=25%.
+const _TIER_STD={A:0.40,B:0.35,C:0.30};
+const _TIER_LOCKERROOM={A:0.35,B:0.30,C:0.25};
+export const auTierDisc=(tier,pricingGroup)=>{const tbl=pricingGroup==='lockerroom'?_TIER_LOCKERROOM:_TIER_STD;return tbl[tier]!=null?tbl[tier]:tbl.B;};
 export const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();return SZ_NORM[u]||u};
 export const showSz=(s,inv)=>{const c=['S','M','L','XL','2XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
 
