@@ -9383,7 +9383,7 @@ export default function App(){
         const poNum=inv._po_number||so?.po_number;
         const pRows=[];let pSubTotal=0;
         const pSoItems=so?safeItems(so):[];const pSoArt=so?safeArt(so):[];
-        const _pAQ2={};pSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ2[d.art_file_id]=(_pAQ2[d.art_file_id]||0)+q2}})});
+        const _pAQ2={};pSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ2[d.art_file_id]=(_pAQ2[d.art_file_id]||0)+q2}})});
         const pIsDeposit=inv.inv_type==='deposit';const pDepPct=pIsDeposit?(inv.deposit_pct||50)/100:1;
         if(pSoItems.length>0){
           pSoItems.forEach(it=>{
@@ -10190,7 +10190,7 @@ export default function App(){
                 // Build rows with decoration detail from SO items
                 const siRows=[];let siSubTotal=0;
                 const siSoItems=siSo?safeItems(siSo):[];const siSoArt=siSo?safeArt(siSo):[];
-                const _siAQ={};siSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_siAQ[d.art_file_id]=(_siAQ[d.art_file_id]||0)+q2}})});
+                const _siAQ={};siSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_siAQ[d.art_file_id]=(_siAQ[d.art_file_id]||0)+q2}})});
                 const siIsDeposit=siInv.inv_type==='deposit';const siDepPct=siIsDeposit?(siInv.deposit_pct||50)/100:1;
                 const siStoredLi=siInv.line_items||[];
                 if(siSoItems.length>0){
@@ -10485,7 +10485,7 @@ export default function App(){
                 // Build rows with decoration detail from SO items
                 const fRows=[];let fSubTotal=0;
                 const fSoItems=so?safeItems(so):[];const fSoArt=so?safeArt(so):[];
-                const _fAQ={};fSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_fAQ[d.art_file_id]=(_fAQ[d.art_file_id]||0)+q2}})});
+                const _fAQ={};fSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_fAQ[d.art_file_id]=(_fAQ[d.art_file_id]||0)+q2}})});
                 const fIsDeposit=inv.inv_type==='deposit';const fDepPct=fIsDeposit?(inv.deposit_pct||50)/100:1;
                 const fStoredLi=inv.line_items||[];
                 const shipAmt=inv.shipping!=null?inv.shipping:so?(()=>{const fLi2=fStoredLi.length>0?fStoredLi:fSoItems.map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{amount:qty*safeNum(it.unit_sell)}});const sub=fLi2.reduce((a,l)=>a+(l.amount||0),0);return(so.shipping_type==='pct'?sub*(so.shipping_value||0)/100:so.shipping_value||0)})():0;
