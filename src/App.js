@@ -5204,8 +5204,10 @@ export default function App(){
       if(st!=='complete')return true;
       // A promo order can be financially "closed" (status='complete') while its blanks are
       // received but not yet decorated/shipped. Keep such orders visible to the warehouse so
-      // their still-active jobs can be pulled, moved to deco, and shipped.
-      return safeJobs(so).some(j=>j.prod_status!=='completed'&&j.prod_status!=='shipped'&&j.prod_status!=='draft');
+      // their still-active jobs can be pulled, moved to deco, and shipped. A 'completed' job is
+      // decorated but not yet shipped, so it still belongs in Ready to Ship — only treat a job
+      // as done-for-warehouse once it is actually 'shipped' (or never left 'draft').
+      return safeJobs(so).some(j=>j.prod_status!=='shipped'&&j.prod_status!=='draft');
     }).forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
