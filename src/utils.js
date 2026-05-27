@@ -102,6 +102,20 @@ export const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)
 
 // ── File filtering helpers ──
 export const _filterDisplayable=files=>(files||[]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');return u&&_isDisplayableFile(u,f)});
+// Choose which mockups to show for one garment line item, in priority order:
+//   1. mocks tagged to a color way this item's decorations actually use (color_way_id match)
+//   2. per-SKU tagged mocks (item_mockups[sku|color], then item_mockups[sku])
+//   3. general untagged mocks (mockup_files/files) — CW-tagged files are excluded so a
+//      color-specific mock never bleeds onto a garment whose color way doesn't match.
+export const pickItemMockups=(itemArtFiles=[],cwIds=[],skuKey='',sku='')=>{
+  const cwSet=cwIds instanceof Set?cwIds:new Set((cwIds||[]).filter(Boolean));
+  const hasCw=f=>typeof f==='object'&&f&&!!f.color_way_id;
+  const cwMocks=cwSet.size>0?_filterDisplayable(itemArtFiles.flatMap(af=>(af?.mockup_files||[]).filter(f=>hasCw(f)&&cwSet.has(f.color_way_id)))):[];
+  const perSku=cwMocks.length>0?[]:_filterDisplayable(itemArtFiles.flatMap(af=>{const v=af?.item_mockups?.[skuKey];return v&&v.length>0?v:(af?.item_mockups?.[sku]||[])}));
+  const general=(cwMocks.length>0||perSku.length>0)?[]:_filterDisplayable(itemArtFiles.flatMap(af=>(af?.mockup_files||af?.files||[]).filter(f=>!hasCw(f))));
+  const seen=new Set();
+  return [...cwMocks,...perSku,...general].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||seen.has(u))return false;seen.add(u);return true});
+};
 export const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;
   let t=u.replace('/raw/upload/','/image/upload/').replace('/video/upload/','/image/upload/');
   return t.replace('/image/upload/','/image/upload/pg_1,f_png/')};

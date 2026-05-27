@@ -18,6 +18,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[showActions,setShowActions]=useState(false);const[showStatement,setShowStatement]=useState(false);const[stmtEmail,setStmtEmail]=useState('');const[stmtMsg,setStmtMsg]=useState('');const[stmtFrom,setStmtFrom]=useState('accounting');const[stmtSending,setStmtSending]=useState(false);
   const[custArtDetail,setCustArtDetail]=useState(null);
   const[custArtExpanded,setCustArtExpanded]=useState(null);// art id of expanded customer library item
+  const[mockupCwSel,setMockupCwSel]=useState({});// {[artId]:colorWayId} — CW chosen for the next mockup upload
   const[custArtFilter,setCustArtFilter]=useState('all');
   const[subsCollapsed,setSubsCollapsed]=useState(true);
   // Promo state
@@ -688,15 +689,27 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               </div>
               <div style={{marginBottom:6}}>
                 <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}><span style={{fontSize:10,fontWeight:700,color:'#2563eb'}}>MOCKUP FILES</span></div>
-                <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{art._mockups.map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#dbeafe',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)}>
-                  <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();const mf=[...art._mockups];mf.splice(fi,1);uCustArt(oi,'mockup_files',mf);if(!ownArt[oi].mockup_files)uCustArt(oi,'files',[])}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>
-                <div style={{border:'2px dashed #bfdbfe',borderRadius:6,padding:10,textAlign:'center',cursor:'pointer',background:'#eff6ff'}}
-                  onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.multiple=true;inp.onchange=async()=>{let acc=[...art._mockups];for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');acc=[...acc,{url,name:f.name}];uCustArt(oi,'mockup_files',acc);if(!ownArt[oi].mockup_files)uCustArt(oi,'files',[]);nf(f.name+' uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
-                  onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#dbeafe';e.currentTarget.style.borderColor='#3b82f6'}}
-                  onDragLeave={e=>{e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe'}}
-                  onDrop={async e=>{e.preventDefault();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe';let acc=[...art._mockups];for(const f of Array.from(e.dataTransfer.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');acc=[...acc,{url,name:f.name}];uCustArt(oi,'mockup_files',acc);if(!ownArt[oi].mockup_files)uCustArt(oi,'files',[]);nf(f.name+' uploaded')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
-                  <div style={{fontSize:11,color:'#2563eb',fontWeight:600}}>Drop mockup files or click to browse</div>
-                  <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>PDF, PNG, JPG, AI, EPS</div></div>
+                <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{art._mockups.map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');const fnCw=(typeof fn==='object'&&fn&&fn.color_way_id)?(art.color_ways||[]).find(c=>c.id===fn.color_way_id):null;return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#dbeafe',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)}>
+                  <Icon name="file" size={10}/>{fileDisplayName(fn)}{fnCw&&<span style={{padding:'0 5px',background:'#1e40af',color:'white',borderRadius:8,fontSize:9,fontWeight:700}}>{fnCw.garment_color||'CW'}</span>}<button onClick={e=>{e.stopPropagation();const mf=[...art._mockups];mf.splice(fi,1);uCustArt(oi,'mockup_files',mf);if(!ownArt[oi].mockup_files)uCustArt(oi,'files',[])}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>
+                {(()=>{const cws=art.color_ways||[];const selId=mockupCwSel[art.id]||'';const selCw=cws.find(c=>c.id===selId);
+                  if(cws.length===0)return<div style={{fontSize:11,color:'#dc2626',fontWeight:600,padding:'6px 0'}}>⚠ Add a color way above before uploading mockups.</div>;
+                  const doUpload=async(fileList)=>{if(!selCw){nf('Select a color way before uploading','error');return}let acc=[...art._mockups];for(const f of Array.from(fileList||[])){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');acc=[...acc,{url,name:f.name,color_way_id:selCw.id,color_way:selCw.garment_color||''}];uCustArt(oi,'mockup_files',acc);if(!ownArt[oi].mockup_files)uCustArt(oi,'files',[]);nf(f.name+' → '+(selCw.garment_color||'CW'))}catch(e){nf('Upload failed: '+e.message,'error')}}};
+                  return<>
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+                      <span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>For color way:</span>
+                      <select className="form-select" value={selId} onChange={e=>setMockupCwSel(s=>({...s,[art.id]:e.target.value}))} style={{fontSize:11,padding:'2px 6px'}}>
+                        <option value="">Select CW…</option>
+                        {cws.map((cw,ci)=><option key={cw.id} value={cw.id}>CW {ci+1}{cw.garment_color?' — '+cw.garment_color:''}</option>)}
+                      </select>
+                    </div>
+                    <div style={{border:'2px dashed '+(selCw?'#bfdbfe':'#e2e8f0'),borderRadius:6,padding:10,textAlign:'center',cursor:selCw?'pointer':'not-allowed',background:selCw?'#eff6ff':'#f8fafc',opacity:selCw?1:0.6}}
+                      onClick={()=>{if(!selCw){nf('Select a color way first','error');return}const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.multiple=true;inp.onchange=()=>doUpload(inp.files);inp.click()}}
+                      onDragOver={e=>{e.preventDefault();if(selCw){e.currentTarget.style.background='#dbeafe';e.currentTarget.style.borderColor='#3b82f6'}}}
+                      onDragLeave={e=>{e.currentTarget.style.background=selCw?'#eff6ff':'#f8fafc';e.currentTarget.style.borderColor=selCw?'#bfdbfe':'#e2e8f0'}}
+                      onDrop={e=>{e.preventDefault();e.currentTarget.style.background=selCw?'#eff6ff':'#f8fafc';e.currentTarget.style.borderColor=selCw?'#bfdbfe':'#e2e8f0';doUpload(e.dataTransfer.files)}}>
+                      <div style={{fontSize:11,color:selCw?'#2563eb':'#94a3b8',fontWeight:600}}>{selCw?'Drop mockup files or click to browse':'Select a color way first'}</div>
+                      <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>PDF, PNG, JPG, AI, EPS</div></div>
+                  </>;})()}
               </div>
               <div style={{marginBottom:6}}>
                 <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}><span style={{fontSize:10,fontWeight:700,color:'#d97706'}}>PRODUCTION FILES</span><span style={{fontSize:9,color:'#94a3b8'}}>Internal only</span></div>
@@ -777,28 +790,28 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const prodFiles=(art._allProd&&art._allProd.length)?art._allProd:(art.prod_files||[]).filter(f=>f).map(f=>({file:f,url:typeof f==='string'?f:(f?.url||''),src:art._srcLabel||''}));
     // Color ways for this artwork — from the art's color_ways, else distinct colors of items that use it.
     const _logoMatch=a=>(a.name||'').toLowerCase()===(art.name||'').toLowerCase()&&(a.deco_type||'')===(art.deco_type||'');
-    const cwColors=(art.color_ways&&art.color_ways.length)
-      ? [...new Set(art.color_ways.map(c=>c.garment_color||c.color||'').filter(Boolean))]
-      : [...new Set(custSOs.flatMap(so=>(so.items||[]).filter(it=>(it.decorations||[]).some(d=>{const af=(so.art_files||[]).find(a=>a.id===d.art_file_id);return af&&_logoMatch(af)})).map(it=>it.color)).filter(Boolean))];
-    // Tag a mock with a color way wherever this file is attached on the artwork.
-    const applyMockToCW=(mock,cwColor)=>{
-      if(!saveArt||!cwColor)return;
+    const cwOptions=(art.color_ways&&art.color_ways.length)
+      ? art.color_ways.map(c=>({id:c.id,label:c.garment_color||c.color||'CW'}))
+      : [...new Set(custSOs.flatMap(so=>(so.items||[]).filter(it=>(it.decorations||[]).some(d=>{const af=(so.art_files||[]).find(a=>a.id===d.art_file_id);return af&&_logoMatch(af)})).map(it=>it.color)).filter(Boolean))].map(c=>({id:null,label:c}));
+    // Tag a mock with a color way (by stable color_way_id when available) wherever this file is attached.
+    const applyMockToCW=(mock,opt)=>{
+      if(!saveArt||!opt||!opt.label)return;
       const url=urlOf(mock);
-      const tag=f=>{if(urlOf(f)!==url)return f;return{...(typeof f==='string'?{url:f,name:fileDisplayName(f)}:f),color_way:cwColor}};
+      const tag=f=>{if(urlOf(f)!==url)return f;return{...(typeof f==='string'?{url:f,name:fileDisplayName(f)}:f),color_way:opt.label,...(opt.id?{color_way_id:opt.id}:{})}};
+      const hasUrl=a=>(a.mockup_files||[]).some(f=>urlOf(f)===url)||Object.values(a.item_mockups||{}).flat().some(f=>urlOf(f)===url);
+      const tagArt=a=>{const im={...(a.item_mockups||{})};Object.keys(im).forEach(k=>{im[k]=(im[k]||[]).map(tag)});return{...a,mockup_files:(a.mockup_files||[]).map(tag),item_mockups:im}};
       custSOs.forEach(so=>{
         let soChanged=false;
         const updArt=(so.art_files||[]).map(a=>{
-          if(!_logoMatch(a))return a;
-          const has=(a.mockup_files||[]).some(f=>urlOf(f)===url)||Object.values(a.item_mockups||{}).flat().some(f=>urlOf(f)===url);
-          if(!has)return a;
-          soChanged=true;
-          const im={...(a.item_mockups||{})};Object.keys(im).forEach(k=>{im[k]=(im[k]||[]).map(tag)});
-          return{...a,mockup_files:(a.mockup_files||[]).map(tag),item_mockups:im};
+          if(!_logoMatch(a)||!hasUrl(a))return a;
+          soChanged=true;return tagArt(a);
         });
         if(soChanged)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
       });
-      setCustArtDetail(d=>d?{...d,_allMockups:(d._allMockups||[]).map(x=>x.url===url?{...x,file:{...(typeof x.file==='string'?{url:x.file}:(x.file||{url})),color_way:cwColor}}:x)}:d);
-      nf&&nf('Mock tagged as '+cwColor);
+      const lib=customer.art_files||[];
+      if(onRefreshCustomer&&lib.some(a=>_logoMatch(a)&&hasUrl(a)))onRefreshCustomer({...customer,art_files:lib.map(a=>_logoMatch(a)&&hasUrl(a)?tagArt(a):a)});
+      setCustArtDetail(d=>d?{...d,_allMockups:(d._allMockups||[]).map(x=>x.url===url?{...x,file:{...(typeof x.file==='string'?{url:x.file}:(x.file||{url})),color_way:opt.label,...(opt.id?{color_way_id:opt.id}:{})}}:x)}:d);
+      nf&&nf('Mock tagged as '+opt.label);
     };
     // Persist color-way edits for this logo across every matching art record (orders + customer library).
     // Uses the lightweight art-files save so items/POs are never re-persisted.
@@ -870,9 +883,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               :_isPdfUrl(url)?<div style={{height:120,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}>{_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt="" style={{maxHeight:100,objectFit:'contain'}} onError={e=>{e.target.style.display='none'}}/>:<span style={{fontSize:32}}>PDF</span>}</div>
               :<div style={{height:120,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc',fontSize:28}}>📄</div>}
               <div style={{padding:'4px 6px',fontSize:9,color:'#64748b',borderTop:'1px solid #f1f5f9'}}>{fileDisplayName(m.file||url)}{(m.file&&m.file.color_way)&&<span style={{marginLeft:4,padding:'1px 5px',background:'#dbeafe',color:'#1e40af',borderRadius:8,fontWeight:700}}>{m.file.color_way}</span>}<br/><span style={{color:'#94a3b8'}}>{m.src}</span></div>
-              {onSaveSO&&cwColors.length>0&&<select onClick={e=>e.stopPropagation()} value="" onChange={e=>{e.stopPropagation();const v=e.target.value;if(v)applyMockToCW(m.file||url,v)}} style={{width:'100%',fontSize:9,borderTop:'1px solid #f1f5f9',border:'none',borderTopWidth:1,borderTopStyle:'solid',borderTopColor:'#f1f5f9',padding:'4px',cursor:'pointer',color:'#1e40af',background:'#f8fafc',fontWeight:600}}>
+              {onSaveSO&&cwOptions.length>0&&<select onClick={e=>e.stopPropagation()} value="" onChange={e=>{e.stopPropagation();const v=e.target.value;if(v!=='')applyMockToCW(m.file||url,cwOptions[Number(v)])}} style={{width:'100%',fontSize:9,borderTop:'1px solid #f1f5f9',border:'none',borderTopWidth:1,borderTopStyle:'solid',borderTopColor:'#f1f5f9',padding:'4px',cursor:'pointer',color:'#1e40af',background:'#f8fafc',fontWeight:600}}>
                 <option value="">Apply to color…</option>
-                {cwColors.map(c=><option key={c} value={c}>{c}</option>)}
+                {cwOptions.map((o,oi)=><option key={oi} value={oi}>{o.label}</option>)}
               </select>}
             </div>})}
           </div>}
