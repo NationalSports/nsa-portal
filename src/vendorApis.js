@@ -997,6 +997,11 @@ const champroApiCall = async (path, options = {}) => {
     }
     const data = await response.json();
     console.log('[CHAMPRO] API response:', path, data);
+    // CHAMPRO returns HTTP 200 even on failures, with the message in an `Error`
+    // field (e.g. IP-not-allowed). Surface that as a thrown error.
+    if (data && typeof data.Error === 'string' && data.Error.trim()) {
+      throw new Error(data.Error.trim());
+    }
     return data;
   } catch (error) { console.error('[CHAMPRO] API call failed:', path, error); throw error; }
 };
