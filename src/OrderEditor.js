@@ -10,7 +10,7 @@ import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOSt
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import QuickMockBuilder from './QuickMockBuilder';
-import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
+import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
@@ -99,7 +99,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[preexistingPO,setPreexistingPO]=useState(false);const[preexistingPOId,setPreexistingPOId]=useState('');const[poExcluded,setPOExcluded]=useState({});const[poCalcTick,setPoCalcTick]=useState(0);const[poShipTo,setPoShipTo]=useState('warehouse');
     const[topstarService,setTopstarService]=useState('dst');const[topstarImgs,setTopstarImgs]=useState([]);const[topstarNotes,setTopstarNotes]=useState('');const[topstarSending,setTopstarSending]=useState(false);
     const decoVendors=decoVendorsProp||[];const decoVendorPricing=decoVendorPricingProp||[];
-    const DECO_VENDORS=(()=>{const names=decoVendors.filter(v=>v.is_active!==false).map(v=>v.name);return names.length>0?[...names,'Other']:['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','Other']})();
+    const DECO_VENDORS=(()=>{const names=decoVendors.filter(v=>v.is_active!==false).map(v=>v.name);return names.length>0?[...names,'Other']:['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','BYOG Screenprinting','GraphiC323','Frontier Screen Printing','Other']})();
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
   const[showFirmApprove,setShowFirmApprove]=useState(false);const[firmRushPct,setFirmRushPct]=useState(0);
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('final');const[invDepositPct,setInvDepositPct]=useState(50);const[invBilling,setInvBilling]=useState('');const[invDate,setInvDate]=useState(()=>new Date().toLocaleDateString('en-CA'));
@@ -110,6 +110,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[mergeMode,setMergeMode]=useState(null);// {selected:[jobIdx,...]} — select jobs to merge
   const[jobWizard,setJobWizard]=useState(null);// {groups: [{name,deco_type,items:[...]},...]} — Job Setup Wizard
   const[mockBuilder,setMockBuilder]=useState(null);// {gi} — Quick Mock Builder open for jobWizard group index
+  const[editMockJob,setEditMockJob]=useState(null);// job object whose quick mock is being re-edited in place
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
   const[artRevisionNote,setArtRevisionNote]=useState('');
@@ -1314,20 +1315,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const expColorSearchInput=(borderColor)=><input value={expandColorQ} onChange={e=>setExpandColorQ(e.target.value)} onClick={e=>e.stopPropagation()} placeholder="Search colors..." autoFocus style={{flexBasis:'100%',padding:'4px 8px',fontSize:11,border:'1px solid '+borderColor,borderRadius:4,marginBottom:4}}/>;
   const expColorNoMatch=<div style={{fontSize:11,color:'#94a3b8',padding:'4px 2px',flexBasis:'100%'}}>No colors match "{expandColorQ}"</div>;
   const sv=(k,v)=>{setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));setDirty(true)};
-  const isAU=b=>{const l=(b||'').toLowerCase();return l==='adidas'||l==='under armour'||l==='new balance'};const tD={A:0.4,B:0.35,C:0.3};
-  // AU footwear gets 5% less discount than apparel (school pays more for shoes)
-  const auDisc=(isFw)=>{const base=tD[cust?.adidas_ua_tier||'B']||0.35;return isFw?Math.max(0,base-0.05):base};
+  const isAU=b=>{const l=(b||'').toLowerCase();return l==='adidas'||l==='under armour'||l==='new balance'};
+  // AU footwear gets 5% less discount than apparel (school pays more for shoes).
+  // pricingGroup ('lockerroom') selects a reduced tier schedule.
+  const auDisc=(isFw,pricingGroup)=>{const base=auTierDisc(cust?.adidas_ua_tier||'B',pricingGroup);return isFw?Math.max(0,base-0.05):base};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
-  const addP=p=>{const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';const sell=au?rQ(p.retail_price*(1-auDisc(isFw))):rQ(p.nsa_cost*(o.default_markup||1.65));
+  const addP=p=>{const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(p.nsa_cost*(o.default_markup||1.65));
     const avail=(p.available_sizes&&p.available_sizes.length)?[...p.available_sizes]:(isFw?[...FOOTWEAR_DEFAULT_SIZES]:['S','M','L','XL','2XL']);
-    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),...(p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
+    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),...(p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
   const mvI=(i,dir)=>{const items=safeItems(o);const j=i+dir;if(j<0||j>=items.length)return;const next=[...items];[next[i],next[j]]=[next[j],next[i]];sv('items',next)};
   const uI=(i,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?{...it,[k]:v}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};const rmI=i=>{const item=safeItems(o)[i];if(item&&isSO){const pos=safePOs(item);if(pos.length>0){const hasReceived=pos.some(po=>Object.values(po.received||{}).some(v=>v>0));const hasBilled=pos.some(po=>Object.values(po.billed||{}).some(v=>v>0));if(hasReceived||hasBilled){nf('Cannot delete — this item has '+(hasReceived?'received':'')+(hasReceived&&hasBilled?' and ':'')+(hasBilled?'billed':'')+' PO quantities. Remove billing/receiving first.','error');return}nf('Cannot delete — this item has PO(s). Delete the PO(s) first before removing the item.','error');return}}sv('items',safeItems(o).filter((_,x)=>x!==i))};
   const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' with all sizes & decorations')};
-  const copyIWithSku=(i,p)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=p.nsa_cost;clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;
+  const copyIWithSku=(i,p)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=p.nsa_cost;clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;
     // Preserve source's available_sizes (union with new product's) so manually-added sizes survive the swap
     const srcSizes=Array.isArray(it.available_sizes)?it.available_sizes:[];const newSizes=Array.isArray(p.available_sizes)?p.available_sizes:[];clone.available_sizes=[...new Set([...srcSizes,...newSizes])];
-    const isFw=(p.category||'').toLowerCase()==='footwear';clone.is_footwear=isFw;const au=isAU(p.brand);clone._colors=au?null:(p._colors||null);clone.unit_sell=au?rQ(p.retail_price*(1-auDisc(isFw))):rQ(p.nsa_cost*(o.default_markup||1.65));sv('items',[...o.items,clone]);setCopySkuModal(null);nf('📋 Copied decorations from '+it.sku+' → '+p.sku)};
+    const isFw=(p.category||'').toLowerCase()==='footwear';clone.is_footwear=isFw;const au=isAU(p.brand);clone._colors=au?null:(p._colors||null);clone.unit_sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(p.nsa_cost*(o.default_markup||1.65));sv('items',[...o.items,clone]);setCopySkuModal(null);nf('📋 Copied decorations from '+it.sku+' → '+p.sku)};
   // Copy item to a vendor-search result (S&S/SanMar/Momentec/Richardson). Mirrors addSearchProduct
   // but preserves source item's decorations + sizes by cloning it.
   const copyIWithVendorResult=(i,style,color,source)=>{
@@ -1384,14 +1386,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const it=o.items[i];if(!it)return;
     if(safePicks(it).length>0||safePOs(it).length>0){nf('Cannot change SKU — item has PO or IF. Remove them first.','error');return}
     const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';
-    const sell=au?rQ(p.retail_price*(1-auDisc(isFw))):rQ(p.nsa_cost*(o.default_markup||1.65));
+    const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(p.nsa_cost*(o.default_markup||1.65));
     setO(e=>({...e,items:safeItems(e).map((x,xi)=>{
       if(xi!==i)return x;
       const next={...x};
       delete next._ss_live;delete next._sm_live;delete next._mt_live;delete next._rs_live;delete next._mtId;
       delete next._sizeCosts;delete next._sizeSells;delete next._colorImage;delete next._colorBackImage;
       next.product_id=p.id;next.sku=p.sku;next.name=nameWithBrand(p.name,p.brand);next.brand=p.brand;
-      next.vendor_id=p.vendor_id||null;next.color=p.color;
+      next.vendor_id=p.vendor_id||null;next.pricing_group=p.pricing_group||null;next.color=p.color;
       next.nsa_cost=p.nsa_cost;next.retail_price=p.retail_price;next.unit_sell=sell;
       next.available_sizes=[...(p.available_sizes||['S','M','L','XL','2XL'])];
       next._colors=au?null:(p._colors||null);
@@ -1895,6 +1897,44 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       :_isPdfUrl(mockupLightbox)?<iframe title="PDF Preview" src={'https://docs.google.com/gview?url='+encodeURIComponent(mockupLightbox)+'&embedded=true'} style={{width:'90vw',height:'90vh',border:'none',borderRadius:8,background:'white'}} onClick={e=>e.stopPropagation()}/>
       :<div style={{color:'white',fontSize:16}} onClick={e=>e.stopPropagation()}>Cannot preview this file type</div>}
     </div>}
+    {/* Quick Mock re-edit — reopen the builder for an existing quick-mock job and write the
+        updated composites back to the artwork in place (status unchanged, live to coach portal). */}
+    {editMockJob&&(()=>{
+      const j2=safeJobs(o).find(jj=>jj.id===editMockJob.id)||editMockJob;
+      const artIds=((j2._art_ids&&j2._art_ids.length?j2._art_ids:[j2.art_file_id])||[]).filter(a=>a&&a!=='__tbd');
+      const primaryId=artIds[0];
+      const _back=full=>{const prd=products.find(pp=>pp.id===full?.product_id||pp.sku===full?.sku);return prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
+      const garments=[];const seenG=new Set();
+      (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];const sku=it0.sku||full?.sku||'';const color=it0.color||full?.color||'';const key=sku+'|'+color;if(seenG.has(key))return;seenG.add(key);garments.push({key,sku,color,name:it0.name||full?.name||'',frontUrl:full?_itemImg(full):'',backUrl:full?_back(full):''})});
+      const _renderable=f=>{const u=typeof f==='string'?f:(f?.url||'');return !!u&&(_isImgUrl(u)||/\.svg(\?|$)/i.test(u))};
+      const _filePreview=f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u)return null;if(_renderable(f))return{url:u};if(u.includes('cloudinary.com')&&/\.(ai|eps|pdf)(\?|$)/i.test(u)){const png=_cloudinaryPdfThumb(u);if(png)return{url:png,vectorSrc:u}}return null};
+      const _fileName=f=>{const u=typeof f==='string'?f:(f?.url||'');return (typeof f!=='string'&&f?.name)||u.split('?')[0].split('/').pop()||'art'};
+      const locations=[];
+      artIds.forEach(aid=>{const art=safeArt(o).find(a=>a.id===aid);if(!art)return;
+        const _onfile=[...(art.files||[]),...(art.prod_files||[])].filter(f=>typeof f==='string'||f?.url);
+        const files=[];const _seenF=new Set();
+        [art.preview_url,...(art.mockup_files||[]),..._onfile].forEach(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenF.has(u))return;const pv=_filePreview(f);if(!pv)return;_seenF.add(u);files.push({name:_fileName(f),url:u,preview:pv})});
+        locations.push({artFileId:aid,name:art.name||j2.art_name||'',position:j2.positions||'',existingFiles:_onfile,files,preview:files.length?files[0].preview:null});
+      });
+      const initialMocks={};const initialScene={};
+      artIds.forEach(aid=>{const art=safeArt(o).find(a=>a.id===aid);if(!art)return;Object.entries(art.item_mockups||{}).forEach(([k,arr])=>{if(arr&&arr.length)initialMocks[k]=[...(initialMocks[k]||[]),...arr]});Object.entries(art.qm_scenes||{}).forEach(([k,objs])=>{if(objs&&objs.length&&!initialScene[k])initialScene[k]=objs})});
+      return<QuickMockBuilder garments={garments} locations={locations} initialMocks={initialMocks} initialScene={initialScene} nf={nf}
+        onClose={()=>setEditMockJob(null)}
+        onSave={({mocksByGarment,filesByLocation,sceneByGarment})=>{
+          const _fUrl=f=>typeof f==='string'?f:(f?.url||'');
+          const updArt=safeArt(o).map(a=>{
+            if(!artIds.includes(a.id))return a;
+            const upd={...a};
+            const locFiles=(filesByLocation||{})[a.id]||[];
+            if(locFiles.length){const have=new Set((a.files||[]).map(_fUrl));upd.files=[...(a.files||[]),...locFiles.filter(f=>!have.has(_fUrl(f)))]}
+            if(a.id===primaryId){const im={};Object.entries(mocksByGarment||{}).forEach(([k,arr])=>{if(arr&&arr.length)im[k]=arr.map(m=>({...m,art_file_id:primaryId}))});upd.item_mockups=im;if(sceneByGarment)upd.qm_scenes=sceneByGarment}
+            return upd;
+          });
+          const updated={...o,art_files:updArt,updated_at:new Date().toLocaleString()};
+          setO(updated);onSave(updated);setDirty(false);setEditMockJob(null);
+          nf('Mockup updated — the coach portal now shows the new version');
+        }}/>;
+    })()}
     {/* Sticky header — appears when scrolling */}
     <div style={{position:'sticky',top:52,zIndex:40,background:'white',borderBottom:'1px solid #e2e8f0',padding:'8px 16px',marginBottom:0,display:'flex',alignItems:'center',gap:12,boxShadow:'0 1px 3px rgba(0,0,0,0.05)',flexWrap:'wrap'}}>
       <button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="back" size={12}/> Back</button>
@@ -2497,7 +2537,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontSize:13,fontWeight:600}}>Sell: <$In value={item._sizeSells&&szQty>0?rQ(pRev/szQty):item.unit_sell} onChange={v=>{if(item._sizeSells&&item._sizeCosts){const ratio=item.nsa_cost>0?v/rQ(item.nsa_cost*(o.default_markup||1.65)):1;const ns={};Object.entries(item._sizeCosts).forEach(([sz,c])=>{ns[sz]=rQ(c*(o.default_markup||1.65)*ratio)});uI(idx,'_sizeSells',ns)}uI(idx,'unit_sell',v)}}/>/ea</span>
                 {item._sizeSells&&szQty>0&&Object.keys(item._sizeSells).length>1&&<span style={{fontSize:9,color:'#94a3b8'}}>(avg)</span>}
                 {item.is_custom&&<span style={{fontSize:12,color:'#64748b'}}>Cost: <$In value={item.nsa_cost} onChange={v=>{uI(idx,'nsa_cost',v);if(!isAU(item.brand)&&v>0){uI(idx,'unit_sell',rQ(v*(o.default_markup||1.65)))}}}/></span>}
-                {item.is_custom&&isAU(item.brand)&&<span style={{fontSize:12,color:'#64748b'}}>Retail: <$In value={item.retail_price||0} onChange={v=>{uI(idx,'retail_price',v);if(isAU(item.brand)&&v>0){const costMult=item.is_footwear?(item.brand==='Adidas'?0.55*0.75:0.55*0.85):(item.brand==='Adidas'?0.375:0.425);uI(idx,'nsa_cost',Math.floor(v*costMult*100)/100);uI(idx,'unit_sell',rQ(v*(1-auDisc(item.is_footwear))))}}}/></span>}
+                {item.is_custom&&isAU(item.brand)&&<span style={{fontSize:12,color:'#64748b'}}>Retail: <$In value={item.retail_price||0} onChange={v=>{uI(idx,'retail_price',v);if(isAU(item.brand)&&v>0){const costMult=item.is_footwear?(item.brand==='Adidas'?0.55*0.75:0.55*0.85):(item.brand==='Adidas'?0.375:0.425);uI(idx,'nsa_cost',Math.floor(v*costMult*100)/100);uI(idx,'unit_sell',rQ(v*(1-auDisc(item.is_footwear,item.pricing_group))))}}}/></span>}
                 {!isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:'#64748b'}}>({((item._sizeSells&&szQty>0?pRev/szQty:item.unit_sell)/(item._sizeCosts&&szQty>0?pCost/szQty:item.nsa_cost)).toFixed(2)}x)</span>}
                 {isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:item.unit_sell>item.nsa_cost?'#166534':'#dc2626'}}>({Math.round((item.unit_sell-item.nsa_cost)/item.unit_sell*100)}% margin)</span>}
               </div></div>
@@ -3196,7 +3236,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               if(isAU(brand)&&safeNum(x.retail_price)>0){
                 const mult=fw?(brand==='Adidas'?0.55*0.75:0.55*0.85):(brand==='Adidas'?0.375:0.425);
                 nx.nsa_cost=Math.floor(x.retail_price*mult*100)/100;
-                nx.unit_sell=rQ(x.retail_price*(1-auDisc(fw)));
+                nx.unit_sell=rQ(x.retail_price*(1-auDisc(fw,x.pricing_group)));
               }
               return nx;
             })} style={{padding:'5px 12px',fontSize:11,fontWeight:700,borderRadius:4,border:'none',cursor:'pointer',
@@ -3207,7 +3247,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>
 
       {/* Pricing section — brand-aware */}
-      {(()=>{const brandName=vendorList.find(v=>v.id===custItem.vendor_id)?.name||'';const au=isAU(brandName);const isFw=custItem.item_type==='footwear';const tier=cust?.adidas_ua_tier||'B';const disc=auDisc(isFw);const mk=o.default_markup||1.65;
+      {(()=>{const brandName=vendorList.find(v=>v.id===custItem.vendor_id)?.name||'';const au=isAU(brandName);const isFw=custItem.item_type==='footwear';const tier=cust?.adidas_ua_tier||'B';const disc=auDisc(isFw,custItem.pricing_group);const mk=o.default_markup||1.65;
         return<>
           <div style={{padding:8,background:au?'#eff6ff':'#f8fafc',borderRadius:6,marginBottom:8,fontSize:11}}>
             {au?<><strong>💎 {brandName} {isFw?'Footwear':'Apparel'} — Tier {tier}:</strong> Cost = Retail × {isFw?(brandName==='Adidas'?'0.55 × 0.75 (41.25%)':'0.55 × 0.85 (46.75%)'):(brandName==='Adidas'?'0.5 × 0.75 (37.5%)':'0.5 × 0.85 (42.5%)')}. Sell = Retail × {Math.round((1-disc)*100)}%.</>
@@ -3453,7 +3493,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const retail=catMatch?.retail_price||p.vendor_retail||0;
               const isFw=(catMatch?.category||'').toLowerCase()==='footwear';
               const sell=au
-                ?rQ(retail*(1-auDisc(isFw)))
+                ?rQ(retail*(1-auDisc(isFw,catMatch?.pricing_group)))
                 :rQ(cost*(o.default_markup||1.65));
               const szKeys=Object.keys(p.sizes||{});
               return{
@@ -5365,13 +5405,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(showPO==='select')return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
         <div className="modal-header"><h2>Create PO — Select Vendor</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
         <div className="modal-body">{Object.entries(vendorMap).map(([vk,items])=>{const vn=vendorList.find(v=>v.id===vk)?.name||D_V.find(v=>v.id===vk)?.name||vk;
-          const openCount=items.reduce((tot,it)=>tot+openSizesFor(it).reduce((a,[,v])=>a+v,0),0);
+          const openItems=items.filter(it=>openSizesFor(it).reduce((a,[,v])=>a+v,0)>0);
+          const openCount=openItems.reduce((tot,it)=>tot+openSizesFor(it).reduce((a,[,v])=>a+v,0),0);
           if(openCount===0)return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,opacity:0.5,display:'flex',alignItems:'center',gap:12}}>
             <div style={{width:40,height:40,borderRadius:8,background:'#dcfce7',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="check" size={20}/></div>
             <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#166534'}}>All items fully covered</div></div></div>;
           return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,cursor:'pointer',display:'flex',alignItems:'center',gap:12}} onClick={()=>{setShowPO(vk);setPOExcluded({})}}>
             <div style={{width:40,height:40,borderRadius:8,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="package" size={20}/></div>
-            <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#64748b'}}>{items.length} item(s) — <span style={{color:'#dc2626',fontWeight:600}}>{openCount} units open</span></div></div>
+            <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#64748b'}}>{openItems.length} item(s) — <span style={{color:'#dc2626',fontWeight:600}}>{openCount} units open</span></div></div>
             <Icon name="back" size={16} style={{transform:'rotate(180deg)'}}/></div>})}
           {unlinkedItems.length>0&&<div style={{borderTop:'2px solid #fca5a5',marginTop:8,paddingTop:8}}>
             <div style={{fontSize:10,fontWeight:700,color:'#dc2626',textTransform:'uppercase',marginBottom:6}}>⚠️ Items Without Vendor</div>
@@ -5655,6 +5696,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse')}}>← Back</button><button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse')}}>Cancel</button>
           {poItems.length>0&&isBatchEligible&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={poItems.every((_,vi)=>poExcluded[vi])} onClick={()=>{
             // Build batch PO entry
+            const isDropShip=document.getElementById('po-dropship-'+autoPoId)?.checked||false;
             const batchItems=[];let totalCost=0;
             poItems.forEach((pit,vi)=>{
               if(poExcluded[vi])return;
@@ -5678,6 +5720,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               totalCost+=batchLineTotal;
               const bItem={sku:pit.sku,name:pit.name,color:pit.color,sizes,qty,unit_cost:batchUnitCost,item_idx:pit._idx};
               if(hasSizePrices&&new Set(Object.values(sizeCosts).map(v=>v.toFixed(2))).size>1)bItem._size_costs=sizeCosts;
+              if(isDropShip)bItem.drop_ship=true;
               batchItems.push(bItem);
             });
             const bpId='BPO '+Date.now();
@@ -5690,6 +5733,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const idx=bit.item_idx;if(idx==null||!updatedItems[idx])return;
               const poLine={po_id:autoPoId,vendor:vn,status:'queued',created_at:new Date().toLocaleDateString(),memo:'Batch queue — '+batchConfig.name,received:{},shipments:[],unit_cost:bit.unit_cost,batch_queue_id:bpId};
               if(bit._size_costs)poLine._size_costs=bit._size_costs;
+              if(bit.drop_ship)poLine.drop_ship=true;
               Object.entries(bit.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
               const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
               if(hasQty)updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
@@ -6233,6 +6277,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     onBlur={e=>{const v=e.target.value.trim();const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,art_name:v||jj.art_name,_name_locked:true}:jj);setO(e2=>({...e2,jobs:updJobs,updated_at:new Date().toLocaleString()}));setDirty(true);setEditingJobName(null)}}/>
                   :<><span style={{fontSize:15,fontWeight:700}}>{j.art_name}</span>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>setEditingJobName(j.id)} title="Rename this job">✏️ Rename</button>
+                    {(()=>{const _aids=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);const canEditMock=j.quick_mock||_aids.some(aid=>{const a=safeArt(o).find(x=>x.id===aid);return a&&a.item_mockups&&Object.values(a.item_mockups).some(arr=>(arr||[]).length>0)});return canEditMock?<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#7c3aed',color:'white',border:'none',fontWeight:700}} title="Edit this Quick Mock — updates the mockup the coach sees, status unchanged" onClick={()=>{(j.items||[]).forEach(gItem=>{const it=safeItems(o)[gItem.item_idx];if(it)fetchVendorImage(it.sku,it.color,it.vendor_id,it)});setEditMockJob(j)}}>✏️ Edit Mock</button>:null})()}
                     {j._name_locked&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,_name_locked:false}:jj);setO(e2=>({...e2,jobs:updJobs,updated_at:new Date().toLocaleString()}));setDirty(true);nf('Job name will sync from artwork on next change')}} title="Stop overriding — name will follow the artwork again">🔓 Unlock</button>}
                     {j._name_locked&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:700}}>Custom name</span>}
                   </>}
@@ -7319,6 +7364,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   im[key]=[...(im[key]||[]),...tagged];
                 });
                 upd.item_mockups=im;
+                if(g.qmScene)upd.qm_scenes={...(a.qm_scenes||{}),...g.qmScene};
               }
               return upd;
             });
@@ -7495,9 +7541,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const preview=files.length?files[0].preview:null;
               locations.push({artFileId:aid,name:art?.name||it.art_name||DECO_LABELS_W[g.deco_type]||g.name,position:d.position||'',existingFiles:_onfile,files,preview});
             });});
-          return<QuickMockBuilder garments={garments} locations={locations} initialMocks={g.qmMocks} initialFiles={g.qmFiles} nf={nf}
+          return<QuickMockBuilder garments={garments} locations={locations} initialMocks={g.qmMocks} initialScene={g.qmScene} initialFiles={g.qmFiles} nf={nf}
             onClose={()=>setMockBuilder(null)}
-            onSave={({mocksByGarment,filesByLocation})=>{const gs=[...jobWizard.groups];gs[mockBuilder.gi]={...gs[mockBuilder.gi],qmMocks:mocksByGarment,qmFiles:filesByLocation};setJobWizard({...jobWizard,groups:gs});setMockBuilder(null);nf('Mockups attached — release the job to send to the coach')}}/>;
+            onSave={({mocksByGarment,filesByLocation,sceneByGarment})=>{const gs=[...jobWizard.groups];gs[mockBuilder.gi]={...gs[mockBuilder.gi],qmMocks:mocksByGarment,qmFiles:filesByLocation,qmScene:sceneByGarment};setJobWizard({...jobWizard,groups:gs});setMockBuilder(null);nf('Mockups attached — release the job to send to the coach')}}/>;
         })()}
       </div></div>;
 
@@ -7564,7 +7610,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
               <td>{(()=>{const _is=jItemStatus(j);return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[_is]?.bg,color:SC[_is]?.c}}>{itemLabels[_is]}</span>})()}</td>
               <td>{(()=>{const sentCust=j.art_status==='waiting_approval'&&j.sent_to_coach_at;const aLbl=sentCust?'Sent to Customer':(artLabels[j.art_status]||j.art_status);const aSt=sentCust?{bg:'#ede9fe',c:'#6d28d9'}:SC[j.art_status];return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:aSt?.bg,color:aSt?.c}}>{aLbl}</span>})()}</td>
-              <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}}>{prodLabels[j.prod_status]||j.prod_status}</span></td>
+              <td>{(()=>{const readyForProd=j.prod_status==='hold'&&canProduce;const pSt=readyForProd?{bg:'#dcfce7',c:'#166534'}:(SC[j.prod_status]||{bg:'#f1f5f9',c:'#475569'});return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:pSt.bg,color:pSt.c}}>{readyForProd?'Ready for Prod':(prodLabels[j.prod_status]||j.prod_status)}</span>})()}</td>
               <td style={{whiteSpace:'nowrap'}}>
                 {(()=>{const _artIds4=j._art_ids||[j.art_file_id].filter(Boolean);if(_artIds4.length===0||(_artIds4.length===1&&_artIds4[0]==='__tbd'))return null;const hasActiveReqs=(j.art_requests||[]).some(r=>r.status!=='recalled');const hasAnyReqs=(j.art_requests||[]).length>0;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
                   const artReturned=j.art_status==='waiting_approval';

@@ -49,14 +49,21 @@ const hexToRgb = h => {
   return m ? {r: parseInt(m[0], 16), g: parseInt(m[1], 16), b: parseInt(m[2], 16)} : {r: 0, g: 0, b: 0};
 };
 
-export default function QuickMockBuilder({garments, locations, initialMocks, onSave, onClose, nf}){
+export default function QuickMockBuilder({garments, locations, initialMocks, initialScene, onSave, onClose, nf}){
   const [gi, setGi] = useState(0);
   const [side, setSide] = useState('front');
   const [canvas, setCanvas] = useState(null);
   const wrapRef = useRef(null);
   // Serialized art per "gi|side" so switching garment color / side (which rebuilds the
   // fabric canvas) restores the art the user already placed instead of showing blank.
-  const sceneRef = useRef({});
+  // Seeded from a previously-saved scene (keyed garmentKey|side) so re-editing a mock
+  // restores the placed art at its saved size/position instead of a blank canvas.
+  const sceneRef = useRef(null);
+  if (sceneRef.current === null) {
+    const seed = {};
+    if (initialScene) garments.forEach((g, i) => ['front', 'back'].forEach(s => { const k = g.key + '|' + s; if (initialScene[k] && initialScene[k].length) seed[i + '|' + s] = initialScene[k]; }));
+    sceneRef.current = seed;
+  }
   // Tracks whether the current canvas has art placed/changed since its last save, so we can
   // auto-commit a side's mockup when the user switches side/garment or finishes — otherwise
   // placed-but-not-explicitly-saved art is silently lost (e.g. only the back mock saved).
@@ -449,6 +456,8 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
 
   // Done renders & saves a mock for every garment+side the rep placed art on — not just the
   // one on screen. The current canvas is snapshotted into the scene store first so it's included.
+  // The serialized scenes are also re-keyed by garmentKey|side and passed back so a later
+  // "Edit Mock" can restore the placed art.
   const handleDone = async () => {
     setBusy(true);
     try {
@@ -482,7 +491,10 @@ export default function QuickMockBuilder({garments, locations, initialMocks, onS
       const filesByLocation = {};
       // Only newly uploaded files get appended — art already on the artwork stays as-is.
       layers.forEach(l => { if (l.source && l.artFileId) filesByLocation[l.artFileId] = [...(filesByLocation[l.artFileId] || []), l.source]; });
-      onSave({mocksByGarment: finalMocks, filesByLocation});
+      // Re-key the scenes by garmentKey|side so a later edit can restore the placed art.
+      const sceneByGarment = {};
+      Object.entries(sceneRef.current).forEach(([k, objs]) => { if (!objs || !objs.length) return; const sep = k.lastIndexOf('|'); const g = garments[+k.slice(0, sep)]; if (g) sceneByGarment[g.key + '|' + k.slice(sep + 1)] = objs; });
+      onSave({mocksByGarment: finalMocks, filesByLocation, sceneByGarment});
     } finally { setBusy(false); }
   };
 

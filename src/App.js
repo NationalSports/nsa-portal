@@ -18,7 +18,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
-import { calcOrderTotals } from './pricing';
+import { calcOrderTotals, auTierDisc } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
@@ -4727,8 +4727,8 @@ export default function App(){
     setProd(pp=>pp.map(x=>x.id===pid?{...x,_inv:inv}:x));nf('Inventory updated');
   };
   const newE=(c,product,seedItems)=>{const mk=c?.catalog_markup||1.65;const items=[];
-    if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-(({A:0.4,B:0.35,C:0.3})[c?.adidas_ua_tier||'B']||0.35))):rQ(repCost*mk);
-      items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
+    if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-auTierDisc(c?.adidas_ua_tier||'B',product.pricing_group))):rQ(repCost*mk);
+      items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,vendor_id:product.vendor_id||null,pricing_group:product.pricing_group||null,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
     if(Array.isArray(seedItems)&&seedItems.length)items.push(...seedItems);
     const e={id:nextEstId(ests),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates');return e};
   // Create a blank Sales Order directly (skipping the estimate stage). Reps still pick a
@@ -6564,9 +6564,9 @@ export default function App(){
                 <span>Cost: <strong>${ep.nsa_cost?.toFixed(2)}</strong></span>
                 <span>Retail: <strong>${ep.retail_price?.toFixed(2)}</strong></span>
                 {(ep.brand==='Adidas'||ep.brand==='Under Armour'||ep.brand==='New Balance')?<>
-                  <span>Tier A: <strong>${rQ((ep.retail_price||0)*0.6).toFixed(2)}</strong></span>
-                  <span>Tier B: <strong>${rQ((ep.retail_price||0)*0.65).toFixed(2)}</strong></span>
-                  <span>Tier C: <strong>${rQ((ep.retail_price||0)*0.7).toFixed(2)}</strong></span>
+                  <span>Tier A: <strong>${rQ((ep.retail_price||0)*(1-auTierDisc('A',ep.pricing_group))).toFixed(2)}</strong></span>
+                  <span>Tier B: <strong>${rQ((ep.retail_price||0)*(1-auTierDisc('B',ep.pricing_group))).toFixed(2)}</strong></span>
+                  <span>Tier C: <strong>${rQ((ep.retail_price||0)*(1-auTierDisc('C',ep.pricing_group))).toFixed(2)}</strong></span>
                 </>:<span>Sell: <strong>${rQ(ep.nsa_cost*1.65).toFixed(2)}</strong></span>}
               </div>
               <div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
@@ -6577,7 +6577,7 @@ export default function App(){
             </>:<>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
                 <div><label className="form-label">SKU</label><input className="form-input" value={ep.sku} onChange={e=>setEp(x=>({...x,sku:e.target.value}))}/></div>
-                <div><label className="form-label">Brand</label><select className="form-select" value={ep.vendor_id} onChange={e=>{const vn=D_V.find(x=>x.id===e.target.value);setEp(x=>({...x,vendor_id:e.target.value,brand:vn?.name||x.brand}))}}><option value="">Select...</option>{D_V.map(vv=><option key={vv.id} value={vv.id}>{vv.name}</option>)}</select></div>
+                <div><label className="form-label">Vendor</label><select className="form-select" value={ep.vendor_id} onChange={e=>{const vn=D_V.find(x=>x.id===e.target.value);setEp(x=>({...x,vendor_id:e.target.value,brand:vn?.name||x.brand}))}}><option value="">Select...</option>{D_V.map(vv=><option key={vv.id} value={vv.id}>{vv.name}</option>)}</select></div>
                 <div style={{gridColumn:'1/3'}}><label className="form-label">Name</label><input className="form-input" value={ep.name} onChange={e=>setEp(x=>({...x,name:e.target.value}))}/></div>
                 <div><label className="form-label">Color</label><input className="form-input" value={ep.color} onChange={e=>setEp(x=>({...x,color:e.target.value}))}/></div>
                 <div><label className="form-label">Color Category</label><select className="form-select" value={ep.color_category||''} onChange={e=>setEp(x=>({...x,color_category:e.target.value}))}><option value="">Select...</option>{COLOR_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
@@ -6646,10 +6646,10 @@ export default function App(){
       {/* ORDER HISTORY (ALL) */}
       {tab==='history'&&<div className="card"><div className="card-header"><h3>All Orders</h3></div><div className="card-body" style={{padding:0}}>
         <table><thead><tr><th>Type</th><th>ID</th><th>Customer</th><th>Memo</th><th>Qty</th><th>Status</th><th>Date</th></tr></thead><tbody>
-        {[...pEsts.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const it=e.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const qty=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;
+        {[...pEsts.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const it=e.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const _sq=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;const qty=it?(_sq>0?_sq:safeNum(it.est_qty)):0;
           return{type:'Estimate',id:e.id,cust:c,memo:e.memo,qty,status:e.status,date:e.created_at,badge:e.status==='open'||e.status==='draft'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':'badge-gray',
             onClick:()=>{setEEst(e);setEEstC(c);setPg('estimates');setSelP(null)}}}),
-        ...pSOs.map(s=>{const c=cust.find(x=>x.id===s.customer_id);const it=s.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const qty=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;
+        ...pSOs.map(s=>{const c=cust.find(x=>x.id===s.customer_id);const it=s.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const _sq=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;const qty=it?(_sq>0?_sq:safeNum(it.est_qty)):0;
           return{type:'SO',id:s.id,cust:c,memo:s.memo,qty,status:calcSOStatus(s),date:s.created_at,badge:'badge-blue',
             onClick:()=>{setESO(s);setESOC(c);setPg('orders');setSelP(null)}}}),
         ...pPOs.map(po=>({type:'PO',id:po.po_id,cust:po.customer,memo:'→ '+po.soId,qty:Object.values(po.received||{}).reduce((a,v2)=>a+v2,0),status:po.status,date:po.created_at,badge:po.status==='received'?'badge-green':po.status==='ordered'?'badge-amber':'badge-gray',
@@ -7504,6 +7504,7 @@ export default function App(){
   const[artDashView,setArtDashView]=useState('artist');// 'artist' | 'rep'
   const[artCompletedOpen,setArtCompletedOpen]=useState(false);// toggle completed jobs dropdown
   const[artHiddenOpen,setArtHiddenOpen]=useState(false);// toggle hidden jobs dropdown
+  const[artInProductionOpen,setArtInProductionOpen]=useState(false);// toggle in-production jobs dropdown
   const[artCompletedSearch,setArtCompletedSearch]=useState('');// search within completed jobs
   const[artRejectModal,setArtRejectModal]=useState(null);// {job, reason:''}
   const[artEditModal,setArtEditModal]=useState(null);// {job, instructions:'', notes:''}
@@ -7527,7 +7528,7 @@ export default function App(){
   const[prodJobLightbox,setProdJobLightbox]=useState(false);// lightbox for mockup image
   const[prodLightboxIdx,setProdLightboxIdx]=useState(0);// index of current mockup in lightbox gallery
   const[prodLightboxZoom,setProdLightboxZoom]=useState(1);// zoom level for lightbox
-  const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
+  const[prodView,_setProdView]=useState(()=>loadState('prod_view','board'));const setProdView=v=>{_setProdView(v);try{localStorage.setItem('nsa_prod_view',JSON.stringify(v))}catch(e){}};const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
   const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');const[prodDecoF,setProdDecoF]=useState('all');
   const PROD_LIST_DEFAULT_COLS=['status','job','customer','expected','qty','deco','rep','so','actions'];
   const[prodListCols,_setProdListCols]=useState(()=>loadState('prod_list_cols',PROD_LIST_DEFAULT_COLS));
@@ -7809,7 +7810,7 @@ export default function App(){
     const readyOnly=byDeco.filter(j=>(j.prod_status!=='hold'||isJobReady(j,j.so))).filter(j=>j.prod_status!=='shipped');
     // Decorator filtering: decorators see all Ready for Prod, but only their assigned jobs in In Line/In Process/Completed
     const roleFiltered=isDecorator?readyOnly.filter(j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'||j.assigned_to===cu?.name):readyOnly;
-    const byStatus=prodStatF==='active'?roleFiltered:prodStatF==='all'?roleFiltered:prodStatF==='hold'?roleFiltered.filter(j=>j.prod_status==='hold'||j.prod_status==='ready'):roleFiltered.filter(j=>j.prod_status===prodStatF);
+    const byStatus=prodStatF==='active'?roleFiltered.filter(j=>j.prod_status!=='completed'):prodStatF==='all'?roleFiltered:prodStatF==='hold'?roleFiltered.filter(j=>j.prod_status==='hold'||j.prod_status==='ready'):roleFiltered.filter(j=>j.prod_status===prodStatF);
     const totalUnits=byStatus.reduce((a,j)=>a+j.total_units,0);
     const fulfilledUnits=byStatus.reduce((a,j)=>a+j.fulfilled_units,0);
     const needsArt=byStatus.filter(j=>j.art_status!=='art_complete').length;
@@ -8027,7 +8028,14 @@ export default function App(){
           items_count:{label:'# Items',align:'right',render:j=><span style={{fontSize:11}}>{(j.items||[]).length}</span>},
           notes:{label:'Notes',render:j=><div style={{fontSize:11,maxWidth:280,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.notes||j.so?.production_notes||'—'}</div>},
           progress:{label:'Progress',align:'right',render:j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;return<span style={{fontSize:11,whiteSpace:'nowrap'}}>{pct}%</span>}},
-          actions:{label:'',render:j=><button className="btn btn-sm" style={{fontSize:14,padding:'6px 12px',background:'#d97706',color:'white',border:'none'}} title="Production sheet" onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋</button>},
+          actions:{label:'Prod Sheet',align:'center',render:j=>{
+            const flow={hold:{to:'staging',label:'📦 → In Line',c:'#6366f1'},ready:{to:'staging',label:'→ In Line',c:'#d97706'},staging:{to:'in_process',label:'→ In Process',c:'#2563eb'},in_process:{to:'completed',label:'✓ Done',c:'#166534'}};
+            const nx=flow[j.prod_status];
+            return<div style={{display:'flex',gap:8,justifyContent:'center',alignItems:'center',whiteSpace:'nowrap'}}>
+              <div style={{width:116,display:'flex',justifyContent:'flex-end'}}>{nx&&<button className="btn btn-sm" style={{fontSize:10,padding:'5px 10px',background:nx.c,color:'white',border:'none',fontWeight:600}} title={'Move to '+statusLabel[nx.to]} onClick={e=>{e.stopPropagation();moveJobStatus(j,nx.to)}}>{nx.label}</button>}</div>
+              <button className="btn btn-sm" style={{fontSize:14,padding:'6px 12px',background:'#d97706',color:'white',border:'none'}} title="Production sheet" onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋</button>
+            </div>;
+          }},
         };
         const visibleCols=prodListCols.filter(id=>ALL_COLS[id]);
         const sortVal=(j,key)=>{
@@ -9119,6 +9127,7 @@ export default function App(){
                     bp.items.forEach(bpIt=>{
                       const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
                       const poLine={po_id:poNum,vendor:vg.name,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+vg.pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
+                      if(bpIt.drop_ship)poLine.drop_ship=true;
                       Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
                       updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
                     });
@@ -16802,9 +16811,11 @@ export default function App(){
       {id:'waiting_for_art',label:'Waiting for Art',color:'#dc2626',bg:'#fef2f2',desc:'Needs artist attention'},
       {id:'needs_approval',label:'Needs Approval',color:'#92400e',bg:'#fef3c7',desc:'Waiting for rep/customer approval'},
       {id:'approved',label:'Approved / Needs Files',color:'#166534',bg:'#dcfce7',desc:'Approved — upload production files'},
-      {id:'in_production',label:'In Production',color:'#2563eb',bg:'#eff6ff',desc:'Art done — being decorated'},
     ];
-    const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=c.id==='in_production'?inProductionJobs.length:artistJobs.filter(j=>getArtFileStatus(j)===c.id).length});
+    const inProductionCol={id:'in_production',label:'In Production',color:'#2563eb',bg:'#eff6ff',desc:'Art done — being decorated'};
+    const sortByDaysOut=(a,b)=>{if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0};
+    const sortedInProductionJobs=[...inProductionJobs].sort(sortByDaysOut);
+    const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=artistJobs.filter(j=>getArtFileStatus(j)===c.id).length});
 
     // ─── Rep view data — all jobs grouped by rep ───
     const repJobs=filtered.filter(j=>!j.art_hidden).filter(j=>artDashView==='rep'?(cu.role==='admin'||cu.role==='super_admin'||j.repId===cu.id||artFilter!=='all'):true);
@@ -16828,7 +16839,7 @@ export default function App(){
           </div>
           <div style={{display:'flex',gap:5,alignItems:'center',marginBottom:2,minWidth:0}}>
             <span style={{fontSize:11,fontWeight:600,color:'#475569',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.art_name}</span>
-            {af&&(()=>{const fSt=af.status==='uploaded'?'needs_approval':af.status||'waiting_for_art';return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
+            {af&&(()=>{const fSt=getArtFileStatus(j);return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
           </div>
           <div style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
             <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.id} · {j.soId} · {j.total_units}u · {j.rep}</span>
@@ -16991,16 +17002,12 @@ export default function App(){
       {artDashView==='artist'&&<>
         <div className="stats-row">
           {artistCols.map(c=><div key={c.id} className="stat-card"><div className="stat-label">{c.label}</div><div className="stat-value" style={{color:c.color}}>{artistCounts[c.id]}</div></div>)}
+          <div className="stat-card"><div className="stat-label">{inProductionCol.label}</div><div className="stat-value" style={{color:inProductionCol.color}}>{inProductionJobs.length}</div></div>
           <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value">{artistJobs.length+inProductionJobs.length}</div></div>
         </div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:10,alignItems:'flex-start'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:10,alignItems:'flex-start'}}>
           {artistCols.map(col=>{
-            const colJobs=col.id==='in_production'?inProductionJobs.sort((a,b)=>{
-              if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;
-              if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0})
-              :artistJobs.filter(j=>getArtFileStatus(j)===col.id).sort((a,b)=>{
-              if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;
-              if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0});
+            const colJobs=artistJobs.filter(j=>getArtFileStatus(j)===col.id).sort(sortByDaysOut);
             return<div key={col.id} style={{background:col.bg,borderRadius:10,padding:8,minHeight:200}}>
               <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'4px 6px'}}>
                 <div style={{width:10,height:10,borderRadius:5,background:col.color}}/>
@@ -17012,8 +17019,24 @@ export default function App(){
             </div>})}
         </div>
 
-        {/* ═══ COMPLETED JOBS — collapsible reference section ═══ */}
+        {/* ═══ IN PRODUCTION — collapsible section (art done, being decorated) ═══ */}
         <div style={{marginTop:16}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:inProductionCol.bg,borderRadius:artInProductionOpen?'10px 10px 0 0':'10px',border:'1px solid #bfdbfe',cursor:'pointer'}} onClick={()=>setArtInProductionOpen(v=>!v)}>
+            <span style={{fontSize:16,color:inProductionCol.color,transform:artInProductionOpen?'rotate(90deg)':'rotate(0deg)',transition:'transform 0.2s'}}>&#9654;</span>
+            <span style={{fontSize:13,fontWeight:800,color:inProductionCol.color}}>{inProductionCol.label}</span>
+            <span style={{fontSize:11,fontWeight:700,color:inProductionCol.color,background:'white',borderRadius:10,padding:'1px 8px'}}>{sortedInProductionJobs.length}</span>
+            <span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>{inProductionCol.desc}</span>
+          </div>
+          {artInProductionOpen&&<div style={{border:'1px solid #bfdbfe',borderTop:'none',borderRadius:'0 0 10px 10px',padding:12,background:'white'}}>
+            {sortedInProductionJobs.length===0&&<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:11}}>No jobs in production</div>}
+            {sortedInProductionJobs.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:8}}>
+              {sortedInProductionJobs.map(j=>renderArtCard(j,'artist',inProductionCol))}
+            </div>}
+          </div>}
+        </div>
+
+        {/* ═══ COMPLETED JOBS — collapsible reference section ═══ */}
+        <div style={{marginTop:8}}>
           <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:'#f8fafc',borderRadius:artCompletedOpen?'10px 10px 0 0':'10px',border:'1px solid #e2e8f0',cursor:'pointer'}} onClick={()=>setArtCompletedOpen(v=>!v)}>
             <span style={{fontSize:16,transform:artCompletedOpen?'rotate(90deg)':'rotate(0deg)',transition:'transform 0.2s'}}>&#9654;</span>
             <span style={{fontSize:13,fontWeight:800,color:'#475569'}}>Completed Jobs</span>
@@ -26008,7 +26031,7 @@ export default function App(){
           })()}
         </div>}
       </div>}
-      <div className={`content${pg==='production'?' content-wide':''}`}>{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
+      <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
     {/* ═══ CREATE TODO MODAL (global) ═══ */}
     {todoModal.open&&<div className="modal-overlay" onClick={()=>setTodoModal(m=>({...m,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
       <div className="modal-header"><h2>📌 Assign Task</h2><button className="modal-close" onClick={()=>setTodoModal(m=>({...m,open:false}))}>×</button></div>
