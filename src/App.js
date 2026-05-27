@@ -2825,6 +2825,11 @@ export default function App(){
   // Rep-CSR assignments and assigned todos
   const[repCsrAssignments,setRepCsrAssignments]=useState([]);
   const[assignedTodos,setAssignedTodos]=useState([]);
+  // When each OMG store was first brought into the portal, keyed by store id:
+  // {at:ISO, baseline:bool}. Drives the 4-week "apply OMG funds" accounting
+  // reminder. baseline=true marks stores already present when this shipped, so
+  // we don't backfill tasks for the entire history.
+  const[omgFirstSeen,setOmgFirstSeen]=useState(()=>loadState('omg_first_seen',{}));
   const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,doc_label:''});
   const[todoDetailId,setTodoDetailId]=useState(null);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
@@ -2893,6 +2898,7 @@ export default function App(){
           if(as.wh_recent_actions)setWhRecentActions(as.wh_recent_actions);
           if(as.job_time_logs)setJobTimeLogs(as.job_time_logs);
           if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:{..._qbDef.mapping,...(as.qb_config.mapping||{})},syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
+          if(as.omg_first_seen)setOmgFirstSeen(as.omg_first_seen);
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(as.inv_adj_log);
           if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
@@ -3733,6 +3739,41 @@ export default function App(){
       return t;
     }));
   },[sos,ests]);
+  React.useEffect(()=>{_saveAppState('omg_first_seen',omgFirstSeen)},[omgFirstSeen]);
+  // OMG stores are settled from store deposit funds (not a coach payment), so
+  // 4 weeks after a store is brought into the portal, remind accounting (Andrea
+  // Jung) to apply those funds to its invoice. Stores already present when this
+  // shipped are baselined (no retroactive backlog); tasks are deduped by the
+  // [store-id] tag in the title.
+  React.useEffect(()=>{
+    if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;
+    if(!(omgStores&&omgStores.length))return;
+    const now=Date.now();
+    const seen={...omgFirstSeen};
+    const firstAdoption=Object.keys(seen).length===0;
+    let seenChanged=false;
+    omgStores.forEach(s=>{if(s&&s.id&&!seen[s.id]){seen[s.id]={at:new Date().toISOString(),baseline:firstAdoption};seenChanged=true}});
+    if(seenChanged)setOmgFirstSeen(seen);
+    const FOUR_WEEKS=28*24*60*60*1000;
+    const andrea=REPS.find(r=>r&&/andrea\s+jung/i.test(r.name||''));
+    const toAdd=[];
+    omgStores.forEach(s=>{
+      if(!s||!s.id)return;
+      const rec=seen[s.id];
+      if(!rec||rec.baseline)return;
+      if(now-new Date(rec.at).getTime()<FOUR_WEEKS)return;
+      const tag='['+s.id+']';
+      if(assignedTodos.some(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag)))return;
+      const so=sos.find(x=>x.omg_store_id===s.id);
+      const $=n=>'$'+(+n||0).toLocaleString(undefined,{maximumFractionDigits:2});
+      const grand=s._omg_grand_total||0,fund=s._omg_fundraise||0,fees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);
+      const desc=`OMG store "${s.store_name||s.id}" was brought into the portal on ${new Date(rec.at).toLocaleDateString()}. Apply the collected store deposit funds to its invoice (OMG orders are paid from store funds, not a coach).\n`
+        +`Collected per OMG — Grand total: ${$(grand)} · Fundraise: ${$(fund)} · Fees (ship/proc/tax): ${$(fees)}.`
+        +(so?`\nSales order: ${so.id}`:'\n(No sales order created from this store yet.)');
+      toAdd.push({id:'todo-omg-'+s.id+'-'+now,title:`Apply OMG funds — ${s.store_name||s.id} ${tag}`,description:desc,created_by:cu?.id||null,assigned_to:andrea?.id||'',so_id:so?.id||null,customer_id:s.customer_id||null,priority:2,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]});
+    });
+    if(toAdd.length)setAssignedTodos(prev=>[...toAdd,...prev]);
+  },[omgStores,assignedTodos,REPS,sos,omgFirstSeen]);
   // Batch POs, submitted batches, changelog, SO history — sync to Supabase app_state table.
   // Unbounded log keys (change_log, so_history, inv_adj_log) skip localStorage — cloud-only to avoid quota pressure.
   // Other keys still cache locally for fast cold-start.
@@ -13533,6 +13574,10 @@ export default function App(){
                 onClick={()=>{const so=sos.find(x=>x.omg_store_id===s.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}}>
                 📋 View SO → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>
             </div>}
+            {(()=>{const rec=omgFirstSeen[s.id];const tag='['+s.id+']';const task=assignedTodos.find(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag));
+              if(task){const who=REPS.find(r=>r.id===task.assigned_to)?.name||'accounting';return<div style={{marginTop:6,padding:'6px 12px',background:task.status==='completed'?'#f0fdf4':'#faf5ff',borderRadius:6,fontSize:11,color:task.status==='completed'?'#166534':'#6d28d9',fontWeight:600}}>{task.status==='completed'?'✅ OMG funds applied':`💰 ${who} reminded to apply OMG funds`}</div>}
+              if(rec&&!rec.baseline){const days=Math.ceil((28*864e5-(Date.now()-new Date(rec.at).getTime()))/864e5);return<div style={{marginTop:6,padding:'6px 12px',background:'#fffbeb',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⏳ Accounting will be reminded to apply OMG funds in {Math.max(0,days)} day{days===1?'':'s'}</div>}
+              return null})()}
           </div>
         </div></div>
 
