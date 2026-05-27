@@ -64,6 +64,14 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
     if (initialScene) garments.forEach((g, i) => ['front', 'back'].forEach(s => { const k = g.key + '|' + s; if (initialScene[k] && initialScene[k].length) seed[i + '|' + s] = initialScene[k]; }));
     sceneRef.current = seed;
   }
+  // Tracks whether the current canvas has art placed/changed since its last save, so we can
+  // auto-commit a side's mockup when the user switches side/garment or finishes — otherwise
+  // placed-but-not-explicitly-saved art is silently lost (e.g. only the back mock saved).
+  const dirtyRef = useRef(false);
+  // Reactive mirror of dirtyRef so the "Done" button / footer can reflect placed-but-unsaved art.
+  const [hasPending, setHasPending] = useState(false);
+  const markDirty = () => { dirtyRef.current = true; setHasPending(true); };
+  const clearDirty = () => { dirtyRef.current = false; setHasPending(false); };
   // Each location is a layer. preview = renderable art to place on the canvas (may come
   // from the artwork already on file). source = a NEW file to append to the artwork on save.
   const [layers, setLayers] = useState(() => locations.map(l => ({
@@ -87,6 +95,10 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   const garment = garments[gi] || {};
   const baseUrl = side === 'back' ? garment.backUrl : garment.frontUrl;
   const garmentUrl = imgOverride[garment.key] || baseUrl;
+  // Names of the art locations placed on a mock (by their layer/artFileId), so the job view can
+  // label each mockup with the logo(s) it shows rather than just the filename.
+  const _artLabels = layerIds => [...new Set((layerIds || []).filter(Boolean))]
+    .map(id => (layers.find(l => l.artFileId === id) || {}).name).filter(Boolean).join(' + ');
 
   // Build the fabric canvas imperatively inside a wrapper div React owns. Fabric wraps
   // the <canvas> in its own container, so we never let React manage the canvas element
@@ -99,6 +111,12 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
     wrap.appendChild(el);
     const c = new fabric.Canvas(el, {width: 460, height: 560, backgroundColor: '#ffffff'});
     setCanvas(c);
+    // Fresh canvas for this garment/side starts clean. User edits (drag/resize/delete) mark it
+    // dirty; placing/recoloring art marks it dirty in those handlers. Restoring a saved scene and
+    // adding the garment backdrop must NOT mark dirty, so we only listen to modify/remove here.
+    clearDirty();
+    c.on('object:modified', () => { markDirty(); });
+    c.on('object:removed', () => { if (c.getObjects().some(o => o._isArt)) markDirty(); });
     const delHandler = e => {
       if ((e.key === 'Delete' || e.key === 'Backspace') && e.target === document.body) {
         const sel = c.getActiveObject();
@@ -180,6 +198,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
     const txt = new fabric.FabricText(label, {left: 230, top: 250, fontSize: 24, fontWeight: 'bold', fill: 'rgba(0,0,0,0.65)', textAlign: 'center', backgroundColor: 'rgba(255,255,255,0.7)'});
     styleArt(txt); txt._layerId = layer.artFileId;
     canvas.add(txt); canvas.setActiveObject(txt); canvas.renderAll();
+    markDirty();
   };
 
   const placeLayer = layer => {
@@ -195,6 +214,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
         group.set({left: 230, top: 250, scaleX: scale, scaleY: scale});
         styleArt(group); group._layerId = layer.artFileId;
         canvas.add(group); canvas.setActiveObject(group); canvas.renderAll();
+        markDirty();
       }).catch(() => addImg(preview.url, layer));
       return;
     }
@@ -225,6 +245,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
         img.set({left: 230, top: 250, scaleX: scale, scaleY: scale});
         styleArt(img); img._layerId = layer.artFileId;
         canvas.add(img); canvas.setActiveObject(img); canvas.renderAll();
+        markDirty();
       };
       return el;
     };
@@ -286,7 +307,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
     if (remove && !pickedColor) { nf && nf('Pick which color to remove first', 'error'); return; }
     const src = pickedColor ? hexToRgb(pickedColor) : null;
     const near = rgb => !src || rgbDist(rgb, src) <= COLOR_TOL;
-    const done = () => { setArtColors(computePalette(obj)); if (remove) setPickedColor(null); else if (src) setPickedColor(hex); };
+    const done = () => { markDirty(); setArtColors(computePalette(obj)); if (remove) setPickedColor(null); else if (src) setPickedColor(hex); };
     if (typeof obj.getObjects === 'function') {
       const match = c => { if (!c || c === 'transparent' || c === '') return false; const hx = fabricColorToHex(c); return hx ? near(hexToRgb(hx)) : !src; };
       const apply = o => {
@@ -357,9 +378,12 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
     finally { setBusy(false); }
   }, [garment.key, nf]);
 
-  const saveColorMock = useCallback(async () => {
-    if (!canvas) return;
-    if (!canvas.getObjects().some(o => o._isArt)) { nf && nf('Place at least one art layer before saving', 'error'); return; }
+  // Saves the current canvas as a mock for the current garment+side. Returns {key, entry} on
+  // success (null otherwise) so callers can fold the just-saved mock into state that hasn't
+  // re-rendered yet (e.g. on "Done").
+  const saveColorMock = useCallback(async ({silent} = {}) => {
+    if (!canvas) return null;
+    if (!canvas.getObjects().some(o => o._isArt)) { if (!silent) nf && nf('Place at least one art layer before saving', 'error'); return null; }
     setBusy(true);
     try {
       const dataUrl = canvas.toDataURL({format: 'png', multiplier: 2});
@@ -368,26 +392,110 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
       const fname = 'mock-' + (safe(garment.sku) || 'item') + '-' + (safe(garment.color) || 'default') + '-' + side + '.png';
       const fileObj = new File([blob], fname, {type: 'image/png'});
       const url = await fileUpload(fileObj, 'nsa-mockups');
-      const entry = {url, name: fname, sku: garment.sku};
+      const art_label = _artLabels(canvas.getObjects().filter(o => o._isArt).map(o => o._layerId));
+      const entry = {url, name: fname, sku: garment.sku, side, art_label};
+      const key = garment.key;
       setMocks(prev => {
-        const cur = (prev[garment.key] || []).filter(m => m.name !== fname);
-        return {...prev, [garment.key]: [...cur, entry]};
+        const cur = (prev[key] || []).filter(m => m.name !== fname);
+        return {...prev, [key]: [...cur, entry]};
       });
-      nf && nf('Mockup saved for ' + (garment.color || garment.sku));
-    } catch (e) { nf && nf('Could not save mockup: ' + e.message, 'error'); }
+      clearDirty();
+      nf && nf('Mockup saved for ' + (garment.color || garment.sku) + ' (' + side + ')');
+      return {key, entry};
+    } catch (e) { nf && nf('Could not save mockup: ' + e.message, 'error'); return null; }
     finally { setBusy(false); }
   }, [canvas, garment, side, nf]);
 
-  const handleDone = () => {
-    const filesByLocation = {};
-    // Only newly uploaded files get appended — art already on the artwork stays as-is.
-    layers.forEach(l => { if (l.source && l.artFileId) filesByLocation[l.artFileId] = [...(filesByLocation[l.artFileId] || []), l.source]; });
-    // Snapshot the active canvas (other garment/sides were already snapshotted on switch),
-    // then re-key the scene by garmentKey|side so it can be restored on a later edit.
-    try { if (canvas) sceneRef.current[gi + '|' + side] = canvas.getObjects().filter(o => o._isArt).map(o => { const jj = o.toObject(['_isArt', '_layerId']); if (jj.type && /image/i.test(jj.type)) jj.crossOrigin = 'anonymous'; return jj; }); } catch (e) {}
-    const sceneByGarment = {};
-    Object.entries(sceneRef.current).forEach(([k, objs]) => { if (!objs || !objs.length) return; const sep = k.lastIndexOf('|'); const g = garments[+k.slice(0, sep)]; if (g) sceneByGarment[g.key + '|' + k.slice(sep + 1)] = objs; });
-    onSave({mocksByGarment: mocks, filesByLocation, sceneByGarment});
+  // Before leaving the current garment/side (switching side, switching garment, or finishing),
+  // auto-save any placed-but-unsaved art so a mock isn't silently lost. No-op when nothing changed.
+  const commitPending = useCallback(async () => {
+    if (!dirtyRef.current) return null;
+    if (!canvas || !canvas.getObjects().some(o => o._isArt)) return null;
+    return await saveColorMock({silent: true});
+  }, [canvas, saveColorMock]);
+
+  const switchSide = useCallback(async s => { if (s === side || busy) return; await commitPending(); setSide(s); }, [side, busy, commitPending]);
+  const switchGarment = useCallback(async i => { if (i === gi || busy) return; await commitPending(); setSide('front'); setGi(i); }, [gi, busy, commitPending]);
+
+  const _safeName = s => (s || '').toString().replace(/[\/\\?%*:|"<>\s]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  const _mockFname = (g, sd) => 'mock-' + (_safeName(g.sku) || 'item') + '-' + (_safeName(g.color) || 'default') + '-' + sd + '.png';
+
+  // Load a garment image CORS-clean (proxy first, direct fallback) for offscreen rendering.
+  const _loadImg = garmentUrl => new Promise(resolve => {
+    if (!garmentUrl) return resolve(null);
+    const proxyUrl = '/.netlify/functions/image-proxy?url=' + encodeURIComponent(garmentUrl);
+    const attempt = (src, onFail) => { const im = new Image(); im.crossOrigin = 'anonymous'; im.onload = () => resolve(im); im.onerror = onFail; im.src = src; };
+    attempt(proxyUrl, () => attempt(garmentUrl, () => resolve(null)));
+  });
+
+  // Render a stored scene (placed art for one garment+side) to a PNG and upload it as a mock.
+  const _renderSceneMock = async (g, sd, sceneObjs) => {
+    const el = document.createElement('canvas');
+    const c = new fabric.Canvas(el, {width: 460, height: 560, backgroundColor: '#ffffff'});
+    try {
+      const garmentUrl = imgOverride[g.key] || (sd === 'back' ? g.backUrl : g.frontUrl);
+      const imgEl = await _loadImg(garmentUrl);
+      if (imgEl) {
+        const garImg = new fabric.FabricImage(imgEl, {selectable: false, evented: false});
+        const scale = Math.min(460 / garImg.width, 560 / garImg.height);
+        garImg.set({scaleX: scale, scaleY: scale, left: (460 - garImg.width * scale) / 2, top: (560 - garImg.height * scale) / 2});
+        c.add(garImg); c.sendObjectToBack(garImg);
+      }
+      const objs = await fabric.util.enlivenObjects(sceneObjs);
+      objs.forEach(o => c.add(o));
+      c.renderAll();
+      const dataUrl = c.toDataURL({format: 'png', multiplier: 2});
+      const blob = await (await fetch(dataUrl)).blob();
+      const fname = _mockFname(g, sd);
+      const url = await fileUpload(new File([blob], fname, {type: 'image/png'}), 'nsa-mockups');
+      const art_label = _artLabels((sceneObjs || []).map(o => o._layerId));
+      return {key: g.key, entry: {url, name: fname, sku: g.sku, side: sd, art_label}};
+    } catch (e) { return null; }
+    finally { try { c.dispose(); } catch (e2) {} }
+  };
+
+  // Done renders & saves a mock for every garment+side the rep placed art on — not just the
+  // one on screen. The current canvas is snapshotted into the scene store first so it's included.
+  // The serialized scenes are also re-keyed by garmentKey|side and passed back so a later
+  // "Edit Mock" can restore the placed art.
+  const handleDone = async () => {
+    setBusy(true);
+    try {
+      if (canvas) {
+        try {
+          sceneRef.current[gi + '|' + side] = canvas.getObjects().filter(o => o._isArt).map(o => {
+            const j = o.toObject(['_isArt', '_layerId']);
+            if (j.type && /image/i.test(j.type)) j.crossOrigin = 'anonymous';
+            return j;
+          });
+        } catch (e) {}
+      }
+      let finalMocks = {...mocks};
+      const curKey = gi + '|' + side;
+      for (const [k, objs] of Object.entries(sceneRef.current)) {
+        if (!Array.isArray(objs) || !objs.length) continue;
+        const [giStr, sd] = k.split('|');
+        const g = garments[Number(giStr)];
+        if (!g) continue;
+        // Scenes left behind were auto-saved on exit; skip re-uploading an unchanged one. Always
+        // (re)render the current view so its latest positions win.
+        if (k !== curKey && (finalMocks[g.key] || []).some(m => m.name === _mockFname(g, sd))) continue;
+        const res = await _renderSceneMock(g, sd, objs);
+        if (res) {
+          const cur = (finalMocks[res.key] || []).filter(m => m.name !== res.entry.name);
+          finalMocks = {...finalMocks, [res.key]: [...cur, res.entry]};
+        }
+      }
+      setMocks(finalMocks);
+      clearDirty();
+      const filesByLocation = {};
+      // Only newly uploaded files get appended — art already on the artwork stays as-is.
+      layers.forEach(l => { if (l.source && l.artFileId) filesByLocation[l.artFileId] = [...(filesByLocation[l.artFileId] || []), l.source]; });
+      // Re-key the scenes by garmentKey|side so a later edit can restore the placed art.
+      const sceneByGarment = {};
+      Object.entries(sceneRef.current).forEach(([k, objs]) => { if (!objs || !objs.length) return; const sep = k.lastIndexOf('|'); const g = garments[+k.slice(0, sep)]; if (g) sceneByGarment[g.key + '|' + k.slice(sep + 1)] = objs; });
+      onSave({mocksByGarment: finalMocks, filesByLocation, sceneByGarment});
+    } finally { setBusy(false); }
   };
 
   const savedCount = Object.values(mocks).filter(a => (a || []).length > 0).length;
@@ -406,7 +514,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
 
           {garments.length > 1 && <div style={{display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12}}>
             {garments.map((g, i) => <button key={g.key} title={[g.name, g.color].filter(Boolean).join(' — ')} className={`btn btn-sm ${i === gi ? 'btn-primary' : 'btn-secondary'}`} style={{fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 5}}
-              onClick={() => setGi(i)}>{g.color && <ColorSwatch name={g.color} />}<span>{(g.sku || g.name || 'Item')}{g.color ? ' · ' + g.color : ''}</span>{(mocks[g.key] || []).length > 0 && <span>✓</span>}</button>)}
+              onClick={() => switchGarment(i)}>{g.color && <ColorSwatch name={g.color} />}<span>{(g.sku || g.name || 'Item')}{g.color ? ' · ' + g.color : ''}</span>{(mocks[g.key] || []).length > 0 && <span>✓</span>}</button>)}
           </div>}
 
           <div style={{display: 'grid', gridTemplateColumns: '300px 1fr', gap: 16}}>
@@ -454,8 +562,8 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
               <div style={{display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap'}}>
                 <span style={{fontSize: 12, fontWeight: 700, color: '#1e293b', display: 'inline-flex', alignItems: 'center', gap: 5}}>{garment.color && <ColorSwatch name={garment.color} size={14} />}{garment.name || garment.sku} — {garment.color || 'Default'}</span>
                 {garment.backUrl && <div style={{display: 'flex', gap: 2}}>
-                  <button className={`btn btn-sm ${side === 'front' ? 'btn-primary' : 'btn-secondary'}`} style={{fontSize: 10}} onClick={() => setSide('front')}>Front</button>
-                  <button className={`btn btn-sm ${side === 'back' ? 'btn-primary' : 'btn-secondary'}`} style={{fontSize: 10}} onClick={() => setSide('back')}>Back</button>
+                  <button className={`btn btn-sm ${side === 'front' ? 'btn-primary' : 'btn-secondary'}`} style={{fontSize: 10}} disabled={busy} onClick={() => switchSide('front')}>Front</button>
+                  <button className={`btn btn-sm ${side === 'back' ? 'btn-primary' : 'btn-secondary'}`} style={{fontSize: 10}} disabled={busy} onClick={() => switchSide('back')}>Back</button>
                 </div>}
                 <button className="btn btn-sm btn-secondary" style={{fontSize: 10}} title="Delete selected" onClick={() => { if (!canvas) return; const sel = canvas.getActiveObject(); if (sel && sel._isArt) { canvas.remove(sel); canvas.discardActiveObject(); canvas.renderAll(); } else nf && nf('Select an art element to delete', 'error'); }}>
                   <Icon name="trash" size={11} /> Delete
@@ -505,7 +613,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
           <span style={{fontSize: 11, color: savedCount > 0 ? '#166534' : '#94a3b8', fontWeight: 600}}>
             {savedCount} of {garments.length} color{garments.length === 1 ? '' : 's'} mocked
           </span>
-          <button className="btn btn-primary" style={{marginLeft: 'auto', background: '#166534', borderColor: '#166534'}} disabled={savedCount === 0 || busy} onClick={handleDone}>Done — Attach Mockups</button>
+          <button className="btn btn-primary" style={{marginLeft: 'auto', background: '#166534', borderColor: '#166534'}} disabled={(savedCount === 0 && !hasPending) || busy} onClick={handleDone}>Done — Attach Mockups</button>
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
         </div>
       </div>
