@@ -2815,7 +2815,7 @@ export default function App(){
   // Rep-CSR assignments and assigned todos
   const[repCsrAssignments,setRepCsrAssignments]=useState([]);
   const[assignedTodos,setAssignedTodos]=useState([]);
-  const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:''});
+  const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',wh_only:false});
   const[todoDetailId,setTodoDetailId]=useState(null);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
@@ -5779,7 +5779,7 @@ export default function App(){
       return<div className="card" style={{marginBottom:16,borderLeft:'3px solid #0891b2'}}>
         <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <h2>📌 My Tasks Today ({whTasks.length})</h2>
-          {canDelegateWh&&<button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_todayStr})}>+ Assign Task</button>}
+          {canDelegateWh&&<button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_todayStr,doc_label:'',wh_only:true})}>+ Assign Task</button>}
         </div>
         <div className="card-body" style={{padding:0,maxHeight:340,overflow:'auto'}}>
           {whTasks.length===0?<div className="empty" style={{padding:16,fontSize:13}}>No tasks assigned to you. {canDelegateWh?'Use “+ Assign Task” to delegate work.':'All clear!'}</div>:whTasks.map(t=>_row(t,true))}
@@ -6153,7 +6153,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:'',doc_label:t.doc_label||eEst?.id||''})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.wh_only?'':csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -6210,7 +6210,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:'',doc_label:t.doc_label||eSO?.id||''})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.wh_only?'':csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -14117,6 +14117,8 @@ export default function App(){
     const myWhTasks=assignedTodos.filter(t=>t.status==='open'&&t.assigned_to===cu.id).sort((a,b)=>_whDueSort(a).localeCompare(_whDueSort(b))||(a.priority??2)-(b.priority??2));
     const delegatedWhTasks=_whCanDelegate?assignedTodos.filter(t=>t.status==='open'&&t.created_by===cu.id&&t.assigned_to!==cu.id).sort((a,b)=>_whDueSort(a).localeCompare(_whDueSort(b))||(a.priority??2)-(b.priority??2)):[];
     const _whTodoComplete=(id)=>{const ts=new Date().toISOString();const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,...upd}:x));_dbSnap.current.assignedTodos=(_dbSnap.current.assignedTodos||[]).map(x=>x.id===id?{...x,...upd}:x);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));nf('Task completed!')};
+    // Open the Assign-Task modal pre-tied to a warehouse document (SO / IF / job), warehouse-only assignees.
+    const _whOpenAssign=({title,description,so,soId,docLabel})=>{const s=so||sos.find(x=>x.id===soId);setTodoModal({open:true,title:title||'',description:description||'',assigned_to:'',so_id:soId||s?.id||'',customer_id:s?.customer_id||'',priority:2,due_date:_whTodayStr,doc_label:docLabel||soId||s?.id||'',wh_only:true})};
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)c++})});return c})();
     const tabs=[
@@ -14572,7 +14574,7 @@ export default function App(){
         <button className="btn btn-sm" style={{fontSize:10,background:'#92400e',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
           onClick={()=>setManualShipModal({soSearch:'',so:null,cust:null,carrier:'fedex',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}>⚡ Manual Ship</button>
         {_whCanDelegate&&<button className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
-          onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_whTodayStr,doc_label:''})}>📌 Assign Task</button>}
+          onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_whTodayStr,doc_label:'',wh_only:true})}>📌 Assign Task</button>}
       </div>
 
       {/* ── SCAN TO RECEIVE ── */}
@@ -15003,9 +15005,12 @@ export default function App(){
             <td>{(()=>{const d=t.shipDest;const labels={in_house:'🏭 In-House',ship_customer:'📦 Customer',ship_deco:'🚚 Deco'};return<span style={{fontSize:9,padding:'2px 5px',borderRadius:4,fontWeight:600,background:d==='ship_customer'?'#dbeafe':d==='ship_deco'?'#fef3c7':'#f1f5f9',color:d==='ship_customer'?'#1e40af':d==='ship_deco'?'#92400e':'#64748b'}}>{labels[d]||'🏭 In-House'}</span>})()}</td>
             <td style={{fontSize:10,color:'#94a3b8'}}>{t.rep}</td>
             <td style={{textAlign:'center'}}>{t.openDays!=null?<span style={{fontSize:10,fontWeight:700,color:t.openDays>=14?'#dc2626':t.openDays>=7?'#d97706':'#64748b'}}>{t.openDays}d</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
-            <td><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
-              onClick={e=>{e.stopPropagation();setWhViewIF(t)}}>
-              Pick →</button></td>
+            <td><div style={{display:'flex',flexDirection:'column',gap:3}}>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
+                onClick={e=>{e.stopPropagation();setWhViewIF(t)}}>Pick →</button>
+              <button title="Assign this pull to a warehouse worker" className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#0891b2',color:'white',border:'none'}}
+                onClick={e=>{e.stopPropagation();_whOpenAssign({title:'Pull '+(t.pickId||t.soId)+' — '+t.sku,description:(t.cName||'')+(t.color?' · '+t.color:'')+' · '+t.needsPull+' units',so:t.so,soId:t.soId,docLabel:t.pickId||t.soId})}}>👤 Assign</button>
+            </div></td>
           </tr>})}
           </tbody></table>
         </div></div>}
@@ -15028,8 +15033,12 @@ export default function App(){
                 <td style={{textAlign:'center'}}>{t.machine?<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#6d28d9'}}>{t.machine}</span>:<span style={{fontSize:10,color:'#94a3b8'}}>Unassigned</span>}</td>
                 <td style={{fontSize:11}}>{t.rep}</td>
                 <td style={{textAlign:'center'}}>{t.daysOut!=null?<span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:t.urgent?'#fee2e2':t.daysOut<=7?'#fef3c7':'#dcfce7',color:t.urgent?'#dc2626':t.daysOut<=7?'#92400e':'#166534'}}>{t.daysOut}d</span>:'—'}</td>
-                <td><button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:600,whiteSpace:'nowrap'}}
-                  onClick={e=>{e.stopPropagation();if(t.job){applyJobMove({...t.job,soId:t.soId},'ready',t.job.assigned_machine||'',t.job.assigned_to||'');addWhAction({type:'move_to_deco',soId:t.soId,customer:t.cName,jobId:t.job.id,artName:t.artName,decoType:t.decoType,qty:t.totalUnits,by:cu?.id||'warehouse'})}}}>Move to Deco →</button></td>
+                <td><div style={{display:'flex',gap:6,justifyContent:'flex-end',alignItems:'center'}}>
+                  <button title="Assign this job to a warehouse worker" className="btn btn-sm" style={{fontSize:10,padding:'3px 8px',background:'#0891b2',color:'white',border:'none',borderRadius:6,fontWeight:600,whiteSpace:'nowrap'}}
+                    onClick={e=>{e.stopPropagation();_whOpenAssign({title:'Move to deco: '+(t.artName||t.job?.id||t.soId),description:(t.cName||'')+' · '+(t.decoType||'').replace(/_/g,' ')+' · '+t.totalUnits+' units',so:t.so,soId:t.soId,docLabel:t.job?.id||t.soId})}}>👤 Assign</button>
+                  <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:600,whiteSpace:'nowrap'}}
+                    onClick={e=>{e.stopPropagation();if(t.job){applyJobMove({...t.job,soId:t.soId},'ready',t.job.assigned_machine||'',t.job.assigned_to||'');addWhAction({type:'move_to_deco',soId:t.soId,customer:t.cName,jobId:t.job.id,artName:t.artName,decoType:t.decoType,qty:t.totalUnits,by:cu?.id||'warehouse'})}}}>Move to Deco →</button>
+                </div></td>
               </tr>})}
           </tbody></table>
         </div></div>
@@ -15110,6 +15119,8 @@ export default function App(){
                     </tbody></table>})()}
                   </div>})}
                 <div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
+                  <button title="Assign this shipment to a warehouse worker" className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                    onClick={()=>{const firstSO=Object.values(grp.soMap)[0];_whOpenAssign({title:'Ship — '+grp.cName,description:[...grp.soIds].join(', ')+' · '+grp.totalUnits+' units',so:firstSO,soId:firstSO?.id,docLabel:[...grp.soIds].join(', ')})}}>👤 Assign</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>{
                       // Build ship modal with remaining (unshipped) items from SOs
@@ -16149,6 +16160,8 @@ export default function App(){
                   {t.deliverDate?<div style={{fontWeight:700,color:onHold?'#dc2626':'#0f172a',marginTop:2}}>Deliver: {t.deliverDate}{onHold?' · hold '+t.deliverDaysOut+'d':''}</div>
                   :t.daysOut!=null&&<div>{t.daysOut>=0?'Due in '+t.daysOut+'d':Math.abs(t.daysOut)+'d overdue'}</div>}
                 </div>
+                <button title="Assign this delivery to a warehouse worker" className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                  onClick={e=>{e.stopPropagation();_whOpenAssign({title:'Deliver '+t.soId+' — '+t.cName,description:t.desc+' · '+t.units+' units'+(t.deliverDate?' · '+t.deliverDate:''),so:t.so,soId:t.soId,docLabel:t.soId})}}>👤 Assign</button>
                 <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                   onClick={e=>{e.stopPropagation();printSOPackingList(t.so,null,t)}}>📦 Packing List</button>
               </div>
@@ -16439,7 +16452,7 @@ export default function App(){
         return<div className="card">
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>📌 My Tasks ({myWhTasks.length})</h2>
-            {_whCanDelegate&&<button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_whTodayStr,doc_label:''})}>+ Assign Task</button>}
+            {_whCanDelegate&&<button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_whTodayStr,doc_label:'',wh_only:true})}>+ Assign Task</button>}
           </div>
           <div className="card-body" style={{padding:0}}>
             {myWhTasks.length===0?<div className="empty" style={{padding:20}}>No tasks assigned to you. {_whCanDelegate?'Use “+ Assign Task” to delegate work to the warehouse crew.':'All clear!'}</div>:myWhTasks.map(t=>_row(t,true))}
@@ -26033,6 +26046,8 @@ export default function App(){
               {(()=>{
                 const isAdminGm=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
                 const isWhLead=WAREHOUSE_LEAD_IDS.includes(cu.id);
+                // Warehouse-context tasks (from the warehouse page / item rows) only assign to warehouse crew.
+                if(todoModal.wh_only){return REPS.filter(r=>r.is_active!==false&&r.role==='warehouse').map(r=><option key={r.id} value={r.id}>{r.name}{r.id===cu.id?' (me)':''}</option>)}
                 if(isAdminGm){
                   const office=REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='rep'||r.role==='admin'));
                   const warehouse=REPS.filter(r=>r.is_active!==false&&r.role==='warehouse');
@@ -26083,7 +26098,7 @@ export default function App(){
         <button className="btn btn-primary" disabled={!todoModal.title.trim()||!todoModal.assigned_to} onClick={()=>{
           const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,priority:todoModal.priority,due_date:todoModal.due_date||null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
           setAssignedTodos(prev=>[newTodo,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:''});
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',wh_only:false});
           nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
         }}>Assign Task</button>
       </div>
