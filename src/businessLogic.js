@@ -81,7 +81,10 @@ function calcSOStatus(ord) {
 
   let totalSz = 0, coveredSz = 0, fulfilledSz = 0;
   safeItems(ord).forEach(it => {
-    Object.entries(safeSizes(it)).filter(([, v]) => safeNum(v) > 0).forEach(([sz, v]) => {
+    let entries = Object.entries(safeSizes(it)).filter(([, v]) => safeNum(v) > 0);
+    // qty_only items hold their quantity in est_qty (sizes is empty); POs/picks track them under the 'QTY' key
+    if (entries.length === 0 && safeNum(it.est_qty) > 0) entries = [['QTY', safeNum(it.est_qty)]];
+    entries.forEach(([sz, v]) => {
       totalSz += v;
       const picked = safePicks(it).reduce((a, pk) => a + safeNum(pk[sz]), 0);
       const poOrd = safePOs(it).reduce((a, pk) => a + safeNum(pk[sz]) - safeNum((pk.cancelled || {})[sz]), 0);
