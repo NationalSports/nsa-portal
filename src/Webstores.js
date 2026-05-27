@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
-import { cloudUpload } from './utils';
+import { cloudUpload, sendBrevoEmail } from './utils';
 import { shipStationCall } from './vendorApis';
 import { NSA } from './constants';
 
@@ -282,6 +282,28 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
 
   const custName = useCallback((id) => cust.find((c) => c.id === id)?.name || '—', [cust]);
   const repName = useCallback((id) => REPS.find((r) => r.id === id)?.name || '—', [REPS]);
+
+  // Read-only coach/director portal link for a store's club (keyed on alpha_tag).
+  const coachPortalUrl = useCallback((store) => {
+    const c = cust.find((x) => x.id === store?.customer_id);
+    const tag = c?.alpha_tag || c?.name || '';
+    return tag ? `${window.location.origin}/?portal=${encodeURIComponent(tag)}` : '';
+  }, [cust]);
+
+  const emailDirector = useCallback(async (store) => {
+    const url = coachPortalUrl(store);
+    if (!url) { flash('No club alpha tag found for the portal link'); return; }
+    if (!store.director_email) { flash('Add a Club Director email in Settings first'); return; }
+    const html = `<div style="font-family:sans-serif;font-size:14px;line-height:1.6;color:#1e293b;max-width:600px">
+      <p>Hi ${store.director_name || 'Coach'},</p>
+      <p>Here's your live tracking portal for the <b>${store.name}</b> team store. You can watch orders come in and follow each one through production and shipping.</p>
+      <p><a href="${url}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:11px 22px;border-radius:8px;font-weight:700">Open your team portal</a></p>
+      <p style="font-size:12px;color:#64748b">Or paste this link into your browser:<br>${url}</p>
+    </div>`;
+    const r = await sendBrevoEmail({ to: [{ email: store.director_email, name: store.director_name || '' }], subject: `Your ${store.name} team portal`, htmlContent: html, senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com' });
+    if (r && r.error) flash('Email failed: ' + r.error);
+    else flash('Portal link emailed to ' + store.director_email);
+  }, [coachPortalUrl, flash]);
 
   const loadStores = useCallback(async () => {
     setLoading(true); setErr(null); setNeedsMigration(false);
@@ -635,7 +657,8 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
           onAddSingle={addSingle} onCreateBundle={createBundle} onRemove={removeCatalogItem} onUpdateImage={updateImage} onBatch={batchOrders} onReorder={reorderItem} onUpdateItem={updateCatalogItem}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
-          onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder} />
+          onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
+          portalUrl={coachPortalUrl(sel)} onEmailDirector={() => emailDirector(sel)} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} />
       )}
@@ -906,7 +929,9 @@ function Toggle({ label, checked, onChange }) {
 }
 
 // ── Store detail (with catalog editing) ──────────────────────────────
-function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName, onBack, onEdit, onOpenSO, onAddSingle, onCreateBundle, onRemove, onUpdateImage, onBatch, onReorder, onUpdateItem, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, portalUrl, onEmailDirector }) {
+  const [portalCopied, setPortalCopied] = useState(false);
+  const copyPortal = () => { if (!portalUrl) return; navigator.clipboard?.writeText(portalUrl); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 1800); };
   const orders = detail?.orders || [];
   const orderItems = detail?.orderItems || [];
   const catalog = detail?.catalog || [];
@@ -948,6 +973,8 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, custName, repName
         <button className="btn btn-sm btn-secondary" onClick={onBack}>← Back to All Stores</button>
         <div style={{ display: 'flex', gap: 8 }}>
           <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer">↗ View storefront</a>
+          {portalUrl && <button className="btn btn-sm btn-secondary" title={portalUrl} onClick={copyPortal}>{portalCopied ? '✓ Copied' : 'Copy coach portal link'}</button>}
+          {portalUrl && <button className="btn btn-sm btn-secondary" title={s.director_email ? `Email ${s.director_email}` : 'Add a director email in Settings'} disabled={!s.director_email} onClick={onEmailDirector} style={!s.director_email ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>Email director</button>}
           <button className="btn btn-sm btn-primary" onClick={onEdit}>Edit settings</button>
         </div>
       </div>
