@@ -1811,9 +1811,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _kept=[...newJobs,...splitJobs,...releasedJobs,...recalcedMerged];
     const _keptIds=new Set(_kept.map(j=>j.id));
     const _keptKeys=new Set(_kept.map(j=>j.key));
+    // Decoration coverage of the current jobs — every (item_idx, deco_idx) pair a kept job
+    // already produces. Used to drop stale "submitted" auto-jobs whose decorations are now
+    // represented by another job (e.g. an art-location change rebuilt the job under a new
+    // signature, or a released/merged job absorbed the decoration). Without this, those
+    // duplicates linger as branched-off jobs covering the same items.
+    const _coveredPairs=new Set();
+    const _jobDecoPairs=j=>{const out=[];(j.items||[]).forEach(gi=>{const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:[]);dis.forEach(di=>out.push(gi.item_idx+'::'+di))});return out;};
+    _kept.forEach(j=>_jobDecoPairs(j).forEach(p=>_coveredPairs.add(p)));
     const orphanedSubmitted=safeJobs(o).filter(j=>{
       if(!j||j._released||j._merged||j.split_from)return false;// already handled above
       if(_keptIds.has(j.id)||_keptKeys.has(j.key))return false;// already represented by a rebuilt job
+      // Stale duplicate — its decorations are already covered by a current job. Only the
+      // orphan-preservation case (decoration genuinely missing) should fall through below.
+      const pairs=_jobDecoPairs(j);
+      if(pairs.length&&pairs.every(p=>_coveredPairs.has(p)))return false;
       const artIds=(Array.isArray(j._art_ids)&&j._art_ids.length?j._art_ids:[j.art_file_id]).filter(Boolean);
       const hasRealArt=artIds.some(aid=>aid&&aid!=='__tbd'&&af.some(a=>a.id===aid));
       const wasSubmitted=j.art_status&&j.art_status!=='needs_art';
@@ -6032,13 +6044,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         (items||[]).forEach(gi=>{
           const key=gi.item_idx+'-'+gi.sku;
           const existing=map.get(key);
+          const giDecoIdxs=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:[]);
           if(!existing){
-            const copy={...gi};
+            const copy={...gi,deco_idxs:[...giDecoIdxs]};
             if(gi.sizes)copy.sizes={...gi.sizes};
             if(gi.fulSizes)copy.fulSizes={...gi.fulSizes};
             if(gi.roster)copy.roster=JSON.parse(JSON.stringify(gi.roster));
             map.set(key,copy);order.push(key);return;
           }
+          // Same item appearing in two merged jobs covers additional decorations — union the
+          // deco indices so the merged job freezes every decoration (else syncJobs regenerates
+          // the un-tracked ones as branched-off jobs).
+          existing.deco_idxs=[...new Set([...(existing.deco_idxs||[]),...giDecoIdxs])];
           existing.units=safeNum(existing.units)+safeNum(gi.units);
           existing.fulfilled=safeNum(existing.fulfilled)+safeNum(gi.fulfilled);
           if(gi.sizes||existing.sizes){
@@ -6615,7 +6632,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {!canProduce&&j.prod_status!=='hold'&&<span style={{fontSize:9,color:'#d97706',marginLeft:4}}>⚠️ Items/art incomplete</span>}</>}
               <div style={{marginLeft:'auto',display:'flex',gap:6}}>
                 {j.art_status==='needs_art'&&(j.items||[]).length>0&&<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}} title="Set up just this job — assign an artist, skip the artist, or build a quick mock" onClick={()=>{
-                  const grpItems=(j.items||[]).map(gItem=>{const it=safeItems(o)[gItem.item_idx];const af2=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);return{item_idx:gItem.item_idx,deco_idx:gItem.deco_idx,sku:gItem.sku||it?.sku||'',name:gItem.name||safeStr(it?.name),color:gItem.color||it?.color||'',units:gItem.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0),fulfilled:gItem.fulfilled||0,art_file_id:j.art_file_id,art_name:af2?.name||j.art_name||'',position:j.positions||'Front Center'};});
+                  const grpItems=(j.items||[]).map(gItem=>{const it=safeItems(o)[gItem.item_idx];const af2=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);return{item_idx:gItem.item_idx,deco_idx:gItem.deco_idx,deco_idxs:Array.isArray(gItem.deco_idxs)&&gItem.deco_idxs.length?gItem.deco_idxs:(gItem.deco_idx!=null?[gItem.deco_idx]:[]),sku:gItem.sku||it?.sku||'',name:gItem.name||safeStr(it?.name),color:gItem.color||it?.color||'',units:gItem.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0),fulfilled:gItem.fulfilled||0,art_file_id:j.art_file_id,art_name:af2?.name||j.art_name||'',position:j.positions||'Front Center'};});
                   const group={name:j.art_name||j.deco_type.replace(/_/g,' '),deco_type:j.deco_type,items:grpItems,artist:j.assigned_artist||'',notes:j.rep_notes||'',files:[],_split:!!j.split_from,_existingJobId:j.id,_merged:!!j._merged};
                   setSelJob(null);
                   setJobWizard({groups:[group],scopeJobId:j.id});
@@ -7088,7 +7105,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const items=(j.items||[]).map(ji=>{
               const it=safeItems(o)[ji.item_idx];
               const af2=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);
-              return{item_idx:ji.item_idx,deco_idx:ji.deco_idx,sku:ji.sku||it?.sku||'',name:ji.name||safeStr(it?.name),color:ji.color||it?.color||'',
+              return{item_idx:ji.item_idx,deco_idx:ji.deco_idx,deco_idxs:Array.isArray(ji.deco_idxs)&&ji.deco_idxs.length?ji.deco_idxs:(ji.deco_idx!=null?[ji.deco_idx]:[]),sku:ji.sku||it?.sku||'',name:ji.name||safeStr(it?.name),color:ji.color||it?.color||'',
                 units:ji.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0),fulfilled:ji.fulfilled||0,art_file_id:j.art_file_id,
                 art_name:af2?.name||j.art_name||'',position:j.positions||'Front Center'};
             });
@@ -7198,7 +7215,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             assigned_artist:g.artist||'',
             rep_notes:g.notes||'',
             ...(autoArtRequest?{art_requests:[{id:'AR-'+Date.now()+'-'+gi,artist:g.artist||'',artist_name:artistObj?.name||'',instructions:g.notes||'Requested on release',files:g.files||[],status:'requested',created_at:new Date().toISOString(),created_by:cu?.name||'System',auto:false}]}:{}),
-            items:releaseItems.map(({item_idx,deco_idx,sku,name,color,units,fulfilled})=>({item_idx,deco_idx,sku,name,color,units,fulfilled:fulfilled||0}))
+            items:releaseItems.map(({item_idx,deco_idx,deco_idxs,sku,name,color,units,fulfilled})=>({item_idx,deco_idx,deco_idxs:Array.isArray(deco_idxs)&&deco_idxs.length?deco_idxs:(deco_idx!=null?[deco_idx]:[]),sku,name,color,units,fulfilled:fulfilled||0}))
           });
         });
         // Store rep's sample art files on the art file records (separate from artist mockups)
