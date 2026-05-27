@@ -5581,6 +5581,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 nsa_cost:0,unit_sell:svc.sell,retail_price:0,available_sizes:[],sizes:{},qty_only:true,est_qty:1,
                 decorations:[],no_deco:true,is_custom:true,_topstar:true,_topstar_po:tsPoIdFinal};
               const updated={...o,items:[...safeItems(o),lineItem],deco_pos:[...(o.deco_pos||[]),decoPO],updated_at:new Date().toLocaleString()};
+              // Persist the PO BEFORE the network email — a slow/failed send (or a background poll firing
+              // during the await) must not be able to drop the optimistic deco_pos record.
+              setO(updated);onSave(updated);setPOCounter(c=>c+1);
               const custName=cust?.name||cust?.alpha_tag||'';
               const imgList=topstarImgs.map((u,i)=>'<li><a href="'+u+'">Image '+(i+1)+'</a></li>').join('');
               const html='<div style="font-family:Arial,sans-serif;font-size:14px;color:#1e293b">'+
@@ -5599,7 +5602,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 replyTo:cuEmail?{email:cuEmail,name:cu?.name||undefined}:undefined,
                 attachment:topstarImgs.map((u,i)=>({url:u,name:(svc.deco_type||'art')+'-'+(i+1)+'.'+((u.split('?')[0].split('.').pop())||'png')}))});
               }catch(e){r={ok:false,error:e.message}}
-              setO(updated);onSave(updated);setPOCounter(c=>c+1);
               setShowPO(null);setTopstarImgs([]);setTopstarNotes('');setTopstarService('dst');setTopstarSending(false);
               if(r.ok)nf('🧵 '+tsPoIdFinal+' sent to Topstar — cost $'+svc.cost.toFixed(2)+', customer billed $'+svc.sell.toFixed(2));
               else nf('PO created & customer billed, but email to Topstar failed: '+r.error,'error');
