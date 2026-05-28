@@ -109,15 +109,16 @@ function resolveAgainstCatalog(line: ParsedLine, catalog: CatalogItem[]): Parsed
   }
   const skuUp = line.sku_guess.toUpperCase().trim();
 
-  // 1. Exact SKU
+  // 1. Exact SKU — trust the catalog's color over whatever the AI parsed,
+  // since a SKU in our catalog has exactly one canonical color.
   let hit = catalog.find((p) => p.sku.toUpperCase() === skuUp);
-  if (hit) return { ...line, sizes, total_qty, sku_guess: hit.sku, product_id: (hit as any).id || null, match_quality: "exact" };
+  if (hit) return { ...line, sizes, total_qty, sku_guess: hit.sku, color: hit.color || line.color || "", product_id: (hit as any).id || null, match_quality: "exact" };
 
   // 2. Strip trailing size suffix (e.g. "JY6033-M" -> "JY6033")
   const stripped = skuUp.replace(/[-\s](XXS|XS|S|M|L|XL|2XL|3XL|4XL|5XL|YXS|YS|YM|YL|YXL)$/i, "");
   if (stripped !== skuUp) {
     hit = catalog.find((p) => p.sku.toUpperCase() === stripped);
-    if (hit) return { ...line, sizes, total_qty, sku_guess: hit.sku, product_id: (hit as any).id || null, match_quality: "stripped" };
+    if (hit) return { ...line, sizes, total_qty, sku_guess: hit.sku, color: hit.color || line.color || "", product_id: (hit as any).id || null, match_quality: "stripped" };
   }
 
   // 3. Prefix / token match on name + color
