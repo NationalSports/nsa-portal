@@ -9530,7 +9530,7 @@ export default function App(){
         if(pSoItems.length>0){
           pSoItems.forEach(it=>{
             const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-            const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+            const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
             const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*pDepPct*100)/100;pSubTotal+=lineAmt;
             let itemName=(it.name||'')+(it.color?' - '+it.color:'');
             if(szStr)itemName+='<br/><span>'+szStr+'</span>';
@@ -10338,7 +10338,7 @@ export default function App(){
                 if(siSoItems.length>0){
                   siSoItems.forEach(it=>{
                     const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-                    const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+                    const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
                     const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*siDepPct*100)/100;siSubTotal+=lineAmt;
                     let itemName=(it.name||'')+(it.color?' - '+it.color:'');
                     if(szStr)itemName+='<br/><span>'+szStr+'</span>';
@@ -10635,7 +10635,7 @@ export default function App(){
                 if(fSoItems.length>0){
                   fSoItems.forEach(it=>{
                     const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-                    const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+                    const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
                     const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*fDepPct*100)/100;fSubTotal+=lineAmt;
                     let itemName=(it.name||'')+(it.color?' - '+it.color:'');
                     if(szStr)itemName+='<br/><span>'+szStr+'</span>';
