@@ -7990,6 +7990,15 @@ export default function App(){
 
                   {j.expected&&<div style={{fontSize:10,color:urgent?'#dc2626':'#64748b',marginBottom:6}}>📅 Due: {j.expected}{urgent?' — RUSH':''}  </div>}
 
+                  {/* Embroidery names file (Google Drive) */}
+                  {j.deco_type==='embroidery'&&<div style={{background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:6,padding:'5px 8px',marginBottom:6}} onClick={e=>e.stopPropagation()}>
+                    <div style={{fontSize:9,fontWeight:700,color:'#6d28d9',marginBottom:3}}>🧵 EMBROIDERY NAMES FILE</div>
+                    <input type="text" className="form-input" placeholder="Google Drive link" defaultValue={j.emb_names_link||''}
+                      style={{fontSize:10,padding:'2px 6px',width:'100%'}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}}
+                      onBlur={e=>{const v=e.target.value.trim();if(v===(j.emb_names_link||''))return;updateJobField(j,{emb_names_link:v});nf(v?'Names file link saved':'Names file link cleared')}}/>
+                    {j.emb_names_link&&<a href={j.emb_names_link} target="_blank" rel="noopener noreferrer" style={{fontSize:10,fontWeight:700,color:'#2563eb',textDecoration:'underline',display:'inline-block',marginTop:3}}>↗ Open names file</a>}
+                  </div>}
+
                   {/* Open SO / Job links */}
                   <button className="btn btn-sm" style={{fontSize:11,padding:'6px 12px',width:'100%',marginBottom:6,background:'#d97706',color:'white',border:'none',fontWeight:700,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:6,cursor:'pointer'}} onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋 Production Sheet</button>
                   <div style={{display:'flex',gap:8,marginBottom:6}}>
@@ -8335,6 +8344,15 @@ export default function App(){
                   <div><div style={{fontSize:11,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#3b82f6'}}>Mockup File</div></div>
                 </div>)}
               </div>
+            </div>}
+
+            {/* Embroidery names file (digitized names kept in Google Drive) */}
+            {j.deco_type==='embroidery'&&<div style={{padding:14,borderBottom:'2px solid #e2e8f0',background:'#faf5ff'}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#6d28d9',marginBottom:6}}>🧵 Embroidery Names File</div>
+              {j.emb_names_link?<a href={j.emb_names_link} target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#7c3aed',color:'white',borderRadius:6,fontSize:12,fontWeight:700,textDecoration:'none'}}>📁 Open Digitized Names (Google Drive) ↗</a>:<div style={{fontSize:12,color:'#94a3b8'}}>No names file linked yet.</div>}
+              <input type="text" className="form-input" placeholder="Paste Google Drive link to digitized name files" defaultValue={j.emb_names_link||''}
+                style={{fontSize:11,padding:'4px 8px',width:'100%',marginTop:8}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}}
+                onBlur={e=>{const v=e.target.value.trim();if(v===(j.emb_names_link||''))return;updateJobField(j,{emb_names_link:v});setProdJobModal(pm=>pm?{...pm,emb_names_link:v}:pm);nf(v?'Names file link saved':'Names file link cleared')}}/>
             </div>}
 
             {/* Dual-Run Order — art + numbers */}

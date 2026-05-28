@@ -6298,6 +6298,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     Multi-job item: {siblings.map(s=><span key={s.id} style={{fontWeight:700}}>{s.art_name||s.deco_type?.replace(/_/g,' ')} <span style={{padding:'1px 4px',borderRadius:3,fontSize:9,background:s.prod_status==='completed'||s.prod_status==='shipped'?'#dcfce7':'#fee2e2',color:s.prod_status==='completed'||s.prod_status==='shipped'?'#166534':'#dc2626'}}>{prodLabels[s.prod_status]||s.prod_status}</span></span>).reduce((acc,el,i)=>i===0?[el]:[...acc,<span key={'sep-'+i}> · </span>,el],[])}
                   </div>})()}
                 {j.split_from&&<div style={{fontSize:11,color:'#7c3aed',marginTop:2}}>✂️ Split from {j.split_from}</div>}
+                {j.deco_type==='embroidery'&&<div style={{marginTop:6,display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                  <span style={{fontSize:11,fontWeight:700,color:'#6d28d9'}}>🧵 Names File:</span>
+                  <input type="text" className="form-input" placeholder="Paste Google Drive link to digitized name files"
+                    defaultValue={j.emb_names_link||''} style={{fontSize:11,padding:'2px 8px',flex:'0 1 360px',minWidth:240}}
+                    onClick={e=>e.stopPropagation()} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}}
+                    onBlur={e=>{const v=e.target.value.trim();if(v===(j.emb_names_link||''))return;const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,emb_names_link:v}:jj);setO(e2=>({...e2,jobs:updJobs,updated_at:new Date().toLocaleString()}));setDirty(true);nf(v?'Names file link saved':'Names file link cleared')}}/>
+                  {j.emb_names_link&&<a href={j.emb_names_link} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:11,fontWeight:700,color:'#2563eb',textDecoration:'underline'}}>↗ Open</a>}
+                </div>}
               </div>
               <div style={{textAlign:'right'}}>
                 <div style={{fontSize:24,fontWeight:800,color:pct>=100?'#166534':'#1e40af'}}>{j.fulfilled_units}/{j.total_units}</div>
