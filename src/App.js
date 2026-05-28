@@ -808,13 +808,17 @@ const _dbSaveEstimateInner = async (est) => {
     }
     const _oldEstItems=_oldEstResp.data||[];
     const oldItemIds=_oldEstItems.map(i=>i.id);
-    // Safety check: if client has 0 items but DB has some, abort to prevent data loss
-    if((!items||items.length===0)&&oldItemIds.length>0){
+    // Safety check: block saves that would DROP items when this session never loaded them cleanly.
+    // Covers the full wipe (client 0) AND the partial overwrite (client < DB) — both are data loss when items
+    // weren't hydrated (e.g. a timed-out estimate_items load left the editor blank/partial and a save fired on
+    // top, the EST-1119 failure mode). When items WERE hydrated, a reduction is a deliberate rep edit, so allow it.
+    const _clientEstItemCount=(items||[]).length;
+    if(oldItemIds.length>0&&_clientEstItemCount<oldItemIds.length){
       if(est._itemsHydrated){
-        console.warn('[DB] Estimate',est.id,'saving with 0 items (DB had',oldItemIds.length,') — items were hydrated, treating as intentional removal');
+        console.warn('[DB] Estimate',est.id,'saving with',_clientEstItemCount,'item(s) (DB had',oldItemIds.length,') — items were hydrated, treating as intentional edit');
       }else{
-        console.error('[DB] SAFETY: Blocking estimate save — client has 0 items but DB has',oldItemIds.length,'for',est.id,'(items never hydrated this session)');
-        if(_dbNotify)_dbNotify('Save blocked — '+oldItemIds.length+' item(s) would be lost. Please reload the page.','error');
+        console.error('[DB] SAFETY: Blocking estimate save —',_clientEstItemCount,'client item(s) vs',oldItemIds.length,'in DB for',est.id,'(items never hydrated this session)');
+        if(_dbNotify)_dbNotify('Save blocked — '+oldItemIds.length+' item(s) in the database but only '+_clientEstItemCount+' loaded. Please reload the page.','error');
         return false;
       }
     }
@@ -1005,17 +1009,19 @@ const _dbSaveSOInner = async (so) => {
     }
     const _oldSoItems=_oldItemsResp.data||[];
     const oldItemIds=_oldSoItems.map(i=>i.id);
-    // Safety check: if client has 0 items but DB has some, abort to prevent data loss
-    // Triggers when state was polluted by a timed-out so_items load and an autosave fires before a fresh load completes
-    if((!items||items.length===0)&&oldItemIds.length>0){
+    // Safety check: block saves that would DROP items when this session never loaded them cleanly.
+    // Covers the full wipe (client 0) AND the partial overwrite (client < DB) — both are data loss when items
+    // weren't hydrated (state polluted by a timed-out so_items load with an autosave firing before a fresh load
+    // completes). When items WERE hydrated, a reduction is a deliberate rep edit — allow it (further guards below
+    // still protect orphaned jobs/decorations).
+    const _clientSoItemCount=(items||[]).length;
+    if(oldItemIds.length>0&&_clientSoItemCount<oldItemIds.length){
       if(so._itemsHydrated){
-        // Items loaded cleanly this session and the client now has none — a deliberate removal, not a persistence
-        // glitch. Allow the save through (further guards below still protect orphaned jobs/decorations).
-        console.warn('[DB] SO',so.id,'saving with 0 items (DB had',oldItemIds.length,') — items were hydrated, treating as intentional removal');
+        console.warn('[DB] SO',so.id,'saving with',_clientSoItemCount,'item(s) (DB had',oldItemIds.length,') — items were hydrated, treating as intentional edit');
       }else{
-        console.error('[DB] SAFETY: Blocking SO save — client has 0 items but DB has',oldItemIds.length,'for',so.id,'(items never hydrated this session)');
-        if(_dbNotify)_dbNotify('Save blocked — '+oldItemIds.length+' item(s) would be lost. Please reload the page.','error');
-        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:oldItemIds.length,newCount:0,reason:'Client save had 0 items while DB had '+oldItemIds.length+' (items not loaded this session)'});
+        console.error('[DB] SAFETY: Blocking SO save —',_clientSoItemCount,'client item(s) vs',oldItemIds.length,'in DB for',so.id,'(items never hydrated this session)');
+        if(_dbNotify)_dbNotify('Save blocked — '+oldItemIds.length+' item(s) in the database but only '+_clientSoItemCount+' loaded. Please reload the page.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:oldItemIds.length,newCount:_clientSoItemCount,reason:'Client save had '+_clientSoItemCount+' items while DB had '+oldItemIds.length+' (items not loaded this session)'});
         return false;
       }
     }
