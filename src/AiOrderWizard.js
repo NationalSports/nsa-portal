@@ -128,7 +128,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       const hasNums = Object.values(numbers).some(a => a.some(v => v && String(v).trim()));
       const hasNames = Object.values(names).some(a => a.some(v => v && String(v).trim()));
       const decorations = [];
-      if (hasNums) decorations.push({ kind: 'numbers', position: 'Back', num_method: 'screen_print', num_size: '6"', two_color: false, sell_override: null, custom_font_art_id: null, roster: numbers });
+      if (hasNums) decorations.push({ kind: 'numbers', position: 'Back', num_method: 'screen_print', num_size: '8"', two_color: false, sell_override: null, custom_font_art_id: null, roster: numbers });
       if (hasNames) decorations.push({ kind: 'names', position: 'Back Center', name_method: 'heat_press', sell_override: null, sell_each: 6, cost_each: 3, names });
       const szKeys = Object.keys(sizes).sort(szSort);
       return {
@@ -393,7 +393,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
               })}
             </div>
             <div style={{ marginTop: 8, padding: 8, background: '#f8fafc', borderRadius: 6, fontSize: 11, color: '#64748b' }}>
-              💡 Each item gets a numbers deco (Back, screen print) and a names deco (Back Center, heat press) pre-filled from the roster. Adjust methods, positions and pricing in the estimate editor.
+              💡 Each item gets a numbers deco (Back, 8" screen print) and a names deco (Back Center, heat press) pre-filled from the roster. Adjust methods, positions and pricing in the estimate editor.
             </div>
             {ai.error && <div style={{ marginTop: 10, padding: 8, background: '#fef2f2', borderRadius: 6, fontSize: 11, color: '#991b1b' }}>⚠ {ai.error}</div>}
           </>;
