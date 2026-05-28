@@ -13,7 +13,7 @@ import { jsPDF } from 'jspdf';
 import { svg2pdf } from 'svg2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
@@ -2843,7 +2843,7 @@ export default function App(){
   // reminder. baseline=true marks stores already present when this shipped, so
   // we don't backfill tasks for the entire history.
   const[omgFirstSeen,setOmgFirstSeen]=useState(()=>loadState('omg_first_seen',{}));
-  const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,doc_label:''});
+  const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',wh_only:false});
   const[todoDetailId,setTodoDetailId]=useState(null);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
@@ -4495,6 +4495,13 @@ export default function App(){
     nf('Snoozed for '+days+' day'+(days!==1?'s':''));
   };
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
+  // Lock non-admin/GM users to their own dashboard view (they shouldn't land on the admin overview).
+  React.useEffect(()=>{
+    if(!cu?.role)return;
+    if(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return;
+    const map={csr:'csr',rep:'sales',warehouse:'warehouse',artist:'decorator',art:'decorator',production:'production',prod_manager:'production',prod_assistant:'production',accounting:'admin'};
+    setDashView(map[cu.role]||'warehouse');
+  },[cu?.id,cu?.role]);
   const handleLogin=(user)=>{_sessionDead=false;setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
   // Called from the save layer when a session refresh fails: clear the dead session and bounce to login
@@ -5613,6 +5620,10 @@ export default function App(){
     // Get assigned todos for this user (manually created)
     const myAssignedTodos=assignedTodos.filter(t=>t.status==='open'&&(t.assigned_to===cu.id||t.created_by===cu.id));
     const _fmtTodoDate=(d)=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);if(days<1)return'Today';if(days===1)return'Yesterday';if(days<14)return days+'d ago';return(dt.getMonth()+1)+'/'+dt.getDate()+'/'+String(dt.getFullYear()).slice(-2)}catch{return''}};
+    // Due-date helpers — due_date is a plain YYYY-MM-DD; compare against local today without timezone drift.
+    const _todayStr=(()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`})();
+    const _fmtDueDate=(d)=>{if(!d)return'';const ds=String(d).slice(0,10);if(ds===_todayStr)return'Today';try{const dt=new Date(ds+'T00:00:00');if(isNaN(dt))return ds;const days=Math.round((dt-new Date(_todayStr+'T00:00:00'))/864e5);if(days===1)return'Tomorrow';if(days===-1)return'Yesterday';if(days<0)return Math.abs(days)+'d overdue';return(dt.getMonth()+1)+'/'+dt.getDate()}catch{return ds}};
+    const _todoDueColor=(d)=>{if(!d)return'#64748b';const ds=String(d).slice(0,10);if(ds<_todayStr)return'#dc2626';if(ds===_todayStr)return'#d97706';return'#2563eb'};
     const _todoComplete=(id,note)=>{
       const ts=new Date().toISOString();
       const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};
@@ -5668,7 +5679,7 @@ export default function App(){
             {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
               <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
               {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
-              {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>}
+              {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2,due_date:''})}}>Assign</button>}
               <button title="Dismiss" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#94a3b8',flexShrink:0}} onClick={e=>{e.stopPropagation();dismissTodo(t.dismissKey)}}>✕</button>
               {_todoIsFollowUp(t)?(snoozeOpenKey===t.dismissKey?<div style={{display:'flex',gap:2,alignItems:'center'}} onClick={e=>e.stopPropagation()}>
                 <button title="Cancel" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:11,color:'#64748b'}} onClick={e=>{e.stopPropagation();setSnoozeOpenKey(null)}}>←</button>
@@ -5708,7 +5719,7 @@ export default function App(){
     {myAssignedTodos.length>0&&<div className="card" style={{marginBottom:16}}>
       <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>📌 Assigned Tasks ({myAssignedTodos.length})</h2>
-        <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2})}>+ New Task</button>
+        <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:''})}>+ New Task</button>
       </div>
       <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
         {myAssignedTodos.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));
@@ -5732,7 +5743,7 @@ export default function App(){
       <button className="btn btn-secondary" onClick={()=>{setPg('customers');setCM({open:true,c:null})}}><Icon name="plus" size={14}/> New Customer</button>
       <button className="btn btn-secondary" onClick={()=>setPg('production')}><Icon name="grid" size={14}/> Prod Board</button>
       <button className="btn btn-secondary" onClick={()=>setPg('messages')}><Icon name="mail" size={14}/> Messages</button>
-      <button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2})}>📌 Assign Task</button></div></div>
+      <button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:''})}>📌 Assign Task</button></div></div>
     </>}
 
     {/* ═══ SALES REP VIEW ═══ */}
@@ -5757,7 +5768,7 @@ export default function App(){
             {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
               <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId&&cu.role!=='rep'?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
               {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
-              {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||cu.role==='rep')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>}
+              {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||cu.role==='rep')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2,due_date:''})}}>Assign</button>}
               <button title="Dismiss" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#94a3b8',flexShrink:0}} onClick={e=>{e.stopPropagation();dismissTodo(t.dismissKey)}}>✕</button>
               {_todoIsFollowUp(t)?(snoozeOpenKey===t.dismissKey?<div style={{display:'flex',gap:2,alignItems:'center'}} onClick={e=>e.stopPropagation()}>
                 <button title="Cancel" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:11,color:'#64748b'}} onClick={e=>{e.stopPropagation();setSnoozeOpenKey(null)}}>←</button>
@@ -5791,7 +5802,7 @@ export default function App(){
     {(()=>{const tasksIAssigned=myAssignedTodos.filter(t=>t.created_by===cu.id&&t.assigned_to!==cu.id);const tasksForMe=myAssignedTodos.filter(t=>t.assigned_to===cu.id);const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);return<div className="card" style={{marginBottom:16}}>
       <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>📌 Assigned Tasks ({myAssignedTodos.length})</h2>
-        <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2})}>+ New Task</button>
+        <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2,due_date:''})}>+ New Task</button>
       </div>
       <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
         {myAssignedTodos.length===0?<div className="empty" style={{padding:20}}>No open tasks</div>:
@@ -5829,7 +5840,7 @@ export default function App(){
       <button className="btn btn-secondary" onClick={()=>setPg('omg')}>🏪 OMG Stores</button>
       <button className="btn btn-secondary" onClick={()=>setPg('invoices')}>💰 Invoices</button>
       <button className="btn btn-secondary" onClick={()=>setPg('commissions')}>💵 My Commissions</button>
-      {(cu.role==='rep'||cu.role==='admin'||cu.role==='super_admin')&&<button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2})}>📌 Assign Task to CSR</button>}
+      {(cu.role==='rep'||cu.role==='admin'||cu.role==='super_admin')&&<button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2,due_date:''})}>📌 Assign Task to CSR</button>}
     </div></div>
     </>}
 
@@ -5841,6 +5852,37 @@ export default function App(){
       <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Rush Orders</div><div className="stat-value" style={{color:'#dc2626'}}>{pullTasks.filter(t=>t.urgent).length}</div></div>
       <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Active Timers</div><div className="stat-value" style={{color:'#2563eb'}}>{Object.keys(activeTimers).length}</div></div>
     </div>
+    {/* My delegated tasks — what this warehouse worker needs to do, with due dates */}
+    {(()=>{
+      const canDelegateWh=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||WAREHOUSE_LEAD_IDS.includes(cu.id);
+      const _due=t=>t.due_date?String(t.due_date).slice(0,10):'9999-12-31';
+      const whTasks=myAssignedTodos.filter(t=>t.assigned_to===cu.id).sort((a,b)=>_due(a).localeCompare(_due(b))||(a.priority??2)-(b.priority??2));
+      const delegated=canDelegateWh?myAssignedTodos.filter(t=>t.created_by===cu.id&&t.assigned_to!==cu.id).sort((a,b)=>_due(a).localeCompare(_due(b))||(a.priority??2)-(b.priority??2)):[];
+      if(whTasks.length===0&&delegated.length===0&&!canDelegateWh)return null;
+      const _row=(t,mine)=>{const creator=REPS.find(r=>r.id===t.created_by);const assignee=REPS.find(r=>r.id===t.assigned_to);
+        return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:t.due_date&&String(t.due_date).slice(0,10)<=_todayStr?'#fffbeb':'white'}} onClick={()=>setTodoDetailId(t.id)}>
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:600}}>{t.title}</div>
+              <div style={{fontSize:11,color:'#64748b'}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(assignee?.name||'—')}{t.so_id?' · '+t.so_id:''}</div>
+            </div>
+            {t.due_date&&<span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:8,whiteSpace:'nowrap',color:_todoDueColor(t.due_date),background:'#f1f5f9'}}>📅 {_fmtDueDate(t.due_date)}</span>}
+            <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{['Urgent','High','Normal','Low'][t.priority]||'Normal'}</span>
+            {mine&&<button title="Mark complete" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}>✓</button>}
+            {canDelegateWh&&!mine&&<button title="Delete" style={{background:'none',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#dc2626',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoDelete(t.id)}}>✕</button>}
+          </div>
+        </div>};
+      return<div className="card" style={{marginBottom:16,borderLeft:'3px solid #0891b2'}}>
+        <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <h2>📌 My Tasks Today ({whTasks.length})</h2>
+          {canDelegateWh&&<button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_todayStr,doc_label:'',wh_only:true})}>+ Assign Task</button>}
+        </div>
+        <div className="card-body" style={{padding:0,maxHeight:340,overflow:'auto'}}>
+          {whTasks.length===0?<div className="empty" style={{padding:16,fontSize:13}}>No tasks assigned to you. {canDelegateWh?'Use “+ Assign Task” to delegate work.':'All clear!'}</div>:whTasks.map(t=>_row(t,true))}
+          {delegated.length>0&&<><div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderTop:'1px solid #e2e8f0',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>Assigned to others ({delegated.length})</div>{delegated.map(t=>_row(t,false))}</>}
+        </div>
+      </div>;
+    })()}
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card" style={{borderLeft:'3px solid #d97706'}}><div className="card-header"><h2>🏗️ Next to Pull</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('warehouse')}>Full List →</button></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
@@ -6160,6 +6202,7 @@ export default function App(){
             {soRef&&<div><span style={{color:'#64748b'}}>SO:</span> <span style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{setTodoDetailId(null);setESO(soRef);setESOC(cust.find(c=>c.id===soRef.customer_id));setPg('orders')}}>{soRef.id}</span></div>}
             <div><span style={{color:'#64748b'}}>Priority:</span> <span style={{color:td.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{['Urgent','High','Normal','Low'][td.priority]||'Normal'}</span></div>
             <div><span style={{color:'#64748b'}}>Status:</span> <span style={{fontWeight:600,color:td.status==='open'?'#d97706':'#166534'}}>{td.status}</span></div>
+            {td.due_date&&<div><span style={{color:'#64748b'}}>Due:</span> <span style={{fontWeight:600,color:_todoDueColor(td.due_date)}}>{_fmtDueDate(td.due_date)}</span></div>}
           </div>
           {td.description&&<div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:13,marginBottom:12,border:'1px solid #e2e8f0'}}>{td.description}</div>}
           {/* Comments */}
@@ -6206,7 +6249,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,doc_label:t.doc_label||eEst?.id||''})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.wh_only?'':csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -6263,7 +6306,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,doc_label:t.doc_label||eSO?.id||''})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.wh_only?'':csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -10887,6 +10930,7 @@ export default function App(){
 
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
+  const[whRptRange,setWhRptRange]=useState('30');// warehouse productivity report time window (days, or 'all')
   const[invDrill,setInvDrill]=useState(null);// {kind:'vendor'|'category',key:string}
   const[rptRep,setRptRep]=useState(()=>(cu?.role==='rep'||cu?.role==='admin')&&cu?.id?cu.id:'all');// default to logged-in rep/admin so they see their own numbers
   const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true,invByCategory:true,invByVendor:true,invTopValue:true,invLowStock:true,invOutOfStock:true,invRecentAdj:true});
@@ -11098,6 +11142,7 @@ export default function App(){
         <div style={{display:'flex',gap:4}}>
           {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['inventory','🗃️ Inventory'],['reps','🏆 Reps'],['production','🏭 Production'],['decorator','👤 Decorator'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax'],['csr_tasks','📌 CSR Tasks']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${rptTab===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab(v)}>{l}</button>)}
+          {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')&&<button key="warehouse" className={`btn btn-sm ${rptTab==='warehouse'?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab('warehouse')}>📦 Warehouse</button>}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={rptRep} onChange={e=>setRptRep(e.target.value)}>
           <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
@@ -12809,6 +12854,139 @@ export default function App(){
         </div>
         </>})()}
 
+      {rptTab==='warehouse'&&(()=>{
+        const whMembers=REPS.filter(r=>r.role==='warehouse'&&r.is_active!==false);
+        const cutoff=whRptRange==='all'?0:Date.now()-parseInt(whRptRange,10)*86400000;
+        const inRange=a=>!cutoff||(a.ts||0)>=cutoff;
+        const acts=(whRecentActions||[]).filter(inRange);
+        const completedTasks=(assignedTodos||[]).filter(t=>(t.status==='completed'||t.status==='done')&&t.completed_at&&(!cutoff||new Date(t.completed_at).getTime()>=cutoff));
+        const qtyOf=(byId,type)=>acts.filter(a=>a.by===byId&&a.type===type).reduce((s,a)=>s+(safeNum(a.qty)||0),0);
+        const cntOf=(byId,types)=>acts.filter(a=>a.by===byId&&types.includes(a.type)).length;
+        // Open tasks are shown regardless of the time window (they're still pending).
+        const openTasksAll=(assignedTodos||[]).filter(t=>t.status==='open');
+        const _turnaroundHrs=(t)=>{if(!t.completed_at||!t.created_at)return null;const h=(new Date(t.completed_at)-new Date(t.created_at))/3600000;return h>=0?h:null};
+        const _fmtTurnaround=(h)=>{if(h==null)return'—';if(h<1)return Math.round(h*60)+'m';if(h<48)return h.toFixed(1)+'h';return(h/24).toFixed(1)+'d'};
+        const _taskAgeDays=(t)=>{if(!t.created_at)return null;return Math.floor((Date.now()-new Date(t.created_at))/86400000)};
+        const rowFor=(id)=>{
+          const doneByMe=completedTasks.filter(t=>t.completed_by===id);
+          const turns=doneByMe.map(_turnaroundHrs).filter(h=>h!=null);
+          return{
+            picked:qtyOf(id,'pulled'),
+            received:qtyOf(id,'received'),
+            deco:qtyOf(id,'move_to_deco'),
+            shipped:qtyOf(id,'shipped'),
+            delivered:qtyOf(id,'delivered'),
+            shipments:cntOf(id,['label_created','manual_label_created','manual_ship']),
+            tasks:doneByMe.length,
+            open:openTasksAll.filter(t=>t.assigned_to===id).length,
+            avgHrs:turns.length?turns.reduce((a,h)=>a+h,0)/turns.length:null,
+          };
+        };
+        const stats=whMembers.map(m=>({id:m.id,name:m.name,...rowFor(m.id)}))
+          .sort((a,b)=>(b.picked+b.received+b.shipped+b.delivered+b.deco)-(a.picked+a.received+a.shipped+a.delivered+a.deco));
+        // Actions logged before per-user attribution (or by auto checks) land under "warehouse".
+        const unattrib=rowFor('warehouse');
+        const hasUnattrib=unattrib.picked||unattrib.received||unattrib.shipped||unattrib.delivered||unattrib.deco||unattrib.shipments;
+        const tot=k=>stats.reduce((s,r)=>s+r[k],0)+(unattrib[k]||0);
+        const _cell=(v,color)=>v>0?<span style={{fontWeight:700,color:color||'#0f172a'}}>{v.toLocaleString()}</span>:<span style={{color:'#cbd5e1'}}>0</span>;
+        const recent=acts.filter(a=>['pulled','received','move_to_deco','shipped','delivered'].includes(a.type)).slice(0,40);
+        const typeLabel={pulled:'Picked',received:'Received',move_to_deco:'To Deco',shipped:'Shipped',delivered:'Delivered'};
+        const typeColor={pulled:'#d97706',received:'#2563eb',move_to_deco:'#7c3aed',shipped:'#166534',delivered:'#0891b2'};
+        return<>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12,flexWrap:'wrap'}}>
+          <span style={{fontSize:12,fontWeight:700,color:'#64748b'}}>Time window:</span>
+          {[['7','Last 7 days'],['30','Last 30 days'],['90','Last 90 days'],['all','All time']].map(([v,l])=>
+            <button key={v} className={`btn btn-sm ${whRptRange===v?'btn-primary':'btn-secondary'}`} onClick={()=>setWhRptRange(v)}>{l}</button>)}
+        </div>
+        <div className="stats-row" style={{marginBottom:16}}>
+          <div className="stat-card"><div className="stat-label">Items Picked</div><div className="stat-value" style={{color:'#d97706'}}>{tot('picked').toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Items Received</div><div className="stat-value" style={{color:'#2563eb'}}>{tot('received').toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Items Shipped</div><div className="stat-value" style={{color:'#166534'}}>{tot('shipped').toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Items Delivered</div><div className="stat-value" style={{color:'#0891b2'}}>{tot('delivered').toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Tasks Completed</div><div className="stat-value" style={{color:'#7c3aed'}}>{completedTasks.filter(t=>whMembers.some(m=>m.id===t.completed_by)).length}</div></div>
+        </div>
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>📦 Warehouse Productivity by Person</h2></div>
+          <div className="card-body" style={{padding:0,overflow:'auto'}}>
+            {whMembers.length===0?<div className="empty" style={{padding:20}}>No warehouse staff found.</div>:
+            <table style={{fontSize:12,width:'100%'}}><thead><tr>
+              <th style={{textAlign:'left'}}>Worker</th>
+              <th style={{textAlign:'center'}}>Picked</th><th style={{textAlign:'center'}}>Received</th><th style={{textAlign:'center'}}>To Deco</th>
+              <th style={{textAlign:'center'}}>Shipped</th><th style={{textAlign:'center'}}>Delivered</th>
+              <th style={{textAlign:'center'}}>Shipments</th><th style={{textAlign:'center'}}>Tasks Done</th>
+              <th style={{textAlign:'center'}}>Open Tasks</th><th style={{textAlign:'center'}}>Avg Turnaround</th>
+            </tr></thead>
+            <tbody>
+              {stats.map(s=><tr key={s.id}>
+                <td style={{fontWeight:700}}>{s.name}</td>
+                <td style={{textAlign:'center'}}>{_cell(s.picked,'#d97706')}</td>
+                <td style={{textAlign:'center'}}>{_cell(s.received,'#2563eb')}</td>
+                <td style={{textAlign:'center'}}>{_cell(s.deco,'#7c3aed')}</td>
+                <td style={{textAlign:'center'}}>{_cell(s.shipped,'#166534')}</td>
+                <td style={{textAlign:'center'}}>{_cell(s.delivered,'#0891b2')}</td>
+                <td style={{textAlign:'center'}}>{_cell(s.shipments,'#475569')}</td>
+                <td style={{textAlign:'center'}}>{_cell(s.tasks,'#7c3aed')}</td>
+                <td style={{textAlign:'center',fontWeight:700,color:s.open>0?'#d97706':'#cbd5e1'}}>{s.open}</td>
+                <td style={{textAlign:'center',color:'#64748b'}}>{s.avgHrs!=null?_fmtTurnaround(s.avgHrs):'—'}</td>
+              </tr>)}
+              {hasUnattrib&&<tr style={{color:'#94a3b8'}}>
+                <td style={{fontStyle:'italic'}}>Unattributed</td>
+                <td style={{textAlign:'center'}}>{unattrib.picked||0}</td><td style={{textAlign:'center'}}>{unattrib.received||0}</td><td style={{textAlign:'center'}}>{unattrib.deco||0}</td>
+                <td style={{textAlign:'center'}}>{unattrib.shipped||0}</td><td style={{textAlign:'center'}}>{unattrib.delivered||0}</td>
+                <td style={{textAlign:'center'}}>{unattrib.shipments||0}</td><td style={{textAlign:'center'}}>—</td>
+                <td style={{textAlign:'center'}}>—</td><td style={{textAlign:'center'}}>—</td>
+              </tr>}
+              <tr style={{borderTop:'2px solid #e2e8f0',fontWeight:800,background:'#f8fafc'}}>
+                <td>Total</td>
+                <td style={{textAlign:'center'}}>{tot('picked').toLocaleString()}</td><td style={{textAlign:'center'}}>{tot('received').toLocaleString()}</td><td style={{textAlign:'center'}}>{tot('deco').toLocaleString()}</td>
+                <td style={{textAlign:'center'}}>{tot('shipped').toLocaleString()}</td><td style={{textAlign:'center'}}>{tot('delivered').toLocaleString()}</td>
+                <td style={{textAlign:'center'}}>{tot('shipments').toLocaleString()}</td><td style={{textAlign:'center'}}>{tot('tasks').toLocaleString()}</td>
+                <td style={{textAlign:'center'}}>{stats.reduce((a,s)=>a+s.open,0)}</td><td style={{textAlign:'center'}}>—</td>
+              </tr>
+            </tbody></table>}
+          </div>
+          <div style={{padding:'8px 14px',fontSize:10,color:'#94a3b8',borderTop:'1px solid #f1f5f9'}}>Counts are units logged from warehouse actions (pick / receive / ship / deliver / move-to-deco) attributed to the signed-in worker, plus delegated tasks marked complete. Avg Turnaround = average time from a task being assigned to being marked complete (within the selected window). Open Tasks counts all currently-pending tasks regardless of window. "Unattributed" covers actions logged before a worker was signed in or by automated checks.</div>
+        </div>
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>📋 Open Tasks by Worker</h2></div>
+          <div className="card-body" style={{padding:0,maxHeight:460,overflow:'auto'}}>
+            {(()=>{const withOpen=whMembers.map(m=>({m,tasks:openTasksAll.filter(t=>t.assigned_to===m.id).sort((a,b)=>{const da=a.due_date?String(a.due_date).slice(0,10):'9999';const db=b.due_date?String(b.due_date).slice(0,10):'9999';return da.localeCompare(db)||(a.priority??2)-(b.priority??2)})})).filter(x=>x.tasks.length>0);
+              if(withOpen.length===0)return<div className="empty" style={{padding:20}}>No open tasks for any warehouse worker. 🎉</div>;
+              return withOpen.map(({m,tasks})=><div key={m.id}>
+                <div style={{padding:'6px 14px',fontSize:11,fontWeight:700,color:'#0f172a',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',borderTop:'1px solid #e2e8f0'}}>{m.name} <span style={{color:'#94a3b8',fontWeight:600}}>({tasks.length} open)</span></div>
+                <table style={{fontSize:12,width:'100%'}}><thead><tr><th style={{textAlign:'left'}}>Task</th><th>From</th><th>SO</th><th>Priority</th><th>Due</th><th style={{textAlign:'center'}}>Age</th></tr></thead>
+                <tbody>{tasks.map(t=>{const creator=REPS.find(r=>r.id===t.created_by);const age=_taskAgeDays(t);const overdue=t.due_date&&String(t.due_date).slice(0,10)<new Date().toISOString().slice(0,10);
+                  return<tr key={t.id} style={{cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
+                    <td style={{fontWeight:600}}>{t.title}</td>
+                    <td style={{color:'#64748b'}}>{creator?.name||'—'}</td>
+                    <td style={{color:'#2563eb'}}>{t.so_id||'—'}</td>
+                    <td><span style={{fontSize:10,padding:'1px 6px',borderRadius:6,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{['Urgent','High','Normal','Low'][t.priority]||'Normal'}</span></td>
+                    <td style={{fontSize:11,color:overdue?'#dc2626':'#64748b',fontWeight:overdue?700:400}}>{t.due_date?String(t.due_date).slice(0,10):'—'}</td>
+                    <td style={{textAlign:'center',fontSize:11,color:age>=7?'#dc2626':age>=3?'#d97706':'#94a3b8'}}>{age!=null?age+'d':'—'}</td>
+                  </tr>})}</tbody></table>
+              </div>);
+            })()}
+          </div>
+        </div>
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>🕐 Recent Warehouse Activity</h2></div>
+          <div className="card-body" style={{padding:0,maxHeight:420,overflow:'auto'}}>
+            {recent.length===0?<div className="empty" style={{padding:20}}>No activity in this window.</div>:
+            <table style={{fontSize:12,width:'100%'}}><thead><tr><th style={{textAlign:'left'}}>When</th><th>Worker</th><th>Action</th><th>SO</th><th>Customer</th><th>Item</th><th style={{textAlign:'center'}}>Qty</th></tr></thead>
+            <tbody>{recent.map((a,i)=>{const who=a.by==='warehouse'?'—':a.by==='auto-check'?'auto':(REPS.find(r=>r.id===a.by)?.name||a.by);
+              return<tr key={i}>
+                <td style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{a.at||(a.ts?new Date(a.ts).toLocaleString():'')}</td>
+                <td style={{fontWeight:600}}>{who}</td>
+                <td><span style={{fontSize:10,padding:'1px 7px',borderRadius:8,fontWeight:700,background:'#f1f5f9',color:typeColor[a.type]||'#475569'}}>{typeLabel[a.type]||a.type}</span></td>
+                <td style={{color:'#2563eb',whiteSpace:'nowrap'}}>{a.soId||'—'}</td>
+                <td style={{maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.customer||'—'}</td>
+                <td style={{fontSize:11,color:'#64748b',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.sku||a.artName||a.name||'—'}</td>
+                <td style={{textAlign:'center',fontWeight:700}}>{a.qty!=null?a.qty:'—'}</td>
+              </tr>})}</tbody></table>}
+          </div>
+        </div>
+        </>})()}
+
       {/* Widget Customization */}
       <div className="card" style={{marginBottom:12}}>
         <div className="card-header" style={{padding:'8px 16px'}}><h2 style={{margin:0,fontSize:13}}>⚙️ Customize Dashboard</h2></div>
@@ -14218,6 +14396,17 @@ export default function App(){
     })();
     const readyForDeco=decoTasks.filter(t=>t.isReady&&(t.prodStatus==='hold'||t.prodStatus==='draft')&&t.prodStatus!=='ready');const fDeco=filt(readyForDeco);
     const openStockPOs=invPOs.filter(p=>p.status!=='received'&&p.status!=='cancelled');
+    // Warehouse task delegation — open tasks for this user, plus tasks they delegated (managers/leads).
+    const _whCanDelegate=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||WAREHOUSE_LEAD_IDS.includes(cu.id);
+    const _whTodayStr=(()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`})();
+    const _whDueSort=t=>t.due_date?String(t.due_date).slice(0,10):'9999-12-31';
+    const _whFmtDue=(d)=>{if(!d)return'';const ds=String(d).slice(0,10);if(ds===_whTodayStr)return'Today';try{const dt=new Date(ds+'T00:00:00');const days=Math.round((dt-new Date(_whTodayStr+'T00:00:00'))/864e5);if(days===1)return'Tomorrow';if(days===-1)return'Yesterday';if(days<0)return Math.abs(days)+'d overdue';return(dt.getMonth()+1)+'/'+dt.getDate()}catch{return ds}};
+    const _whDueColor=(d)=>{if(!d)return'#64748b';const ds=String(d).slice(0,10);if(ds<_whTodayStr)return'#dc2626';if(ds===_whTodayStr)return'#d97706';return'#2563eb'};
+    const myWhTasks=assignedTodos.filter(t=>t.status==='open'&&t.assigned_to===cu.id).sort((a,b)=>_whDueSort(a).localeCompare(_whDueSort(b))||(a.priority??2)-(b.priority??2));
+    const delegatedWhTasks=_whCanDelegate?assignedTodos.filter(t=>t.status==='open'&&t.created_by===cu.id&&t.assigned_to!==cu.id).sort((a,b)=>_whDueSort(a).localeCompare(_whDueSort(b))||(a.priority??2)-(b.priority??2)):[];
+    const _whTodoComplete=(id)=>{const ts=new Date().toISOString();const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,...upd}:x));_dbSnap.current.assignedTodos=(_dbSnap.current.assignedTodos||[]).map(x=>x.id===id?{...x,...upd}:x);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));nf('Task completed!')};
+    // Open the Assign-Task modal pre-tied to a warehouse document (SO / IF / job), warehouse-only assignees.
+    const _whOpenAssign=({title,description,so,soId,docLabel})=>{const s=so||sos.find(x=>x.id===soId);setTodoModal({open:true,title:title||'',description:description||'',assigned_to:'',so_id:soId||s?.id||'',customer_id:s?.customer_id||'',priority:2,due_date:_whTodayStr,doc_label:docLabel||soId||s?.id||'',wh_only:true})};
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)c++})});return c})();
     const tabs=[
@@ -14227,6 +14416,7 @@ export default function App(){
       {id:'deliver',label:'Deliver',icon:'🚚',count:fDeliver.length,color:'#d97706'},
       {id:'pickup',label:'Awaiting Pickup',icon:'🚚',count:awaitingPickupCount,color:'#d97706'},
       {id:'stockpo',label:'Stock POs',icon:'📋',count:openStockPOs.length,color:'#6366f1'},
+      ...(cu.role==='warehouse'?[{id:'tasks',label:'My Tasks',icon:'📌',count:myWhTasks.length,color:'#0891b2'}]:[]),
       {id:'recent',label:'Recent Actions',icon:'🕐',count:whRecentActions.filter(a=>(a.ts||0)>=Date.now()-7*86400000).length,color:'#475569'},
     ];
 
@@ -14671,6 +14861,8 @@ export default function App(){
           onClick={()=>setWhTab('receive')}>📱 Scan to Receive</button>
         <button className="btn btn-sm" style={{fontSize:10,background:'#92400e',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
           onClick={()=>setManualShipModal({soSearch:'',so:null,cust:null,carrier:'fedex',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}>⚡ Manual Ship</button>
+        {_whCanDelegate&&<button className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
+          onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_whTodayStr,doc_label:'',wh_only:true})}>📌 Assign Task</button>}
       </div>
 
       {/* ── SCAN TO RECEIVE ── */}
@@ -15101,9 +15293,12 @@ export default function App(){
             <td>{(()=>{const d=t.shipDest;const labels={in_house:'🏭 In-House',ship_customer:'📦 Customer',ship_deco:'🚚 Deco'};return<span style={{fontSize:9,padding:'2px 5px',borderRadius:4,fontWeight:600,background:d==='ship_customer'?'#dbeafe':d==='ship_deco'?'#fef3c7':'#f1f5f9',color:d==='ship_customer'?'#1e40af':d==='ship_deco'?'#92400e':'#64748b'}}>{labels[d]||'🏭 In-House'}</span>})()}</td>
             <td style={{fontSize:10,color:'#94a3b8'}}>{t.rep}</td>
             <td style={{textAlign:'center'}}>{t.openDays!=null?<span style={{fontSize:10,fontWeight:700,color:t.openDays>=14?'#dc2626':t.openDays>=7?'#d97706':'#64748b'}}>{t.openDays}d</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
-            <td><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
-              onClick={e=>{e.stopPropagation();setWhViewIF(t)}}>
-              Pick →</button></td>
+            <td><div style={{display:'flex',flexDirection:'column',gap:3}}>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
+                onClick={e=>{e.stopPropagation();setWhViewIF(t)}}>Pick →</button>
+              <button title="Assign this pull to a warehouse worker" className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#0891b2',color:'white',border:'none'}}
+                onClick={e=>{e.stopPropagation();const multi=subs.length>1||t._extraCount>0;_whOpenAssign({title:'Pull '+(t.pickId||t.soId)+' — '+(t.cName||t.soId),description:(multi?t.needsPull+' units · multiple SKUs':t.sku+(t.color?' · '+t.color:'')+' · '+t.needsPull+' units'),so:t.so,soId:t.soId,docLabel:t.pickId||t.soId})}}>👤 Assign</button>
+            </div></td>
           </tr>})}
           </tbody></table>
         </div></div>}
@@ -15126,8 +15321,12 @@ export default function App(){
                 <td style={{textAlign:'center'}}>{t.machine?<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#6d28d9'}}>{t.machine}</span>:<span style={{fontSize:10,color:'#94a3b8'}}>Unassigned</span>}</td>
                 <td style={{fontSize:11}}>{t.rep}</td>
                 <td style={{textAlign:'center'}}>{t.daysOut!=null?<span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:t.urgent?'#fee2e2':t.daysOut<=7?'#fef3c7':'#dcfce7',color:t.urgent?'#dc2626':t.daysOut<=7?'#92400e':'#166534'}}>{t.daysOut}d</span>:'—'}</td>
-                <td><button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:600,whiteSpace:'nowrap'}}
-                  onClick={e=>{e.stopPropagation();if(t.job){applyJobMove({...t.job,soId:t.soId},'ready',t.job.assigned_machine||'',t.job.assigned_to||'');addWhAction({type:'move_to_deco',soId:t.soId,customer:t.cName,jobId:t.job.id,artName:t.artName,decoType:t.decoType,qty:t.totalUnits,by:cu?.id||'warehouse'})}}}>Move to Deco →</button></td>
+                <td><div style={{display:'flex',gap:6,justifyContent:'flex-end',alignItems:'center'}}>
+                  <button title="Assign this job to a warehouse worker" className="btn btn-sm" style={{fontSize:10,padding:'3px 8px',background:'#0891b2',color:'white',border:'none',borderRadius:6,fontWeight:600,whiteSpace:'nowrap'}}
+                    onClick={e=>{e.stopPropagation();_whOpenAssign({title:'Move to deco: '+(t.artName||t.job?.id||t.soId),description:(t.cName||'')+' · '+(t.decoType||'').replace(/_/g,' ')+' · '+t.totalUnits+' units',so:t.so,soId:t.soId,docLabel:t.job?.id||t.soId})}}>👤 Assign</button>
+                  <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:600,whiteSpace:'nowrap'}}
+                    onClick={e=>{e.stopPropagation();if(t.job){applyJobMove({...t.job,soId:t.soId},'ready',t.job.assigned_machine||'',t.job.assigned_to||'');addWhAction({type:'move_to_deco',soId:t.soId,customer:t.cName,jobId:t.job.id,artName:t.artName,decoType:t.decoType,qty:t.totalUnits,by:cu?.id||'warehouse'})}}}>Move to Deco →</button>
+                </div></td>
               </tr>})}
           </tbody></table>
         </div></div>
@@ -15208,6 +15407,8 @@ export default function App(){
                     </tbody></table>})()}
                   </div>})}
                 <div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
+                  <button title="Assign this shipment to a warehouse worker" className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                    onClick={()=>{const firstSO=Object.values(grp.soMap)[0];_whOpenAssign({title:'Ship — '+grp.cName,description:[...grp.soIds].join(', ')+' · '+grp.totalUnits+' units',so:firstSO,soId:firstSO?.id,docLabel:[...grp.soIds].join(', ')})}}>👤 Assign</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>{
                       // Build ship modal with remaining (unshipped) items from SOs
@@ -16247,6 +16448,8 @@ export default function App(){
                   {t.deliverDate?<div style={{fontWeight:700,color:onHold?'#dc2626':'#0f172a',marginTop:2}}>Deliver: {t.deliverDate}{onHold?' · hold '+t.deliverDaysOut+'d':''}</div>
                   :t.daysOut!=null&&<div>{t.daysOut>=0?'Due in '+t.daysOut+'d':Math.abs(t.daysOut)+'d overdue'}</div>}
                 </div>
+                <button title="Assign this delivery to a warehouse worker" className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                  onClick={e=>{e.stopPropagation();_whOpenAssign({title:'Deliver '+t.soId+' — '+t.cName,description:t.desc+' · '+t.units+' units'+(t.deliverDate?' · '+t.deliverDate:''),so:t.so,soId:t.soId,docLabel:t.soId})}}>👤 Assign</button>
                 <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                   onClick={e=>{e.stopPropagation();printSOPackingList(t.so,null,t)}}>📦 Packing List</button>
               </div>
@@ -16520,6 +16723,31 @@ export default function App(){
           </div>
         </div></div>}
       </>}
+
+      {whTab==='tasks'&&(()=>{
+        const _row=(t,mine)=>{const creator=REPS.find(r=>r.id===t.created_by);const assignee=REPS.find(r=>r.id===t.assigned_to);const overdue=t.due_date&&String(t.due_date).slice(0,10)<=_whTodayStr;
+          return<div key={t.id} style={{padding:'12px 14px',borderBottom:'1px solid #f1f5f9',background:mine&&overdue?'#fffbeb':'white',display:'flex',alignItems:'center',gap:10}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:14,fontWeight:600}}>{t.title}</div>
+              {t.description&&<div style={{fontSize:12,color:'#475569',marginTop:2}}>{t.description}</div>}
+              <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(assignee?.name||'—')}{t.so_id?' · '+t.so_id:''}</div>
+            </div>
+            {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>{const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
+            {t.due_date&&<span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:8,whiteSpace:'nowrap',color:_whDueColor(t.due_date),background:'#f1f5f9'}}>📅 {_whFmtDue(t.due_date)}</span>}
+            <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{['Urgent','High','Normal','Low'][t.priority]||'Normal'}</span>
+            {mine&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700,borderRadius:4,whiteSpace:'nowrap'}} onClick={()=>_whTodoComplete(t.id)}>✓ Done</button>}
+          </div>};
+        return<div className="card">
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h2>📌 My Tasks ({myWhTasks.length})</h2>
+            {_whCanDelegate&&<button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_whTodayStr,doc_label:'',wh_only:true})}>+ Assign Task</button>}
+          </div>
+          <div className="card-body" style={{padding:0}}>
+            {myWhTasks.length===0?<div className="empty" style={{padding:20}}>No tasks assigned to you. {_whCanDelegate?'Use “+ Assign Task” to delegate work to the warehouse crew.':'All clear!'}</div>:myWhTasks.map(t=>_row(t,true))}
+            {delegatedWhTasks.length>0&&<><div style={{padding:'8px 14px',fontSize:11,fontWeight:700,color:'#64748b',background:'#f8fafc',borderTop:'1px solid #e2e8f0',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>Assigned to others ({delegatedWhTasks.length})</div>{delegatedWhTasks.map(t=>_row(t,false))}</>}
+          </div>
+        </div>;
+      })()}
 
       {whTab==='recent'&&(()=>{
         const cutoff=whActionRange==='7d'?Date.now()-7*86400000:whActionRange==='30d'?Date.now()-30*86400000:0;
@@ -26119,7 +26347,18 @@ export default function App(){
               <option value="">Select person...</option>
               {(()=>{
                 const isAdminGm=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
-                if(isAdminGm){return REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name} ({r.role}){getPrimaryCsrForRep(cu.id)===r.id?' ★':''}</option>)}
+                const isWhLead=WAREHOUSE_LEAD_IDS.includes(cu.id);
+                // Warehouse-context tasks (from the warehouse page / item rows) only assign to warehouse crew.
+                if(todoModal.wh_only){return REPS.filter(r=>r.is_active!==false&&r.role==='warehouse').map(r=><option key={r.id} value={r.id}>{r.name}{r.id===cu.id?' (me)':''}</option>)}
+                if(isAdminGm){
+                  const office=REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='rep'||r.role==='admin'));
+                  const warehouse=REPS.filter(r=>r.is_active!==false&&r.role==='warehouse');
+                  return[
+                    <optgroup key="office" label="Office / Sales">{office.map(r=><option key={r.id} value={r.id}>{r.name} ({r.role}){getPrimaryCsrForRep(cu.id)===r.id?' ★':''}</option>)}</optgroup>,
+                    warehouse.length>0&&<optgroup key="warehouse" label="Warehouse">{warehouse.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>
+                  ];
+                }
+                if(isWhLead){return REPS.filter(r=>r.is_active!==false&&r.role==='warehouse').map(r=><option key={r.id} value={r.id}>{r.name}{r.id===cu.id?' (me)':''}</option>)}
                 const myCsrIds=getCsrsForRep(cu.id);
                 const myCsrs=REPS.filter(r=>myCsrIds.includes(r.id)&&r.is_active!==false);
                 const otherCsrs=REPS.filter(r=>r.is_active!==false&&r.role==='csr'&&!myCsrIds.includes(r.id));
@@ -26134,6 +26373,12 @@ export default function App(){
               <option value={0}>Urgent</option><option value={1}>High</option><option value={2}>Normal</option><option value={3}>Low</option>
             </select></div>
         </div>
+        <div style={{marginBottom:12}}><label className="form-label">Due Date (optional)</label>
+          <div style={{display:'flex',gap:6,alignItems:'center'}}>
+            <input type="date" className="form-input" value={todoModal.due_date||''} onChange={e=>setTodoModal(m=>({...m,due_date:e.target.value}))} style={{flex:1}}/>
+            <button type="button" className="btn btn-sm btn-secondary" onClick={()=>{const d=new Date();setTodoModal(m=>({...m,due_date:`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}))}}>Today</button>
+            {todoModal.due_date&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>setTodoModal(m=>({...m,due_date:''}))}>Clear</button>}
+          </div></div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
           <div><label className="form-label">{todoModal.doc_label?'Document #':'SO # (optional)'}</label>
             {todoModal.doc_label?<input className="form-input" disabled value={todoModal.doc_label}/>:
@@ -26153,9 +26398,9 @@ export default function App(){
       <div className="modal-footer" style={{display:'flex',gap:8,justifyContent:'flex-end',padding:'12px 20px',borderTop:'1px solid #e2e8f0'}}>
         <button className="btn btn-secondary" onClick={()=>setTodoModal(m=>({...m,open:false}))}>Cancel</button>
         <button className="btn btn-primary" disabled={!todoModal.title.trim()||!todoModal.assigned_to} onClick={()=>{
-          const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,priority:todoModal.priority,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
+          const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,priority:todoModal.priority,due_date:todoModal.due_date||null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
           setAssignedTodos(prev=>[newTodo,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2});
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',wh_only:false});
           nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
         }}>Assign Task</button>
       </div>
