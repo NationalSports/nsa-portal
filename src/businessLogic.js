@@ -146,6 +146,11 @@ const buildJobs = (o) => {
         const part = 'numbers_' + dt + '@' + (d.position || '');
         if (!decosByType[dt]) decosByType[dt] = [];
         decosByType[dt].push({ part, d, di });
+      } else if (d.kind === 'names') {
+        const dt = d.name_method || 'heat_press';
+        const part = 'names_' + dt + '@' + (d.position || '');
+        if (!decosByType[dt]) decosByType[dt] = [];
+        decosByType[dt].push({ part, d, di });
       }
     });
     Object.entries(decosByType).forEach(([dt, decos]) => {
@@ -180,6 +185,10 @@ const buildJobs = (o) => {
         positions.add(d.position || '');
         artNames.push('Numbers — ' + (d.num_method || 'heat_transfer').replace(/_/g, ' '));
         decoTypes.push(d.num_method || 'heat_transfer');
+      } else if (d.kind === 'names') {
+        positions.add(d.position || '');
+        artNames.push('Names — ' + (d.name_method || 'heat_press').replace(/_/g, ' '));
+        decoTypes.push(d.name_method || 'heat_press');
       }
     });
     const items = grp.items.map(({ idx, it, decos }) => {

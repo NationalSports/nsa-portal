@@ -1492,7 +1492,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const itemIsReversible=i=>{const it=o.items[i];return!!(it&&safeDecos(it).some(d=>d.reversible))};
   const addArtDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null,...(rev?{reversible:true}:{})}]}:x))};
   const addNumDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'numbers',position:'Back',num_method:'screen_print',num_size:'6"',two_color:false,sell_override:null,custom_font_art_id:null,roster:{},...(rev?{reversible:true}:{})}]}:x))};
-  const addNameDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'names',position:'Back Center',sell_override:null,sell_each:6,cost_each:3,names:{},...(rev?{reversible:true}:{})}]}:x))};
+  const addNameDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'names',position:'Back Center',name_method:'heat_press',sell_override:null,sell_each:6,cost_each:3,names:{},...(rev?{reversible:true}:{})}]}:x))};
   const addOutsideDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'outside_deco',position:'Front Center',vendor:'',deco_type:'embroidery',cost_each:0,sell_each:0,notes:'',sell_override:null,...(rev?{reversible:true}:{})}]}:x))};
   const uD=(ii,di,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,[k]:v}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   const uDM=(ii,di,updates)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,...updates}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
@@ -1659,6 +1659,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const part='numbers_'+dt+'@'+safeStr(d.position);
           if(!decosByType[dt])decosByType[dt]=[];
           decosByType[dt].push({part,d,di});
+        } else if(d.kind==='names'){
+          const dt=d.name_method||'heat_press';
+          const part='names_'+dt+'@'+safeStr(d.position);
+          if(!decosByType[dt])decosByType[dt]=[];
+          decosByType[dt].push({part,d,di});
         }
       });
       // Create one signature entry per deco type group
@@ -1699,6 +1704,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           positions.add(safeStr(d.position));
           artNames.push('Numbers — '+(d.num_method||'heat_transfer').replace(/_/g,' '));
           decoTypes.push(d.num_method||'heat_transfer');
+        } else if(d.kind==='names'){
+          positions.add(safeStr(d.position));
+          artNames.push('Names — '+(d.name_method||'heat_press').replace(/_/g,' '));
+          decoTypes.push(d.name_method||'heat_press');
         }
       });
       // Numbers-only jobs (no art decoration) still need a mockup / setup — they
@@ -1768,6 +1777,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         _art_ids:j._art_ids||[],
         // Preserve dual-run order fields
         run_order:existing?.run_order||null,run1_done:existing?.run1_done||false,run2_done:existing?.run2_done||false,
+        // Preserve embroidery digitized-names file link
+        emb_names_link:existing?.emb_names_link||null,
       };
     });
     // Preserve per-item sizes/fulSizes overrides from prior custom splits so the parent job keeps
@@ -3001,6 +3012,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span onClick={()=>setCollapsedNames(p=>({...p,[nKey]:!p[nKey]}))} style={{cursor:'pointer',fontSize:11,color:'#92400e',transition:'transform 0.2s',transform:nCollapsed?'rotate(-90deg)':'rotate(0deg)'}}>▼</span>
                 <span style={{fontSize:18}}>🏷️</span><span style={{fontWeight:700,fontSize:13,cursor:'pointer'}} onClick={()=>setCollapsedNames(p=>({...p,[nKey]:!p[nKey]}))}>Names</span>
                 <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Method:</span>
+                <Bg options={[{value:'heat_press',label:'Heat Press'},{value:'embroidery',label:'Embroidery'}]} value={deco.name_method||'heat_press'} onChange={v=>uD(idx,di,'name_method',v)}/>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Color:</span>
                 <input className="form-input" style={{width:90,fontSize:12,padding:'2px 6px'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
                 <div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
@@ -6298,6 +6311,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     Multi-job item: {siblings.map(s=><span key={s.id} style={{fontWeight:700}}>{s.art_name||s.deco_type?.replace(/_/g,' ')} <span style={{padding:'1px 4px',borderRadius:3,fontSize:9,background:s.prod_status==='completed'||s.prod_status==='shipped'?'#dcfce7':'#fee2e2',color:s.prod_status==='completed'||s.prod_status==='shipped'?'#166534':'#dc2626'}}>{prodLabels[s.prod_status]||s.prod_status}</span></span>).reduce((acc,el,i)=>i===0?[el]:[...acc,<span key={'sep-'+i}> · </span>,el],[])}
                   </div>})()}
                 {j.split_from&&<div style={{fontSize:11,color:'#7c3aed',marginTop:2}}>✂️ Split from {j.split_from}</div>}
+                {j.deco_type==='embroidery'&&<div style={{marginTop:6,display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                  <span style={{fontSize:11,fontWeight:700,color:'#6d28d9'}}>🧵 Names File:</span>
+                  <input type="text" className="form-input" placeholder="Paste Google Drive link to digitized name files"
+                    defaultValue={j.emb_names_link||''} style={{fontSize:11,padding:'2px 8px',flex:'0 1 360px',minWidth:240}}
+                    onClick={e=>e.stopPropagation()} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}}
+                    onBlur={e=>{const v=e.target.value.trim();if(v===(j.emb_names_link||''))return;const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,emb_names_link:v}:jj);setO(e2=>({...e2,jobs:updJobs,updated_at:new Date().toLocaleString()}));setDirty(true);nf(v?'Names file link saved':'Names file link cleared')}}/>
+                  {j.emb_names_link&&<a href={j.emb_names_link} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:11,fontWeight:700,color:'#2563eb',textDecoration:'underline'}}>↗ Open</a>}
+                </div>}
               </div>
               <div style={{textAlign:'right'}}>
                 <div style={{fontSize:24,fontWeight:800,color:pct>=100?'#166534':'#1e40af'}}>{j.fulfilled_units}/{j.total_units}</div>
