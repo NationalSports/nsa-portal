@@ -4495,6 +4495,13 @@ export default function App(){
     nf('Snoozed for '+days+' day'+(days!==1?'s':''));
   };
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
+  // Lock non-admin/GM users to their own dashboard view (they shouldn't land on the admin overview).
+  React.useEffect(()=>{
+    if(!cu?.role)return;
+    if(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return;
+    const map={csr:'csr',rep:'sales',warehouse:'warehouse',artist:'decorator',art:'decorator',production:'production',prod_manager:'production',prod_assistant:'production',accounting:'admin'};
+    setDashView(map[cu.role]||'warehouse');
+  },[cu?.id,cu?.role]);
   const handleLogin=(user)=>{_sessionDead=false;setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
   // Called from the save layer when a session refresh fails: clear the dead session and bounce to login
@@ -14385,7 +14392,7 @@ export default function App(){
       {id:'deliver',label:'Deliver',icon:'🚚',count:fDeliver.length,color:'#d97706'},
       {id:'pickup',label:'Awaiting Pickup',icon:'🚚',count:awaitingPickupCount,color:'#d97706'},
       {id:'stockpo',label:'Stock POs',icon:'📋',count:openStockPOs.length,color:'#6366f1'},
-      {id:'tasks',label:'My Tasks',icon:'📌',count:myWhTasks.length,color:'#0891b2'},
+      ...(cu.role==='warehouse'?[{id:'tasks',label:'My Tasks',icon:'📌',count:myWhTasks.length,color:'#0891b2'}]:[]),
       {id:'recent',label:'Recent Actions',icon:'🕐',count:whRecentActions.filter(a=>(a.ts||0)>=Date.now()-7*86400000).length,color:'#475569'},
     ];
 
