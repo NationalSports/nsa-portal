@@ -3515,7 +3515,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 sku:sku||'CUSTOM',
                 name:catMatch?.name||p.name||'',
                 brand,
-                color:p.color||catMatch?.color||'',
+                color:catMatch?.color||p.color||'',
                 nsa_cost:cost,
                 retail_price:retail,
                 unit_sell:sell,

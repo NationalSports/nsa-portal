@@ -101,7 +101,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
         brand,
         vendor_id: catMatch?.vendor_id || null,
         pricing_group: catMatch?.pricing_group || null,
-        color: p.color || catMatch?.color || '',
+        color: catMatch?.color || p.color || '',
         nsa_cost: cost,
         retail_price: retail,
         unit_sell: sell,
