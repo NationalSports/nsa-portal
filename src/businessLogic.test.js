@@ -896,7 +896,7 @@ describe('Job Building', () => {
     expect(jobs).toHaveLength(0);
   });
 
-  test('number decorations generate jobs, name decorations do not', () => {
+  test('number and name decorations each generate a job, split by method', () => {
     const so = makeSO({
       items: [makeSOItem({
         sizes: { S: 10 },
@@ -908,8 +908,23 @@ describe('Job Building', () => {
       jobs: [],
     });
     const jobs = buildJobs(so);
+    expect(jobs).toHaveLength(2);
+    expect(jobs.some(j => j.art_name.includes('Numbers'))).toBe(true);
+    expect(jobs.some(j => j.art_name.includes('Names'))).toBe(true);
+  });
+
+  test('embroidery names build an embroidery job', () => {
+    const so = makeSO({
+      items: [makeSOItem({
+        sizes: { S: 10 },
+        decorations: [{ kind: 'names', name_method: 'embroidery', position: 'Back' }],
+      })],
+      jobs: [],
+    });
+    const jobs = buildJobs(so);
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].art_name).toContain('Numbers');
+    expect(jobs[0].deco_type).toBe('embroidery');
+    expect(jobs[0].art_name).toContain('Names');
   });
 
   test('art status from art file propagates to job', () => {

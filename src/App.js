@@ -7419,7 +7419,7 @@ export default function App(){
       const cleanJob={id:j.id,key:j.key,art_file_id:j.art_file_id,art_name:j.art_name,deco_type:j.deco_type,
         positions:j.positions,art_status:j.art_status,item_status:j.item_status,prod_status:'hold',
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,split_from:null,
-        created_at:j.created_at,items:j.items,_auto:false};
+        created_at:j.created_at,items:j.items,emb_names_link:j.emb_names_link||null,_auto:false};
       savSO({...jso,jobs:[...existing,cleanJob]});
       nf('🏭 '+j.id+' added to Production Board');
     };
