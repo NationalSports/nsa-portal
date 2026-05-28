@@ -53,6 +53,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[moreSubPage,setMoreSubPage]=useState(null);
   const[scope,setScope]=useState('mine'); // mine | all — default reps see their own work first
   const[reportScope,setReportScope]=useState('mine'); // mine | all
+  // Jobs filters
+  const[jobsStatusF,setJobsStatusF]=useState('active');
+  const[jobsDecoF,setJobsDecoF]=useState('all');
+  const[jobsQ,setJobsQ]=useState('');
   // New estimate form
   const[newEst,setNewEst]=useState(null); // null = not creating, object = in progress
   const[newEstCustQ,setNewEstCustQ]=useState('');
@@ -1133,15 +1137,41 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     if(subPage==='jobs'){
       const allJobs=[];
       sos.filter(so=>inScope(so.customer_id,so.created_by)).forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).forEach(j=>{allJobs.push({...j,so,so_id:so.id,customer:cc?.name||cc?.alpha_tag||'—'})})});
-      const activeJobs=allJobs.filter(j=>!['completed','shipped','draft'].includes(j.prod_status||'')).sort((a,b)=>(a.so?.expected_date||'9').localeCompare(b.so?.expected_date||'9'));
+      const STATUS_FILTERS=[
+        {k:'active',l:'Active',f:j=>!['completed','shipped','draft'].includes(j.prod_status||'')},
+        {k:'ready',l:'Ready',f:j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'},
+        {k:'staging',l:'In Line',f:j=>j.prod_status==='staging'},
+        {k:'in_process',l:'In Process',f:j=>j.prod_status==='in_process'},
+        {k:'hold',l:'On Hold',f:j=>j.prod_status==='hold'},
+        {k:'completed',l:'Done',f:j=>['completed','shipped'].includes(j.prod_status||'')},
+        {k:'all',l:'All',f:j=>(j.prod_status||'')!=='draft'},
+      ];
+      const decoTypes=[...new Set(allJobs.map(j=>j.deco_type).filter(Boolean))].sort();
+      const statusFn=(STATUS_FILTERS.find(s=>s.k===jobsStatusF)||STATUS_FILTERS[0]).f;
+      let jobs=allJobs.filter(statusFn);
+      if(jobsDecoF!=='all')jobs=jobs.filter(j=>j.deco_type===jobsDecoF);
+      if(jobsQ.length>=2){const s=jobsQ.toLowerCase();jobs=jobs.filter(j=>((j.id||'')+' '+(j.art_name||'')+' '+(j.deco_type||'')+' '+(j.customer||'')+' '+(j.so_id||'')+' '+(j.assigned_to||'')).toLowerCase().includes(s))}
+      jobs=jobs.sort((a,b)=>(a.so?.expected_date||'9').localeCompare(b.so?.expected_date||'9'));
       return<div className="mp-page">
         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
           <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
-          <div className="mp-page-title" style={{margin:0,flex:1}}>Jobs ({activeJobs.length})</div>
+          <div className="mp-page-title" style={{margin:0,flex:1}}>Jobs ({jobs.length})</div>
           <ScopeToggle/>
         </div>
-        {activeJobs.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40,fontSize:14}}>No active jobs.</div>}
-        {activeJobs.slice(0,60).map((j,i)=><div key={i} className="mp-list-card" onClick={()=>{if(j.so)setDetail({type:'order',data:j.so})}}>
+        <div className="mp-search-inline" style={{marginBottom:8}}>
+          <MIcon name="search" size={16}/>
+          <input placeholder="Search jobs by art, SO, customer..." value={jobsQ} onChange={e=>setJobsQ(e.target.value)} className="mp-search-input"/>
+          {jobsQ&&<button onClick={()=>setJobsQ('')} className="mp-clear-btn"><MIcon name="x" size={14}/></button>}
+        </div>
+        <div className="mp-filter-row" style={{overflowX:'auto',WebkitOverflowScrolling:'touch',flexWrap:'nowrap'}}>
+          {STATUS_FILTERS.map(s=><button key={s.k} className={`mp-filter-btn${jobsStatusF===s.k?' active':''}`} style={{whiteSpace:'nowrap',flexShrink:0}} onClick={()=>setJobsStatusF(s.k)}>{s.l}</button>)}
+        </div>
+        {decoTypes.length>1&&<select value={jobsDecoF} onChange={e=>setJobsDecoF(e.target.value)} className="mp-sort-select" style={{width:'100%',marginBottom:8}}>
+          <option value="all">All Deco Types</option>
+          {decoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}
+        </select>}
+        {jobs.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40,fontSize:14}}>No jobs match.</div>}
+        {jobs.slice(0,80).map((j,i)=><div key={i} className="mp-list-card" onClick={()=>{if(j.so)setDetail({type:'order',data:j.so})}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
             <div style={{flex:1,minWidth:0}}>
               <div style={{display:'flex',gap:8,alignItems:'center'}}>
@@ -1149,10 +1179,12 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                 <span style={statusBadge(j.prod_status||'pending')}>{prodLabel(j)}</span>
               </div>
               <div style={{fontSize:12,color:'#334155',marginTop:2}}>{(j.deco_type||'—').replace(/_/g,' ')} · {j.art_name||'—'}</div>
-              <div style={{fontSize:11,color:'#94a3b8'}}>{j.customer} · {j.so_id}</div>
+              <div style={{fontSize:11,color:'#94a3b8'}}>{j.customer} · {j.so_id}{j.assigned_to?' · '+j.assigned_to:''}</div>
             </div>
+            <div style={{textAlign:'right',flexShrink:0,marginLeft:8,fontSize:11,color:'#64748b'}}>{fmtDate(j.so?.expected_date)}</div>
           </div>
         </div>)}
+        {jobs.length>80&&<div style={{textAlign:'center',color:'#94a3b8',padding:12,fontSize:12}}>Showing first 80 of {jobs.length}. Use search to narrow.</div>}
       </div>;
     }
     if(subPage==='production'){
