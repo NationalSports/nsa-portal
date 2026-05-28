@@ -228,6 +228,31 @@ const isJobReady = (j, o) => {
   return totalSz > 0 && fulfilledSz >= totalSz;
 };
 
+// ── Linking jobs that share a decoration ("run together") ──
+// Two jobs are "the same screen/setup" when they carry the same artwork (matched by name +
+// deco type, the same way art is de-duped across orders elsewhere). Used to auto-detect jobs
+// that should run together so the screen/digitized file isn't recreated per sales order.
+const jobScreenKey = (j) => {
+  if (!j) return null;
+  const name = (j.art_name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!name || !j.deco_type) return null;
+  return name + '|' + j.deco_type;
+};
+
+// Resolve the group a job runs with. Manual link_group (an explicit override) always wins —
+// it lets reps tie jobs together even when art names differ across sub-customers. Otherwise
+// jobs auto-group by screen key, scoped to the parent customer so unrelated parents that
+// happen to reuse a name don't merge. auto_group_off opts a job out of auto-grouping (the
+// override for when two different designs share a name). Returns null when the job groups
+// with nothing.
+const jobGroupKey = (j, parentId) => {
+  if (!j) return null;
+  if (j.link_group) return 'm:' + j.link_group;
+  if (j.auto_group_off) return null;
+  const sk = jobScreenKey(j);
+  return sk ? 'a:' + (parentId || '') + '|' + sk : null;
+};
+
 // ── Totals Calculation ──
 function calcTotals(o, cust) {
   const artQty = {};
@@ -495,7 +520,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, isJobReady, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, isJobReady, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars

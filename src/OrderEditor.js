@@ -15,6 +15,7 @@ import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIO
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
+import { jobScreenKey, jobGroupKey } from './businessLogic';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -27,7 +28,7 @@ const nameWithBrand=(name,brand)=>{
   return b+' '+n;
 };
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -6353,6 +6354,72 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     onBlur={e=>{const v=e.target.value.trim();if(v===(j.emb_names_link||''))return;const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,emb_names_link:v}:jj);setO(e2=>({...e2,jobs:updJobs,updated_at:new Date().toLocaleString()}));setDirty(true);nf(v?'Names file link saved':'Names file link cleared')}}/>
                   {j.emb_names_link&&<a href={j.emb_names_link} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:11,fontWeight:700,color:'#2563eb',textDecoration:'underline'}}>↗ Open</a>}
                 </div>}
+                {/* ── Linked jobs ("run together") ── Surfaces other jobs across this parent's
+                    sub-customers that share this decoration, so they can be run on one screen
+                    setup. Auto-matches by artwork name + deco type; a manual link covers cases
+                    where names differ across sub-customers. */}
+                {isSO&&(()=>{
+                  const _parentId=cust?.parent_id||cust?.id||null;
+                  const _familyIds=new Set((allCustomers||[]).filter(c=>c.id===_parentId||c.parent_id===_parentId).map(c=>c.id));
+                  if(_parentId)_familyIds.add(_parentId);
+                  const _custName=id=>(allCustomers||[]).find(x=>x.id===id)?.name||'—';
+                  const _pidOf=s=>{const c=(allCustomers||[]).find(x=>x.id===s.customer_id);return c?.parent_id||c?.id||null};
+                  const srcOf=s=>(s.id===o.id?o:s);
+                  const _grp=jobGroupKey(j,_parentId);
+                  const _isAuto=!!_grp&&!j.link_group;
+                  const linked=[];const candidates=[];
+                  (allOrders||[]).forEach(s=>{
+                    if(!_familyIds.has(s.customer_id))return;
+                    const src=srcOf(s);
+                    safeJobs(src).forEach(jj=>{
+                      if(s.id===o.id&&jj.id===j.id)return;
+                      const gk=jobGroupKey(jj,_pidOf(s));
+                      if(_grp&&gk===_grp){linked.push({soId:s.id,custId:s.customer_id,job:jj,auto:!jj.link_group});return}
+                      candidates.push({value:s.id+'||'+jj.id,label:(jj.art_name||jj.deco_type?.replace(/_/g,' ')||'Job')+' — '+_custName(s.customer_id)+' · '+s.id,searchText:(jj.deco_type||'')+' '+(jj.prod_status||'')+' '+s.id+' '+_custName(s.customer_id)});
+                    });
+                  });
+                  if(!linked.length&&!candidates.length)return null;
+                  const doLink=value=>{
+                    const[tSoId,tJobId]=value.split('||');
+                    const tSo=(allOrders||[]).find(s=>s.id===tSoId);const tSrc=tSoId===o.id?o:tSo;const tJob=tSrc&&safeJobs(tSrc).find(jj=>jj.id===tJobId);if(!tJob)return;
+                    const newGid=j.link_group||tJob.link_group||('lg_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7));
+                    const localIds=new Set([j.id]);if(tSoId===o.id)localIds.add(tJobId);
+                    const oldGroups=new Set([j.link_group,tJob.link_group].filter(g=>g&&g!==newGid));
+                    if(oldGroups.size)(allOrders||[]).forEach(s=>{const src=srcOf(s);safeJobs(src).forEach(jj=>{if(jj.link_group&&oldGroups.has(jj.link_group)){if(s.id===o.id)localIds.add(jj.id);else if(onSetJobLinkGroup)onSetJobLinkGroup(s.id,jj.id,newGid)}})});
+                    setO(e2=>({...e2,jobs:safeJobs(e2).map(jj=>localIds.has(jj.id)?{...jj,link_group:newGid,auto_group_off:false}:jj),updated_at:new Date().toLocaleString()}));setDirty(true);
+                    if(tSoId!==o.id&&onSetJobLinkGroup)onSetJobLinkGroup(tSoId,tJobId,newGid);
+                    nf('Jobs linked — they’ll run together when both reach the same stage');
+                  };
+                  const unlinkMember=m=>{
+                    const manual=!!m.job.link_group;
+                    if(m.soId===o.id){setO(e2=>({...e2,jobs:safeJobs(e2).map(jj=>jj.id===m.job.id?{...jj,...(manual?{link_group:null}:{auto_group_off:true})}:jj),updated_at:new Date().toLocaleString()}));setDirty(true)}
+                    else if(manual){if(onSetJobLinkGroup)onSetJobLinkGroup(m.soId,m.job.id,null)}
+                    else if(onSetJobAutoGroupOff)onSetJobAutoGroupOff(m.soId,m.job.id,true);
+                    nf('Job unlinked');
+                  };
+                  const unlinkSelf=()=>{
+                    setO(e2=>({...e2,jobs:safeJobs(e2).map(jj=>jj.id===j.id?{...jj,...(j.link_group?{link_group:null}:{auto_group_off:true})}:jj),updated_at:new Date().toLocaleString()}));setDirty(true);
+                    nf('This job removed from the run-together group');
+                  };
+                  return<div style={{marginTop:8,padding:'8px 10px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:linked.length?6:0,flexWrap:'wrap'}}>
+                      <span style={{fontSize:11,fontWeight:700,color:'#0f172a'}}>🔗 Runs together with</span>
+                      {!linked.length&&<span style={{fontSize:11,color:'#94a3b8'}}>nothing yet — link a job below if it uses the same screen</span>}
+                      {_isAuto&&linked.length>0&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#dbeafe',color:'#1e40af'}}>auto-matched by artwork</span>}
+                    </div>
+                    {linked.map(m=>{const mj=m.job;return<div key={m.soId+'|'+mj.id} style={{display:'flex',alignItems:'center',gap:6,padding:'3px 0',flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
+                      <span style={{fontSize:11,fontWeight:600,color:'#1e293b'}}>{mj.art_name||mj.deco_type?.replace(/_/g,' ')||'Job'}</span>
+                      <span style={{fontSize:10,color:'#64748b'}}>{_custName(m.custId)} · {onViewSO?<span style={{cursor:'pointer',textDecoration:'underline',color:'#2563eb',fontWeight:600}} onClick={()=>onViewSO(m.soId)} title="Open sales order">{m.soId}</span>:m.soId}</span>
+                      <span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:SC[mj.prod_status]?.bg||'#f1f5f9',color:SC[mj.prod_status]?.c||'#475569'}}>{prodLabels[mj.prod_status]||mj.prod_status}</span>
+                      {m.auto&&<span style={{fontSize:8,color:'#94a3b8'}}>auto</span>}
+                      <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'1px 6px'}} title={m.auto?'These aren’t the same screen — stop auto-grouping it':'Remove this manual link'} onClick={()=>unlinkMember(m)}>Unlink</button>
+                    </div>})}
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginTop:6,flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
+                      {candidates.length>0&&<div style={{flex:'0 1 320px',minWidth:220}}><SearchSelect options={candidates} value="" onChange={doLink} placeholder="🔗 Link another job (same parent)…"/></div>}
+                      {linked.length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 8px'}} onClick={unlinkSelf} title={j.link_group?'Remove this job from the linked group':'Stop auto-grouping this job by artwork'}>{j.link_group?'Leave group':'Not the same screen'}</button>}
+                    </div>
+                  </div>;
+                })()}
               </div>
               <div style={{textAlign:'right'}}>
                 <div style={{fontSize:24,fontWeight:800,color:pct>=100?'#166534':'#1e40af'}}>{j.fulfilled_units}/{j.total_units}</div>
