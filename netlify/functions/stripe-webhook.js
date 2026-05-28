@@ -93,7 +93,7 @@ async function sendConfirmation(sb, order) {
       <td align="left" style="padding:12px 20px;background:#fff;border:1px solid #eef1f5;border-bottom:none;border-radius:10px 0 0 0"><img src="${nsaLogo}" alt="National Sports Apparel" height="32" style="height:32px;display:block"></td>
       <td align="right" style="padding:12px 20px;background:#fff;border:1px solid #eef1f5;border-bottom:none;border-left:none;border-radius:0 10px 0 0">${store.logo_url ? `<img src="${store.logo_url}" alt="${store.name}" height="40" style="height:40px;max-width:130px;object-fit:contain;display:inline-block">` : `<span style="font-weight:800;color:#0b1220">${store.name}</span>`}</td>
     </tr></table>`;
-  const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:560px;margin:0 auto">
+  const html = `<div style="font-family:'Source Sans 3',-apple-system,Segoe UI,Roboto,sans-serif;color:#2A2F3E;max-width:560px;margin:0 auto">
     ${logoBar}
     <div style="background:${store.primary_color || '#0b1f3a'};color:#fff;padding:18px 24px">
       <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;opacity:.85">${store.name}</div>

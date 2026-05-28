@@ -18,27 +18,28 @@ const cartTotal = (items) => items.reduce((a, l) => a + lineUnit(l) * (l.qty || 
 const shipFee = (store) => store && store.delivery_mode === 'ship_home' ? (Number(store.flat_shipping) || 0) : 0;
 const grandTotal = (store, items) => cartTotal(items) + shipFee(store);
 
-// Bold athletic type system: condensed display for headlines, Inter for body.
-const DISPLAY = "'Anton','Oswald','Helvetica Neue',Impact,sans-serif";
-const BODY = "'Inter','Helvetica Neue',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif";
+// Type system aligned with the NSA marketing site:
+// Barlow Condensed for display, Source Sans 3 for body.
+const DISPLAY = "'Barlow Condensed','Oswald','Helvetica Neue',Impact,sans-serif";
+const BODY = "'Source Sans 3','Source Sans Pro','Helvetica Neue',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif";
 
 function StoreStyles() {
   return (
     <>
       <link rel="preconnect" href="https://fonts.googleapis.com" />
       <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-      <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+      <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
       <style>{`
         .sf-root *{box-sizing:border-box}
-        .sf-root{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
-        .sf-root ::selection{background:var(--sf-accent,#e11d2a);color:#fff}
+        .sf-root{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;background:#F7F8FB;color:#2A2F3E}
+        .sf-root ::selection{background:var(--sf-accent,#962C32);color:#fff}
         html{scroll-behavior:smooth}
         .sf-btn{transition:transform .15s ease, filter .15s ease, box-shadow .15s ease}
         .sf-btn:hover{transform:translateY(-2px);filter:brightness(1.06)}
         .sf-btn:active{transform:translateY(0)}
         .sf-card{transition:transform .16s ease, box-shadow .16s ease}
         .sf-card .sf-img{transition:transform .35s ease}
-        .sf-card:hover{transform:translateY(-5px);box-shadow:0 18px 40px rgba(11,18,32,.16)}
+        .sf-card:hover{transform:translateY(-5px);box-shadow:0 18px 40px rgba(15,26,56,.14)}
         .sf-card:hover .sf-img{transform:scale(1.07)}
         .sf-card:hover .sf-bar{transform:scaleX(1)}
       `}</style>
@@ -78,8 +79,8 @@ function navTo(path) { window.history.pushState({}, '', path); window.dispatchEv
 
 function useTheme(store) {
   return useMemo(() => {
-    const primary = store?.primary_color || '#0b1f3a';
-    const accent = store?.accent_color || '#e11d2a';
+    const primary = store?.primary_color || '#192853';
+    const accent = store?.accent_color || '#962C32';
     const theme = store?.theme || 'classic';
     return { primary, accent, theme, radius: theme === 'minimal' ? 2 : theme === 'bold' ? 14 : 8 };
   }, [store]);
@@ -153,7 +154,7 @@ export default function Storefront() {
 
   const isOpen = store.status === 'open';
   return (
-    <div className="sf-root" style={{ '--sf-accent': theme.accent, '--sf-primary': theme.primary, fontFamily: BODY, color: '#0b1220', minHeight: '100vh', background: '#fff', display: 'flex', flexDirection: 'column' }}>
+    <div className="sf-root" style={{ '--sf-accent': theme.accent, '--sf-primary': theme.primary, fontFamily: BODY, color: '#2A2F3E', minHeight: '100vh', background: '#F7F8FB', display: 'flex', flexDirection: 'column' }}>
       <StoreStyles />
       <Header store={store} theme={theme} cartCount={cartCount(cart)} />
       {!isOpen && <PreviewBanner status={store.status} />}
@@ -170,13 +171,13 @@ export default function Storefront() {
   );
 }
 
-const Wrap = ({ children }) => <div style={{ maxWidth: 1180, margin: '0 auto', padding: '0 20px 64px', boxSizing: 'border-box' }}>{children}</div>;
+const Wrap = ({ children }) => <div style={{ maxWidth: 1240, margin: '0 auto', padding: '0 20px 64px', boxSizing: 'border-box' }}>{children}</div>;
 
 // ── Header ───────────────────────────────────────────────────────────
 function Header({ store, theme, cartCount = 0 }) {
   return (
     <header style={{ position: 'sticky', top: 0, zIndex: 20, background: `linear-gradient(120deg, ${theme.primary}, ${shade(theme.primary, -10)})`, color: '#fff', borderBottom: `3px solid ${theme.accent}`, boxShadow: '0 2px 14px rgba(11,18,32,.18)' }}>
-      <div style={{ maxWidth: 1180, margin: '0 auto', padding: '13px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
+      <div style={{ maxWidth: 1240, margin: '0 auto', padding: '13px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 13, cursor: 'pointer' }} onClick={() => navTo('/shop/' + store.slug)}>
           {store.logo_url
             ? <img src={store.logo_url} alt="" style={{ height: 46, width: 46, objectFit: 'contain', borderRadius: 10, background: '#fff', padding: 4, boxShadow: '0 2px 8px rgba(0,0,0,.25)' }} />
@@ -209,7 +210,7 @@ function Home({ store, theme, products }) {
       <section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden' }}>
         {/* angled accent slash */}
         <div style={{ position: 'absolute', top: 0, bottom: 0, right: -120, width: 220, background: theme.accent, opacity: store.banner_url ? 0.85 : 0.9, transform: 'skewX(-12deg)', boxShadow: '0 0 60px rgba(0,0,0,.25)' }} />
-        <div style={{ position: 'relative', maxWidth: 1180, margin: '0 auto', padding: 'clamp(56px,9vw,96px) 20px clamp(56px,8vw,84px)' }}>
+        <div style={{ position: 'relative', maxWidth: 1240, margin: '0 auto', padding: 'clamp(56px,9vw,96px) 20px clamp(56px,8vw,84px)' }}>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, marginBottom: 18 }}>
             <span style={{ width: 30, height: 4, background: theme.accent, borderRadius: 2 }} />
             <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: 2.5, textTransform: 'uppercase', opacity: 0.92 }}>Official Team Store</span>
@@ -224,7 +225,7 @@ function Home({ store, theme, products }) {
 
       <TrustStrip store={store} theme={theme} />
 
-      <div id="shop-grid" style={{ maxWidth: 1180, margin: '0 auto', padding: '48px 20px 80px' }}>
+      <div id="shop-grid" style={{ maxWidth: 1240, margin: '0 auto', padding: '48px 20px 80px' }}>
         <SectionTitle theme={theme}>The Collection</SectionTitle>
         {products.length === 0
           ? <Splash>No products in this store yet.</Splash>
@@ -240,8 +241,8 @@ function TrustStrip({ store, theme }) {
   const deliver = store.delivery_mode === 'ship_home' ? 'Ships to your door' : 'Delivered to the club';
   const items = [['★', 'Official team apparel'], ['⚡', 'Quality custom decoration'], ['📦', deliver], ['♥', 'Supports the team']];
   return (
-    <div style={{ background: '#0b1220', color: '#fff' }}>
-      <div style={{ maxWidth: 1180, margin: '0 auto', padding: '16px 20px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12 }}>
+    <div style={{ background: '#0F1A38', color: '#fff' }}>
+      <div style={{ maxWidth: 1240, margin: '0 auto', padding: '16px 20px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12 }}>
         {items.map(([icon, label]) => (
           <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'center', fontSize: 13, fontWeight: 600, letterSpacing: 0.3 }}>
             <span style={{ color: theme.accent, fontSize: 16 }}>{icon}</span>{label}
@@ -580,7 +581,7 @@ async function sendOrderEmail({ store, order, cart, buyer, shipping, total, disc
           <td align="right" style="padding:12px 20px;background:#fff;border:1px solid #eef1f5;border-bottom:none;border-left:none;border-radius:0 10px 0 0">${store.logo_url ? `<img src="${store.logo_url}" alt="${store.name}" height="40" style="height:40px;max-width:130px;object-fit:contain;display:inline-block">` : `<span style="font-weight:800;color:#0b1220">${store.name}</span>`}</td>
         </tr>
       </table>`;
-    const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:560px;margin:0 auto">
+    const html = `<div style="font-family:'Source Sans 3',-apple-system,Segoe UI,Roboto,sans-serif;color:#2A2F3E;max-width:560px;margin:0 auto">
       ${logoBar}
       <div style="background:${store.primary_color || '#0b1f3a'};color:#fff;padding:18px 24px">
         <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;opacity:.85">${store.name}</div>
