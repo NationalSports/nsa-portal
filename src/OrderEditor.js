@@ -8594,7 +8594,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             allLines.forEach(ln=>{updatedItems[ln.lineIdx].po_lines=updatedItems[ln.lineIdx].po_lines.filter((_,i)=>i!==ln.poIdx)});
             const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(null);nf('PO deleted');
           }}><Icon name="trash" size={10}/> Delete PO</button>
-          <button className="btn btn-primary" onClick={()=>setEditPO(null)}>Close</button>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            {onAssignTodo&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#0891b2',borderColor:'#a5f3fc'}} title="Assign a task to your CSR to order this PO" onClick={()=>{onAssignTodo({title:'Order PO '+(po.po_id||'')+(item?.sku?' — '+item.sku:''),description:(item?.name||'')+(item?.color?' · '+item.color:'')+(_poWide?.ord?' · '+_poWide.ord+' ordered':''),so_id:isSO?o.id:'',customer_id:o.customer_id||'',priority:2,doc_label:po.po_id||''});setEditPO(null)}}>📋 Assign TODO</button>}
+            <button className="btn btn-primary" onClick={()=>setEditPO(null)}>Close</button>
+          </div>
         </div>
       </div></div>})()}
 
