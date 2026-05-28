@@ -316,6 +316,12 @@ const _missing404Tables=new Map();// table → timestamp
 const _MISSING_TABLE_TTL=5*60*1000;// 5 minutes
 // Track which tables timed out during the most recent _dbLoad — cleared at start of each load
 const _lastLoadTimedOut=new Set();
+// Sticky per-entity hydration: ids of SOs/estimates whose items loaded cleanly at least once this
+// session. A later flaky/timed-out refresh keeps the in-memory items but can flip the per-load
+// _itemsHydrated flag to false; the save guards also honor this set so a legitimate edit/addition on a
+// once-loaded order isn't blocked. Entities that genuinely never loaded their items stay out of the set
+// and remain protected. Cleared only on full session reload (module reload).
+const _everHydratedItems=new Set();
 // Circuit breaker: track consecutive poll failures to implement exponential backoff
 let _pollConsecutiveFailures=0;
 const _POLL_BASE_INTERVAL=60000;// 60s normal interval (realtime handles instant sync)
@@ -632,7 +638,8 @@ const _dbLoad = async (opts={}) => {
         const{id:_,estimate_id:__,item_index:___,...rest}=item;return{...rest,decorations}});
       // _itemsHydrated: true only when estimate_items loaded cleanly this session. Lets save guards tell a
       // deliberate rep deletion (hydrated→empty) apart from items vanishing on a timed-out load (never hydrated).
-      return{...est,items,art_files,_itemsHydrated:!_lastLoadTimedOut.has('estimate_items'),_decosHydrated:!_lastLoadTimedOut.has('estimate_item_decorations')&&!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
+      const _estItemsHydrated=!_lastLoadTimedOut.has('estimate_items');if(_estItemsHydrated)_everHydratedItems.add(est.id);
+      return{...est,items,art_files,_itemsHydrated:_estItemsHydrated,_decosHydrated:!_lastLoadTimedOut.has('estimate_item_decorations')&&!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
       // Recycled-number carry-over guard: a reused SO id can inherit jobs/art from the order that
@@ -677,7 +684,8 @@ const _dbLoad = async (opts={}) => {
       const _hydratedPoIds=[...new Set(items.flatMap(it=>(it.po_lines||[]).map(p=>p.po_id).filter(Boolean)))];
       // _hydratedPickIds: same idea for pick lines, keyed by pick_id.
       const _hydratedPickIds=[...new Set(items.flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)))];
-      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_decosHydrated:!_lastLoadTimedOut.has('so_item_decorations')&&!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
+      const _soItemsHydrated=!_lastLoadTimedOut.has('so_items');if(_soItemsHydrated)_everHydratedItems.add(so.id);
+      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:_soItemsHydrated,_decosHydrated:!_lastLoadTimedOut.has('so_item_decorations')&&!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
@@ -818,8 +826,11 @@ const _dbSaveEstimateInner = async (est) => {
     // while not hydrated (fewer OR more), not just reductions. When items WERE hydrated, the list is trustworthy
     // and the rep can add/remove freely.
     const _clientEstItemCount=(items||[]).length;
+    // Client-authored estimate (new/imported): first save inserts the editor's items while the DB has none —
+    // they're authoritative, so trust this estimate for the rest of the session (see SO save for rationale).
+    if(oldItemIds.length===0&&_clientEstItemCount>0)_everHydratedItems.add(est.id);
     if(oldItemIds.length>0&&_clientEstItemCount!==oldItemIds.length){
-      if(est._itemsHydrated){
+      if(est._itemsHydrated||_everHydratedItems.has(est.id)){
         console.warn('[DB] Estimate',est.id,'saving with',_clientEstItemCount,'item(s) (DB had',oldItemIds.length,') — items were hydrated, treating as intentional edit');
       }else{
         console.error('[DB] SAFETY: Blocking estimate save —',_clientEstItemCount,'client item(s) vs',oldItemIds.length,'in DB for',est.id,'(items never hydrated this session)');
@@ -1024,8 +1035,14 @@ const _dbSaveSOInner = async (so) => {
     // ANY count mismatch while not hydrated (fewer OR more), not just reductions. When items WERE hydrated, the
     // list is trustworthy and the rep can add/remove freely (further guards below still protect orphaned jobs/decos).
     const _clientSoItemCount=(items||[]).length;
+    // Client-authored order (parsed/imported, webstore, converted, copied, new): the DB has no items yet, so
+    // this save is inserting the editor's items for the first time — they're authoritative. Trust this order
+    // for the rest of the session so a follow-up edit (e.g. adding a line) isn't blocked by the hydration flag,
+    // which only turns true after a later clean reload. Orders whose DB already holds items are NOT trusted here;
+    // they must still load cleanly to clear the guard.
+    if(oldItemIds.length===0&&_clientSoItemCount>0)_everHydratedItems.add(so.id);
     if(oldItemIds.length>0&&_clientSoItemCount!==oldItemIds.length){
-      if(so._itemsHydrated){
+      if(so._itemsHydrated||_everHydratedItems.has(so.id)){
         console.warn('[DB] SO',so.id,'saving with',_clientSoItemCount,'item(s) (DB had',oldItemIds.length,') — items were hydrated, treating as intentional edit');
       }else{
         console.error('[DB] SAFETY: Blocking SO save —',_clientSoItemCount,'client item(s) vs',oldItemIds.length,'in DB for',so.id,'(items never hydrated this session)');
