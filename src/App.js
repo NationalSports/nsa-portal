@@ -632,7 +632,7 @@ const _dbLoad = async (opts={}) => {
         const{id:_,estimate_id:__,item_index:___,...rest}=item;return{...rest,decorations}});
       // _itemsHydrated: true only when estimate_items loaded cleanly this session. Lets save guards tell a
       // deliberate rep deletion (hydrated→empty) apart from items vanishing on a timed-out load (never hydrated).
-      return{...est,items,art_files,_itemsHydrated:!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
+      return{...est,items,art_files,_itemsHydrated:!_lastLoadTimedOut.has('estimate_items'),_decosHydrated:!_lastLoadTimedOut.has('estimate_item_decorations')&&!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
       // Recycled-number carry-over guard: a reused SO id can inherit jobs/art from the order that
@@ -677,7 +677,7 @@ const _dbLoad = async (opts={}) => {
       const _hydratedPoIds=[...new Set(items.flatMap(it=>(it.po_lines||[]).map(p=>p.po_id).filter(Boolean)))];
       // _hydratedPickIds: same idea for pick lines, keyed by pick_id.
       const _hydratedPickIds=[...new Set(items.flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)))];
-      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
+      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_decosHydrated:!_lastLoadTimedOut.has('so_item_decorations')&&!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
@@ -824,16 +824,20 @@ const _dbSaveEstimateInner = async (est) => {
         return false;
       }
     }
-    // Safety check: if client has 0 decorations but DB has some, abort to prevent data loss
+    // Safety check: if client has 0 decorations but DB has some, abort to prevent data loss — but ONLY when
+    // decorations were not cleanly loaded this session. A timed-out estimate_item_decorations load strips decos
+    // off the items while the DB still has them, so a save would wipe them. When decos WERE hydrated, the client
+    // list is trustworthy and removing the last decoration is a deliberate edit (the user-reported case) — allow it.
     const clientDecoCount=(items||[]).reduce((a,it)=>a+(it.decorations?.length||0),0);
     const allNoDeco=(items||[]).length>0&&(items||[]).every(it=>it.no_deco);
-    if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length){
+    if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length&&!est._decosHydrated){
       const{count:dbDecoCount}=await supabase.from('estimate_item_decorations').select('id',{count:'exact',head:true}).in('estimate_item_id',oldItemIds);
-      if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking estimate save — client has 0 decorations but DB has',dbDecoCount,'for',est.id);if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');return false}
+      if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking estimate save — client has 0 decorations but DB has',dbDecoCount,'for',est.id,'(decorations never hydrated this session)');if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');return false}
     }
     // Per-item safety: block save if any single item would lose all its decorations.
     // Catches the partial-loss case the all-zero check above misses (one item drops decos while others retain them).
-    if(oldItemIds.length&&items?.length){
+    // Gated on _decosHydrated: when decos loaded cleanly, a per-item deco removal is a deliberate edit, so skip.
+    if(oldItemIds.length&&items?.length&&!est._decosHydrated){
       const{data:_oldDecoRows}=await supabase.from('estimate_item_decorations').select('estimate_item_id').in('estimate_item_id',oldItemIds);
       const _oldDecoByItem=new Map();(_oldDecoRows||[]).forEach(d=>_oldDecoByItem.set(d.estimate_item_id,(_oldDecoByItem.get(d.estimate_item_id)||0)+1));
       for(const oi of _oldEstItems){
@@ -1039,16 +1043,20 @@ const _dbSaveSOInner = async (so) => {
         return false;
       }
     }
-    // Safety check: if client has 0 decorations but DB has some, abort to prevent data loss
+    // Safety check: if client has 0 decorations but DB has some, abort to prevent data loss — but ONLY when
+    // decorations were not cleanly loaded this session. A timed-out so_item_decorations load strips decos off the
+    // items while the DB still has them, so a save would wipe them. When decos WERE hydrated, the client list is
+    // trustworthy and removing the last decoration is a deliberate edit — allow it.
     const clientDecoCount=(items||[]).reduce((a,it)=>a+(it.decorations?.length||0),0);
     const allNoDeco=(items||[]).length>0&&(items||[]).every(it=>it.no_deco);
-    if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length){
+    if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length&&!so._decosHydrated){
       const{count:dbDecoCount}=await supabase.from('so_item_decorations').select('id',{count:'exact',head:true}).in('so_item_id',oldItemIds);
-      if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking SO save — client has 0 decorations but DB has',dbDecoCount,'for',so.id);if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');return false}
+      if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking SO save — client has 0 decorations but DB has',dbDecoCount,'for',so.id,'(decorations never hydrated this session)');if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');return false}
     }
     // Per-item safety: block save if any single item would lose all its decorations.
     // Catches the partial-loss case the all-zero check above misses (one item drops decos while siblings retain them).
-    if(oldItemIds.length&&items?.length){
+    // Gated on _decosHydrated: when decos loaded cleanly, a per-item deco removal is a deliberate edit, so skip.
+    if(oldItemIds.length&&items?.length&&!so._decosHydrated){
       const{data:_oldDecoRows}=await supabase.from('so_item_decorations').select('so_item_id').in('so_item_id',oldItemIds);
       const _oldDecoByItem=new Map();(_oldDecoRows||[]).forEach(d=>_oldDecoByItem.set(d.so_item_id,(_oldDecoByItem.get(d.so_item_id)||0)+1));
       for(const oi of _oldSoItems){
