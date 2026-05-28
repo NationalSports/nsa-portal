@@ -48,6 +48,23 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const fo=orders.filter(o=>{if(oF!=='all'&&o.type!==oF)return false;if(sF==='open')return['sent','draft','open','need_order','waiting_receive','needs_pull'].includes(o.status)||calcSOStatus(o)!=='complete';if(sF==='closed')return['approved','paid','complete'].includes(o.status)||calcSOStatus(o)==='complete';return true});
   const gn=id=>allCustomers.find(x=>x.id===id)?.alpha_tag||'';
   const teamName=id=>{const c=allCustomers.find(x=>x.id===id);if(!c)return'';const parent=c.parent_id?allCustomers.find(x=>x.id===c.parent_id):null;if(parent?.name&&c.name?.startsWith(parent.name))return c.name.slice(parent.name.length).trim().replace(/^[-—–]\s*/,'')||c.name;return c.name||c.alpha_tag||''};
+  // Promote a sub-customer's order/estimate artwork into the parent customer's own library
+  // (customer.art_files). Library art cascades to every sub-customer ("applies to all"),
+  // so this is how a logo first seen on one sub-account becomes shared across the program.
+  // Only meaningful when viewing a parent customer; copies the merged mockup/production
+  // files so the library entry is self-contained.
+  const promoteArtToLibrary=(art)=>{
+    if(!isP){nf&&nf('Open the parent customer to add art to the program library','error');return}
+    const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
+    const lib=customer.art_files||[];
+    if(lib.some(a=>(a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt)){nf&&nf('"'+(art.name||'art')+'" is already in the program library');return}
+    if(!window.confirm('Add "'+(art.name||'this art')+'" to the program library so it applies to all sub-customers?'))return;
+    const mockFiles=(art._allMockups||[]).map(m=>m.file||m.url).filter(Boolean);
+    const prodFiles=(art._allProd||[]).map(m=>m.file||m.url).filter(Boolean);
+    const entry={id:'caf'+Date.now(),name:art.name||'',deco_type:dt||'screen_print',ink_colors:art.ink_colors||'',thread_colors:art.thread_colors||'',stitches:art.stitches||'',art_size:art.art_size||'',art_sizes:art.art_sizes||null,garment_colors:art.garment_colors||null,color_ways:art.color_ways||[],files:[],mockup_files:mockFiles,prod_files:prodFiles,notes:art.notes||'',status:art.status==='uploaded'?'needs_approval':(art.status||'approved'),uploaded:new Date().toLocaleDateString()};
+    const newCust={...customer,art_files:[...lib,entry]};setCustLocal(newCust);onRefreshCustomer(newCust);
+    nf&&nf('"'+(art.name||'art')+'" added to the program library — now applies to all sub-customers');
+  };
   // Contact editing
   const saveContact=(idx,updated)=>{const newContacts=[...(customer.contacts||[])];newContacts[idx]=updated;const newCust={...customer,contacts:newContacts};setCustLocal(newCust);onEdit(newCust);setEditContact(null)};
   const addContact=()=>{const newContacts=[...(customer.contacts||[]),{name:'',email:'',phone:'',role:''}];setCustLocal({...customer,contacts:newContacts});setEditContact(newContacts.length-1)};
@@ -646,6 +663,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:3}}>
                 <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:(ART_FILE_SC[art._st]||ART_FILE_SC.waiting_for_art).bg,color:(ART_FILE_SC[art._st]||ART_FILE_SC.waiting_for_art).c}}>{(art._st).replace(/_/g,' ')}</span>
                 <button title={art._archived?'Restore to the active library':'Archive — keep in system but hide from the library and previous-art pickers'} onClick={e=>{e.stopPropagation();archiveLogo(art,!art._archived)}} style={{fontSize:9,padding:'2px 8px',borderRadius:4,border:'1px solid #cbd5e1',background:'white',color:'#64748b',cursor:'pointer',fontWeight:600}}>{art._archived?'Unarchive':'Archive'}</button>
+                {isP&&!art._appliesToAll&&!art._archived&&<button title="Add to the program library so this logo applies to every sub-customer" onClick={e=>{e.stopPropagation();promoteArtToLibrary(art)}} style={{fontSize:9,padding:'2px 8px',borderRadius:4,border:'1px solid #93c5fd',background:'#eff6ff',color:'#1e40af',cursor:'pointer',fontWeight:700}}>↑ Use for program</button>}
                 <div style={{display:'flex',gap:6}}>
                   {art._mockups.length>0&&<span style={{fontSize:10,color:'#2563eb'}}>{art._mockups.length} file(s)</span>}
                   {art._usedOnSOs.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{art._usedOnSOs.length} order(s)</span>}
@@ -948,7 +966,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {usedOnSOs.length===0&&art._src==='library'&&<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>Not yet used on any orders</div>}
         {art.notes&&<div style={{marginTop:12,fontSize:12,color:'#64748b',padding:8,background:'#f1f5f9',borderRadius:6}}>Notes: {art.notes}</div>}
       </div>
-      <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setCustArtDetail(null)}>Close</button></div>
+      <div className="modal-footer">
+        {isP&&!art._appliesToAll&&<button className="btn btn-primary" style={{marginRight:'auto'}} onClick={()=>{promoteArtToLibrary(art);setCustArtDetail(null)}}><Icon name="plus" size={12}/> Use for whole program</button>}
+        <button className="btn btn-secondary" onClick={()=>setCustArtDetail(null)}>Close</button></div>
     </div></div>})()}
   {tab==='reporting'&&(()=>{
     // Pull every invoice-type row out of allOrders for this customer (or parent+subs).
