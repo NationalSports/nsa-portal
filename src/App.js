@@ -15266,7 +15266,7 @@ export default function App(){
               <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
                 onClick={e=>{e.stopPropagation();setWhViewIF(t)}}>Pick →</button>
               <button title="Assign this pull to a warehouse worker" className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#0891b2',color:'white',border:'none'}}
-                onClick={e=>{e.stopPropagation();_whOpenAssign({title:'Pull '+(t.pickId||t.soId)+' — '+t.sku,description:(t.cName||'')+(t.color?' · '+t.color:'')+' · '+t.needsPull+' units',so:t.so,soId:t.soId,docLabel:t.pickId||t.soId})}}>👤 Assign</button>
+                onClick={e=>{e.stopPropagation();const multi=subs.length>1||t._extraCount>0;_whOpenAssign({title:'Pull '+(t.pickId||t.soId)+' — '+(t.cName||t.soId),description:(multi?t.needsPull+' units · multiple SKUs':t.sku+(t.color?' · '+t.color:'')+' · '+t.needsPull+' units'),so:t.so,soId:t.soId,docLabel:t.pickId||t.soId})}}>👤 Assign</button>
             </div></td>
           </tr>})}
           </tbody></table>
