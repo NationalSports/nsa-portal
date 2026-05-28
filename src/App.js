@@ -2879,7 +2879,7 @@ export default function App(){
   // reminder. baseline=true marks stores already present when this shipped, so
   // we don't backfill tasks for the entire history.
   const[omgFirstSeen,setOmgFirstSeen]=useState(()=>loadState('omg_first_seen',{}));
-  const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',wh_only:false});
+  const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',wh_only:false});
   const[todoDetailId,setTodoDetailId]=useState(null);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
@@ -6289,6 +6289,7 @@ export default function App(){
     {todoDetailId&&(()=>{const td=assignedTodos.find(t=>t.id===todoDetailId);if(!td)return null;
       const creator=REPS.find(r=>r.id===td.created_by);const assignee=REPS.find(r=>r.id===td.assigned_to);
       const soRef=td.so_id?sos.find(s=>s.id===td.so_id):null;const custRef=td.customer_id?cust.find(c=>c.id===td.customer_id):null;
+      const ifId=td.if_id||((td.title||'').match(/\bIF-\d+/i)||[])[0]||'';
       return<div className="modal-overlay" onClick={()=>setTodoDetailId(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
         <div className="modal-header"><h2>📌 {td.title}</h2><button className="modal-close" onClick={()=>setTodoDetailId(null)}>×</button></div>
         <div className="modal-body">
@@ -6297,6 +6298,7 @@ export default function App(){
             <div><span style={{color:'#64748b'}}>Assigned to:</span> <strong>{assignee?.name}</strong></div>
             {custRef&&<div><span style={{color:'#64748b'}}>Customer:</span> {custRef.alpha_tag||custRef.name}</div>}
             {soRef&&<div><span style={{color:'#64748b'}}>SO:</span> <span style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{setTodoDetailId(null);setESO(soRef);setESOC(cust.find(c=>c.id===soRef.customer_id));setPg('orders')}}>{soRef.id}</span></div>}
+            {ifId&&<div><span style={{color:'#64748b'}}>IF:</span> <span style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{const ifSo=soRef||sos.find(s=>safeItems(s).some(it=>safePicks(it).some(pk=>pk.pick_id===ifId)));if(ifSo){setTodoDetailId(null);setESO(ifSo);setESOC(cust.find(c=>c.id===ifSo.customer_id));setESOTab('items');setPg('orders')}else{nf('Item Fulfillment '+ifId+' not found','warn')}}}>{ifId}</span></div>}
             <div><span style={{color:'#64748b'}}>Priority:</span> <span style={{color:td.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{['Urgent','High','Normal','Low'][td.priority]||'Normal'}</span></div>
             <div><span style={{color:'#64748b'}}>Status:</span> <span style={{fontWeight:600,color:td.status==='open'?'#d97706':'#166534'}}>{td.status}</span></div>
             {td.due_date&&<div><span style={{color:'#64748b'}}>Due:</span> <span style={{fontWeight:600,color:_todoDueColor(td.due_date)}}>{_fmtDueDate(td.due_date)}</span></div>}
@@ -26517,9 +26519,10 @@ export default function App(){
       <div className="modal-footer" style={{display:'flex',gap:8,justifyContent:'flex-end',padding:'12px 20px',borderTop:'1px solid #e2e8f0'}}>
         <button className="btn btn-secondary" onClick={()=>setTodoModal(m=>({...m,open:false}))}>Cancel</button>
         <button className="btn btn-primary" disabled={!todoModal.title.trim()||!todoModal.assigned_to} onClick={()=>{
-          const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,priority:todoModal.priority,due_date:todoModal.due_date||null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
+          const _ifId=todoModal.if_id||(/^IF-/i.test(todoModal.doc_label||'')?todoModal.doc_label:'')||null;
+          const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,if_id:_ifId,priority:todoModal.priority,due_date:todoModal.due_date||null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
           setAssignedTodos(prev=>[newTodo,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',wh_only:false});
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',wh_only:false});
           nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
         }}>Assign Task</button>
       </div>
