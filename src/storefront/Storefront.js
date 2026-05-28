@@ -613,9 +613,9 @@ async function sendOrderEmail({ store, order, cart, buyer, shipping, total, disc
 async function placeOrder({ store, cart, buyer, ship, payMode, stripePiId, status, sendEmail = true, coupon = null }) {
   const subtotal = cart.reduce((a, l) => a + (Number(l.unit_price) || 0) * (l.qty || 1), 0);
   const fundraise = cart.reduce((a, l) => a + ((Number(l.fundraise) || 0) + (Number(l.name_extra) || 0)) * (l.qty || 1), 0);
-  const discount = couponDiscount(coupon, cart);
   const shipping = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
-  const total = Math.max(0, cartTotal(cart) - discount) + shipping;
+  const discount = couponDiscount(coupon, cart, shipping);
+  const total = Math.max(0, cartTotal(cart) + shipping - discount);
   const { data: order, error } = await supabase.from('webstore_orders').insert({
     store_id: store.id, status: status || (payMode === 'paid' ? 'paid' : 'unpaid'), payment_mode: payMode, order_kind: 'individual',
     buyer_name: buyer.name, buyer_email: buyer.email, buyer_phone: buyer.phone || null,
@@ -651,11 +651,12 @@ async function placeOrder({ store, cart, buyer, ship, payMode, stripePiId, statu
   return { order, shipping, total };
 }
 
-// Percent coupons discount the cart total (products + fundraising); free
-// shipping is handled separately by zeroing the shipping fee.
-function couponDiscount(coupon, cart) {
+// Percent coupons discount the whole order including shipping (so a 100% code
+// fully comps it); free shipping is handled separately by zeroing the fee.
+function couponDiscount(coupon, cart, shipping = 0) {
   if (!coupon || coupon.kind !== 'percent') return 0;
-  return Math.round(cartTotal(cart) * (Number(coupon.value) || 0) / 100 * 100) / 100;
+  const base = cartTotal(cart) + (Number(shipping) || 0);
+  return Math.round(base * (Number(coupon.value) || 0) / 100 * 100) / 100;
 }
 
 function CheckoutPage({ store, theme, cart, onClear }) {
@@ -676,9 +677,9 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} /><Splash>Your cart is empty.</Splash></div>;
 
   const validBuyer = buyer.name.trim() && /.+@.+\..+/.test(buyer.email) && (!needAddr || (ship.street1 && ship.city && ship.state && ship.zip));
-  const discount = couponDiscount(coupon, cart);
   const ship_ = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
-  const payable = Math.max(0, cartTotal(cart) - discount) + ship_;
+  const discount = couponDiscount(coupon, cart, ship_);
+  const payable = Math.max(0, cartTotal(cart) + ship_ - discount);
   const comped = payable <= 0; // fully covered by a code → no card, invoice the program
 
   const applyCoupon = async () => {

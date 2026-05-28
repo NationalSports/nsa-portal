@@ -55,6 +55,7 @@ function CoachStore({ customer }) {
 function CoachStoreCard({ store: s, d }) {
   const [q, setQ] = useState('');
   const [showOrders, setShowOrders] = useState(false);
+  const [openOrder, setOpenOrder] = useState(null);
   const itemsByOrder = {}; d.items.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
   // Active orders exclude abandoned pre-payment carts and cancellations.
   const active = d.orders.filter((o) => o.status !== 'cancelled' && o.status !== 'pending_payment');
@@ -145,18 +146,30 @@ function CoachStoreCard({ store: s, d }) {
               {active.length === 0 ? <div style={{ fontSize: 13, color: '#64748b' }}>No orders yet.</div> : (
                 <div style={{ overflowX: 'auto' }}>
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                    <thead><tr style={{ textAlign: 'left', color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}><th style={{ padding: 6 }}>Player</th><th style={{ padding: 6 }}>#</th><th style={{ padding: 6 }}>Items</th><th style={{ padding: 6 }}>Paid?</th><th style={{ padding: 6 }}>Status</th></tr></thead>
+                    <thead><tr style={{ textAlign: 'left', color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}><th style={{ padding: 6, width: 18 }}></th><th style={{ padding: 6 }}>Player</th><th style={{ padding: 6 }}>#</th><th style={{ padding: 6 }}>Items</th><th style={{ padding: 6 }}>Paid?</th><th style={{ padding: 6 }}>Status</th></tr></thead>
                     <tbody>
-                      {orderRows.map((o) => { const its = itemsByOrder[o.id] || []; const player = [...new Set(its.map((i) => i.player_name).filter(Boolean))].join(', '); const num = [...new Set(its.map((i) => i.player_number).filter(Boolean))].join(', '); const ls = its[0]?.line_status || 'pending'; const qty = its.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (i.qty || 0), 0); return (
-                        <tr key={o.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                      {orderRows.map((o) => { const its = itemsByOrder[o.id] || []; const player = [...new Set(its.map((i) => i.player_name).filter(Boolean))].join(', '); const num = [...new Set(its.map((i) => i.player_number).filter(Boolean))].join(', '); const ls = its[0]?.line_status || 'pending'; const qty = its.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (i.qty || 0), 0); const open = openOrder === o.id; const lineItems = its.filter((i) => !i.is_bundle_parent); return (
+                        <React.Fragment key={o.id}>
+                        <tr onClick={() => setOpenOrder(open ? null : o.id)} style={{ borderTop: '1px solid #f1f5f9', cursor: 'pointer', background: open ? '#f8fafc' : 'transparent' }}>
+                          <td style={{ padding: 6, color: '#94a3b8' }}>{open ? '▾' : '▸'}</td>
                           <td style={{ padding: 6 }}>{player || o.buyer_name || '—'}</td>
                           <td style={{ padding: 6 }}>{num || '—'}</td>
                           <td style={{ padding: 6 }}>{qty}</td>
                           <td style={{ padding: 6 }}>{o.payment_mode === 'paid' ? 'Paid' : 'Team tab'}</td>
                           <td style={{ padding: 6, fontWeight: 700, color: _cpTone(ls) }}>{_cpStages[ls] || ls}</td>
                         </tr>
+                        {open && <tr><td></td><td colSpan={5} style={{ padding: '4px 6px 12px', background: '#f8fafc' }}>
+                          <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, margin: '4px 0' }}>Ordered by {o.buyer_name || '—'}{o.buyer_email ? ` · ${o.buyer_email}` : ''}</div>
+                          {lineItems.map((i) => (
+                            <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, borderTop: '1px solid #eef1f5' }}>
+                              <span>{i.sku || 'Item'}{i.size ? ' · ' + i.size : ''}{i.player_number ? ' · #' + i.player_number : ''}{i.player_name ? ' · ' + i.player_name : ''}{i.qty > 1 ? ` · ×${i.qty}` : ''}</span>
+                              <span style={{ color: _cpTone(i.line_status || 'pending'), fontWeight: 600 }}>{_cpStages[i.line_status || 'pending'] || i.line_status}</span>
+                            </div>
+                          ))}
+                        </td></tr>}
+                        </React.Fragment>
                       ); })}
-                      {orderRows.length === 0 && <tr><td colSpan={5} style={{ padding: 10, color: '#94a3b8' }}>No orders match “{q}”.</td></tr>}
+                      {orderRows.length === 0 && <tr><td colSpan={6} style={{ padding: 10, color: '#94a3b8' }}>No orders match “{q}”.</td></tr>}
                     </tbody>
                   </table>
                 </div>
