@@ -132,7 +132,9 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const iScoped=invs.filter(i=>inScope(i.customer_id,i.created_by));
     const activeOrders=sScoped.filter(s=>!['completed','shipped','cancelled'].includes(s.status||''));
     const openInvoices=iScoped.filter(i=>i.status!=='paid'&&i.status!=='cancelled');
-    const monthRevenue=iScoped.filter(i=>i.status==='paid'&&thisMonth(i.paid_date||i.created_at)).reduce((a,i)=>a+(i.total||0),0);
+    // MTD sales — revenue booked this month (mirrors the desktop rep dashboard's MTD),
+    // i.e. sales orders written this month rather than invoices paid this month.
+    const monthRevenue=sScoped.filter(s=>(s.status||'')!=='cancelled'&&thisMonth(s.created_at)).reduce((a,s)=>{const c=custObj(s.customer_id);return a+calcOrderTotals(s,c?.tax_rate||0).rev},0);
     const urgentOrders=sScoped.filter(s=>{if(['completed','shipped','cancelled'].includes(s.status||''))return false;if(!s.expected_date)return false;const days=Math.ceil((new Date(s.expected_date)-now)/(1000*60*60*24));return days<=3&&days>=0});
     return{activeOrders:activeOrders.length,openInvoices:openInvoices.length,monthRevenue,urgentOrders:urgentOrders.length};
   },[sos,invs,scope,myCustIds]);
@@ -847,7 +849,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <div className="mp-stat-num">{stats.openInvoices}</div><div className="mp-stat-label">Open Invoices</div>
         </div>
         <div className="mp-stat-card">
-          <div className="mp-stat-num" style={{color:'#16a34a'}}>{fmtMoney(stats.monthRevenue)}</div><div className="mp-stat-label">Month Revenue</div>
+          <div className="mp-stat-num" style={{color:'#16a34a'}}>{fmtMoney(stats.monthRevenue)}</div><div className="mp-stat-label">MTD Sales</div>
         </div>
       </div>
       {/* Urgent orders */}
@@ -1236,10 +1238,12 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       const qStart=new Date(now.getFullYear(),Math.floor(now.getMonth()/3)*3,1);
       const inQuarter=d=>{if(!d)return false;const t=new Date(d);return t>=qStart&&t<=now};
       const scopedInvs=invs.filter(i=>inScope(i.customer_id));
-      const paidInvs=scopedInvs.filter(i=>i.status==='paid');
-      const monthRev=paidInvs.filter(i=>sameMonth(i.paid_date||i.created_at)).reduce((a,i)=>a+(i.total||0),0);
-      const qtrRev=paidInvs.filter(i=>inQuarter(i.paid_date||i.created_at)).reduce((a,i)=>a+(i.total||0),0);
       const scopedSOs=sos.filter(s=>inScope(s.customer_id));
+      // Revenue = sales booked (SO revenue) by period, matching the home MTD figure.
+      const soRev=s=>calcOrderTotals(s,custObj(s.customer_id)?.tax_rate||0).rev;
+      const booked=scopedSOs.filter(s=>(s.status||'')!=='cancelled');
+      const monthRev=booked.filter(s=>sameMonth(s.created_at)).reduce((a,s)=>a+soRev(s),0);
+      const qtrRev=booked.filter(s=>inQuarter(s.created_at)).reduce((a,s)=>a+soRev(s),0);
       const openSOs=scopedSOs.filter(s=>!['completed','shipped','cancelled'].includes(s.status||''));
       const statusCounts={};openSOs.forEach(s=>{const k=s.status||'new';statusCounts[k]=(statusCounts[k]||0)+1});
       const scopedEsts=ests.filter(e=>inScope(e.customer_id));
