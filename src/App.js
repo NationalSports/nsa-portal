@@ -10899,6 +10899,7 @@ export default function App(){
 
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
+  const[whRptRange,setWhRptRange]=useState('30');// warehouse productivity report time window (days, or 'all')
   const[invDrill,setInvDrill]=useState(null);// {kind:'vendor'|'category',key:string}
   const[rptRep,setRptRep]=useState(()=>(cu?.role==='rep'||cu?.role==='admin')&&cu?.id?cu.id:'all');// default to logged-in rep/admin so they see their own numbers
   const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true,invByCategory:true,invByVendor:true,invTopValue:true,invLowStock:true,invOutOfStock:true,invRecentAdj:true});
@@ -11110,6 +11111,7 @@ export default function App(){
         <div style={{display:'flex',gap:4}}>
           {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['inventory','🗃️ Inventory'],['reps','🏆 Reps'],['production','🏭 Production'],['decorator','👤 Decorator'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax'],['csr_tasks','📌 CSR Tasks']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${rptTab===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab(v)}>{l}</button>)}
+          {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')&&<button key="warehouse" className={`btn btn-sm ${rptTab==='warehouse'?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab('warehouse')}>📦 Warehouse</button>}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={rptRep} onChange={e=>setRptRep(e.target.value)}>
           <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
@@ -12816,6 +12818,102 @@ export default function App(){
                 <td style={{color:'#64748b'}}>{creator?.name||'?'}</td>
                 <td style={{color:'#2563eb'}}>{t.so_id||'—'}</td>
                 <td style={{fontSize:10,color:'#94a3b8'}}>{t.updated_at?new Date(t.updated_at).toLocaleDateString():''}</td>
+              </tr>})}</tbody></table>}
+          </div>
+        </div>
+        </>})()}
+
+      {rptTab==='warehouse'&&(()=>{
+        const whMembers=REPS.filter(r=>r.role==='warehouse'&&r.is_active!==false);
+        const cutoff=whRptRange==='all'?0:Date.now()-parseInt(whRptRange,10)*86400000;
+        const inRange=a=>!cutoff||(a.ts||0)>=cutoff;
+        const acts=(whRecentActions||[]).filter(inRange);
+        const completedTasks=(assignedTodos||[]).filter(t=>(t.status==='completed'||t.status==='done')&&t.completed_at&&(!cutoff||new Date(t.completed_at).getTime()>=cutoff));
+        const qtyOf=(byId,type)=>acts.filter(a=>a.by===byId&&a.type===type).reduce((s,a)=>s+(safeNum(a.qty)||0),0);
+        const cntOf=(byId,types)=>acts.filter(a=>a.by===byId&&types.includes(a.type)).length;
+        const rowFor=(id)=>({
+          picked:qtyOf(id,'pulled'),
+          received:qtyOf(id,'received'),
+          deco:qtyOf(id,'move_to_deco'),
+          shipped:qtyOf(id,'shipped'),
+          delivered:qtyOf(id,'delivered'),
+          shipments:cntOf(id,['label_created','manual_label_created','manual_ship']),
+          tasks:completedTasks.filter(t=>t.completed_by===id).length,
+        });
+        const stats=whMembers.map(m=>({id:m.id,name:m.name,...rowFor(m.id)}))
+          .sort((a,b)=>(b.picked+b.received+b.shipped+b.delivered+b.deco)-(a.picked+a.received+a.shipped+a.delivered+a.deco));
+        // Actions logged before per-user attribution (or by auto checks) land under "warehouse".
+        const unattrib=rowFor('warehouse');
+        const hasUnattrib=unattrib.picked||unattrib.received||unattrib.shipped||unattrib.delivered||unattrib.deco||unattrib.shipments;
+        const tot=k=>stats.reduce((s,r)=>s+r[k],0)+(unattrib[k]||0);
+        const _cell=(v,color)=>v>0?<span style={{fontWeight:700,color:color||'#0f172a'}}>{v.toLocaleString()}</span>:<span style={{color:'#cbd5e1'}}>0</span>;
+        const recent=acts.filter(a=>['pulled','received','move_to_deco','shipped','delivered'].includes(a.type)).slice(0,40);
+        const typeLabel={pulled:'Picked',received:'Received',move_to_deco:'To Deco',shipped:'Shipped',delivered:'Delivered'};
+        const typeColor={pulled:'#d97706',received:'#2563eb',move_to_deco:'#7c3aed',shipped:'#166534',delivered:'#0891b2'};
+        return<>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12,flexWrap:'wrap'}}>
+          <span style={{fontSize:12,fontWeight:700,color:'#64748b'}}>Time window:</span>
+          {[['7','Last 7 days'],['30','Last 30 days'],['90','Last 90 days'],['all','All time']].map(([v,l])=>
+            <button key={v} className={`btn btn-sm ${whRptRange===v?'btn-primary':'btn-secondary'}`} onClick={()=>setWhRptRange(v)}>{l}</button>)}
+        </div>
+        <div className="stats-row" style={{marginBottom:16}}>
+          <div className="stat-card"><div className="stat-label">Items Picked</div><div className="stat-value" style={{color:'#d97706'}}>{tot('picked').toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Items Received</div><div className="stat-value" style={{color:'#2563eb'}}>{tot('received').toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Items Shipped</div><div className="stat-value" style={{color:'#166534'}}>{tot('shipped').toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Items Delivered</div><div className="stat-value" style={{color:'#0891b2'}}>{tot('delivered').toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Tasks Completed</div><div className="stat-value" style={{color:'#7c3aed'}}>{completedTasks.filter(t=>whMembers.some(m=>m.id===t.completed_by)).length}</div></div>
+        </div>
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>📦 Warehouse Productivity by Person</h2></div>
+          <div className="card-body" style={{padding:0,overflow:'auto'}}>
+            {whMembers.length===0?<div className="empty" style={{padding:20}}>No warehouse staff found.</div>:
+            <table style={{fontSize:12,width:'100%'}}><thead><tr>
+              <th style={{textAlign:'left'}}>Worker</th>
+              <th style={{textAlign:'center'}}>Picked</th><th style={{textAlign:'center'}}>Received</th><th style={{textAlign:'center'}}>To Deco</th>
+              <th style={{textAlign:'center'}}>Shipped</th><th style={{textAlign:'center'}}>Delivered</th>
+              <th style={{textAlign:'center'}}>Shipments</th><th style={{textAlign:'center'}}>Tasks Done</th>
+            </tr></thead>
+            <tbody>
+              {stats.map(s=><tr key={s.id}>
+                <td style={{fontWeight:700}}>{s.name}</td>
+                <td style={{textAlign:'center'}}>{_cell(s.picked,'#d97706')}</td>
+                <td style={{textAlign:'center'}}>{_cell(s.received,'#2563eb')}</td>
+                <td style={{textAlign:'center'}}>{_cell(s.deco,'#7c3aed')}</td>
+                <td style={{textAlign:'center'}}>{_cell(s.shipped,'#166534')}</td>
+                <td style={{textAlign:'center'}}>{_cell(s.delivered,'#0891b2')}</td>
+                <td style={{textAlign:'center'}}>{_cell(s.shipments,'#475569')}</td>
+                <td style={{textAlign:'center'}}>{_cell(s.tasks,'#7c3aed')}</td>
+              </tr>)}
+              {hasUnattrib&&<tr style={{color:'#94a3b8'}}>
+                <td style={{fontStyle:'italic'}}>Unattributed</td>
+                <td style={{textAlign:'center'}}>{unattrib.picked||0}</td><td style={{textAlign:'center'}}>{unattrib.received||0}</td><td style={{textAlign:'center'}}>{unattrib.deco||0}</td>
+                <td style={{textAlign:'center'}}>{unattrib.shipped||0}</td><td style={{textAlign:'center'}}>{unattrib.delivered||0}</td>
+                <td style={{textAlign:'center'}}>{unattrib.shipments||0}</td><td style={{textAlign:'center'}}>—</td>
+              </tr>}
+              <tr style={{borderTop:'2px solid #e2e8f0',fontWeight:800,background:'#f8fafc'}}>
+                <td>Total</td>
+                <td style={{textAlign:'center'}}>{tot('picked').toLocaleString()}</td><td style={{textAlign:'center'}}>{tot('received').toLocaleString()}</td><td style={{textAlign:'center'}}>{tot('deco').toLocaleString()}</td>
+                <td style={{textAlign:'center'}}>{tot('shipped').toLocaleString()}</td><td style={{textAlign:'center'}}>{tot('delivered').toLocaleString()}</td>
+                <td style={{textAlign:'center'}}>{tot('shipments').toLocaleString()}</td><td style={{textAlign:'center'}}>{tot('tasks').toLocaleString()}</td>
+              </tr>
+            </tbody></table>}
+          </div>
+          <div style={{padding:'8px 14px',fontSize:10,color:'#94a3b8',borderTop:'1px solid #f1f5f9'}}>Counts are units logged from warehouse actions (pick / receive / ship / deliver / move-to-deco) attributed to the signed-in worker, plus delegated tasks marked complete. "Unattributed" covers actions logged before a worker was signed in or by automated checks.</div>
+        </div>
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>🕐 Recent Warehouse Activity</h2></div>
+          <div className="card-body" style={{padding:0,maxHeight:420,overflow:'auto'}}>
+            {recent.length===0?<div className="empty" style={{padding:20}}>No activity in this window.</div>:
+            <table style={{fontSize:12,width:'100%'}}><thead><tr><th style={{textAlign:'left'}}>When</th><th>Worker</th><th>Action</th><th>SO</th><th>Customer</th><th>Item</th><th style={{textAlign:'center'}}>Qty</th></tr></thead>
+            <tbody>{recent.map((a,i)=>{const who=a.by==='warehouse'?'—':a.by==='auto-check'?'auto':(REPS.find(r=>r.id===a.by)?.name||a.by);
+              return<tr key={i}>
+                <td style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{a.at||(a.ts?new Date(a.ts).toLocaleString():'')}</td>
+                <td style={{fontWeight:600}}>{who}</td>
+                <td><span style={{fontSize:10,padding:'1px 7px',borderRadius:8,fontWeight:700,background:'#f1f5f9',color:typeColor[a.type]||'#475569'}}>{typeLabel[a.type]||a.type}</span></td>
+                <td style={{color:'#2563eb',whiteSpace:'nowrap'}}>{a.soId||'—'}</td>
+                <td style={{maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.customer||'—'}</td>
+                <td style={{fontSize:11,color:'#64748b',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.sku||a.artName||a.name||'—'}</td>
+                <td style={{textAlign:'center',fontWeight:700}}>{a.qty!=null?a.qty:'—'}</td>
               </tr>})}</tbody></table>}
           </div>
         </div>
