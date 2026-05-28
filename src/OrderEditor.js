@@ -1488,6 +1488,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(newTotal>0&&item.est_qty)uI(i,'est_qty',0);
   };
   const addSzToItem=(i,sz)=>{const it=o.items[i];const cur=it.available_sizes||[];if(!cur.includes(sz))uI(i,'available_sizes',[...cur,sz])};
+  // Switch an item between apparel / footwear / OSFA size pools. Clears existing
+  // size quantities (with confirmation) since the size pools don't overlap, and
+  // re-derives AU cost from retail since footwear vs apparel use different multipliers.
+  const setSizeMode=(i,mode)=>{const it=o.items[i];const hasQty=Object.values(it.sizes||{}).some(v=>safeNum(v)>0);
+    if(hasQty&&!window.confirm('This item has quantities filled in. Switching the size mode will clear them. Continue?'))return false;
+    if(hasQty)uI(i,'sizes',{});
+    if(mode==='footwear'){uI(i,'available_sizes',[...FOOTWEAR_DEFAULT_SIZES]);uI(i,'is_footwear',true);
+      if(isAU(it.brand)&&safeNum(it.retail_price)>0){const mult=it.brand==='Adidas'?0.55*0.75:0.55*0.85;uI(i,'nsa_cost',Math.floor(it.retail_price*mult*100)/100)}
+    }else if(mode==='osfa'){uI(i,'available_sizes',['OSFA']);uI(i,'is_footwear',false);
+      if(isAU(it.brand)&&safeNum(it.retail_price)>0){const mult=it.brand==='Adidas'?0.375:0.425;uI(i,'nsa_cost',Math.floor(it.retail_price*mult*100)/100)}
+    }else{uI(i,'available_sizes',['S','M','L','XL','2XL']);uI(i,'is_footwear',false);
+      if(isAU(it.brand)&&safeNum(it.retail_price)>0){const mult=it.brand==='Adidas'?0.375:0.425;uI(i,'nsa_cost',Math.floor(it.retail_price*mult*100)/100)}
+    }
+    return true;
+  };
   const removeSzFromItem=(i,sz)=>{const it=o.items[i];if(safeNum(it.sizes[sz])>0){nf('Cannot remove '+sz+' — it has quantity. Set to 0 first.','error');return}const newSizes={...it.sizes};delete newSizes[sz];uI(i,'sizes',newSizes);uI(i,'available_sizes',(it.available_sizes||[]).filter(s=>s!==sz))};
   const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['4"','6"','8"','10"']};
   const itemIsReversible=i=>{const it=o.items[i];return!!(it&&safeDecos(it).some(d=>d.reversible))};
@@ -2580,20 +2595,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {showItemMenu===idx&&itemMenuPos&&createPortal(<>
                 <div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:1039}} onClick={()=>{setShowItemMenu(null);setItemMenuPos(null)}}/>
                 <div style={{position:'fixed',top:itemMenuPos.top,right:itemMenuPos.right,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:1040,minWidth:200,padding:4}}>
-                  {(()=>{const curAvail=item.available_sizes||[];const apparelDef=['S','M','L','XL','2XL'];const curMode=item.is_footwear?'footwear':(curAvail.join(',')==='OSFA'?'osfa':'apparel');
-                    const switchMode=(mode)=>{
-                      const hasQty=Object.values(item.sizes||{}).some(v=>safeNum(v)>0);
-                      if(hasQty&&!window.confirm('This item has quantities filled in. Switching the size mode will clear them. Continue?'))return;
-                      if(hasQty)uI(idx,'sizes',{});
-                      if(mode==='footwear'){uI(idx,'available_sizes',[...FOOTWEAR_DEFAULT_SIZES]);uI(idx,'is_footwear',true);
-                        if(isAU(item.brand)&&safeNum(item.retail_price)>0){const mult=item.brand==='Adidas'?0.55*0.75:0.55*0.85;uI(idx,'nsa_cost',Math.floor(item.retail_price*mult*100)/100)}
-                      }else if(mode==='osfa'){uI(idx,'available_sizes',['OSFA']);uI(idx,'is_footwear',false);
-                        if(isAU(item.brand)&&safeNum(item.retail_price)>0){const mult=item.brand==='Adidas'?0.375:0.425;uI(idx,'nsa_cost',Math.floor(item.retail_price*mult*100)/100)}
-                      }else{uI(idx,'available_sizes',[...apparelDef]);uI(idx,'is_footwear',false);
-                        if(isAU(item.brand)&&safeNum(item.retail_price)>0){const mult=item.brand==='Adidas'?0.375:0.425;uI(idx,'nsa_cost',Math.floor(item.retail_price*mult*100)/100)}
-                      }
-                      setShowItemMenu(null);
-                    };
+                  {(()=>{const curAvail=item.available_sizes||[];const curMode=item.is_footwear?'footwear':(curAvail.join(',')==='OSFA'?'osfa':'apparel');
+                    const switchMode=(mode)=>{setSizeMode(idx,mode);setShowItemMenu(null)};
                     return<>
                       <div style={{padding:'4px 10px 2px',fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.5}}>Size mode</div>
                       <div style={{display:'flex',gap:3,padding:'2px 6px 6px'}}>
@@ -2675,6 +2678,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{fontSize:9,fontWeight:700,color:'#64748b'}}>Click multiple, then Done</span>
                   <button className="btn btn-sm btn-primary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setShowSzPicker(null)}>Done</button>
                 </div>
+                {(()=>{const curMode=item.is_footwear?'footwear':((item.available_sizes||[]).join(',')==='OSFA'?'osfa':'apparel');return<>
+                  <div style={{width:'100%',fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.5,marginBottom:2}}>Size type</div>
+                  <div style={{width:'100%',display:'flex',gap:3,marginBottom:4}}>
+                    {[{k:'apparel',l:'👕 Apparel'},{k:'footwear',l:'👟 Footwear'},{k:'osfa',l:'🧢 OSFA'}].map(m=><button key={m.k} onClick={()=>{if(m.k!==curMode)setSizeMode(idx,m.k)}} style={{flex:1,padding:'4px 4px',fontSize:10,fontWeight:700,borderRadius:4,cursor:'pointer',border:'1px solid '+(curMode===m.k?'#0f172a':'#e2e8f0'),background:curMode===m.k?'#0f172a':'white',color:curMode===m.k?'white':'#475569'}}>{m.l}</button>)}
+                  </div>
+                  <div style={{width:'100%',borderTop:'1px solid #e2e8f0',marginBottom:3}}/>
+                </>})()}
                 {removable.length>0&&<><div style={{width:'100%',fontSize:9,fontWeight:700,color:'#dc2626',marginBottom:2}}>Remove</div>{removable.map(sz=><button key={'rm-'+sz} className="btn btn-sm" style={{fontSize:10,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',background:'#fef2f2'}} onClick={()=>removeSzFromItem(idx,sz)}>−{sz}</button>)}<div style={{width:'100%',borderTop:'1px solid #e2e8f0',margin:'3px 0'}}/></>}
                 {addable.map(sz=><button key={sz} className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>addSzToItem(idx,sz)}>{sz}</button>)}
                 <button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',width:'100%',marginTop:3}} onClick={()=>{uI(idx,'qty_only',true);uI(idx,'est_qty',szQty||safeNum(item.est_qty)||0);uI(idx,'sizes',{});setShowSzPicker(null)}}>Custom (No Sizes / Qty Only)</button>

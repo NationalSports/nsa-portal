@@ -48,6 +48,23 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const fo=orders.filter(o=>{if(oF!=='all'&&o.type!==oF)return false;if(sF==='open')return['sent','draft','open','need_order','waiting_receive','needs_pull'].includes(o.status)||calcSOStatus(o)!=='complete';if(sF==='closed')return['approved','paid','complete'].includes(o.status)||calcSOStatus(o)==='complete';return true});
   const gn=id=>allCustomers.find(x=>x.id===id)?.alpha_tag||'';
   const teamName=id=>{const c=allCustomers.find(x=>x.id===id);if(!c)return'';const parent=c.parent_id?allCustomers.find(x=>x.id===c.parent_id):null;if(parent?.name&&c.name?.startsWith(parent.name))return c.name.slice(parent.name.length).trim().replace(/^[-—–]\s*/,'')||c.name;return c.name||c.alpha_tag||''};
+  // Promote a sub-customer's order/estimate artwork into the parent customer's own library
+  // (customer.art_files). Library art cascades to every sub-customer ("applies to all"),
+  // so this is how a logo first seen on one sub-account becomes shared across the program.
+  // Only meaningful when viewing a parent customer; copies the merged mockup/production
+  // files so the library entry is self-contained.
+  const promoteArtToLibrary=(art)=>{
+    if(!isP){nf&&nf('Open the parent customer to add art to the program library','error');return}
+    const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
+    const lib=customer.art_files||[];
+    if(lib.some(a=>(a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt)){nf&&nf('"'+(art.name||'art')+'" is already in the program library');return}
+    if(!window.confirm('Add "'+(art.name||'this art')+'" to the program library so it applies to all sub-customers?'))return;
+    const mockFiles=(art._allMockups||[]).map(m=>m.file||m.url).filter(Boolean);
+    const prodFiles=(art._allProd||[]).map(m=>m.file||m.url).filter(Boolean);
+    const entry={id:'caf'+Date.now(),name:art.name||'',deco_type:dt||'screen_print',ink_colors:art.ink_colors||'',thread_colors:art.thread_colors||'',stitches:parseInt(art.stitches,10)||null,art_size:art.art_size||'',art_sizes:art.art_sizes||null,garment_colors:art.garment_colors||null,color_ways:art.color_ways||[],files:[],mockup_files:mockFiles,prod_files:prodFiles,notes:art.notes||'',status:art.status==='uploaded'?'needs_approval':(art.status||'approved'),uploaded:new Date().toLocaleDateString()};
+    const newCust={...customer,art_files:[...lib,entry]};setCustLocal(newCust);onRefreshCustomer(newCust);
+    nf&&nf('"'+(art.name||'art')+'" added to the program library — now applies to all sub-customers');
+  };
   // Contact editing
   const saveContact=(idx,updated)=>{const newContacts=[...(customer.contacts||[])];newContacts[idx]=updated;const newCust={...customer,contacts:newContacts};setCustLocal(newCust);onEdit(newCust);setEditContact(null)};
   const addContact=()=>{const newContacts=[...(customer.contacts||[]),{name:'',email:'',phone:'',role:''}];setCustLocal({...customer,contacts:newContacts});setEditContact(newContacts.length-1)};
@@ -633,7 +650,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           const _subLabel=isP&&!art._appliesToAll?(art._srcCustIds||[]).map(id=>teamName(id)).filter(Boolean).join(', '):'';
           return<div key={art.id+'-'+art._src+'-'+i} style={{background:'#f8fafc',borderRadius:8,border:art._st==='approved'?'2px solid #22c55e':art._st==='needs_approval'?'2px solid #f59e0b':'1px solid #e2e8f0',overflow:'hidden'}}>
             {/* Summary row */}
-            <div style={{display:'flex',gap:10,alignItems:'center',padding:'10px 14px',cursor:'pointer'}} onClick={()=>{if(isEditable)setCustArtExpanded(isExp?null:art.id);else setCustArtDetail({...art,_usedOnSOs:art._usedOnSOs,_allMockups:art._allMockups,_allProd:art._allProd})}}>
+            <div style={{display:'flex',gap:10,alignItems:'center',padding:'10px 14px',cursor:'pointer'}} onClick={()=>setCustArtDetail({...art,_usedOnSOs:art._usedOnSOs,_allMockups:art._allMockups,_allProd:art._allProd})}>
               {art._imgUrl&&_isImgUrl(art._imgUrl)?<img src={art._imgUrl} alt="" style={{width:56,height:56,borderRadius:6,objectFit:'contain',flexShrink:0,background:'white',border:'1px solid #e2e8f0'}}/>:
                 <div style={{width:56,height:56,borderRadius:6,background:art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,flexShrink:0}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':'🔥'}</div>}
               <div style={{flex:1}}>
@@ -646,12 +663,13 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:3}}>
                 <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:(ART_FILE_SC[art._st]||ART_FILE_SC.waiting_for_art).bg,color:(ART_FILE_SC[art._st]||ART_FILE_SC.waiting_for_art).c}}>{(art._st).replace(/_/g,' ')}</span>
                 <button title={art._archived?'Restore to the active library':'Archive — keep in system but hide from the library and previous-art pickers'} onClick={e=>{e.stopPropagation();archiveLogo(art,!art._archived)}} style={{fontSize:9,padding:'2px 8px',borderRadius:4,border:'1px solid #cbd5e1',background:'white',color:'#64748b',cursor:'pointer',fontWeight:600}}>{art._archived?'Unarchive':'Archive'}</button>
+                {isP&&!art._appliesToAll&&!art._archived&&<button title="Add to the program library so this logo applies to every sub-customer" onClick={e=>{e.stopPropagation();promoteArtToLibrary(art)}} style={{fontSize:9,padding:'2px 8px',borderRadius:4,border:'1px solid #93c5fd',background:'#eff6ff',color:'#1e40af',cursor:'pointer',fontWeight:700}}>↑ Use for program</button>}
                 <div style={{display:'flex',gap:6}}>
                   {art._mockups.length>0&&<span style={{fontSize:10,color:'#2563eb'}}>{art._mockups.length} file(s)</span>}
                   {art._usedOnSOs.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{art._usedOnSOs.length} order(s)</span>}
                 </div>
               </div>
-              {isEditable&&<span style={{fontSize:12,color:'#94a3b8',transition:'transform 0.2s',transform:isExp?'rotate(180deg)':'rotate(0deg)'}}>▼</span>}
+              {isEditable&&<button title="Edit details — name, type, size, status, delete" onClick={e=>{e.stopPropagation();setCustArtExpanded(isExp?null:art.id)}} style={{display:'flex',alignItems:'center',gap:3,fontSize:9,fontWeight:700,padding:'2px 7px',borderRadius:4,border:'1px solid #cbd5e1',background:isExp?'#0f172a':'white',color:isExp?'white':'#64748b',cursor:'pointer',whiteSpace:'nowrap'}}>Edit details <span style={{transition:'transform 0.2s',transform:isExp?'rotate(180deg)':'rotate(0deg)'}}>▼</span></button>}
             </div>
             {/* Expanded editor — only for customer library art */}
             {isEditable&&isExp&&<div style={{padding:'0 14px 14px',borderTop:'1px solid #e2e8f0'}}>
@@ -748,12 +766,17 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // Remove a file from this artwork everywhere it's attached (mockups/files/prod/item_mockups)
     // across every sales order that uses this logo, then persist each changed order.
     const urlOf=f=>typeof f==='string'?f:(f?.url||'');
+    // Program-library copies of this logo live in customer.art_files. File add/remove/tag must
+    // also hit those so library art is self-contained (not just whatever order it came from).
+    const _libMatch=a=>(a.name||'').toLowerCase()===(art.name||'').toLowerCase()&&(a.deco_type||'')===(art.deco_type||'');
+    const libHasLogo=()=>(customer.art_files||[]).some(_libMatch);
+    const updateLibArt=(updater)=>{const lib=customer.art_files||[];if(!lib.some(_libMatch))return false;const newCust={...customer,art_files:lib.map(a=>_libMatch(a)?updater(a):a)};setCustLocal(newCust);onRefreshCustomer(newCust);return true};
     const removeMockFromArt=(url)=>{
-      if(!url||!saveArt)return;
-      if(!window.confirm('Remove this file from "'+(art.name||'this artwork')+'" on all orders that use it? This cannot be undone.'))return;
+      if(!url)return;
+      if(!window.confirm('Remove this file from "'+(art.name||'this artwork')+'" everywhere it\'s used (orders + program library)? This cannot be undone.'))return;
       const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
       const filt=arr=>(arr||[]).filter(f=>urlOf(f)!==url);
-      custSOs.forEach(so=>{let changed=false;
+      if(saveArt)custSOs.forEach(so=>{let changed=false;
         const updArt=(so.art_files||[]).map(a=>{
           if((a.name||'').toLowerCase()!==nm||(a.deco_type||'')!==dt)return a;
           const mf=filt(a.mockup_files),fl=filt(a.files),pf=filt(a.prod_files);
@@ -763,36 +786,41 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         });
         if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
       });
+      updateLibArt(a=>{const im={...(a.item_mockups||{})};Object.keys(im).forEach(k=>{im[k]=filt(im[k])});return{...a,mockup_files:filt(a.mockup_files),files:filt(a.files),prod_files:filt(a.prod_files),item_mockups:im}});
       setCustArtDetail(d=>d?{...d,_allMockups:(d._allMockups||[]).filter(x=>x.url!==url),_allProd:(d._allProd||[]).filter(x=>x.url!==url),mockup_files:(d.mockup_files||[]).filter(f=>urlOf(f)!==url),files:(d.files||[]).filter(f=>urlOf(f)!==url),prod_files:(d.prod_files||[]).filter(f=>urlOf(f)!==url)}:d);
       nf&&nf('File removed from '+(art.name||'artwork'));
     };
-    // Upload a new mockup and attach it to this artwork's record on its source order.
+    // Upload a new mockup and attach it to this artwork — on its source order and/or the program library.
     const addMockToArt=async(fileList)=>{
       const soId=art._so_id||(usedOnSOs[0]&&usedOnSOs[0].so_id);
       const so=custSOs.find(s=>s.id===soId);
-      if(!so||!saveArt){nf&&nf('No order found to attach the mockup to','error');return}
+      const hasLib=libHasLogo();
+      if(!so&&!hasLib){nf&&nf('No order or program-library record found to attach the mockup to','error');return}
       const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
       const added=[];
       for(const f of Array.from(fileList||[])){nf&&nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');added.push({url,name:f.name})}catch(e){nf&&nf('Upload failed: '+e.message,'error')}}
       if(!added.length)return;
-      const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);return match?{...a,mockup_files:[...(a.mockup_files||[]),...added]}:a});
-      saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
-      setCustArtDetail(d=>d?{...d,_allMockups:[...(d._allMockups||[]),...added.map(m=>({file:m,url:m.url,src:so.id+(so.memo?' — '+so.memo:'')}))]}:d);
+      let srcLabel='';
+      if(so&&saveArt){const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);return match?{...a,mockup_files:[...(a.mockup_files||[]),...added]}:a});saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});srcLabel=so.id+(so.memo?' — '+so.memo:'')}
+      if(hasLib){updateLibArt(a=>({...a,mockup_files:[...(a.mockup_files||[]),...added]}));if(!srcLabel)srcLabel='Program Library'}
+      setCustArtDetail(d=>d?{...d,_allMockups:[...(d._allMockups||[]),...added.map(m=>({file:m,url:m.url,src:srcLabel}))]}:d);
       nf&&nf(added.length+' mockup'+(added.length>1?'s':'')+' added');
     };
     const pickMock=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*,.pdf';inp.multiple=true;inp.onchange=()=>addMockToArt(inp.files);inp.click()};
-    // Upload a new production file and attach it to this artwork's record on its source order.
+    // Upload a new production file and attach it to this artwork — on its source order and/or the program library.
     const addProdToArt=async(fileList)=>{
       const soId=art._so_id||(usedOnSOs[0]&&usedOnSOs[0].so_id);
       const so=custSOs.find(s=>s.id===soId);
-      if(!so||!saveArt){nf&&nf('No order found to attach the file to','error');return}
+      const hasLib=libHasLogo();
+      if(!so&&!hasLib){nf&&nf('No order or program-library record found to attach the file to','error');return}
       const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
       const added=[];
       for(const f of Array.from(fileList||[])){nf&&nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');added.push({url,name:f.name})}catch(e){nf&&nf('Upload failed: '+e.message,'error')}}
       if(!added.length)return;
-      const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);return match?{...a,prod_files:[...(a.prod_files||[]),...added]}:a});
-      saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
-      setCustArtDetail(d=>d?{...d,_allProd:[...(d._allProd||[]),...added.map(m=>({file:m,url:m.url,src:so.id+(so.memo?' — '+so.memo:'')}))]}:d);
+      let srcLabel='';
+      if(so&&saveArt){const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);return match?{...a,prod_files:[...(a.prod_files||[]),...added]}:a});saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});srcLabel=so.id+(so.memo?' — '+so.memo:'')}
+      if(hasLib){updateLibArt(a=>({...a,prod_files:[...(a.prod_files||[]),...added]}));if(!srcLabel)srcLabel='Program Library'}
+      setCustArtDetail(d=>d?{...d,_allProd:[...(d._allProd||[]),...added.map(m=>({file:m,url:m.url,src:srcLabel}))]}:d);
       nf&&nf(added.length+' production file'+(added.length>1?'s':'')+' added');
     };
     const pickProd=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=()=>addProdToArt(inp.files);inp.click()};
@@ -804,10 +832,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       : [...new Set(custSOs.flatMap(so=>(so.items||[]).filter(it=>(it.decorations||[]).some(d=>{const af=(so.art_files||[]).find(a=>a.id===d.art_file_id);return af&&_logoMatch(af)})).map(it=>it.color)).filter(Boolean))];
     // Tag a mock with a color way wherever this file is attached on the artwork.
     const applyMockToCW=(mock,cwColor)=>{
-      if(!saveArt||!cwColor)return;
+      if(!cwColor)return;
       const url=urlOf(mock);
       const tag=f=>{if(urlOf(f)!==url)return f;return{...(typeof f==='string'?{url:f,name:fileDisplayName(f)}:f),color_way:cwColor}};
-      custSOs.forEach(so=>{
+      updateLibArt(a=>{const im={...(a.item_mockups||{})};Object.keys(im).forEach(k=>{im[k]=(im[k]||[]).map(tag)});return{...a,mockup_files:(a.mockup_files||[]).map(tag),item_mockups:im}});
+      if(saveArt)custSOs.forEach(so=>{
         let soChanged=false;
         const updArt=(so.art_files||[]).map(a=>{
           if(!_logoMatch(a))return a;
@@ -948,7 +977,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {usedOnSOs.length===0&&art._src==='library'&&<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>Not yet used on any orders</div>}
         {art.notes&&<div style={{marginTop:12,fontSize:12,color:'#64748b',padding:8,background:'#f1f5f9',borderRadius:6}}>Notes: {art.notes}</div>}
       </div>
-      <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setCustArtDetail(null)}>Close</button></div>
+      <div className="modal-footer">
+        {isP&&!art._appliesToAll&&<button className="btn btn-primary" style={{marginRight:'auto'}} onClick={()=>{promoteArtToLibrary(art);setCustArtDetail(null)}}><Icon name="plus" size={12}/> Use for whole program</button>}
+        <button className="btn btn-secondary" onClick={()=>setCustArtDetail(null)}>Close</button></div>
     </div></div>})()}
   {tab==='reporting'&&(()=>{
     // Pull every invoice-type row out of allOrders for this customer (or parent+subs).
