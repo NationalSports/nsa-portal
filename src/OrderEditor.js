@@ -2123,7 +2123,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);
                 const decos=safeDecos(it);
                 const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);return a+dp2.sell},0);
-                const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+                const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
                 const unitPrice=isRolled?safeNum(it.unit_sell)+decoSell:safeNum(it.unit_sell);
                 const lineAmt=qty*unitPrice;subTotal+=lineAmt;
                 let itemName=(it.name||'')+(it.color?' - '+it.color:'');
@@ -4544,7 +4544,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       items.forEach(it=>{
         const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);
         const decos=safeDecos(it);const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);return a+dp2.sell},0);
-        const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+        const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
         const unitPrice=isRolled?safeNum(it.unit_sell)+decoSell:safeNum(it.unit_sell);const lineAmt=qty*unitPrice;subTotal+=lineAmt;
         let itemName=(it.name||'')+(it.color?' - '+it.color:'');
         if(szStr)itemName+='<br/><span>'+szStr+'</span>';
@@ -5039,7 +5039,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(soItems.length>0){
           soItems.forEach(it=>{
             const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-            const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+            const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
             const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
             let itemName=(it.name||'')+(it.color?' - '+it.color:'');
             if(szStr)itemName+='<br/><span>'+szStr+'</span>';
@@ -5260,7 +5260,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(eSoItems.length>0){
               eSoItems.forEach(it=>{
                 const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-                const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+                const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
                 const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*eDepPct*100)/100;eSubTotal+=lineAmt;
                 let itemName=(it.name||'')+(it.color?' - '+it.color:'');
                 if(szStr)itemName+='<br/><span>'+szStr+'</span>';
