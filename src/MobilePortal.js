@@ -82,7 +82,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   // so it stays out of open/AR views. Paid history has no true paid_date, so we fall back
   // to the invoice date for revenue bucketing.
   const invs=useMemo(()=>{
-    const norm=(histInvs||[]).map(i=>{
+    const norm=(histInvs||[]).filter(Boolean).map(i=>{
       const total=+i.total||0;
       const status=i.status==='void'?'cancelled':(i.status||'open');
       const date=i.invoice_date||i.date||null;
@@ -96,7 +96,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
 
   // Rep scoping — default to the logged-in rep's own customers/work. Falls back to
   // everything when the rep has no assigned customers (e.g. admins/CSRs).
-  const myCustIds=useMemo(()=>new Set(cust.filter(c=>c.primary_rep_id===cu.id).map(c=>c.id)),[cust,cu.id]);
+  const myCustIds=useMemo(()=>new Set((cust||[]).filter(c=>c&&c.primary_rep_id===cu.id).map(c=>c.id)),[cust,cu.id]);
   const useMine=scope==='mine'&&myCustIds.size>0;
   const inScope=(custId,createdBy)=>!useMine||myCustIds.has(custId)||createdBy===cu.id;
   // Compact Mine/All toggle for list headers

@@ -25911,7 +25911,7 @@ export default function App(){
   // LOGIN GATE
   if(!cu)return<ComponentErrorBoundary name="LoginGate"><React.Suspense fallback={<LazyFallback/>}><LoginGate onLogin={handleLogin} reps={REPS} supabase={supabase} sbSignIn={_sbSignIn} sbSignUp={_sbSignUp} sbResendSignup={_sbResendSignup} sbResetPassword={_sbResetPassword} sbGetSession={_sbGetSession} sbLinkTeamAuth={_sbLinkTeamAuth} sbGetMyProfile={_sbGetMyProfile}/></React.Suspense></ComponentErrorBoundary>;
   // MOBILE PORTAL GATE
-  if(mobileMode)return<MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs}/>;
+  if(mobileMode)return<ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs}/></ComponentErrorBoundary>;
 
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     {/* Mobile sidebar backdrop */}
