@@ -201,39 +201,69 @@ function PreviewBanner({ status }) {
 // ── Home: hero + grid ────────────────────────────────────────────────
 function Home({ store, theme, products }) {
   const closes = closesLabel(store.close_at);
-  const stripes = `repeating-linear-gradient(115deg, rgba(255,255,255,0.05) 0 2px, transparent 2px 26px)`;
+  const accentLight = shade(theme.accent, 18);
   const heroBg = store.banner_url
     ? `linear-gradient(180deg, rgba(0,0,0,0.42), rgba(0,0,0,0.74)), url(${store.banner_url}) center/cover`
-    : `${stripes}, radial-gradient(120% 130% at 85% -10%, ${theme.accent} 0%, transparent 45%), linear-gradient(135deg, ${theme.primary} 0%, ${shade(theme.primary, -16)} 70%)`;
+    : `linear-gradient(135deg, ${theme.primary} 0%, ${shade(theme.primary, -16)} 100%)`;
+  // The marketing-site hero language: navy gradient + diagonal stripes overlay,
+  // red chevrons along the bottom, skewed tag pill, italic-em accent in the h1.
+  const stripes = 'repeating-linear-gradient(-55deg, transparent 0 30px, rgba(255,255,255,0.02) 30px 60px)';
+  // Split the store name into "FIRST WORD" + rest so the rest can be italic-em.
+  const parts = (store.name || '').trim().split(/\s+/);
+  const head = parts.shift() || store.name || '';
+  const rest = parts.join(' ');
   return (
     <>
-      <section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden' }}>
-        {/* angled accent slash */}
-        <div style={{ position: 'absolute', top: 0, bottom: 0, right: -120, width: 220, background: theme.accent, opacity: store.banner_url ? 0.85 : 0.9, transform: 'skewX(-12deg)', boxShadow: '0 0 60px rgba(0,0,0,.25)' }} />
-        <div style={{ position: 'relative', maxWidth: 1240, margin: '0 auto', padding: 'clamp(56px,9vw,96px) 20px clamp(56px,8vw,84px)' }}>
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, marginBottom: 18 }}>
-            <span style={{ width: 30, height: 4, background: theme.accent, borderRadius: 2 }} />
-            <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: 2.5, textTransform: 'uppercase', opacity: 0.92 }}>Official Team Store</span>
+      <section style={{ background: heroBg, color: '#fff', position: 'relative', overflow: 'hidden', minHeight: 480 }}>
+        {/* Diagonal stripes overlay */}
+        <div aria-hidden style={{ position: 'absolute', inset: 0, background: stripes, pointerEvents: 'none' }} />
+        {/* Red chevron row (4 chevrons across the bottom) */}
+        <div aria-hidden style={{ position: 'absolute', left: 0, right: 0, bottom: 24, display: 'flex', justifyContent: 'center', gap: 10, opacity: 0.85, pointerEvents: 'none' }}>
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} style={{ width: 40, height: 80, background: theme.accent, clipPath: 'polygon(0 0, 70% 50%, 0 100%, 30% 100%, 100% 50%, 30% 0)' }} />
+          ))}
+        </div>
+        <div style={{ position: 'relative', zIndex: 2, maxWidth: 1240, margin: '0 auto', padding: 'clamp(60px,8vw,110px) 20px clamp(96px,10vw,140px)' }}>
+          <div style={{ display: 'inline-block', background: theme.accent, color: '#fff', fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: 2, textTransform: 'uppercase', padding: '8px 20px', marginBottom: 22, transform: 'skewX(-5deg)' }}>
+            <span style={{ display: 'inline-block', transform: 'skewX(5deg)' }}>Official Team Store</span>
           </div>
-          {closes && <div style={{ display: 'inline-block', marginLeft: 0, marginBottom: 16, background: closes.urgent ? theme.accent : 'rgba(255,255,255,0.16)', color: '#fff', fontSize: 12, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', padding: '6px 14px', borderRadius: 999, boxShadow: closes.urgent ? '0 4px 14px rgba(0,0,0,.2)' : 'none' }}>{closes.text}</div>}
-          <h1 style={{ fontFamily: DISPLAY, margin: 0, fontSize: 'clamp(44px,8vw,92px)', letterSpacing: -0.5, textTransform: 'uppercase', lineHeight: 0.88, maxWidth: 900, textShadow: store.banner_url ? '0 2px 20px rgba(0,0,0,.4)' : 'none' }}>{store.name}</h1>
-          {store.hero_blurb && <p style={{ margin: '20px 0 0', maxWidth: 560, fontSize: 17, lineHeight: 1.55, opacity: 0.92, fontWeight: 500 }}>{store.hero_blurb}</p>}
-          <button className="sf-btn" onClick={() => document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' })}
-            style={{ marginTop: 28, background: theme.accent, color: '#fff', border: 'none', padding: '15px 38px', borderRadius: theme.radius, fontFamily: DISPLAY, fontSize: 16, letterSpacing: 1.5, textTransform: 'uppercase', cursor: 'pointer', boxShadow: '0 8px 22px rgba(0,0,0,.25)' }}>Shop the Collection</button>
+          {closes && <div style={{ display: 'inline-block', marginLeft: 12, marginBottom: 22, background: closes.urgent ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.10)', color: '#fff', fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', padding: '8px 16px', transform: 'skewX(-5deg)' }}>
+            <span style={{ display: 'inline-block', transform: 'skewX(5deg)' }}>{closes.text}</span>
+          </div>}
+          <h1 style={{ fontFamily: DISPLAY, margin: 0, fontSize: 'clamp(40px,7vw,76px)', letterSpacing: 0.2, textTransform: 'uppercase', lineHeight: 1.02, maxWidth: 880, fontWeight: 800 }}>
+            {head}{rest && <> <em style={{ fontStyle: 'italic', color: accentLight, fontWeight: 800 }}>{rest}</em></>}
+          </h1>
+          {store.hero_blurb && <p style={{ margin: '20px 0 0', maxWidth: 580, fontSize: 18, lineHeight: 1.55, color: 'rgba(255,255,255,0.88)', fontWeight: 500 }}>{store.hero_blurb}</p>}
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 32 }}>
+            <SkewBtn theme={theme} variant="red" onClick={() => document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' })}>Shop the Collection</SkewBtn>
+            <SkewBtn theme={theme} variant="white" onClick={() => navTo('/shop/' + store.slug + '/cart')}>View cart</SkewBtn>
+          </div>
         </div>
       </section>
 
       <TrustStrip store={store} theme={theme} />
 
-      <div id="shop-grid" style={{ maxWidth: 1240, margin: '0 auto', padding: '48px 20px 80px' }}>
-        <SectionTitle theme={theme}>The Collection</SectionTitle>
+      <div id="shop-grid" style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(48px,7vw,80px) 20px clamp(64px,8vw,96px)' }}>
+        <SectionTitle theme={theme} eyebrow="Gear up">The <em>Collection</em></SectionTitle>
         {products.length === 0
           ? <Splash>No products in this store yet.</Splash>
-          : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(238px,1fr))', gap: 22 }}>
+          : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(248px,1fr))', gap: 18 }}>
               {products.map((p) => <Card key={p.webstore_product_id} store={store} theme={theme} p={p} />)}
             </div>}
       </div>
     </>
+  );
+}
+
+// Skewed CTA in the marketing-site language.
+function SkewBtn({ theme, variant = 'red', onClick, children }) {
+  const styles = variant === 'white'
+    ? { background: '#fff', color: theme.primary, border: 'none' }
+    : { background: theme.accent, color: '#fff', border: 'none' };
+  return (
+    <button className="sf-btn" onClick={onClick} style={{ ...styles, fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, letterSpacing: 1, textTransform: 'uppercase', padding: '15px 34px', cursor: 'pointer', transform: 'skewX(-3deg)', boxShadow: '0 6px 18px rgba(0,0,0,.18)' }}>
+      <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{children}</span>
+    </button>
   );
 }
 
@@ -242,7 +272,7 @@ function TrustStrip({ store, theme }) {
   const items = [['★', 'Official team apparel'], ['⚡', 'Quality custom decoration'], ['📦', deliver], ['♥', 'Supports the team']];
   return (
     <div style={{ background: '#0F1A38', color: '#fff' }}>
-      <div style={{ maxWidth: 1240, margin: '0 auto', padding: '16px 20px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12 }}>
+      <div style={{ maxWidth: 1240, margin: '0 auto', padding: '18px 20px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12 }}>
         {items.map(([icon, label]) => (
           <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'center', fontSize: 13, fontWeight: 600, letterSpacing: 0.3 }}>
             <span style={{ color: theme.accent, fontSize: 16 }}>{icon}</span>{label}
@@ -253,40 +283,46 @@ function TrustStrip({ store, theme }) {
   );
 }
 
-function SectionTitle({ children, theme }) {
-  return <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 28 }}>
-    <span style={{ width: 7, height: 30, background: theme.accent, borderRadius: 2 }} />
-    <h2 style={{ fontFamily: DISPLAY, margin: 0, fontSize: 'clamp(26px,4vw,36px)', letterSpacing: 0.3, textTransform: 'uppercase', lineHeight: 1 }}>{children}</h2>
+function SectionTitle({ children, theme, eyebrow }) {
+  return <div style={{ textAlign: 'center', marginBottom: 36 }}>
+    {eyebrow && <div style={{ fontFamily: DISPLAY, color: '#5A6075', fontWeight: 700, fontSize: 13, letterSpacing: 3, textTransform: 'uppercase', marginBottom: 8 }}>{eyebrow}</div>}
+    <h2 style={{ fontFamily: DISPLAY, margin: 0, fontSize: 'clamp(30px,4vw,44px)', letterSpacing: 0.2, textTransform: 'uppercase', lineHeight: 1, color: '#192853', fontWeight: 800 }}>{children}</h2>
   </div>;
 }
 
 function stockBadge(p) {
-  if (p.kind === 'bundle') return { text: 'Package', color: '#fff', bg: '#1e40af' };
-  if (effOnHand(p) > 0) return { text: 'In stock', color: '#fff', bg: '#16a34a' };
-  if (isIncoming(p)) { const e = etaOf(p); return { text: e ? `Arriving ${e}` : 'On the way', color: '#fff', bg: '#d97706' }; }
-  return { text: 'Sold out', color: '#fff', bg: '#b91c1c' };
+  if (p.kind === 'bundle') return { text: 'Package', color: '#fff', bg: '#192853' };
+  if (effOnHand(p) > 0) return { text: 'In stock', color: '#fff', bg: '#166534' };
+  if (isIncoming(p)) { const e = etaOf(p); return { text: e ? `Arriving ${e}` : 'On the way', color: '#fff', bg: '#b45309' }; }
+  return { text: 'Sold out', color: '#fff', bg: '#962C32' };
 }
 
 function Card({ store, theme, p }) {
   const b = stockBadge(p);
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
   const go = () => navTo(`/shop/${store.slug}/${p.kind === 'bundle' ? 'b' : 'p'}/${p.webstore_product_id}`);
+  // Notched-corner card: angular clip-path (8px notches) borrowed from the
+  // sport-card pattern on the marketing site. Photo fills the card with a
+  // dark gradient overlay holding the title and price.
+  const notch = 'polygon(0 8px, 8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%)';
   return (
-    <div className="sf-card" onClick={go} style={{ cursor: 'pointer', display: 'flex', flexDirection: 'column', background: '#fff', borderRadius: theme.radius, overflow: 'hidden', border: '1px solid #eef1f5', boxShadow: '0 1px 3px rgba(11,18,32,.05)' }}>
-      <div style={{ position: 'relative', aspectRatio: '4/5', background: '#f4f6f9', overflow: 'hidden' }}>
+    <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'block', aspectRatio: '1 / 1.18', background: '#fff', overflow: 'hidden', clipPath: notch, boxShadow: '0 4px 14px rgba(15,26,56,.08)' }}>
+      <div style={{ position: 'absolute', inset: 0, background: '#F7F8FB' }}>
         {p.image_front_url
           ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
           : <Placeholder theme={theme} label={p.name || store.name} />}
-        <span style={{ position: 'absolute', top: 10, left: 10, fontSize: 10, fontWeight: 800, letterSpacing: 0.6, textTransform: 'uppercase', padding: '5px 10px', borderRadius: 999, background: b.bg, color: b.color, boxShadow: '0 2px 6px rgba(0,0,0,.15)' }}>{b.text}</span>
       </div>
-      <div style={{ position: 'relative', padding: '15px 15px 17px', display: 'flex', flexDirection: 'column', gap: 5 }}>
-        <span className="sf-bar" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: theme.accent, transform: 'scaleX(0)', transformOrigin: 'left', transition: 'transform .2s ease' }} />
-        <div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.3, minHeight: 36 }}>{p.name}</div>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-          <span style={{ fontFamily: DISPLAY, fontSize: 22, letterSpacing: 0.3 }}>{money(priceOf(p))}</span>
+      <span style={{ position: 'absolute', top: 12, left: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', padding: '5px 12px', background: b.bg, color: b.color, transform: 'skewX(-5deg)', boxShadow: '0 2px 6px rgba(0,0,0,.18)' }}><span style={{ display: 'inline-block', transform: 'skewX(5deg)' }}>{b.text}</span></span>
+      {/* Bottom gradient overlay holding the name + price */}
+      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '46px 16px 18px', color: '#fff', background: 'linear-gradient(0deg, rgba(15,26,56,0.95) 0%, rgba(15,26,56,0.78) 55%, rgba(15,26,56,0) 100%)' }}>
+        <div style={{ fontFamily: DISPLAY, textTransform: 'uppercase', fontWeight: 700, fontSize: 15, letterSpacing: 0.4, lineHeight: 1.15, minHeight: 36 }}>{p.name}</div>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 6 }}>
+          <span style={{ fontFamily: DISPLAY, fontSize: 22, letterSpacing: 0.3, fontWeight: 800 }}>{money(priceOf(p))}</span>
+          {showFund && <span style={{ fontSize: 11, color: shade(theme.accent, 32), fontWeight: 700 }}>♥ {money(p.fundraise_amount)} to team</span>}
         </div>
-        {showFund && <div style={{ fontSize: 11, color: '#16a34a', fontWeight: 700 }}>♥ {money(p.fundraise_amount)} supports the team</div>}
       </div>
+      {/* Accent bar reveal on hover */}
+      <span className="sf-bar" style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 4, background: theme.accent, transform: 'scaleX(0)', transformOrigin: 'left', transition: 'transform .2s ease', zIndex: 3 }} />
     </div>
   );
 }
