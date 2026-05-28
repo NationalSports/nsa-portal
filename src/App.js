@@ -632,7 +632,7 @@ const _dbLoad = async (opts={}) => {
         const{id:_,estimate_id:__,item_index:___,...rest}=item;return{...rest,decorations}});
       // _itemsHydrated: true only when estimate_items loaded cleanly this session. Lets save guards tell a
       // deliberate rep deletion (hydrated→empty) apart from items vanishing on a timed-out load (never hydrated).
-      return{...est,items,art_files,_itemsHydrated:!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
+      return{...est,items,art_files,_itemsHydrated:!_lastLoadTimedOut.has('estimate_items'),_decosHydrated:!_lastLoadTimedOut.has('estimate_item_decorations')&&!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
       // Recycled-number carry-over guard: a reused SO id can inherit jobs/art from the order that
@@ -677,7 +677,7 @@ const _dbLoad = async (opts={}) => {
       const _hydratedPoIds=[...new Set(items.flatMap(it=>(it.po_lines||[]).map(p=>p.po_id).filter(Boolean)))];
       // _hydratedPickIds: same idea for pick lines, keyed by pick_id.
       const _hydratedPickIds=[...new Set(items.flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)))];
-      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
+      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:!_lastLoadTimedOut.has('so_items'),_decosHydrated:!_lastLoadTimedOut.has('so_item_decorations')&&!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
@@ -808,26 +808,36 @@ const _dbSaveEstimateInner = async (est) => {
     }
     const _oldEstItems=_oldEstResp.data||[];
     const oldItemIds=_oldEstItems.map(i=>i.id);
-    // Safety check: if client has 0 items but DB has some, abort to prevent data loss
-    if((!items||items.length===0)&&oldItemIds.length>0){
+    // Safety check: if this session never cleanly loaded the items, do NOT let it rewrite them. A timed-out
+    // estimate_items load leaves the editor with an untrustworthy item list (blank, partial, or with new rows
+    // added on top of a phantom-empty estimate), and the insert-new/delete-old swap below would replace the real
+    // DB rows with it — the EST-1119 failure mode (4 real items overwritten by 1). Block on ANY count mismatch
+    // while not hydrated (fewer OR more), not just reductions. When items WERE hydrated, the list is trustworthy
+    // and the rep can add/remove freely.
+    const _clientEstItemCount=(items||[]).length;
+    if(oldItemIds.length>0&&_clientEstItemCount!==oldItemIds.length){
       if(est._itemsHydrated){
-        console.warn('[DB] Estimate',est.id,'saving with 0 items (DB had',oldItemIds.length,') — items were hydrated, treating as intentional removal');
+        console.warn('[DB] Estimate',est.id,'saving with',_clientEstItemCount,'item(s) (DB had',oldItemIds.length,') — items were hydrated, treating as intentional edit');
       }else{
-        console.error('[DB] SAFETY: Blocking estimate save — client has 0 items but DB has',oldItemIds.length,'for',est.id,'(items never hydrated this session)');
-        if(_dbNotify)_dbNotify('Save blocked — '+oldItemIds.length+' item(s) would be lost. Please reload the page.','error');
+        console.error('[DB] SAFETY: Blocking estimate save —',_clientEstItemCount,'client item(s) vs',oldItemIds.length,'in DB for',est.id,'(items never hydrated this session)');
+        if(_dbNotify)_dbNotify('Save blocked — items may not have loaded fully (database has '+oldItemIds.length+', editor has '+_clientEstItemCount+'). Please reload the page.','error');
         return false;
       }
     }
-    // Safety check: if client has 0 decorations but DB has some, abort to prevent data loss
+    // Safety check: if client has 0 decorations but DB has some, abort to prevent data loss — but ONLY when
+    // decorations were not cleanly loaded this session. A timed-out estimate_item_decorations load strips decos
+    // off the items while the DB still has them, so a save would wipe them. When decos WERE hydrated, the client
+    // list is trustworthy and removing the last decoration is a deliberate edit (the user-reported case) — allow it.
     const clientDecoCount=(items||[]).reduce((a,it)=>a+(it.decorations?.length||0),0);
     const allNoDeco=(items||[]).length>0&&(items||[]).every(it=>it.no_deco);
-    if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length){
+    if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length&&!est._decosHydrated){
       const{count:dbDecoCount}=await supabase.from('estimate_item_decorations').select('id',{count:'exact',head:true}).in('estimate_item_id',oldItemIds);
-      if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking estimate save — client has 0 decorations but DB has',dbDecoCount,'for',est.id);if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');return false}
+      if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking estimate save — client has 0 decorations but DB has',dbDecoCount,'for',est.id,'(decorations never hydrated this session)');if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');return false}
     }
     // Per-item safety: block save if any single item would lose all its decorations.
     // Catches the partial-loss case the all-zero check above misses (one item drops decos while others retain them).
-    if(oldItemIds.length&&items?.length){
+    // Gated on _decosHydrated: when decos loaded cleanly, a per-item deco removal is a deliberate edit, so skip.
+    if(oldItemIds.length&&items?.length&&!est._decosHydrated){
       const{data:_oldDecoRows}=await supabase.from('estimate_item_decorations').select('estimate_item_id').in('estimate_item_id',oldItemIds);
       const _oldDecoByItem=new Map();(_oldDecoRows||[]).forEach(d=>_oldDecoByItem.set(d.estimate_item_id,(_oldDecoByItem.get(d.estimate_item_id)||0)+1));
       for(const oi of _oldEstItems){
@@ -1005,17 +1015,19 @@ const _dbSaveSOInner = async (so) => {
     }
     const _oldSoItems=_oldItemsResp.data||[];
     const oldItemIds=_oldSoItems.map(i=>i.id);
-    // Safety check: if client has 0 items but DB has some, abort to prevent data loss
-    // Triggers when state was polluted by a timed-out so_items load and an autosave fires before a fresh load completes
-    if((!items||items.length===0)&&oldItemIds.length>0){
+    // Safety check: if this session never cleanly loaded the items, do NOT let it rewrite them. A timed-out
+    // so_items load leaves an untrustworthy item list (blank, partial, or with new rows added on top of a
+    // phantom-empty SO), and the insert-new/delete-old swap below would replace the real DB rows with it. Block on
+    // ANY count mismatch while not hydrated (fewer OR more), not just reductions. When items WERE hydrated, the
+    // list is trustworthy and the rep can add/remove freely (further guards below still protect orphaned jobs/decos).
+    const _clientSoItemCount=(items||[]).length;
+    if(oldItemIds.length>0&&_clientSoItemCount!==oldItemIds.length){
       if(so._itemsHydrated){
-        // Items loaded cleanly this session and the client now has none — a deliberate removal, not a persistence
-        // glitch. Allow the save through (further guards below still protect orphaned jobs/decorations).
-        console.warn('[DB] SO',so.id,'saving with 0 items (DB had',oldItemIds.length,') — items were hydrated, treating as intentional removal');
+        console.warn('[DB] SO',so.id,'saving with',_clientSoItemCount,'item(s) (DB had',oldItemIds.length,') — items were hydrated, treating as intentional edit');
       }else{
-        console.error('[DB] SAFETY: Blocking SO save — client has 0 items but DB has',oldItemIds.length,'for',so.id,'(items never hydrated this session)');
-        if(_dbNotify)_dbNotify('Save blocked — '+oldItemIds.length+' item(s) would be lost. Please reload the page.','error');
-        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:oldItemIds.length,newCount:0,reason:'Client save had 0 items while DB had '+oldItemIds.length+' (items not loaded this session)'});
+        console.error('[DB] SAFETY: Blocking SO save —',_clientSoItemCount,'client item(s) vs',oldItemIds.length,'in DB for',so.id,'(items never hydrated this session)');
+        if(_dbNotify)_dbNotify('Save blocked — items may not have loaded fully (database has '+oldItemIds.length+', editor has '+_clientSoItemCount+'). Please reload the page.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:oldItemIds.length,newCount:_clientSoItemCount,reason:'Client save had '+_clientSoItemCount+' items while DB had '+oldItemIds.length+' (items not loaded this session)'});
         return false;
       }
     }
@@ -1031,16 +1043,20 @@ const _dbSaveSOInner = async (so) => {
         return false;
       }
     }
-    // Safety check: if client has 0 decorations but DB has some, abort to prevent data loss
+    // Safety check: if client has 0 decorations but DB has some, abort to prevent data loss — but ONLY when
+    // decorations were not cleanly loaded this session. A timed-out so_item_decorations load strips decos off the
+    // items while the DB still has them, so a save would wipe them. When decos WERE hydrated, the client list is
+    // trustworthy and removing the last decoration is a deliberate edit — allow it.
     const clientDecoCount=(items||[]).reduce((a,it)=>a+(it.decorations?.length||0),0);
     const allNoDeco=(items||[]).length>0&&(items||[]).every(it=>it.no_deco);
-    if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length){
+    if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length&&!so._decosHydrated){
       const{count:dbDecoCount}=await supabase.from('so_item_decorations').select('id',{count:'exact',head:true}).in('so_item_id',oldItemIds);
-      if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking SO save — client has 0 decorations but DB has',dbDecoCount,'for',so.id);if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');return false}
+      if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking SO save — client has 0 decorations but DB has',dbDecoCount,'for',so.id,'(decorations never hydrated this session)');if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');return false}
     }
     // Per-item safety: block save if any single item would lose all its decorations.
     // Catches the partial-loss case the all-zero check above misses (one item drops decos while siblings retain them).
-    if(oldItemIds.length&&items?.length){
+    // Gated on _decosHydrated: when decos loaded cleanly, a per-item deco removal is a deliberate edit, so skip.
+    if(oldItemIds.length&&items?.length&&!so._decosHydrated){
       const{data:_oldDecoRows}=await supabase.from('so_item_decorations').select('so_item_id').in('so_item_id',oldItemIds);
       const _oldDecoByItem=new Map();(_oldDecoRows||[]).forEach(d=>_oldDecoByItem.set(d.so_item_id,(_oldDecoByItem.get(d.so_item_id)||0)+1));
       for(const oi of _oldSoItems){
@@ -2854,6 +2870,9 @@ export default function App(){
   const exportIssuesCSV=()=>{const hdr=['ID','Status','Priority','Description','Page','Context','Reported By','Role','Timestamp','Resolution','Resolved At'];const rows=issues.map(i=>[i.id,i.status,i.priority,'"'+i.description.replace(/"/g,'""')+'"',i.page,i.viewing||'',i.reported_by||i.reportedBy||'',i.role,i.timestamp,i.resolution||'',i.resolved_at||i.resolvedAt||'']);const csv=[hdr.join(','),...rows.map(r=>r.join(','))].join('\n');const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='issues_export_'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url)};
   // SO version history
   const[soHistory,setSOHistory]=useState(()=>loadState('so_history',{}));// {soId:[{ts,user,snapshot}]}
+  // Estimate version history — same shape/mechanism as soHistory so a blanked estimate (the EST-1119 failure mode)
+  // can be restored from its last good snapshot. Cloud-backed via app_state, skips localStorage (_LS_SKIP_APPSTATE).
+  const[estHistory,setEstHistory]=useState(()=>loadState('est_history',{}));// {estId:[{ts,user,snapshot}]}
   const[msgs,setMsgs]=useState(()=>_migrated.msgs);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});const[vM,setVM]=useState({open:false,v:null});
   // ─── Supabase: load on mount ───
   const _pendingQBTokens=useRef(null);
@@ -2908,6 +2927,7 @@ export default function App(){
           if(as.batch_counter)setBatchCounter(as.batch_counter);
           if(as.change_log)setChangeLog(as.change_log);
           if(as.so_history)setSOHistory(as.so_history);
+          if(as.est_history)setEstHistory(as.est_history);
           if(as.wh_recent_actions)setWhRecentActions(as.wh_recent_actions);
           if(as.job_time_logs)setJobTimeLogs(as.job_time_logs);
           if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:{..._qbDef.mapping,...(as.qb_config.mapping||{})},syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
@@ -2936,7 +2956,7 @@ export default function App(){
             try{
               await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
               if(issues?.length) _dbSave('issues',issues.map(i=>_pick(i,_issueCols)));
-              const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo,wh_recent_actions:whRecentActions};
+              const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,est_history:estHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo,wh_recent_actions:whRecentActions};
               for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
               await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
               console.log('[DB] Seeded Supabase from localStorage');
@@ -2961,7 +2981,7 @@ export default function App(){
               const as2=d2.appState||{};
               if(as2.batch_pos){_batchPosApplied.current=JSON.stringify(as2.batch_pos);setBatchPOs(as2.batch_pos)}if(as2.submitted_batches)setSubmittedBatches(as2.submitted_batches);
               if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.change_log)setChangeLog(as2.change_log);
-              if(as2.so_history)setSOHistory(as2.so_history);if(as2.job_time_logs)setJobTimeLogs(as2.job_time_logs);
+              if(as2.so_history)setSOHistory(as2.so_history);if(as2.est_history)setEstHistory(as2.est_history);if(as2.job_time_logs)setJobTimeLogs(as2.job_time_logs);
               if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:{..._qbDef.mapping,...(as2.qb_config.mapping||{})},syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(as2.inv_adj_log);if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);
               if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
@@ -2973,7 +2993,7 @@ export default function App(){
               try{
                 await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
                 if(issues?.length) _dbSave('issues',issues.map(i=>_pick(i,_issueCols)));
-                const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo,wh_recent_actions:whRecentActions};
+                const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,est_history:estHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo,wh_recent_actions:whRecentActions};
                 for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
                 await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
                 console.log('[DB] Seeded Supabase from localStorage (fallback)');
@@ -3790,13 +3810,14 @@ export default function App(){
   // Batch POs, submitted batches, changelog, SO history — sync to Supabase app_state table.
   // Unbounded log keys (change_log, so_history, inv_adj_log) skip localStorage — cloud-only to avoid quota pressure.
   // Other keys still cache locally for fast cold-start.
-  const _LS_SKIP_APPSTATE=new Set(['change_log','so_history','inv_adj_log']);
+  const _LS_SKIP_APPSTATE=new Set(['change_log','so_history','est_history','inv_adj_log']);
   const _saveAppState=(key,val)=>{if(!_LS_SKIP_APPSTATE.has(key))_lsSet('nsa_'+key,JSON.stringify(val));if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSavingGuard(()=>_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}]))};
   React.useEffect(()=>{const cur=JSON.stringify(batchPOs);if(_batchPosApplied.current!==cur)_batchPosDirtyUntil=Date.now()+12000;_saveAppState('batch_pos',batchPOs)},[batchPOs]);
   React.useEffect(()=>{_saveAppState('submitted_batches',submittedBatches)},[submittedBatches]);
   React.useEffect(()=>{_saveAppState('batch_counter',batchCounter)},[batchCounter]);
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
+  React.useEffect(()=>{_saveAppState('est_history',estHistory)},[estHistory]);
   // Boot-time snapshot regression scan: walk each SO's snapshot history and flag any whose latest
   // snapshot has fewer items than the one before it. One-shot per session — useful for catching anything
   // that slipped through the live guards before they existed.
@@ -3837,6 +3858,39 @@ export default function App(){
       }
     }
   },[sos,soHistory]);
+  // Boot-time snapshot regression scan for Estimates — mirrors the SO scan above.
+  const _estBootScanRanRef=React.useRef(false);
+  React.useEffect(()=>{
+    if(_estBootScanRanRef.current)return;
+    if(!estHistory||Object.keys(estHistory).length===0)return;
+    if(!ests||ests.length===0)return;
+    _estBootScanRanRef.current=true;
+    const flagged=[];
+    Object.entries(estHistory).forEach(([estId,snaps])=>{
+      if(!Array.isArray(snaps)||snaps.length<2)return;
+      const liveEst=ests.find(e=>e.id===estId);if(!liveEst||liveEst.deleted_at)return;
+      const liveCount=(liveEst.items||[]).length;
+      const lastGood=snaps.find(s=>(s?.snapshot?.items||[]).length>0);
+      if(!lastGood)return;
+      const lastGoodCount=lastGood.snapshot.items.length;
+      if(liveCount<lastGoodCount){flagged.push({estId,liveCount,lastGoodCount,lastGoodTs:lastGood.ts})}
+    });
+    const _isAdminRole=cu?.role==='admin'||cu?.role==='super_admin';
+    if(flagged.length&&_isAdminRole){
+      console.warn('[boot-scan] '+flagged.length+' Estimate(s) have fewer items than their last snapshot:',flagged);
+      const newIssues=flagged
+        .filter(f=>!issues.some(i=>i.id==='ISS-ESTSNAPREG-'+f.estId))
+        .map(f=>({id:'ISS-ESTSNAPREG-'+f.estId,status:'open',priority:'high',
+          description:f.estId+' appears to have lost items: '+f.liveCount+' live vs. '+f.lastGoodCount+' in last good snapshot ('+f.lastGoodTs+'). Review the estimate and its snapshot history.',
+          page:'Estimates',viewing:f.estId,reported_by:'System',role:'system',
+          timestamp:new Date().toISOString(),recent_errors:[],resolved_at:null,resolution:null}));
+      if(newIssues.length){
+        setIssues(prev=>{const add=newIssues.filter(n=>!prev.some(i=>i.id===n.id));return add.length?[...add,...prev]:prev});
+        newIssues.forEach(n=>logChange('snapshot_regression','Estimate',n.viewing,n.description));
+        nf('⚠️ '+newIssues.length+' Estimate(s) may have lost items vs. snapshot history — logged to the Issues page','error');
+      }
+    }
+  },[ests,estHistory]);
   React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
   // QB background auto-sync — runs even when not on QB page, using ref set by rQB()
   React.useEffect(()=>{
@@ -4700,7 +4754,20 @@ export default function App(){
         return{...d,_cost_locked:dp.cost}});
       return{...item,decorations}});
     return{...order,items}};
-  const savE=e=>{const e2=lockPrices(e.status==='draft'?{...e,status:'open'}:e);setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});logChange(ests.find(x=>x.id===e2.id)?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
+  const savE=e=>{const e2=lockPrices(e.status==='draft'?{...e,status:'open'}:e);
+    const prev=ests.find(x=>x.id===e2.id);
+    // Last-line client guard: refuse to silently drop all items. If the previous in-memory state had items but the
+    // incoming save has none, alert and abort — mirrors the savSO guard that protected SO-1001.
+    if(prev&&(prev.items?.length||0)>0&&(!e2.items||e2.items.length===0)){
+      console.warn('[savE] Refusing to save '+e2.id+' — would drop '+prev.items.length+' item(s) from current state.');
+      nf('⚠️ Save blocked for '+e2.id+': '+prev.items.length+' line item(s) would be deleted. Reload the page if items look wrong.','error');
+      return prev;
+    }
+    // Snapshot the prior state before overwriting so a blanked estimate can be restored from Estimate Version
+    // History. Keeps the last 20 saves, cloud-backed via app_state (est_history).
+    if(prev){setEstHistory(h=>{const existing=h[e2.id]||[];return{...h,[e2.id]:[{ts:new Date().toLocaleString(),user:cu?.name||'Portal Coach',snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
+    setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});
+    logChange(prev?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
   const savSO=(s,opts)=>{const sl=lockPrices(s);const skipMerge=opts?.skipMerge;
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===sl.id);
@@ -9284,7 +9351,7 @@ export default function App(){
     _meta:{version:'1.0',exported_at:new Date().toISOString(),exported_by:cu.name,app:'NSA Portal'},
     customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs,
     batch_queue:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,
-    change_log:changeLog,so_history:soHistory,
+    change_log:changeLog,so_history:soHistory,est_history:estHistory,
     inv_adj_log:invAdjLog,inv_pos:invPOs,inv_po_counter:invPOCounter
   });
   const exportBackup=()=>{
@@ -9318,6 +9385,7 @@ export default function App(){
           if(data.batch_counter)setBatchCounter(data.batch_counter);
           if(data.change_log)setChangeLog(data.change_log);
           if(data.so_history)setSOHistory(data.so_history);
+          if(data.est_history)setEstHistory(data.est_history);
           if(data.inv_adj_log)setInvAdjLog(data.inv_adj_log);
           if(data.inv_pos)setInvPOs(data.inv_pos);
           if(data.inv_po_counter)setInvPOCounter(data.inv_po_counter);
@@ -9352,7 +9420,7 @@ export default function App(){
         if(data.submitted_batches)setSubmittedBatches(data.submitted_batches);
         if(data.batch_counter)setBatchCounter(data.batch_counter);
         if(data.change_log)setChangeLog(data.change_log);
-        if(data.so_history)setSOHistory(data.so_history);
+        if(data.so_history)setSOHistory(data.so_history);if(data.est_history)setEstHistory(data.est_history);
         if(data.inv_adj_log)setInvAdjLog(data.inv_adj_log);
         if(data.inv_pos)setInvPOs(data.inv_pos);
         if(data.inv_po_counter)setInvPOCounter(data.inv_po_counter);
@@ -22512,6 +22580,27 @@ export default function App(){
               const v=versions[0];
               if(v&&window.confirm('Rollback '+soId+' to version from '+v.ts+'?')){
                 savSO(v.snapshot);nf('⏪ '+soId+' rolled back to '+v.ts);
+              }
+            }}>⏪ Rollback</button></td>
+          </tr>)}
+          </tbody></table>}
+        </div>
+      </div>
+
+      {/* Estimate Version History */}
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-header"><h2>📜 Estimate Version History</h2><span style={{fontSize:12,color:'#64748b'}}>{Object.keys(estHistory).length} estimates tracked</span></div>
+        <div className="card-body" style={{padding:0}}>
+          {Object.keys(estHistory).length===0?<div className="empty" style={{padding:20}}>No version history yet. Changes to estimates will be tracked here.</div>:
+          <table><thead><tr><th>Estimate</th><th>Versions</th><th>Latest Save</th><th>Action</th></tr></thead><tbody>
+          {Object.entries(estHistory).map(([estId,versions])=><tr key={estId}>
+            <td style={{fontWeight:700,color:'#1e40af'}}>{estId}</td>
+            <td>{versions.length} version{versions.length!==1?'s':''}</td>
+            <td style={{fontSize:11,color:'#64748b'}}>{versions[0]?.ts} by {versions[0]?.user?.split(' ')[0]}</td>
+            <td><button className="btn btn-sm btn-secondary" onClick={()=>{
+              const v=versions[0];
+              if(v&&window.confirm('Rollback '+estId+' to version from '+v.ts+'?')){
+                savE(v.snapshot);nf('⏪ '+estId+' rolled back to '+v.ts);
               }
             }}>⏪ Rollback</button></td>
           </tr>)}
