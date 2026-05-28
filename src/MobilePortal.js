@@ -1,6 +1,7 @@
 /* eslint-disable */
 import React, { useState, useMemo } from 'react';
 import { auTierDisc, dP, calcOrderTotals } from './pricing';
+import { isJobReady } from './businessLogic';
 
 // ─── Inline Icon (same SVG paths as main app) ───
 const MIcon=({name,size=20})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,menu:<><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></>,back:<polyline points="15 18 9 12 15 6"/>,plus:<path d="M12 5v14M5 12h14"/>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,clock:<><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,scan:<><path d="M3 7V5a2 2 0 012-2h2"/><path d="M17 3h2a2 2 0 012 2v2"/><path d="M21 17v2a2 2 0 01-2 2h-2"/><path d="M7 21H5a2 2 0 01-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/></>,phone:<><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></>,monitor:<><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
@@ -27,11 +28,13 @@ const statusBadge=(status)=>{
 const fmtDate=(d)=>{if(!d)return'—';try{return new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric'})}catch{return'—'}};
 const fmtMoney=(n)=>{if(n==null)return'$0';return'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})};
 const timeAgo=(d)=>{if(!d)return'';const ms=Date.now()-new Date(d).getTime();const m=ms/60000;if(m<1)return'just now';if(m<60)return Math.floor(m)+'m';if(m<1440)return Math.floor(m/60)+'h';return Math.floor(m/1440)+'d'};
+const PROD_LABELS={ready:'Ready',hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped',draft:'Draft'};
+const prodLabel=(j)=>PROD_LABELS[j.prod_status]||(j.prod_status||'pending').replace(/_/g,' ');
 
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,nextEstId,nf,onMsg}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,nextEstId,nf,onMsg}){
   const[tab,setTab]=useState('home');
   const[q,setQ]=useState('');
   const[showSearch,setShowSearch]=useState(false);
@@ -48,6 +51,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   const[invsSort,setInvsSort]=useState('newest');
   const[custQ,setCustQ]=useState('');
   const[moreSubPage,setMoreSubPage]=useState(null);
+  const[scope,setScope]=useState('mine'); // mine | all — default reps see their own work first
   const[reportScope,setReportScope]=useState('mine'); // mine | all
   // New estimate form
   const[newEst,setNewEst]=useState(null); // null = not creating, object = in progress
@@ -68,6 +72,33 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   // Derived data
   const repName=(id)=>{const r=REPS.find(x=>x.id===id);return r?r.name:'—'};
   const custObj=(id)=>cust.find(x=>x.id===id);
+
+  // Merge portal invoices with NetSuite-imported history (customer_invoices), normalized
+  // to the portal invoice shape. History is read-only; status 'void' maps to 'cancelled'
+  // so it stays out of open/AR views. Paid history has no true paid_date, so we fall back
+  // to the invoice date for revenue bucketing.
+  const invs=useMemo(()=>{
+    const norm=(histInvs||[]).map(i=>{
+      const total=+i.total||0;
+      const status=i.status==='void'?'cancelled':(i.status||'open');
+      const date=i.invoice_date||i.date||null;
+      return{id:i.id,customer_id:i.customer_id,status,total,amount_paid:status==='paid'?total:0,
+        created_at:date,paid_date:status==='paid'?date:null,due_date:i.due_date||null,so_id:null,
+        _hist:true,_cname:i.raw_customer_name||null};
+    });
+    const seen=new Set((invsPortal||[]).map(i=>i.id));
+    return[...(invsPortal||[]),...norm.filter(i=>!seen.has(i.id))];
+  },[invsPortal,histInvs]);
+
+  // Rep scoping — default to the logged-in rep's own customers/work. Falls back to
+  // everything when the rep has no assigned customers (e.g. admins/CSRs).
+  const myCustIds=useMemo(()=>new Set(cust.filter(c=>c.primary_rep_id===cu.id).map(c=>c.id)),[cust,cu.id]);
+  const useMine=scope==='mine'&&myCustIds.size>0;
+  const inScope=(custId,createdBy)=>!useMine||myCustIds.has(custId)||createdBy===cu.id;
+  // Compact Mine/All toggle for list headers
+  const ScopeToggle=()=>myCustIds.size===0?null:<div style={{display:'flex',gap:4,background:'#f1f5f9',borderRadius:8,padding:2}}>
+    {[['mine','Mine'],['all','All']].map(([v,l])=><button key={v} onClick={()=>setScope(v)} style={{padding:'4px 12px',borderRadius:6,border:'none',background:scope===v?'white':'transparent',color:scope===v?'#1e40af':'#64748b',fontWeight:700,fontSize:12,cursor:'pointer',boxShadow:scope===v?'0 1px 2px rgba(0,0,0,0.1)':'none'}}>{l}</button>)}
+  </div>;
 
   // Messages computed
   const myUnreadMsgs=useMemo(()=>msgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&(m.tagged_members||[]).includes(cu.id)),[msgs,cu.id]);
@@ -97,12 +128,14 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   // ─── STATS ───
   const stats=useMemo(()=>{
     const now=new Date();const thisMonth=(d)=>{if(!d)return false;const dt=new Date(d);return dt.getMonth()===now.getMonth()&&dt.getFullYear()===now.getFullYear()};
-    const activeOrders=sos.filter(s=>!['completed','shipped','cancelled'].includes(s.status||''));
-    const openInvoices=invs.filter(i=>i.status!=='paid'&&i.status!=='cancelled');
-    const monthRevenue=invs.filter(i=>i.status==='paid'&&thisMonth(i.paid_date||i.created_at)).reduce((a,i)=>a+(i.total||0),0);
-    const urgentOrders=sos.filter(s=>{if(['completed','shipped','cancelled'].includes(s.status||''))return false;if(!s.expected_date)return false;const days=Math.ceil((new Date(s.expected_date)-now)/(1000*60*60*24));return days<=3&&days>=0});
+    const sScoped=sos.filter(s=>inScope(s.customer_id,s.created_by));
+    const iScoped=invs.filter(i=>inScope(i.customer_id,i.created_by));
+    const activeOrders=sScoped.filter(s=>!['completed','shipped','cancelled'].includes(s.status||''));
+    const openInvoices=iScoped.filter(i=>i.status!=='paid'&&i.status!=='cancelled');
+    const monthRevenue=iScoped.filter(i=>i.status==='paid'&&thisMonth(i.paid_date||i.created_at)).reduce((a,i)=>a+(i.total||0),0);
+    const urgentOrders=sScoped.filter(s=>{if(['completed','shipped','cancelled'].includes(s.status||''))return false;if(!s.expected_date)return false;const days=Math.ceil((new Date(s.expected_date)-now)/(1000*60*60*24));return days<=3&&days>=0});
     return{activeOrders:activeOrders.length,openInvoices:openInvoices.length,monthRevenue,urgentOrders:urgentOrders.length};
-  },[sos,invs]);
+  },[sos,invs,scope,myCustIds]);
 
   // ─── SORT HELPER ───
   const sortList=(list,sortKey)=>{
@@ -117,19 +150,19 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
 
   // ─── FILTERED DATA (must be above early-return gates to satisfy Rules of Hooks) ───
   const filteredOrders=useMemo(()=>{
-    let list=sos;
-    if(ordersFilter==='active')list=sos.filter(s=>!['completed','shipped','cancelled'].includes(s.status||''));
-    else if(ordersFilter==='completed')list=sos.filter(s=>['completed','shipped'].includes(s.status||''));
-    else if(ordersFilter==='hold')list=sos.filter(s=>(s.status||'')==='hold');
+    let list=sos.filter(s=>inScope(s.customer_id,s.created_by));
+    if(ordersFilter==='active')list=list.filter(s=>!['completed','shipped','cancelled'].includes(s.status||''));
+    else if(ordersFilter==='completed')list=list.filter(s=>['completed','shipped'].includes(s.status||''));
+    else if(ordersFilter==='hold')list=list.filter(s=>(s.status||'')==='hold');
     if(ordersQ.length>=2){const s=ordersQ.toLowerCase();list=list.filter(so=>{const cc=custObj(so.customer_id);return(so.id+' '+(so.memo||'')+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')+' '+(so.po_number||'')).toLowerCase().includes(s)})}
     return sortList(list,ordersSort);
-  },[sos,ordersFilter,ordersSort,ordersQ]);
+  },[sos,ordersFilter,ordersSort,ordersQ,scope,myCustIds]);
 
   const filteredCust=useMemo(()=>{
-    let list=cust;
-    if(custQ.length>=2){const s=custQ.toLowerCase();list=list.filter(c=>(c.name+' '+(c.alpha_tag||'')+' '+(c.email||'')+' '+(c.phone||'')).toLowerCase().includes(s))}
-    return list.sort((a,b)=>a.name.localeCompare(b.name));
-  },[cust,custQ]);
+    let list=useMine?cust.filter(c=>myCustIds.has(c.id)):cust;
+    if(custQ.length>=2){const s=custQ.toLowerCase();list=(useMine?cust:list).filter(c=>(c.name+' '+(c.alpha_tag||'')+' '+(c.email||'')+' '+(c.phone||'')).toLowerCase().includes(s))}
+    return [...list].sort((a,b)=>a.name.localeCompare(b.name));
+  },[cust,custQ,scope,myCustIds]);
 
   // ─── DETAIL VIEW (ORDER) ───
   const renderOrderDetail=(so)=>{
@@ -795,9 +828,12 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   const renderHome=()=>{
     const priColors={1:'#dc2626',2:'#d97706',3:'#64748b'};
     return<div className="mp-page">
-      <div className="mp-greeting">
-        <div className="mp-greeting-text">Welcome, {cu.name?.split(' ')[0]}</div>
-        <div className="mp-greeting-sub">{new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}</div>
+      <div className="mp-greeting" style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+        <div>
+          <div className="mp-greeting-text">Welcome, {cu.name?.split(' ')[0]}</div>
+          <div className="mp-greeting-sub">{new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}</div>
+        </div>
+        <ScopeToggle/>
       </div>
       {/* Quick stats */}
       <div className="mp-stats-grid">
@@ -851,7 +887,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   // ─── ORDERS TAB ───
   const renderOrders=()=>{
     return<div className="mp-page">
-      <div className="mp-page-title">Sales Orders</div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <div className="mp-page-title">Sales Orders</div>
+        <ScopeToggle/>
+      </div>
       {/* Search/filter bar */}
       <div className="mp-search-inline" style={{marginBottom:8}}>
         <MIcon name="search" size={16}/>
@@ -943,7 +982,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   // ─── CUSTOMERS TAB ───
   const renderCustomers=()=>{
     return<div className="mp-page">
-      <div className="mp-page-title">Customers</div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <div className="mp-page-title">Customers</div>
+        <ScopeToggle/>
+      </div>
       <div className="mp-search-inline">
         <MIcon name="search" size={16}/>
         <input placeholder="Search customers..." value={custQ} onChange={e=>setCustQ(e.target.value)} className="mp-search-input"/>
@@ -972,16 +1014,17 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
     const subPage=moreSubPage;const setSubPage=setMoreSubPage;
     if(subPage==='estimates'){
       const filteredE=(()=>{
-        let list=ests;
-        if(estsFilter==='pending')list=ests.filter(e=>['draft','pending','sent'].includes(e.status||'draft'));
-        else if(estsFilter==='won')list=ests.filter(e=>e.status==='won'||e.status==='approved');
-        else if(estsFilter==='lost')list=ests.filter(e=>e.status==='lost'||e.status==='expired');
+        let list=ests.filter(e=>inScope(e.customer_id,e.created_by));
+        if(estsFilter==='pending')list=list.filter(e=>['draft','pending','sent'].includes(e.status||'draft'));
+        else if(estsFilter==='won')list=list.filter(e=>e.status==='won'||e.status==='approved');
+        else if(estsFilter==='lost')list=list.filter(e=>e.status==='lost'||e.status==='expired');
         return sortList(list,estsSort);
       })();
       return<div className="mp-page">
         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
           <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
-          <div className="mp-page-title" style={{margin:0}}>Estimates</div>
+          <div className="mp-page-title" style={{margin:0,flex:1}}>Estimates</div>
+          <ScopeToggle/>
         </div>
         <div className="mp-filter-row">
           {['pending','all','won','lost'].map(f=><button key={f} className={`mp-filter-btn${estsFilter===f?' active':''}`} onClick={()=>setEstsFilter(f)}>{f==='pending'?'Pending':f==='all'?'All':f==='won'?'Won':'Lost'}</button>)}
@@ -1013,16 +1056,17 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
     }
     if(subPage==='invoices'){
       const filteredI=(()=>{
-        let list=invs;
-        if(invsFilter==='open')list=invs.filter(i=>i.status!=='paid'&&i.status!=='cancelled');
-        else if(invsFilter==='paid')list=invs.filter(i=>i.status==='paid');
-        else if(invsFilter==='overdue')list=invs.filter(i=>{if(i.status==='paid'||i.status==='cancelled')return false;if(!i.due_date)return false;return new Date(i.due_date)<new Date()});
+        let list=invs.filter(i=>inScope(i.customer_id,i.created_by));
+        if(invsFilter==='open')list=list.filter(i=>i.status!=='paid'&&i.status!=='cancelled');
+        else if(invsFilter==='paid')list=list.filter(i=>i.status==='paid');
+        else if(invsFilter==='overdue')list=list.filter(i=>{if(i.status==='paid'||i.status==='cancelled')return false;if(!i.due_date)return false;return new Date(i.due_date)<new Date()});
         return sortList(list,invsSort);
       })();
       return<div className="mp-page">
         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
           <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
-          <div className="mp-page-title" style={{margin:0}}>Invoices</div>
+          <div className="mp-page-title" style={{margin:0,flex:1}}>Invoices</div>
+          <ScopeToggle/>
         </div>
         <div className="mp-filter-row">
           {['open','all','paid','overdue'].map(f=><button key={f} className={`mp-filter-btn${invsFilter===f?' active':''}`} onClick={()=>setInvsFilter(f)}>{f==='open'?'Open':f==='all'?'All':f==='paid'?'Paid':'Overdue'}</button>)}
@@ -1033,15 +1077,16 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
             <option value="newest">Newest</option><option value="oldest">Oldest</option><option value="due_date">Due Date</option><option value="customer">Customer</option><option value="amount">Amount</option>
           </select>
         </div>
-        {filteredI.map(inv=>{const cc=custObj(inv.customer_id);
+        {filteredI.slice(0,200).map(inv=>{const cc=custObj(inv.customer_id);
           return<div key={inv.id} className="mp-list-card" onClick={()=>setDetail({type:'invoice',data:inv})}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{display:'flex',gap:8,alignItems:'center'}}>
                   <span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span>
                   <span style={statusBadge(inv.status||'open')}>{inv.status||'open'}</span>
+                  {inv._hist&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:6,background:'#f1f5f9',color:'#64748b',fontWeight:700}}>NS</span>}
                 </div>
-                <div style={{fontSize:12,color:'#64748b'}}>{cc?.name||cc?.alpha_tag||'—'}</div>
+                <div style={{fontSize:12,color:'#64748b'}}>{cc?.name||cc?.alpha_tag||inv._cname||'—'}</div>
               </div>
               <div style={{textAlign:'right',flexShrink:0}}>
                 <div style={{fontWeight:700}}>{fmtMoney(inv.total)}</div>
@@ -1049,6 +1094,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
               </div>
             </div>
           </div>})}
+        {filteredI.length>200&&<div style={{textAlign:'center',color:'#94a3b8',padding:12,fontSize:12}}>Showing first 200 of {filteredI.length}. Use search to narrow.</div>}
       </div>;
     }
     if(subPage==='inventory'){
@@ -1084,21 +1130,23 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
     }
     if(subPage==='jobs'){
       const allJobs=[];
-      sos.forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).forEach((j,ji)=>{allJobs.push({...j,so,so_id:so.id,customer:cc?.name||cc?.alpha_tag||'—'})})});
-      const activeJobs=allJobs.filter(j=>j.status!=='completed'&&j.status!=='shipped').sort((a,b)=>(b.so?.created_at||'').localeCompare(a.so?.created_at||''));
+      sos.filter(so=>inScope(so.customer_id,so.created_by)).forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).forEach(j=>{allJobs.push({...j,so,so_id:so.id,customer:cc?.name||cc?.alpha_tag||'—'})})});
+      const activeJobs=allJobs.filter(j=>!['completed','shipped','draft'].includes(j.prod_status||'')).sort((a,b)=>(a.so?.expected_date||'9').localeCompare(b.so?.expected_date||'9'));
       return<div className="mp-page">
         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
           <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
-          <div className="mp-page-title" style={{margin:0}}>Jobs ({activeJobs.length})</div>
+          <div className="mp-page-title" style={{margin:0,flex:1}}>Jobs ({activeJobs.length})</div>
+          <ScopeToggle/>
         </div>
-        {activeJobs.slice(0,30).map((j,i)=><div key={i} className="mp-list-card" onClick={()=>{if(j.so)setDetail({type:'order',data:j.so})}}>
+        {activeJobs.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40,fontSize:14}}>No active jobs.</div>}
+        {activeJobs.slice(0,60).map((j,i)=><div key={i} className="mp-list-card" onClick={()=>{if(j.so)setDetail({type:'order',data:j.so})}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
             <div style={{flex:1,minWidth:0}}>
               <div style={{display:'flex',gap:8,alignItems:'center'}}>
                 <span style={{fontWeight:700,color:'#1e40af',fontSize:13}}>{j.id||'Job'}</span>
-                <span style={statusBadge(j.status||'pending')}>{j.status||'pending'}</span>
+                <span style={statusBadge(j.prod_status||'pending')}>{prodLabel(j)}</span>
               </div>
-              <div style={{fontSize:12,color:'#334155',marginTop:2}}>{j.deco_type||'—'} · {j.art_name||'—'}</div>
+              <div style={{fontSize:12,color:'#334155',marginTop:2}}>{(j.deco_type||'—').replace(/_/g,' ')} · {j.art_name||'—'}</div>
               <div style={{fontSize:11,color:'#94a3b8'}}>{j.customer} · {j.so_id}</div>
             </div>
           </div>
@@ -1107,31 +1155,44 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
     }
     if(subPage==='production'){
       const allJobs=[];
-      sos.forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).forEach((j,ji)=>{allJobs.push({...j,so,so_id:so.id,customer:cc?.name||cc?.alpha_tag||'—'})})});
-      const prodStatuses=['ready','in_process','staging','hold'];
-      const prodJobs=allJobs.filter(j=>prodStatuses.includes(j.status)).sort((a,b)=>{
-        const ord={hold:0,ready:1,in_process:2,staging:3};return(ord[a.status]||9)-(ord[b.status]||9)});
+      sos.filter(so=>inScope(so.customer_id,so.created_by)).forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).forEach(j=>{allJobs.push({...j,so,so_id:so.id,customer:cc?.name||cc?.alpha_tag||'—'})})});
+      // Kanban columns mirror the desktop production board (driven by prod_status + isJobReady).
+      const cols=[
+        {id:'ready',label:'Ready for Prod',color:'#6366f1',filter:j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'},
+        {id:'staging',label:'In Line',color:'#d97706',filter:j=>j.prod_status==='staging'},
+        {id:'in_process',label:'In Process',color:'#2563eb',filter:j=>j.prod_status==='in_process'},
+        {id:'completed',label:'Completed',color:'#166534',filter:j=>j.prod_status==='completed'},
+      ];
+      const colJobs=cols.map(c=>({...c,jobs:allJobs.filter(c.filter).sort((a,b)=>(a.so?.expected_date||'9').localeCompare(b.so?.expected_date||'9'))}));
+      const total=colJobs.reduce((a,c)=>a+c.jobs.length,0);
       return<div className="mp-page">
         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
           <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
-          <div className="mp-page-title" style={{margin:0}}>Production ({prodJobs.length})</div>
+          <div className="mp-page-title" style={{margin:0,flex:1}}>Production Board ({total})</div>
+          <ScopeToggle/>
         </div>
         <div className="mp-stats-grid" style={{marginBottom:12}}>
-          {prodStatuses.map(st=>{const c=prodJobs.filter(j=>j.status===st).length;
-            return<div key={st} className="mp-stat-card"><div className="mp-stat-num">{c}</div><div className="mp-stat-label" style={{textTransform:'capitalize'}}>{st.replace('_',' ')}</div></div>})}
+          {colJobs.map(c=><div key={c.id} className="mp-stat-card"><div className="mp-stat-num" style={{color:c.color}}>{c.jobs.length}</div><div className="mp-stat-label">{c.label}</div></div>)}
         </div>
-        {prodJobs.slice(0,40).map((j,i)=><div key={i} className="mp-list-card" onClick={()=>{if(j.so)setDetail({type:'order',data:j.so})}}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{display:'flex',gap:8,alignItems:'center'}}>
-                <span style={{fontWeight:700,color:'#1e40af',fontSize:13}}>{j.id||'Job'}</span>
-                <span style={statusBadge(j.status||'pending')}>{j.status||'pending'}</span>
-              </div>
-              <div style={{fontSize:13,color:'#334155',marginTop:2}}>{j.deco_type||'—'} · {j.art_name||'—'}</div>
-              <div style={{fontSize:12,color:'#94a3b8'}}>{j.customer} · {j.so_id}</div>
-            </div>
-            <div style={{textAlign:'right',fontSize:11,color:'#64748b'}}>{fmtDate(j.so?.expected_date)}</div>
+        {total===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40,fontSize:14}}>No jobs on the board.</div>}
+        {colJobs.filter(c=>c.jobs.length>0).map(c=><div key={c.id} style={{marginBottom:16}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+            <div style={{width:10,height:10,borderRadius:3,background:c.color}}/>
+            <div style={{fontWeight:800,fontSize:14,color:'#0f172a'}}>{c.label}</div>
+            <div style={{fontSize:12,color:'#94a3b8',fontWeight:600}}>{c.jobs.length}</div>
           </div>
+          {c.jobs.map((j,i)=><div key={c.id+i} className="mp-list-card" style={{borderLeft:'3px solid '+c.color}} onClick={()=>{if(j.so)setDetail({type:'order',data:j.so})}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontWeight:700,fontSize:13,color:'#0f172a'}}>{(j.art_name||'Job')} <span style={{color:'#94a3b8',fontWeight:600}}>· {(j.deco_type||'').replace(/_/g,' ')}</span></div>
+                <div style={{fontSize:11,color:'#94a3b8',marginTop:1}}>{j.customer} · {j.so_id}{j.assigned_to?' · '+j.assigned_to:''}</div>
+              </div>
+              <div style={{textAlign:'right',flexShrink:0,marginLeft:8}}>
+                {j.total_units>0&&<div style={{fontSize:12,fontWeight:700}}>{j.total_units} pc</div>}
+                <div style={{fontSize:11,color:'#64748b'}}>{fmtDate(j.so?.expected_date)}</div>
+              </div>
+            </div>
+          </div>)}
         </div>)}
       </div>;
     }
