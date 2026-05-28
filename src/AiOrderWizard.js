@@ -13,10 +13,13 @@ import { rQ, auTierDisc } from './pricing';
 const isAU = b => { const l = (b || '').toLowerCase(); return l === 'adidas' || l === 'under armour' || l === 'new balance'; };
 
 const initialAi = () => ({
-  inputMode: 'text', text: '', images: [], url: '',
+  inputMode: 'text', parseMode: 'order', combineNameNum: false, text: '', images: [], url: '',
   loading: false, error: null, statusMsg: null,
-  parsed: [], warnings: [], build_id: null, hasParsed: false,
+  parsed: [], rosters: [], warnings: [], build_id: null, hasParsed: false,
 });
+
+const SZ_ORDER = ['YXS', 'YS', 'YM', 'YL', 'YXL', 'XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', 'OSFA'];
+const szSort = (a, b) => { const ia = SZ_ORDER.indexOf(a), ib = SZ_ORDER.indexOf(b); return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib); };
 
 export function AiOrderWizard({ open, onClose, supabase, products, customers, vendors, defaultMarkup, onCreateEstimate, nf, cu }) {
   const [customerId, setCustomerId] = useState(null);
@@ -36,6 +39,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       const catalog = (products || []).map(p => ({ id: p.id, sku: p.sku, name: p.name, brand: p.brand, color: p.color, available_sizes: p.available_sizes }));
       const payload = {
         input_type: ai.inputMode,
+        mode: ai.parseMode,
         text: ai.text || '',
         image_data_urls: (ai.images || []).map(i => i.dataUrl),
         url: ai.url || '',
@@ -52,6 +56,22 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       try { d = await invokeEdgeFn(supabase, 'ai-order-builder', payload); }
       finally { clearInterval(ticker); }
       if (!d?.ok) { setAi(x => ({ ...x, loading: false, statusMsg: null, error: d?.error || 'AI parse failed' })); return; }
+
+      if (ai.parseMode === 'roster') {
+        let rosters = (d.rosters || []).map(r => ({
+          ...r, _skip: false,
+          players: (r.players || []).map(p => ({ ...p, _skip: false })),
+        }));
+        const unmatched = rosters.filter(r => !r.product_id && (r.sku_guess || '').trim()).length;
+        if (unmatched > 0) {
+          setAi(x => ({ ...x, statusMsg: `Looking up ${unmatched} SKU${unmatched === 1 ? '' : 's'} in vendor catalogs…` }));
+          try { rosters = await enrichAiLinesWithVendors(rosters, (done, total) => setAi(x => ({ ...x, statusMsg: `Vendor lookup: ${done}/${total}…` }))); }
+          catch (e) { console.warn('[AiOrderWizard] vendor enrichment failed:', e); }
+        }
+        setAi(x => ({ ...x, loading: false, statusMsg: null, rosters, warnings: d.warnings || [], build_id: d.build_id || null, hasParsed: true }));
+        return;
+      }
+
       let lines = (d.lines || []).map(l => ({ ...l, _skip: false }));
 
       const unmatchedCount = lines.filter(l => !l.product_id && (l.sku_guess || '').trim()).length;
@@ -78,7 +98,86 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
     }
   };
 
+  const findCatMatch = (sku, product_id) => product_id
+    ? (products || []).find(pr => pr.id === product_id)
+    : (sku ? ((products || []).find(pr => pr.sku === sku) || (products || []).find(pr => pr.sku.toLowerCase() === sku.toLowerCase())) : null);
+
+  const buildRosterItems = (mk) => {
+    const keeping = (ai.rosters || []).filter(r => !r._skip);
+    return keeping.map(r => {
+      const sku = (r.sku_guess || '').trim();
+      const catMatch = findCatMatch(sku, r.product_id);
+      const brand = catMatch?.brand || r.brand || '';
+      const au = isAU(brand);
+      const cost = catMatch?.nsa_cost || r.vendor_price || 0;
+      const retail = catMatch?.retail_price || r.vendor_retail || 0;
+      const sell = au
+        ? rQ(retail * (1 - auTierDisc(customer?.adidas_ua_tier || 'B', catMatch?.pricing_group)))
+        : rQ(cost * mk);
+      // One row = one garment unit. Build size counts plus parallel
+      // numbers/names arrays (same index = same player) keyed by size, the
+      // exact shape the number/name deco lines expect.
+      const combine = !!ai.combineNameNum;
+      const players = (r.players || []).filter(p => !p._skip);
+      const sizes = {}, numbers = {}, names = {};
+      players.forEach(p => {
+        const sz = (p.size || 'M').toUpperCase();
+        sizes[sz] = (sizes[sz] || 0) + 1;
+        const num = p.number ? String(p.number).trim() : '';
+        const nm = (p.name || '').trim();
+        if (combine) {
+          // Name + number share a single line, e.g. "MATRO - 22".
+          (names[sz] = names[sz] || []).push(nm && num ? `${nm} - ${num}` : (nm || num));
+        } else {
+          (numbers[sz] = numbers[sz] || []).push(num);
+          (names[sz] = names[sz] || []).push(nm);
+        }
+      });
+      const hasNums = Object.values(numbers).some(a => a.some(v => v && String(v).trim()));
+      const hasNames = Object.values(names).some(a => a.some(v => v && String(v).trim()));
+      const decorations = [];
+      if (hasNums) decorations.push({ kind: 'numbers', position: 'Back', num_method: 'screen_print', num_size: '8"', two_color: false, sell_override: null, custom_font_art_id: null, roster: numbers });
+      if (hasNames) decorations.push({ kind: 'names', position: 'Back Center', name_method: 'heat_press', sell_override: null, sell_each: 6, cost_each: 3, names });
+      const szKeys = Object.keys(sizes).sort(szSort);
+      return {
+        product_id: catMatch?.id || null,
+        sku: sku || 'CUSTOM',
+        name: catMatch?.name || r.name || '',
+        brand,
+        vendor_id: catMatch?.vendor_id || null,
+        pricing_group: catMatch?.pricing_group || null,
+        color: catMatch?.color || r.color || '',
+        nsa_cost: cost,
+        retail_price: retail,
+        unit_sell: sell,
+        available_sizes: szKeys.length > 0 ? szKeys : (catMatch?.available_sizes || ['S', 'M', 'L', 'XL', '2XL']),
+        sizes,
+        decorations,
+        no_deco: decorations.length === 0,
+        is_custom: !catMatch && !r.vendor_source,
+        vendor_source: r.vendor_source || null,
+        pick_lines: [],
+        po_lines: [],
+      };
+    });
+  };
+
   const handleCreate = () => {
+    if (ai.parseMode === 'roster') {
+      const keepingR = (ai.rosters || []).filter(r => !r._skip && (r.players || []).some(p => !p._skip));
+      if (keepingR.length === 0) { setAi(x => ({ ...x, error: 'Nothing to import — keep at least one roster with players.' })); return; }
+      const mk = customer?.catalog_markup || defaultMarkup || 1.65;
+      const items = buildRosterItems(mk);
+      if (supabase && ai.build_id) {
+        try { supabase.from('ai_order_builds').update({ accepted_lines: keepingR, accepted_count: keepingR.length }).eq('id', ai.build_id); } catch (_) {}
+      }
+      onCreateEstimate(customer, items);
+      const players = items.reduce((a, it) => a + Object.values(it.sizes).reduce((b, v) => b + v, 0), 0);
+      if (nf) nf('✨ Created estimate with ' + items.length + ' roster item' + (items.length === 1 ? '' : 's') + ' (' + players + ' players)');
+      reset();
+      onClose();
+      return;
+    }
     const keeping = (ai.parsed || []).filter(p => !p._skip);
     if (keeping.length === 0) { setAi(x => ({ ...x, error: 'Nothing to import — uncheck "skip" on at least one line.' })); return; }
     const mk = customer?.catalog_markup || defaultMarkup || 1.65;
@@ -158,8 +257,22 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
             </div>}
           </div>
 
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 12, fontWeight: 700, color: '#475569', display: 'block', marginBottom: 6 }}>What are we building?</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {[['order', '📦 Order', 'Sizes & quantities → line items'], ['roster', '🧍 Roster', 'Names / numbers / sizes → deco lines']].map(([k, label, sub]) =>
+                <button key={k} onClick={() => setAi(x => ({ ...x, parseMode: k, error: null }))}
+                  style={{ flex: 1, textAlign: 'left', padding: '10px 12px', borderRadius: 8, cursor: 'pointer',
+                    border: ai.parseMode === k ? '2px solid #7c3aed' : '1px solid #e2e8f0',
+                    background: ai.parseMode === k ? '#f5f3ff' : 'white' }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: ai.parseMode === k ? '#6d28d9' : '#334155' }}>{label}</div>
+                  <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>{sub}</div>
+                </button>)}
+            </div>
+          </div>
+
           <div>
-            <label style={{ fontSize: 12, fontWeight: 700, color: '#475569', display: 'block', marginBottom: 6 }}>What did the coach send?</label>
+            <label style={{ fontSize: 12, fontWeight: 700, color: '#475569', display: 'block', marginBottom: 6 }}>{ai.parseMode === 'roster' ? 'Paste / upload the roster' : 'What did the coach send?'}</label>
             <div style={{ display: 'flex', gap: 4, marginBottom: 10, borderBottom: '1px solid #e2e8f0' }}>
               {[['text', '📝 Paste Text'], ['image', '📷 Upload Image'], ['url', '🔗 Sheets / URL']].map(([k, label]) =>
                 <button key={k} onClick={() => setAi(x => ({ ...x, inputMode: k, error: null }))}
@@ -170,7 +283,9 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
 
             {ai.inputMode === 'text' && <textarea className="form-input" rows={10} value={ai.text}
               onChange={e => setAi(x => ({ ...x, text: e.target.value }))}
-              placeholder={"Paste whatever the coach sent. Examples:\n\nTechfit Sleeveless Tee (Black) JY6033\nS/40  M/60  L/60  XL/60  2XL/15  3XL/15\n\nM Everyday Pro Reversible (Black) JM5094\nSizing S/50  M/50  L/50  XL/30  2XL/15"}
+              placeholder={ai.parseMode === 'roster'
+                ? "Paste the roster — one player per row. Examples:\n\nGame Jersey JY6033 (Black)\nName     #    Size\nSmith    12   M\nJones    7    L\nWilliams 23   XL\n\n(SKU can be one for the whole team, or a column per row.)"
+                : "Paste whatever the coach sent. Examples:\n\nTechfit Sleeveless Tee (Black) JY6033\nS/40  M/60  L/60  XL/60  2XL/15  3XL/15\n\nM Everyday Pro Reversible (Black) JM5094\nSizing S/50  M/50  L/50  XL/30  2XL/15"}
               style={{ fontFamily: 'monospace', fontSize: 12 }} />}
 
             {ai.inputMode === 'image' && <div>
@@ -229,8 +344,78 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
           </div>}
         </>}
 
-        {/* REVIEW */}
-        {ai.hasParsed && <>
+        {/* REVIEW — ROSTER */}
+        {ai.hasParsed && ai.parseMode === 'roster' && (() => {
+          const totalPlayers = (ai.rosters || []).reduce((a, r) => a + (r.players || []).length, 0);
+          const matched = (ai.rosters || []).filter(r => r.product_id || r.vendor_source).length;
+          const updR = (ri, k, v) => setAi(x => ({ ...x, rosters: x.rosters.map((r, i) => i === ri ? { ...r, [k]: v } : r) }));
+          const updP = (ri, pi, k, v) => setAi(x => ({ ...x, rosters: x.rosters.map((r, i) => i === ri ? { ...r, players: r.players.map((p, j) => j === pi ? { ...p, [k]: v } : p) } : r) }));
+          const togglePlayer = (ri, pi) => setAi(x => ({ ...x, rosters: x.rosters.map((r, i) => i === ri ? { ...r, players: r.players.map((p, j) => j === pi ? { ...p, _skip: !p._skip } : p) } : r) }));
+          const addPlayer = ri => setAi(x => ({ ...x, rosters: x.rosters.map((r, i) => i === ri ? { ...r, players: [...r.players, { name: '', number: '', size: 'M', _skip: false }] } : r) }));
+          return <>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <div style={{ padding: 8, background: '#ede9fe', borderRadius: 6, flex: 1, textAlign: 'center' }}>
+                <div style={{ fontSize: 18, fontWeight: 800, color: '#7c3aed' }}>{(ai.rosters || []).length}</div><div style={{ fontSize: 10, color: '#64748b' }}>Roster Items</div></div>
+              <div style={{ padding: 8, background: '#dbeafe', borderRadius: 6, flex: 1, textAlign: 'center' }}>
+                <div style={{ fontSize: 18, fontWeight: 800, color: '#1e40af' }}>{totalPlayers}</div><div style={{ fontSize: 10, color: '#64748b' }}>Players</div></div>
+              <div style={{ padding: 8, background: '#f0fdf4', borderRadius: 6, flex: 1, textAlign: 'center' }}>
+                <div style={{ fontSize: 18, fontWeight: 800, color: '#166534' }}>{matched}</div><div style={{ fontSize: 10, color: '#64748b' }}>SKU Matches</div></div>
+            </div>
+
+            {(ai.warnings || []).length > 0 && <div style={{ marginBottom: 8, padding: 8, background: '#fef3c7', borderRadius: 6 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#92400e', marginBottom: 4 }}>⚠️ Notes from Claude</div>
+              {ai.warnings.map((w, i) => <div key={i} style={{ fontSize: 10, color: '#92400e' }}>{w}</div>)}
+            </div>}
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '8px 10px', background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+              <input type="checkbox" checked={ai.combineNameNum} onChange={e => setAi(x => ({ ...x, combineNameNum: e.target.checked }))} />
+              <span><b>Combine name + number onto one line</b> — e.g. “MATRO - 22” as a single names deco, instead of separate name and number decos.</span>
+            </label>
+
+            <div style={{ maxHeight: 400, overflow: 'auto' }}>
+              {(ai.rosters || []).map((r, ri) => {
+                const mq = r.match_quality;
+                const isVendor = typeof mq === 'string' && mq.startsWith('vendor_');
+                const vendorName = isVendor ? mq.slice('vendor_'.length) : null;
+                const vendorLabel = vendorName === 'sanmar' ? '🟦 SanMar' : vendorName === 'ss' ? '🟪 S&S' : vendorName === 'momentec' ? '🟧 Momentec' : null;
+                const mqLabel = vendorLabel || (mq === 'exact' ? '✓ Exact' : mq === 'stripped' ? '✓ Trimmed' : mq === 'fuzzy_name' ? '~ Fuzzy' : mq === 'no_sku' ? '? No SKU' : '✗ Unmatched');
+                const matchedSrc = !!r.product_id || isVendor;
+                const activePlayers = (r.players || []).filter(p => !p._skip).length;
+                return <div key={ri} style={{ marginBottom: 12, border: '1px solid #e2e8f0', borderRadius: 8, opacity: r._skip ? 0.5 : 1, background: matchedSrc ? 'white' : '#fffbeb' }}>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '8px 10px', borderBottom: '1px solid #f1f5f9', flexWrap: 'wrap' }}>
+                    <input type="checkbox" checked={!r._skip} onChange={() => updR(ri, '_skip', !r._skip)} title="Include this item" />
+                    <input className="form-input" value={r.sku_guess || ''} onChange={e => updR(ri, 'sku_guess', e.target.value)} placeholder="SKU" style={{ width: 90, fontSize: 11, fontFamily: 'monospace' }} />
+                    <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 4, fontWeight: 700, whiteSpace: 'nowrap', background: matchedSrc ? '#dcfce7' : mq === 'fuzzy_name' ? '#fef3c7' : '#fee2e2', color: matchedSrc ? '#166534' : mq === 'fuzzy_name' ? '#d97706' : '#dc2626' }}>{mqLabel}</span>
+                    <input className="form-input" value={r.name || ''} onChange={e => updR(ri, 'name', e.target.value)} placeholder="Product name" style={{ flex: 1, minWidth: 120, fontSize: 11 }} />
+                    <input className="form-input" value={r.color || ''} onChange={e => updR(ri, 'color', e.target.value)} placeholder="Color" style={{ width: 80, fontSize: 11 }} />
+                    <span style={{ fontSize: 10, color: '#64748b', fontWeight: 600 }}>{activePlayers} player{activePlayers === 1 ? '' : 's'}</span>
+                  </div>
+                  <div style={{ padding: '6px 10px' }}>
+                    <table style={{ fontSize: 11, width: '100%' }}>
+                      <thead><tr><th style={{ width: 24 }}>✓</th><th style={{ textAlign: 'left' }}>Name</th><th style={{ width: 60 }}>Number</th><th style={{ width: 70 }}>Size</th></tr></thead>
+                      <tbody>{(r.players || []).map((p, pi) => <tr key={pi} style={{ opacity: p._skip ? 0.4 : 1 }}>
+                        <td><input type="checkbox" checked={!p._skip} onChange={() => togglePlayer(ri, pi)} /></td>
+                        <td><input className="form-input" value={p.name || ''} onChange={e => updP(ri, pi, 'name', e.target.value)} placeholder="—" style={{ width: '100%', fontSize: 11 }} /></td>
+                        <td><input className="form-input" value={p.number || ''} onChange={e => updP(ri, pi, 'number', e.target.value)} placeholder="—" style={{ width: 50, fontSize: 11, textAlign: 'center' }} /></td>
+                        <td><input className="form-input" value={p.size || ''} onChange={e => updP(ri, pi, 'size', e.target.value.toUpperCase())} placeholder="M" style={{ width: 60, fontSize: 11, textAlign: 'center' }} /></td>
+                      </tr>)}</tbody>
+                    </table>
+                    <button className="btn btn-sm btn-secondary" style={{ fontSize: 10, marginTop: 4 }} onClick={() => addPlayer(ri)}>+ Add player</button>
+                  </div>
+                </div>;
+              })}
+            </div>
+            <div style={{ marginTop: 8, padding: 8, background: '#f8fafc', borderRadius: 6, fontSize: 11, color: '#64748b' }}>
+              💡 {ai.combineNameNum
+                ? 'Each item gets one names deco with name + number combined (e.g. “MATRO - 22”).'
+                : 'Each item gets a numbers deco (Back, 8" screen print) and a names deco (Back Center, heat press) pre-filled from the roster.'} Adjust methods, positions and pricing in the estimate editor.
+            </div>
+            {ai.error && <div style={{ marginTop: 10, padding: 8, background: '#fef2f2', borderRadius: 6, fontSize: 11, color: '#991b1b' }}>⚠ {ai.error}</div>}
+          </>;
+        })()}
+
+        {/* REVIEW — ORDER */}
+        {ai.hasParsed && ai.parseMode !== 'roster' && <>
           <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
             <div style={{ padding: 8, background: '#f0fdf4', borderRadius: 6, flex: 1, textAlign: 'center' }}>
               <div style={{ fontSize: 18, fontWeight: 800, color: '#166534' }}>{ai.parsed.length}</div><div style={{ fontSize: 10, color: '#64748b' }}>Items Parsed</div></div>
@@ -289,11 +474,16 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       </div>
 
       <div style={{ padding: '12px 20px', borderTop: '1px solid #e2e8f0', display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center', background: '#fafafa' }}>
-        <div>{ai.hasParsed && !ai.loading && <button className="btn btn-secondary" onClick={() => setAi(x => ({ ...x, hasParsed: false, parsed: [], warnings: [], build_id: null }))}>← Back</button>}</div>
+        <div>{ai.hasParsed && !ai.loading && <button className="btn btn-secondary" onClick={() => setAi(x => ({ ...x, hasParsed: false, parsed: [], rosters: [], warnings: [], build_id: null }))}>← Back</button>}</div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-secondary" onClick={close} disabled={ai.loading}>Cancel</button>
           {!ai.hasParsed && <button className="btn btn-primary" style={{ background: '#7c3aed', borderColor: '#6d28d9' }} disabled={!canParse} onClick={runParse}>{ai.loading ? '🤖 Working…' : '✨ Parse with AI'}</button>}
-          {ai.hasParsed && <button className="btn btn-primary" style={{ background: '#7c3aed', borderColor: '#6d28d9' }} disabled={ai.parsed.filter(p => !p._skip).length === 0} onClick={handleCreate}>✅ Create Estimate with {ai.parsed.filter(p => !p._skip).length} item{ai.parsed.filter(p => !p._skip).length === 1 ? '' : 's'}</button>}
+          {ai.hasParsed && (() => {
+            const keptCount = ai.parseMode === 'roster'
+              ? (ai.rosters || []).filter(r => !r._skip && (r.players || []).some(p => !p._skip)).length
+              : ai.parsed.filter(p => !p._skip).length;
+            return <button className="btn btn-primary" style={{ background: '#7c3aed', borderColor: '#6d28d9' }} disabled={keptCount === 0} onClick={handleCreate}>✅ Create Estimate with {keptCount} item{keptCount === 1 ? '' : 's'}</button>;
+          })()}
         </div>
       </div>
     </div>

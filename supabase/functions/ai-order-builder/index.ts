@@ -70,6 +70,33 @@ Skip anything that's clearly not a line item (greetings, signatures, decoration 
 shipping addresses). If you see decoration callouts (Screen Print, Embroidery, Logo
 on left chest, etc.), note them in warnings — don't add as line items.`;
 
+const ROSTER_SYSTEM_PROMPT = `You parse team-apparel ROSTERS for National Sports Activewear.
+A roster lists individual players/people who each get a garment personalized with their NAME and/or NUMBER.
+Input may be free-form text, a screenshot of a spreadsheet, or a sheet's contents.
+
+Extract a normalized JSON list of roster GROUPS. Group players by the garment (SKU/product) they receive:
+- If the roster names a single garment for everyone, return ONE group with all players.
+- If different players get different garments (a SKU or product column varies by row), return one group per distinct garment.
+
+Each group has:
+- sku_guess: the SKU as written (e.g. "JY6033"). If only a product name is given, set null and put it in "name".
+- name: product/garment name if given (e.g. "Game Jersey", "Techfit Tee"). Else "".
+- brand: if obvious (e.g. "Adidas", "Under Armour"). Else omit.
+- color: if mentioned (e.g. "Black"). Else omit.
+- players: array of { name, number, size }:
+  - name: player's name as written; "" if none.
+  - number: jersey/roster number as a STRING ("12", "00", "7"); "" if none.
+  - size: standard size code — XS, S, M, L, XL, 2XL, 3XL, 4XL, 5XL, YXS, YS, YM, YL, YXL, OSFA.
+    Infer from the row. If a row has no size, use "M" and add a note in warnings.
+
+One row = one player = one garment unit. Do NOT collapse duplicate names or merge rows — each row is a distinct unit even if names/sizes repeat.
+
+Return STRICT JSON only — no prose, no markdown fences. Schema:
+{ "groups": [ { "sku_guess": string|null, "name": string, "brand"?: string, "color"?: string, "players": [{ "name": string, "number": string, "size": string }] } ], "warnings": string[] }
+
+Use the catalog provided in the system prompt to validate SKUs when possible. If a SKU appears in the catalog, use the exact casing from the catalog. If it doesn't, still return what was written — the server will fuzzy-match.
+Put any caveats (inferred sizes, ambiguous columns, headers you skipped) in warnings.`;
+
 function buildCatalogBlock(catalog: CatalogItem[]): string {
   // Compact format to keep tokens low: "SKU | name | brand | color"
   const lines = catalog.map((p) => {
@@ -143,6 +170,60 @@ function resolveAgainstCatalog(line: ParsedLine, catalog: CatalogItem[]): Parsed
   return { ...line, sizes, total_qty, product_id: null, match_quality: "unresolved" };
 }
 
+type RosterPlayer = { name: string; number: string; size: string };
+type RosterGroup = {
+  sku_guess: string | null;
+  name: string;
+  brand?: string;
+  color?: string;
+  players: RosterPlayer[];
+};
+
+function resolveRosterGroup(group: RosterGroup, catalog: CatalogItem[]): RosterGroup & { product_id: string | null; match_quality: string; sizes: Record<string, number>; total_qty: number } {
+  const players: RosterPlayer[] = (group.players || []).map((p) => ({
+    name: typeof p?.name === "string" ? p.name : "",
+    number: p?.number == null ? "" : String(p.number),
+    size: normalizeSize(p?.size || "M") || "M",
+  }));
+  const sizes: Record<string, number> = {};
+  for (const p of players) sizes[p.size] = (sizes[p.size] || 0) + 1;
+  const total_qty = players.length;
+
+  // Resolve the garment SKU the same way order lines do: exact, stripped
+  // suffix, then fuzzy name+color. Rosters often carry only a product name
+  // (no SKU), so fall through to fuzzy when sku_guess is blank.
+  const base = { ...group, players, sizes, total_qty };
+  const skuRaw = (group.sku_guess || "").trim();
+  if (skuRaw) {
+    const skuUp = skuRaw.toUpperCase();
+    let hit = catalog.find((p) => p.sku.toUpperCase() === skuUp);
+    if (hit) return { ...base, sku_guess: hit.sku, color: hit.color || group.color || "", product_id: (hit as any).id || null, match_quality: "exact" };
+    const stripped = skuUp.replace(/[-\s](XXS|XS|S|M|L|XL|2XL|3XL|4XL|5XL|YXS|YS|YM|YL|YXL)$/i, "");
+    if (stripped !== skuUp) {
+      hit = catalog.find((p) => p.sku.toUpperCase() === stripped);
+      if (hit) return { ...base, sku_guess: hit.sku, color: hit.color || group.color || "", product_id: (hit as any).id || null, match_quality: "stripped" };
+    }
+  }
+  const nameUp = (group.name || "").toUpperCase();
+  const colorUp = (group.color || "").toUpperCase();
+  if (nameUp) {
+    const tokens = nameUp.split(/\s+/).filter((t) => t.length > 2);
+    const scored = catalog.map((p) => {
+      const pn = (p.name || "").toUpperCase();
+      const pc = (p.color || "").toUpperCase();
+      let score = 0;
+      for (const t of tokens) if (pn.includes(t)) score += 1;
+      if (colorUp && pc && pc.includes(colorUp)) score += 1;
+      return { p, score };
+    }).filter((x) => x.score >= 2).sort((a, b) => b.score - a.score);
+    if (scored.length > 0) {
+      const hit = scored[0].p;
+      return { ...base, product_id: (hit as any).id || null, match_quality: "fuzzy_name" };
+    }
+  }
+  return { ...base, product_id: null, match_quality: skuRaw ? "unresolved" : "no_sku" };
+}
+
 async function fetchUrlAsText(url: string): Promise<{ ok: boolean; text?: string; error?: string }> {
   try {
     // Google Sheets: convert /edit URL to CSV export.
@@ -188,6 +269,7 @@ serve(async (req: Request) => {
     const body = await req.json();
     const {
       input_type,           // 'text' | 'image' | 'url'
+      mode,                 // 'order' (default) | 'roster'
       text,                 // string (for text + url-fetched)
       image_data_urls,      // string[] (data:image/...;base64,XXX) for vision
       url,                  // string
@@ -195,6 +277,7 @@ serve(async (req: Request) => {
       estimate_id,
       so_id,
     } = body || {};
+    const isRoster = mode === "roster";
 
     // Identify user from JWT (for audit). Don't fail if missing.
     const authHeader = req.headers.get("Authorization") || "";
@@ -241,7 +324,7 @@ serve(async (req: Request) => {
     // Without this we pay the cache-write cost on every call (and burn through
     // the org's input-tokens-per-minute rate limit on back-to-back parses).
     const systemBlocks: any[] = [
-      { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+      { type: "text", text: isRoster ? ROSTER_SYSTEM_PROMPT : SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
       { type: "text", text: catalogBlock, cache_control: { type: "ephemeral", ttl: "1h" } },
     ];
 
@@ -352,7 +435,7 @@ serve(async (req: Request) => {
 
     // Extract the JSON object — Claude usually returns clean JSON given the
     // system prompt, but be defensive in case of stray prose.
-    let parsed: { lines: ParsedLine[]; warnings: string[] } = { lines: [], warnings: [] };
+    let parsed: { lines?: ParsedLine[]; groups?: RosterGroup[]; warnings: string[] } = { lines: [], warnings: [] };
     try {
       const start = textOut.indexOf("{");
       const end = textOut.lastIndexOf("}");
@@ -370,6 +453,30 @@ serve(async (req: Request) => {
     }
 
     const catalogArr = Array.isArray(catalog) ? (catalog as CatalogItem[]) : [];
+
+    if (isRoster) {
+      const rosters = (parsed.groups || []).map((g) => resolveRosterGroup(g, catalogArr));
+      if (admin && auditId) {
+        await admin.from("ai_order_builds").update({
+          raw_response: claudeJson,
+          parsed_lines: rosters,
+          line_count: rosters.length,
+          input_tokens: usage.input_tokens || null,
+          output_tokens: usage.output_tokens || null,
+          cache_read_tokens: usage.cache_read_input_tokens || null,
+          cache_create_tokens: usage.cache_creation_input_tokens || null,
+          duration_ms: Date.now() - t0,
+        }).eq("id", auditId);
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        build_id: auditId,
+        rosters,
+        warnings: parsed.warnings || [],
+        usage,
+      }), { status: 200, headers: CORS });
+    }
+
     const resolved = (parsed.lines || []).map((l) => resolveAgainstCatalog(l, catalogArr));
 
     if (admin && auditId) {
