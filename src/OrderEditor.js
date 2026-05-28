@@ -2864,10 +2864,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div></div>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Method:</span>
-                <Bg options={[{value:'heat_transfer',label:'Heat Transfer'},{value:'embroidery',label:'Embroidery'},{value:'screen_print',label:'Screen Print'}]} value={nm} onChange={v=>{const ns=NUM_SZ[v]||[];uDM(idx,di,{num_method:v,num_size:ns[Math.min(2,ns.length-1)]||ns[0]||'4"',num_font:null,custom_font_art_id:null})}}/>
-                <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>{deco.front_and_back?'Size (Front):':'Size:'}</span>
+                <Bg options={[{value:'heat_transfer',label:'Heat Transfer'},{value:'embroidery',label:'Embroidery'},{value:'screen_print',label:'Screen Print'},{value:'sublimated',label:'Sublimated'}]} value={nm} onChange={v=>{const ns=NUM_SZ[v]||[];uDM(idx,di,{num_method:v,num_size:ns[Math.min(2,ns.length-1)]||ns[0]||'',num_font:null,custom_font_art_id:null,sell_override:null})}}/>
+                {nm!=='sublimated'&&<><span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>{deco.front_and_back?'Size (Front):':'Size:'}</span>
                 <Bg options={szOpts.map(s=>({value:s,label:s}))} value={deco.num_size||szOpts[0]} onChange={v=>uD(idx,di,'num_size',v)}/>
-                <label style={{fontSize:12,display:'flex',alignItems:'center',gap:4,marginLeft:4}}><input type="checkbox" checked={deco.two_color||false} onChange={e=>uD(idx,di,'two_color',e.target.checked)}/> 2-Color (+$3)</label>
+                <label style={{fontSize:12,display:'flex',alignItems:'center',gap:4,marginLeft:4}}><input type="checkbox" checked={deco.two_color||false} onChange={e=>uD(idx,di,'two_color',e.target.checked)}/> 2-Color (+$3)</label></>}
                 {deco.reversible?(()=>{
                   const sideLabels=(()=>{
                     const artD=safeDecos(item).find(dd=>dd.kind==='art'&&dd.reversible&&dd.color_way_id&&dd.color_way_id_b);
@@ -2912,12 +2912,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         </div>}
                   </>})()}
               </div>
-              {deco.front_and_back&&<div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
+              {deco.front_and_back&&nm!=='sublimated'&&<div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Size (Back):</span>
                 <Bg options={szOpts.map(s=>({value:s,label:s}))} value={deco.num_size_back||deco.num_size||szOpts[0]} onChange={v=>uD(idx,di,'num_size_back',v)}/>
               </div>}
               {/* Font selection */}
-              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
+              {nm!=='sublimated'&&<div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Font:</span>
                 {nm==='embroidery'&&<span style={{fontSize:12,color:'#475569'}}>Block (standard)</span>}
                 {nm==='screen_print'&&<><Bg options={[{value:'block',label:'Block'},{value:'serif',label:'Serif'}]} value={deco.num_font||'block'} onChange={v=>uD(idx,di,'num_font',v)}/>
@@ -2925,7 +2925,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {deco.custom_font_art_id&&<><span style={{fontSize:11,color:'#7c3aed'}}>Custom font art</span><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id',null)}>× Clear</button></>}</>}
                 {nm==='heat_transfer'&&<>{!deco.custom_font_art_id?<><span style={{fontSize:12,color:'#475569'}}>Standard</span><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id','pending')}>Use Custom Font Art</button></>
                   :<><span style={{fontSize:11,color:'#7c3aed'}}>Custom font art</span><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id',null)}>× Clear</button></>}</>}
-              </div>
+              </div>}
               {/* Front + Back toggle + number assignment */}
               <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:deco.front_and_back?'#7c3aed':'#faf5ff',borderColor:'#c084fc',color:deco.front_and_back?'white':'#7c3aed',fontWeight:deco.front_and_back?700:400}} onClick={()=>{uD(idx,di,'front_and_back',!deco.front_and_back);nf(deco.front_and_back?'Front + Back OFF — single side':'Front + Back ON — qty doubled')}}>↕ Front + Back{deco.front_and_back?' ✓':''}</button>
@@ -3015,7 +3015,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontSize:18}}>🏷️</span><span style={{fontWeight:700,fontSize:13,cursor:'pointer'}} onClick={()=>setCollapsedNames(p=>({...p,[nKey]:!p[nKey]}))}>Names</span>
                 <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Method:</span>
-                <Bg options={[{value:'heat_press',label:'Heat Press'},{value:'embroidery',label:'Embroidery'}]} value={deco.name_method||'heat_press'} onChange={v=>uD(idx,di,'name_method',v)}/>
+                <Bg options={[{value:'heat_press',label:'Heat Press'},{value:'embroidery',label:'Embroidery'},{value:'sublimated',label:'Sublimated'}]} value={deco.name_method||'heat_press'} onChange={v=>uDM(idx,di,{name_method:v,sell_override:null})}/>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Color:</span>
                 <input className="form-input" style={{width:90,fontSize:12,padding:'2px 6px'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
                 <div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
