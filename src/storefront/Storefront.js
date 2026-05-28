@@ -651,11 +651,11 @@ async function placeOrder({ store, cart, buyer, ship, payMode, stripePiId, statu
   return { order, shipping, total };
 }
 
-// Percent coupons discount the whole order including shipping (so a 100% code
-// fully comps it); free shipping is handled separately by zeroing the fee.
+// Percent coupons discount the order; whether shipping is included is per-coupon
+// (cover_shipping, default on). Free shipping is handled by zeroing the fee.
 function couponDiscount(coupon, cart, shipping = 0) {
   if (!coupon || coupon.kind !== 'percent') return 0;
-  const base = cartTotal(cart) + (Number(shipping) || 0);
+  const base = cartTotal(cart) + (coupon.cover_shipping !== false ? (Number(shipping) || 0) : 0);
   return Math.round(base * (Number(coupon.value) || 0) / 100 * 100) / 100;
 }
 
