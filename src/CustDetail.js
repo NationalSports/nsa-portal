@@ -160,7 +160,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               {jobs.length>0&&!isExp&&<span style={{marginLeft:6,fontSize:10,color:'#94a3b8',fontWeight:500}}>({jobs.length} {jobs.length===1?'job':'jobs'})</span>}
             </td>
             <td>{so.memo}</td>
-            {isP&&<td><span className="badge badge-gray">{subC?.alpha_tag}</span></td>}
+            {isP&&<td><span className="badge badge-gray" title={subC?.alpha_tag||''}>{teamName(so.customer_id)||subC?.alpha_tag}</span></td>}
             {isP&&<td style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</td>}
             <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[st]?.bg,color:SC[st]?.c}}>{stL[st]}</span></td>
             <td>{safeItems(so).length} items · {totalU} units</td>

@@ -27,7 +27,7 @@ const nameWithBrand=(name,brand)=>{
   return b+' '+n;
 };
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -1991,6 +1991,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
       </div>)}
     </div>}
+    {/* OPEN TASKS BANNER — open TODOs linked to this sales order, so it's clear work is in progress */}
+    {isSO&&(()=>{
+      const openTodos=(assignedTodos||[]).filter(t=>t.so_id===o.id&&(t.status||'open')!=='completed'&&t.status!=='done');
+      if(!openTodos.length)return null;
+      const _todayStr=(()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`})();
+      const _fmtDue=(d)=>{if(!d)return'';const ds=String(d).slice(0,10);if(ds===_todayStr)return'Today';try{const dt=new Date(ds+'T00:00:00');if(isNaN(dt))return ds;const days=Math.round((dt-new Date(_todayStr+'T00:00:00'))/864e5);if(days===1)return'Tomorrow';if(days===-1)return'Yesterday';if(days<0)return Math.abs(days)+'d overdue';return(dt.getMonth()+1)+'/'+dt.getDate()}catch{return ds}};
+      const _dueColor=(d)=>{if(!d)return'#6366f1';const ds=String(d).slice(0,10);if(ds<_todayStr)return'#dc2626';if(ds===_todayStr)return'#d97706';return'#4f46e5'};
+      return<div style={{margin:'8px 0',padding:'12px 16px',background:'#eef2ff',border:'2px solid #6366f1',borderRadius:10}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}><span style={{fontSize:16}}>📋</span><span style={{fontWeight:800,fontSize:14,color:'#3730a3'}}>Open Tasks ({openTodos.length})</span></div>
+        {openTodos.map(t=>{const who=(REPS||[]).find(r=>r.id===t.assigned_to)?.name;return<div key={t.id} style={{padding:'8px 12px',background:'white',borderRadius:8,marginBottom:6,border:'1px solid #c7d2fe',display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:13,color:'#312e81',fontWeight:600}}>{t.priority===1&&<span style={{fontSize:10,fontWeight:800,color:'#dc2626',marginRight:6}}>HIGH</span>}{t.title}</div>
+            <div style={{fontSize:11,color:'#6366f1',marginTop:2,display:'flex',gap:10,flexWrap:'wrap'}}>
+              {who&&<span>👤 {who}</span>}
+              {t.due_date&&<span style={{color:_dueColor(t.due_date),fontWeight:600}}>📅 {_fmtDue(t.due_date)}</span>}
+            </div>
+            {t.description&&<div style={{fontSize:12,color:'#64748b',marginTop:3}}>{t.description}</div>}
+          </div>
+          {onCompleteTodo&&<button className="btn btn-sm" style={{fontSize:10,background:'#22c55e',color:'white',border:'none',padding:'3px 10px',fontWeight:700,flexShrink:0}} onClick={()=>onCompleteTodo(t.id)}>Done</button>}
+        </div>})}
+      </div>;
+    })()}
     {/* HEADER */}
     <div className="card" style={{marginBottom:16,marginTop:8}}><div style={{padding:'16px 20px'}}>
       <div style={{display:'flex',gap:16,alignItems:'flex-start',flexWrap:'wrap'}}>
