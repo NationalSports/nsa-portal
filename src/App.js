@@ -12831,15 +12831,26 @@ export default function App(){
         const completedTasks=(assignedTodos||[]).filter(t=>(t.status==='completed'||t.status==='done')&&t.completed_at&&(!cutoff||new Date(t.completed_at).getTime()>=cutoff));
         const qtyOf=(byId,type)=>acts.filter(a=>a.by===byId&&a.type===type).reduce((s,a)=>s+(safeNum(a.qty)||0),0);
         const cntOf=(byId,types)=>acts.filter(a=>a.by===byId&&types.includes(a.type)).length;
-        const rowFor=(id)=>({
-          picked:qtyOf(id,'pulled'),
-          received:qtyOf(id,'received'),
-          deco:qtyOf(id,'move_to_deco'),
-          shipped:qtyOf(id,'shipped'),
-          delivered:qtyOf(id,'delivered'),
-          shipments:cntOf(id,['label_created','manual_label_created','manual_ship']),
-          tasks:completedTasks.filter(t=>t.completed_by===id).length,
-        });
+        // Open tasks are shown regardless of the time window (they're still pending).
+        const openTasksAll=(assignedTodos||[]).filter(t=>t.status==='open');
+        const _turnaroundHrs=(t)=>{if(!t.completed_at||!t.created_at)return null;const h=(new Date(t.completed_at)-new Date(t.created_at))/3600000;return h>=0?h:null};
+        const _fmtTurnaround=(h)=>{if(h==null)return'—';if(h<1)return Math.round(h*60)+'m';if(h<48)return h.toFixed(1)+'h';return(h/24).toFixed(1)+'d'};
+        const _taskAgeDays=(t)=>{if(!t.created_at)return null;return Math.floor((Date.now()-new Date(t.created_at))/86400000)};
+        const rowFor=(id)=>{
+          const doneByMe=completedTasks.filter(t=>t.completed_by===id);
+          const turns=doneByMe.map(_turnaroundHrs).filter(h=>h!=null);
+          return{
+            picked:qtyOf(id,'pulled'),
+            received:qtyOf(id,'received'),
+            deco:qtyOf(id,'move_to_deco'),
+            shipped:qtyOf(id,'shipped'),
+            delivered:qtyOf(id,'delivered'),
+            shipments:cntOf(id,['label_created','manual_label_created','manual_ship']),
+            tasks:doneByMe.length,
+            open:openTasksAll.filter(t=>t.assigned_to===id).length,
+            avgHrs:turns.length?turns.reduce((a,h)=>a+h,0)/turns.length:null,
+          };
+        };
         const stats=whMembers.map(m=>({id:m.id,name:m.name,...rowFor(m.id)}))
           .sort((a,b)=>(b.picked+b.received+b.shipped+b.delivered+b.deco)-(a.picked+a.received+a.shipped+a.delivered+a.deco));
         // Actions logged before per-user attribution (or by auto checks) land under "warehouse".
@@ -12872,6 +12883,7 @@ export default function App(){
               <th style={{textAlign:'center'}}>Picked</th><th style={{textAlign:'center'}}>Received</th><th style={{textAlign:'center'}}>To Deco</th>
               <th style={{textAlign:'center'}}>Shipped</th><th style={{textAlign:'center'}}>Delivered</th>
               <th style={{textAlign:'center'}}>Shipments</th><th style={{textAlign:'center'}}>Tasks Done</th>
+              <th style={{textAlign:'center'}}>Open Tasks</th><th style={{textAlign:'center'}}>Avg Turnaround</th>
             </tr></thead>
             <tbody>
               {stats.map(s=><tr key={s.id}>
@@ -12883,22 +12895,47 @@ export default function App(){
                 <td style={{textAlign:'center'}}>{_cell(s.delivered,'#0891b2')}</td>
                 <td style={{textAlign:'center'}}>{_cell(s.shipments,'#475569')}</td>
                 <td style={{textAlign:'center'}}>{_cell(s.tasks,'#7c3aed')}</td>
+                <td style={{textAlign:'center',fontWeight:700,color:s.open>0?'#d97706':'#cbd5e1'}}>{s.open}</td>
+                <td style={{textAlign:'center',color:'#64748b'}}>{s.avgHrs!=null?_fmtTurnaround(s.avgHrs):'—'}</td>
               </tr>)}
               {hasUnattrib&&<tr style={{color:'#94a3b8'}}>
                 <td style={{fontStyle:'italic'}}>Unattributed</td>
                 <td style={{textAlign:'center'}}>{unattrib.picked||0}</td><td style={{textAlign:'center'}}>{unattrib.received||0}</td><td style={{textAlign:'center'}}>{unattrib.deco||0}</td>
                 <td style={{textAlign:'center'}}>{unattrib.shipped||0}</td><td style={{textAlign:'center'}}>{unattrib.delivered||0}</td>
                 <td style={{textAlign:'center'}}>{unattrib.shipments||0}</td><td style={{textAlign:'center'}}>—</td>
+                <td style={{textAlign:'center'}}>—</td><td style={{textAlign:'center'}}>—</td>
               </tr>}
               <tr style={{borderTop:'2px solid #e2e8f0',fontWeight:800,background:'#f8fafc'}}>
                 <td>Total</td>
                 <td style={{textAlign:'center'}}>{tot('picked').toLocaleString()}</td><td style={{textAlign:'center'}}>{tot('received').toLocaleString()}</td><td style={{textAlign:'center'}}>{tot('deco').toLocaleString()}</td>
                 <td style={{textAlign:'center'}}>{tot('shipped').toLocaleString()}</td><td style={{textAlign:'center'}}>{tot('delivered').toLocaleString()}</td>
                 <td style={{textAlign:'center'}}>{tot('shipments').toLocaleString()}</td><td style={{textAlign:'center'}}>{tot('tasks').toLocaleString()}</td>
+                <td style={{textAlign:'center'}}>{stats.reduce((a,s)=>a+s.open,0)}</td><td style={{textAlign:'center'}}>—</td>
               </tr>
             </tbody></table>}
           </div>
-          <div style={{padding:'8px 14px',fontSize:10,color:'#94a3b8',borderTop:'1px solid #f1f5f9'}}>Counts are units logged from warehouse actions (pick / receive / ship / deliver / move-to-deco) attributed to the signed-in worker, plus delegated tasks marked complete. "Unattributed" covers actions logged before a worker was signed in or by automated checks.</div>
+          <div style={{padding:'8px 14px',fontSize:10,color:'#94a3b8',borderTop:'1px solid #f1f5f9'}}>Counts are units logged from warehouse actions (pick / receive / ship / deliver / move-to-deco) attributed to the signed-in worker, plus delegated tasks marked complete. Avg Turnaround = average time from a task being assigned to being marked complete (within the selected window). Open Tasks counts all currently-pending tasks regardless of window. "Unattributed" covers actions logged before a worker was signed in or by automated checks.</div>
+        </div>
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>📋 Open Tasks by Worker</h2></div>
+          <div className="card-body" style={{padding:0,maxHeight:460,overflow:'auto'}}>
+            {(()=>{const withOpen=whMembers.map(m=>({m,tasks:openTasksAll.filter(t=>t.assigned_to===m.id).sort((a,b)=>{const da=a.due_date?String(a.due_date).slice(0,10):'9999';const db=b.due_date?String(b.due_date).slice(0,10):'9999';return da.localeCompare(db)||(a.priority??2)-(b.priority??2)})})).filter(x=>x.tasks.length>0);
+              if(withOpen.length===0)return<div className="empty" style={{padding:20}}>No open tasks for any warehouse worker. 🎉</div>;
+              return withOpen.map(({m,tasks})=><div key={m.id}>
+                <div style={{padding:'6px 14px',fontSize:11,fontWeight:700,color:'#0f172a',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',borderTop:'1px solid #e2e8f0'}}>{m.name} <span style={{color:'#94a3b8',fontWeight:600}}>({tasks.length} open)</span></div>
+                <table style={{fontSize:12,width:'100%'}}><thead><tr><th style={{textAlign:'left'}}>Task</th><th>From</th><th>SO</th><th>Priority</th><th>Due</th><th style={{textAlign:'center'}}>Age</th></tr></thead>
+                <tbody>{tasks.map(t=>{const creator=REPS.find(r=>r.id===t.created_by);const age=_taskAgeDays(t);const overdue=t.due_date&&String(t.due_date).slice(0,10)<new Date().toISOString().slice(0,10);
+                  return<tr key={t.id} style={{cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
+                    <td style={{fontWeight:600}}>{t.title}</td>
+                    <td style={{color:'#64748b'}}>{creator?.name||'—'}</td>
+                    <td style={{color:'#2563eb'}}>{t.so_id||'—'}</td>
+                    <td><span style={{fontSize:10,padding:'1px 6px',borderRadius:6,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{['Urgent','High','Normal','Low'][t.priority]||'Normal'}</span></td>
+                    <td style={{fontSize:11,color:overdue?'#dc2626':'#64748b',fontWeight:overdue?700:400}}>{t.due_date?String(t.due_date).slice(0,10):'—'}</td>
+                    <td style={{textAlign:'center',fontSize:11,color:age>=7?'#dc2626':age>=3?'#d97706':'#94a3b8'}}>{age!=null?age+'d':'—'}</td>
+                  </tr>})}</tbody></table>
+              </div>);
+            })()}
+          </div>
         </div>
         <div className="card" style={{marginBottom:12}}>
           <div className="card-header"><h2 style={{margin:0,fontSize:14}}>🕐 Recent Warehouse Activity</h2></div>
