@@ -459,7 +459,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
   }, [sel, flash, loadDetail]);
 
   // Generate `count` coupon codes (or insert a single explicit code).
-  const createCoupons = useCallback(async ({ kind, value, count, single, prefix, batch_label, expires_at, code }) => {
+  const createCoupons = useCallback(async ({ kind, value, count, single, prefix, batch_label, expires_at, code, cover_shipping }) => {
     const rand = () => Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
     const rows = [];
     const n = code ? 1 : Math.max(1, Math.min(500, Number(count) || 1));
@@ -468,7 +468,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
       let c = code ? code.toUpperCase().trim() : `${(prefix || '').toUpperCase().replace(/[^A-Z0-9]/g, '')}${rand()}`;
       while (seen.has(c)) c = `${(prefix || '').toUpperCase().replace(/[^A-Z0-9]/g, '')}${rand()}`;
       seen.add(c);
-      rows.push({ store_id: sel.id, code: c, kind, value: kind === 'percent' ? Number(value) || 0 : 0, max_uses: single ? 1 : null, batch_label: batch_label || null, expires_at: expires_at || null, active: true });
+      rows.push({ store_id: sel.id, code: c, kind, value: kind === 'percent' ? Number(value) || 0 : 0, max_uses: single ? 1 : null, batch_label: batch_label || null, expires_at: expires_at || null, cover_shipping: cover_shipping !== false, active: true });
     }
     const { data, error } = await supabase.from('webstore_coupons').insert(rows).select();
     if (error) { flash('Could not create codes: ' + error.message); return { error }; }
@@ -1395,6 +1395,7 @@ function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRe
   const [value, setValue] = useState(100);
   const [count, setCount] = useState(10);
   const [single, setSingle] = useState(true);
+  const [coverShip, setCoverShip] = useState(true);
   const [prefix, setPrefix] = useState('');
   const [label, setLabel] = useState('');
   const [expires, setExpires] = useState('');
@@ -1405,7 +1406,7 @@ function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRe
   orders.forEach((o) => { if (o.coupon_code && o.status !== 'cancelled' && o.status !== 'pending_payment') { const k = o.coupon_code.toUpperCase(); usedByCode[k] = (usedByCode[k] || 0) + 1; } });
 
   const submit = async () => {
-    const r = await onCreate({ kind, value, count, single, prefix, batch_label: label, expires_at: expires || null });
+    const r = await onCreate({ kind, value, count, single, prefix, batch_label: label, expires_at: expires || null, cover_shipping: coverShip });
     if (r && r.data) { setGenerated(r.data.map((c) => c.code)); setAdding(false); }
   };
   const copyAll = () => { if (generated) navigator.clipboard?.writeText(generated.join('\n')); };
@@ -1426,6 +1427,7 @@ function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRe
         <Row label="Batch label (optional)"><input className="form-input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="2026 scholarships" /></Row>
         <Row label="Expires (optional)"><input className="form-input" type="date" value={expires} onChange={(e) => setExpires(e.target.value)} /></Row>
         <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}><input type="checkbox" checked={single} onChange={(e) => setSingle(e.target.checked)} /> Single-use (one order per code)</label>
+        {kind === 'percent' && <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8 }}><input type="checkbox" checked={coverShip} onChange={(e) => setCoverShip(e.target.checked)} /> Also discount shipping</label>}
         <button className="btn btn-primary" onClick={submit}>Generate</button>
         <button className="btn btn-secondary" onClick={() => setAdding(false)}>Cancel</button>
       </div></div>}
@@ -1449,7 +1451,7 @@ function CouponsTab({ store, coupons = [], orders = [], onCreate, onUpdate, onRe
                 return (
                   <tr key={c.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                     <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700 }}>{c.code}</td>
-                    <td style={td}>{c.kind === 'free_shipping' ? 'Free shipping' : `${c.value}% off`}</td>
+                    <td style={td}>{c.kind === 'free_shipping' ? 'Free shipping' : `${c.value}% off${c.cover_shipping !== false ? ' + shipping' : ''}`}</td>
                     <td style={{ ...td, color: '#64748b' }}>{c.batch_label || '—'}</td>
                     <td style={td}>{used}{c.max_uses != null ? ` / ${c.max_uses}` : ''}{exhausted && <span style={{ color: '#b91c1c', fontWeight: 700 }}> ·used up</span>}</td>
                     <td style={{ ...td, color: '#64748b' }}>{c.expires_at || '—'}</td>
