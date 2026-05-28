@@ -13,7 +13,7 @@ import { rQ, auTierDisc } from './pricing';
 const isAU = b => { const l = (b || '').toLowerCase(); return l === 'adidas' || l === 'under armour' || l === 'new balance'; };
 
 const initialAi = () => ({
-  inputMode: 'text', parseMode: 'order', text: '', images: [], url: '',
+  inputMode: 'text', parseMode: 'order', combineNameNum: false, text: '', images: [], url: '',
   loading: false, error: null, statusMsg: null,
   parsed: [], rosters: [], warnings: [], build_id: null, hasParsed: false,
 });
@@ -117,13 +117,21 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       // One row = one garment unit. Build size counts plus parallel
       // numbers/names arrays (same index = same player) keyed by size, the
       // exact shape the number/name deco lines expect.
+      const combine = !!ai.combineNameNum;
       const players = (r.players || []).filter(p => !p._skip);
       const sizes = {}, numbers = {}, names = {};
       players.forEach(p => {
         const sz = (p.size || 'M').toUpperCase();
         sizes[sz] = (sizes[sz] || 0) + 1;
-        (numbers[sz] = numbers[sz] || []).push(p.number ? String(p.number) : '');
-        (names[sz] = names[sz] || []).push(p.name || '');
+        const num = p.number ? String(p.number).trim() : '';
+        const nm = (p.name || '').trim();
+        if (combine) {
+          // Name + number share a single line, e.g. "MATRO - 22".
+          (names[sz] = names[sz] || []).push(nm && num ? `${nm} - ${num}` : (nm || num));
+        } else {
+          (numbers[sz] = numbers[sz] || []).push(num);
+          (names[sz] = names[sz] || []).push(nm);
+        }
       });
       const hasNums = Object.values(numbers).some(a => a.some(v => v && String(v).trim()));
       const hasNames = Object.values(names).some(a => a.some(v => v && String(v).trim()));
@@ -359,6 +367,11 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
               {ai.warnings.map((w, i) => <div key={i} style={{ fontSize: 10, color: '#92400e' }}>{w}</div>)}
             </div>}
 
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '8px 10px', background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+              <input type="checkbox" checked={ai.combineNameNum} onChange={e => setAi(x => ({ ...x, combineNameNum: e.target.checked }))} />
+              <span><b>Combine name + number onto one line</b> — e.g. “MATRO - 22” as a single names deco, instead of separate name and number decos.</span>
+            </label>
+
             <div style={{ maxHeight: 400, overflow: 'auto' }}>
               {(ai.rosters || []).map((r, ri) => {
                 const mq = r.match_quality;
@@ -393,7 +406,9 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
               })}
             </div>
             <div style={{ marginTop: 8, padding: 8, background: '#f8fafc', borderRadius: 6, fontSize: 11, color: '#64748b' }}>
-              💡 Each item gets a numbers deco (Back, 8" screen print) and a names deco (Back Center, heat press) pre-filled from the roster. Adjust methods, positions and pricing in the estimate editor.
+              💡 {ai.combineNameNum
+                ? 'Each item gets one names deco with name + number combined (e.g. “MATRO - 22”).'
+                : 'Each item gets a numbers deco (Back, 8" screen print) and a names deco (Back Center, heat press) pre-filled from the roster.'} Adjust methods, positions and pricing in the estimate editor.
             </div>
             {ai.error && <div style={{ marginTop: 10, padding: 8, background: '#fef2f2', borderRadius: 6, fontSize: 11, color: '#991b1b' }}>⚠ {ai.error}</div>}
           </>;
