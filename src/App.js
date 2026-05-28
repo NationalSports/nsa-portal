@@ -4510,6 +4510,12 @@ export default function App(){
   // table fails with 401. Force them to sign in again so writes get a valid auth.uid().
   React.useEffect(()=>{
     if(!supabase||!cu)return;
+    // Netlify deploy previews / branch deploys use a "<context>--<site>.netlify.app" host
+    // (double dash). Those origins don't carry a valid Supabase session, so the stale-session
+    // guard would kick testers to login a few seconds after load. Skip it there so the UI is
+    // testable; production (custom domain / single-label host) keeps the guard intact.
+    const isPreviewHost=typeof window!=='undefined'&&/--/.test(window.location.hostname||'');
+    if(isPreviewHost)return;
     let cancelled=false;
     (async()=>{
       // Supabase session restore is async on first load — retry generously before kicking out.
