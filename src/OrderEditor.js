@@ -3000,7 +3000,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // NAMES decoration
             if(deco.kind==='names'){
               const sQ2=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
-              const nd=deco.names||{};const nSell=safeNum(deco.sell_override||deco.sell_each||6);const nCost=safeNum(deco.cost_each||3);
+              const nd=deco.names||{};const isSublimatedName=deco.name_method==='sublimated';const nSell=isSublimatedName?safeNum(deco.sell_override)||0:safeNum(deco.sell_override||deco.sell_each||6);const nCost=isSublimatedName?0:safeNum(deco.cost_each||3);
               const nCt=Object.values(nd).flat().filter(v=>v&&v.trim()).length;
               const nameQtyOverride=safeNum(deco.name_qty)||0;
               const effectiveNameQty=nCt||nameQtyOverride;
