@@ -4855,7 +4855,7 @@ export default function App(){
     _dbSaveArtFiles(merged);
     return merged;
   };
-  const savI=(pid,inv,deltas,reason,adjType)=>{
+  const savI=(pid,inv,deltas,reason,adjType,availSizes)=>{
     const p=prod.find(x=>x.id===pid);
     if(deltas&&p){
       const entries=Object.entries(deltas).filter(([,v])=>v!==0);
@@ -4865,7 +4865,10 @@ export default function App(){
         logChange('inventory_adjustment','Product',pid,entries.map(([sz,d2])=>(d2>0?'+':'')+d2+' '+sz).join(', ')+(reason?' — '+reason:''));
       }
     }
-    setProd(pp=>pp.map(x=>x.id===pid?{...x,_inv:inv}:x));nf('Inventory updated');
+    setProd(pp=>pp.map(x=>x.id===pid?{...x,_inv:inv,...(Array.isArray(availSizes)?{available_sizes:availSizes}:{})}:x));
+    const addedSizes=Array.isArray(availSizes)&&p?availSizes.filter(s=>!(p.available_sizes||[]).includes(s)):[];
+    if(addedSizes.length){logChange('inventory_sizes','Product',pid,'Added size'+(addedSizes.length===1?'':'s')+': '+addedSizes.join(', '))}
+    nf('Inventory updated');
   };
   const newE=(c,product,seedItems)=>{const mk=c?.catalog_markup||1.65;const items=[];
     if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-auTierDisc(c?.adidas_ua_tier||'B',product.pricing_group))):rQ(repCost*mk);
@@ -6670,7 +6673,7 @@ export default function App(){
     const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());const[salesView,setSalesView]=useState('month');
     const[autoSaved,setAutoSaved]=useState(false);
     // Sync ep with product prop when inventory changes externally (e.g. AdjModal)
-    React.useEffect(()=>{if(!editing){setEp({...product})}else{setEp(prev=>({...prev,_inv:product._inv}))}},[product._inv]);
+    React.useEffect(()=>{if(!editing){setEp({...product})}else{setEp(prev=>({...prev,_inv:product._inv}))}},[product._inv,(product.available_sizes||[]).join(',')]);
     const epRef=React.useRef(ep);const editingRef=React.useRef(editing);
     React.useEffect(()=>{epRef.current=ep},[ep]);
     React.useEffect(()=>{editingRef.current=editing},[editing]);
