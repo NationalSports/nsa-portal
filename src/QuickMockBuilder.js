@@ -13,7 +13,9 @@ import { fileUpload, _cloudinaryPdfThumb } from './utils';
 //
 // Props:
 //   garments  : [{key, sku, color, name, frontUrl, backUrl}]
-//   locations : [{artFileId, name, position, existingFiles:[...], preview:{url}|null}]
+//   locations : [{artFileId, name, position, existingFiles:[...], preview:{url}|null,
+//                 garmentKeys:[sku|color]}] — garmentKeys scopes a location to specific
+//                 garments (empty = shown for every garment)
 //   initialMocks : {key:[{url,name}]}
 //   onSave({mocksByGarment, filesByLocation})
 //   onClose()
@@ -84,6 +86,9 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
     preview: (l.files && l.files[0] ? l.files[0].preview : l.preview) || null,
     source: null,
     hasExisting: (l.existingFiles || []).length > 0 || !!l.preview,
+    // Garment keys (sku|color) this art belongs to. Empty = applies to every garment (the
+    // common one-design case); otherwise the location only shows for its own garment(s).
+    garmentKeys: l.garmentKeys || [],
   })));
   const [mocks, setMocks] = useState(() => ({...(initialMocks || {})}));
   const [imgOverride, setImgOverride] = useState({});
@@ -100,6 +105,9 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   const garment = garments[gi] || {};
   const baseUrl = side === 'back' ? garment.backUrl : garment.frontUrl;
   const garmentUrl = imgOverride[garment.key] || baseUrl;
+  // A location is shown for the selected garment when it isn't tied to specific garments
+  // (applies to all) or its garment list includes the current one.
+  const layerForGarment = l => !l.garmentKeys || !l.garmentKeys.length || l.garmentKeys.includes(garment.key);
   // Names of the art locations placed on a mock (by their layer/artFileId), so the job view can
   // label each mockup with the logo(s) it shows rather than just the filename.
   const _artLabels = layerIds => [...new Set((layerIds || []).filter(Boolean))]
@@ -387,14 +395,17 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   const dropArtOnCanvas = useCallback(file => {
     if (!file) return;
     if (!isArtFile(file)) { nf && nf('Drop a PNG, JPG, SVG, AI, EPS, or PDF art file', 'error'); return; }
-    if (!layers.length) { nf && nf('No art locations on this job to attach art to', 'error'); return; }
+    // Only consider art locations that belong to the garment currently on screen.
+    const applies = (i) => layerForGarment(layers[i]);
+    const visible = layers.map((l, i) => i).filter(applies);
+    if (!visible.length) { nf && nf('No art location for this garment to attach art to', 'error'); return; }
     let idx = -1;
     const active = canvas && canvas.getActiveObject();
-    if (active && active._isArt && active._layerId) idx = layers.findIndex(l => l.artFileId === active._layerId);
-    if (idx < 0) idx = layers.findIndex(l => !l.source);
-    if (idx < 0) idx = 0;
+    if (active && active._isArt && active._layerId) { const i = layers.findIndex(l => l.artFileId === active._layerId); if (i >= 0 && applies(i)) idx = i; }
+    if (idx < 0) idx = visible.find(i => !layers[i].source);
+    if (idx == null || idx < 0) idx = visible[0];
     uploadLayerFile(idx, file, {place: true});
-  }, [canvas, layers, uploadLayerFile, nf]);
+  }, [canvas, layers, uploadLayerFile, nf, garment.key]);
 
   const uploadGarmentImg = useCallback(async file => {
     setBusy(true);
@@ -555,7 +566,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
           <div style={{display: 'grid', gridTemplateColumns: '300px 1fr', gap: 16}}>
             <div>
               <div style={{fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 6}}>Art Locations</div>
-              {layers.map((l, idx) => <div key={l.artFileId || idx}
+              {layers.map((l, idx) => !layerForGarment(l) ? null : <div key={l.artFileId || idx}
                 onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('layer-' + idx); }}
                 onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOver(d => d === 'layer-' + idx ? null : d); }}
                 onDrop={e => { e.preventDefault(); e.stopPropagation(); setDragOver(null); if (busy) return; const f = e.dataTransfer.files[0]; if (!f) return; if (!isArtFile(f)) { nf && nf('Drop a PNG, JPG, SVG, AI, EPS, or PDF art file', 'error'); return; } uploadLayerFile(idx, f); }}
@@ -584,7 +595,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
                   </button>
                 </div>
               </div>)}
-              {layers.length === 0 && <div style={{fontSize: 11, color: '#94a3b8'}}>No art locations on this job.</div>}
+              {!layers.some(layerForGarment) && <div style={{fontSize: 11, color: '#94a3b8'}}>No art locations for this garment.</div>}
 
               <div
                 onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('product'); }}

@@ -1974,6 +1974,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _back=full=>{const prd=products.find(pp=>pp.id===full?.product_id||pp.sku===full?.sku);return prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
       const garments=[];const seenG=new Set();
       (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];const sku=it0.sku||full?.sku||'';const color=it0.color||full?.color||'';const key=sku+'|'+color;if(seenG.has(key))return;seenG.add(key);garments.push({key,sku,color,name:it0.name||full?.name||'',frontUrl:full?_itemImg(full):'',backUrl:full?_back(full):''})});
+      // Map each art file in the job to the garment keys (sku|color) it actually decorates, read
+      // from each item's own decorations. Without this the builder would show/save every art for
+      // every garment, so a job mixing different art per item (e.g. a crest on one tee, a flag on
+      // another) put the wrong art on a garment and left some garments with no mockup at all.
+      const artGarmentKeys={};
+      (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];const key=(it0.sku||full?.sku||'')+'|'+(it0.color||full?.color||'');
+        const ids=full?[...new Set(safeDecos(full).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&artIds.includes(d.art_file_id)).map(d=>d.art_file_id))]:[];
+        // Fall back to all of the job's art when an item has no explicit art decoration — that's
+        // the common "one design across colors" case and keeps existing behavior.
+        const useIds=ids.length?ids:artIds;
+        useIds.forEach(aid=>{(artGarmentKeys[aid]||(artGarmentKeys[aid]=new Set())).add(key)});
+      });
       const _renderable=f=>{const u=typeof f==='string'?f:(f?.url||'');return !!u&&(_isImgUrl(u)||/\.svg(\?|$)/i.test(u))};
       const _filePreview=f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u)return null;if(_renderable(f))return{url:u};if(u.includes('cloudinary.com')&&/\.(ai|eps|pdf)(\?|$)/i.test(u)){const png=_cloudinaryPdfThumb(u);if(png)return{url:png,vectorSrc:u}}return null};
       const _fileName=f=>{const u=typeof f==='string'?f:(f?.url||'');return (typeof f!=='string'&&f?.name)||u.split('?')[0].split('/').pop()||'art'};
@@ -1982,7 +1994,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const _onfile=[...(art.files||[]),...(art.prod_files||[])].filter(f=>typeof f==='string'||f?.url);
         const files=[];const _seenF=new Set();
         [art.preview_url,...(art.mockup_files||[]),..._onfile].forEach(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenF.has(u))return;const pv=_filePreview(f);if(!pv)return;_seenF.add(u);files.push({name:_fileName(f),url:u,preview:pv})});
-        locations.push({artFileId:aid,name:art.name||j2.art_name||'',position:j2.positions||'',existingFiles:_onfile,files,preview:files.length?files[0].preview:null});
+        locations.push({artFileId:aid,name:art.name||j2.art_name||'',position:j2.positions||'',existingFiles:_onfile,files,preview:files.length?files[0].preview:null,garmentKeys:[...(artGarmentKeys[aid]||[])]});
       });
       const initialMocks={};const initialScene={};
       artIds.forEach(aid=>{const art=safeArt(o).find(a=>a.id===aid);if(!art)return;Object.entries(art.item_mockups||{}).forEach(([k,arr])=>{if(arr&&arr.length)initialMocks[k]=[...(initialMocks[k]||[]),...arr]});Object.entries(art.qm_scenes||{}).forEach(([k,objs])=>{if(objs&&objs.length&&!initialScene[k])initialScene[k]=objs})});
@@ -2003,7 +2015,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const upd={...a};
             const locFiles=(filesByLocation||{})[a.id]||[];
             if(locFiles.length){const have=new Set((a.files||[]).map(_fUrl));upd.files=[...(a.files||[]),...locFiles.filter(f=>!have.has(_fUrl(f)))]}
-            if(a.id===primaryId){const im={};Object.entries(mocksByGarment||{}).forEach(([k,arr])=>{if(arr&&arr.length)im[k]=arr.map(m=>({...m,art_file_id:primaryId}))});upd.item_mockups=im;if(sceneByGarment)upd.qm_scenes=sceneByGarment}
+            // Attach each garment's mock to the art file that decorates that garment (not just the
+            // job's primary art), so every item shows its own mockup on the coach screen.
+            const keysForArt=artGarmentKeys[a.id]||new Set();
+            const im={};Object.entries(mocksByGarment||{}).forEach(([k,arr])=>{if(arr&&arr.length&&keysForArt.has(k))im[k]=arr.map(m=>({...m,art_file_id:a.id}))});
+            if(Object.keys(im).length)upd.item_mockups={...(a.item_mockups||{}),...im};
+            if(a.id===primaryId&&sceneByGarment)upd.qm_scenes=sceneByGarment;
             return upd;
           });
           const updated={...o,art_files:updArt,updated_at:new Date().toLocaleString()};
