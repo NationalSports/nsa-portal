@@ -2270,25 +2270,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isSO&&onRevertToEst&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Revert '+o.id+' back to estimate? The SO will be deleted and '+(o.estimate_id?'the original estimate reopened.':'a new estimate created.')))return;onRevertToEst(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Revert to Estimate</button>}
             {isSO&&o.estimate_id&&onViewEstimate&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onViewEstimate(o.estimate_id)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="dollar" size={12}/> View Estimate</button>}
             {/* Promo Funds — show when customer has promo programs and funds available (auto-allocate period if needed) */}
-            {cust&&(cust.promo_programs||[]).length>0&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(_bal>0)return true;const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false);return progs.some(p=>p.type==='fixed'&&safeNum(p.fixed_amount)>0)})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
+            {cust&&(cust.promo_programs||[]).length>0&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _ps=(cust.promo_periods||[]).filter(p=>p.period_start>=_pStart);const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(_bal>0)return true;const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false);return progs.some(p=>p.type==='fixed'&&safeNum(p.fixed_amount)>0)})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
               // Calculate available promo balance, auto-allocate period if needed
               const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
               const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
-              let _ps=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);
-              let promoBudget=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
-              // Auto-allocate period from fixed programs if no period exists
-              if(_ps.length===0){
+              const _halfLabel=ps=>{const yy=ps.slice(0,4);return (ps.slice(5,7)==='01'?'H1 ':'H2 ')+yy};
+              let _cur=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);
+              // Auto-allocate current period from fixed programs if none exists
+              if(_cur.length===0){
                 const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
                 const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
                 if(totalFixed>0){
                   const newPeriod={id:'pp_'+(cust.parent_id||cust.id)+'_'+_pStart,customer_id:cust.parent_id||cust.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
                   await _dbSavePromoPeriod(newPeriod);
-                  const updatedCust={...cust,promo_periods:[...(cust.promo_periods||[]),newPeriod]};
-                  setCust(updatedCust);
-                  _ps=[newPeriod];promoBudget=totalFixed;
-                  nf('Auto-allocated $'+totalFixed.toLocaleString()+' promo for '+(_m<6?'H1 '+_y:'H2 '+_y));
+                  setCust({...cust,promo_periods:[...(cust.promo_periods||[]),newPeriod]});
+                  _cur=[newPeriod];
+                  nf('Auto-allocated $'+totalFixed.toLocaleString()+' promo for '+_halfLabel(_pStart));
                 }
               }
+              // Drawable periods: current half first, then future allocations (early use), each with a remaining balance.
+              const _future=(cust.promo_periods||[]).filter(p=>p.period_start>_pStart).sort((a,b)=>a.period_start.localeCompare(b.period_start));
+              const _drawable=[..._cur,..._future].filter(p=>(safeNum(p.allocated)-safeNum(p.used))>0);
+              let promoBudget=_drawable.reduce((a,p)=>a+safeNum(p.allocated)-safeNum(p.used),0);
               if(promoBudget<=0){nf('No promo funds available','error');return}
               // Calculate promo cost per item (retail price + 25% deco markup)
               const items=safeItems(o);const _aq={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
@@ -2336,13 +2339,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // Estimates skip this — their promo is provisional until conversion to SO (handled in App.convertSO).
               if(isSO){
                 const promoUsed=promoBudget-remaining;
-                const targetPeriod=_ps[0];
-                if(promoUsed>0&&targetPeriod){
-                  const updatedPeriod={...targetPeriod,used:safeNum(targetPeriod.used)+promoUsed};
-                  const usageRec={period_id:targetPeriod.id,amount:promoUsed,description:o.memo||('Promo on '+o.id),created_by:cu?.name||'System',so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()};
-                  if(onSavePromoPeriod)await onSavePromoPeriod(updatedPeriod);else if(_dbSavePromoPeriod)await _dbSavePromoPeriod(updatedPeriod);
-                  if(onSavePromoUsage)await onSavePromoUsage(usageRec);
-                  setCust(c=>c?{...c,promo_periods:(c.promo_periods||[]).map(p=>p.id===targetPeriod.id?updatedPeriod:p),promo_usage:[...(c.promo_usage||[]),usageRec]}:c);
+                if(promoUsed>0){
+                  // Spread the deduction across drawable periods: current half first, then future (early use).
+                  let _toDeduct=promoUsed;const _updatedPeriods=[];const _usageRecs=[];
+                  for(const p of _drawable){
+                    if(_toDeduct<=0.0001)break;
+                    const avail=safeNum(p.allocated)-safeNum(p.used);if(avail<=0)continue;
+                    const take=Math.min(avail,_toDeduct);const isEarly=p.period_start>_pStart;
+                    _updatedPeriods.push({...p,used:safeNum(p.used)+take});
+                    _usageRecs.push({period_id:p.id,amount:take,description:(o.memo||('Promo on '+o.id))+(isEarly?' — early draw from '+_halfLabel(p.period_start):''),created_by:cu?.name||'System',so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()});
+                    _toDeduct-=take;
+                  }
+                  for(const up of _updatedPeriods){if(onSavePromoPeriod)await onSavePromoPeriod(up);else if(_dbSavePromoPeriod)await _dbSavePromoPeriod(up)}
+                  for(const ur of _usageRecs){if(onSavePromoUsage)await onSavePromoUsage(ur)}
+                  setCust(c=>c?{...c,promo_periods:(c.promo_periods||[]).map(p=>{const up=_updatedPeriods.find(x=>x.id===p.id);return up||p}),promo_usage:[...(c.promo_usage||[]),..._usageRecs]}:c);
                   sv('promo_amount',promoUsed);
                 }
               }
@@ -2362,7 +2372,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     if(onSavePromoPeriod)await onSavePromoPeriod(restored);else if(_dbSavePromoPeriod)await _dbSavePromoPeriod(restored);
                   }
                 }
-                if(usages.length&&onDeletePromoUsage)await onDeletePromoUsage(usages[0].period_id,o.id);
+                if(usages.length&&onDeletePromoUsage){const _pids=[...new Set(usages.map(u=>u.period_id))];for(const _pid of _pids)await onDeletePromoUsage(_pid,o.id)}
                 if(usages.length){setCust(c=>c?{...c,promo_periods:(c.promo_periods||[]).map(p=>{const u=usages.find(x=>x.period_id===p.id);return u?{...p,used:Math.max(0,safeNum(p.used)-safeNum(u.amount))}:p}),promo_usage:(c.promo_usage||[]).filter(u=>u.so_id!==o.id)}:c)}
               }
               sv('promo_applied',false);sv('promo_amount',0);sv('items',safeItems(o).map(it=>({...it,is_promo:false,unit_sell:it._pre_promo_sell!=null?it._pre_promo_sell:it.unit_sell,decorations:safeDecos(it).map(d=>d._pre_promo_sell_override!==undefined?{...d,sell_override:d._pre_promo_sell_override,_pre_promo_sell_override:undefined}:d),_pre_promo_sell:undefined,_promo_credit:undefined,_promo_partial_qty:undefined})));nf('Promo mode disabled')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Remove Promo</button>}
@@ -2470,7 +2480,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <span style={{fontSize:12,fontWeight:700,color:'#92400e'}}>Promo Total: ${promoTotals.promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
         {promoTotals.normalRev>0&&<span style={{fontSize:12}}>Customer Pays: <strong style={{color:'#166534'}}>${promoTotals.customerPays.toFixed(2)}</strong></span>}
         {promoTotals.normalRev===0&&promoTotals.promoCredit===0&&<span style={{fontSize:12,fontWeight:700,color:'#166534'}}>$0.00 Order</span>}
-        {(()=>{if(!cust)return null;const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);const _ownDeducted=(cust.promo_usage||[]).filter(u=>u.so_id===o.id).reduce((a,u)=>a+safeNum(u.amount),0);const _availableForThis=_bal+_ownDeducted;if(promoTotals.promoAmount>_availableForThis)return<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠️ Exceeds available funds — ${_availableForThis.toLocaleString(undefined,{maximumFractionDigits:2})} available</span>;return<span style={{fontSize:11,color:'#64748b'}}>Remaining: ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
+        {(()=>{if(!cust)return null;const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(cust.promo_periods||[]).filter(p=>p.period_start>=(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);const _ownDeducted=(cust.promo_usage||[]).filter(u=>u.so_id===o.id).reduce((a,u)=>a+safeNum(u.amount),0);const _availableForThis=_bal+_ownDeducted;if(promoTotals.promoAmount>_availableForThis)return<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠️ Exceeds available funds — ${_availableForThis.toLocaleString(undefined,{maximumFractionDigits:2})} available</span>;return<span style={{fontSize:11,color:'#64748b'}}>Remaining: ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
       </div>}
       {/* Credit Summary */}
       {o.credit_applied&&safeNum(o.credit_amount)>0&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>

@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks } from './components';
-import { dP, rQ, DTF, mergeColors } from './pricing';
+import { dP, rQ, DTF, mergeColors, calcQualifyingSpend } from './pricing';
 import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey } from './utils';
 import { StripePaymentModal } from './modals';
 
@@ -39,6 +39,28 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
   React.useEffect(()=>{if(!showActions)return;const close=()=>setShowActions(false);document.addEventListener('click',close);return()=>document.removeEventListener('click',close)},[showActions]);
   const customer=custLocal;
+  // Auto co-op true-up: the first time this customer is opened after a period rollover (1/1 or 7/1),
+  // finalize the now-current period's allocation to the full % earned from the prior half's qualifying spend.
+  useEffect(()=>{
+    const c=initCust;if(!c)return;
+    const pId=c.parent_id||c.id;
+    const pctProg=(c.promo_programs||[]).find(p=>p.is_active!==false&&p.type==='percent_of_spend'&&safeNum(p.spend_percentage)>0);
+    if(!pctProg)return;const pct=safeNum(pctProg.spend_percentage);if(pct<=0)return;
+    const d=new Date();const yy=d.getFullYear();const mm=d.getMonth();
+    const cur=mm<6?{start:yy+'-01-01',end:yy+'-06-30'}:{start:yy+'-07-01',end:yy+'-12-31'};
+    const prev=mm<6?{start:(yy-1)+'-07-01',end:(yy-1)+'-12-31'}:{start:yy+'-01-01',end:yy+'-06-30'};
+    const fam=[pId,...allCustomers.filter(x=>x.parent_id===pId).map(x=>x.id)];
+    const fulfilled=so=>['approved','paid','complete'].includes(so.status)||calcSOStatus(so)==='complete';
+    const prevSpend=(sos||[]).filter(so=>fam.includes(so.customer_id)&&fulfilled(so)&&(()=>{const dt=(so.order_date||so.created_at||'').slice(0,10);return dt>=prev.start&&dt<=prev.end})()).reduce((a,so)=>a+calcQualifyingSpend(so),0);
+    const prevEarned=Math.round(prevSpend*pct*100)/100;if(prevEarned<=0)return;
+    const existing=(c.promo_periods||[]).find(p=>p.period_start===cur.start);
+    const curAlloc=existing?safeNum(existing.allocated):0;
+    if(prevEarned-curAlloc>0.01){
+      if(existing)onSavePromoPeriod({...existing,allocated:Math.max(curAlloc,prevEarned),program_id:existing.program_id||pctProg.id,notes:existing.notes||'Auto co-op true-up'});
+      else onSavePromoPeriod({id:'pp_'+pId+'_'+cur.start,customer_id:pId,program_id:pctProg.id,period_start:cur.start,period_end:cur.end,allocated:prevEarned,used:0,notes:'Auto co-op true-up',created_at:new Date().toISOString()});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[initCust.id,sos]);
   const isP=!customer.parent_id;const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
   const tl={prepay:'Prepay',net15:'Net 15',net30:'Net 30',net60:'Net 60'};
   const ids=isP?[customer.id,...subs.map(s=>s.id)]:[customer.id];
@@ -392,7 +414,28 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const curBalance=curPeriods.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
     const curAllocated=curPeriods.reduce((a,p)=>a+(p.allocated||0),0);
     const curUsed=curPeriods.reduce((a,p)=>a+(p.used||0),0);
-    const pastPeriods=periods.filter(p=>p.period_start!==curPeriod.start).sort((a,b)=>b.period_start.localeCompare(a.period_start));
+    // Split non-current periods into upcoming (future) and past so future allocations don't read as "Past".
+    const otherPeriods=periods.filter(p=>p.period_start!==curPeriod.start);
+    const upcomingPeriods=otherPeriods.filter(p=>(p.period_start||'')>curPeriod.start).sort((a,b)=>a.period_start.localeCompare(b.period_start));
+    const pastPeriods=otherPeriods.filter(p=>(p.period_start||'')<curPeriod.start).sort((a,b)=>b.period_start.localeCompare(a.period_start));
+    // Co-op earning: live % of qualifying (≥20% margin) net spend this half, destined for the next half.
+    const pctProg=programs.find(p=>p.is_active!==false&&p.type==='percent_of_spend'&&safeNum(p.spend_percentage)>0);
+    const pct=pctProg?safeNum(pctProg.spend_percentage):0;
+    const famIds=[parentId,...allCustomers.filter(c=>c.parent_id===parentId).map(c=>c.id)];
+    const _fulfilled=so=>['approved','paid','complete'].includes(so.status)||calcSOStatus(so)==='complete';
+    const _spendInRange=(s,e)=>(sos||[]).filter(so=>famIds.includes(so.customer_id)&&_fulfilled(so)&&(()=>{const d=(so.order_date||so.created_at||'').slice(0,10);return d>=s&&d<=e})()).reduce((a,so)=>a+calcQualifyingSpend(so),0);
+    const curHalfSpend=pct>0?_spendInRange(curPeriod.start,curPeriod.end):0;
+    const curEarned=pct>0?Math.round(curHalfSpend*pct*100)/100:0;
+    const nextPeriod=m<6?{start:y+'-07-01',end:y+'-12-31',label:'H2 '+y}:{start:(y+1)+'-01-01',end:(y+1)+'-06-30',label:'H1 '+(y+1)};
+    const nextExisting=periods.find(p=>p.period_start===nextPeriod.start);
+    const nextPulled=nextExisting?safeNum(nextExisting.allocated):0;
+    const doPullForward=()=>{
+      if(curEarned<=0){nf('No qualifying spend yet this half','error');return}
+      if(curEarned<=nextPulled){nf('Already pulled forward — earned hasn\'t increased','error');return}
+      if(nextExisting)onSavePromoPeriod({...nextExisting,allocated:Math.max(safeNum(nextExisting.allocated),curEarned),program_id:nextExisting.program_id||pctProg?.id||null,notes:nextExisting.notes||('Pulled forward from '+curPeriod.label+' spend')});
+      else onSavePromoPeriod({id:'pp_'+parentId+'_'+nextPeriod.start,customer_id:parentId,program_id:pctProg?.id||null,period_start:nextPeriod.start,period_end:nextPeriod.end,allocated:curEarned,used:0,notes:'Pulled forward from '+curPeriod.label+' spend',created_at:new Date().toISOString()});
+      nf('Pulled forward $'+curEarned.toLocaleString()+' to '+nextPeriod.label);
+    };
     return<div style={{display:'flex',flexDirection:'column',gap:12}}>
       {customer.parent_id&&parentCust&&parentCust.id!==customer.id&&<div style={{padding:'8px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e40af'}}>Promo $ is shared with parent account <strong style={{cursor:'pointer',textDecoration:'underline'}} onClick={()=>onSelCust&&onSelCust(parentCust)}>{parentCust.name}</strong> — changes here apply to all sub-accounts.</div>}
       {/* Current Balance */}
@@ -429,6 +472,24 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           </div>:curPeriods.length>0&&<button className="btn btn-sm btn-secondary" style={{marginTop:8}} onClick={()=>setPromoAdj({period_id:curPeriods[0]?.id,amount:0,description:''})}>± Adjust Balance</button>}
         </div>
       </div>
+
+      {/* Earning this half (% of spend co-op) */}
+      {pctProg&&<div className="card"><div className="card-header"><h2>Earning This Half — {curPeriod.label}</h2></div>
+        <div className="card-body">
+          <div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+            <div style={{fontSize:13,color:'#334155',flex:1,minWidth:240}}>
+              Qualifying spend <span style={{fontSize:11,color:'#94a3b8'}}>(net, ≥20% margin)</span>: <strong>${curHalfSpend.toLocaleString(undefined,{maximumFractionDigits:0})}</strong>
+              <span style={{margin:'0 6px',color:'#cbd5e1'}}>×</span>{(pct*100).toFixed(0)}%
+              <span style={{margin:'0 6px',color:'#cbd5e1'}}>=</span>
+              <strong style={{color:'#166534'}}>${curEarned.toLocaleString(undefined,{maximumFractionDigits:2})}</strong>
+              <span style={{color:'#64748b'}}> earned for {nextPeriod.label}</span>
+            </div>
+            <button className="btn btn-sm btn-primary" disabled={curEarned<=nextPulled} onClick={doPullForward} title={curEarned<=nextPulled?'Nothing new to pull forward yet':('Make $'+(curEarned-nextPulled).toLocaleString()+' usable now')}>↪ Pull Forward to {nextPeriod.label}</button>
+          </div>
+          {nextPulled>0&&<div style={{fontSize:11,color:'#64748b',marginTop:8}}>${nextPulled.toLocaleString()} already pulled forward to {nextPeriod.label}{curEarned>nextPulled?(' — $'+(curEarned-nextPulled).toLocaleString()+' more available'):' (up to date)'}.</div>}
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:6}}>Pulled-forward dollars are usable on orders now. Spend keeps accruing — the {nextPeriod.label} allocation trues up automatically when the half closes.</div>
+        </div>
+      </div>}
 
       {/* Programs */}
       <div className="card"><div className="card-header"><h2>Promo Programs</h2><button className="btn btn-sm btn-primary" onClick={()=>setPromoEdit({type:'fixed',fixed_amount:0,spend_percentage:0.10,notes:'',id:null})}>+ Add Program</button></div>
@@ -494,6 +555,19 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           </div>
         </div>:<div style={{fontSize:12,color:'#94a3b8'}}>Click "+ New Period" to allocate promo dollars for an upcoming period</div>}
       </div></div>
+
+      {/* Upcoming Periods — future allocations (e.g. pulled-forward co-op), usable early on current orders */}
+      {upcomingPeriods.length>0&&<div className="card"><div className="card-header"><h2>Upcoming Periods</h2></div><div className="card-body" style={{padding:0}}>
+        <table style={{fontSize:12}}><thead><tr><th>Period</th><th>Allocated</th><th>Used</th><th>Remaining</th><th>Status</th></tr></thead><tbody>
+          {upcomingPeriods.map(p=>{const rem=(p.allocated||0)-(p.used||0);return<tr key={p.id}>
+            <td style={{fontWeight:600}}>{p.period_start?.slice(0,7)} — {p.period_end?.slice(0,7)}</td>
+            <td>${(p.allocated||0).toLocaleString()}</td>
+            <td style={{color:'#dc2626'}}>${(p.used||0).toLocaleString()}</td>
+            <td style={{color:rem>0?'#166534':'#94a3b8'}}>${rem.toLocaleString()}</td>
+            <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:rem>0?'#dcfce7':'#f1f5f9',color:rem>0?'#166534':'#94a3b8'}}>{rem>0?'Available early $'+rem.toLocaleString():'Fully Used'}</span></td>
+          </tr>})}
+        </tbody></table>
+      </div></div>}
 
       {/* Past Periods */}
       {pastPeriods.length>0&&<div className="card"><div className="card-header"><h2>Past Periods</h2></div><div className="card-body" style={{padding:0}}>
