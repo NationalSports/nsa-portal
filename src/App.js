@@ -351,7 +351,14 @@ const _safeQuery=(table,opts)=>{
       if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){
         _missing404Tables.set(table,Date.now());return{data:[],error:null,status:200};
       }
-      if(r.error)return r;
+      if(r.error){
+        // Partial/incomplete load: a page failed part-way through pagination. Treat it exactly like a timeout —
+        // mark the table untrusted so reloads SKIP applying it (poll/realtime both bail on _decoTimedOut) and
+        // hydration flags turn false, so a half-loaded result can never overwrite real child rows in state or DB.
+        // (Source of the stale item-less estimate copies behind the 2026-05-29 wipe.)
+        _lastLoadTimedOut.add(table);
+        return r;
+      }
       const rows=r.data||[];
       all.push(...rows);
       if(rows.length<pageSize)break;

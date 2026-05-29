@@ -1,11 +1,15 @@
 // supabase/functions/daily-backup/index.ts
 // ─────────────────────────────────────────────────────────
 // Full-database snapshot, uploaded to the private `backups`
-// storage bucket as backup-YYYY-MM-DD.json.gz. Also prunes
-// any backup file older than RETENTION_DAYS.
+// storage bucket. Two modes:
+//   • daily  (default)        → backup-YYYY-MM-DD.json.gz, kept RETENTION_DAYS
+//   • intraday (body {intraday:true}) → backup-YYYY-MM-DDTHHMM.json.gz,
+//     kept INTRADAY_RETENTION_DAYS. Timestamped so frequent runs never
+//     overwrite each other (or the daily file), shrinking the recovery
+//     window from ~24h to the intraday cadence.
 //
-// Triggered daily by pg_cron (see migration 00059). Can also
-// be invoked manually with an authenticated POST for an
+// Triggered by pg_cron (daily at 07:00 UTC + intraday every few hours).
+// Can also be invoked manually with an authenticated POST for an
 // on-demand snapshot.
 // ─────────────────────────────────────────────────────────
 
@@ -18,6 +22,7 @@ const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 const RETENTION_DAYS = 30;
+const INTRADAY_RETENTION_DAYS = 4; // timestamped intraday snapshots are kept this long
 const PAGE_SIZE = 1000;
 const BUCKET = "backups";
 
@@ -76,14 +81,27 @@ const TABLES = [
   "vendors",
 ];
 
-async function dumpTable(name: string): Promise<unknown[]> {
+// Returns the table's rows, or null if the table doesn't exist (renamed/dropped/not yet created).
+// A single missing table must never abort the whole backup — that's how the snapshot silently broke before.
+async function dumpTable(name: string): Promise<unknown[] | null> {
   const rows: unknown[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
     const { data, error } = await supabase
       .from(name)
       .select("*")
       .range(from, from + PAGE_SIZE - 1);
-    if (error) throw new Error(`${name}: ${error.message}`);
+    if (error) {
+      const msg = error.message || "";
+      if (
+        msg.includes("does not exist") ||
+        msg.includes("Could not find the table") ||
+        error.code === "PGRST205" ||
+        error.code === "42P01"
+      ) {
+        return null; // table absent — skip it, keep backing up the rest
+      }
+      throw new Error(`${name}: ${msg}`);
+    }
     if (!data || data.length === 0) break;
     rows.push(...data);
     if (data.length < PAGE_SIZE) break;
@@ -104,12 +122,23 @@ async function pruneOldBackups(): Promise<string[]> {
 
   const cutoff = new Date();
   cutoff.setUTCDate(cutoff.getUTCDate() - RETENTION_DAYS);
+  const intradayCutoff = new Date();
+  intradayCutoff.setUTCDate(intradayCutoff.getUTCDate() - INTRADAY_RETENTION_DAYS);
 
   const toDelete: string[] = [];
   for (const f of files ?? []) {
-    const m = f.name.match(/^backup-(\d{4}-\d{2}-\d{2})\.json(?:\.gz)?$/);
-    if (!m) continue;
-    if (new Date(m[1] + "T00:00:00Z") < cutoff) toDelete.push(f.name);
+    // Daily snapshot: backup-YYYY-MM-DD.json[.gz]
+    const daily = f.name.match(/^backup-(\d{4}-\d{2}-\d{2})\.json(?:\.gz)?$/);
+    if (daily) {
+      if (new Date(daily[1] + "T00:00:00Z") < cutoff) toDelete.push(f.name);
+      continue;
+    }
+    // Intraday snapshot: backup-YYYY-MM-DDTHHMM.json.gz — shorter retention
+    const intra = f.name.match(/^backup-(\d{4}-\d{2}-\d{2})T\d{4}\.json\.gz$/);
+    if (intra) {
+      if (new Date(intra[1] + "T00:00:00Z") < intradayCutoff) toDelete.push(f.name);
+      continue;
+    }
   }
 
   if (toDelete.length) {
@@ -121,12 +150,18 @@ async function pruneOldBackups(): Promise<string[]> {
 
 serve(async (_req: Request) => {
   const started = Date.now();
+  // Intraday runs (frequent cron) pass {intraday:true} so the file is timestamped and never overwrites
+  // the daily snapshot or a prior intraday one. Missing/empty body → daily mode.
+  let intraday = false;
+  try { const body = await _req.json(); intraday = !!body?.intraday; } catch { /* no/invalid body → daily */ }
   try {
     const snapshot: Record<string, unknown[]> = {};
     const rowCounts: Record<string, number> = {};
+    const skipped: string[] = [];
 
     for (const table of TABLES) {
       const rows = await dumpTable(table);
+      if (rows === null) { skipped.push(table); continue; }
       snapshot[table] = rows;
       rowCounts[table] = rows.length;
     }
@@ -138,6 +173,7 @@ serve(async (_req: Request) => {
         created_at: new Date().toISOString(),
         retention_days: RETENTION_DAYS,
         row_counts: rowCounts,
+        skipped_tables: skipped,
         total_rows: Object.values(rowCounts).reduce((a, b) => a + b, 0),
       },
       data: snapshot,
@@ -146,8 +182,12 @@ serve(async (_req: Request) => {
     const json = JSON.stringify(payload);
     const gz = await gzip(json);
 
-    const date = new Date().toISOString().split("T")[0];
-    const filename = `backup-${date}.json.gz`;
+    const iso = new Date().toISOString();        // 2026-05-29T14:30:05.123Z
+    const date = iso.split("T")[0];              // 2026-05-29
+    // Daily file is overwritten each day; intraday files are timestamped (HHMM) so each run is distinct.
+    const filename = intraday
+      ? `backup-${date}T${iso.slice(11, 16).replace(":", "")}.json.gz`
+      : `backup-${date}.json.gz`;
 
     const { error: upErr } = await supabase.storage.from(BUCKET).upload(filename, gz, {
       contentType: "application/gzip",
@@ -160,10 +200,12 @@ serve(async (_req: Request) => {
     return new Response(
       JSON.stringify({
         ok: true,
+        mode: intraday ? "intraday" : "daily",
         file: filename,
         bytes_uncompressed: json.length,
         bytes_compressed: gz.byteLength,
         total_rows: payload._meta.total_rows,
+        skipped_tables: skipped,
         pruned,
         duration_ms: Date.now() - started,
       }),
