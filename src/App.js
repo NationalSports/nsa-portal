@@ -1140,6 +1140,51 @@ const _dbSaveSOInner = async (so) => {
         }
       }
     }
+    // Duplicate-PO guard: drop any newly-introduced po_id whose size signature exactly matches
+    // a clean (un-received/un-billed/un-shipped) PO line already on the same item. Catches the
+    // "two creates raced against a stale open-size view" pattern (SO-1080, SO-1059, SO-1101)
+    // where the counter advanced (so the new po_id differs) but the units were already covered.
+    if(items&&items.length){
+      const _dbPoIdSet=new Set((oldItemIds.length?(await(async()=>{try{const r=await supabase.from('so_item_po_lines').select('po_id').in('so_item_id',oldItemIds);return(r.data||[]).map(x=>x.po_id).filter(Boolean)}catch{return[]}})()):[]));
+      const _poMeta=new Set(['po_id','vendor','status','received','shipments','cancelled','created_at','expected_date','memo','po_type','deco_vendor','deco_type','unit_cost','drop_ship','billed','tracking_numbers','preexisting','batch_queue_id','batch_po_number','notes']);
+      const _sizeSig=pl=>{const ks=Object.keys(pl||{}).filter(k=>!k.startsWith('_')&&!_poMeta.has(k)&&typeof pl[k]==='number'&&pl[k]>0).sort();return ks.map(k=>k+':'+pl[k]).join('|')};
+      const _isClean=pl=>{
+        if(pl.status&&pl.status!=='waiting'&&pl.status!=='queued')return false;
+        const anyPos=o=>o&&Object.values(o).some(v=>typeof v==='number'&&v>0);
+        if(anyPos(pl.received)||anyPos(pl.billed)||anyPos(pl.cancelled))return false;
+        if(Array.isArray(pl.shipments)&&pl.shipments.length>0)return false;
+        if(Array.isArray(pl.tracking_numbers)&&pl.tracking_numbers.length>0)return false;
+        return true;
+      };
+      let _dupesDropped=0;const _droppedSummary=[];
+      items.forEach((it,ii)=>{
+        const pls=Array.isArray(it.po_lines)?it.po_lines:[];if(pls.length<2)return;
+        const bySig={};
+        pls.forEach((pl,pi)=>{const sig=_sizeSig(pl);if(!sig)return;(bySig[sig]=bySig[sig]||[]).push({pl,pi})});
+        const drop=new Set();
+        Object.values(bySig).forEach(group=>{
+          if(group.length<2)return;
+          const clean=group.filter(g=>_isClean(g.pl));
+          if(clean.length<2)return;
+          const dbKnown=clean.filter(g=>g.pl.po_id&&_dbPoIdSet.has(g.pl.po_id));
+          const newOnes=clean.filter(g=>!g.pl.po_id||!_dbPoIdSet.has(g.pl.po_id));
+          if(dbKnown.length>=1&&newOnes.length>=1){
+            newOnes.forEach(g=>drop.add(g.pi));
+          }else if(dbKnown.length===0&&newOnes.length>=2){
+            // Both new in this save — keep the lowest-sorted po_id, drop the rest.
+            newOnes.slice().sort((a,b)=>String(a.pl.po_id||'').localeCompare(String(b.pl.po_id||''))).slice(1).forEach(g=>drop.add(g.pi));
+          }
+        });
+        if(drop.size){
+          drop.forEach(pi=>_droppedSummary.push((pls[pi]&&pls[pi].po_id)||'?'));
+          items[ii]={...it,po_lines:pls.filter((_,pi)=>!drop.has(pi))};
+          _dupesDropped+=drop.size;
+        }
+      });
+      if(_dupesDropped){
+        console.warn('[DB] PO dedup: dropped',_dupesDropped,'duplicate PO line(s) on',so.id,'-',_droppedSummary.join(', '));
+      }
+    }
     // Pick line preservation: same hazard as PO lines — picks are deleted and rebuilt from in-memory items on every
     // save, so a stale/timed-out so_item_pick_lines load (or picks another user added) would be silently wiped.
     // Re-inject any pick the client never deliberately deleted; only intentional removals stick.
