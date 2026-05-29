@@ -3944,6 +3944,9 @@ export default function App(){
   const _bootScanRanRef=React.useRef(false);
   React.useEffect(()=>{
     if(_bootScanRanRef.current)return;
+    // Wait for the initial cloud load to finish before scanning — otherwise the `issues` list below
+    // isn't authoritative yet and we'd re-file/re-alert issues that were already logged or resolved.
+    if(!_dbLoadSuccess.current)return;
     if(!soHistory||Object.keys(soHistory).length===0)return;
     if(!sos||sos.length===0)return;
     _bootScanRanRef.current=true;
@@ -3957,7 +3960,9 @@ export default function App(){
       const lastGood=snaps.find(s=>(s?.snapshot?.items||[]).length>0);
       if(!lastGood)return;
       const lastGoodCount=lastGood.snapshot.items.length;
-      if(liveCount<lastGoodCount){flagged.push({soId,liveCount,lastGoodCount,lastGoodTs:lastGood.ts})}
+      // Only flag a *significant* loss — the SO wiped to zero, or lost more than half its items.
+      // Reps routinely delete a line or two as normal workflow, so small drops are not data loss.
+      if(liveCount<lastGoodCount&&(liveCount===0||(lastGoodCount-liveCount)>lastGoodCount/2)){flagged.push({soId,liveCount,lastGoodCount,lastGoodTs:lastGood.ts})}
     });
     // Admin-only: reps and other users should never see this internal data-integrity alert.
     const _isAdminRole=cu?.role==='admin'||cu?.role==='super_admin';
@@ -3982,6 +3987,8 @@ export default function App(){
   const _estBootScanRanRef=React.useRef(false);
   React.useEffect(()=>{
     if(_estBootScanRanRef.current)return;
+    // Same load gate as the SO scan — don't scan until the cloud `issues` list is authoritative.
+    if(!_dbLoadSuccess.current)return;
     if(!estHistory||Object.keys(estHistory).length===0)return;
     if(!ests||ests.length===0)return;
     _estBootScanRanRef.current=true;
@@ -3993,7 +4000,8 @@ export default function App(){
       const lastGood=snaps.find(s=>(s?.snapshot?.items||[]).length>0);
       if(!lastGood)return;
       const lastGoodCount=lastGood.snapshot.items.length;
-      if(liveCount<lastGoodCount){flagged.push({estId,liveCount,lastGoodCount,lastGoodTs:lastGood.ts})}
+      // Only flag a wipe to zero or losing more than half the items — routine line deletions are normal.
+      if(liveCount<lastGoodCount&&(liveCount===0||(lastGoodCount-liveCount)>lastGoodCount/2)){flagged.push({estId,liveCount,lastGoodCount,lastGoodTs:lastGood.ts})}
     });
     const _isAdminRole=cu?.role==='admin'||cu?.role==='super_admin';
     if(flagged.length&&_isAdminRole){
