@@ -2,6 +2,7 @@
 import React, { useState, useMemo } from 'react';
 import { auTierDisc, dP, calcOrderTotals } from './pricing';
 import { isJobReady } from './businessLogic';
+import { SZ_ORD } from './constants';
 
 // ─── Inline Icon (same SVG paths as main app) ───
 const MIcon=({name,size=20})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,menu:<><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></>,back:<polyline points="15 18 9 12 15 6"/>,plus:<path d="M12 5v14M5 12h14"/>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,clock:<><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,scan:<><path d="M3 7V5a2 2 0 012-2h2"/><path d="M17 3h2a2 2 0 012 2v2"/><path d="M21 17v2a2 2 0 01-2 2h-2"/><path d="M7 21H5a2 2 0 01-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/></>,phone:<><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></>,monitor:<><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
@@ -34,7 +35,7 @@ const prodLabel=(j)=>PROD_LABELS[j.prod_status]||(j.prod_status||'pending').repl
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,nextEstId,nf,onMsg}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,nextEstId,nf,onMsg,invPOs=[],onPullIF,onReceiveSOPO,onReceiveInvPO}){
   const[tab,setTab]=useState('home');
   const[q,setQ]=useState('');
   const[showSearch,setShowSearch]=useState(false);
@@ -65,6 +66,14 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[newEstEditItem,setNewEstEditItem]=useState(null); // index of item being edited for sizes
   // Messages filter
   const[msgFilter,setMsgFilter]=useState('for_me');
+  // ─── Warehouse state ───
+  const[whTab,setWhTab]=useState('if'); // if | pos
+  const[whDetail,setWhDetail]=useState(null); // null | {kind:'if',soId,pickId} | {kind:'po',key}
+  const[whPullQty,setWhPullQty]=useState({}); // {itemIdx:{size:qty}}
+  const[whRcvQty,setWhRcvQty]=useState({}); // {lineIdx:{size:qty}}
+  const[whPoFilter,setWhPoFilter]=useState('open'); // open | all
+  const[whQ,setWhQ]=useState('');
+  const[whSaving,setWhSaving]=useState(false);
   // Send estimate modal
   const[sendEstModal,setSendEstModal]=useState(null); // estimate object or null
   // Compose message
@@ -1015,6 +1024,247 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     </div>;
   };
 
+  // ═══════════════════════════════════════════
+  // WAREHOUSE — full IF pull + PO check-in/view
+  // ═══════════════════════════════════════════
+  // Extract real size keys (numeric) from a pick/po line, ordered by SZ_ORD.
+  const whSizes=(obj)=>Object.keys(obj||{}).filter(k=>SZ_ORD.includes(k)&&typeof obj[k]==='number').sort((a,b)=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b));
+  const whProd=(it)=>prod.find(x=>x.id===it?.product_id)||prod.find(x=>x.sku===it?.sku)||null;
+
+  // Open IFs (pick groups not yet fully pulled) across active orders, grouped by SO + pick_id.
+  const buildOpenIFs=()=>{
+    const out=[];
+    sos.forEach(so=>{
+      if(['completed','shipped','cancelled'].includes(so.status||''))return;
+      const items=safeItems(so);const groups={};
+      items.forEach((it,ii)=>{(it.pick_lines||[]).forEach(pk=>{
+        if((pk.status||'pick')!=='pulled'){
+          const g=groups[pk.pick_id]||(groups[pk.pick_id]={pickId:pk.pick_id,shipDest:pk.ship_dest||'in_house',decoVendor:pk.deco_vendor||'',memo:pk.memo||'',lines:[]});
+          g.lines.push({itemIdx:ii,item:it,pick:pk});
+        }
+      })});
+      Object.values(groups).forEach(g=>{
+        const totalQty=g.lines.reduce((a,l)=>a+whSizes(l.pick).reduce((b,sz)=>b+(l.pick[sz]||0),0),0);
+        out.push({so,soId:so.id,cust:custObj(so.customer_id),...g,totalQty});
+      });
+    });
+    return out.sort((a,b)=>(a.so.expected_date||'9').localeCompare(b.so.expected_date||'9'));
+  };
+
+  // All POs — SO-attached blank POs (grouped by SO + po_id) plus standalone inventory POs.
+  const buildPOs=()=>{
+    const map={};
+    sos.forEach(so=>{const cc=custObj(so.customer_id);safeItems(so).forEach((it,ii)=>{(it.po_lines||[]).forEach((po,pli)=>{
+      const pid=po.po_id||'PO';const key='so|'+so.id+'|'+pid+'|'+(po.vendor||'');
+      const e=map[key]||(map[key]={key,kind:'so',poId:pid,soId:so.id,cust:cc,vendor:po.vendor||'',lines:[],created_at:po.created_at||so.created_at});
+      const sizes={};let ordered=0,received=0,open=0;
+      whSizes(po).forEach(sz=>{const ord=po[sz]||0;const rcv=(po.received||{})[sz]||0;const can=(po.cancelled||{})[sz]||0;const o=Math.max(0,ord-rcv-can);sizes[sz]={ord,rcv,open:o};ordered+=ord;received+=rcv;open+=o});
+      e.lines.push({itemIdx:ii,poLineIdx:pli,item:it,sizes,ordered,received,open});
+    })})});
+    (invPOs||[]).forEach(po=>{
+      const lines=(po.items||[]).map((it,idx)=>{const sizes={};let ordered=0,received=0,open=0;Object.keys(it.sizes||{}).forEach(sz=>{const ord=it.sizes[sz]||0;const rcv=(it.received||{})[sz]||0;const o=Math.max(0,ord-rcv);sizes[sz]={ord,rcv,open:o};ordered+=ord;received+=rcv;open+=o});return{idx,item:it,sizes,ordered,received,open}});
+      map['inv|'+po.id]={key:'inv|'+po.id,kind:'inv',poId:po.po_number,invId:po.id,vendor:po.vendor_name||'',cust:null,lines,created_at:po.created_at,_status:po.status};
+    });
+    return Object.values(map).map(e=>{
+      const totOpen=e.lines.reduce((a,l)=>a+l.open,0),totRcv=e.lines.reduce((a,l)=>a+l.received,0),totOrd=e.lines.reduce((a,l)=>a+l.ordered,0);
+      const status=e.kind==='inv'?(e._status==='received'?'received':totRcv>0?'partial':'waiting'):(totOpen<=0&&totRcv>0?'received':totRcv>0?'partial':'waiting');
+      return{...e,totOpen,totRcv,totOrd,status};
+    }).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+  };
+
+  const openIF=(grp)=>{const init={};grp.lines.forEach(l=>{const m={};whSizes(l.pick).forEach(sz=>{m[sz]=l.pick[sz]||0});init[l.itemIdx]=m});setWhPullQty(init);setWhDetail({kind:'if',soId:grp.soId,pickId:grp.pickId})};
+  const openPO=(po)=>{const init={};po.lines.forEach((l,i)=>{const m={};Object.entries(l.sizes).forEach(([sz,s])=>{if(s.open>0)m[sz]=s.open});init[i]=m});setWhRcvQty(init);setWhDetail({kind:'po',key:po.key})};
+
+  const confirmPull=(grp)=>{
+    if(whSaving)return;
+    const map={};Object.entries(whPullQty).forEach(([ii,m])=>{const mm={};Object.entries(m||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0)mm[sz]=n});if(Object.keys(mm).length)map[ii]=mm});
+    const total=Object.values(map).reduce((a,m)=>a+Object.values(m).reduce((b,v)=>b+v,0),0);
+    if(total===0){if(nf)nf('Enter at least one quantity to pull','error');return}
+    setWhSaving(true);
+    try{onPullIF&&onPullIF(grp.soId,grp.pickId,map)}finally{setWhSaving(false);setWhDetail(null);setWhPullQty({})}
+  };
+  const confirmReceive=(po)=>{
+    if(whSaving)return;let total=0;
+    if(po.kind==='so'){
+      const lines=po.lines.map((l,i)=>{const rcv={};Object.entries(whRcvQty[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0){rcv[sz]=n;total+=n}});return{itemIdx:l.itemIdx,poLineIdx:l.poLineIdx,rcv}}).filter(l=>Object.keys(l.rcv).length);
+      if(total===0){if(nf)nf('Enter at least one quantity to receive','error');return}
+      setWhSaving(true);try{onReceiveSOPO&&onReceiveSOPO(po.soId,lines)}finally{setWhSaving(false);setWhDetail(null);setWhRcvQty({})}
+    }else{
+      const receivedMap={};po.lines.forEach((l,i)=>{const m={};Object.entries(whRcvQty[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0){m[sz]=n;total+=n}});if(Object.keys(m).length)receivedMap[l.idx]=m});
+      if(total===0){if(nf)nf('Enter at least one quantity to receive','error');return}
+      setWhSaving(true);try{onReceiveInvPO&&onReceiveInvPO(po.invId,receivedMap)}finally{setWhSaving(false);setWhDetail(null);setWhRcvQty({})}
+    }
+  };
+
+  const PO_BADGE={waiting:{bg:'#fef3c7',c:'#92400e',l:'Waiting'},partial:{bg:'#dbeafe',c:'#1e40af',l:'Partial'},received:{bg:'#dcfce7',c:'#166534',l:'Received'}};
+  const whNumInput=(val,max,onCh)=>{const over=val>max;return<input type="number" inputMode="numeric" min={0} max={max} value={val} onChange={e=>{const v=Math.max(0,parseInt(e.target.value)||0);onCh(v)}} style={{width:48,textAlign:'center',fontSize:16,fontWeight:800,border:'1px solid '+(over?'#dc2626':'#cbd5e1'),borderRadius:6,padding:'6px 0',color:over?'#dc2626':'#0f172a',boxSizing:'border-box'}}/>};
+
+  const renderWarehouse=()=>{
+    const setSubPage=setMoreSubPage;
+    const openIFs=buildOpenIFs();
+    const pos=buildPOs();
+
+    // ─── IF PULL DETAIL ───
+    if(whDetail?.kind==='if'){
+      const grp=openIFs.find(g=>g.soId===whDetail.soId&&g.pickId===whDetail.pickId);
+      if(grp){
+        const shipBadge=grp.shipDest!=='in_house'?(grp.shipDest==='ship_customer'?{t:'📦 Ship to Customer',bg:'#eff6ff',c:'#1e40af'}:{t:'🚚 Ship to Deco'+(grp.decoVendor?' — '+grp.decoVendor:''),bg:'#fffbeb',c:'#92400e'}):null;
+        const grandPull=Object.values(whPullQty).reduce((a,m)=>a+Object.values(m||{}).reduce((b,v)=>b+(parseInt(v)||0),0),0);
+        return<div className="mp-detail">
+          <div className="mp-detail-header">
+            <button className="mp-back-btn" onClick={()=>{setWhDetail(null);setWhPullQty({})}}><MIcon name="back" size={22}/></button>
+            <div style={{flex:1}}><div className="mp-detail-id">{grp.pickId}</div><div className="mp-detail-sub">{grp.soId} · {grp.cust?.name||grp.cust?.alpha_tag||'—'}</div></div>
+            <span style={{fontSize:11,background:'#fef3c7',color:'#92400e',padding:'3px 10px',borderRadius:12,fontWeight:700}}>To Pull</span>
+          </div>
+          <div className="mp-detail-body">
+            {shipBadge&&<div style={{padding:'10px 12px',marginBottom:12,borderRadius:10,background:shipBadge.bg,color:shipBadge.c,fontWeight:700,fontSize:13}}>{shipBadge.t}</div>}
+            {grp.memo&&<div className="mp-memo">{grp.memo}</div>}
+            <div className="mp-section-title">Items to Pull ({grp.lines.length})</div>
+            {grp.lines.map(l=>{const p=whProd(l.item);const szs=whSizes(l.pick);
+              return<div key={l.itemIdx} className="mp-item-card">
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+                  <div style={{minWidth:0}}><div style={{fontWeight:700,fontSize:14}}>{l.item.name||l.item.sku}</div>
+                  <div style={{fontSize:12,color:'#64748b'}}>{l.item.sku}{l.item.color?' · '+l.item.color:''}</div></div>
+                </div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                  {szs.map(sz=>{const planned=l.pick[sz]||0;const stock=p?._inv?.[sz]||0;const v=(whPullQty[l.itemIdx]||{})[sz]??planned;
+                    return<div key={sz} style={{textAlign:'center',minWidth:62,padding:'6px',borderRadius:8,border:'1px solid #e2e8f0',background:'#f8fafc'}}>
+                      <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:2}}>{sz}</div>
+                      <div style={{fontSize:9,color:'#94a3b8',marginBottom:4}}>need {planned}</div>
+                      {whNumInput(v,planned,nv=>setWhPullQty(prev=>({...prev,[l.itemIdx]:{...(prev[l.itemIdx]||{}),[sz]:nv}})))}
+                      <div style={{fontSize:9,color:stock<planned?'#dc2626':'#94a3b8',marginTop:3}}>{stock} in stock</div>
+                    </div>})}
+                </div>
+              </div>})}
+          </div>
+          <div style={{position:'sticky',bottom:0,background:'white',borderTop:'1px solid #e2e8f0',padding:'12px 16px',paddingBottom:'max(12px, env(safe-area-inset-bottom))'}}>
+            <button disabled={whSaving||grandPull===0} onClick={()=>confirmPull(grp)} style={{width:'100%',padding:'14px',borderRadius:12,border:'none',background:grandPull>0&&!whSaving?'#166534':'#cbd5e1',color:'white',fontWeight:800,fontSize:15,cursor:grandPull>0&&!whSaving?'pointer':'default',minHeight:48}}>
+              {whSaving?'Saving…':'✓ Mark Pulled ('+grandPull+' units)'}
+            </button>
+          </div>
+        </div>;
+      }
+    }
+
+    // ─── PO RECEIVE / VIEW DETAIL ───
+    if(whDetail?.kind==='po'){
+      const po=pos.find(p=>p.key===whDetail.key);
+      if(po){
+        const b=PO_BADGE[po.status]||PO_BADGE.waiting;
+        const grandRcv=Object.values(whRcvQty).reduce((a,m)=>a+Object.values(m||{}).reduce((s,v)=>s+(parseInt(v)||0),0),0);
+        const done=po.status==='received';
+        return<div className="mp-detail">
+          <div className="mp-detail-header">
+            <button className="mp-back-btn" onClick={()=>{setWhDetail(null);setWhRcvQty({})}}><MIcon name="back" size={22}/></button>
+            <div style={{flex:1}}><div className="mp-detail-id">{po.poId}</div><div className="mp-detail-sub">{po.vendor||'—'}{po.kind==='so'?' · '+po.soId+(po.cust?' · '+po.cust.name:''):' · Inventory PO'}</div></div>
+            <span style={{fontSize:11,background:b.bg,color:b.c,padding:'3px 10px',borderRadius:12,fontWeight:700}}>{b.l}</span>
+          </div>
+          <div className="mp-detail-body">
+            <div className="mp-info-grid">
+              <div className="mp-info-item"><div className="mp-info-label">Ordered</div><div className="mp-info-val">{po.totOrd}</div></div>
+              <div className="mp-info-item"><div className="mp-info-label">Received</div><div className="mp-info-val" style={{color:'#16a34a'}}>{po.totRcv}</div></div>
+              <div className="mp-info-item"><div className="mp-info-label">Open</div><div className="mp-info-val" style={{color:po.totOpen>0?'#d97706':'#94a3b8'}}>{po.totOpen}</div></div>
+              <div className="mp-info-item"><div className="mp-info-label">Type</div><div className="mp-info-val">{po.kind==='inv'?'Inventory':'Order PO'}</div></div>
+            </div>
+            <div className="mp-section-title">Items ({po.lines.length}){po.totOpen>0?' — enter qty received':''}</div>
+            {po.lines.map((l,i)=>{const item=l.item;const szEntries=Object.entries(l.sizes).filter(([,s])=>s.ord>0);
+              return<div key={i} className="mp-item-card">
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+                  <div style={{minWidth:0}}><div style={{fontWeight:700,fontSize:14}}>{item.name||item.sku}</div>
+                  <div style={{fontSize:12,color:'#64748b'}}>{item.sku}{item.color?' · '+item.color:''}</div></div>
+                </div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                  {szEntries.map(([sz,s])=>{const v=(whRcvQty[i]||{})[sz]??(s.open>0?s.open:0);
+                    return<div key={sz} style={{textAlign:'center',minWidth:62,padding:'6px',borderRadius:8,border:s.open>0?'1px solid #e2e8f0':'1px solid #f1f5f9',background:s.open>0?'#f8fafc':'#fafafa'}}>
+                      <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:2}}>{sz}</div>
+                      <div style={{fontSize:9,color:'#94a3b8',marginBottom:4}}>{s.rcv}/{s.ord} rcvd</div>
+                      {s.open>0?whNumInput(v,s.open,nv=>setWhRcvQty(prev=>({...prev,[i]:{...(prev[i]||{}),[sz]:nv}}))):<div style={{fontSize:16,fontWeight:800,color:'#16a34a',padding:'6px 0'}}>✓</div>}
+                    </div>})}
+                </div>
+              </div>})}
+          </div>
+          {!done&&<div style={{position:'sticky',bottom:0,background:'white',borderTop:'1px solid #e2e8f0',padding:'12px 16px',paddingBottom:'max(12px, env(safe-area-inset-bottom))'}}>
+            <button disabled={whSaving||grandRcv===0} onClick={()=>confirmReceive(po)} style={{width:'100%',padding:'14px',borderRadius:12,border:'none',background:grandRcv>0&&!whSaving?'#1e40af':'#cbd5e1',color:'white',fontWeight:800,fontSize:15,cursor:grandRcv>0&&!whSaving?'pointer':'default',minHeight:48}}>
+              {whSaving?'Saving…':'✓ Receive ('+grandRcv+' units)'}
+            </button>
+          </div>}
+        </div>;
+      }
+    }
+
+    // ─── WAREHOUSE LIST (IFs + POs) ───
+    const openPoCount=pos.filter(p=>p.status!=='received').length;
+    let poList=pos;
+    if(whPoFilter==='open')poList=poList.filter(p=>p.status!=='received');
+    if(whQ.length>=2){const s=whQ.toLowerCase();poList=poList.filter(p=>((p.poId||'')+' '+(p.vendor||'')+' '+(p.soId||'')+' '+(p.cust?.name||'')+' '+p.lines.map(l=>(l.item?.sku||'')+' '+(l.item?.name||'')).join(' ')).toLowerCase().includes(s))}
+    return<div className="mp-page">
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+        <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
+        <div className="mp-page-title" style={{margin:0}}>Warehouse</div>
+      </div>
+      {/* Segmented tabs */}
+      <div style={{display:'flex',gap:6,background:'#f1f5f9',borderRadius:10,padding:4,marginBottom:12}}>
+        {[['if','Pull IFs',openIFs.length],['pos','Check In POs',openPoCount]].map(([k,l,n])=>
+          <button key={k} onClick={()=>setWhTab(k)} style={{flex:1,padding:'10px 8px',borderRadius:8,border:'none',background:whTab===k?'white':'transparent',color:whTab===k?'#0f172a':'#64748b',fontWeight:700,fontSize:13,cursor:'pointer',boxShadow:whTab===k?'0 1px 2px rgba(0,0,0,0.1)':'none'}}>{l}{n>0?' ('+n+')':''}</button>)}
+      </div>
+
+      {whTab==='if'&&<>
+        {openIFs.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40,fontSize:14}}>No IFs waiting to pull 🎉</div>}
+        {openIFs.map(g=><div key={g.soId+g.pickId} className="mp-list-card" onClick={()=>openIF(g)}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <span style={{fontWeight:800,color:'#d97706',fontSize:14}}>{g.pickId}</span>
+                <span style={{fontSize:11,color:'#1e40af',fontWeight:700}}>{g.soId}</span>
+                {g.shipDest!=='in_house'&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:6,background:g.shipDest==='ship_customer'?'#dbeafe':'#ede9fe',color:g.shipDest==='ship_customer'?'#1e40af':'#6d28d9',fontWeight:700}}>{g.shipDest==='ship_customer'?'→ Customer':'→ Deco'}</span>}
+              </div>
+              <div style={{fontSize:13,color:'#334155',marginTop:2}}>{g.cust?.name||g.cust?.alpha_tag||'—'}</div>
+              <div style={{fontSize:11,color:'#94a3b8',marginTop:1}}>{g.lines.length} item{g.lines.length!==1?'s':''} · {g.lines.map(l=>l.item.sku).slice(0,2).join(', ')}{g.lines.length>2?'…':''}</div>
+            </div>
+            <div style={{textAlign:'right',flexShrink:0,marginLeft:8}}>
+              <div style={{fontSize:18,fontWeight:800,color:'#d97706'}}>{g.totalQty}</div>
+              <div style={{fontSize:10,color:'#94a3b8'}}>to pull</div>
+              {g.so.expected_date&&<div style={{fontSize:11,fontWeight:700,marginTop:2,color:(()=>{const d=Math.ceil((new Date(g.so.expected_date)-new Date())/86400000);return d<=3?'#dc2626':d<=7?'#d97706':'#64748b'})()}}>{fmtDate(g.so.expected_date)}</div>}
+            </div>
+          </div>
+        </div>)}
+      </>}
+
+      {whTab==='pos'&&<>
+        <div className="mp-search-inline" style={{marginBottom:8}}>
+          <MIcon name="search" size={16}/>
+          <input placeholder="Search PO #, vendor, SO, SKU…" value={whQ} onChange={e=>setWhQ(e.target.value)} className="mp-search-input"/>
+          {whQ&&<button onClick={()=>setWhQ('')} className="mp-clear-btn"><MIcon name="x" size={14}/></button>}
+        </div>
+        <div className="mp-filter-row">
+          {[['open','Open'],['all','All']].map(([k,l])=><button key={k} className={`mp-filter-btn${whPoFilter===k?' active':''}`} onClick={()=>setWhPoFilter(k)}>{l}</button>)}
+        </div>
+        <div className="mp-count">{poList.length} PO{poList.length!==1?'s':''}</div>
+        {poList.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40,fontSize:14}}>No POs {whPoFilter==='open'?'awaiting check-in':'found'}</div>}
+        {poList.slice(0,150).map(po=>{const b=PO_BADGE[po.status]||PO_BADGE.waiting;
+          return<div key={po.key} className="mp-list-card" onClick={()=>openPO(po)}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{po.poId}</span>
+                  <span style={{fontSize:11,background:b.bg,color:b.c,padding:'2px 8px',borderRadius:10,fontWeight:700}}>{b.l}</span>
+                  {po.kind==='inv'&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:6,background:'#f1f5f9',color:'#64748b',fontWeight:700}}>INV</span>}
+                </div>
+                <div style={{fontSize:13,color:'#334155',marginTop:2}}>{po.vendor||'—'}</div>
+                <div style={{fontSize:11,color:'#94a3b8',marginTop:1}}>{po.kind==='so'?po.soId+(po.cust?' · '+po.cust.name:''):po.lines.length+' item'+(po.lines.length!==1?'s':'')}</div>
+              </div>
+              <div style={{textAlign:'right',flexShrink:0,marginLeft:8}}>
+                <div style={{fontSize:16,fontWeight:800,color:po.totOpen>0?'#d97706':'#16a34a'}}>{po.totRcv}/{po.totOrd}</div>
+                <div style={{fontSize:10,color:'#94a3b8'}}>received</div>
+                {po.totOpen>0&&<div style={{fontSize:11,fontWeight:700,color:'#d97706',marginTop:2}}>{po.totOpen} open</div>}
+              </div>
+            </div>
+          </div>})}
+        {poList.length>150&&<div style={{textAlign:'center',color:'#94a3b8',padding:12,fontSize:12}}>Showing first 150 of {poList.length}. Search to narrow.</div>}
+      </>}
+    </div>;
+  };
+
   // ─── MORE TAB (hamburger) ───
   const renderMore=()=>{
     const subPage=moreSubPage;const setSubPage=setMoreSubPage;
@@ -1230,37 +1480,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         </div>)}
       </div>;
     }
-    if(subPage==='warehouse'){
-      const whOrders=sos.filter(s=>{
-        if(['completed','shipped','cancelled'].includes(s.status||''))return false;
-        const items=safeItems(s);return items.some(it=>(it.pick_lines||[]).some(pk=>pk.status==='pick'));
-      }).sort((a,b)=>(a.expected_date||'9').localeCompare(b.expected_date||'9'));
-      return<div className="mp-page">
-        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
-          <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
-          <div className="mp-page-title" style={{margin:0}}>Warehouse ({whOrders.length})</div>
-        </div>
-        {whOrders.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40,fontSize:14}}>No orders pending pick</div>}
-        {whOrders.map(so=>{const cc=custObj(so.customer_id);const totalQty=safeItems(so).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((s,v)=>s+v,0),0);
-          const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
-          const pickCount=safeItems(so).reduce((a,it)=>a+(it.pick_lines||[]).filter(pk=>pk.status==='pick').length,0);
-          return<div key={so.id} className="mp-list-card" onClick={()=>setDetail({type:'order',data:so})}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{display:'flex',gap:8,alignItems:'center'}}>
-                  <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{so.id}</span>
-                  <span style={{fontSize:11,background:'#fef3c7',color:'#92400e',padding:'2px 8px',borderRadius:10,fontWeight:700}}>{pickCount} to pull</span>
-                </div>
-                <div style={{fontSize:13,color:'#334155',marginTop:2}}>{cc?.name||cc?.alpha_tag||'—'}</div>
-              </div>
-              <div style={{textAlign:'right',flexShrink:0}}>
-                <div style={{fontSize:12,color:'#64748b'}}>{totalQty} pcs</div>
-                {daysOut!=null&&<div style={{fontSize:11,fontWeight:700,color:daysOut<=3?'#dc2626':daysOut<=7?'#d97706':'#64748b'}}>{daysOut<=0?'DUE TODAY':daysOut+'d out'}</div>}
-              </div>
-            </div>
-          </div>})}
-      </div>;
-    }
+    if(subPage==='warehouse')return renderWarehouse();
     if(subPage==='reports'){
       const now=new Date();
       const myCustIds=new Set(cust.filter(c=>c.primary_rep_id===cu.id).map(c=>c.id));
@@ -1553,6 +1773,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       {id:'inventory',label:'Inventory',icon:'warehouse',sub:true},
       {id:'jobs',label:'Jobs',icon:'grid',sub:true},
       {id:'production',label:'Production',icon:'package',sub:true},
+      {id:'warehouse',label:'Warehouse',icon:'box',sub:true},
       {id:'reports',label:'Reports',icon:'dollar',sub:true},
     ];
     return<>
