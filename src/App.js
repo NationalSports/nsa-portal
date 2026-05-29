@@ -14430,6 +14430,67 @@ export default function App(){
     checkPickups();
   },[sos]); // eslint-disable-line react-hooks/exhaustive-deps
   const addWhAction=(action)=>{setWhRecentActions(prev=>[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,500))};
+  // ─── Mobile warehouse mutations — parity with desktop IF-pull / PO-receive side effects ───
+  const _mobRecalcJobs=(so,items)=>safeJobs(so).map(j=>{
+    let total=0,fulfilled=0;
+    (j.items||[]).forEach(gi=>{const it=items[gi.item_idx];if(!it)return;
+      Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
+        total+=v;
+        const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+        const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+        fulfilled+=Math.min(v,pQ+rQ);
+      });
+    });
+    const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
+    if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
+    return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
+  });
+  // Pull an IF (pick group) from mobile. pullMap: {itemIdx:{size:qty}} pulled this round.
+  const mobilePullIF=(soId,pickId,pullMap)=>{
+    const so=sos.find(s=>s.id===soId);if(!so)return;
+    const items=safeItems(so);
+    const updatedItems=items.map((it,ii)=>{
+      const qtys=pullMap[ii];if(!qtys)return it;
+      const picks=it.pick_lines||[];let changed=false;
+      const newPicks=picks.map(pk=>{
+        if(pk.pick_id===pickId&&pk.status!=='pulled'){changed=true;const u={...pk,status:'pulled',pulled_at:new Date().toLocaleString()};Object.keys(qtys).forEach(sz=>{u[sz]=qtys[sz]||0});return u}
+        return pk;
+      });
+      return changed?{...it,pick_lines:newPicks}:it;
+    });
+    const updatedSO={...so,items:updatedItems,jobs:_mobRecalcJobs(so,updatedItems),updated_at:new Date().toLocaleString()};
+    // Deduct warehouse inventory for what was pulled
+    const prodPatches={};
+    Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const p=prod.find(x=>x.id===it.product_id)||prod.find(x=>x.sku===it.sku);if(!p)return;const newInv={...(prodPatches[p.id]||p._inv||{})};Object.entries(qtys).forEach(([sz,v])=>{if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});prodPatches[p.id]=newInv});
+    if(Object.keys(prodPatches).length>0)setProd(pp=>pp.map(x=>prodPatches[x.id]?{...x,_inv:prodPatches[x.id]}:x));
+    savSO(updatedSO,{skipMerge:true});
+    // Atomic per-line DB sync for cross-tab consistency (mirrors desktop pull)
+    Object.entries(pullMap).forEach(([ii,qtys])=>{const pq={};Object.keys(qtys).forEach(sz=>{pq[sz]=qtys[sz]||0});_dbUpdatePickLineStatus(soId,parseInt(ii),pickId,'pulled',pq)});
+    const cc=cust.find(c=>c.id===so.customer_id);let grand=0;
+    Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const szStr=Object.entries(qtys).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');const qty=Object.values(qtys).reduce((a,v)=>a+(v||0),0);grand+=qty;if(qty>0)addWhAction({type:'pulled',pickId,soId,customer:cc?.name||'',sku:it.sku,name:it.name,color:it.color,productId:it.product_id,sizes:szStr,qty,by:cu?.id||'warehouse'})});
+    nf('✅ '+pickId+' pulled — '+grand+' units');
+  };
+  // Receive (check in) SO-attached PO lines from mobile. lines: [{itemIdx,poLineIdx,rcv:{size:qty}}].
+  const mobileReceiveSOPO=(soId,lines)=>{
+    const so=sos.find(s=>s.id===soId);if(!so)return;
+    const items=safeItems(so).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
+    let grand=0;const cc=cust.find(c=>c.id===so.customer_id);const acts=[];
+    lines.forEach(({itemIdx,poLineIdx,rcv})=>{const it=items[itemIdx];if(!it)return;const po=it.po_lines[poLineIdx];if(!po)return;
+      const newReceived={...(po.received||{})};const shipment={date:new Date().toLocaleDateString()};let any=false;
+      Object.entries(rcv||{}).forEach(([sz,qty])=>{if(qty>0){newReceived[sz]=(newReceived[sz]||0)+qty;shipment[sz]=qty;any=true;grand+=qty}});
+      if(!any)return;
+      const szKeys=Object.keys(po).filter(k=>SZ_ORD.includes(k));
+      const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-((po.cancelled||{})[sz]||0)),0);
+      const status=open<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
+      it.po_lines[poLineIdx]={...po,received:newReceived,shipments:[...(po.shipments||[]),shipment],status};
+      const szStr=Object.entries(rcv).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');
+      acts.push({type:'received',poId:po.po_id||'',soId,customer:cc?.name||'',sku:it.sku,name:it.name,color:it.color,qty:Object.values(rcv).reduce((a,v)=>a+(v||0),0),sizes:szStr,by:cu?.id||'warehouse'});
+    });
+    if(grand===0)return;
+    savSO({...so,items,jobs:_mobRecalcJobs(so,items),updated_at:new Date().toLocaleString()});
+    acts.forEach(a=>addWhAction(a));
+    nf('Received '+grand+' unit'+(grand!==1?'s':'')+' on '+soId);
+  };
   // Persist warehouse recent actions to app_state (DB) + localStorage so they survive across devices/sessions
   React.useEffect(()=>{_saveAppState('wh_recent_actions',whRecentActions)},[whRecentActions]);
   const[whActionRange,setWhActionRange]=useState('7d');
@@ -26284,7 +26345,7 @@ export default function App(){
   // LOGIN GATE
   if(!cu)return<ComponentErrorBoundary name="LoginGate"><React.Suspense fallback={<LazyFallback/>}><LoginGate onLogin={handleLogin} reps={REPS} supabase={supabase} sbSignIn={_sbSignIn} sbSignUp={_sbSignUp} sbResendSignup={_sbResendSignup} sbResetPassword={_sbResetPassword} sbGetSession={_sbGetSession} sbLinkTeamAuth={_sbLinkTeamAuth} sbGetMyProfile={_sbGetMyProfile}/></React.Suspense></ComponentErrorBoundary>;
   // MOBILE PORTAL GATE
-  if(mobileMode)return<ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs}/></ComponentErrorBoundary>;
+  if(mobileMode)return<ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO}/></ComponentErrorBoundary>;
 
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     {/* Mobile sidebar backdrop */}
