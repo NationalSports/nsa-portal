@@ -1572,6 +1572,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   const addFileToArt=i=>{const a=af[i];if(!a)return;uArt(i,'files',[...(a.files||[]),'new_file_'+((a.files||[]).length+1)+'.ai'])};
 
+  // Promote an order/estimate art group into the customer's program library so other teams can reuse it.
+  // The library lives on the PARENT customer's art_files and cascades to every sub-account; if this order's
+  // customer has no parent, the customer itself owns the library. Copies the art (color ways, mockups,
+  // production files, preview) so the library entry is self-contained. Mirrors promoteArtToLibrary in CustDetail.
+  const applyArtToParent=i=>{
+    const art=af[i];if(!art)return;
+    if(!onSaveCustomer){nf&&nf('Cannot reach the customer library from here','error');return}
+    if(!cust){nf&&nf('Select a customer first','error');return}
+    if(!(art.name||'').trim()){nf&&nf('Name the art group before adding it to the library','error');return}
+    const libCust=cust.parent_id?allCustomers.find(c=>c.id===cust.parent_id):cust;
+    if(!libCust){nf&&nf('Parent customer not found','error');return}
+    const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
+    const lib=libCust.art_files||[];
+    if(lib.some(a=>(a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt)){nf&&nf('"'+(art.name||'art')+'" is already in the '+(libCust.name||'customer')+' library');return}
+    const where=cust.parent_id?('the parent ('+(libCust.name||'parent')+') library so it applies to all teams'):'the program library so it applies to all sub-customers';
+    if(!window.confirm('Add "'+(art.name||'this art')+'" to '+where+'?'))return;
+    const entry={id:'caf'+Date.now(),name:art.name||'',deco_type:dt||'screen_print',ink_colors:art.ink_colors||'',thread_colors:art.thread_colors||'',stitches:parseInt(art.stitches,10)||null,art_size:art.art_size||'',art_sizes:art.art_sizes||null,garment_colors:art.garment_colors||null,color_ways:art.color_ways||[],files:[],mockup_files:(art.mockup_files&&art.mockup_files.length?art.mockup_files:(art.files||[])),prod_files:art.prod_files||[],preview_url:art.preview_url||'',notes:art.notes||'',status:art.status==='uploaded'?'needs_approval':(art.status||'approved'),uploaded:new Date().toLocaleDateString()};
+    const updatedCust={...libCust,art_files:[...lib,entry]};
+    onSaveCustomer(updatedCust);
+    if(libCust.id===cust.id)setCust(updatedCust);
+    nf&&nf('"'+(art.name||'art')+'" added to the '+(libCust.name||'customer')+' library — now reusable by other teams');
+  };
+
   // Promo auto-repair removed — use "Apply Promo Funds" in Actions dropdown instead
 
   const addrs=useMemo(()=>getAddrs(cust,allCustomers),[cust,allCustomers]);
@@ -3668,7 +3691,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </div>
                   {/* Notes */}
                   <input className="form-input" value={art.notes||''} onChange={e=>uArt(i,'notes',e.target.value)} placeholder="Notes..." style={{fontSize:12}}/>
-                  <div style={{display:'flex',gap:8,alignItems:'center',marginTop:6}}><span style={{fontSize:10,color:'#94a3b8'}}>Uploaded {art.uploaded} · Applied to {usedIn} decoration(s)</span></div>
+                  <div style={{display:'flex',gap:8,alignItems:'center',marginTop:6,flexWrap:'wrap'}}><span style={{fontSize:10,color:'#94a3b8'}}>Uploaded {art.uploaded} · Applied to {usedIn} decoration(s)</span>
+                    {onSaveCustomer&&cust&&(()=>{const libCust=cust.parent_id?allCustomers.find(c=>c.id===cust.parent_id):cust;if(!libCust)return null;
+                      const inLib=!!(art.name||'').trim()&&(libCust.art_files||[]).some(a=>(a.name||'').toLowerCase()===(art.name||'').toLowerCase()&&(a.deco_type||'')===(art.deco_type||''));
+                      return inLib
+                        ?<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,padding:'3px 8px',marginLeft:'auto'}} title={'Already in the '+(libCust.name||'customer')+' library'}>✓ In {cust.parent_id?'Parent':'Customer'} Library</span>
+                        :<button className="btn btn-sm" style={{background:'#ede9fe',color:'#6d28d9',border:'1px solid #ddd6fe',fontSize:10,fontWeight:700,marginLeft:'auto'}} title={'Add this art to '+(libCust.name||'the customer')+"'s library so other teams/sub-customers can reuse it"} onClick={e=>{e.stopPropagation();applyArtToParent(i)}}>⬆ {cust.parent_id?'Apply to Parent':'Add to Library'}</button>;
+                    })()}
+                  </div>
                 </div>
               </div>
               </div>}
