@@ -7,7 +7,7 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, BATCH_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced } from './safeHelpers';
-import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery } from './components';
+import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import QuickMockBuilder from './QuickMockBuilder';
@@ -1557,6 +1557,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // writing back a stale snapshot would clobber unsaved color ways / size.
   const addArt=()=>{setO(e=>({...e,art_files:[...(e.art_files||[]),{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}],updated_at:new Date().toLocaleString()}));setDirty(true)};
   const uArt=(i,k,v)=>{setO(e=>({...e,art_files:(e.art_files||[]).map((f,x)=>x===i?{...f,[k]:v}:f),updated_at:new Date().toLocaleString()}));setDirty(true)};
+  // The customer whose library this order's art should be promoted into. Library art lives on
+  // the *parent* account and cascades to every sub-customer ("applies to all"), so a logo
+  // created on one team's order can be made reusable program-wide. If this order's customer is
+  // itself a parent (or standalone), it's its own library target.
+  const libCust=useMemo(()=>cust?(cust.parent_id?allCustomers.find(c=>c.id===cust.parent_id)||cust:cust):null,[cust,allCustomers]);
+  const _artKey=a=>(a.name||'').toLowerCase().trim()+'|'+(a.deco_type||'');
+  // Is this art group already saved in the program library?
+  const artInLibrary=art=>{const nm=(art.name||'').trim();return !!nm&&(libCust?.art_files||[]).some(a=>_artKey(a)===_artKey(art))};
+  // Promote an order art group into the program library so other teams (sub-customers) can reuse it.
+  const promoteArtToLibrary=art=>{
+    if(!libCust||!onSaveCustomer){nf&&nf('No customer to add this art to','error');return}
+    const nm=(art.name||'').trim();
+    if(!nm){nf&&nf('Name this art group before adding it to the library','error');return}
+    const lib=libCust.art_files||[];
+    if(lib.some(a=>_artKey(a)===_artKey(art))){nf&&nf('"'+nm+'" is already in '+(libCust.name||'the')+' library');return}
+    const toLib=cust&&cust.parent_id;// promoting up to a parent vs. saving to own library
+    if(!window.confirm('Add "'+nm+'" to '+(toLib?(libCust.name||'the parent')+'\'s program library so other teams can use it':'the program library so it applies to all teams')+'?'))return;
+    const entry={id:'caf'+Date.now(),name:nm,deco_type:art.deco_type||'screen_print',ink_colors:art.ink_colors||'',thread_colors:art.thread_colors||'',art_size:art.art_size||'',color_ways:(art.color_ways||[]).map(cw=>({...cw,inks:[...(cw.inks||[])]})),files:[],mockup_files:(art.mockup_files||[]).slice(),prod_files:(art.prod_files||[]).slice(),preview_url:art.preview_url||'',notes:art.notes||'',status:art.status==='uploaded'?'needs_approval':(art.status||'approved'),uploaded:new Date().toLocaleDateString()};
+    const updated={...libCust,art_files:[...lib,entry]};
+    if(libCust.id===cust.id)setCust(updated);
+    onSaveCustomer(updated);
+    nf&&nf('"'+nm+'" added to '+(libCust.name||'the')+' library — other teams can now use it');
+  };
   // Remove a single mockup image (by URL) from the artwork's item_mockups / mockup_files so a rep
   // can clear stale or wrong mockups from a job. Source art (files/prod_files) is left untouched.
   // Persists immediately so the deletion survives a page refresh.
@@ -3639,30 +3662,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </div>
                   {/* Color Ways */}
                   <div style={{marginBottom:6}}>
-                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
-                      <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>COLOR WAYS</span>
-                      <span style={{fontSize:9,color:'#94a3b8'}}>{art.deco_type==='embroidery'?'Thread colors per garment':'Ink colors per garment'}</span>
-                    </div>
-                    {(art.color_ways||[]).length===0&&!art.ink_colors&&!art.thread_colors&&<div style={{fontSize:11,color:'#dc2626',marginBottom:6,fontWeight:600}}>⚠ At least one color way is required. Add one to specify ink/thread colors per garment color.</div>}
-                    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:6}}>
-                      {(art.color_ways||[]).map((cw,ci)=><div key={cw.id} style={{flex:'1 1 220px',minWidth:220,maxWidth:360,background:'white',border:'1px solid #e2e8f0',borderRadius:8,padding:10}}>
-                        <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:6}}>
-                          <span style={{fontSize:11,fontWeight:700,color:'#475569'}}>CW {ci+1}</span>
-                          <input className="form-input" value={cw.garment_color||''} onChange={e=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,garment_color:e.target.value};uArt(i,'color_ways',cws)}} placeholder="Garment color..." style={{fontSize:11,flex:1}}/>
-                          <button onClick={()=>{const cws=(art.color_ways||[]).filter((_,x)=>x!==ci);uArt(i,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:2}} title="Remove CW"><Icon name="trash" size={12}/></button>
-                        </div>
-                        {cw.inks.map((ink,ii)=><div key={ii} style={{display:'flex',gap:4,alignItems:'center',marginBottom:3}}>
-                          <span style={{fontSize:10,color:'#94a3b8',width:14,textAlign:'right'}}>{ii+1}</span>
-                          {pantoneHex(ink)&&<span style={{width:12,height:12,borderRadius:2,background:pantoneHex(ink),border:'1px solid #d1d5db',flexShrink:0}}/>}
-                          <input className="form-input" value={ink} onChange={e=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];inks[ii]=e.target.value;cws[ci]={...cw,inks};uArt(i,'color_ways',cws)}} placeholder={art.deco_type==='embroidery'?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1}}/>
-                          <button onClick={()=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,inks:cw.inks.filter((_,x)=>x!==ii)};uArt(i,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:2}}><Icon name="x" size={10}/></button>
-                        </div>)}
-                        {art.deco_type==='embroidery'?<ThreadQuickPicks colors={mergeColors(cust,allCustomers,'thread_colors')} onPick={(v)=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];const emptyIdx=inks.findIndex(x=>!x);if(emptyIdx>=0)inks[emptyIdx]=v;else inks.push(v);cws[ci]={...cw,inks};uArt(i,'color_ways',cws)}}/>
-                        :<PantoneQuickPicks colors={mergeColors(cust,allCustomers,'pantone_colors')} onPick={(v)=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];const emptyIdx=inks.findIndex(x=>!x);if(emptyIdx>=0)inks[emptyIdx]=v;else inks.push(v);cws[ci]={...cw,inks};uArt(i,'color_ways',cws)}}/>}
-                        <button onClick={()=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,inks:[...cw.inks,'']};uArt(i,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#2563eb',padding:'2px 0'}}>+ Add color</button>
-                      </div>)}
-                    </div>
-                    <button onClick={()=>{const cws=[...(art.color_ways||[]),{id:'cw'+Date.now(),garment_color:'',inks:['']}];uArt(i,'color_ways',cws)}} style={{background:'none',border:'1px dashed #cbd5e1',borderRadius:6,cursor:'pointer',fontSize:11,color:'#475569',padding:'6px 12px',fontWeight:600}}>+ Add Color Way</button>
+                    <ColorWaysEditor colorWays={art.color_ways||[]} onChange={cws=>uArt(i,'color_ways',cws)} decoType={art.deco_type} pantoneColors={mergeColors(cust,allCustomers,'pantone_colors')} threadColors={mergeColors(cust,allCustomers,'thread_colors')} suppressWarning={!!art.ink_colors||!!art.thread_colors}/>
                   </div>
                   {/* PRODUCTION FILES — internal only */}
                   <div style={{marginBottom:6}}>
@@ -3682,7 +3682,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </div>
                   {/* Notes */}
                   <input className="form-input" value={art.notes||''} onChange={e=>uArt(i,'notes',e.target.value)} placeholder="Notes..." style={{fontSize:12}}/>
-                  <div style={{display:'flex',gap:8,alignItems:'center',marginTop:6}}><span style={{fontSize:10,color:'#94a3b8'}}>Uploaded {art.uploaded} · Applied to {usedIn} decoration(s)</span></div>
+                  <div style={{display:'flex',gap:8,alignItems:'center',marginTop:6,flexWrap:'wrap',justifyContent:'space-between'}}>
+                    <span style={{fontSize:10,color:'#94a3b8'}}>Uploaded {art.uploaded} · Applied to {usedIn} decoration(s)</span>
+                    {libCust&&(artInLibrary(art)
+                      ?<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:10,fontWeight:700,color:'#16a34a',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:'3px 9px'}} title={'Saved in '+(libCust.name||'the')+' library — available to other teams'}><Icon name="check" size={11}/> In {cust&&cust.parent_id?'parent ':''}library</span>
+                      :<button onClick={e=>{e.stopPropagation();promoteArtToLibrary(art)}} title={cust&&cust.parent_id?'Add to '+(libCust.name||'the parent')+'\'s program library so other teams can reuse it':'Add to the program library so it applies to all teams'} style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:10,fontWeight:700,color:'#1e40af',background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:6,padding:'4px 10px',cursor:'pointer'}}>↑ {cust&&cust.parent_id?'Apply to parent':'Add to library'}</button>)}
+                  </div>
                 </div>
               </div>
               </div>}
@@ -5693,6 +5698,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
         <div className="modal-body">
+          {/* Jump straight to an Outside Decoration PO without backing out to the vendor picker — lets you order the goods (and drop-ship them) and spin up a decorator PO from one place. */}
+          <div style={{display:'flex',gap:8,alignItems:'center',padding:'8px 10px',background:'#faf5ff',border:'1px solid #ede9fe',borderRadius:8,marginBottom:12}}>
+            <span style={{fontSize:13}}>🎨</span>
+            <span style={{fontSize:12,fontWeight:600,color:'#6d28d9',whiteSpace:'nowrap'}}>Also going to a decorator?</span>
+            <select className="form-select" id="po-deco-jump" defaultValue="" style={{flex:1,fontSize:12,padding:'4px 6px'}}>
+              <option value="" disabled>Outside Decoration PO…</option>
+              {DECO_VENDORS.filter(dv=>dv!=='Other').map(dv=><option key={dv} value={dv}>{dv}</option>)}
+            </select>
+            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(sel)setShowPO('deco:'+sel);else nf('Pick a decorator first','error')}}>Create Deco PO →</button>
+          </div>
           {o._posHydrated===false&&<div style={{padding:10,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:12}}>
             <div style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>⚠️ Existing POs for this order didn't finish loading</div>
             <div style={{fontSize:11,color:'#b91c1c',marginTop:2}}>Creating a PO now could duplicate one that already exists. Reload the page so the current POs load first, then create the PO.</div>
