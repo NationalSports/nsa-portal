@@ -14409,7 +14409,7 @@ export default function App(){
   };
 
   // WAREHOUSE DASHBOARD
-  const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);const[whRecvPO,setWhRecvPO]=useState(null);const[whReceiving,setWhReceiving]=useState(false);const[whViewIF,setWhViewIF]=useState(null);const[whPulling,setWhPulling]=useState(false);
+  const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);const[whRecvPO,setWhRecvPO]=useState(null);const[whReceiving,setWhReceiving]=useState(false);const[whViewIF,setWhViewIF]=useState(null);const[whPulling,setWhPulling]=useState(false);const[whEditItems,setWhEditItems]=useState(false);
   const[shippedCustF,setShippedCustF]=useState('all');const[shippedDateF,setShippedDateF]=useState('all');
   const[whRecentActions,setWhRecentActions]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_wh_recent_actions')||localStorage.getItem('nsa_wh_recent')||'[]')}catch{return[]}});
   // Auto-check UPS pickup status once daily after 3 AM (moved out of rWarehouse to avoid conditional hook call)
@@ -14638,11 +14638,32 @@ export default function App(){
         const setBoxes=newBoxes=>setWhViewIF(prev=>({...prev,_boxes:newBoxes}));
         // Single-item alias retained so the rest of the original page (shipping label section etc.) keeps working
         const item=firstPI.item;const p=firstPI.p;
+        // ── Edit Items: add another SO line to this IF, or remove a line that hasn't been pulled yet ──
+        // Open units = ordered − (already on any pick line) − (committed on a PO). Mirrors the IF-creation
+        // availability check in OrderEditor so the warehouse and order screens agree on what can still be pulled.
+        const ifOpenSizes=(it)=>{const p2=prod.find(pp=>pp.sku===it.sku||pp.id===it.product_id);const out={};Object.entries(it.sizes||{}).forEach(([sz,need])=>{if(!(safeNum(need)>0))return;const picked=(it.pick_lines||[]).reduce((a,pk)=>a+safeNum(pk[sz]),0);const po=(it.po_lines||[]).reduce((a,pk)=>a+(safeNum(pk[sz])-safeNum((pk.cancelled||{})[sz])),0);const inv=p2?._inv?.[sz]||0;const open=Math.max(0,safeNum(need)-picked-po);if(open>0)out[sz]={open,inv}});return out};
+        // SO items not already on this IF that still have open units to fulfill
+        const addableItems=safeItems(so).map((it,ii)=>({it,ii})).filter(({it})=>!(it.pick_lines||[]).some(pk=>pk.pick_id===pickId&&pk.status!=='pulled')&&Object.keys(ifOpenSizes(it)).length>0);
+        const persistIFItems=(updatedItems,msg)=>{const updatedSO={...so,items:updatedItems,updated_at:new Date().toLocaleString()};savSO(updatedSO,{skipMerge:true});setWhViewIF(prev=>prev?{...prev,so:updatedSO,_pullQtys:undefined,_boxes:undefined}:prev);if(msg)nf(msg)};
+        const removeItemFromIF=(itemIdx)=>{
+          const updatedItems=safeItems(so).map((it2,ii)=>ii===itemIdx?{...it2,pick_lines:(it2.pick_lines||[]).filter(pk=>!(pk.pick_id===pickId&&pk.status!=='pulled'))}:it2);
+          const remaining=updatedItems.filter(it2=>(it2.pick_lines||[]).some(pk=>pk.pick_id===pickId&&pk.status!=='pulled')).length;
+          if(remaining===0){const updatedSO={...so,items:updatedItems,updated_at:new Date().toLocaleString()};savSO(updatedSO,{skipMerge:true});setWhEditItems(false);setWhViewIF(null);nf('Removed last item — '+pickId+' is now empty');return}
+          persistIFItems(updatedItems,'Item removed from '+pickId);
+        };
+        const addItemToIF=(itemIdx)=>{
+          const it=safeItems(so)[itemIdx];if(!it)return;const opens=ifOpenSizes(it);
+          if(Object.keys(opens).length===0){nf('No open units to add for this item','error');return}
+          const newPick={pick_id:pickId,status:'pick',created_at:new Date().toLocaleDateString(),ship_dest:shipDest};
+          Object.entries(opens).forEach(([sz,o])=>{newPick[sz]=o.open});
+          const updatedItems=safeItems(so).map((it2,ii)=>ii===itemIdx?{...it2,pick_lines:[...(it2.pick_lines||[]),newPick]}:it2);
+          persistIFItems(updatedItems,(it.sku||'Item')+' added to '+pickId);
+        };
 
         return<div style={{maxWidth:900,margin:'0 auto'}}>
           {/* Back button */}
           <div style={{marginBottom:12}}>
-            <button className="btn btn-sm btn-secondary" onClick={()=>setWhViewIF(null)} style={{fontSize:12,padding:'6px 14px'}}>
+            <button className="btn btn-sm btn-secondary" onClick={()=>{setWhEditItems(false);setWhViewIF(null)}} style={{fontSize:12,padding:'6px 14px'}}>
               ← Back to Item Fulfillment</button>
           </div>
 
@@ -14673,6 +14694,7 @@ export default function App(){
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
                 <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Item Details</div>
                 {pickItems.length>1&&<span style={{fontSize:10,padding:'2px 7px',background:'#dbeafe',color:'#1e40af',borderRadius:10,fontWeight:700}}>{pickItems.length} items on this IF</span>}
+                {activePick?.status!=='pulled'&&<button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11,padding:'4px 12px'}} onClick={()=>setWhEditItems(e=>!e)}>{whEditItems?'✓ Done':'✎ Edit Items'}</button>}
               </div>
               {pickItems.map((pi,piIdx)=>{
                 const piPull=pullQtys[pi.itemIdx]||{};
@@ -14692,6 +14714,7 @@ export default function App(){
                         {' · '}Total ordered: {pi.totalOrdered}{' · '}Already pulled: {pi.totalPulled}
                       </div>
                     </div>
+                    {whEditItems&&<button className="btn btn-sm" style={{marginLeft:'auto',fontSize:11,background:'#fee2e2',color:'#dc2626',border:'1px solid #fecaca',padding:'5px 12px',fontWeight:700,whiteSpace:'nowrap'}} onClick={()=>removeItemFromIF(pi.itemIdx)}>✕ Remove from IF</button>}
                   </div>
                   <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Sizes to Pull</div>
                   <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
@@ -14724,6 +14747,19 @@ export default function App(){
                   </div>
                 </div>;
               })}
+              {whEditItems&&<div style={{marginTop:10,padding:12,border:'1px dashed #94a3b8',borderRadius:8,background:'#f8fafc'}}>
+                <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:8}}>➕ Add an item from {t.soId} to this IF</div>
+                {addableItems.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No other items on this sales order have open units to fulfill.</div>:
+                  addableItems.map(({it,ii})=>{const opens=ifOpenSizes(it);const totOpen=Object.values(opens).reduce((a,o)=>a+o.open,0);const p2=prod.find(pp=>pp.sku===it.sku||pp.id===it.product_id);
+                    return<div key={ii} style={{display:'flex',gap:10,alignItems:'center',padding:'8px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6,marginBottom:6,flexWrap:'wrap'}}>
+                      {p2?.image_url&&<img src={p2.image_url} alt="" style={{width:36,height:36,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
+                      <div style={{flex:1,minWidth:180}}>
+                        <div><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{it.sku}</span> <span style={{fontWeight:600,fontSize:13}}>{it.name}</span>{it.color?<span style={{fontSize:11,color:'#64748b'}}> · {it.color}</span>:''}</div>
+                        <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{Object.entries(opens).map(([sz,o])=>sz+': '+o.open+' open ('+o.inv+' in stock)').join(' · ')}</div>
+                      </div>
+                      <button className="btn btn-sm btn-primary" style={{fontSize:11,whiteSpace:'nowrap'}} onClick={()=>addItemToIF(ii)}>+ Add {totOpen} units</button>
+                    </div>})}
+              </div>}
               {pickItems.length>1&&<div style={{padding:'8px 12px',marginTop:4,background:'#eff6ff',borderRadius:6,fontSize:12,fontWeight:700,color:'#1e40af',textAlign:'right'}}>Total: {grandPulling} of {grandNeed} units across {pickItems.length} items</div>}
 
               {/* Pull Action Buttons */}
@@ -14791,7 +14827,7 @@ export default function App(){
                           printQrLabel({id:pickIdToUse,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickIdToUse),shipBadge:labelShipBadge,lines});
                         }
                       }catch(e){/* label print is best-effort */}
-                      nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totPulling2+' units');setWhPulling(false);setWhViewIF(null);
+                      nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totPulling2+' units');setWhPulling(false);setWhEditItems(false);setWhViewIF(null);
                     }}>{whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPulling2+' units)':isPartial?'✓ Mark Partial Pull ('+totPulling2+' of '+grandNeed+')':'✓ Mark as Pulled')}</button>
                     {!isFull&&<button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
                       const filled={};pickItems.forEach(pi=>{filled[pi.itemIdx]=Object.fromEntries(pi.szKeys.map(sz=>[sz,Math.max(0,(pi.sizes[sz]||0)-(pi.pulled[sz]||0))]))});setPullQtys(filled);
@@ -15452,7 +15488,7 @@ export default function App(){
           </tr></thead><tbody>
           {fPull.map((t,ti)=>{const subs=t._subTasks||[t];const extraSkus=subs.length-1;
             return<tr key={ti} style={{cursor:'pointer',background:t.urgent?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
-            onClick={()=>setWhViewIF(t)}>
+            onClick={()=>{setWhEditItems(false);setWhViewIF(t)}}>
             <td>{t.urgent&&<span title={'Due in '+t.daysOut+'d'}>🔥</span>}{t.noDeco&&<span title="No decoration">📦</span>}</td>
             <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}</td>
             <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#1e40af',whiteSpace:'nowrap'}}>{t.pickId||'—'}{extraSkus>0?<span title={subs.length+' items in this IF'} style={{marginLeft:4,fontSize:9,padding:'1px 5px',borderRadius:10,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>×{subs.length}</span>:null}</td>
@@ -15473,7 +15509,7 @@ export default function App(){
             <td style={{textAlign:'center'}}>{t.openDays!=null?<span style={{fontSize:10,fontWeight:700,color:t.openDays>=14?'#dc2626':t.openDays>=7?'#d97706':'#64748b'}}>{t.openDays}d</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
             <td><div style={{display:'flex',flexDirection:'column',gap:3}}>
               <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
-                onClick={e=>{e.stopPropagation();setWhViewIF(t)}}>Pick →</button>
+                onClick={e=>{e.stopPropagation();setWhEditItems(false);setWhViewIF(t)}}>Pick →</button>
               <button title="Assign this pull to a warehouse worker" className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#0891b2',color:'white',border:'none'}}
                 onClick={e=>{e.stopPropagation();const multi=subs.length>1||t._extraCount>0;_whOpenAssign({title:'Pull '+(t.pickId||t.soId)+' — '+(t.cName||t.soId),description:(multi?t.needsPull+' units · multiple SKUs':t.sku+(t.color?' · '+t.color:'')+' · '+t.needsPull+' units'),so:t.so,soId:t.soId,docLabel:t.pickId||t.soId})}}>👤 Assign</button>
             </div></td>
@@ -26282,7 +26318,7 @@ export default function App(){
               const task={so,soId:so.id,item:it,itemIdx:ii,cName:cc?.name||'Unknown',rep,daysOut,urgent:daysOut!=null&&daysOut<=3,
                 sku:it.sku,name:it.name,brand:it.brand||'',color:it.color||'',sizes:it.sizes,pulled,needsPull:totalOrdered-totalPulled,totalOrdered,totalPulled,szKeys,
                 shipDest:pk.ship_dest||'in_house'};
-              setWhViewIF(task);setPg('warehouse');setWhTab('pull');
+              setWhEditItems(false);setWhViewIF(task);setPg('warehouse');setWhTab('pull');
               nf('Scanned: '+pk.pick_id+' — opened IF detail');return;
             }
           }
