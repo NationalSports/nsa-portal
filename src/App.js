@@ -795,6 +795,50 @@ const _checkVersion=async(table,id,localVersion)=>{
 // Art rows map `stitches` to an INT column. An empty string (or any non-numeric value) must
 // become null or Postgres rejects the whole upsert ("invalid input syntax for type integer").
 const _sanitizeArtRow=(r)=>{if('stitches' in r){const n=parseInt(r.stitches,10);r.stitches=Number.isFinite(n)?n:null}return r};
+// ─── Art-file field-level merge (optimistic-concurrency conflict resolution) ───
+// When an art row's DB copy has advanced past this client's (a _version conflict), we must do neither of the two
+// unsafe extremes: blindly overwriting (clobbers another user's concurrent approval/mockup) nor silently dropping
+// this client's edit. The drop is the reported data-loss bug — a flood of background reloads/saves keeps bumping
+// the DB _version, the open editor's working copy falls behind, and the user's typed name/color-ways/size are then
+// filtered out as "stale". Instead we 3-way-merge: start from the DB row (keeps concurrent approval/status/mockup
+// changes), overlay THIS client's user-authored content, and union file collections so neither side's uploads are
+// lost. _version itself is never written (the DB trigger owns it), so the merged row upserts cleanly.
+const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','notes','archived'];
+const _ART_FILE_COLLECTIONS=['files','mockup_files','prod_files','sample_art'];
+const _artFileUrl=f=>typeof f==='string'?f:(f&&(f.url||f.name))||'';
+const _unionArtFiles=(dbArr,clientArr)=>{
+  // Both scalar (e.g. a single preview/sample url): prefer the client's value, falling back to the DB's.
+  if(!Array.isArray(dbArr)&&!Array.isArray(clientArr))return clientArr!==undefined?clientArr:dbArr;
+  const out=Array.isArray(dbArr)?dbArr.slice():[];
+  const seen=new Set(out.map(_artFileUrl).filter(Boolean));
+  (Array.isArray(clientArr)?clientArr:[]).forEach(f=>{const k=_artFileUrl(f);if(!k){out.push(f)}else if(!seen.has(k)){seen.add(k);out.push(f)}});
+  return out;
+};
+const _mergeArtConflict=(clientArt,dbRow)=>{
+  const merged={...dbRow};// base = DB row: keeps status/preview/uploaded and anything another user changed
+  _ART_CONTENT_FIELDS.forEach(f=>{if(f in clientArt)merged[f]=clientArt[f]});// overlay this client's typed content
+  _ART_FILE_COLLECTIONS.forEach(f=>{merged[f]=_unionArtFiles(dbRow[f],clientArt[f])});// union uploads from both sides
+  const im={...(dbRow.item_mockups||{})};// per-item mockup map: union each item's url list
+  Object.entries(clientArt.item_mockups||{}).forEach(([k,v])=>{im[k]=_unionArtFiles(im[k],v)});
+  merged.item_mockups=im;
+  if(!merged.preview_url&&clientArt.preview_url)merged.preview_url=clientArt.preview_url;
+  return merged;
+};
+// Resolve which art rows to persist given the client's art_files and the live full DB rows. Conflicting rows
+// (DB _version ahead of the client's) are field-merged onto the DB copy; the rest pass through unchanged. Returns
+// {client, row, baseVersion} per file so the caller can upsert `row` and, on success, bump the in-memory `client`
+// copy to baseVersion+1 (matching the DB trigger) so its own next save isn't mistaken for stale.
+const _resolveArtRows=(clientArtFiles,dbRows,parentId)=>{
+  const dbById=new Map((dbRows||[]).map(r=>[r.id,r]));
+  let conflicts=0;
+  const out=clientArtFiles.map(a=>{
+    const db=dbById.get(a.id);
+    if(db&&(a._version||0)<(db._version||0)){conflicts++;return{client:a,row:_mergeArtConflict(a,db),baseVersion:db._version||0}}
+    return{client:a,row:a,baseVersion:a._version||0};
+  });
+  if(conflicts)console.warn('[DB]',conflicts,'art file(s) for',parentId,'field-merged with newer DB copy (concurrent edit) — your content preserved');
+  return out;
+};
 const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
   // Optimistic locking: check version before saving (auto-heal on conflict)
@@ -872,26 +916,25 @@ const _dbSaveEstimateInner = async (est) => {
     // window where a committed delete followed by a timed-out insert left the estimate permanently empty.
     // Sync art_files: upsert current, delete removed. Optimistic concurrency via the _version trigger — never
     // overwrite an art row whose DB copy is newer than the client's, and only delete rows the client had loaded.
-    const{data:_dbAf}=await supabase.from('estimate_art_files').select('id,_version').eq('estimate_id',est.id);
+    const{data:_dbAf}=await supabase.from('estimate_art_files').select('*').eq('estimate_id',est.id);
     const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
     if(art_files?.length){
-      const _freshArt=art_files.filter(a=>{const dbv=_dbAfVerById.get(a.id);return dbv==null||(a._version||0)>=dbv});
-      const _staleSkipped=art_files.length-_freshArt.length;
-      if(_staleSkipped)console.warn('[DB]',_staleSkipped,'art file(s) for',est.id,'left untouched — DB copy is newer (concurrent edit)');
-      if(_freshArt.length){
-        let afRows=_freshArt.map(a=>_sanitizeArtRow({..._pick(a,_artCols),archived:!!a.archived,estimate_id:est.id}));
+      const _resolved=_resolveArtRows(art_files,_dbAf,est.id);
+      {
+        let afRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,estimate_id:est.id}));
+        let _afOk=true;
         const{error:afErr}=await supabase.from('estimate_art_files').upsert(afRows,{onConflict:'estimate_id,id'});
         if(afErr){
           if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
             console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
             const coreRows=afRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
             const{error:afErr2}=await supabase.from('estimate_art_files').upsert(coreRows,{onConflict:'estimate_id,id'});
-            if(afErr2)console.error('[DB] estimate_art_files upsert failed (core):',afErr2.message,afErr2.details);
+            if(afErr2){console.error('[DB] estimate_art_files upsert failed (core):',afErr2.message,afErr2.details);_afOk=false}
             else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
-          }else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details)}
+          }else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details);_afOk=false}
         }
         // Match the DB trigger's version bump so this client's next save isn't mistaken for stale.
-        _freshArt.forEach(a=>{a._version=(a._version||0)+1});
+        if(_afOk)_resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
       }
       const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
       const _knownArtIds=new Set(Array.isArray(est._hydratedArtIds)?est._hydratedArtIds:[]);
@@ -1255,27 +1298,26 @@ const _dbSaveSOInner = async (so) => {
     // Optimistic concurrency (via the _version trigger): never overwrite an art row whose DB copy is newer than
     // the client's — that would clobber an approval/mockup another user set after this client loaded. And only
     // delete rows the client actually loaded (_hydratedArtIds), so art another user added meanwhile is preserved.
-    const{data:_dbAf}=await supabase.from('so_art_files').select('id,_version').eq('so_id',so.id);
+    const{data:_dbAf}=await supabase.from('so_art_files').select('*').eq('so_id',so.id);
     const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
     if(art_files?.length){
-      const _freshArt=art_files.filter(a=>{const dbv=_dbAfVerById.get(a.id);return dbv==null||(a._version||0)>=dbv});
-      const _staleSkipped=art_files.length-_freshArt.length;
-      if(_staleSkipped)console.warn('[DB]',_staleSkipped,'art file(s) for',so.id,'left untouched — DB copy is newer (concurrent edit)');
-      if(_freshArt.length){
-        let soAfRows=_freshArt.map(a=>_sanitizeArtRow({..._pick(a,_artCols),archived:!!a.archived,so_id:so.id}));
+      const _resolved=_resolveArtRows(art_files,_dbAf,so.id);
+      {
+        let soAfRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id}));
+        let _afOk=true;
         const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
         if(afErr){
           if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
             console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
             const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
             const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
-            if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr2.message)}
+            if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr2.message);_afOk=false}
             else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
-          }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message)}
+          }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message);_afOk=false}
         }
         // Match the DB trigger's version bump so this client's next save isn't mistaken for stale. Over-bump is safe
-        // (the >= check still upserts); under-bump would make the client skip its own row.
-        _freshArt.forEach(a=>{a._version=(a._version||0)+1});
+        // (the merge still upserts); under-bump would make the client skip its own row.
+        if(_afOk)_resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
       }
       // Delete only art the client deliberately removed: it had loaded the row and no longer holds it.
       const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
@@ -1431,13 +1473,13 @@ const _dbSaveArtFilesInner = async (so) => {
   return _dbSavingGuard(async()=>{try{
     const art_files=so.art_files;
     if(!Array.isArray(art_files))return true;// nothing hydrated to sync
-    const{data:_dbAf,error:_dbAfErr}=await _retryNet(()=>supabase.from('so_art_files').select('id,_version').eq('so_id',so.id));
+    const{data:_dbAf,error:_dbAfErr}=await _retryNet(()=>supabase.from('so_art_files').select('*').eq('so_id',so.id));
     if(_dbAfErr){console.error('[DB] so_art_files read failed:',_dbAfErr.message);if(_dbNotify)_dbNotify('Could not save artwork file change: '+_dbAfErr.message,'error');return false}
     const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
     if(art_files.length){
-      const _freshArt=art_files.filter(a=>{const dbv=_dbAfVerById.get(a.id);return dbv==null||(a._version||0)>=dbv});
-      if(_freshArt.length){
-        const soAfRows=_freshArt.map(a=>_sanitizeArtRow({..._pick(a,_artCols),archived:!!a.archived,so_id:so.id}));
+      const _resolved=_resolveArtRows(art_files,_dbAf,so.id);
+      {
+        const soAfRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id}));
         const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
         if(afErr){
           if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
@@ -1446,7 +1488,7 @@ const _dbSaveArtFilesInner = async (so) => {
             if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+afErr2.message,'error');return false}
           }else{console.error('[DB] so_art_files upsert failed:',afErr.message);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+afErr.message,'error');return false}
         }
-        _freshArt.forEach(a=>{a._version=(a._version||0)+1});
+        _resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
       }
       const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
       const _knownArtIds=new Set(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]);
