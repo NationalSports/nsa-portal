@@ -8129,10 +8129,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{textAlign:'center',borderLeft:'2px solid #e2e8f0',paddingLeft:8}}><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>QTY</div><div style={{fontSize:18,fontWeight:800}}>{info.total}</div></div>
           </div>
         </div>)}
-        {/* Add another SO item to this pick */}
-        {addablePickItems.length>0&&<div style={{marginBottom:12,padding:10,border:'1px dashed #94a3b8',borderRadius:8,background:'#f8fafc'}}>
+        {/* Add another SO item to this pick — always shown so it's discoverable, even with nothing addable */}
+        <div style={{marginBottom:12,padding:10,border:'1px dashed #94a3b8',borderRadius:8,background:'#f8fafc'}}>
           <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8}}>➕ Add an item to this pick</div>
-          {addablePickItems.map(({it,li})=>{const opens=opensForItem(it);const totOpen=opens.reduce((a,[,op])=>a+op,0);
+          {addablePickItems.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No other items on this order have open units to pull — everything is already assigned to a pick or PO.</div>:
+            addablePickItems.map(({it,li})=>{const opens=opensForItem(it);const totOpen=opens.reduce((a,[,op])=>a+op,0);
             return<div key={li} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 8px',background:'white',border:'1px solid #e2e8f0',borderRadius:6,marginBottom:6,flexWrap:'wrap'}}>
               <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{it.sku}</span>
               <span style={{fontWeight:600,fontSize:12}}>{it.name}</span>
@@ -8144,7 +8145,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 setEditPick(p=>({...p,picks:[...p.picks,{lineIdx:li,pickIdx:-1,pick:newPick}]}));
               }}>+ Add {totOpen}</button>
             </div>;})}
-        </div>}
+        </div>
         {itemInfos.length>1&&<div style={{padding:'6px 10px',marginBottom:12,background:'#eff6ff',borderRadius:6,fontSize:12,fontWeight:700,color:'#1e40af',textAlign:'right'}}>Total: {grandTotal} units across {itemInfos.length} items</div>}
         {/* QR / Print Label */}
         <div style={{padding:12,border:'1px dashed #d1d5db',borderRadius:8,background:'#fafafa'}}>
