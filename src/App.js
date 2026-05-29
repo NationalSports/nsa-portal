@@ -2355,20 +2355,32 @@ function dP(d,q,artFiles,cq){
 // Returns {rows, subtotal}. `fmt` formats a number as a currency string.
 function buildInvoicePdfRows(inv, so, fmt){
   const soArt=so?safeArt(so):[];
-  const aqMap={};if(so)safeItems(so).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){aqMap[d.art_file_id]=(aqMap[d.art_file_id]||0)+q}})});
-  const soByKey={};if(so)safeItems(so).forEach((it,idx)=>{soByKey[soLineKey(it,idx)]=it});
+  const soItems=so?safeItems(so):[];
+  const aqMap={};soItems.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){aqMap[d.art_file_id]=(aqMap[d.art_file_id]||0)+q}})});
+  const soByKey={};soItems.forEach((it,idx)=>{soByKey[soLineKey(it,idx)]=idx});
   let lineItems=(inv&&inv.line_items)||[];
   if(!lineItems.length&&so){
-    lineItems=safeItems(so).map((it,idx)=>{
+    lineItems=soItems.map((it,idx)=>{
       const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return null;
       const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?aqMap[d.art_file_id]:qty;return a+dP(d,qty,soArt,cq).sell},0);
       return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell),_sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,idx)};
     }).filter(Boolean);
   }
+  // Match each invoice line back to its SO item so we can re-attach the size breakdown and
+  // decoration/number detail. Try the stored line key first, then SKU, then a description prefix
+  // (mirrors the on-screen invoice view); consume matched SO items so duplicate SKUs map 1:1.
+  const usedSo=new Set();
+  const matchSoIdx=(li)=>{
+    if(li._so_line_key!=null&&soByKey[li._so_line_key]!=null&&!usedSo.has(soByKey[li._so_line_key])){const i=soByKey[li._so_line_key];usedSo.add(i);return i}
+    let i=li._sku?soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku===li._sku):-1;
+    if(i<0)i=soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku&&(li.desc||'').startsWith(it.sku));
+    if(i>=0){usedSo.add(i);return i}
+    return -1;
+  };
   const rows=[];let subtotal=0;
   lineItems.forEach(li=>{
     const qty=safeNum(li.qty);subtotal+=safeNum(li.amount);
-    const soIt=(li._so_line_key&&soByKey[li._so_line_key])||(so?safeItems(so).find(it=>it.sku===li._sku):null);
+    const soIdx=matchSoIdx(li);const soIt=soIdx>=0?soItems[soIdx]:null;
     const sku=li._sku||soIt?.sku||'';
     const nm=soIt?.name||li._name;const color=soIt?.color||li._color;
     let itemName=nm?(nm+(color?' - '+color:'')):(li.desc||'');
