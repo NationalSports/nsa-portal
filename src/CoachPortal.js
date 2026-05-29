@@ -372,7 +372,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <span style={{fontWeight:800,fontSize:16}}>Estimated Total</span><span style={{fontWeight:800,fontSize:18,color:'#92400e'}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
             </div>
           </div>
-          {canApprove&&<button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',marginBottom:10}} onClick={async()=>{
+          {canApprove&&<button id="est-approve-btn" style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',marginBottom:10}} onClick={async()=>{
             const _approvedAt=new Date().toISOString();const _updatedAt=new Date().toLocaleString();
             const _approvedEst={...est,status:'approved',approved_by:'Coach',approved_at:_approvedAt,updated_at:_updatedAt};
             if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?_approvedEst:e))}
@@ -390,7 +390,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             });
             if(!_res.ok)alert('Could not save your approval — please try again or contact your rep.\n\n'+(_res.error||''));
           }}>✅ Approve This Estimate</button>}
-          {canApprove&&<div style={{border:'1px solid #e2e8f0',borderRadius:10,padding:16,marginBottom:10}}>
+          {canApprove&&<div id="est-request-box" style={{border:'1px solid #e2e8f0',borderRadius:10,padding:16,marginBottom:10}}>
             <div style={{fontSize:13,fontWeight:700,color:'#1e3a5f',marginBottom:8}}>Need changes? Request updates from your rep</div>
             {updateRequestSent?<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:600}}>Your update request has been sent to your rep!</div>
             :<>
@@ -430,8 +430,16 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>}
           {est.status==='approved'&&<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:700}}>✅ Approved — your rep will convert this to an order</div>}
           {est.status==='converted'&&<div style={{textAlign:'center',padding:12,background:'#dbeafe',borderRadius:8,color:'#1e40af',fontWeight:700}}>📦 This estimate has been converted to an active order</div>}
+          {canApprove&&<div style={{height:64}}/>}
         </div>
       </div>
+      {/* Sticky action bar — keeps Approve / Request changes reachable on long estimates without forcing the coach to commit before reviewing the items above */}
+      {canApprove&&<div style={{position:'fixed',left:0,right:0,bottom:0,display:'flex',justifyContent:'center',padding:'10px 16px',background:'rgba(255,255,255,0.92)',backdropFilter:'blur(6px)',borderTop:'1px solid #e2e8f0',boxShadow:'0 -2px 12px rgba(0,0,0,0.06)',zIndex:50}}>
+        <div style={{width:'100%',maxWidth:640,display:'flex',gap:10}}>
+          <button style={{flex:1,padding:'12px 16px',background:'white',color:'#d97706',border:'1px solid #d97706',borderRadius:10,fontSize:14,fontWeight:700,cursor:'pointer'}} onClick={()=>document.getElementById('est-request-box')?.scrollIntoView({behavior:'smooth',block:'center'})}>✏️ Request changes</button>
+          <button style={{flex:1,padding:'12px 16px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:14,fontWeight:800,cursor:'pointer'}} onClick={()=>document.getElementById('est-approve-btn')?.scrollIntoView({behavior:'smooth',block:'center'})}>✅ Approve</button>
+        </div>
+      </div>}
     </div>
   }
 
