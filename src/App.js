@@ -16,7 +16,7 @@ import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
-import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
+import { buildJobs, isJobReady, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
 import { calcOrderTotals, auTierDisc } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
@@ -6530,7 +6530,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.wh_only?'':csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.wh_only?'':csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -8080,6 +8080,19 @@ export default function App(){
     const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,...fields}:jj);
     savSO({...so,jobs:updatedJobs});
   };
+  // Set the manual link group on a job living on another sales order (used by OrderEditor when
+  // a rep links jobs across sub-customers). Persists via savSO so state + DB stay in sync.
+  const setJobLinkGroup=(soId,jobId,groupId)=>{
+    const so=sos.find(s=>s.id===soId);if(!so)return;
+    const updatedJobs=safeJobs(so).map(jj=>jj.id===jobId?{...jj,link_group:groupId||null}:jj);
+    savSO({...so,jobs:updatedJobs});
+  };
+  // Toggle a job out of (or back into) automatic same-artwork grouping.
+  const setJobAutoGroupOff=(soId,jobId,off)=>{
+    const so=sos.find(s=>s.id===soId);if(!so)return;
+    const updatedJobs=safeJobs(so).map(jj=>jj.id===jobId?{...jj,auto_group_off:!!off}:jj);
+    savSO({...so,jobs:updatedJobs});
+  };
   const[showColPicker,setShowColPicker]=useState(false);
   const ALL_PROD_COLS=[
     {id:'so',label:'SO',default:true},
@@ -8112,13 +8125,27 @@ export default function App(){
     const allJobs=[];
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);
+      const parentId=c?.parent_id||c?.id||null;
       safeJobs(so).forEach(j=>{
         allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
+          parentId,grpKey:jobGroupKey(j,parentId),
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—',
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
         });
       });
     });
+    // ── "Run together" linking ──
+    // Jobs sharing a group key (same artwork within a parent, or a manual link) should run on
+    // one screen setup. Map each group key to its members so we can cluster them in the board
+    // and surface a prompt when 2+ are sitting at the same production stage at once.
+    const grpMembers={};
+    allJobs.forEach(j=>{if(j.grpKey){(grpMembers[j.grpKey]=grpMembers[j.grpKey]||[]).push(j)}});
+    // Linked siblings of a job that are NOT shipped/completed (i.e. still relevant to run) —
+    // a long-finished job that happened to share the art name shouldn't clutter the badge.
+    const linkSiblings=(j)=>j.grpKey?(grpMembers[j.grpKey]||[]).filter(x=>!(x.soId===j.soId&&x.id===j.id)&&x.prod_status!=='shipped'&&x.prod_status!=='completed'):[];
+    // Reorder a list so members of the same group sit next to each other, preserving the
+    // original order of each group's first appearance and leaving ungrouped jobs in place.
+    const clusterLinked=(arr)=>{const seen=new Set();const out=[];arr.forEach(j=>{const g=j.grpKey;if(!g){out.push(j);return}if(seen.has(g))return;seen.add(g);arr.forEach(x=>{if(x.grpKey===g)out.push(x)})});return out;};
     const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>{const cc=cust.find(x=>x.id===j.so.customer_id);return(cc?.primary_rep_id||j.so.created_by)===prodFilter});
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
     const readyOnly=byDeco.filter(j=>(j.prod_status!=='hold'||isJobReady(j,j.so))).filter(j=>j.prod_status!=='shipped');
@@ -8167,8 +8194,41 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Needs Art</div><div className="stat-value" style={{color:needsArt>0?'#d97706':''}}>{needsArt}</div></div>
         <div className="stat-card"><div className="stat-label">In Process</div><div className="stat-value" style={{color:'#2563eb'}}>{inProcess}</div></div>
       </div>
+      {/* ── Run-together prompts ── Surfaces groups where 2+ jobs share the same decoration and
+          are sitting at the same production stage right now, so the team runs them on one screen
+          setup instead of recreating it per sales order. */}
+      {(()=>{
+        const sLabel={hold:'Ready for Prod',ready:'Ready for Prod',staging:'In Line',in_process:'In Process'};
+        const byKey={};
+        byStatus.forEach(j=>{if(j.grpKey)(byKey[j.grpKey]=byKey[j.grpKey]||[]).push(j)});
+        const alerts=[];
+        Object.entries(byKey).forEach(([k,members])=>{
+          if(members.length<2)return;
+          const byStat={};
+          members.forEach(m=>{const s=m.prod_status==='ready'?'hold':m.prod_status;(byStat[s]=byStat[s]||[]).push(m)});
+          Object.entries(byStat).forEach(([s,ms])=>{
+            if(s==='completed'||s==='shipped')return;
+            // For Ready-for-Prod, only count jobs that are actually checked in (items pulled/received).
+            const ready=s==='hold'?ms.filter(m=>isJobReady(m,m.so)):ms;
+            if(ready.length<2)return;
+            alerts.push({k,status:s,members:ready});
+          });
+        });
+        if(!alerts.length)return null;
+        return<div style={{marginBottom:12,display:'flex',flexDirection:'column',gap:8}}>
+          {alerts.map((a,i)=>{const m0=a.members[0];return(
+            <div key={a.k+a.status+i} style={{padding:'10px 14px',background:'linear-gradient(135deg,#ecfdf5,#f0fdf4)',border:'1px solid #86efac',borderRadius:8,display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+              <span style={{fontSize:18}}>🔗</span>
+              <div style={{flex:1,minWidth:240}}>
+                <div style={{fontSize:13,fontWeight:700,color:'#166534'}}>{a.members.length} jobs share "{m0.art_name||'(unnamed art)'}" ({(m0.deco_type||'').replace(/_/g,' ')}) — run together to reuse the screen</div>
+                <div style={{fontSize:11,color:'#15803d',marginTop:2}}>All at <strong>{sLabel[a.status]||a.status}</strong>: {a.members.map(m=>m.soId+' · '+m.customer).join('  •  ')}</div>
+              </div>
+            </div>
+          )})}
+        </div>;
+      })()}
       {prodView==='board'&&<div style={{display:'flex',gap:12,overflowX:'auto',paddingBottom:12}}>
-        {kanbanCols.map(col=>{const colJobs=col.filter?byStatus.filter(col.filter):byStatus.filter(j=>j.prod_status===col.id);
+        {kanbanCols.map(col=>{const colJobs=clusterLinked(col.filter?byStatus.filter(col.filter):byStatus.filter(j=>j.prod_status===col.id));
           return<div key={col.id} style={{minWidth:220,flex:1,background:col.bg,borderRadius:8,padding:8}}>
             <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
               <div style={{width:8,height:8,borderRadius:8,background:col.color}}/>
@@ -8202,6 +8262,7 @@ export default function App(){
                   </div>
                   <div style={{display:'flex',alignItems:'center',gap:4}}>
                     <span style={{fontSize:9,color:'#94a3b8'}}>{j.id} · {gCount} item{gCount!==1?'s':''} · {j.rep}</span>
+                    {(()=>{const sibs=linkSiblings(j);if(!sibs.length)return null;const _norm=s=>s==='ready'?'hold':s;const same=sibs.filter(s=>_norm(s.prod_status)===_norm(j.prod_status));const title='Shares this decoration with:\n'+sibs.map(s=>s.soId+' · '+s.customer+' ('+(s.prod_status||'').replace(/_/g,' ')+')').join('\n')+(j.link_group?'\n\n(manually linked)':'');return<span title={title} style={{fontSize:8,fontWeight:700,padding:'1px 5px',borderRadius:6,marginLeft:4,background:same.length?'#dcfce7':'#f1f5f9',color:same.length?'#166534':'#64748b'}}>🔗 {same.length?'Run w/ '+(same.length+1):'Linked'}</span>})()}
                     <span style={{fontSize:9,color:'#94a3b8',marginLeft:'auto',transition:'transform 0.15s',transform:isExp?'rotate(180deg)':'rotate(0deg)'}}>▾</span>
                   </div>
                 </div>
@@ -8334,7 +8395,7 @@ export default function App(){
           status:{label:'Status',sort:'status',render:j=>{const k=j.prod_status||'hold';const sc=statusColors[k]||{bg:'#f1f5f9',c:'#64748b'};return<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:sc.bg,color:sc.c,whiteSpace:'nowrap'}}>{statusLabel[k]||k.replace(/_/g,' ')}</span>}},
           job:{label:'Job ID',sort:'job',render:j=><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span>},
           job_name:{label:'Job Name',sort:'art_name',render:j=><div style={{maxWidth:280,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.art_name||'—'}</div>},
-          customer:{label:'Customer',sort:'customer',render:j=><span>{j.customer}{j.alpha&&<span className="badge badge-gray" style={{marginLeft:4}}>{j.alpha}</span>}</span>},
+          customer:{label:'Customer',sort:'customer',render:j=>{const sibs=linkSiblings(j);const _norm=s=>s==='ready'?'hold':s;const same=sibs.filter(s=>_norm(s.prod_status)===_norm(j.prod_status));return<span>{j.customer}{j.alpha&&<span className="badge badge-gray" style={{marginLeft:4}}>{j.alpha}</span>}{sibs.length>0&&<span title={'Shares this decoration with:\n'+sibs.map(s=>s.soId+' · '+s.customer+' ('+(s.prod_status||'').replace(/_/g,' ')+')').join('\n')+(j.link_group?'\n\n(manually linked)':'')} style={{fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:6,marginLeft:4,background:same.length?'#dcfce7':'#f1f5f9',color:same.length?'#166534':'#64748b',whiteSpace:'nowrap'}}>🔗 {same.length?'Run w/ '+(same.length+1):'Linked'}</span>}</span>}},
           alpha:{label:'Alpha Tag',sort:'alpha',render:j=>j.alpha||'—'},
           so:{label:'SO #',sort:'soId',render:j=><span style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{j.soId}</span>},
           so_memo:{label:'SO Memo',render:j=><div style={{maxWidth:240,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:11}}>{j.soMemo||'—'}</div>},
@@ -8416,7 +8477,7 @@ export default function App(){
                 </th>;
               })}
             </tr></thead><tbody>
-            {sorted.map(j=><tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
+            {clusterLinked(sorted).map(j=><tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
               {visibleCols.map(id=>{const c=ALL_COLS[id];return<td key={id} style={{textAlign:c.align||'left'}}>{c.render(j)}</td>;})}
             </tr>)}
             </tbody></table>
