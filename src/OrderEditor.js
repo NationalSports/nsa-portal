@@ -2335,9 +2335,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 }
               });
               sv('promo_applied',true);sv('items',newItems);
-              // On SOs (committed orders), deduct from balance + record usage immediately so the Promo $ tab and balance reflect the spend.
-              // Estimates skip this — their promo is provisional until conversion to SO (handled in App.convertSO).
-              if(isSO){
+              // Deduct from balance + record usage immediately on both estimates and SOs so the Promo $ tab
+              // and balance reflect the spend right away. Usage is keyed by estimate_id on an estimate (so_id
+              // null) and by so_id on an SO; convertSO re-links the estimate's usage to the new SO instead of
+              // deducting again, so an estimate and the SO it becomes never double-spend.
+              {
                 const promoUsed=promoBudget-remaining;
                 if(promoUsed>0){
                   // Spread the deduction across drawable periods: current half first, then future (early use).
@@ -2347,7 +2349,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const avail=safeNum(p.allocated)-safeNum(p.used);if(avail<=0)continue;
                     const take=Math.min(avail,_toDeduct);const isEarly=p.period_start>_pStart;
                     _updatedPeriods.push({...p,used:safeNum(p.used)+take});
-                    _usageRecs.push({period_id:p.id,amount:take,description:(o.memo||('Promo on '+o.id))+(isEarly?' — early draw from '+_halfLabel(p.period_start):''),created_by:cu?.name||'System',so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()});
+                    _usageRecs.push({period_id:p.id,amount:take,description:(o.memo||('Promo on '+o.id))+(isEarly?' — early draw from '+_halfLabel(p.period_start):''),created_by:cu?.name||'System',so_id:isSO?o.id:null,estimate_id:isSO?(o.estimate_id||null):o.id,created_at:new Date().toISOString()});
                     _toDeduct-=take;
                   }
                   for(const up of _updatedPeriods){if(onSavePromoPeriod)await onSavePromoPeriod(up);else if(_dbSavePromoPeriod)await _dbSavePromoPeriod(up)}
@@ -2362,9 +2364,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               else{nf('Promo applied to '+fullCount+' of '+totalItems+' items — customer pays for rest')}
             }} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Apply Promo Funds</button>}
             {o.promo_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
-              // On SOs, reverse the deduction by deleting any usage tied to this SO and restoring the period balance.
-              if(isSO&&cust){
-                const usages=(cust.promo_usage||[]).filter(u=>u.so_id===o.id);
+              // Reverse the deduction by deleting any usage tied to this doc (by so_id on an SO, by estimate_id
+              // on an estimate) and restoring each affected period's balance.
+              if(cust){
+                const _mine=u=>isSO?u.so_id===o.id:(u.estimate_id===o.id&&!u.so_id);
+                const usages=(cust.promo_usage||[]).filter(_mine);
                 for(const u of usages){
                   const period=(cust.promo_periods||[]).find(p=>p.id===u.period_id);
                   if(period){
@@ -2372,8 +2376,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     if(onSavePromoPeriod)await onSavePromoPeriod(restored);else if(_dbSavePromoPeriod)await _dbSavePromoPeriod(restored);
                   }
                 }
-                if(usages.length&&onDeletePromoUsage){const _pids=[...new Set(usages.map(u=>u.period_id))];for(const _pid of _pids)await onDeletePromoUsage(_pid,o.id)}
-                if(usages.length){setCust(c=>c?{...c,promo_periods:(c.promo_periods||[]).map(p=>{const u=usages.find(x=>x.period_id===p.id);return u?{...p,used:Math.max(0,safeNum(p.used)-safeNum(u.amount))}:p}),promo_usage:(c.promo_usage||[]).filter(u=>u.so_id!==o.id)}:c)}
+                if(usages.length&&onDeletePromoUsage){const _pids=[...new Set(usages.map(u=>u.period_id))];for(const _pid of _pids)await onDeletePromoUsage(_pid,isSO?o.id:null,isSO?null:o.id)}
+                if(usages.length){setCust(c=>{if(!c)return c;const _byPeriod={};usages.forEach(u=>{_byPeriod[u.period_id]=(_byPeriod[u.period_id]||0)+safeNum(u.amount)});return{...c,promo_periods:(c.promo_periods||[]).map(p=>_byPeriod[p.id]?{...p,used:Math.max(0,safeNum(p.used)-_byPeriod[p.id])}:p),promo_usage:(c.promo_usage||[]).filter(u=>!_mine(u))}})}
               }
               sv('promo_applied',false);sv('promo_amount',0);sv('items',safeItems(o).map(it=>({...it,is_promo:false,unit_sell:it._pre_promo_sell!=null?it._pre_promo_sell:it.unit_sell,decorations:safeDecos(it).map(d=>d._pre_promo_sell_override!==undefined?{...d,sell_override:d._pre_promo_sell_override,_pre_promo_sell_override:undefined}:d),_pre_promo_sell:undefined,_promo_credit:undefined,_promo_partial_qty:undefined})));nf('Promo mode disabled')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Remove Promo</button>}
             {/* Credit — show when customer has credits available */}
