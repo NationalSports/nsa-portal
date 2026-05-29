@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
-import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES } from './constants';
+import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES, APPAREL_SIZES, FOOTWEAR_SIZES } from './constants';
 import { safeNum, safeItems, safeSizes, safeArr, safeStr, safeDecos } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, SortHeader, PantoneAdder, SearchSelect } from './components';
 import { CONTACT_ROLES } from './pricing';
@@ -462,23 +462,44 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
     onSave(dat);onClose()}}>{tcLook.loading?'Saving...':'Save'}</button></div></div></div>);
 }
 
-function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});const[d,setD]=useState({});const[reason,setReason]=useState('');const[adjType,setAdjType]=useState('manual');
-  React.useEffect(()=>{if(product){setA({...product._inv});setD({});setReason('');setAdjType('manual')}},[product,isOpen]);if(!isOpen||!product)return null;
+function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});const[d,setD]=useState({});const[reason,setReason]=useState('');const[adjType,setAdjType]=useState('manual');const[avail,setAvail]=useState([]);const[showSzPicker,setShowSzPicker]=useState(false);
+  React.useEffect(()=>{if(product){setA({...product._inv});setD({});setReason('');setAdjType('manual');setAvail([...(product.available_sizes||[])]);setShowSzPicker(false)}},[product,isOpen]);if(!isOpen||!product)return null;
   const applyDelta=(sz,val)=>{const cur=product._inv?.[sz]||0;const delta=parseInt(val)||0;setD(x=>({...x,[sz]:delta}));setA(x=>({...x,[sz]:Math.max(0,cur+delta)}))};
-  const hasChanges=Object.values(d).some(v=>v!==0);
+  const isFw=product.is_footwear||(product.category||'').toLowerCase()==='footwear';
+  const sizePool=isFw?FOOTWEAR_SIZES:APPAREL_SIZES;
+  const sortSz=(arr)=>[...arr].sort((x,y)=>{const xi=SZ_ORD.indexOf(x),yi=SZ_ORD.indexOf(y);if(xi<0&&yi<0)return(parseFloat(x)||0)-(parseFloat(y)||0);if(xi<0)return 1;if(yi<0)return -1;return xi-yi});
+  const dispSizes=sortSz(avail);
+  const addable=sizePool.filter(s=>!avail.includes(s));
+  const addSz=(sz)=>{if(!avail.includes(sz))setAvail(x=>[...x,sz])};
+  const removeSz=(sz)=>{if((product._inv?.[sz]||0)>0)return;setAvail(x=>x.filter(s=>s!==sz));setD(x=>{const n={...x};delete n[sz];return n});setA(x=>{const n={...x};delete n[sz];return n})};
+  const sizesChanged=JSON.stringify(sortSz(avail))!==JSON.stringify(sortSz(product.available_sizes||[]));
+  const hasChanges=Object.values(d).some(v=>v!==0)||sizesChanged;
   return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:650}}>
     <div className="modal-header"><h2>Adjust Inventory</h2><button className="modal-close" onClick={onClose}>x</button></div>
     <div className="modal-body"><div style={{padding:12,background:'#f8fafc',borderRadius:6,marginBottom:16}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{product.sku}</span> {product.name}</div>
-      <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>{product.available_sizes.map(sz=>{const cur=product._inv?.[sz]||0;const delta=d[sz]||0;const newVal=Math.max(0,cur+delta);
-        return<div key={sz} style={{textAlign:'center',minWidth:56}}>
-          <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:2}}>{sz}</div>
+      <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'flex-start'}}>{dispSizes.map(sz=>{const cur=product._inv?.[sz]||0;const delta=d[sz]||0;const newVal=Math.max(0,cur+delta);const isNew=!(product.available_sizes||[]).includes(sz);
+        return<div key={sz} style={{textAlign:'center',minWidth:56,position:'relative'}}>
+          {isNew&&cur===0&&<button onClick={()=>removeSz(sz)} title={'Remove '+sz} style={{position:'absolute',top:-6,right:2,width:16,height:16,lineHeight:'14px',padding:0,borderRadius:8,border:'1px solid #fca5a5',background:'#fef2f2',color:'#dc2626',fontSize:11,fontWeight:700,cursor:'pointer'}}>×</button>}
+          <div style={{fontSize:10,fontWeight:700,color:isNew?'#7c3aed':'#64748b',marginBottom:2}}>{sz}{isNew&&<span style={{fontSize:8,display:'block',color:'#a78bfa',fontWeight:600}}>new</span>}</div>
           <div style={{fontSize:18,fontWeight:800,color:'#0f172a',marginBottom:2}}>{cur}</div>
           <div style={{fontSize:9,color:'#94a3b8',marginBottom:4}}>current</div>
           <input style={{width:52,textAlign:'center',border:'2px solid '+(delta>0?'#22c55e':delta<0?'#ef4444':'#d1d5db'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,color:delta>0?'#166534':delta<0?'#dc2626':'#0f172a',background:delta>0?'#f0fdf4':delta<0?'#fef2f2':'white'}}
             value={delta===0?'':((delta>0?'+':'')+delta)} placeholder="±0"
             onChange={e=>{const raw=e.target.value.replace(/[^0-9\-+]/g,'');if(raw===''||raw==='-'||raw==='+'){setD(x=>({...x,[sz]:0}));setA(x=>({...x,[sz]:cur}));return}applyDelta(sz,raw)}}/>
           <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>= <strong style={{color:delta!==0?'#1e40af':'#94a3b8'}}>{newVal}</strong></div>
-        </div>})}</div>
+        </div>})}
+        <div style={{position:'relative',alignSelf:'center'}}>
+          <button type="button" className="btn btn-sm btn-secondary" onClick={()=>setShowSzPicker(v=>!v)} style={{fontSize:11,whiteSpace:'nowrap'}}><Icon name="plus" size={11}/> Size</button>
+          {showSzPicker&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(false)}/>
+            <div style={{position:'absolute',top:'100%',left:0,marginTop:4,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.12)',zIndex:40,padding:8,width:240,maxHeight:260,overflowY:'auto'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                <span style={{fontSize:10,fontWeight:700,color:'#64748b'}}>Add a size</span>
+                <button className="btn btn-sm btn-primary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setShowSzPicker(false)}>Done</button>
+              </div>
+              {addable.length===0?<div style={{fontSize:11,color:'#94a3b8',padding:'4px 2px'}}>All sizes added</div>
+              :<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{addable.map(sz=><button key={sz} type="button" className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'3px 8px'}} onClick={()=>addSz(sz)}>{sz}</button>)}</div>}
+            </div></>}
+        </div></div>
       {hasChanges&&<div style={{marginTop:16,borderTop:'1px solid #e2e8f0',paddingTop:12}}>
         <div style={{display:'flex',gap:12,marginBottom:8}}>
           <div style={{flex:1}}><label style={{fontSize:11,fontWeight:700,color:'#475569',display:'block',marginBottom:4}}>Type</label>
@@ -489,7 +510,7 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
         </div>
         <div style={{fontSize:11,color:'#64748b',background:'#fffbeb',padding:'6px 10px',borderRadius:4,border:'1px solid #fef3c7'}}>This adjustment will be logged and synced to QuickBooks.</div>
       </div>}
-    </div><div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={!hasChanges} onClick={()=>{onSave(product.id,a,d,reason,adjType);onClose()}}>Save</button></div></div></div>);
+    </div><div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={!hasChanges} onClick={()=>{onSave(product.id,a,d,reason,adjType,sortSz(avail));onClose()}}>Save</button></div></div></div>);
 }
 
 // ─── STRIPE CHECKOUT ───
