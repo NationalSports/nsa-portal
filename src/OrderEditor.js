@@ -8404,7 +8404,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontSize:11,fontWeight:600,color:'#64748b',width:40}}>Qty:</span>
                 {rsk.filter(sz=>getOp(sz)>0).map(sz=><div key={sz} style={{textAlign:'center'}}>
                   <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                  <input id={'po-recv-'+ln.lineIdx+'-'+ln.poIdx+'-'+sz} style={{width:42,textAlign:'center',border:'1px solid #22c55e',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getOp(sz)} onChange={e=>{const v=parseInt(e.target.value)||0;e.target.style.borderColor=v>getOp(sz)?'#dc2626':'#22c55e';e.target.style.background=v>getOp(sz)?'#fef2f2':'white'}}/>
+                  <input id={'po-recv-'+ln.lineIdx+'-'+ln.poIdx+'-'+sz} style={{width:42,textAlign:'center',border:'1px solid #22c55e',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={0} onFocus={e=>e.target.select()} onChange={e=>{const v=parseInt(e.target.value)||0;e.target.style.borderColor=v>getOp(sz)?'#dc2626':'#22c55e';e.target.style.background=v>getOp(sz)?'#fef2f2':'white'}}/>
                   <div style={{fontSize:9,color:'#64748b'}}>{getOp(sz)} open</div>
                 </div>)}
               </div>
@@ -9049,7 +9049,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Qty:</span>
                   {rsk.filter(sz=>getOp(sz)>0).map(sz=><div key={sz} style={{textAlign:'center'}}>
                     <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                    <input id={'po-fp-recv-'+ln.lineIdx+'-'+ln.poIdx+'-'+sz} style={{width:48,textAlign:'center',border:'1px solid #22c55e',borderRadius:4,padding:'5px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getOp(sz)}/>
+                    <input id={'po-fp-recv-'+ln.lineIdx+'-'+ln.poIdx+'-'+sz} style={{width:48,textAlign:'center',border:'1px solid #22c55e',borderRadius:4,padding:'5px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={0} onFocus={e=>e.target.select()}/>
                     <div style={{fontSize:9,color:'#64748b'}}>{getOp(sz)} open</div>
                   </div>)}
                 </div>
