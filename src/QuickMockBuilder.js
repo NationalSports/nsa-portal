@@ -18,6 +18,8 @@ import { fileUpload, _cloudinaryPdfThumb } from './utils';
 //   onSave({mocksByGarment, filesByLocation})
 //   onClose()
 //   nf
+//   onSaveProductImage(garment, url, side) -> truthy when the photo was saved back to the
+//     product catalog (matched by SKU/color), so an uploaded product image is reused later.
 
 // Common apparel color names -> swatch hex, so the rep can eyeball which colorway
 // they're mocking. Unknown names fall back to neutral grey.
@@ -49,7 +51,7 @@ const hexToRgb = h => {
   return m ? {r: parseInt(m[0], 16), g: parseInt(m[1], 16), b: parseInt(m[2], 16)} : {r: 0, g: 0, b: 0};
 };
 
-export default function QuickMockBuilder({garments, locations, initialMocks, initialScene, onSave, onClose, nf}){
+export default function QuickMockBuilder({garments, locations, initialMocks, initialScene, onSave, onClose, nf, onSaveProductImage}){
   const [gi, setGi] = useState(0);
   const [side, setSide] = useState('front');
   const [canvas, setCanvas] = useState(null);
@@ -400,9 +402,16 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
       nf && nf('Uploading product image...');
       const url = await fileUpload(file, 'nsa-products');
       setImgOverride(prev => ({...prev, [garment.key]: url}));
+      // Persist the photo back to the product catalog (matched by SKU/color) so it's reused
+      // next time instead of re-uploaded. onSaveProductImage returns true when it matched a
+      // catalog product. The current side decides whether it's the front or back image.
+      if (onSaveProductImage) {
+        const saved = await onSaveProductImage(garment, url, side);
+        if (saved) nf && nf('Saved to the product catalog for future use');
+      }
     } catch (e) { nf && nf('Upload failed: ' + e.message, 'error'); }
     finally { setBusy(false); }
-  }, [garment.key, nf]);
+  }, [garment, side, nf, onSaveProductImage]);
 
   // Saves the current canvas as a mock for the current garment+side. Returns {key, entry} on
   // success (null otherwise) so callers can fold the just-saved mock into state that hasn't

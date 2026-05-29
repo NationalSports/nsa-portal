@@ -1988,6 +1988,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       artIds.forEach(aid=>{const art=safeArt(o).find(a=>a.id===aid);if(!art)return;Object.entries(art.item_mockups||{}).forEach(([k,arr])=>{if(arr&&arr.length)initialMocks[k]=[...(initialMocks[k]||[]),...arr]});Object.entries(art.qm_scenes||{}).forEach(([k,objs])=>{if(objs&&objs.length&&!initialScene[k])initialScene[k]=objs})});
       return<QuickMockBuilder garments={garments} locations={locations} initialMocks={initialMocks} initialScene={initialScene} nf={nf}
         onClose={()=>setEditMockJob(null)}
+        onSaveProductImage={(g,url,side)=>{
+          // Persist a product photo uploaded in the mock builder back to the catalog so it's
+          // reused next time. Match the catalog product by SKU (preferring the exact color).
+          const prd=products.find(p=>p.sku===g.sku&&(!g.color||p.color===g.color))||products.find(p=>p.sku===g.sku);
+          if(!prd||!onSaveProduct)return false;
+          onSaveProduct(side==='back'?{...prd,back_image_url:url}:{...prd,image_url:url});
+          return true;
+        }}
         onSave={({mocksByGarment,filesByLocation,sceneByGarment})=>{
           const _fUrl=f=>typeof f==='string'?f:(f?.url||'');
           const updArt=safeArt(o).map(a=>{
