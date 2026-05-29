@@ -9,7 +9,7 @@ import { StripePaymentModal } from './modals';
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveArtFiles,REPS,prod,onCopy,onDelete,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveArtFiles,REPS,prod,onCopy,onDelete,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[rR,setRR]=useState('thisyear');
   const[expSOs,setExpSOs]=useState(()=>new Set());
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
@@ -24,6 +24,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[promoEdit,setPromoEdit]=useState(null);// null or {type,fixed_amount,spend_percentage,notes,id?}
   const[promoNewPeriod,setPromoNewPeriod]=useState(null);// null or {program_id,allocated,notes}
   const[promoAdj,setPromoAdj]=useState(null);// null or {period_id,amount,description}
+  const[promoPeriodEdit,setPromoPeriodEdit]=useState(null);// null or {id,allocated} — inline edit of a period's allocation
   // Credit state
   const[creditAdd,setCreditAdd]=useState(null);// null or {amount,source}
   const[portalJobView,setPortalJobView]=useState(null);// {job,so} when viewing a job mockup
@@ -436,6 +437,23 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       else onSavePromoPeriod({id:'pp_'+parentId+'_'+nextPeriod.start,customer_id:parentId,program_id:pctProg?.id||null,period_start:nextPeriod.start,period_end:nextPeriod.end,allocated:curEarned,used:0,notes:'Pulled forward from '+curPeriod.label+' spend',created_at:new Date().toISOString()});
       nf('Pulled forward $'+curEarned.toLocaleString()+' to '+nextPeriod.label);
     };
+    // Inline allocated cell + Edit/Delete actions for a period row (Upcoming / Past tables).
+    const _allocCell=p=>(promoPeriodEdit&&promoPeriodEdit.id===p.id)
+      ?<td><input className="form-input" type="number" style={{width:90}} value={promoPeriodEdit.allocated} onChange={e=>setPromoPeriodEdit({...promoPeriodEdit,allocated:parseFloat(e.target.value)||0})}/></td>
+      :<td>${(p.allocated||0).toLocaleString()}</td>;
+    const _periodActions=p=>{const used=safeNum(p.used);
+      if(promoPeriodEdit&&promoPeriodEdit.id===p.id)return<td style={{whiteSpace:'nowrap'}}>
+        <button className="btn btn-sm btn-primary" onClick={()=>{onSavePromoPeriod({...p,allocated:safeNum(promoPeriodEdit.allocated)});setPromoPeriodEdit(null)}}>Save</button>
+        <button className="btn btn-sm btn-secondary" style={{marginLeft:4}} onClick={()=>setPromoPeriodEdit(null)}>Cancel</button>
+      </td>;
+      return<td style={{whiteSpace:'nowrap'}}>
+        <button className="btn btn-sm btn-secondary" onClick={()=>setPromoPeriodEdit({id:p.id,allocated:safeNum(p.allocated)})}>Edit</button>
+        <button className="btn btn-sm" style={{color:'#dc2626',marginLeft:4}} title={used>0?'$'+used.toLocaleString()+' is used by orders — remove promo from those first':'Delete period'} onClick={()=>{
+          if(used>0){nf('Can\'t delete — $'+used.toLocaleString()+' is used by orders. Remove promo from those orders first.','error');return}
+          if(window.confirm('Delete this promo period ($'+safeNum(p.allocated).toLocaleString()+' allocated)?'))onDeletePromoPeriod&&onDeletePromoPeriod(p.id);
+        }}>× Delete</button>
+      </td>;
+    };
     return<div style={{display:'flex',flexDirection:'column',gap:12}}>
       {customer.parent_id&&parentCust&&parentCust.id!==customer.id&&<div style={{padding:'8px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e40af'}}>Promo $ is shared with parent account <strong style={{cursor:'pointer',textDecoration:'underline'}} onClick={()=>onSelCust&&onSelCust(parentCust)}>{parentCust.name}</strong> — changes here apply to all sub-accounts.</div>}
       {/* Current Balance */}
@@ -558,26 +576,28 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
 
       {/* Upcoming Periods — future allocations (e.g. pulled-forward co-op), usable early on current orders */}
       {upcomingPeriods.length>0&&<div className="card"><div className="card-header"><h2>Upcoming Periods</h2></div><div className="card-body" style={{padding:0}}>
-        <table style={{fontSize:12}}><thead><tr><th>Period</th><th>Allocated</th><th>Used</th><th>Remaining</th><th>Status</th></tr></thead><tbody>
+        <table style={{fontSize:12}}><thead><tr><th>Period</th><th>Allocated</th><th>Used</th><th>Remaining</th><th>Status</th><th></th></tr></thead><tbody>
           {upcomingPeriods.map(p=>{const rem=(p.allocated||0)-(p.used||0);return<tr key={p.id}>
             <td style={{fontWeight:600}}>{p.period_start?.slice(0,7)} — {p.period_end?.slice(0,7)}</td>
-            <td>${(p.allocated||0).toLocaleString()}</td>
+            {_allocCell(p)}
             <td style={{color:'#dc2626'}}>${(p.used||0).toLocaleString()}</td>
             <td style={{color:rem>0?'#166534':'#94a3b8'}}>${rem.toLocaleString()}</td>
             <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:rem>0?'#dcfce7':'#f1f5f9',color:rem>0?'#166534':'#94a3b8'}}>{rem>0?'Available early $'+rem.toLocaleString():'Fully Used'}</span></td>
+            {_periodActions(p)}
           </tr>})}
         </tbody></table>
       </div></div>}
 
       {/* Past Periods */}
       {pastPeriods.length>0&&<div className="card"><div className="card-header"><h2>Past Periods</h2></div><div className="card-body" style={{padding:0}}>
-        <table style={{fontSize:12}}><thead><tr><th>Period</th><th>Allocated</th><th>Used</th><th>Remaining</th><th>Status</th></tr></thead><tbody>
+        <table style={{fontSize:12}}><thead><tr><th>Period</th><th>Allocated</th><th>Used</th><th>Remaining</th><th>Status</th><th></th></tr></thead><tbody>
           {pastPeriods.map(p=>{const rem=(p.allocated||0)-(p.used||0);return<tr key={p.id}>
             <td style={{fontWeight:600}}>{p.period_start?.slice(0,7)} — {p.period_end?.slice(0,7)}</td>
-            <td>${(p.allocated||0).toLocaleString()}</td>
+            {_allocCell(p)}
             <td style={{color:'#dc2626'}}>${(p.used||0).toLocaleString()}</td>
             <td style={{color:rem>0?'#166534':'#94a3b8'}}>${rem.toLocaleString()}</td>
             <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:rem>0?'#fef3c7':'#f1f5f9',color:rem>0?'#92400e':'#94a3b8'}}>{rem>0?'Unused $'+rem:'Fully Used'}</span></td>
+            {_periodActions(p)}
           </tr>})}
         </tbody></table>
       </div></div>}
