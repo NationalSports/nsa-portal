@@ -8154,6 +8154,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       });
       const grandTotal=itemInfos.reduce((a,x)=>a+x.total,0);
       const overallStatus=picks.every(p=>p.pick.status==='pulled')?'pulled':'pick';
+      // SO items not already on this pick that still have open units (ordered − picked − PO-committed),
+      // so the user can grow the pick from the order side. Mirrors the "Create IF" availability check.
+      const onPickIdxs=new Set(picks.map(p=>p.lineIdx));
+      const pickDefaultDest=(picks.map(p=>p.pick).find(pk=>pk.ship_dest)?.ship_dest)||firstPk.ship_dest||'in_house';
+      const opensForItem=(it)=>Object.entries(it.sizes||{}).map(([sz,v])=>{const picked=(it.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(it.po_lines,sz);return[sz,Math.max(0,(v||0)-picked-po)]}).filter(([,op])=>op>0);
+      const addablePickItems=o.items.map((it,li)=>({it,li})).filter(({it,li})=>!onPickIdxs.has(li)&&opensForItem(it).length>0);
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId);
       // Build shared ship badge from first pick that has ship info
       const shipPk=picks.map(p=>p.pick).find(pk=>pk.ship_dest&&pk.ship_dest!=='in_house')||firstPk;
@@ -8200,6 +8206,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{info.item.sku}</span>
             <span style={{fontWeight:600,fontSize:13}}>{info.item.name}</span>
             {info.item.color&&<span className="badge badge-gray">{info.item.color}</span>}
+            {picks.length>1&&<button className="btn btn-sm" style={{marginLeft:'auto',fontSize:10,background:'#fee2e2',color:'#dc2626',border:'1px solid #fecaca',padding:'3px 10px',fontWeight:700}} onClick={()=>setEditPick(p=>({...p,picks:p.picks.filter((_,i)=>i!==info.idx)}))}>✕ Remove</button>}
           </div>
           <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:6}}>Quantities by size:</div>
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
@@ -8210,6 +8217,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{textAlign:'center',borderLeft:'2px solid #e2e8f0',paddingLeft:8}}><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>QTY</div><div style={{fontSize:18,fontWeight:800}}>{info.total}</div></div>
           </div>
         </div>)}
+        {/* Add another SO item to this pick — always shown so it's discoverable, even with nothing addable */}
+        <div style={{marginBottom:12,padding:10,border:'1px dashed #94a3b8',borderRadius:8,background:'#f8fafc'}}>
+          <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8}}>➕ Add an item to this pick</div>
+          {addablePickItems.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No other items on this order have open units to pull — everything is already assigned to a pick or PO.</div>:
+            addablePickItems.map(({it,li})=>{const opens=opensForItem(it);const totOpen=opens.reduce((a,[,op])=>a+op,0);
+            return<div key={li} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 8px',background:'white',border:'1px solid #e2e8f0',borderRadius:6,marginBottom:6,flexWrap:'wrap'}}>
+              <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{it.sku}</span>
+              <span style={{fontWeight:600,fontSize:12}}>{it.name}</span>
+              {it.color&&<span className="badge badge-gray" style={{fontSize:10}}>{it.color}</span>}
+              <span style={{fontSize:10,color:'#64748b'}}>{opens.map(([sz,op])=>sz+':'+op).join(' ')} open</span>
+              <button className="btn btn-sm btn-primary" style={{marginLeft:'auto',fontSize:11}} onClick={()=>{
+                const newPick={pick_id:editPick.pickId,status:'pick',created_at:new Date().toLocaleDateString(),ship_dest:pickDefaultDest};
+                opens.forEach(([sz,op])=>{newPick[sz]=op});
+                setEditPick(p=>({...p,picks:[...p.picks,{lineIdx:li,pickIdx:-1,pick:newPick}]}));
+              }}>+ Add {totOpen}</button>
+            </div>;})}
+        </div>
         {itemInfos.length>1&&<div style={{padding:'6px 10px',marginBottom:12,background:'#eff6ff',borderRadius:6,fontSize:12,fontWeight:700,color:'#1e40af',textAlign:'right'}}>Total: {grandTotal} units across {itemInfos.length} items</div>}
         {/* QR / Print Label */}
         <div style={{padding:12,border:'1px dashed #d1d5db',borderRadius:8,background:'#fafafa'}}>
@@ -8245,10 +8269,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick deleted');
         }}><Icon name="trash" size={12}/> Delete</button>
         <button className="btn btn-primary" onClick={()=>{
-          // Apply inventory adjustments per line based on status transitions
-          picks.forEach(p=>{const oldPick=o.items[p.lineIdx]?.pick_lines?.[p.pickIdx];const it=o.items[p.lineIdx];const newPick=p.pick;if(!oldPick||!it)return;if(oldPick.status!=='pulled'&&newPick.status==='pulled')adjustInvForPick(newPick,it,-1);else if(oldPick.status==='pulled'&&newPick.status!=='pulled')adjustInvForPick(oldPick,it,1)});
-          const writeMap=new Map();picks.forEach(p=>{if(!writeMap.has(p.lineIdx))writeMap.set(p.lineIdx,new Map());writeMap.get(p.lineIdx).set(p.pickIdx,p.pick)});
-          const updatedItems=o.items.map((it,i)=>writeMap.has(i)?{...it,pick_lines:(it.pick_lines||[]).map((pl,pi)=>writeMap.get(i).has(pi)?writeMap.get(i).get(pi):pl)}:it);
+          // Rebuild each affected item's pick lines for this pick_id from the modal state. This covers quantity
+          // edits, status changes, newly added items, and items removed in the modal — all in one pass.
+          const pkId=editPick.pickId;
+          const curByLine=new Map();picks.forEach(p=>curByLine.set(p.lineIdx,p.pick));
+          const affected=new Set(picks.map(p=>p.lineIdx));
+          o.items.forEach((it,i)=>{if((it.pick_lines||[]).some(pl=>pl.pick_id===pkId))affected.add(i)});
+          // Inventory transitions (stock only moves on the pulled status)
+          affected.forEach(i=>{const it=o.items[i];const old=(it.pick_lines||[]).find(pl=>pl.pick_id===pkId);const cur=curByLine.get(i);
+            if(old&&old.status==='pulled'&&(!cur||cur.status!=='pulled'))adjustInvForPick(old,it,1);
+            if(cur&&cur.status==='pulled'&&(!old||old.status!=='pulled'))adjustInvForPick(cur,it,-1);});
+          const updatedItems=o.items.map((it,i)=>{if(!affected.has(i))return it;const others=(it.pick_lines||[]).filter(pl=>pl.pick_id!==pkId);const cur=curByLine.get(i);return{...it,pick_lines:cur?[...others,cur]:others}});
           const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick updated');
         }}>Save Changes</button>
       </div>
