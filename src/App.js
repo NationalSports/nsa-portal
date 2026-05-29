@@ -826,6 +826,16 @@ const _dbSaveEstimateInner = async (est) => {
     // while not hydrated (fewer OR more), not just reductions. When items WERE hydrated, the list is trustworthy
     // and the rep can add/remove freely.
     const _clientEstItemCount=(items||[]).length;
+    // SAFETY (root cause of the 2026-05-29 multi-estimate item wipe): a background sync (poll/realtime
+    // _diffSave, _bgSync=true) must NEVER shrink or empty an estimate's items. Emptying is always a deliberate
+    // foreground edit; a background path arriving with fewer items means stale/partial in-memory state
+    // (truncated child fetch, merge gap) — which the sticky _everHydratedItems guard below would otherwise
+    // wave through. Preserve the DB rows untouched; the estimate row's field changes already upserted above.
+    if(_bgSync&&oldItemIds.length>0&&_clientEstItemCount<oldItemIds.length){
+      console.warn('[DB] SAFETY: background sync would shrink',est.id,'items ('+_clientEstItemCount+'<'+oldItemIds.length+') — preserving DB items, skipping child writes');
+      if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:est.id,prevCount:oldItemIds.length,newCount:_clientEstItemCount,reason:'background estimate save would shrink items'});
+      _dbSaveFailedIds.delete(est.id);_persistFailedIds();return true;
+    }
     // Client-authored estimate (new/imported): first save inserts the editor's items while the DB has none —
     // they're authoritative, so trust this estimate for the rest of the session (see SO save for rationale).
     if(oldItemIds.length===0&&_clientEstItemCount>0)_everHydratedItems.add(est.id);
@@ -1041,6 +1051,13 @@ const _dbSaveSOInner = async (so) => {
     // which only turns true after a later clean reload. Orders whose DB already holds items are NOT trusted here;
     // they must still load cleanly to clear the guard.
     if(oldItemIds.length===0&&_clientSoItemCount>0)_everHydratedItems.add(so.id);
+    // SAFETY: a background sync (poll/realtime _diffSave, _bgSync=true) must NEVER shrink or empty an SO's
+    // items — same root cause as the estimate item-wipe. Preserve DB rows; the SO row already upserted above.
+    if(_bgSync&&oldItemIds.length>0&&_clientSoItemCount<oldItemIds.length){
+      console.warn('[DB] SAFETY: background sync would shrink',so.id,'items ('+_clientSoItemCount+'<'+oldItemIds.length+') — preserving DB items, skipping child writes');
+      if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:so.id,prevCount:oldItemIds.length,newCount:_clientSoItemCount,reason:'background SO save would shrink items'});
+      _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
+    }
     if(oldItemIds.length>0&&_clientSoItemCount!==oldItemIds.length){
       if(so._itemsHydrated||_everHydratedItems.has(so.id)){
         console.warn('[DB] SO',so.id,'saving with',_clientSoItemCount,'item(s) (DB had',oldItemIds.length,') — items were hydrated, treating as intentional edit');
