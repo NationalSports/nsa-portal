@@ -2345,6 +2345,61 @@ function dP(d,q,artFiles,cq){
   if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
 
+// Build the line-item rows for an invoice PDF/print document. The invoice's own stored
+// line_items are the source of truth for price/qty so any per-line edits or overrides
+// (e.g. a garment dropped to $0) flow through to the document — exactly as the on-screen
+// invoice view renders them. The sales order is used only to enrich each line with its size
+// breakdown and decoration detail (never to re-price it); decorations are shown as
+// informational sub-rows because their cost is already folded into each line's rate.
+// Legacy invoices that never stored line_items fall back to deriving them from the SO.
+// Returns {rows, subtotal}. `fmt` formats a number as a currency string.
+function buildInvoicePdfRows(inv, so, fmt){
+  const soArt=so?safeArt(so):[];
+  const soItems=so?safeItems(so):[];
+  const aqMap={};soItems.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){aqMap[d.art_file_id]=(aqMap[d.art_file_id]||0)+q}})});
+  const soByKey={};soItems.forEach((it,idx)=>{soByKey[soLineKey(it,idx)]=idx});
+  let lineItems=(inv&&inv.line_items)||[];
+  if(!lineItems.length&&so){
+    lineItems=soItems.map((it,idx)=>{
+      const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return null;
+      const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?aqMap[d.art_file_id]:qty;return a+dP(d,qty,soArt,cq).sell},0);
+      return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell),_sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,idx)};
+    }).filter(Boolean);
+  }
+  // Match each invoice line back to its SO item so we can re-attach the size breakdown and
+  // decoration/number detail. Try the stored line key first, then SKU, then a description prefix
+  // (mirrors the on-screen invoice view); consume matched SO items so duplicate SKUs map 1:1.
+  const usedSo=new Set();
+  const matchSoIdx=(li)=>{
+    if(li._so_line_key!=null&&soByKey[li._so_line_key]!=null&&!usedSo.has(soByKey[li._so_line_key])){const i=soByKey[li._so_line_key];usedSo.add(i);return i}
+    let i=li._sku?soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku===li._sku):-1;
+    if(i<0)i=soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku&&(li.desc||'').startsWith(it.sku));
+    if(i>=0){usedSo.add(i);return i}
+    return -1;
+  };
+  const rows=[];let subtotal=0;
+  lineItems.forEach(li=>{
+    const qty=safeNum(li.qty);subtotal+=safeNum(li.amount);
+    const soIdx=matchSoIdx(li);const soIt=soIdx>=0?soItems[soIdx]:null;
+    const sku=li._sku||soIt?.sku||'';
+    const nm=soIt?.name||li._name;const color=soIt?.color||li._color;
+    let itemName=nm?(nm+(color?' - '+color:'')):(li.desc||'');
+    const szStr=soIt?SZ_ORD.filter(sz=>safeSizes(soIt)[sz]>0).map(sz=>safeSizes(soIt)[sz]+(soIt.is_footwear?'/':' ')+sz).join(', '):'';
+    if(szStr)itemName+='<br/><span>'+szStr+'</span>';
+    if(soIt?.notes&&String(soIt.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(soIt.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
+    rows.push({cells:[{value:qty,style:'text-align:center'},{value:sku,style:'font-weight:700'},{value:itemName},{value:fmt(safeNum(li.rate)),style:'text-align:right'},{value:fmt(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]});
+    const decos=soIt?safeDecos(soIt):[];
+    decos.forEach(d=>{
+      const cq=d.kind==='art'&&d.art_file_id?aqMap[d.art_file_id]:qty;const dp2=dP(d,qty,soArt,cq);
+      const artF=soArt.find(a2=>a2.id===d.art_file_id);
+      const decoLabel=pdfDecoLabel(d,artF);
+      const posLabel=d.position?' — '+d.position:'';
+      rows.push({_class:'deco-row',cells:[{value:'',style:''},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:'+'+fmt(safeNum(dp2.sell))+'/ea',style:'text-align:right;color:#64748b'},{value:'',style:''}]});
+    });
+  });
+  return{rows,subtotal};
+}
+
 // Magic-link landing page. When an admin sends an invite, the email link includes
 // a Supabase access token in the URL hash; supabase-js auto-detects it because
 // detectSessionInUrl is enabled. We just need to confirm a session exists and
@@ -9640,30 +9695,7 @@ export default function App(){
         const shipToOverrideSub=inv.shipping_name?(inv.shipping_address||'').replace(/\n/g,'<br/>')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
         const shipAddr=shipToOverrideSub||(ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'');
         const poNum=inv._po_number||so?.po_number;
-        const pRows=[];let pSubTotal=0;
-        const pSoItems=so?safeItems(so):[];const pSoArt=so?safeArt(so):[];
-        const _pAQ2={};pSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ2[d.art_file_id]=(_pAQ2[d.art_file_id]||0)+q2}})});
-        const pIsDeposit=inv.inv_type==='deposit';const pDepPct=pIsDeposit?(inv.deposit_pct||50)/100:1;
-        if(pSoItems.length>0){
-          pSoItems.forEach(it=>{
-            const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-            const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
-            const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*pDepPct*100)/100;pSubTotal+=lineAmt;
-            let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-            if(szStr)itemName+='<br/><span>'+szStr+'</span>';
-            if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
-            pRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
-            safeDecos(it).forEach(d=>{
-              const cq=d.kind==='art'&&d.art_file_id?_pAQ2[d.art_file_id]:qty;const dp2=dP(d,qty,pSoArt,cq);
-              const artF=pSoArt.find(a2=>a2.id===d.art_file_id);
-              const decoLabel=pdfDecoLabel(d,artF);
-              const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*pDepPct*100)/100;pSubTotal+=decoAmt;
-              pRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
-            });
-          });
-        }else{
-          lineItems.forEach(li=>{pSubTotal+=safeNum(li.amount);pRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$(safeNum(li.rate)),style:'text-align:right'},{value:_$(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
-        }
+        const {rows:pRows,subtotal:pSubTotal}=buildInvoicePdfRows(inv,so,_$);
         return{title:billToName,docNum:inv.id,docType:'INVOICE',
           headerRight:'<div class="ta">'+_$(inv.total)+'</div><div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
           infoBoxes:[
@@ -10446,32 +10478,8 @@ export default function App(){
                 const siBillSub=siInv.billing_name?(siInv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+siCust?.name+'</span>':'';
                 const siBillAddr=siBillSub||(siCust?.billing_address_line1?siCust.billing_address_line1+(siCust.billing_city?'<br/>'+siCust.billing_city+(siCust.billing_state?' '+siCust.billing_state:'')+(siCust.billing_zip?' '+siCust.billing_zip:''):'')+'<br/>United States':'');
                 const siShipAddr=siCust?.shipping_address_line1?siCust.shipping_address_line1+(siCust.shipping_city?'<br/>'+siCust.shipping_city+(siCust.shipping_state?' '+siCust.shipping_state:'')+(siCust.shipping_zip?' '+siCust.shipping_zip:''):'')+'<br/>United States':'';
-                // Build rows with decoration detail from SO items
-                const siRows=[];let siSubTotal=0;
-                const siSoItems=siSo?safeItems(siSo):[];const siSoArt=siSo?safeArt(siSo):[];
-                const _siAQ={};siSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_siAQ[d.art_file_id]=(_siAQ[d.art_file_id]||0)+q2}})});
-                const siIsDeposit=siInv.inv_type==='deposit';const siDepPct=siIsDeposit?(siInv.deposit_pct||50)/100:1;
-                const siStoredLi=siInv.line_items||[];
-                if(siSoItems.length>0){
-                  siSoItems.forEach(it=>{
-                    const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-                    const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
-                    const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*siDepPct*100)/100;siSubTotal+=lineAmt;
-                    let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-                    if(szStr)itemName+='<br/><span>'+szStr+'</span>';
-                    if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
-                    siRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$si(unitPrice),style:'text-align:right'},{value:_$si(lineAmt),style:'text-align:right;font-weight:600'}]});
-                    safeDecos(it).forEach(d=>{
-                      const cq=d.kind==='art'&&d.art_file_id?_siAQ[d.art_file_id]:qty;const dp2=dP(d,qty,siSoArt,cq);
-                      const artF=siSoArt.find(a2=>a2.id===d.art_file_id);
-                      const decoLabel=pdfDecoLabel(d,artF);
-                      const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*siDepPct*100)/100;siSubTotal+=decoAmt;
-                      siRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$si(dp2.sell),style:'text-align:right'},{value:_$si(decoAmt),style:'text-align:right'}]});
-                    });
-                  });
-                }else{
-                  (siStoredLi).forEach(li=>{siSubTotal+=safeNum(li.amount);siRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$si(safeNum(li.rate)),style:'text-align:right'},{value:_$si(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
-                }
+                // Build rows from the invoice's own line items (honors per-line price overrides)
+                const {rows:siRows,subtotal:siSubTotal}=buildInvoicePdfRows(siInv,siSo,_$si);
                 // Build PDF attachment
                 const brevoAttachments=[];
                 try{
@@ -10741,34 +10749,11 @@ export default function App(){
                 const fBillAddr=fBillSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
                 const fShipAddr=ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'';
                 const fPoNum=inv._po_number||so?.po_number;
-                // Build rows with decoration detail from SO items
-                const fRows=[];let fSubTotal=0;
-                const fSoItems=so?safeItems(so):[];const fSoArt=so?safeArt(so):[];
-                const _fAQ={};fSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_fAQ[d.art_file_id]=(_fAQ[d.art_file_id]||0)+q2}})});
-                const fIsDeposit=inv.inv_type==='deposit';const fDepPct=fIsDeposit?(inv.deposit_pct||50)/100:1;
+                // Build rows from the invoice's own line items (honors per-line price overrides)
                 const fStoredLi=inv.line_items||[];
-                const shipAmt=inv.shipping!=null?inv.shipping:so?(()=>{const fLi2=fStoredLi.length>0?fStoredLi:fSoItems.map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{amount:qty*safeNum(it.unit_sell)}});const sub=fLi2.reduce((a,l)=>a+(l.amount||0),0);return(so.shipping_type==='pct'?sub*(so.shipping_value||0)/100:so.shipping_value||0)})():0;
+                const {rows:fRows,subtotal:fSubTotal}=buildInvoicePdfRows(inv,so,_$f);
+                const shipAmt=inv.shipping!=null?inv.shipping:so?(()=>{const fLi2=fStoredLi.length>0?fStoredLi:safeItems(so).map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{amount:qty*safeNum(it.unit_sell)}});const sub=fLi2.reduce((a,l)=>a+(l.amount||0),0);return(so.shipping_type==='pct'?sub*(so.shipping_value||0)/100:so.shipping_value||0)})():0;
                 const taxAmt=inv.tax||0;
-                if(fSoItems.length>0){
-                  fSoItems.forEach(it=>{
-                    const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-                    const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
-                    const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*fDepPct*100)/100;fSubTotal+=lineAmt;
-                    let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-                    if(szStr)itemName+='<br/><span>'+szStr+'</span>';
-                    if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
-                    fRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$f(unitPrice),style:'text-align:right'},{value:_$f(lineAmt),style:'text-align:right;font-weight:600'}]});
-                    safeDecos(it).forEach(d=>{
-                      const cq=d.kind==='art'&&d.art_file_id?_fAQ[d.art_file_id]:qty;const dp2=dP(d,qty,fSoArt,cq);
-                      const artF=fSoArt.find(a2=>a2.id===d.art_file_id);
-                      const decoLabel=pdfDecoLabel(d,artF);
-                      const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*fDepPct*100)/100;fSubTotal+=decoAmt;
-                      fRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$f(dp2.sell),style:'text-align:right'},{value:_$f(decoAmt),style:'text-align:right'}]});
-                    });
-                  });
-                }else{
-                  fStoredLi.forEach(li=>{fSubTotal+=safeNum(li.amount);fRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$f(safeNum(li.rate)),style:'text-align:right'},{value:_$f(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
-                }
                 printDoc({
                   title:billToName,docNum:inv.id,docType:'INVOICE',
                   headerRight:'<div class="ta">'+_$f(inv.total)+'</div>'

@@ -230,7 +230,12 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
 // Auto-calculate SO status from items
 
 
-function calcSOStatus(ord){
+function calcSOStatus(ord,opts){
+  // A closed-out SO (final invoice, "Close Sales Order", promo close, or manual mark-complete) persists
+  // status='complete'. That's a sticky terminal state — honor it everywhere the effective status is shown
+  // so lists/dashboards don't recompute back to 'ready_to_invoice'. The SO detail page passes
+  // {ignoreOverride:true} to get the pure auto-status that drives its "Reset to Auto" control.
+  if(!opts?.ignoreOverride&&ord?.status==='complete')return'complete';
   // Promo orders skip the invoicing/fulfillment funnel — once Close Promo Order sets status='complete', honor it.
   if(ord?.promo_applied&&ord?.status==='complete')return'complete';
   // Booking orders stay in 'booking' status until confirmed or within alert threshold of ship date

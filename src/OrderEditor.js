@@ -2505,7 +2505,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>}
       {/* SO STATUS — fully auto-calculated from items/jobs */}
       {isSO&&(()=>{
-        const autoSt=calcSOStatus(o);
+        const autoSt=calcSOStatus(o,{ignoreOverride:true});
         // Auto-sync status
         if(o.status!==autoSt&&o.status!=='complete'){setTimeout(()=>sv('status',autoSt),0)}
         const stLabels={need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
