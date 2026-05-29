@@ -1969,8 +1969,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         updated composites back to the artwork in place (status unchanged, live to coach portal). */}
     {editMockJob&&(()=>{
       const j2=safeJobs(o).find(jj=>jj.id===editMockJob.id)||editMockJob;
-      const artIds=((j2._art_ids&&j2._art_ids.length?j2._art_ids:[j2.art_file_id])||[]).filter(a=>a&&a!=='__tbd');
-      const primaryId=artIds[0];
+      // The job's declared _art_ids only carry the FIRST item's art (see buildJobs), so a job
+      // whose items use different art (e.g. a crest on one tee, a flag on another) is missing the
+      // others. Union in every art file referenced by any item's decorations so each garment's
+      // own art has a location to place and save under.
+      const _declaredArtIds=((j2._art_ids&&j2._art_ids.length?j2._art_ids:[j2.art_file_id])||[]).filter(a=>a&&a!=='__tbd');
+      const _artIdSet=new Set(_declaredArtIds);
+      (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];if(!full)return;safeDecos(full).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_artIdSet.add(d.art_file_id)})});
+      const artIds=[..._artIdSet];
+      const primaryId=_declaredArtIds[0]||artIds[0];
       const _back=full=>{const prd=products.find(pp=>pp.id===full?.product_id||pp.sku===full?.sku);return prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
       const garments=[];const seenG=new Set();
       (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];const sku=it0.sku||full?.sku||'';const color=it0.color||full?.color||'';const key=sku+'|'+color;if(seenG.has(key))return;seenG.add(key);garments.push({key,sku,color,name:it0.name||full?.name||'',frontUrl:full?_itemImg(full):'',backUrl:full?_back(full):''})});
@@ -1978,9 +1985,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // from each item's own decorations. Without this the builder would show/save every art for
       // every garment, so a job mixing different art per item (e.g. a crest on one tee, a flag on
       // another) put the wrong art on a garment and left some garments with no mockup at all.
-      const artGarmentKeys={};
+      const artGarmentKeys={};const artPos={};
       (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];const key=(it0.sku||full?.sku||'')+'|'+(it0.color||full?.color||'');
-        const ids=full?[...new Set(safeDecos(full).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&artIds.includes(d.art_file_id)).map(d=>d.art_file_id))]:[];
+        const artDecos=full?safeDecos(full).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&artIds.includes(d.art_file_id)):[];
+        artDecos.forEach(d=>{if(d.position&&!artPos[d.art_file_id])artPos[d.art_file_id]=d.position});
+        const ids=[...new Set(artDecos.map(d=>d.art_file_id))];
         // Fall back to all of the job's art when an item has no explicit art decoration — that's
         // the common "one design across colors" case and keeps existing behavior.
         const useIds=ids.length?ids:artIds;
@@ -1994,7 +2003,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const _onfile=[...(art.files||[]),...(art.prod_files||[])].filter(f=>typeof f==='string'||f?.url);
         const files=[];const _seenF=new Set();
         [art.preview_url,...(art.mockup_files||[]),..._onfile].forEach(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenF.has(u))return;const pv=_filePreview(f);if(!pv)return;_seenF.add(u);files.push({name:_fileName(f),url:u,preview:pv})});
-        locations.push({artFileId:aid,name:art.name||j2.art_name||'',position:j2.positions||'',existingFiles:_onfile,files,preview:files.length?files[0].preview:null,garmentKeys:[...(artGarmentKeys[aid]||[])]});
+        locations.push({artFileId:aid,name:art.name||j2.art_name||'',position:artPos[aid]||j2.positions||'',existingFiles:_onfile,files,preview:files.length?files[0].preview:null,garmentKeys:[...(artGarmentKeys[aid]||[])]});
       });
       const initialMocks={};const initialScene={};
       artIds.forEach(aid=>{const art=safeArt(o).find(a=>a.id===aid);if(!art)return;Object.entries(art.item_mockups||{}).forEach(([k,arr])=>{if(arr&&arr.length)initialMocks[k]=[...(initialMocks[k]||[]),...arr]});Object.entries(art.qm_scenes||{}).forEach(([k,objs])=>{if(objs&&objs.length&&!initialScene[k])initialScene[k]=objs})});
