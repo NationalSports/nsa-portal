@@ -494,11 +494,17 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             let recvQ=0;Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);recvQ+=Math.min(v,pQ+rQ)});
             let decoTotal=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_soAQ[d.art_file_id]:qty;const dp2=dP(d,qty,soAF,cq);const eq2=dp2._nq!=null?dp2._nq:qty;decoTotal+=eq2*dp2.sell});
             const lineTotal=qty*safeNum(it.unit_sell)+decoTotal;
+            const _prd=(prod||[]).find(pp=>pp.id===it.product_id||pp.sku===it.sku);
+            const itImg=_prd?.image_url||(_prd?.images&&_prd.images[0])||it._colorImage||'';
             return<div key={ii} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:10}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:4}}>
-                <div style={{flex:1}}>
-                  <div style={{fontWeight:700,fontSize:13}}>{safeStr(it.name)||'Item'}</div>
-                  <div style={{fontSize:11,color:'#64748b'}}>{it.sku} · {safeStr(it.color)||'—'} {it.brand&&'· '+it.brand}</div>
+                <div style={{flex:1,display:'flex',gap:10,alignItems:'center'}}>
+                  {itImg&&isUrl(itImg)?<img src={itImg} alt={safeStr(it.name)||'Item'} title="Click to enlarge" onClick={()=>setLightbox(itImg)} style={{width:48,height:48,objectFit:'cover',borderRadius:8,border:'1px solid #e2e8f0',flexShrink:0,cursor:'zoom-in'}}/>
+                  :<div style={{width:48,height:48,background:'#f8fafc',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><div style={{fontSize:20}}>👕</div></div>}
+                  <div style={{minWidth:0}}>
+                    <div style={{fontWeight:700,fontSize:13}}>{safeStr(it.name)||'Item'}</div>
+                    <div style={{fontSize:11,color:'#64748b'}}>{it.sku} · {safeStr(it.color)||'—'} {it.brand&&'· '+it.brand}</div>
+                  </div>
                 </div>
                 <div style={{textAlign:'right'}}>
                   <div style={{fontWeight:800,fontSize:14,color:'#1e3a5f'}}>${lineTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
