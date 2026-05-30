@@ -71,16 +71,27 @@ function formatLines(lines) {
 
 function buildPrompt(task) {
   const p = task.bot_payload || {};
-  const creds = credsForTarget(p.target);
+  const hasLines = Array.isArray(p.lines) && p.lines.length > 0;
+  // Structured payload (batch button) -> use its vendor. Plain task (no payload)
+  // -> default to Adidas CLICK so creds fill in; Claude works from the task text.
+  const target = p.target || (hasLines ? 'unknown' : 'adidas_click');
+  const creds = credsForTarget(target);
   const tpl = readFileSync(join(__dirname, 'prompts', 'add_to_cart.md'), 'utf8');
+  const lines = hasLines
+    ? formatLines(p.lines)
+    : `(No structured line list — work from the task notes below.)`;
+  const notes = task.title || task.description
+    ? `Task: ${task.title || ''}${task.description ? '\n' + task.description : ''}`
+    : '(none)';
   return tpl
-    .replaceAll('{{VENDOR_NAME}}', p.vendor_name || p.target || 'vendor')
-    .replaceAll('{{TARGET}}', p.target || 'unknown')
+    .replaceAll('{{VENDOR_NAME}}', p.vendor_name || target)
+    .replaceAll('{{TARGET}}', target)
     .replaceAll('{{VENDOR_URL}}', creds.url || '(unknown — find it)')
     .replaceAll('{{VENDOR_USER}}', creds.user || '(missing)')
     .replaceAll('{{VENDOR_PASS}}', creds.pass || '(missing)')
-    .replaceAll('{{PO_NUMBER}}', p.po_number || '(none)')
-    .replaceAll('{{LINES}}', formatLines(p.lines));
+    .replaceAll('{{PO_NUMBER}}', p.po_number || '(see task notes)')
+    .replaceAll('{{LINES}}', lines)
+    .replaceAll('{{TASK_NOTES}}', notes);
 }
 
 // Run Claude Code headlessly with the Playwright MCP. Returns the parsed
@@ -173,7 +184,7 @@ async function claim(task) {
 async function processOne() {
   const { data: tasks, error } = await supabase
     .from('assigned_todos')
-    .select('id,title,bot_payload,bot_status,status')
+    .select('id,title,description,bot_payload,bot_status,status')
     .eq('assigned_to', BOT_MEMBER_ID)
     .eq('status', 'open')
     .eq('bot_status', 'queued')

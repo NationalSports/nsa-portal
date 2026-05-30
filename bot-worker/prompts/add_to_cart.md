@@ -13,12 +13,20 @@ PO number to enter on the cart: **{{PO_NUMBER}}**
 Line items (add each at the listed sizes/quantities):
 {{LINES}}
 
+Task notes (use these when the line list above is empty — the product name,
+color, quantity, and PO number are usually here; parse them yourself):
+{{TASK_NOTES}}
+
 # Rules — read carefully
 1. Log in with the credentials above. If you hit a CAPTCHA, 2FA, or any login
    wall you cannot clear, STOP and report status "blocked" with what blocked you.
-2. For each line, find the product by SKU and add the exact quantities per size.
-   If a SKU or size is unavailable/out of stock, do NOT substitute — record it
-   in `issues` and continue with the rest.
+2. Add each line to the cart at the given quantities/sizes. Find products by SKU
+   when one is given; otherwise search by the product name/color in the task
+   notes. Do NOT give up just because there's no SKU list — work from the notes
+   like a CSR would. If a product or size is genuinely unavailable/out of stock,
+   do NOT substitute — record it in `issues` and continue with the rest.
+   Only report "blocked" if you truly cannot proceed (e.g. can't log in, or the
+   notes don't name any product to add).
 3. After all available lines are in the cart, enter the PO number "{{PO_NUMBER}}"
    in the cart's PO / reference field if one exists.
 4. **DO NOT place, submit, or check out the order under any circumstance.**
