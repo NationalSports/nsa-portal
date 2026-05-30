@@ -35,8 +35,9 @@ const prodLabel=(j)=>PROD_LABELS[j.prod_status]||(j.prod_status||'pending').repl
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,nextEstId,nf,onMsg,invPOs=[],onPullIF,onReceiveSOPO,onReceiveInvPO}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,nextEstId,nf,onMsg,invPOs=[],onPullIF,onReceiveSOPO,onReceiveInvPO,onAssignBot}){
   const[tab,setTab]=useState('home');
+  const[botCompose,setBotCompose]=useState(null);// {title,so_id} when the quick "Assign to Claude" form is open
   const[q,setQ]=useState('');
   const[showSearch,setShowSearch]=useState(false);
   const[detail,setDetail]=useState(null);
@@ -874,7 +875,25 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         <MIcon name="mail" size={16}/><span>{unreadForMeCount} unread message{unreadForMeCount>1?'s':''} for you</span>
       </div>}
       {/* To-Do List */}
-      <div className="mp-section-title">To-Do ({myTodos.length})</div>
+      <div className="mp-section-title" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+        <span>To-Do ({myTodos.length})</span>
+        {onAssignBot&&<button onClick={()=>setBotCompose(botCompose?null:{title:'',so_id:''})} style={{background:botCompose?'#0f766e':'#f0fdfa',color:botCompose?'white':'#0f766e',border:'1px solid #5eead4',borderRadius:8,padding:'4px 10px',fontSize:12,fontWeight:700,cursor:'pointer'}}>🤖 Assign to Claude</button>}
+      </div>
+      {botCompose&&<div className="mp-list-card" style={{background:'#f0fdfa',border:'1px solid #99f6e4'}}>
+        <div style={{fontSize:11,fontWeight:700,color:'#0f766e',marginBottom:6}}>New task for Claude</div>
+        <input value={botCompose.title} onChange={e=>setBotCompose(b=>({...b,title:e.target.value}))} placeholder="What should Claude do? e.g. Add PO NSA-123 to Adidas cart"
+          style={{width:'100%',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:8,fontSize:14,marginBottom:6,boxSizing:'border-box'}}/>
+        <select value={botCompose.so_id} onChange={e=>setBotCompose(b=>({...b,so_id:e.target.value}))}
+          style={{width:'100%',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:8,fontSize:14,marginBottom:8,boxSizing:'border-box',background:'white'}}>
+          <option value="">No related SO (optional)</option>
+          {sos.slice(0,50).map(s=>{const sc=cust.find(c=>c.id===s.customer_id);return<option key={s.id} value={s.id}>{s.id} — {sc?.alpha_tag||sc?.name||''}</option>})}
+        </select>
+        <div style={{display:'flex',gap:8}}>
+          <button onClick={()=>setBotCompose(null)} style={{flex:1,padding:'8px',border:'1px solid #e2e8f0',borderRadius:8,background:'white',fontSize:13,fontWeight:600,color:'#64748b'}}>Cancel</button>
+          <button disabled={!botCompose.title.trim()} onClick={()=>{const so=sos.find(s=>s.id===botCompose.so_id);if(onAssignBot({title:botCompose.title,so_id:botCompose.so_id||null,customer_id:so?.customer_id||null,priority:1}))setBotCompose(null)}}
+            style={{flex:2,padding:'8px',border:'none',borderRadius:8,background:botCompose.title.trim()?'#0f766e':'#cbd5e1',color:'white',fontSize:13,fontWeight:700}}>Assign to Claude</button>
+        </div>
+      </div>}
       {myTodos.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:20,fontSize:13}}>No open tasks</div>}
       {myTodos.slice(0,15).map(t=>{
         const isAssignedToMe=t.assigned_to===cu.id;

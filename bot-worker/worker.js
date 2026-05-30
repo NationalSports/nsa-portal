@@ -21,16 +21,21 @@ import { createClient } from '@supabase/supabase-js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+import { hostname } from 'node:os';
+
 const {
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY,
   BOT_MEMBER_ID = 'bot-claude',
   POLL_INTERVAL_MS = '30000',
   CLAUDE_BIN = 'claude',
+  WORKER_HOST = hostname(),
   ADIDAS_CLICK_URL = '',
   ADIDAS_CLICK_USER = '',
   ADIDAS_CLICK_PASS = '',
 } = process.env;
+
+const WORKER_VERSION = '0.1.0';
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.error('[worker] SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required. Copy .env.example to .env.');
@@ -124,6 +129,23 @@ function extractJsonBlock(text) {
   return null;
 }
 
+// Tell the portal we're awake. status='working' while on a task, else 'idle'.
+// Best-effort: a heartbeat failure must never stop the worker.
+async function heartbeat(status = 'idle', currentTaskId = null) {
+  const { error } = await supabase.from('bot_heartbeats').upsert(
+    {
+      bot_id: BOT_MEMBER_ID,
+      status,
+      current_task_id: currentTaskId,
+      host: WORKER_HOST,
+      version: WORKER_VERSION,
+      last_seen: new Date().toISOString(),
+    },
+    { onConflict: 'bot_id' },
+  );
+  if (error) log('heartbeat failed:', error.message);
+}
+
 async function comment(todoId, text) {
   const { error } = await supabase.from('todo_comments').insert({
     id: 'cmt-bot-' + Date.now(),
@@ -163,6 +185,7 @@ async function processOne() {
 
   if (!(await claim(task))) return false; // someone else got it
   log('claimed task', task.id, '—', task.title);
+  await heartbeat('working', task.id);
 
   let result;
   try {
@@ -197,8 +220,10 @@ async function loop() {
   log(`started. bot=${BOT_MEMBER_ID} interval=${interval}ms`);
   for (;;) {
     try {
+      await heartbeat('idle');
       // Drain any backlog, then wait for the next poll.
       while (await processOne()) { /* keep going */ }
+      await heartbeat('idle');
     } catch (e) {
       log('loop error:', e?.message || e);
     }
@@ -207,7 +232,10 @@ async function loop() {
 }
 
 if (process.env.RUN_ONCE) {
-  processOne().then((did) => { log(did ? 'processed one task.' : 'no queued tasks.'); process.exit(0); });
+  heartbeat('idle')
+    .then(() => processOne())
+    .then((did) => { log(did ? 'processed one task.' : 'no queued tasks.'); return heartbeat('idle'); })
+    .then(() => process.exit(0));
 } else {
   loop();
 }

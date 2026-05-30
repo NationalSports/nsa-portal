@@ -6066,7 +6066,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setBatchReadyPopup(null)}>Continue working</button>
-          {onAssignTodo&&<button className="btn btn-secondary" style={{color:'#0f766e',borderColor:'#5eead4'}} title="Assign this batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, then stops before submit for your review" onClick={()=>{
+          {onAssignTodo&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-secondary" style={{color:'#0f766e',borderColor:'#5eead4'}} title="Assign this batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, then stops before submit for your review" onClick={()=>{
             const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
             if(!bot){nf('No bot user found — apply the bot migration first','error');return}
             const{title,description,bot_payload}=buildBotCartPayload({poNumber:nextBatchPONumber||'',vendorName:batchReadyPopup.vendorName,batches:liveBatches,soId:o.id});

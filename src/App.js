@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import './portal.css';
 import MobilePortal from './MobilePortal';
+import BotStatus from './BotStatus';
 import { createClient } from '@supabase/supabase-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
@@ -3066,6 +3067,18 @@ export default function App(){
   const[omgFirstSeen,setOmgFirstSeen]=useState(()=>loadState('omg_first_seen',{}));
   const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',wh_only:false,bot_payload:null});
   const[todoDetailId,setTodoDetailId]=useState(null);
+  // Quick-create a task assigned to the Claude bot (used by the mobile view,
+  // which has no Assign Task modal). Mirrors the modal's save shape.
+  const assignBotTask=useCallback(({title,description='',so_id=null,customer_id=null,priority=1,bot_payload=null})=>{
+    const bot=REPS.find(r=>r.is_active!==false&&r.role==='bot');
+    if(!bot){nf('No Claude bot found — apply the bot migration first','error');return false}
+    if(!title||!title.trim()){nf('Task needs a title','error');return false}
+    const newTodo={id:'todo-'+Date.now(),title:title.trim(),description:(description||'').trim(),created_by:cu.id,assigned_to:bot.id,so_id:so_id||null,customer_id:customer_id||null,if_id:null,priority,due_date:null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[],bot_status:'queued'};
+    if(bot_payload)newTodo.bot_payload=bot_payload;
+    setAssignedTodos(prev=>[newTodo,...prev]);
+    nf('🤖 Assigned to Claude');
+    return true;
+  },[REPS,cu,nf]);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
   React.useEffect(()=>{const orig=console.error;console.error=(...args)=>{consoleErrors.current=[{msg:args.map(a=>typeof a==='string'?a:JSON.stringify(a)).join(' '),ts:new Date().toISOString()},...consoleErrors.current].slice(0,5);orig.apply(console,args)};return()=>{console.error=orig}},[]);
@@ -6158,7 +6171,10 @@ export default function App(){
     {(()=>{const tasksIAssigned=myAssignedTodos.filter(t=>t.created_by===cu.id&&t.assigned_to!==cu.id);const tasksForMe=myAssignedTodos.filter(t=>t.assigned_to===cu.id);const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);return<div className="card" style={{marginBottom:16}}>
       <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>📌 Assigned Tasks ({myAssignedTodos.length})</h2>
-        <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2,due_date:''})}>+ New Task</button>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <BotStatus assignedTodos={assignedTodos}/>
+          <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2,due_date:''})}>+ New Task</button>
+        </div>
       </div>
       <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
         {myAssignedTodos.length===0?<div className="empty" style={{padding:20}}>No open tasks</div>:
@@ -26659,7 +26675,7 @@ export default function App(){
   // LOGIN GATE
   if(!cu)return<ComponentErrorBoundary name="LoginGate"><React.Suspense fallback={<LazyFallback/>}><LoginGate onLogin={handleLogin} reps={REPS} supabase={supabase} sbSignIn={_sbSignIn} sbSignUp={_sbSignUp} sbResendSignup={_sbResendSignup} sbResetPassword={_sbResetPassword} sbGetSession={_sbGetSession} sbLinkTeamAuth={_sbLinkTeamAuth} sbGetMyProfile={_sbGetMyProfile}/></React.Suspense></ComponentErrorBoundary>;
   // MOBILE PORTAL GATE
-  if(mobileMode)return<ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO}/></ComponentErrorBoundary>;
+  if(mobileMode)return<ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO} onAssignBot={assignBotTask}/></ComponentErrorBoundary>;
 
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     {/* Mobile sidebar backdrop */}
