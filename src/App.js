@@ -26923,8 +26923,12 @@ export default function App(){
         <button className="btn btn-primary" disabled={!todoModal.title.trim()||!todoModal.assigned_to} onClick={()=>{
           const _ifId=todoModal.if_id||(/^IF-/i.test(todoModal.doc_label||'')?todoModal.doc_label:'')||null;
           const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,if_id:_ifId,priority:todoModal.priority,due_date:todoModal.due_date||null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
-          // Bot task: attach structured payload + queue it for the worker.
-          if(todoModal.bot_payload){newTodo.bot_payload=todoModal.bot_payload;newTodo.bot_status='queued'}
+          // Bot task: queue it for the worker. Attach structured payload when present
+          // (batch button); otherwise queue from the title/description alone.
+          if(REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'){
+            newTodo.bot_status='queued';
+            if(todoModal.bot_payload)newTodo.bot_payload=todoModal.bot_payload;
+          }
           setAssignedTodos(prev=>[newTodo,...prev]);
           setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',wh_only:false,bot_payload:null});
           nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
