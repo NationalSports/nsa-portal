@@ -28,7 +28,7 @@ const nameWithBrand=(name,brand)=>{
   return b+' '+n;
 };
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -8415,6 +8415,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
         </div>
         <div className="modal-body">
+          {/* Vendor — who this PO is written to */}
+          {(()=>{
+            const _vRec=po.po_type==='outside_deco'?null:vendorList.find(v=>v.id===item?.vendor_id);
+            const _vName=po.po_type==='outside_deco'?(po.deco_vendor||'Outside Decorator'):(po.vendor||_vRec?.name||D_V.find(v=>v.id===item?.vendor_id)?.name||item?.brand||'');
+            const _vEmail=_vRec?.contact_email||'';
+            return<div style={{padding:'8px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,marginBottom:12,display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+              <span style={{fontSize:10,fontWeight:700,color:'#1e40af',textTransform:'uppercase',letterSpacing:0.5}}>Written to</span>
+              <span style={{fontSize:14,fontWeight:800,color:_vName?'#0f172a':'#b45309'}}>{_vName||'— no vendor set —'}</span>
+              {isDropShip&&<span style={{fontSize:10,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
+              {_vEmail&&<span style={{fontSize:11,color:'#64748b'}}>✉ {_vEmail}</span>}
+            </div>;
+          })()}
           {/* All items on this PO */}
           {allLines.length>1&&<div style={{marginBottom:12}}>
             <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Items on this PO ({allLines.length})</div>
@@ -9385,6 +9397,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <input id={'bpo-edit-'+bp.id+'-'+ii+'-'+sz} style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={v}/></div>)}
               </div>
             </div>})}
+          {/* Read-only: the rest of this vendor's batch (other sales orders queued together) */}
+          {(()=>{
+            const _sameBatch=(batchPOs||[]).filter(b=>b.vendor_key===bp.vendor_key);
+            const others=_sameBatch.filter(b=>b.id!==bp.id);
+            const batchTotal=_sameBatch.reduce((a,b)=>a+(b.total_cost||0),0);
+            const batchUnits=_sameBatch.reduce((a,b)=>a+(b.items||[]).reduce((s,it)=>s+(it.qty||0),0),0);
+            return<div style={{marginTop:14,borderTop:'1px solid #e2e8f0',paddingTop:12}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,flexWrap:'wrap',gap:6}}>
+                <div style={{fontSize:11,fontWeight:800,color:'#7c3aed',textTransform:'uppercase',letterSpacing:0.5}}>Also in this {bp.vendor_name} batch ({others.length})</div>
+                <div style={{fontSize:11,color:'#64748b'}}>Batch total: <strong style={{color:'#166534'}}>${batchTotal.toFixed(2)}</strong> · {batchUnits} units</div>
+              </div>
+              {others.length===0?<div style={{fontSize:12,color:'#94a3b8',padding:'8px 12px',background:'#f8fafc',borderRadius:6}}>This is the only order queued for {bp.vendor_name} right now.</div>
+              :others.map(ob=><div key={ob.id} style={{padding:'8px 12px',background:'#faf5ff',border:'1px solid #ede9fe',borderRadius:6,marginBottom:6}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4,flexWrap:'wrap',gap:6}}>
+                  <div style={{fontSize:12}}>{ob.po_id&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',marginRight:6}}>{ob.po_id}</span>}<span style={{fontWeight:700,color:'#1e40af'}}>{ob.so_id}</span><span style={{color:'#64748b',marginLeft:6}}>{ob.customer}{ob.so_memo?' — '+ob.so_memo:''}</span></div>
+                  <div style={{fontSize:12,fontWeight:700}}>${(ob.total_cost||0).toFixed(2)}</div>
+                </div>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                  {(ob.items||[]).map((it,i)=><span key={i} style={{fontSize:11,padding:'2px 8px',background:'white',border:'1px solid #e2e8f0',borderRadius:4}}><span style={{fontFamily:'monospace',fontWeight:600,color:'#1e40af'}}>{it.sku}</span> {it.name}{it.color?' · '+it.color:''} <span style={{color:'#64748b'}}>({it.qty})</span></span>)}
+                </div>
+              </div>)}
+              {onNavBatch&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,marginTop:4}} onClick={()=>{setEditBatchPO(null);onNavBatch()}}>Open full Batch POs page →</button>}
+            </div>;
+          })()}
         </div>
         <div className="modal-footer" style={{justifyContent:'space-between'}}>
           <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
