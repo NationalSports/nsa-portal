@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import './portal.css';
 import MobilePortal from './MobilePortal';
 import BotStatus from './BotStatus';
-import { isBotOwner } from './lib/botTasks';
+import { isBotOwner, botRowUI } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';

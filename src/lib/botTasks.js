@@ -16,6 +16,28 @@ export const BOT_OWNER_EMAIL = 'steve@nationalsportsapparel.com';
 export const isBotOwner = (cu) =>
   !!cu && (cu.id === BOT_OWNER_ID || (cu.email || '').toLowerCase() === BOT_OWNER_EMAIL);
 
+// Visual styling for a task row based on the bot's progress. Returns null for
+// non-bot tasks (so they render normally). Drives the dashboard color cue:
+// amber 'Ready to review & order' is the human's signal to go place the order.
+export function botRowUI(botStatus) {
+  switch (botStatus) {
+    case 'queued':
+      return { label: '🤖 Queued', bg: '#f8fafc', bar: '#94a3b8', pillBg: '#e2e8f0', pillFg: '#475569' };
+    case 'in_progress':
+      return { label: '🤖 Bot working…', bg: '#eff6ff', bar: '#3b82f6', pillBg: '#dbeafe', pillFg: '#1e40af' };
+    case 'needs_review':
+      return { label: '🛒 Ready to review & order', bg: '#fefce8', bar: '#f59e0b', pillBg: '#fde68a', pillFg: '#92400e' };
+    case 'blocked':
+      return { label: '🚧 Bot blocked', bg: '#fff7ed', bar: '#fb923c', pillBg: '#fed7aa', pillFg: '#9a3412' };
+    case 'failed':
+      return { label: '❌ Bot failed', bg: '#fef2f2', bar: '#ef4444', pillBg: '#fecaca', pillFg: '#b91c1c' };
+    case 'done':
+      return { label: '✅ Bot done', bg: '#f0fdf4', bar: '#22c55e', pillBg: '#bbf7d0', pillFg: '#166534' };
+    default:
+      return null;
+  }
+}
+
 
 
 // Values for assigned_todos.bot_status (the worker's own progress).
