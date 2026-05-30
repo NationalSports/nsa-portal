@@ -124,5 +124,42 @@ export const calcOrderTotals=(o,custTaxRate=0)=>{
   return{rev,ship,tax,grand:rev+ship+tax};
 };
 
+// ── calcQualifyingSpend — net sales (product + deco) that qualifies for promo earning ──
+// Mirrors calcOrderTotals' revenue walk but also tallies per-line cost, and only counts
+// a line's net revenue when its margin (sell−cost)/sell meets `minMargin` (default 20%).
+// Used by the co-op "earn % of spend" calculation so thin-margin lines don't earn promo.
+export const calcQualifyingSpend=(o,minMargin=0.2)=>{
+  if(!o)return 0;
+  const items=_sItems(o);const af=_sArt(o);
+  const artQty={};
+  items.forEach(it=>{
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
+    const q=sq>0?sq:_sNum(it.est_qty);
+    if(!q)return;
+    _sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+q*(d.reversible?2:1)}});
+  });
+  let total=0;
+  items.forEach(it=>{
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
+    const q=sq>0?sq:_sNum(it.est_qty);
+    if(!q)return;
+    let rev=0,cost=0;
+    if(it._sizeSells&&sq>0){
+      Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0){rev+=n*(it._sizeSells?.[sz]||_sNum(it.unit_sell));cost+=n*_sNum(it.nsa_cost)}});
+    }else{
+      rev+=q*_sNum(it.unit_sell);cost+=q*_sNum(it.nsa_cost);
+    }
+    _sDecos(it).forEach(d=>{
+      const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;
+      const dp=dP(d,q,af,cq);
+      const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);
+      rev+=eq*_sNum(dp.sell);cost+=eq*_sNum(dp.cost);
+    });
+    const margin=rev>0?(rev-cost)/rev:0;
+    if(margin>=minMargin)total+=rev;
+  });
+  return total;
+};
+
 // ── mergeColors — pure function for combining customer + parent colors ──
 export const mergeColors=(cust,allCustomers,field)=>{const own=cust?.[field]||[];if(!cust?.parent_id)return own;const parent=allCustomers?.find(c=>c.id===cust.parent_id);const parentColors=parent?.[field]||[];if(!parentColors.length)return own;const key=field==='pantone_colors'?'code':'name';const seen=new Set(own.map(c=>(c[key]||'').toUpperCase()));return[...own,...parentColors.filter(c=>!seen.has((c[key]||'').toUpperCase()))]};

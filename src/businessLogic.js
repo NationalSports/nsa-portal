@@ -468,6 +468,42 @@ function calcPromoSpendAllocation(orders, customerIds, periodStart, periodEnd, p
   return Math.round(totalRev * safeNum(percentage) * 100) / 100;
 }
 
+// Net sales (product + deco) that qualifies a line for promo earning. A line's net revenue
+// only counts when its margin (sell-cost)/sell meets minMargin (default 20%). Mirrors the
+// app helper in pricing.js so co-op earning ignores thin-margin lines.
+function calcQualifyingSpend(o, minMargin = 0.2) {
+  if (!o) return 0;
+  const items = safeItems(o); const af = safeArt(o);
+  const artQty = {};
+  items.forEach(it => {
+    const sq = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
+    const q = sq > 0 ? sq : safeNum(it.est_qty);
+    if (!q) return;
+    safeDecos(it).forEach(d => { if (d.kind === 'art' && d.art_file_id) { artQty[d.art_file_id] = (artQty[d.art_file_id] || 0) + q * (d.reversible ? 2 : 1) } });
+  });
+  let total = 0;
+  items.forEach(it => {
+    const sq = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
+    const q = sq > 0 ? sq : safeNum(it.est_qty);
+    if (!q) return;
+    let rev = 0, cost = 0;
+    if (it._sizeSells && sq > 0) {
+      Object.entries(safeSizes(it)).forEach(([sz, v]) => { const n = safeNum(v); if (n > 0) { rev += n * (it._sizeSells?.[sz] || safeNum(it.unit_sell)); cost += n * safeNum(it.nsa_cost) } });
+    } else {
+      rev += q * safeNum(it.unit_sell); cost += q * safeNum(it.nsa_cost);
+    }
+    safeDecos(it).forEach(d => {
+      const cq = d.kind === 'art' && d.art_file_id ? artQty[d.art_file_id] : q;
+      const dp = dP(d, q, af, cq);
+      const eq = dp._nq != null ? dp._nq : (d.reversible ? q * 2 : q);
+      rev += eq * safeNum(dp.sell); cost += eq * safeNum(dp.cost);
+    });
+    const margin = rev > 0 ? (rev - cost) / rev : 0;
+    if (margin >= minMargin) total += rev;
+  });
+  return total;
+}
+
 // Get the current promo period boundaries
 // Returns { start: 'YYYY-MM-DD', end: 'YYYY-MM-DD', label: 'H1 2026' }
 function getCurrentPromoPeriod(date) {
@@ -524,7 +560,7 @@ module.exports = {
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
-  PROMO_DECO_MULT, PROMO_SHIP_MULT, calcPromoItemSell, calcPromoTotals, calcPromoSpendAllocation, getCurrentPromoPeriod, getPreviousPromoPeriod,
+  PROMO_DECO_MULT, PROMO_SHIP_MULT, calcPromoItemSell, calcPromoTotals, calcPromoSpendAllocation, calcQualifyingSpend, getCurrentPromoPeriod, getPreviousPromoPeriod,
   // QB sync
   buildQBSalesOrder, buildQBInvoice,
   // Inventory

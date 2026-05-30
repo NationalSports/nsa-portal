@@ -351,7 +351,14 @@ const _safeQuery=(table,opts)=>{
       if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){
         _missing404Tables.set(table,Date.now());return{data:[],error:null,status:200};
       }
-      if(r.error)return r;
+      if(r.error){
+        // Partial/incomplete load: a page failed part-way through pagination. Treat it exactly like a timeout —
+        // mark the table untrusted so reloads SKIP applying it (poll/realtime both bail on _decoTimedOut) and
+        // hydration flags turn false, so a half-loaded result can never overwrite real child rows in state or DB.
+        // (Source of the stale item-less estimate copies behind the 2026-05-29 wipe.)
+        _lastLoadTimedOut.add(table);
+        return r;
+      }
       const rows=r.data||[];
       all.push(...rows);
       if(rows.length<pageSize)break;
@@ -870,6 +877,16 @@ const _dbSaveEstimateInner = async (est) => {
     // while not hydrated (fewer OR more), not just reductions. When items WERE hydrated, the list is trustworthy
     // and the rep can add/remove freely.
     const _clientEstItemCount=(items||[]).length;
+    // SAFETY (root cause of the 2026-05-29 multi-estimate item wipe): a background sync (poll/realtime
+    // _diffSave, _bgSync=true) must NEVER shrink or empty an estimate's items. Emptying is always a deliberate
+    // foreground edit; a background path arriving with fewer items means stale/partial in-memory state
+    // (truncated child fetch, merge gap) — which the sticky _everHydratedItems guard below would otherwise
+    // wave through. Preserve the DB rows untouched; the estimate row's field changes already upserted above.
+    if(_bgSync&&oldItemIds.length>0&&_clientEstItemCount<oldItemIds.length){
+      console.warn('[DB] SAFETY: background sync would shrink',est.id,'items ('+_clientEstItemCount+'<'+oldItemIds.length+') — preserving DB items, skipping child writes');
+      if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:est.id,prevCount:oldItemIds.length,newCount:_clientEstItemCount,reason:'background estimate save would shrink items'});
+      _dbSaveFailedIds.delete(est.id);_persistFailedIds();return true;
+    }
     // Client-authored estimate (new/imported): first save inserts the editor's items while the DB has none —
     // they're authoritative, so trust this estimate for the rest of the session (see SO save for rationale).
     if(oldItemIds.length===0&&_clientEstItemCount>0)_everHydratedItems.add(est.id);
@@ -1084,6 +1101,13 @@ const _dbSaveSOInner = async (so) => {
     // which only turns true after a later clean reload. Orders whose DB already holds items are NOT trusted here;
     // they must still load cleanly to clear the guard.
     if(oldItemIds.length===0&&_clientSoItemCount>0)_everHydratedItems.add(so.id);
+    // SAFETY: a background sync (poll/realtime _diffSave, _bgSync=true) must NEVER shrink or empty an SO's
+    // items — same root cause as the estimate item-wipe. Preserve DB rows; the SO row already upserted above.
+    if(_bgSync&&oldItemIds.length>0&&_clientSoItemCount<oldItemIds.length){
+      console.warn('[DB] SAFETY: background sync would shrink',so.id,'items ('+_clientSoItemCount+'<'+oldItemIds.length+') — preserving DB items, skipping child writes');
+      if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:so.id,prevCount:oldItemIds.length,newCount:_clientSoItemCount,reason:'background SO save would shrink items'});
+      _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
+    }
     if(oldItemIds.length>0&&_clientSoItemCount!==oldItemIds.length){
       if(so._itemsHydrated||_everHydratedItems.has(so.id)){
         console.warn('[DB] SO',so.id,'saving with',_clientSoItemCount,'item(s) (DB had',oldItemIds.length,') — items were hydrated, treating as intentional edit');
@@ -1691,6 +1715,14 @@ const _dbSavePromoPeriod = async (period) => {
     return true;
   }catch(e){console.error('[DB] save promo period:',e);return false}
 };
+const _dbDeletePromoPeriod = async (id) => {
+  if(!supabase)return false;
+  try{
+    const{error}=await supabase.from('customer_promo_periods').delete().eq('id',id);
+    if(error){console.error('[DB] delete promo period:',error.message);return false}
+    return true;
+  }catch(e){console.error('[DB] delete promo period:',e);return false}
+};
 const _dbSavePromoUsage = async (usage) => {
   if(!supabase)return false;
   try{
@@ -1699,15 +1731,26 @@ const _dbSavePromoUsage = async (usage) => {
     return true;
   }catch(e){console.error('[DB] save promo usage:',e);return false}
 };
-const _dbDeletePromoUsage = async (periodId, soId) => {
+const _dbDeletePromoUsage = async (periodId, soId, estimateId) => {
   if(!supabase)return false;
   try{
     let q=supabase.from('customer_promo_usage').delete().eq('period_id',periodId);
     if(soId)q=q.eq('so_id',soId);
+    else if(estimateId)q=q.eq('estimate_id',estimateId).is('so_id',null);
     const{error}=await q;
     if(error){console.error('[DB] delete promo usage:',error.message);return false}
     return true;
   }catch(e){console.error('[DB] delete promo usage:',e);return false}
+};
+// Re-point an estimate's promo usage to the SO it converted into, so the deduction carries
+// over (no double-spend) and the Promo $ tab links the spend to the order.
+const _dbRelinkPromoUsage = async (estimateId, soId) => {
+  if(!supabase)return false;
+  try{
+    const{error}=await supabase.from('customer_promo_usage').update({so_id:soId}).eq('estimate_id',estimateId).is('so_id',null);
+    if(error){console.error('[DB] relink promo usage:',error.message);return false}
+    return true;
+  }catch(e){console.error('[DB] relink promo usage:',e);return false}
 };
 // ── Credit DB functions ──
 const _dbSaveCredit = async (credit) => {
@@ -5050,8 +5093,13 @@ export default function App(){
       const promoCredit=safeItems(est).reduce((a,it)=>a+safeNum(it._promo_credit),0);
       promoAmount=pRev+pShip+promoCredit;
     }
+    // If promo was already deducted at estimate time (new flow), the funds are spent and the usage rows just
+    // need to follow the estimate onto its SO — don't re-check balance or deduct again (that double-spends).
+    // Legacy estimates that applied promo before this flow have no usage rows yet and still deduct here.
+    const _convCustForPromo=cust.find(x=>x.id===est.customer_id);
+    const _promoAlreadyDeducted=est.promo_applied&&(_convCustForPromo?.promo_usage||[]).some(u=>u.estimate_id===est.id&&!u.so_id);
     // Warn and block if promo funds are no longer sufficient (balance may have changed since promo was applied)
-    if(est.promo_applied&&promoAmount>0){
+    if(est.promo_applied&&promoAmount>0&&!_promoAlreadyDeducted){
       const _c2=cust.find(x=>x.id===est.customer_id);
       if(_c2){const _now2=new Date(),_y2=_now2.getFullYear(),_m2=_now2.getMonth();const _pStart2=_m2<6?_y2+'-01-01':_y2+'-07-01';const _ps2=(_c2.promo_periods||[]).filter(p=>p.period_start===_pStart2);
         let _bal2=_ps2.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
@@ -5067,8 +5115,15 @@ export default function App(){
     // Explicitly save to DB immediately — don't rely solely on useEffect chain
     _dbSaveSO(so);_dbSaveEstimate(convertedEst);
     const c=cust.find(x=>x.id===so.customer_id);
+    // Promo already deducted on the estimate — carry the usage onto the SO instead of deducting again.
+    if(_promoAlreadyDeducted&&c){
+      const _ownerId=c.parent_id||c.id;
+      const _isFam=cc=>cc.id===_ownerId||cc.parent_id===_ownerId;
+      _dbRelinkPromoUsage(est.id,so.id);
+      setCust(prev=>prev.map(cc=>_isFam(cc)?{...cc,promo_usage:(cc.promo_usage||[]).map(u=>u.estimate_id===est.id&&!u.so_id?{...u,so_id:so.id}:u)}:cc));
+    }
     // Deduct promo funds from customer's current period (promo lives on parent — apply to parent + all subs in state)
-    if(est.promo_applied&&promoAmount>0&&c){
+    if(est.promo_applied&&promoAmount>0&&c&&!_promoAlreadyDeducted){
       const promoOwnerId=c.parent_id||c.id;
       const isFamily=cc=>cc.id===promoOwnerId||cc.parent_id===promoOwnerId;
       const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
@@ -5145,11 +5200,20 @@ export default function App(){
       setEsts(p=>p.map(e=>e.id===parentEst.id?targetEst:e));
     }else{
       // No parent estimate — create a new one
-      targetEst={id:nextEstId(ests),customer_id:so.customer_id,memo:so.memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,email_status:null,art_files:clonedArt,items:clonedItems};
+      targetEst={id:nextEstId(ests),customer_id:so.customer_id,memo:so.memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,email_status:null,art_files:clonedArt,items:clonedItems,promo_applied:so.promo_applied||false,promo_amount:safeNum(so.promo_amount),credit_applied:so.credit_applied||false,credit_amount:safeNum(so.credit_amount)};
       setEsts(p=>[...p,targetEst]);
     }
     // Delete the SO entirely
     setSOs(p=>p.filter(s=>s.id!==so.id));_dbDeleteSO(so.id);
+    // Carry any promo deduction from the SO back onto the reopened estimate (so_id -> null) so the funds stay
+    // spent but the estimate owns/manages the deduction again rather than orphaning it against the deleted SO.
+    const _rc=cust.find(x=>x.id===targetEst.customer_id);
+    const _soUsage=(_rc?.promo_usage||[]).filter(u=>u.so_id===so.id);
+    if(_soUsage.length&&_rc){
+      const _ownerId=_rc.parent_id||_rc.id;const _isFam=cc=>cc.id===_ownerId||cc.parent_id===_ownerId;
+      if(supabase)supabase.from('customer_promo_usage').update({so_id:null,estimate_id:targetEst.id}).eq('so_id',so.id).then(r=>{if(r.error)console.error('[DB] revert promo relink:',r.error.message)});
+      setCust(prev=>prev.map(cc=>_isFam(cc)?{...cc,promo_usage:(cc.promo_usage||[]).map(u=>u.so_id===so.id?{...u,so_id:null,estimate_id:targetEst.id}:u)}:cc));
+    }
     setESO(null);
     const c=cust.find(x=>x.id===targetEst.customer_id);setEEst(targetEst);setEEstC(c);setPg('estimates');
     nf(parentEst?`Reopened ${targetEst.id} from ${so.id} — SO deleted`:`${targetEst.id} created from ${so.id} — SO deleted`)};
@@ -5432,6 +5496,21 @@ export default function App(){
     if(linkedSO){setSOs(prev=>prev.map(s=>s.estimate_id===estId?{...s,estimate_id:null,updated_at:new Date().toLocaleString()}:s))}
     // Soft-delete in DB
     _dbDeleteEstimate(estId);
+    // Release any promo this estimate deducted but never converted (usage still keyed to the estimate,
+    // so_id null) so the budget isn't leaked. Converted estimates have their usage re-linked to the SO,
+    // which owns the deduction, so those rows are left untouched.
+    const _estCust=cust.find(x=>x.id===est.customer_id);
+    const _estPromoUsage=(_estCust?.promo_usage||[]).filter(u=>u.estimate_id===estId&&!u.so_id);
+    if(_estPromoUsage.length&&_estCust){
+      const _ownerId=_estCust.parent_id||_estCust.id;const _isFam=cc=>cc.id===_ownerId||cc.parent_id===_ownerId;
+      const _byPeriod={};_estPromoUsage.forEach(u=>{_byPeriod[u.period_id]=(_byPeriod[u.period_id]||0)+safeNum(u.amount)});
+      Object.entries(_byPeriod).forEach(([pid,amt])=>{
+        const pd=(_estCust.promo_periods||[]).find(p=>p.id===pid);
+        if(pd)_dbSavePromoPeriod({...pd,used:Math.max(0,safeNum(pd.used)-amt)});
+        _dbDeletePromoUsage(pid,null,estId);
+      });
+      setCust(prev=>prev.map(cc=>_isFam(cc)?{...cc,promo_periods:(cc.promo_periods||[]).map(p=>_byPeriod[p.id]?{...p,used:Math.max(0,safeNum(p.used)-_byPeriod[p.id])}:p),promo_usage:(cc.promo_usage||[]).filter(u=>!(u.estimate_id===estId&&!u.so_id))}:cc));
+    }
     logChange('deleted','Estimate',estId,est.memo||'');
     nf('Estimate '+estId+' deleted');
     // If we were editing this estimate, go back to list
@@ -5474,6 +5553,19 @@ export default function App(){
     }
     // Soft-delete in DB
     _dbDeleteSO(soId);
+    // Release any promo this SO deducted so the budget isn't leaked when the order is removed.
+    const _soCust=cust.find(x=>x.id===so.customer_id);
+    const _soPromoUsage=(_soCust?.promo_usage||[]).filter(u=>u.so_id===soId);
+    if(_soPromoUsage.length&&_soCust){
+      const _ownerId=_soCust.parent_id||_soCust.id;const _isFam=cc=>cc.id===_ownerId||cc.parent_id===_ownerId;
+      const _byPeriod={};_soPromoUsage.forEach(u=>{_byPeriod[u.period_id]=(_byPeriod[u.period_id]||0)+safeNum(u.amount)});
+      Object.entries(_byPeriod).forEach(([pid,amt])=>{
+        const pd=(_soCust.promo_periods||[]).find(p=>p.id===pid);
+        if(pd)_dbSavePromoPeriod({...pd,used:Math.max(0,safeNum(pd.used)-amt)});
+        _dbDeletePromoUsage(pid,soId);
+      });
+      setCust(prev=>prev.map(cc=>_isFam(cc)?{...cc,promo_periods:(cc.promo_periods||[]).map(p=>_byPeriod[p.id]?{...p,used:Math.max(0,safeNum(p.used)-_byPeriod[p.id])}:p),promo_usage:(cc.promo_usage||[]).filter(u=>u.so_id!==soId)}:cc));
+    }
     logChange('deleted','SO',soId,so.memo||'');
     nf('Sales order '+soId+' deleted'+(linkedInvs.length?' ('+linkedInvs.filter(i=>i.paid===0).length+' invoices also removed)':''));
     if(eSO?.id===soId){setESO(null);setESOC(null)}
@@ -6518,7 +6610,7 @@ export default function App(){
     if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.wh_only?'':csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
-      onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
+      onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend}/></React.Suspense></ComponentErrorBoundary>
     // Filter estimates
     let fe=[...ests];
@@ -6575,7 +6667,7 @@ export default function App(){
     if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.wh_only?'':csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
-      onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
+      onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend}/></React.Suspense></ComponentErrorBoundary>
     // Filter SOs
     let fSOs=[...sos];
@@ -6660,8 +6752,9 @@ export default function App(){
       onSavePromoProgram={async(prog)=>{await _dbSavePromoProgram(prog);const isFamily=c=>c.id===prog.customer_id||c.parent_id===prog.customer_id;const upd=c=>({...c,promo_programs:[...(c.promo_programs||[]).filter(p=>p.id!==prog.id),prog]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s);nf('Promo program saved')}}
       onDeletePromoProgram={async(id)=>{await _dbDeletePromoProgram(id);const upd=c=>({...c,promo_programs:(c.promo_programs||[]).filter(p=>p.id!==id)});setCust(prev=>prev.map(c=>(c.promo_programs||[]).some(p=>p.id===id)?upd(c):c));setSelC(s=>s&&(s.promo_programs||[]).some(p=>p.id===id)?upd(s):s);nf('Promo program removed')}}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s);nf('Promo period saved')}}
+      onDeletePromoPeriod={async(id)=>{await _dbDeletePromoPeriod(id);const upd=c=>({...c,promo_periods:(c.promo_periods||[]).filter(p=>p.id!==id)});setCust(prev=>prev.map(c=>(c.promo_periods||[]).some(p=>p.id===id)?upd(c):c));setSelC(s=>s&&(s.promo_periods||[]).some(p=>p.id===id)?upd(s):s);nf('Promo period removed')}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
-      onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
+      onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onSaveCredit={async(credit)=>{await _dbSaveCredit(credit);const updated={...selC,credits:[...(selC.credits||[]).filter(c=>c.id!==credit.id),credit]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit saved')}}
       onDeleteCredit={async(id)=>{await _dbDeleteCredit(id);const updated={...selC,credits:(selC.credits||[]).filter(c=>c.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit removed')}}
       onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}}

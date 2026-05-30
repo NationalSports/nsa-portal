@@ -6,6 +6,7 @@ const {
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   buildQBSalesOrder, buildQBInvoice,
   checkInventoryConflicts,
+  calcQualifyingSpend,
 } = require('./businessLogic');
 
 // ═══════════════════════════════════════════════
@@ -1776,6 +1777,38 @@ describe('Booking Orders', () => {
     expect(calcSOStatus(so)).toBe('need_order');
     const so2 = makeSO(); // no order_type set
     expect(calcSOStatus(so2)).toBe('need_order');
+  });
+});
+
+describe('Promo Co-op Qualifying Spend (calcQualifyingSpend)', () => {
+  test('sums net sales of a healthy-margin line (no deco)', () => {
+    // 26 units × $25 sell, cost $12 → margin 52% ≥ 20%, no decorations
+    const so = makeSO({ items: [makeSOItem({ decorations: [] })] });
+    expect(calcQualifyingSpend(so)).toBe(26 * 25);
+  });
+
+  test('excludes a line whose margin is under 20%', () => {
+    // sell 25, cost 21 → margin 16% < 20% → line does not qualify
+    const so = makeSO({ items: [makeSOItem({ nsa_cost: 21, decorations: [] })] });
+    expect(calcQualifyingSpend(so)).toBe(0);
+  });
+
+  test('keeps qualifying lines and drops thin-margin lines in the same order', () => {
+    const good = makeSOItem({ decorations: [] });                 // qualifies, $650
+    const thin = makeSOItem({ nsa_cost: 24, sizes: { M: 4 }, decorations: [] }); // margin 4% → excluded
+    const so = makeSO({ items: [good, thin] });
+    expect(calcQualifyingSpend(so)).toBe(26 * 25);
+  });
+
+  test('honors a custom minimum-margin threshold', () => {
+    const so = makeSO({ items: [makeSOItem({ nsa_cost: 21, decorations: [] })] }); // 16% margin
+    expect(calcQualifyingSpend(so, 0.1)).toBe(26 * 25); // qualifies at 10% floor
+    expect(calcQualifyingSpend(so, 0.2)).toBe(0);       // excluded at 20% floor
+  });
+
+  test('returns 0 for an empty/falsy order', () => {
+    expect(calcQualifyingSpend(null)).toBe(0);
+    expect(calcQualifyingSpend(makeSO({ items: [] }))).toBe(0);
   });
 });
 
