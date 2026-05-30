@@ -9432,17 +9432,21 @@ export default function App(){
 
       {/* Pending queue */}
       {!batchScan.trim()&&<>
-      <div className="stats-row">
-        <div className="stat-card"><div className="stat-label">Queued</div><div className="stat-value">{batchPOs.length}</div></div>
-        <div className="stat-card"><div className="stat-label">Vendors</div><div className="stat-value">{vendorGroups.length}</div></div>
-        <div className="stat-card"><div className="stat-label">Queue Value</div><div className="stat-value">${batchPOs.reduce((a,bp)=>a+bp.total_cost,0).toFixed(2)}</div></div>
-        <div className="stat-card"><div className="stat-label">Ordered</div><div className="stat-value">{submittedBatches.length}</div></div>
+      <div style={{display:'flex',gap:18,alignItems:'center',flexWrap:'wrap',padding:'10px 18px',background:'white',border:'1px solid #e2e8f0',borderRadius:10,marginBottom:16}}>
+        <div style={{fontSize:13,color:'#475569'}}><strong style={{fontSize:18,color:'#0f172a'}}>{batchPOs.length}</strong> queued</div>
+        <div style={{width:1,height:20,background:'#e2e8f0'}}/>
+        <div style={{fontSize:13,color:'#475569'}}><strong style={{fontSize:18,color:'#0f172a'}}>{vendorGroups.length}</strong> vendor{vendorGroups.length!==1?'s':''}</div>
+        <div style={{width:1,height:20,background:'#e2e8f0'}}/>
+        <div style={{fontSize:13,color:'#475569'}}>Queue value <strong style={{fontSize:18,color:'#166534'}}>${batchPOs.reduce((a,bp)=>a+bp.total_cost,0).toFixed(2)}</strong></div>
+        <div style={{width:1,height:20,background:'#e2e8f0'}}/>
+        <div style={{fontSize:13,color:'#475569'}}><strong style={{fontSize:18,color:'#0f172a'}}>{submittedBatches.length}</strong> ordered</div>
       </div>
       {vendorGroups.length===0&&submittedBatches.length===0&&<div className="card"><div className="empty" style={{padding:40}}>
         <div style={{fontSize:32,marginBottom:8}}>📦</div>
         <div style={{fontWeight:700,fontSize:16,marginBottom:4}}>No batch POs queued</div>
         <div style={{maxWidth:400,margin:'0 auto'}}>When creating a PO for S&S, SanMar, Richardson, Momentec, A4, Adidas, or Under Armour — click "Add to Batch" to queue it. Order when the batch hits free shipping threshold.</div>
       </div></div>}
+      {vendorGroups.length>0&&<div style={{display:'flex',alignItems:'center',gap:8,margin:'4px 2px 10px'}}><span style={{fontSize:13,fontWeight:800,color:'#0f172a',textTransform:'uppercase',letterSpacing:0.5}}>Ready to Order</span><span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 8px',borderRadius:999}}>{vendorGroups.length} vendor{vendorGroups.length!==1?'s':''}</span></div>}
       {vendorGroups.map(([vk,vg])=>{
         const total=vg.pos.reduce((a,bp)=>a+bp.total_cost,0);
         const totalUnits=vg.pos.reduce((a,bp)=>a+bp.items.reduce((a2,it)=>a2+it.qty,0),0);
@@ -9451,36 +9455,50 @@ export default function App(){
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
         return<div key={vk} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
-          <div className="card-header">
-            <div><h2>{vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
-            <div style={{textAlign:'right'}}>
-              <div style={{fontSize:20,fontWeight:800,color:hitThreshold?'#166534':'#d97706'}}>${total.toFixed(2)}</div>
-              <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:600}}>{vg.threshold>0?(hitThreshold?'✅ Free shipping!':'$'+(vg.threshold-total).toFixed(2)+' to free ship'):'Batch orders'}</div>
+          <div className="card-header" style={{flexDirection:'column',alignItems:'stretch',gap:10}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+              <div><h2>{vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
+              <div style={{textAlign:'right',flexShrink:0}}>
+                <div style={{fontSize:22,fontWeight:800,color:hitThreshold?'#166534':'#d97706'}}>${total.toFixed(2)}</div>
+                <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:700}}>{vg.threshold>0?(hitThreshold?'✅ Free shipping unlocked':'$'+(vg.threshold-total).toFixed(2)+' to free ship'):'Batch orders'}</div>
+              </div>
             </div>
+            {vg.threshold>0&&(()=>{const pct=Math.max(0,Math.min(100,Math.round(total/vg.threshold*100)));return<div>
+              <div style={{height:9,background:'#e2e8f0',borderRadius:999,overflow:'hidden'}}><div style={{height:'100%',width:pct+'%',background:hitThreshold?'linear-gradient(90deg,#22c55e,#16a34a)':'linear-gradient(90deg,#fbbf24,#d97706)',borderRadius:999,transition:'width .3s'}}/></div>
+              <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'#94a3b8',marginTop:4}}><span>$0</span><span style={{fontWeight:700,color:hitThreshold?'#166534':'#b45309'}}>{hitThreshold?'Free shipping ✓':pct+'% · $'+(vg.threshold-total).toFixed(2)+' to go'}</span><span>Free ship ${vg.threshold}</span></div>
+            </div>})()}
           </div>
           <div className="card-body" style={{padding:0}}>
             {vg.pos.map((bp,bpi)=>{const isEditing=editingBatchId===bp.id;return<div key={bp.id} style={{padding:'12px 16px',borderBottom:bpi<vg.pos.length-1?'1px solid #f1f5f9':'none',background:isEditing?'#f5f3ff':'transparent'}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-                <div>{bp.po_id&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:13,marginRight:8}}>{bp.po_id}</span>}<span style={{fontWeight:700,color:'#1e40af',fontSize:15}}>{bp.so_id}</span><span style={{fontSize:13,color:'#64748b',marginLeft:8}}>{bp.customer} — {bp.so_memo}</span></div>
-                <div style={{display:'flex',alignItems:'center',gap:8}}>
-                  <span style={{fontWeight:700}}>${bp.total_cost.toFixed(2)}</span>
-                  <span style={{fontSize:10,color:'#94a3b8'}}>{bp.created_by_name?.split(' ')[0]}</span>
-                  <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'2px 6px',fontSize:10}} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
-                  <button className="btn btn-sm" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'2px 6px'}} onClick={()=>{if(!window.confirm('Remove this batch PO from queue?'))return;
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8,gap:8}}>
+                <div style={{minWidth:0}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                    {bp.po_id&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:12,background:'#f5f3ff',padding:'1px 7px',borderRadius:4}}>{bp.po_id}</span>}
+                    <span onClick={()=>{const so=sos.find(s=>s.id===bp.so_id);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf(bp.so_id+' not found','error')}}} title={'Open '+bp.so_id} style={{fontWeight:800,color:'#1e40af',fontSize:15,cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}}>{bp.so_id}</span>
+                  </div>
+                  <div style={{fontSize:12,color:'#64748b',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{bp.customer}{bp.so_memo?' — '+bp.so_memo:''}</div>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+                  <div style={{textAlign:'right'}}><div style={{fontWeight:800,fontSize:14,color:'#0f172a'}}>${bp.total_cost.toFixed(2)}</div>{bp.created_by_name&&<div style={{fontSize:10,color:'#94a3b8'}}>by {bp.created_by_name.split(' ')[0]}</div>}</div>
+                  <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'3px 10px',fontSize:11}} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
+                  <button className="btn btn-sm" title="Remove from queue" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'3px 9px',fontSize:11}} onClick={()=>{if(!window.confirm('Remove this batch PO from queue?'))return;
                     const so=sos.find(s=>s.id===bp.so_id);
                     if(so){const updatedItems=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()})}
                     setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id))}}>✕</button>
                 </div>
               </div>
               {!isEditing&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                {bp.items.map((it,i)=>{const _sw=_bSwatch(it.color);return<div key={i} style={{fontSize:13,padding:'8px 11px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0'}}>
-                  <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap',marginBottom:6}}>
-                    <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:13}}>{it.sku}</span>
-                    <span style={{fontWeight:600,fontSize:13}}>{it.name}</span>
-                    {it.color&&<span style={{display:'inline-flex',alignItems:'center',gap:5,padding:'2px 8px',background:'white',border:'1px solid '+(_sw||'#d1d5db'),borderRadius:5,fontSize:12,fontWeight:700,color:'#334155'}}><span style={{width:12,height:12,borderRadius:3,background:_sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{it.color}</span>}
-                    <span style={{color:'#64748b',fontWeight:700,fontSize:13}}>({it.qty})</span>
+                {bp.items.map((it,i)=>{const _sw=_bSwatch(it.color);const _img=(prod.find(p=>p.sku===it.sku)||{}).image_url;return<div key={i} style={{display:'flex',gap:10,fontSize:13,padding:'8px 11px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0'}}>
+                  {_img?<img src={_img} alt="" style={{width:42,height:42,objectFit:'contain',background:'white',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>:<div style={{width:42,height:42,borderRadius:4,background:'#eef2f7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>👕</div>}
+                  <div style={{minWidth:0}}>
+                    <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap',marginBottom:6}}>
+                      <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:13}}>{it.sku}</span>
+                      <span style={{fontWeight:600,fontSize:13}}>{it.name}</span>
+                      {it.color&&<span style={{display:'inline-flex',alignItems:'center',gap:5,padding:'2px 8px',background:'white',border:'1px solid '+(_sw||'#d1d5db'),borderRadius:5,fontSize:12,fontWeight:700,color:'#334155'}}><span style={{width:12,height:12,borderRadius:3,background:_sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{it.color}</span>}
+                      <span style={{color:'#64748b',fontWeight:700,fontSize:13}}>({it.qty})</span>
+                    </div>
+                    <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>{Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0]))).map(([sz,v])=><span key={sz} style={{fontSize:12,padding:'3px 8px',background:'#e2e8f0',borderRadius:4,fontWeight:600}}>{sz}:<span style={{color:'#1e40af',fontWeight:700}}>{v}</span></span>)}</div>
                   </div>
-                  <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>{Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0]))).map(([sz,v])=><span key={sz} style={{fontSize:12,padding:'3px 8px',background:'#e2e8f0',borderRadius:4,fontWeight:600}}>{sz}:<span style={{color:'#1e40af',fontWeight:700}}>{v}</span></span>)}</div>
                 </div>})}
               </div>}
               {isEditing&&<div style={{padding:8,border:'1px solid #ddd6fe',borderRadius:6,background:'#faf5ff',marginTop:4}}>
