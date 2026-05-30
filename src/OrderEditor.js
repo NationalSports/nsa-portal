@@ -6342,12 +6342,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const prodStatuses=['draft','hold','staging','in_process','completed'];
       const prodLabels={draft:'Draft',hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed'};
       const artLabels=ART_LABELS;
-      const itemLabels={need_to_order:'Need to Order',needs_pull:'Waiting for Pull',partially_received:'Partially Received',items_received:'Items Received'};
+      const itemLabels={need_to_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Waiting for Pull',partially_received:'Partially Received',items_received:'Items Received'};
       // Effective item status for display. Items that already have IF (item fulfillment)
       // picks waiting to be pulled are in-house, so show "Waiting for Pull" instead of the
       // misleading "Need to Order". Stored item_status is left untouched (warehouse pull /
       // PO receive flows own that); this only relabels what the rep sees.
-      const jItemStatus=j=>{const total=j.total_units||0,ful=j.fulfilled_units||0;if(total>0&&ful>=total)return'items_received';const pendingPull=(j.items||[]).some(gi=>safePicks(safeItems(o)[gi.item_idx]).some(pk=>pk.status==='pick'));if(pendingPull)return'needs_pull';if(ful>0)return'partially_received';return'need_to_order';};
+      const jItemStatus=j=>{const total=j.total_units||0,ful=j.fulfilled_units||0;if(total>0&&ful>=total)return'items_received';const pendingPull=(j.items||[]).some(gi=>safePicks(safeItems(o)[gi.item_idx]).some(pk=>pk.status==='pick'));if(pendingPull)return'needs_pull';if(ful>0)return'partially_received';
+      // Nothing received/pulled yet — but if a PO has been placed for these items (committed
+      // qty beyond cancellations), they're on order ("Waiting to Receive"), not "Need to Order".
+      // Display-only relabel; stored item_status stays untouched (PO receive flow owns that).
+      const onOrder=(j.items||[]).some(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return false;return Object.keys(safeSizes(it)).some(sz=>poCommitted(it.po_lines,sz)>0)});if(onOrder)return'waiting_receive';return'need_to_order';};
 
       // Job detail view
       if(selJob!=null){
