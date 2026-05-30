@@ -13,11 +13,15 @@ import { fileUpload, _cloudinaryPdfThumb } from './utils';
 //
 // Props:
 //   garments  : [{key, sku, color, name, frontUrl, backUrl}]
-//   locations : [{artFileId, name, position, existingFiles:[...], preview:{url}|null}]
+//   locations : [{artFileId, name, position, existingFiles:[...], preview:{url}|null,
+//                 garmentKeys:[sku|color]}] — garmentKeys scopes a location to specific
+//                 garments (empty = shown for every garment)
 //   initialMocks : {key:[{url,name}]}
 //   onSave({mocksByGarment, filesByLocation})
 //   onClose()
 //   nf
+//   onSaveProductImage(garment, url, side) -> truthy when the photo was saved back to the
+//     product catalog (matched by SKU/color), so an uploaded product image is reused later.
 
 // Common apparel color names -> swatch hex, so the rep can eyeball which colorway
 // they're mocking. Unknown names fall back to neutral grey.
@@ -49,7 +53,7 @@ const hexToRgb = h => {
   return m ? {r: parseInt(m[0], 16), g: parseInt(m[1], 16), b: parseInt(m[2], 16)} : {r: 0, g: 0, b: 0};
 };
 
-export default function QuickMockBuilder({garments, locations, initialMocks, initialScene, onSave, onClose, nf}){
+export default function QuickMockBuilder({garments, locations, initialMocks, initialScene, onSave, onClose, nf, onSaveProductImage}){
   const [gi, setGi] = useState(0);
   const [side, setSide] = useState('front');
   const [canvas, setCanvas] = useState(null);
@@ -82,6 +86,9 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
     preview: (l.files && l.files[0] ? l.files[0].preview : l.preview) || null,
     source: null,
     hasExisting: (l.existingFiles || []).length > 0 || !!l.preview,
+    // Garment keys (sku|color) this art belongs to. Empty = applies to every garment (the
+    // common one-design case); otherwise the location only shows for its own garment(s).
+    garmentKeys: l.garmentKeys || [],
   })));
   const [mocks, setMocks] = useState(() => ({...(initialMocks || {})}));
   const [imgOverride, setImgOverride] = useState({});
@@ -91,10 +98,16 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
   // art; pickedColor is the one the user chose to change (null = recolor everything).
   const [pickedColor, setPickedColor] = useState(null);
   const [artColors, setArtColors] = useState([]);
+  // Identifies which drop zone (if any) a dragged file is currently hovering, so we can
+  // highlight it: 'canvas', 'product', or 'layer-<idx>' for a specific art location.
+  const [dragOver, setDragOver] = useState(null);
 
   const garment = garments[gi] || {};
   const baseUrl = side === 'back' ? garment.backUrl : garment.frontUrl;
   const garmentUrl = imgOverride[garment.key] || baseUrl;
+  // A location is shown for the selected garment when it isn't tied to specific garments
+  // (applies to all) or its garment list includes the current one.
+  const layerForGarment = l => !l.garmentKeys || !l.garmentKeys.length || l.garmentKeys.includes(garment.key);
   // Names of the art locations placed on a mock (by their layer/artFileId), so the job view can
   // label each mockup with the logo(s) it shows rather than just the filename.
   const _artLabels = layerIds => [...new Set((layerIds || []).filter(Boolean))]
@@ -347,7 +360,7 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvas]);
 
-  const uploadLayerFile = useCallback(async (idx, file) => {
+  const uploadLayerFile = useCallback(async (idx, file, {place} = {}) => {
     const ext = (file.name.split('.').pop() || '').toLowerCase();
     const isImg = ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext);
     const isSvg = ext === 'svg';
@@ -361,12 +374,38 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
       if (isSvg) { const svgString = await file.text(); preview = {url, svgString}; }
       else if (isImg) { preview = {url}; }
       else if (isVectorDoc) { const png = _cloudinaryPdfThumb(url); if (png) preview = {url: png, vectorSrc: url}; }
-      setLayers(prev => prev.map((l, i) => i === idx ? {...l, source, preview, hasExisting: l.hasExisting} : l));
+      let placed = null;
+      setLayers(prev => prev.map((l, i) => { if (i !== idx) return l; placed = {...l, source, preview, hasExisting: l.hasExisting}; return placed; }));
       nf && nf(file.name + ' attached' + (preview ? (isVectorDoc ? ' — generating a preview to place' : '') : ' (a stand-in will be placed on the mock)'));
+      // When the file was dropped onto the garment, place it straight away so the rep
+      // doesn't have to click "Place" afterward.
+      if (place && placed) placeLayer(placed);
     } catch (e) {
       nf && nf('Upload failed: ' + e.message, 'error');
     } finally { setBusy(false); }
-  }, [nf]);
+  }, [nf, placeLayer]);
+
+  // Accepted art file extensions for the location cards and the garment drop zone.
+  const ART_EXTS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'ai', 'eps', 'pdf'];
+  const isArtFile = f => ART_EXTS.includes((f.name.split('.').pop() || '').toLowerCase());
+
+  // Handle a file dropped onto the garment canvas: upload it to a target art location and
+  // place it. Target = the currently selected art's location, else the first location
+  // without a newly uploaded file, else the first location.
+  const dropArtOnCanvas = useCallback(file => {
+    if (!file) return;
+    if (!isArtFile(file)) { nf && nf('Drop a PNG, JPG, SVG, AI, EPS, or PDF art file', 'error'); return; }
+    // Only consider art locations that belong to the garment currently on screen.
+    const applies = (i) => layerForGarment(layers[i]);
+    const visible = layers.map((l, i) => i).filter(applies);
+    if (!visible.length) { nf && nf('No art location for this garment to attach art to', 'error'); return; }
+    let idx = -1;
+    const active = canvas && canvas.getActiveObject();
+    if (active && active._isArt && active._layerId) { const i = layers.findIndex(l => l.artFileId === active._layerId); if (i >= 0 && applies(i)) idx = i; }
+    if (idx < 0) idx = visible.find(i => !layers[i].source);
+    if (idx == null || idx < 0) idx = visible[0];
+    uploadLayerFile(idx, file, {place: true});
+  }, [canvas, layers, uploadLayerFile, nf, garment.key]);
 
   const uploadGarmentImg = useCallback(async file => {
     setBusy(true);
@@ -374,9 +413,16 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
       nf && nf('Uploading product image...');
       const url = await fileUpload(file, 'nsa-products');
       setImgOverride(prev => ({...prev, [garment.key]: url}));
+      // Persist the photo back to the product catalog (matched by SKU/color) so it's reused
+      // next time instead of re-uploaded. onSaveProductImage returns true when it matched a
+      // catalog product. The current side decides whether it's the front or back image.
+      if (onSaveProductImage) {
+        const saved = await onSaveProductImage(garment, url, side);
+        if (saved) nf && nf('Saved to the product catalog for future use');
+      }
     } catch (e) { nf && nf('Upload failed: ' + e.message, 'error'); }
     finally { setBusy(false); }
-  }, [garment.key, nf]);
+  }, [garment, side, nf, onSaveProductImage]);
 
   // Saves the current canvas as a mock for the current garment+side. Returns {key, entry} on
   // success (null otherwise) so callers can fold the just-saved mock into state that hasn't
@@ -520,7 +566,11 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
           <div style={{display: 'grid', gridTemplateColumns: '300px 1fr', gap: 16}}>
             <div>
               <div style={{fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 6}}>Art Locations</div>
-              {layers.map((l, idx) => <div key={l.artFileId || idx} style={{padding: 8, border: '1px solid #e2e8f0', borderRadius: 6, marginBottom: 8, background: '#fff'}}>
+              {layers.map((l, idx) => !layerForGarment(l) ? null : <div key={l.artFileId || idx}
+                onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('layer-' + idx); }}
+                onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOver(d => d === 'layer-' + idx ? null : d); }}
+                onDrop={e => { e.preventDefault(); e.stopPropagation(); setDragOver(null); if (busy) return; const f = e.dataTransfer.files[0]; if (!f) return; if (!isArtFile(f)) { nf && nf('Drop a PNG, JPG, SVG, AI, EPS, or PDF art file', 'error'); return; } uploadLayerFile(idx, f); }}
+                style={{padding: 8, border: '1px solid ' + (dragOver === 'layer-' + idx ? '#7c3aed' : '#e2e8f0'), borderRadius: 6, marginBottom: 8, background: dragOver === 'layer-' + idx ? '#f5f3ff' : '#fff', transition: 'background 0.12s, border-color 0.12s'}}>
                 <div style={{fontSize: 12, fontWeight: 700, color: '#1e293b'}}>{l.name || 'Artwork'}</div>
                 {l.position && <div style={{fontSize: 10, color: '#94a3b8', marginBottom: 4}}>{l.position}</div>}
                 {l.source ? <div style={{fontSize: 10, color: '#166534', display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6}}>
@@ -545,12 +595,16 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
                   </button>
                 </div>
               </div>)}
-              {layers.length === 0 && <div style={{fontSize: 11, color: '#94a3b8'}}>No art locations on this job.</div>}
+              {!layers.some(layerForGarment) && <div style={{fontSize: 11, color: '#94a3b8'}}>No art locations for this garment.</div>}
 
-              <div style={{marginTop: 10, paddingTop: 10, borderTop: '1px solid #e2e8f0'}}>
+              <div
+                onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('product'); }}
+                onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOver(d => d === 'product' ? null : d); }}
+                onDrop={e => { e.preventDefault(); e.stopPropagation(); setDragOver(null); if (busy) return; const f = e.dataTransfer.files[0]; if (!f) return; if (!f.type.startsWith('image/')) { nf && nf('Drop an image file for the product photo', 'error'); return; } uploadGarmentImg(f); }}
+                style={{marginTop: 10, paddingTop: 10, borderTop: '1px solid #e2e8f0', borderRadius: 6, background: dragOver === 'product' ? '#f5f3ff' : 'transparent', boxShadow: dragOver === 'product' ? '0 0 0 2px #7c3aed' : 'none', transition: 'background 0.12s, box-shadow 0.12s'}}>
                 <div style={{fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 4}}>Product Image</div>
                 {garmentUrl ? <div style={{fontSize: 10, color: '#166534'}}>Using catalog image</div>
-                  : <div style={{fontSize: 10, color: '#d97706', marginBottom: 4}}>Not in system — upload one</div>}
+                  : <div style={{fontSize: 10, color: '#d97706', marginBottom: 4}}>Not in system — drag an image here or upload</div>}
                 <button className="btn btn-sm btn-secondary" style={{fontSize: 10, marginTop: 4}} disabled={busy}
                   onClick={() => { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.onchange = () => { if (inp.files[0]) uploadGarmentImg(inp.files[0]); }; inp.click(); }}>
                   <Icon name="upload" size={11} /> Upload Product Image
@@ -582,7 +636,11 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
                   <Icon name="save" size={11} /> Save Mock for {garment.color || garment.sku}
                 </button>
               </div>
-              <div style={{display: 'flex', justifyContent: 'center', background: '#f8fafc', borderRadius: 8, padding: 12, position: 'relative'}}>
+              <div
+                onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!busy) setDragOver('canvas'); }}
+                onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOver(d => d === 'canvas' ? null : d); }}
+                onDrop={e => { e.preventDefault(); e.stopPropagation(); setDragOver(null); if (busy) return; const f = e.dataTransfer.files[0]; if (f) dropArtOnCanvas(f); }}
+                style={{display: 'flex', justifyContent: 'center', background: '#f8fafc', borderRadius: 8, padding: 12, position: 'relative', outline: dragOver === 'canvas' ? '2px dashed #7c3aed' : 'none', outlineOffset: -4}}>
                 <div ref={wrapRef} />
                 {(imgLoading || (!garmentUrl && garment.pending)) && <div style={{position: 'absolute', inset: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, background: 'rgba(248,250,252,0.85)', borderRadius: 8, pointerEvents: 'none'}}>
                   <Icon name="loader" size={26} style={{animation: 'spin 1s linear infinite', color: '#7c3aed'}} />
@@ -592,8 +650,12 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
                   <Icon name="image" size={28} style={{color: '#cbd5e1'}} />
                   <span style={{fontSize: 12, color: '#94a3b8', fontWeight: 600}}>No product image — upload one</span>
                 </div>}
+                {dragOver === 'canvas' && <div style={{position: 'absolute', inset: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, background: 'rgba(124,58,237,0.08)', borderRadius: 8, pointerEvents: 'none'}}>
+                  <Icon name="upload" size={28} style={{color: '#7c3aed'}} />
+                  <span style={{fontSize: 12, color: '#6d28d9', fontWeight: 700}}>Drop art to place it on the garment</span>
+                </div>}
               </div>
-              <div style={{fontSize: 10, color: '#94a3b8', marginTop: 6, textAlign: 'center'}}>Click art to select. Drag to move, corners to resize. Press Delete to remove.</div>
+              <div style={{fontSize: 10, color: '#94a3b8', marginTop: 6, textAlign: 'center'}}>Drag an art file onto the garment to place it. Click art to select; drag to move, corners to resize. Press Delete to remove.</div>
               {(mocks[garment.key] || []).length > 0 && <div style={{marginTop: 10, paddingTop: 10, borderTop: '1px solid #e2e8f0'}}>
                 <div style={{fontSize: 10, fontWeight: 700, color: '#166534', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4}}>
                   <Icon name="check" size={12} /> Saved mock{(mocks[garment.key].length > 1 ? 's' : '')} for {garment.color || garment.sku}

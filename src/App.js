@@ -16,7 +16,7 @@ import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
-import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
+import { buildJobs, isJobReady, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
 import { calcOrderTotals, auTierDisc } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
@@ -802,6 +802,50 @@ const _checkVersion=async(table,id,localVersion)=>{
 // Art rows map `stitches` to an INT column. An empty string (or any non-numeric value) must
 // become null or Postgres rejects the whole upsert ("invalid input syntax for type integer").
 const _sanitizeArtRow=(r)=>{if('stitches' in r){const n=parseInt(r.stitches,10);r.stitches=Number.isFinite(n)?n:null}return r};
+// ─── Art-file field-level merge (optimistic-concurrency conflict resolution) ───
+// When an art row's DB copy has advanced past this client's (a _version conflict), we must do neither of the two
+// unsafe extremes: blindly overwriting (clobbers another user's concurrent approval/mockup) nor silently dropping
+// this client's edit. The drop is the reported data-loss bug — a flood of background reloads/saves keeps bumping
+// the DB _version, the open editor's working copy falls behind, and the user's typed name/color-ways/size are then
+// filtered out as "stale". Instead we 3-way-merge: start from the DB row (keeps concurrent approval/status/mockup
+// changes), overlay THIS client's user-authored content, and union file collections so neither side's uploads are
+// lost. _version itself is never written (the DB trigger owns it), so the merged row upserts cleanly.
+const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','notes','archived'];
+const _ART_FILE_COLLECTIONS=['files','mockup_files','prod_files','sample_art'];
+const _artFileUrl=f=>typeof f==='string'?f:(f&&(f.url||f.name))||'';
+const _unionArtFiles=(dbArr,clientArr)=>{
+  // Both scalar (e.g. a single preview/sample url): prefer the client's value, falling back to the DB's.
+  if(!Array.isArray(dbArr)&&!Array.isArray(clientArr))return clientArr!==undefined?clientArr:dbArr;
+  const out=Array.isArray(dbArr)?dbArr.slice():[];
+  const seen=new Set(out.map(_artFileUrl).filter(Boolean));
+  (Array.isArray(clientArr)?clientArr:[]).forEach(f=>{const k=_artFileUrl(f);if(!k){out.push(f)}else if(!seen.has(k)){seen.add(k);out.push(f)}});
+  return out;
+};
+const _mergeArtConflict=(clientArt,dbRow)=>{
+  const merged={...dbRow};// base = DB row: keeps status/preview/uploaded and anything another user changed
+  _ART_CONTENT_FIELDS.forEach(f=>{if(f in clientArt)merged[f]=clientArt[f]});// overlay this client's typed content
+  _ART_FILE_COLLECTIONS.forEach(f=>{merged[f]=_unionArtFiles(dbRow[f],clientArt[f])});// union uploads from both sides
+  const im={...(dbRow.item_mockups||{})};// per-item mockup map: union each item's url list
+  Object.entries(clientArt.item_mockups||{}).forEach(([k,v])=>{im[k]=_unionArtFiles(im[k],v)});
+  merged.item_mockups=im;
+  if(!merged.preview_url&&clientArt.preview_url)merged.preview_url=clientArt.preview_url;
+  return merged;
+};
+// Resolve which art rows to persist given the client's art_files and the live full DB rows. Conflicting rows
+// (DB _version ahead of the client's) are field-merged onto the DB copy; the rest pass through unchanged. Returns
+// {client, row, baseVersion} per file so the caller can upsert `row` and, on success, bump the in-memory `client`
+// copy to baseVersion+1 (matching the DB trigger) so its own next save isn't mistaken for stale.
+const _resolveArtRows=(clientArtFiles,dbRows,parentId)=>{
+  const dbById=new Map((dbRows||[]).map(r=>[r.id,r]));
+  let conflicts=0;
+  const out=clientArtFiles.map(a=>{
+    const db=dbById.get(a.id);
+    if(db&&(a._version||0)<(db._version||0)){conflicts++;return{client:a,row:_mergeArtConflict(a,db),baseVersion:db._version||0}}
+    return{client:a,row:a,baseVersion:a._version||0};
+  });
+  if(conflicts)console.warn('[DB]',conflicts,'art file(s) for',parentId,'field-merged with newer DB copy (concurrent edit) — your content preserved');
+  return out;
+};
 const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
   // Optimistic locking: check version before saving (auto-heal on conflict)
@@ -889,26 +933,25 @@ const _dbSaveEstimateInner = async (est) => {
     // window where a committed delete followed by a timed-out insert left the estimate permanently empty.
     // Sync art_files: upsert current, delete removed. Optimistic concurrency via the _version trigger — never
     // overwrite an art row whose DB copy is newer than the client's, and only delete rows the client had loaded.
-    const{data:_dbAf}=await supabase.from('estimate_art_files').select('id,_version').eq('estimate_id',est.id);
+    const{data:_dbAf}=await supabase.from('estimate_art_files').select('*').eq('estimate_id',est.id);
     const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
     if(art_files?.length){
-      const _freshArt=art_files.filter(a=>{const dbv=_dbAfVerById.get(a.id);return dbv==null||(a._version||0)>=dbv});
-      const _staleSkipped=art_files.length-_freshArt.length;
-      if(_staleSkipped)console.warn('[DB]',_staleSkipped,'art file(s) for',est.id,'left untouched — DB copy is newer (concurrent edit)');
-      if(_freshArt.length){
-        let afRows=_freshArt.map(a=>_sanitizeArtRow({..._pick(a,_artCols),archived:!!a.archived,estimate_id:est.id}));
+      const _resolved=_resolveArtRows(art_files,_dbAf,est.id);
+      {
+        let afRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,estimate_id:est.id}));
+        let _afOk=true;
         const{error:afErr}=await supabase.from('estimate_art_files').upsert(afRows,{onConflict:'estimate_id,id'});
         if(afErr){
           if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
             console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
             const coreRows=afRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
             const{error:afErr2}=await supabase.from('estimate_art_files').upsert(coreRows,{onConflict:'estimate_id,id'});
-            if(afErr2)console.error('[DB] estimate_art_files upsert failed (core):',afErr2.message,afErr2.details);
+            if(afErr2){console.error('[DB] estimate_art_files upsert failed (core):',afErr2.message,afErr2.details);_afOk=false}
             else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
-          }else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details)}
+          }else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details);_afOk=false}
         }
         // Match the DB trigger's version bump so this client's next save isn't mistaken for stale.
-        _freshArt.forEach(a=>{a._version=(a._version||0)+1});
+        if(_afOk)_resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
       }
       const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
       const _knownArtIds=new Set(Array.isArray(est._hydratedArtIds)?est._hydratedArtIds:[]);
@@ -1164,6 +1207,51 @@ const _dbSaveSOInner = async (so) => {
         }
       }
     }
+    // Duplicate-PO guard: drop any newly-introduced po_id whose size signature exactly matches
+    // a clean (un-received/un-billed/un-shipped) PO line already on the same item. Catches the
+    // "two creates raced against a stale open-size view" pattern (SO-1080, SO-1059, SO-1101)
+    // where the counter advanced (so the new po_id differs) but the units were already covered.
+    if(items&&items.length){
+      const _dbPoIdSet=new Set((oldItemIds.length?(await(async()=>{try{const r=await supabase.from('so_item_po_lines').select('po_id').in('so_item_id',oldItemIds);return(r.data||[]).map(x=>x.po_id).filter(Boolean)}catch{return[]}})()):[]));
+      const _poMeta=new Set(['po_id','vendor','status','received','shipments','cancelled','created_at','expected_date','memo','po_type','deco_vendor','deco_type','unit_cost','drop_ship','billed','tracking_numbers','preexisting','batch_queue_id','batch_po_number','notes']);
+      const _sizeSig=pl=>{const ks=Object.keys(pl||{}).filter(k=>!k.startsWith('_')&&!_poMeta.has(k)&&typeof pl[k]==='number'&&pl[k]>0).sort();return ks.map(k=>k+':'+pl[k]).join('|')};
+      const _isClean=pl=>{
+        if(pl.status&&pl.status!=='waiting'&&pl.status!=='queued')return false;
+        const anyPos=o=>o&&Object.values(o).some(v=>typeof v==='number'&&v>0);
+        if(anyPos(pl.received)||anyPos(pl.billed)||anyPos(pl.cancelled))return false;
+        if(Array.isArray(pl.shipments)&&pl.shipments.length>0)return false;
+        if(Array.isArray(pl.tracking_numbers)&&pl.tracking_numbers.length>0)return false;
+        return true;
+      };
+      let _dupesDropped=0;const _droppedSummary=[];
+      items.forEach((it,ii)=>{
+        const pls=Array.isArray(it.po_lines)?it.po_lines:[];if(pls.length<2)return;
+        const bySig={};
+        pls.forEach((pl,pi)=>{const sig=_sizeSig(pl);if(!sig)return;(bySig[sig]=bySig[sig]||[]).push({pl,pi})});
+        const drop=new Set();
+        Object.values(bySig).forEach(group=>{
+          if(group.length<2)return;
+          const clean=group.filter(g=>_isClean(g.pl));
+          if(clean.length<2)return;
+          const dbKnown=clean.filter(g=>g.pl.po_id&&_dbPoIdSet.has(g.pl.po_id));
+          const newOnes=clean.filter(g=>!g.pl.po_id||!_dbPoIdSet.has(g.pl.po_id));
+          if(dbKnown.length>=1&&newOnes.length>=1){
+            newOnes.forEach(g=>drop.add(g.pi));
+          }else if(dbKnown.length===0&&newOnes.length>=2){
+            // Both new in this save — keep the lowest-sorted po_id, drop the rest.
+            newOnes.slice().sort((a,b)=>String(a.pl.po_id||'').localeCompare(String(b.pl.po_id||''))).slice(1).forEach(g=>drop.add(g.pi));
+          }
+        });
+        if(drop.size){
+          drop.forEach(pi=>_droppedSummary.push((pls[pi]&&pls[pi].po_id)||'?'));
+          items[ii]={...it,po_lines:pls.filter((_,pi)=>!drop.has(pi))};
+          _dupesDropped+=drop.size;
+        }
+      });
+      if(_dupesDropped){
+        console.warn('[DB] PO dedup: dropped',_dupesDropped,'duplicate PO line(s) on',so.id,'-',_droppedSummary.join(', '));
+      }
+    }
     // Pick line preservation: same hazard as PO lines — picks are deleted and rebuilt from in-memory items on every
     // save, so a stale/timed-out so_item_pick_lines load (or picks another user added) would be silently wiped.
     // Re-inject any pick the client never deliberately deleted; only intentional removals stick.
@@ -1234,27 +1322,26 @@ const _dbSaveSOInner = async (so) => {
     // Optimistic concurrency (via the _version trigger): never overwrite an art row whose DB copy is newer than
     // the client's — that would clobber an approval/mockup another user set after this client loaded. And only
     // delete rows the client actually loaded (_hydratedArtIds), so art another user added meanwhile is preserved.
-    const{data:_dbAf}=await supabase.from('so_art_files').select('id,_version').eq('so_id',so.id);
+    const{data:_dbAf}=await supabase.from('so_art_files').select('*').eq('so_id',so.id);
     const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
     if(art_files?.length){
-      const _freshArt=art_files.filter(a=>{const dbv=_dbAfVerById.get(a.id);return dbv==null||(a._version||0)>=dbv});
-      const _staleSkipped=art_files.length-_freshArt.length;
-      if(_staleSkipped)console.warn('[DB]',_staleSkipped,'art file(s) for',so.id,'left untouched — DB copy is newer (concurrent edit)');
-      if(_freshArt.length){
-        let soAfRows=_freshArt.map(a=>_sanitizeArtRow({..._pick(a,_artCols),archived:!!a.archived,so_id:so.id}));
+      const _resolved=_resolveArtRows(art_files,_dbAf,so.id);
+      {
+        let soAfRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id}));
+        let _afOk=true;
         const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
         if(afErr){
           if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
             console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
             const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
             const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
-            if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr2.message)}
+            if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr2.message);_afOk=false}
             else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
-          }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message)}
+          }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message);_afOk=false}
         }
         // Match the DB trigger's version bump so this client's next save isn't mistaken for stale. Over-bump is safe
-        // (the >= check still upserts); under-bump would make the client skip its own row.
-        _freshArt.forEach(a=>{a._version=(a._version||0)+1});
+        // (the merge still upserts); under-bump would make the client skip its own row.
+        if(_afOk)_resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
       }
       // Delete only art the client deliberately removed: it had loaded the row and no longer holds it.
       const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
@@ -1410,13 +1497,13 @@ const _dbSaveArtFilesInner = async (so) => {
   return _dbSavingGuard(async()=>{try{
     const art_files=so.art_files;
     if(!Array.isArray(art_files))return true;// nothing hydrated to sync
-    const{data:_dbAf,error:_dbAfErr}=await _retryNet(()=>supabase.from('so_art_files').select('id,_version').eq('so_id',so.id));
+    const{data:_dbAf,error:_dbAfErr}=await _retryNet(()=>supabase.from('so_art_files').select('*').eq('so_id',so.id));
     if(_dbAfErr){console.error('[DB] so_art_files read failed:',_dbAfErr.message);if(_dbNotify)_dbNotify('Could not save artwork file change: '+_dbAfErr.message,'error');return false}
     const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
     if(art_files.length){
-      const _freshArt=art_files.filter(a=>{const dbv=_dbAfVerById.get(a.id);return dbv==null||(a._version||0)>=dbv});
-      if(_freshArt.length){
-        const soAfRows=_freshArt.map(a=>_sanitizeArtRow({..._pick(a,_artCols),archived:!!a.archived,so_id:so.id}));
+      const _resolved=_resolveArtRows(art_files,_dbAf,so.id);
+      {
+        const soAfRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id}));
         const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
         if(afErr){
           if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
@@ -1425,7 +1512,7 @@ const _dbSaveArtFilesInner = async (so) => {
             if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+afErr2.message,'error');return false}
           }else{console.error('[DB] so_art_files upsert failed:',afErr.message);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+afErr.message,'error');return false}
         }
-        _freshArt.forEach(a=>{a._version=(a._version||0)+1});
+        _resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
       }
       const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
       const _knownArtIds=new Set(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]);
@@ -2387,6 +2474,61 @@ function dP(d,q,artFiles,cq){
   // Outside decoration — user-entered cost/sell
   if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
+
+// Build the line-item rows for an invoice PDF/print document. The invoice's own stored
+// line_items are the source of truth for price/qty so any per-line edits or overrides
+// (e.g. a garment dropped to $0) flow through to the document — exactly as the on-screen
+// invoice view renders them. The sales order is used only to enrich each line with its size
+// breakdown and decoration detail (never to re-price it); decorations are shown as
+// informational sub-rows because their cost is already folded into each line's rate.
+// Legacy invoices that never stored line_items fall back to deriving them from the SO.
+// Returns {rows, subtotal}. `fmt` formats a number as a currency string.
+function buildInvoicePdfRows(inv, so, fmt){
+  const soArt=so?safeArt(so):[];
+  const soItems=so?safeItems(so):[];
+  const aqMap={};soItems.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){aqMap[d.art_file_id]=(aqMap[d.art_file_id]||0)+q}})});
+  const soByKey={};soItems.forEach((it,idx)=>{soByKey[soLineKey(it,idx)]=idx});
+  let lineItems=(inv&&inv.line_items)||[];
+  if(!lineItems.length&&so){
+    lineItems=soItems.map((it,idx)=>{
+      const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return null;
+      const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?aqMap[d.art_file_id]:qty;return a+dP(d,qty,soArt,cq).sell},0);
+      return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell),_sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,idx)};
+    }).filter(Boolean);
+  }
+  // Match each invoice line back to its SO item so we can re-attach the size breakdown and
+  // decoration/number detail. Try the stored line key first, then SKU, then a description prefix
+  // (mirrors the on-screen invoice view); consume matched SO items so duplicate SKUs map 1:1.
+  const usedSo=new Set();
+  const matchSoIdx=(li)=>{
+    if(li._so_line_key!=null&&soByKey[li._so_line_key]!=null&&!usedSo.has(soByKey[li._so_line_key])){const i=soByKey[li._so_line_key];usedSo.add(i);return i}
+    let i=li._sku?soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku===li._sku):-1;
+    if(i<0)i=soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku&&(li.desc||'').startsWith(it.sku));
+    if(i>=0){usedSo.add(i);return i}
+    return -1;
+  };
+  const rows=[];let subtotal=0;
+  lineItems.forEach(li=>{
+    const qty=safeNum(li.qty);subtotal+=safeNum(li.amount);
+    const soIdx=matchSoIdx(li);const soIt=soIdx>=0?soItems[soIdx]:null;
+    const sku=li._sku||soIt?.sku||'';
+    const nm=soIt?.name||li._name;const color=soIt?.color||li._color;
+    let itemName=nm?(nm+(color?' - '+color:'')):(li.desc||'');
+    const szStr=soIt?SZ_ORD.filter(sz=>safeSizes(soIt)[sz]>0).map(sz=>safeSizes(soIt)[sz]+(soIt.is_footwear?'/':' ')+sz).join(', '):'';
+    if(szStr)itemName+='<br/><span>'+szStr+'</span>';
+    if(soIt?.notes&&String(soIt.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(soIt.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
+    rows.push({cells:[{value:qty,style:'text-align:center'},{value:sku,style:'font-weight:700'},{value:itemName},{value:fmt(safeNum(li.rate)),style:'text-align:right'},{value:fmt(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]});
+    const decos=soIt?safeDecos(soIt):[];
+    decos.forEach(d=>{
+      const cq=d.kind==='art'&&d.art_file_id?aqMap[d.art_file_id]:qty;const dp2=dP(d,qty,soArt,cq);
+      const artF=soArt.find(a2=>a2.id===d.art_file_id);
+      const decoLabel=pdfDecoLabel(d,artF);
+      const posLabel=d.position?' — '+d.position:'';
+      rows.push({_class:'deco-row',cells:[{value:'',style:''},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:'+'+fmt(safeNum(dp2.sell))+'/ea',style:'text-align:right;color:#64748b'},{value:'',style:''}]});
+    });
+  });
+  return{rows,subtotal};
+}
 
 // Magic-link landing page. When an admin sends an invite, the email link includes
 // a Supabase access token in the URL hash; supabase-js auto-detects it because
@@ -3887,6 +4029,9 @@ export default function App(){
   const _bootScanRanRef=React.useRef(false);
   React.useEffect(()=>{
     if(_bootScanRanRef.current)return;
+    // Wait for the initial cloud load to finish before scanning — otherwise the `issues` list below
+    // isn't authoritative yet and we'd re-file/re-alert issues that were already logged or resolved.
+    if(!_dbLoadSuccess.current)return;
     if(!soHistory||Object.keys(soHistory).length===0)return;
     if(!sos||sos.length===0)return;
     _bootScanRanRef.current=true;
@@ -3900,7 +4045,9 @@ export default function App(){
       const lastGood=snaps.find(s=>(s?.snapshot?.items||[]).length>0);
       if(!lastGood)return;
       const lastGoodCount=lastGood.snapshot.items.length;
-      if(liveCount<lastGoodCount){flagged.push({soId,liveCount,lastGoodCount,lastGoodTs:lastGood.ts})}
+      // Only flag a *significant* loss — the SO wiped to zero, or lost more than half its items.
+      // Reps routinely delete a line or two as normal workflow, so small drops are not data loss.
+      if(liveCount<lastGoodCount&&(liveCount===0||(lastGoodCount-liveCount)>lastGoodCount/2)){flagged.push({soId,liveCount,lastGoodCount,lastGoodTs:lastGood.ts})}
     });
     // Admin-only: reps and other users should never see this internal data-integrity alert.
     const _isAdminRole=cu?.role==='admin'||cu?.role==='super_admin';
@@ -3925,6 +4072,8 @@ export default function App(){
   const _estBootScanRanRef=React.useRef(false);
   React.useEffect(()=>{
     if(_estBootScanRanRef.current)return;
+    // Same load gate as the SO scan — don't scan until the cloud `issues` list is authoritative.
+    if(!_dbLoadSuccess.current)return;
     if(!estHistory||Object.keys(estHistory).length===0)return;
     if(!ests||ests.length===0)return;
     _estBootScanRanRef.current=true;
@@ -3936,7 +4085,8 @@ export default function App(){
       const lastGood=snaps.find(s=>(s?.snapshot?.items||[]).length>0);
       if(!lastGood)return;
       const lastGoodCount=lastGood.snapshot.items.length;
-      if(liveCount<lastGoodCount){flagged.push({estId,liveCount,lastGoodCount,lastGoodTs:lastGood.ts})}
+      // Only flag a wipe to zero or losing more than half the items — routine line deletions are normal.
+      if(liveCount<lastGoodCount&&(liveCount===0||(lastGoodCount-liveCount)>lastGoodCount/2)){flagged.push({estId,liveCount,lastGoodCount,lastGoodTs:lastGood.ts})}
     });
     const _isAdminRole=cu?.role==='admin'||cu?.role==='super_admin';
     if(flagged.length&&_isAdminRole){
@@ -4898,7 +5048,7 @@ export default function App(){
     _dbSaveArtFiles(merged);
     return merged;
   };
-  const savI=(pid,inv,deltas,reason,adjType)=>{
+  const savI=(pid,inv,deltas,reason,adjType,availSizes)=>{
     const p=prod.find(x=>x.id===pid);
     if(deltas&&p){
       const entries=Object.entries(deltas).filter(([,v])=>v!==0);
@@ -4908,7 +5058,10 @@ export default function App(){
         logChange('inventory_adjustment','Product',pid,entries.map(([sz,d2])=>(d2>0?'+':'')+d2+' '+sz).join(', ')+(reason?' — '+reason:''));
       }
     }
-    setProd(pp=>pp.map(x=>x.id===pid?{...x,_inv:inv}:x));nf('Inventory updated');
+    setProd(pp=>pp.map(x=>x.id===pid?{...x,_inv:inv,...(Array.isArray(availSizes)?{available_sizes:availSizes}:{})}:x));
+    const addedSizes=Array.isArray(availSizes)&&p?availSizes.filter(s=>!(p.available_sizes||[]).includes(s)):[];
+    if(addedSizes.length){logChange('inventory_sizes','Product',pid,'Added size'+(addedSizes.length===1?'':'s')+': '+addedSizes.join(', '))}
+    nf('Inventory updated');
   };
   const newE=(c,product,seedItems)=>{const mk=c?.catalog_markup||1.65;const items=[];
     if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-auTierDisc(c?.adidas_ua_tier||'B',product.pricing_group))):rQ(repCost*mk);
@@ -5905,13 +6058,14 @@ export default function App(){
     </div>})()}
     </>})()}
     {/* Assigned Tasks for Admin */}
-    {myAssignedTodos.length>0&&<div className="card" style={{marginBottom:16}}>
+    {(()=>{const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/864e5)<=3&&!dismissedNotifs.includes('task-ack-'+t.id));return(myAssignedTodos.length>0||recentlyCompleted.length>0)&&<div className="card" style={{marginBottom:16}}>
       <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>📌 Assigned Tasks ({myAssignedTodos.length})</h2>
         <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:''})}>+ New Task</button>
       </div>
       <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
-        {myAssignedTodos.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));
+        {myAssignedTodos.length===0?<div className="empty" style={{padding:20}}>No open tasks</div>:
+        myAssignedTodos.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));
           return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:isAssignedToMe?'#fef3c7':'white',cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
@@ -5926,7 +6080,20 @@ export default function App(){
             </div>
           </div>})}
       </div>
-    </div>}
+      {recentlyCompleted.length>0&&<div style={{borderTop:'1px solid #e2e8f0'}}>
+        <div style={{padding:'8px 14px',fontSize:11,fontWeight:700,color:'#166534',background:'#f0fdf4'}}>Recently Completed ({recentlyCompleted.length})</div>
+        {recentlyCompleted.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/864e5);const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));
+          return<div key={t.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',background:'#f0fdf4',cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:12,color:'#166534'}}>✅ {t.title}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>Completed by {completedBy?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{t.completion_note?' — '+t.completion_note:''}{daysAgo===0?' · Today':' · '+daysAgo+'d ago'}</div>
+              </div>
+              <button title="Acknowledge — clear from list" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();dismissNotif('task-ack-'+t.id)}}>✓</button>
+            </div>
+          </div>})}
+      </div>}
+    </div>})()}
     <div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="file" size={14}/> New Estimate</button>
       <button className="btn btn-secondary" onClick={()=>{setPg('customers');setCM({open:true,c:null})}}><Icon name="plus" size={14}/> New Customer</button>
@@ -6497,7 +6664,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.wh_only?'':csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.wh_only?'':csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -6749,7 +6916,7 @@ export default function App(){
     const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());const[salesView,setSalesView]=useState('month');
     const[autoSaved,setAutoSaved]=useState(false);
     // Sync ep with product prop when inventory changes externally (e.g. AdjModal)
-    React.useEffect(()=>{if(!editing){setEp({...product})}else{setEp(prev=>({...prev,_inv:product._inv}))}},[product._inv]);
+    React.useEffect(()=>{if(!editing){setEp({...product})}else{setEp(prev=>({...prev,_inv:product._inv}))}},[product._inv,(product.available_sizes||[]).join(',')]);
     const epRef=React.useRef(ep);const editingRef=React.useRef(editing);
     React.useEffect(()=>{epRef.current=ep},[ep]);
     React.useEffect(()=>{editingRef.current=editing},[editing]);
@@ -8048,6 +8215,19 @@ export default function App(){
     const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,...fields}:jj);
     savSO({...so,jobs:updatedJobs});
   };
+  // Set the manual link group on a job living on another sales order (used by OrderEditor when
+  // a rep links jobs across sub-customers). Persists via savSO so state + DB stay in sync.
+  const setJobLinkGroup=(soId,jobId,groupId)=>{
+    const so=sos.find(s=>s.id===soId);if(!so)return;
+    const updatedJobs=safeJobs(so).map(jj=>jj.id===jobId?{...jj,link_group:groupId||null}:jj);
+    savSO({...so,jobs:updatedJobs});
+  };
+  // Toggle a job out of (or back into) automatic same-artwork grouping.
+  const setJobAutoGroupOff=(soId,jobId,off)=>{
+    const so=sos.find(s=>s.id===soId);if(!so)return;
+    const updatedJobs=safeJobs(so).map(jj=>jj.id===jobId?{...jj,auto_group_off:!!off}:jj);
+    savSO({...so,jobs:updatedJobs});
+  };
   const[showColPicker,setShowColPicker]=useState(false);
   const ALL_PROD_COLS=[
     {id:'so',label:'SO',default:true},
@@ -8080,13 +8260,27 @@ export default function App(){
     const allJobs=[];
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);
+      const parentId=c?.parent_id||c?.id||null;
       safeJobs(so).forEach(j=>{
         allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
+          parentId,grpKey:jobGroupKey(j,parentId),
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—',
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
         });
       });
     });
+    // ── "Run together" linking ──
+    // Jobs sharing a group key (same artwork within a parent, or a manual link) should run on
+    // one screen setup. Map each group key to its members so we can cluster them in the board
+    // and surface a prompt when 2+ are sitting at the same production stage at once.
+    const grpMembers={};
+    allJobs.forEach(j=>{if(j.grpKey){(grpMembers[j.grpKey]=grpMembers[j.grpKey]||[]).push(j)}});
+    // Linked siblings of a job that are NOT shipped/completed (i.e. still relevant to run) —
+    // a long-finished job that happened to share the art name shouldn't clutter the badge.
+    const linkSiblings=(j)=>j.grpKey?(grpMembers[j.grpKey]||[]).filter(x=>!(x.soId===j.soId&&x.id===j.id)&&x.prod_status!=='shipped'&&x.prod_status!=='completed'):[];
+    // Reorder a list so members of the same group sit next to each other, preserving the
+    // original order of each group's first appearance and leaving ungrouped jobs in place.
+    const clusterLinked=(arr)=>{const seen=new Set();const out=[];arr.forEach(j=>{const g=j.grpKey;if(!g){out.push(j);return}if(seen.has(g))return;seen.add(g);arr.forEach(x=>{if(x.grpKey===g)out.push(x)})});return out;};
     const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>{const cc=cust.find(x=>x.id===j.so.customer_id);return(cc?.primary_rep_id||j.so.created_by)===prodFilter});
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
     const readyOnly=byDeco.filter(j=>(j.prod_status!=='hold'||isJobReady(j,j.so))).filter(j=>j.prod_status!=='shipped');
@@ -8135,8 +8329,41 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Needs Art</div><div className="stat-value" style={{color:needsArt>0?'#d97706':''}}>{needsArt}</div></div>
         <div className="stat-card"><div className="stat-label">In Process</div><div className="stat-value" style={{color:'#2563eb'}}>{inProcess}</div></div>
       </div>
+      {/* ── Run-together prompts ── Surfaces groups where 2+ jobs share the same decoration and
+          are sitting at the same production stage right now, so the team runs them on one screen
+          setup instead of recreating it per sales order. */}
+      {(()=>{
+        const sLabel={hold:'Ready for Prod',ready:'Ready for Prod',staging:'In Line',in_process:'In Process'};
+        const byKey={};
+        byStatus.forEach(j=>{if(j.grpKey)(byKey[j.grpKey]=byKey[j.grpKey]||[]).push(j)});
+        const alerts=[];
+        Object.entries(byKey).forEach(([k,members])=>{
+          if(members.length<2)return;
+          const byStat={};
+          members.forEach(m=>{const s=m.prod_status==='ready'?'hold':m.prod_status;(byStat[s]=byStat[s]||[]).push(m)});
+          Object.entries(byStat).forEach(([s,ms])=>{
+            if(s==='completed'||s==='shipped')return;
+            // For Ready-for-Prod, only count jobs that are actually checked in (items pulled/received).
+            const ready=s==='hold'?ms.filter(m=>isJobReady(m,m.so)):ms;
+            if(ready.length<2)return;
+            alerts.push({k,status:s,members:ready});
+          });
+        });
+        if(!alerts.length)return null;
+        return<div style={{marginBottom:12,display:'flex',flexDirection:'column',gap:8}}>
+          {alerts.map((a,i)=>{const m0=a.members[0];return(
+            <div key={a.k+a.status+i} style={{padding:'10px 14px',background:'linear-gradient(135deg,#ecfdf5,#f0fdf4)',border:'1px solid #86efac',borderRadius:8,display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+              <span style={{fontSize:18}}>🔗</span>
+              <div style={{flex:1,minWidth:240}}>
+                <div style={{fontSize:13,fontWeight:700,color:'#166534'}}>{a.members.length} jobs share "{m0.art_name||'(unnamed art)'}" ({(m0.deco_type||'').replace(/_/g,' ')}) — run together to reuse the screen</div>
+                <div style={{fontSize:11,color:'#15803d',marginTop:2}}>All at <strong>{sLabel[a.status]||a.status}</strong>: {a.members.map(m=>m.soId+' · '+m.customer).join('  •  ')}</div>
+              </div>
+            </div>
+          )})}
+        </div>;
+      })()}
       {prodView==='board'&&<div style={{display:'flex',gap:12,overflowX:'auto',paddingBottom:12}}>
-        {kanbanCols.map(col=>{const colJobs=col.filter?byStatus.filter(col.filter):byStatus.filter(j=>j.prod_status===col.id);
+        {kanbanCols.map(col=>{const colJobs=clusterLinked(col.filter?byStatus.filter(col.filter):byStatus.filter(j=>j.prod_status===col.id));
           return<div key={col.id} style={{minWidth:220,flex:1,background:col.bg,borderRadius:8,padding:8}}>
             <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
               <div style={{width:8,height:8,borderRadius:8,background:col.color}}/>
@@ -8170,6 +8397,7 @@ export default function App(){
                   </div>
                   <div style={{display:'flex',alignItems:'center',gap:4}}>
                     <span style={{fontSize:9,color:'#94a3b8'}}>{j.id} · {gCount} item{gCount!==1?'s':''} · {j.rep}</span>
+                    {(()=>{const sibs=linkSiblings(j);if(!sibs.length)return null;const _norm=s=>s==='ready'?'hold':s;const same=sibs.filter(s=>_norm(s.prod_status)===_norm(j.prod_status));const title='Shares this decoration with:\n'+sibs.map(s=>s.soId+' · '+s.customer+' ('+(s.prod_status||'').replace(/_/g,' ')+')').join('\n')+(j.link_group?'\n\n(manually linked)':'');return<span title={title} style={{fontSize:8,fontWeight:700,padding:'1px 5px',borderRadius:6,marginLeft:4,background:same.length?'#dcfce7':'#f1f5f9',color:same.length?'#166534':'#64748b'}}>🔗 {same.length?'Run w/ '+(same.length+1):'Linked'}</span>})()}
                     <span style={{fontSize:9,color:'#94a3b8',marginLeft:'auto',transition:'transform 0.15s',transform:isExp?'rotate(180deg)':'rotate(0deg)'}}>▾</span>
                   </div>
                 </div>
@@ -8302,7 +8530,7 @@ export default function App(){
           status:{label:'Status',sort:'status',render:j=>{const k=j.prod_status||'hold';const sc=statusColors[k]||{bg:'#f1f5f9',c:'#64748b'};return<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:sc.bg,color:sc.c,whiteSpace:'nowrap'}}>{statusLabel[k]||k.replace(/_/g,' ')}</span>}},
           job:{label:'Job ID',sort:'job',render:j=><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span>},
           job_name:{label:'Job Name',sort:'art_name',render:j=><div style={{maxWidth:280,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.art_name||'—'}</div>},
-          customer:{label:'Customer',sort:'customer',render:j=><span>{j.customer}{j.alpha&&<span className="badge badge-gray" style={{marginLeft:4}}>{j.alpha}</span>}</span>},
+          customer:{label:'Customer',sort:'customer',render:j=>{const sibs=linkSiblings(j);const _norm=s=>s==='ready'?'hold':s;const same=sibs.filter(s=>_norm(s.prod_status)===_norm(j.prod_status));return<span>{j.customer}{j.alpha&&<span className="badge badge-gray" style={{marginLeft:4}}>{j.alpha}</span>}{sibs.length>0&&<span title={'Shares this decoration with:\n'+sibs.map(s=>s.soId+' · '+s.customer+' ('+(s.prod_status||'').replace(/_/g,' ')+')').join('\n')+(j.link_group?'\n\n(manually linked)':'')} style={{fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:6,marginLeft:4,background:same.length?'#dcfce7':'#f1f5f9',color:same.length?'#166534':'#64748b',whiteSpace:'nowrap'}}>🔗 {same.length?'Run w/ '+(same.length+1):'Linked'}</span>}</span>}},
           alpha:{label:'Alpha Tag',sort:'alpha',render:j=>j.alpha||'—'},
           so:{label:'SO #',sort:'soId',render:j=><span style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{j.soId}</span>},
           so_memo:{label:'SO Memo',render:j=><div style={{maxWidth:240,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:11}}>{j.soMemo||'—'}</div>},
@@ -8384,7 +8612,7 @@ export default function App(){
                 </th>;
               })}
             </tr></thead><tbody>
-            {sorted.map(j=><tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
+            {clusterLinked(sorted).map(j=><tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
               {visibleCols.map(id=>{const c=ALL_COLS[id];return<td key={id} style={{textAlign:c.align||'left'}}>{c.render(j)}</td>;})}
             </tr>)}
             </tbody></table>
@@ -9716,30 +9944,7 @@ export default function App(){
         const shipToOverrideSub=inv.shipping_name?(inv.shipping_address||'').replace(/\n/g,'<br/>')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
         const shipAddr=shipToOverrideSub||(ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'');
         const poNum=inv._po_number||so?.po_number;
-        const pRows=[];let pSubTotal=0;
-        const pSoItems=so?safeItems(so):[];const pSoArt=so?safeArt(so):[];
-        const _pAQ2={};pSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ2[d.art_file_id]=(_pAQ2[d.art_file_id]||0)+q2}})});
-        const pIsDeposit=inv.inv_type==='deposit';const pDepPct=pIsDeposit?(inv.deposit_pct||50)/100:1;
-        if(pSoItems.length>0){
-          pSoItems.forEach(it=>{
-            const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-            const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
-            const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*pDepPct*100)/100;pSubTotal+=lineAmt;
-            let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-            if(szStr)itemName+='<br/><span>'+szStr+'</span>';
-            if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
-            pRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
-            safeDecos(it).forEach(d=>{
-              const cq=d.kind==='art'&&d.art_file_id?_pAQ2[d.art_file_id]:qty;const dp2=dP(d,qty,pSoArt,cq);
-              const artF=pSoArt.find(a2=>a2.id===d.art_file_id);
-              const decoLabel=pdfDecoLabel(d,artF);
-              const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*pDepPct*100)/100;pSubTotal+=decoAmt;
-              pRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
-            });
-          });
-        }else{
-          lineItems.forEach(li=>{pSubTotal+=safeNum(li.amount);pRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$(safeNum(li.rate)),style:'text-align:right'},{value:_$(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
-        }
+        const {rows:pRows,subtotal:pSubTotal}=buildInvoicePdfRows(inv,so,_$);
         return{title:billToName,docNum:inv.id,docType:'INVOICE',
           headerRight:'<div class="ta">'+_$(inv.total)+'</div><div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
           infoBoxes:[
@@ -10522,32 +10727,8 @@ export default function App(){
                 const siBillSub=siInv.billing_name?(siInv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+siCust?.name+'</span>':'';
                 const siBillAddr=siBillSub||(siCust?.billing_address_line1?siCust.billing_address_line1+(siCust.billing_city?'<br/>'+siCust.billing_city+(siCust.billing_state?' '+siCust.billing_state:'')+(siCust.billing_zip?' '+siCust.billing_zip:''):'')+'<br/>United States':'');
                 const siShipAddr=siCust?.shipping_address_line1?siCust.shipping_address_line1+(siCust.shipping_city?'<br/>'+siCust.shipping_city+(siCust.shipping_state?' '+siCust.shipping_state:'')+(siCust.shipping_zip?' '+siCust.shipping_zip:''):'')+'<br/>United States':'';
-                // Build rows with decoration detail from SO items
-                const siRows=[];let siSubTotal=0;
-                const siSoItems=siSo?safeItems(siSo):[];const siSoArt=siSo?safeArt(siSo):[];
-                const _siAQ={};siSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_siAQ[d.art_file_id]=(_siAQ[d.art_file_id]||0)+q2}})});
-                const siIsDeposit=siInv.inv_type==='deposit';const siDepPct=siIsDeposit?(siInv.deposit_pct||50)/100:1;
-                const siStoredLi=siInv.line_items||[];
-                if(siSoItems.length>0){
-                  siSoItems.forEach(it=>{
-                    const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-                    const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
-                    const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*siDepPct*100)/100;siSubTotal+=lineAmt;
-                    let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-                    if(szStr)itemName+='<br/><span>'+szStr+'</span>';
-                    if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
-                    siRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$si(unitPrice),style:'text-align:right'},{value:_$si(lineAmt),style:'text-align:right;font-weight:600'}]});
-                    safeDecos(it).forEach(d=>{
-                      const cq=d.kind==='art'&&d.art_file_id?_siAQ[d.art_file_id]:qty;const dp2=dP(d,qty,siSoArt,cq);
-                      const artF=siSoArt.find(a2=>a2.id===d.art_file_id);
-                      const decoLabel=pdfDecoLabel(d,artF);
-                      const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*siDepPct*100)/100;siSubTotal+=decoAmt;
-                      siRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$si(dp2.sell),style:'text-align:right'},{value:_$si(decoAmt),style:'text-align:right'}]});
-                    });
-                  });
-                }else{
-                  (siStoredLi).forEach(li=>{siSubTotal+=safeNum(li.amount);siRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$si(safeNum(li.rate)),style:'text-align:right'},{value:_$si(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
-                }
+                // Build rows from the invoice's own line items (honors per-line price overrides)
+                const {rows:siRows,subtotal:siSubTotal}=buildInvoicePdfRows(siInv,siSo,_$si);
                 // Build PDF attachment
                 const brevoAttachments=[];
                 try{
@@ -10817,34 +10998,11 @@ export default function App(){
                 const fBillAddr=fBillSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
                 const fShipAddr=ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'';
                 const fPoNum=inv._po_number||so?.po_number;
-                // Build rows with decoration detail from SO items
-                const fRows=[];let fSubTotal=0;
-                const fSoItems=so?safeItems(so):[];const fSoArt=so?safeArt(so):[];
-                const _fAQ={};fSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_fAQ[d.art_file_id]=(_fAQ[d.art_file_id]||0)+q2}})});
-                const fIsDeposit=inv.inv_type==='deposit';const fDepPct=fIsDeposit?(inv.deposit_pct||50)/100:1;
+                // Build rows from the invoice's own line items (honors per-line price overrides)
                 const fStoredLi=inv.line_items||[];
-                const shipAmt=inv.shipping!=null?inv.shipping:so?(()=>{const fLi2=fStoredLi.length>0?fStoredLi:fSoItems.map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{amount:qty*safeNum(it.unit_sell)}});const sub=fLi2.reduce((a,l)=>a+(l.amount||0),0);return(so.shipping_type==='pct'?sub*(so.shipping_value||0)/100:so.shipping_value||0)})():0;
+                const {rows:fRows,subtotal:fSubTotal}=buildInvoicePdfRows(inv,so,_$f);
+                const shipAmt=inv.shipping!=null?inv.shipping:so?(()=>{const fLi2=fStoredLi.length>0?fStoredLi:safeItems(so).map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{amount:qty*safeNum(it.unit_sell)}});const sub=fLi2.reduce((a,l)=>a+(l.amount||0),0);return(so.shipping_type==='pct'?sub*(so.shipping_value||0)/100:so.shipping_value||0)})():0;
                 const taxAmt=inv.tax||0;
-                if(fSoItems.length>0){
-                  fSoItems.forEach(it=>{
-                    const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-                    const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
-                    const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*fDepPct*100)/100;fSubTotal+=lineAmt;
-                    let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-                    if(szStr)itemName+='<br/><span>'+szStr+'</span>';
-                    if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
-                    fRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$f(unitPrice),style:'text-align:right'},{value:_$f(lineAmt),style:'text-align:right;font-weight:600'}]});
-                    safeDecos(it).forEach(d=>{
-                      const cq=d.kind==='art'&&d.art_file_id?_fAQ[d.art_file_id]:qty;const dp2=dP(d,qty,fSoArt,cq);
-                      const artF=fSoArt.find(a2=>a2.id===d.art_file_id);
-                      const decoLabel=pdfDecoLabel(d,artF);
-                      const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*fDepPct*100)/100;fSubTotal+=decoAmt;
-                      fRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$f(dp2.sell),style:'text-align:right'},{value:_$f(decoAmt),style:'text-align:right'}]});
-                    });
-                  });
-                }else{
-                  fStoredLi.forEach(li=>{fSubTotal+=safeNum(li.amount);fRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$f(safeNum(li.rate)),style:'text-align:right'},{value:_$f(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
-                }
                 printDoc({
                   title:billToName,docNum:inv.id,docType:'INVOICE',
                   headerRight:'<div class="ta">'+_$f(inv.total)+'</div>'

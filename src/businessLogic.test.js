@@ -2,7 +2,7 @@
 const {
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM,
-  poCommitted, calcSOStatus, buildJobs, isJobReady, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, isJobReady, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   buildQBSalesOrder, buildQBInvoice,
   checkInventoryConflicts,
@@ -1809,5 +1809,56 @@ describe('Promo Co-op Qualifying Spend (calcQualifyingSpend)', () => {
   test('returns 0 for an empty/falsy order', () => {
     expect(calcQualifyingSpend(null)).toBe(0);
     expect(calcQualifyingSpend(makeSO({ items: [] }))).toBe(0);
+  });
+});
+
+// ═══════════════════════════════════════════════
+// LINKING JOBS THAT SHARE A DECORATION ("run together")
+// ═══════════════════════════════════════════════
+describe('Job linking (jobScreenKey / jobGroupKey)', () => {
+  test('jobScreenKey normalizes art name + deco type', () => {
+    expect(jobScreenKey({ art_name: 'Eagles Logo', deco_type: 'screen_print' }))
+      .toBe('eagles logo|screen_print');
+    // Case + whitespace differences collapse to the same key.
+    expect(jobScreenKey({ art_name: '  EAGLES   logo ', deco_type: 'screen_print' }))
+      .toBe('eagles logo|screen_print');
+  });
+
+  test('jobScreenKey returns null without a name or deco type', () => {
+    expect(jobScreenKey({ art_name: '', deco_type: 'screen_print' })).toBeNull();
+    expect(jobScreenKey({ art_name: 'Logo', deco_type: '' })).toBeNull();
+    expect(jobScreenKey(null)).toBeNull();
+  });
+
+  test('same artwork in the same parent auto-groups (scoped by parent)', () => {
+    const a = { art_name: 'Eagles Logo', deco_type: 'screen_print' };
+    const b = { art_name: 'eagles logo', deco_type: 'screen_print' };
+    expect(jobGroupKey(a, 'PARENT-1')).toBe(jobGroupKey(b, 'PARENT-1'));
+    // Different parent => different group even with identical art.
+    expect(jobGroupKey(a, 'PARENT-1')).not.toBe(jobGroupKey(b, 'PARENT-2'));
+  });
+
+  test('different deco type does not auto-group', () => {
+    const a = { art_name: 'Eagles Logo', deco_type: 'screen_print' };
+    const b = { art_name: 'Eagles Logo', deco_type: 'embroidery' };
+    expect(jobGroupKey(a, 'P')).not.toBe(jobGroupKey(b, 'P'));
+  });
+
+  test('manual link_group overrides auto-grouping and crosses parents', () => {
+    const a = { art_name: 'Eagles Logo', deco_type: 'screen_print', link_group: 'lg_1' };
+    const b = { art_name: 'Totally Different', deco_type: 'embroidery', link_group: 'lg_1' };
+    expect(jobGroupKey(a, 'P1')).toBe('m:lg_1');
+    // Manual link ties them together regardless of art name, deco, or parent.
+    expect(jobGroupKey(a, 'P1')).toBe(jobGroupKey(b, 'P2'));
+  });
+
+  test('auto_group_off opts a job out of auto-grouping', () => {
+    const a = { art_name: 'Eagles Logo', deco_type: 'screen_print' };
+    const b = { art_name: 'Eagles Logo', deco_type: 'screen_print', auto_group_off: true };
+    expect(jobGroupKey(a, 'P')).not.toBeNull();
+    expect(jobGroupKey(b, 'P')).toBeNull();
+    // ...but a manual link still wins over auto_group_off.
+    const c = { art_name: 'Eagles Logo', deco_type: 'screen_print', auto_group_off: true, link_group: 'lg_9' };
+    expect(jobGroupKey(c, 'P')).toBe('m:lg_9');
   });
 });

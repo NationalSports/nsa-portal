@@ -6,8 +6,10 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: 'Missing url parameter' };
   }
 
-  // Only allow known supplier image domains
-  const allowed = ['cdnm.sanmar.com', 'sanmar.com', 'ssactivewear.com', 'cdnl.ssactivewear.com', 'www.momentecbrands.com', 'momentecbrands.com'];
+  // Only allow known supplier image domains plus our own Cloudinary uploads (product
+  // photos, art files and mockups), which the Quick Mock Builder renders to canvas and
+  // needs served with CORS headers so the exported mock isn't blocked/tainted.
+  const allowed = ['cdnm.sanmar.com', 'sanmar.com', 'ssactivewear.com', 'cdnl.ssactivewear.com', 'www.momentecbrands.com', 'momentecbrands.com', 'cloudinary.com', 'res.cloudinary.com'];
   let hostname;
   try { hostname = new URL(url).hostname; } catch { return { statusCode: 400, body: 'Invalid url' }; }
   if (!allowed.some(d => hostname === d || hostname.endsWith('.' + d))) {
