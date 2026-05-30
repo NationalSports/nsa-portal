@@ -28,9 +28,10 @@ const {
   BOT_MEMBER_ID = 'bot-claude',
   POLL_INTERVAL_MS = '30000',
   CLAUDE_BIN = 'claude',
-  // Faster, cheaper model for mechanical browser-driving. Sonnet is the sweet
-  // spot (much quicker than Opus); set WORKER_MODEL to override (e.g. a Haiku id).
-  WORKER_MODEL = 'claude-sonnet-4-6',
+  // Faster model for mechanical browser-driving. Sonnet is the sweet spot
+  // (much quicker than Opus). Uses the 'sonnet' alias so it tracks the current
+  // Sonnet without a pinned id; set WORKER_MODEL to override (e.g. 'haiku').
+  WORKER_MODEL = 'sonnet',
   WORKER_HOST = hostname(),
   ADIDAS_CLICK_URL = '',
   ADIDAS_CLICK_USER = '',
