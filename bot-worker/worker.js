@@ -107,20 +107,32 @@ function runClaude(prompt) {
       '--allowedTools', 'mcp__playwright__*',
       '--dangerously-skip-permissions',
     ];
-    const child = spawn(CLAUDE_BIN, args, { cwd: __dirname });
+    // Claude needs no stdin; closing it avoids the "no stdin data received" wait.
+    const child = spawn(CLAUDE_BIN, args, { cwd: __dirname, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
+    let done = false;
+    const finish = (r) => { if (!done) { done = true; resolve(r); } };
+    // Safety net: don't let a stuck run hang forever. Kill + report after N minutes.
+    const timeoutMs = parseInt(process.env.RUN_TIMEOUT_MS || '600000', 10);
+    const killer = setTimeout(() => {
+      log(`run exceeded ${timeoutMs}ms — terminating`);
+      try { child.kill('SIGKILL'); } catch {}
+      finish({ status: 'failed', summary: `Timed out after ${Math.round(timeoutMs / 1000)}s — the agent did not finish (likely stuck on the vendor site).` });
+    }, timeoutMs);
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (err += d));
-    child.on('error', (e) => resolve({ status: 'failed', summary: 'Could not launch Claude: ' + e.message }));
+    child.on('error', (e) => { clearTimeout(killer); finish({ status: 'failed', summary: 'Could not launch Claude: ' + e.message }); });
     child.on('close', (code) => {
+      clearTimeout(killer);
+      if (done) return;
       if (err.trim()) log('claude stderr:', err.trim().slice(0, 500));
       // --output-format json wraps the run; the agent's text is in `.result`.
       let resultText = out;
       try { resultText = JSON.parse(out).result ?? out; } catch { /* not JSON-wrapped */ }
       const parsed = extractJsonBlock(resultText);
-      if (parsed) return resolve(parsed);
-      resolve({
+      if (parsed) return finish(parsed);
+      finish({
         status: code === 0 ? 'needs_review' : 'failed',
         summary: (resultText || 'No output from agent.').trim().slice(0, 800),
       });
