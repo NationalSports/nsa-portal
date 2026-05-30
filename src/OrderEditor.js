@@ -4047,6 +4047,35 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='partial'?'badge-amber':'badge-blue'}`} style={{fontSize:10}}>{inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':'Open'}</span>
             {inv.date&&<span style={{fontSize:11,color:'#94a3b8'}}>{inv.date}</span>}
           </a>)}</div>
+        <div style={{padding:12,background:'#eef2ff',borderRadius:8,border:'1px solid #e0e7ff'}}><div style={{fontWeight:600,marginBottom:4,color:'#4338ca'}}>Tasks / TODOs <span style={{fontSize:10,fontWeight:400,color:'#94a3b8'}}>— assigned tasks for this order &amp; its POs (PO tasks show the PO# in the title)</span></div>
+          {(()=>{
+            const _name=id=>(REPS||[]).find(r=>r.id===id)?.name||id||'—';
+            const _dt=v=>{if(!v)return'';try{const d=new Date(v);if(isNaN(d))return String(v);return(d.getMonth()+1)+'/'+d.getDate()+'/'+String(d.getFullYear()).slice(2)+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}catch{return String(v)}};
+            const _d=v=>{if(!v)return'';const s=String(v).slice(0,10);try{const d=new Date(s+'T00:00:00');if(isNaN(d))return s;return(d.getMonth()+1)+'/'+d.getDate()+'/'+String(d.getFullYear()).slice(2)}catch{return s}};
+            const PRI={1:{t:'High',c:'#dc2626'},2:{t:'Normal',c:'#2563eb'},3:{t:'Low',c:'#64748b'}};
+            const _isDone=t=>(t.status==='completed'||t.status==='done');
+            const todos=(assignedTodos||[]).filter(t=>t.so_id===o.id);
+            if(!todos.length)return<div style={{fontSize:12,color:'#94a3b8'}}>No tasks created for this order yet</div>;
+            const openCt=todos.filter(t=>!_isDone(t)).length,doneCt=todos.length-openCt;
+            const sorted=[...todos].sort((a,b)=>{const da=_isDone(a),db=_isDone(b);if(da!==db)return da?1:-1;if(!da)return String(a.due_date||'9999').localeCompare(String(b.due_date||'9999'));return String(b.completed_at||'').localeCompare(String(a.completed_at||''))});
+            return<><div style={{fontSize:11,color:'#6366f1',marginBottom:6}}>{openCt} open · {doneCt} completed</div>
+              {sorted.map(t=>{const done=_isDone(t);const pri=PRI[t.priority]||PRI[2];return<div key={t.id} style={{padding:'8px 0',borderBottom:'1px solid #e0e7ff'}}>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  <span style={{fontSize:13}}>{done?'✅':'⬜'}</span>
+                  <span style={{fontWeight:700,color:'#312e81',fontSize:13}}>{t.title||'(untitled task)'}</span>
+                  <span className={`badge ${done?'badge-green':'badge-blue'}`} style={{fontSize:10}}>{done?'Completed':'Open'}</span>
+                  {!done&&<span style={{fontSize:10,fontWeight:700,color:pri.c}}>{pri.t}</span>}
+                </div>
+                {t.description&&<div style={{fontSize:11,color:'#64748b',marginTop:2,marginLeft:21}}>{t.description}</div>}
+                <div style={{fontSize:11,color:'#6366f1',marginTop:3,marginLeft:21,display:'flex',gap:12,flexWrap:'wrap'}}>
+                  <span>📋 Created {_dt(t.created_at)}{t.created_by?' by '+_name(t.created_by):''}</span>
+                  <span>👤 {_name(t.assigned_to)}</span>
+                  {t.due_date&&<span>📅 Due {_d(t.due_date)}</span>}
+                </div>
+                {done&&<div style={{fontSize:11,color:'#166534',marginTop:2,marginLeft:21}}>✔ Completed {_dt(t.completed_at)}{t.completed_by?' by '+_name(t.completed_by):''}{t.completion_note?' — "'+t.completion_note+'"':''}</div>}
+                {!done&&onCompleteTodo&&<div style={{marginLeft:21,marginTop:4}}><button className="btn btn-sm" style={{fontSize:10,background:'#22c55e',color:'white',border:'none',padding:'2px 10px',fontWeight:700}} onClick={()=>onCompleteTodo(t.id)}>Mark Done</button></div>}
+              </div>})}</>;
+          })()}</div>
       </div></div></div>})()}
 
     {/* TRACKING TAB */}
