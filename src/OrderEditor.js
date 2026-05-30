@@ -16,7 +16,7 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isIm
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { jobScreenKey, jobGroupKey } from './businessLogic';
-import { buildBotCartPayload, isBotOwner } from './lib/botTasks';
+import { buildBotCartPayload, isBotOwner, botTargetForVendor } from './lib/botTasks';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -8845,7 +8845,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(null);nf('PO deleted');
           }}><Icon name="trash" size={10}/> Delete PO</button>
           <div style={{display:'flex',gap:8,alignItems:'center'}}>
-            {onAssignTodo&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#0891b2',borderColor:'#a5f3fc'}} title="Assign a task to your CSR to order this PO" onClick={()=>{onAssignTodo({title:'Order PO '+(po.po_id||'')+(item?.sku?' — '+item.sku:''),description:(item?.name||'')+(item?.color?' · '+item.color:'')+(_poWide?.ord?' · '+_poWide.ord+' ordered':''),so_id:isSO?o.id:'',customer_id:o.customer_id||'',priority:2,doc_label:po.po_id||''});setEditPO(null)}}>📋 Assign TODO</button>}
+            {onAssignTodo&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#0891b2',borderColor:'#a5f3fc'}} title="Assign a task to your CSR (or Claude) to order this PO" onClick={()=>{
+              // Resolve every line on this PO (all SKUs/colors/exact sizes) so the
+              // task carries the full order — shown in the task box and used by the bot.
+              const _poId=po.po_id||'';
+              const _META=new Set(['received','cancelled','shipments','tracking_numbers']);
+              const _SKIP=new Set(['po_id','status','vendor','memo','created_at','expected_date','unit_cost','drop_ship','po_type','batch_queue_id','batch_po_number']);
+              const _lines=[];let _ds=false;
+              safeItems(o).forEach(it=>safePOs(it).forEach(pl=>{if(pl.po_id!==_poId)return;if(pl.drop_ship)_ds=true;const sizes={};Object.entries(pl).forEach(([k,v])=>{if(k.startsWith('_')||_META.has(k)||_SKIP.has(k))return;if(typeof v==='number'&&v>0)sizes[k]=v});const qty=Object.values(sizes).reduce((a,v)=>a+v,0);if(qty>0)_lines.push({sku:it.sku,name:it.name||'',color:it.color||'',qty,sizes,unit_cost:pl.unit_cost||0})}));
+              const _vendor=po.vendor||'';
+              const _bp=_lines.length?{task_type:'add_to_cart',target:botTargetForVendor(_vendor),vendor_name:_vendor||null,po_number:_poId,lines:_lines,drop_ship:_ds,totals:{line_count:_lines.length,qty:_lines.reduce((a,l)=>a+l.qty,0)}}:null;
+              onAssignTodo({title:'Order PO '+_poId+(item?.sku?' — '+item.sku:''),description:(item?.name||'')+(item?.color?' · '+item.color:'')+(_poWide?.ord?' · '+_poWide.ord+' ordered':''),so_id:isSO?o.id:'',customer_id:o.customer_id||'',priority:2,doc_label:_poId,bot_payload:_bp});setEditPO(null)}}>📋 Assign TODO</button>}
             <button className="btn btn-primary" onClick={()=>setEditPO(null)}>Close</button>
           </div>
         </div>

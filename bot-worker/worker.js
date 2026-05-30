@@ -169,9 +169,13 @@ function buildPrompt(task, p = {}) {
 // {status, summary, ...} the agent emits in its final ```json block.
 function runClaude(prompt) {
   return new Promise((resolve) => {
+    // WORKER_DEBUG=1 streams every step (navigate/click/type) to the terminal
+    // so you can watch what the agent is doing instead of waiting in the dark.
+    const debug = !!process.env.WORKER_DEBUG;
     const args = [
       '-p', prompt,
-      '--output-format', 'json',
+      '--output-format', debug ? 'stream-json' : 'json',
+      ...(debug ? ['--verbose'] : []),
       '--mcp-config', join(__dirname, 'mcp.json'),
       // The agent must drive the browser without interactive approval on a
       // headless worker. Scope this down if you prefer (see SETUP.md).
@@ -182,6 +186,32 @@ function runClaude(prompt) {
     const child = spawn(CLAUDE_BIN, args, { cwd: __dirname, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
+    let streamResult = null;
+    if (debug) {
+      // Print a one-line trace of each agent event as it streams.
+      let buf = '';
+      child.stdout.on('data', (d) => {
+        buf += d;
+        const nl = buf.lastIndexOf('\n');
+        if (nl < 0) return;
+        for (const line of buf.slice(0, nl).split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const ev = JSON.parse(line);
+            if (ev.type === 'assistant' && ev.message?.content) {
+              for (const c of ev.message.content) {
+                if (c.type === 'text' && c.text?.trim()) log('🗣 ', c.text.trim().slice(0, 200));
+                if (c.type === 'tool_use') log('🔧', c.name, JSON.stringify(c.input).slice(0, 200));
+              }
+            } else if (ev.type === 'result') {
+              streamResult = ev.result || '';
+              log('✅ result:', streamResult.slice(0, 200));
+            }
+          } catch { /* non-JSON line */ }
+        }
+        buf = buf.slice(nl + 1);
+      });
+    }
     let done = false;
     const finish = (r) => { if (!done) { done = true; resolve(r); } };
     // Safety net: kill + report a stuck run instead of hanging forever.
@@ -199,8 +229,9 @@ function runClaude(prompt) {
       if (done) return;
       if (err.trim()) log('claude stderr:', err.trim().slice(0, 500));
       // --output-format json wraps the run; the agent's text is in `.result`.
-      let resultText = out;
-      try { resultText = JSON.parse(out).result ?? out; } catch { /* not JSON-wrapped */ }
+      // In debug (stream-json) mode the result text came from the result event.
+      let resultText = (debug && streamResult != null) ? streamResult : out;
+      try { resultText = JSON.parse(resultText).result ?? resultText; } catch { /* not JSON-wrapped */ }
       const parsed = extractJsonBlock(resultText);
       if (parsed) return finish(parsed);
       finish({

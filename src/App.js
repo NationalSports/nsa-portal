@@ -6580,6 +6580,10 @@ export default function App(){
             {td.due_date&&<div><span style={{color:'#64748b'}}>Due:</span> <span style={{fontWeight:600,color:_todoDueColor(td.due_date)}}>{_fmtDueDate(td.due_date)}</span></div>}
           </div>
           {td.description&&<div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:13,marginBottom:12,border:'1px solid #e2e8f0'}}>{td.description}</div>}
+          {td.bot_payload?.lines?.length>0&&<div style={{padding:10,background:'#f0fdfa',borderRadius:6,fontSize:12,marginBottom:12,border:'1px solid #99f6e4'}}>
+            <div style={{fontWeight:700,color:'#0f766e',marginBottom:6}}>🤖 Order details — {td.bot_payload.lines.length} item{td.bot_payload.lines.length===1?'':'s'}{td.bot_payload.po_number?' · PO '+td.bot_payload.po_number:''}{td.bot_payload.drop_ship?' · 🚚 Drop ship':''}</div>
+            {td.bot_payload.lines.map((l,i)=>{const szs=Object.entries(l.sizes||{}).filter(([k,v])=>typeof v==='number'&&v>0&&k!=='drop_ship'&&k!=='unit_cost').map(([k,v])=>k+':'+v).join('  ');return<div key={i} style={{padding:'4px 0',borderTop:i>0?'1px solid #ccfbf1':'none'}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#0f766e'}}>{l.sku}</span> {l.name}{l.color?' · '+l.color:''} — <strong>{l.qty}</strong>{szs?<span style={{color:'#475569'}}> [{szs}]</span>:''}</div>})}
+          </div>}
           {/* Comments */}
           <div style={{marginBottom:12}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Comments ({(td.comments||[]).length})</div>
