@@ -16,12 +16,11 @@ import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { hostname } from 'node:os';
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-import { hostname } from 'node:os';
 
 const {
   SUPABASE_URL,
@@ -56,12 +55,33 @@ function credsForTarget(target) {
   return { url: '', user: '', pass: '' };
 }
 
+// Map a vendor name to the external portal slug the worker drives.
+function botTargetForVendor(vendorName) {
+  const v = String(vendorName || '').toLowerCase();
+  if (v.includes('adidas')) return 'adidas_click';
+  if (v.includes('silver')) return 'silver_screen';
+  if (v.includes('sanmar')) return 'sanmar';
+  return v.replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'unknown';
+}
+
+// Real size:quantity pairs only — the sizes jsonb also carries meta keys
+// (drop_ship, unit_cost, etc.) that must not be treated as sizes.
+const SIZE_META = new Set(['drop_ship', 'unit_cost', 'po_type', 'vendor', 'memo', 'notes', 'status']);
+function cleanSizes(raw) {
+  const out = {};
+  for (const [k, v] of Object.entries(raw || {})) {
+    if (SIZE_META.has(k)) continue;
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) out[k] = n;
+  }
+  return out;
+}
+
 // Render the line items into a readable list for the prompt.
 function formatLines(lines) {
   return (lines || [])
     .map((l) => {
-      const sizes = Object.entries(l.sizes || {})
-        .filter(([, v]) => v > 0)
+      const sizes = Object.entries(cleanSizes(l.sizes))
         .map(([sz, v]) => `${sz}:${v}`)
         .join(' ');
       return `- ${l.sku}${l.color ? ' (' + l.color + ')' : ''} — qty ${l.qty}${sizes ? ' [' + sizes + ']' : ''}`;
@@ -69,18 +89,69 @@ function formatLines(lines) {
     .join('\n');
 }
 
-function buildPrompt(task) {
-  const p = task.bot_payload || {};
+// Resolve the real order behind a task from the database when the task has no
+// structured payload. Parses the PO number from the title (e.g. "Order PO
+// PO 3108 FPUTN — ...") and pulls every line item on that PO (all SKUs, colors,
+// exact per-size breakdown), scoped to the task's SO. Returns a payload-shaped
+// object {target, vendor_name, po_number, lines} or null if it can't.
+async function resolveOrderFromDb(task) {
+  const m = (task.title || '').match(/PO\s*\d[\w\s.\/-]*/i);
+  const poId = m ? m[0].trim() : null;
+  if (!poId) return null;
+
+  const { data: pls, error } = await supabase
+    .from('so_item_po_lines')
+    .select('so_item_id,po_id,sizes,status,vendor')
+    .ilike('po_id', poId);
+  if (error || !pls || !pls.length) return null;
+
+  const ids = [...new Set(pls.map((p) => p.so_item_id))];
+  const { data: items } = await supabase
+    .from('so_items').select('id,sku,name,color,so_id').in('id', ids);
+  const byId = Object.fromEntries((items || []).map((i) => [i.id, i]));
+
+  const lines = pls
+    .filter((p) => p.status !== 'cancelled')
+    .filter((p) => !task.so_id || byId[p.so_item_id]?.so_id === task.so_id)
+    .map((p) => {
+      const it = byId[p.so_item_id] || {};
+      const sizes = cleanSizes(p.sizes);
+      const qty = Object.values(sizes).reduce((a, v) => a + v, 0);
+      return {
+        sku: it.sku,
+        name: it.name || '',
+        color: it.color || '',
+        qty,
+        sizes,
+        unit_cost: Number((p.sizes || {}).unit_cost) || 0,
+        drop_ship: (p.sizes || {}).drop_ship === true,
+        vendor: p.vendor || '',
+      };
+    })
+    .filter((l) => l.sku && l.qty > 0);
+  if (!lines.length) return null;
+
+  const vendorName = lines.find((l) => l.vendor)?.vendor
+    || (lines.find((l) => /adidas/i.test(l.name)) ? 'Adidas' : (lines[0].name || ''));
+  return {
+    target: botTargetForVendor(vendorName),
+    vendor_name: vendorName || null,
+    po_number: poId,
+    lines,
+  };
+}
+
+function buildPrompt(task, p = {}) {
   const hasLines = Array.isArray(p.lines) && p.lines.length > 0;
-  // Structured payload (batch button) -> use its vendor. Plain task (no payload)
-  // -> default to Adidas CLICK so creds fill in; Claude works from the task text.
+  // Resolved/structured order -> use its vendor. Otherwise default to Adidas
+  // CLICK so creds fill in, and let Claude work from the task notes.
   const target = p.target || (hasLines ? 'unknown' : 'adidas_click');
   const creds = credsForTarget(target);
   const tpl = readFileSync(join(__dirname, 'prompts', 'add_to_cart.md'), 'utf8');
   const lines = hasLines
     ? formatLines(p.lines)
-    : `(No structured line list — work from the task notes below.)`;
-  const notes = task.title || task.description
+    : '(No structured line list — work from the task notes below.)';
+  const notes = (task.title || task.description)
     ? `Task: ${task.title || ''}${task.description ? '\n' + task.description : ''}`
     : '(none)';
   return tpl
@@ -107,20 +178,32 @@ function runClaude(prompt) {
       '--allowedTools', 'mcp__playwright__*',
       '--dangerously-skip-permissions',
     ];
-    const child = spawn(CLAUDE_BIN, args, { cwd: __dirname });
+    // Close stdin (no piped input) to avoid the "no stdin data received" wait.
+    const child = spawn(CLAUDE_BIN, args, { cwd: __dirname, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
+    let done = false;
+    const finish = (r) => { if (!done) { done = true; resolve(r); } };
+    // Safety net: kill + report a stuck run instead of hanging forever.
+    const timeoutMs = parseInt(process.env.RUN_TIMEOUT_MS || '600000', 10);
+    const killer = setTimeout(() => {
+      log(`run exceeded ${timeoutMs}ms — terminating`);
+      try { child.kill('SIGKILL'); } catch {}
+      finish({ status: 'failed', summary: `Timed out after ${Math.round(timeoutMs / 1000)}s — the agent did not finish (likely stuck on the vendor site).` });
+    }, timeoutMs);
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (err += d));
-    child.on('error', (e) => resolve({ status: 'failed', summary: 'Could not launch Claude: ' + e.message }));
+    child.on('error', (e) => { clearTimeout(killer); finish({ status: 'failed', summary: 'Could not launch Claude: ' + e.message }); });
     child.on('close', (code) => {
+      clearTimeout(killer);
+      if (done) return;
       if (err.trim()) log('claude stderr:', err.trim().slice(0, 500));
       // --output-format json wraps the run; the agent's text is in `.result`.
       let resultText = out;
       try { resultText = JSON.parse(out).result ?? out; } catch { /* not JSON-wrapped */ }
       const parsed = extractJsonBlock(resultText);
-      if (parsed) return resolve(parsed);
-      resolve({
+      if (parsed) return finish(parsed);
+      finish({
         status: code === 0 ? 'needs_review' : 'failed',
         summary: (resultText || 'No output from agent.').trim().slice(0, 800),
       });
@@ -184,7 +267,7 @@ async function claim(task) {
 async function processOne() {
   const { data: tasks, error } = await supabase
     .from('assigned_todos')
-    .select('id,title,description,bot_payload,bot_status,status')
+    .select('id,title,description,so_id,bot_payload,bot_status,status')
     .eq('assigned_to', BOT_MEMBER_ID)
     .eq('status', 'open')
     .eq('bot_status', 'queued')
@@ -198,29 +281,41 @@ async function processOne() {
   log('claimed task', task.id, '—', task.title);
   await heartbeat('working', task.id);
 
+  let order = null;
   let result;
   try {
-    result = await runClaude(buildPrompt(task));
+    // Prefer the structured payload (batch button); otherwise pull the real PO
+    // line items from the DB; otherwise fall back to the task notes.
+    order = (task.bot_payload && Array.isArray(task.bot_payload.lines) && task.bot_payload.lines.length)
+      ? task.bot_payload
+      : null;
+    if (!order) {
+      try { order = await resolveOrderFromDb(task); } catch (e) { log('resolveOrder error:', e?.message || e); }
+    }
+    if (order) log(`order resolved: ${order.lines.length} line(s), PO ${order.po_number || '?'}, vendor ${order.vendor_name || order.target}`);
+    else log('no structured order — running from task notes');
+    result = await runClaude(buildPrompt(task, order || {}));
   } catch (e) {
     result = { status: 'failed', summary: 'Worker exception: ' + (e?.message || e) };
   }
 
   const status = ['needs_review', 'blocked', 'failed'].includes(result.status) ? result.status : 'needs_review';
-  const merged = { ...(task.bot_payload || {}), result };
+  const merged = { ...(task.bot_payload || {}), ...(order || {}), result };
   await supabase
     .from('assigned_todos')
     .update({ bot_status: status, bot_payload: merged, updated_at: new Date().toISOString() })
     .eq('id', task.id);
 
   const emoji = status === 'needs_review' ? '🛒' : status === 'blocked' ? '🚧' : '❌';
-  const lines = [
+  const reportLines = [
     `${emoji} **Bot ${status}** — ${result.summary || ''}`,
     result.cart_url ? `Cart: ${result.cart_url}` : '',
     result.po_entered ? `PO entered: yes` : '',
     (result.issues && result.issues.length) ? `Issues: ${result.issues.join('; ')}` : '',
     status === 'needs_review' ? `Review the cart and submit it if it looks right, then close this task.` : '',
   ].filter(Boolean).join('\n');
-  await comment(task.id, lines);
+  await comment(task.id, reportLines);
+  await heartbeat('idle', null);
 
   log('finished task', task.id, '→', status);
   return true;
@@ -231,10 +326,8 @@ async function loop() {
   log(`started. bot=${BOT_MEMBER_ID} interval=${interval}ms`);
   for (;;) {
     try {
-      await heartbeat('idle');
-      // Drain any backlog, then wait for the next poll.
-      while (await processOne()) { /* keep going */ }
-      await heartbeat('idle');
+      await heartbeat('idle', null);
+      while (await processOne()) { /* drain backlog */ }
     } catch (e) {
       log('loop error:', e?.message || e);
     }
@@ -243,10 +336,7 @@ async function loop() {
 }
 
 if (process.env.RUN_ONCE) {
-  heartbeat('idle')
-    .then(() => processOne())
-    .then((did) => { log(did ? 'processed one task.' : 'no queued tasks.'); return heartbeat('idle'); })
-    .then(() => process.exit(0));
+  processOne().then((did) => { log(did ? 'processed one task.' : 'no queued tasks.'); process.exit(0); });
 } else {
   loop();
 }

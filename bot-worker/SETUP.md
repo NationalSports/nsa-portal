@@ -18,7 +18,10 @@ Mac mini: worker.js polls ────────────────┘
 - **Node.js 18+** — `brew install node`
 - **Claude Code** — install and sign in once interactively so the worker can
   run it headlessly: see https://docs.claude.com/claude-code. Verify `claude --version`.
-- Playwright's browser is fetched automatically by the MCP server on first run.
+- Playwright's bundled Chromium. If a run stalls with no browser activity,
+  install it once explicitly: `npx -y playwright install chromium`. We use the
+  bundled browser (not your installed Chrome) so macOS doesn't prompt to grant
+  Terminal "App Management" permission.
 
 ## 2. Configure
 
