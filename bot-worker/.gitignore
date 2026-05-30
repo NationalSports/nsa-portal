@@ -1,0 +1,5 @@
+node_modules/
+.env
+*.log
+# Persisted browser profile (keeps you logged in to vendor portals between runs)
+.browser-profile/
