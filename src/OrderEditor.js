@@ -7311,7 +7311,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(cam.sendEmail&&allTargets.length>0){
             if(_brevoKey){
               setCoachApprovalModal(m=>({...m,sending:true}));
-              const htmlMsg=cam.message.replace(/\n/g,'<br/>');
+              // In the HTML email, show the portal link as a friendly clickable button
+              // ("View your art mockup for X") instead of a bare URL. The plain-text message
+              // (used for SMS and the mailto fallback) keeps the raw URL so it stays tappable there.
+              let htmlMsg=cam.message.replace(/\n/g,'<br/>');
+              if(cam.portalUrl){
+                const _esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                const _linkBtn='<a href="'+cam.portalUrl+'" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;font-weight:700;padding:10px 18px;border-radius:8px">View your art mockup for &quot;'+_esc(_emailLabel)+'&quot;</a>';
+                htmlMsg=htmlMsg.split(cam.portalUrl).join(_linkBtn);
+              }
               const toList=allTargets.map(em=>({email:em}));
               const res=await sendBrevoEmail({to:toList,subject:_emailSubject,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6;max-width:600px;margin:0 auto">'+_emailLogoHtml+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:cu?.email||'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
               if(res.ok){actions.push('email sent to '+allTargets.join(', '));actions._messageId=res.messageId}else{nf('Email failed: '+res.error,'error');setCoachApprovalModal(m=>({...m,sending:false}));return}
