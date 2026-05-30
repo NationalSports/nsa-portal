@@ -161,7 +161,7 @@ async function comment(todoId, text) {
   const { error } = await supabase.from('todo_comments').insert({
     id: 'cmt-bot-' + Date.now(),
     todo_id: todoId,
-    author_id: BOT_MEMBER_ID,
+    user_id: BOT_MEMBER_ID,
     text,
     created_at: new Date().toISOString(),
   });
