@@ -6557,11 +6557,12 @@ export default function App(){
       let _poId=td.po_id||'';let _poLines=[];let _poSo=null;
       if(_poId){for(const s of _poSearchSos){const g=_gatherPOs(s).filter(x=>x.pl.po_id===_poId);if(g.length){_poLines=g;_poSo=s;break}}}
       if(!_poLines.length){for(const s of _poSearchSos){const cand=_gatherPOs(s);let hit=cand.filter(x=>_poText.includes(x.pl.po_id));if(!hit.length){const nums=(_poText.match(/\d{3,}/g)||[]);if(nums.length)hit=cand.filter(x=>nums.some(n=>String(x.pl.po_id).includes(n)))}if(hit.length){_poId=hit[0].pl.po_id;_poLines=hit.filter(x=>x.pl.po_id===_poId);_poSo=s;break}}}
+      const _poDisplay=_poId?(/^\s*P\.?O/i.test(_poId)?_poId:'PO '+_poId):'';
       const _poDropShip=_poLines.some(x=>x.pl.drop_ship);
       const _poShipAddr=(()=>{if(!_poDropShip)return'';const s=_poSo||soRef;const c=custRef||(s&&cust.find(x=>x.id===s.customer_id));if(s&&s.ship_to_id==='custom'&&s.ship_to_custom)return s.ship_to_custom;if(c){const al=getAddrs(c,cust)||[];if(s&&s.ship_to_id){const sel=al.find(a=>a.id===s.ship_to_id);if(sel?.addr)return sel.addr}if(al[0]?.addr)return al[0].addr;if(c.shipping_address_line1)return[c.shipping_address_line1,c.shipping_address_line2,[c.shipping_city,c.shipping_state,c.shipping_zip].filter(Boolean).join(', ')].filter(Boolean).join(', ')}return''})();
       const _openPO=()=>{const s=_poSo||soRef;if(s){setTodoDetailId(null);setESO(s);setESOC(cust.find(c=>c.id===s.customer_id));setESOOpenPO(_poId);setPg('orders')}else{nf('PO '+_poId+' not found','warn')}};
       return<div className="modal-overlay" onClick={()=>setTodoDetailId(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
-        <div className="modal-header"><h2>📌 {td.title}</h2><button className="modal-close" onClick={()=>setTodoDetailId(null)}>×</button></div>
+        <div className="modal-header"><div style={{minWidth:0}}><h2 style={{margin:0}}>📌 {td.title}</h2>{_poDisplay&&<div style={{fontSize:13,fontWeight:800,color:'#0369a1',marginTop:3,display:'flex',alignItems:'center',gap:6}}><span style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>🛒 {_poDisplay}</span><button title="Copy PO number" style={{background:'none',border:'1px solid #bae6fd',borderRadius:6,cursor:'pointer',padding:'1px 6px',fontSize:11,color:'#0369a1',flexShrink:0}} onClick={()=>{navigator.clipboard?.writeText(_poId);nf('Copied PO '+_poId)}}>⧉ Copy</button></div>}</div><button className="modal-close" onClick={()=>setTodoDetailId(null)}>×</button></div>
         <div className="modal-body">
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12,fontSize:12}}>
             <div><span style={{color:'#64748b'}}>Created by:</span> <strong>{creator?.name}</strong></div>
@@ -6577,10 +6578,7 @@ export default function App(){
           {/* PO detail — items, ship-to, and a link to the PO page */}
           {_poId&&<div style={{marginBottom:12,border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,padding:'8px 12px',background:'#f0f9ff',borderBottom:'1px solid #e2e8f0'}}>
-              <div style={{fontWeight:800,fontSize:12,color:'#0c4a6e',display:'flex',alignItems:'center',gap:6,minWidth:0}}>
-                <span style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>🛒 {/^\s*P\.?O/i.test(_poId)?_poId:'PO '+_poId}{(()=>{const v=_poLines[0]?.pl?.vendor||_poLines[0]?.pl?.deco_vendor;return v?' · '+v:''})()}{_poLines[0]?.pl?.status?' · '+_poLines[0].pl.status:''}{_poDropShip?' · Drop Ship':''}</span>
-                <button title="Copy PO number" style={{background:'none',border:'1px solid #bae6fd',borderRadius:6,cursor:'pointer',padding:'1px 6px',fontSize:11,color:'#0369a1',flexShrink:0}} onClick={()=>{navigator.clipboard?.writeText(_poId);nf('Copied PO '+_poId)}}>⧉ Copy</button>
-              </div>
+              <div style={{fontWeight:800,fontSize:12,color:'#0c4a6e',minWidth:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>🛒 {_poDisplay}{(()=>{const v=_poLines[0]?.pl?.vendor||_poLines[0]?.pl?.deco_vendor;return v?' · '+v:''})()}{_poLines[0]?.pl?.status?' · '+_poLines[0].pl.status:''}{_poDropShip?' · Drop Ship':''}</div>
               <button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap',flexShrink:0}} onClick={_openPO}>Open PO →</button>
             </div>
             {_poShipAddr&&<div style={{padding:'6px 12px',fontSize:11,color:'#475569',borderBottom:'1px solid #f1f5f9'}}><span style={{color:'#64748b',fontWeight:600}}>📦 Ship to:</span> {_poShipAddr}</div>}
