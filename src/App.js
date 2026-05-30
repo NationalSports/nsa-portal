@@ -3067,18 +3067,6 @@ export default function App(){
   const[omgFirstSeen,setOmgFirstSeen]=useState(()=>loadState('omg_first_seen',{}));
   const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',wh_only:false,bot_payload:null});
   const[todoDetailId,setTodoDetailId]=useState(null);
-  // Quick-create a task assigned to the Claude bot (used by the mobile view,
-  // which has no Assign Task modal). Mirrors the modal's save shape.
-  const assignBotTask=useCallback(({title,description='',so_id=null,customer_id=null,priority=1,bot_payload=null})=>{
-    const bot=REPS.find(r=>r.is_active!==false&&r.role==='bot');
-    if(!bot){nf('No Claude bot found — apply the bot migration first','error');return false}
-    if(!title||!title.trim()){nf('Task needs a title','error');return false}
-    const newTodo={id:'todo-'+Date.now(),title:title.trim(),description:(description||'').trim(),created_by:cu.id,assigned_to:bot.id,so_id:so_id||null,customer_id:customer_id||null,if_id:null,priority,due_date:null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[],bot_status:'queued'};
-    if(bot_payload)newTodo.bot_payload=bot_payload;
-    setAssignedTodos(prev=>[newTodo,...prev]);
-    nf('🤖 Assigned to Claude');
-    return true;
-  },[REPS,cu,nf]);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
   React.useEffect(()=>{const orig=console.error;console.error=(...args)=>{consoleErrors.current=[{msg:args.map(a=>typeof a==='string'?a:JSON.stringify(a)).join(' '),ts:new Date().toISOString()},...consoleErrors.current].slice(0,5);orig.apply(console,args)};return()=>{console.error=orig}},[]);
@@ -5539,6 +5527,18 @@ export default function App(){
     _dbSnap.current.assignedTodos=(_dbSnap.current.assignedTodos||[]).map(x=>x.id===id?{...x,...upd}:x);
     if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));
     nf('Task completed!')
+  };
+  // Quick-create a task assigned to the Claude bot (used by the mobile view,
+  // which has no Assign Task modal). Mirrors the modal's save shape.
+  const assignBotTask=({title,description='',so_id=null,customer_id=null,priority=1,bot_payload=null})=>{
+    const bot=REPS.find(r=>r.is_active!==false&&r.role==='bot');
+    if(!bot){nf('No Claude bot found — apply the bot migration first','error');return false}
+    if(!title||!title.trim()){nf('Task needs a title','error');return false}
+    const newTodo={id:'todo-'+Date.now(),title:title.trim(),description:(description||'').trim(),created_by:cu.id,assigned_to:bot.id,so_id:so_id||null,customer_id:customer_id||null,if_id:null,priority,due_date:null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[],bot_status:'queued'};
+    if(bot_payload)newTodo.bot_payload=bot_payload;
+    setAssignedTodos(prev=>[newTodo,...prev]);
+    nf('🤖 Assigned to Claude');
+    return true;
   };
   const deleteSO = (soId) => {
     if(!canDelete)return nf('You do not have permission to delete','error');
