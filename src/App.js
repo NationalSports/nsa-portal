@@ -2,6 +2,8 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import './portal.css';
 import MobilePortal from './MobilePortal';
+import BotStatus from './BotStatus';
+import { isBotOwner } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
@@ -3064,7 +3066,7 @@ export default function App(){
   // reminder. baseline=true marks stores already present when this shipped, so
   // we don't backfill tasks for the entire history.
   const[omgFirstSeen,setOmgFirstSeen]=useState(()=>loadState('omg_first_seen',{}));
-  const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false});
+  const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null});
   const[todoDetailId,setTodoDetailId]=useState(null);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
@@ -5527,6 +5529,18 @@ export default function App(){
     if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));
     nf('Task completed!')
   };
+  // Quick-create a task assigned to the Claude bot (used by the mobile view,
+  // which has no Assign Task modal). Mirrors the modal's save shape.
+  const assignBotTask=({title,description='',so_id=null,customer_id=null,priority=1,bot_payload=null})=>{
+    const bot=REPS.find(r=>r.is_active!==false&&r.role==='bot');
+    if(!bot){nf('No Claude bot found — apply the bot migration first','error');return false}
+    if(!title||!title.trim()){nf('Task needs a title','error');return false}
+    const newTodo={id:'todo-'+Date.now(),title:title.trim(),description:(description||'').trim(),created_by:cu.id,assigned_to:bot.id,so_id:so_id||null,customer_id:customer_id||null,if_id:null,priority,due_date:null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[],bot_status:'queued'};
+    if(bot_payload)newTodo.bot_payload=bot_payload;
+    setAssignedTodos(prev=>[newTodo,...prev]);
+    nf('🤖 Assigned to Claude');
+    return true;
+  };
   const deleteSO = (soId) => {
     if(!canDelete)return nf('You do not have permission to delete','error');
     const so=sos.find(s=>s.id===soId);if(!so)return;
@@ -6158,7 +6172,10 @@ export default function App(){
     {(()=>{const tasksIAssigned=myAssignedTodos.filter(t=>t.created_by===cu.id&&t.assigned_to!==cu.id);const tasksForMe=myAssignedTodos.filter(t=>t.assigned_to===cu.id);const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);return<div className="card" style={{marginBottom:16}}>
       <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>📌 Assigned Tasks ({myAssignedTodos.length})</h2>
-        <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2,due_date:''})}>+ New Task</button>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <BotStatus assignedTodos={assignedTodos} hidden={!isBotOwner(cu)}/>
+          <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2,due_date:''})}>+ New Task</button>
+        </div>
       </div>
       <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
         {myAssignedTodos.length===0?<div className="empty" style={{padding:20}}>No open tasks</div>:
@@ -6643,7 +6660,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.wh_only?'':csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} supabase={supabase} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -6700,7 +6717,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.wh_only?'':csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -9374,7 +9391,7 @@ export default function App(){
         // Flat items: every line item on this PO
         const poItems=[];
         if(isBatch){
-          batchMatch.source_pos.forEach(sp=>{sp.items.forEach(it=>{const unit=typeof it.unit_cost==='number'?it.unit_cost:0;poItems.push({sku:it.sku,name:it.name,color:it.color||'',sizes:it.sizes,qty:it.qty,soId:sp.so_id,customer:sp.customer,soMemo:sp.so_memo,srcPoId:sp.po_id||'',unitCost:unit,lineCost:unit*it.qty})})});
+          batchMatch.source_pos.forEach(sp=>{sp.items.forEach(it=>{const unit=typeof it.unit_cost==='number'?it.unit_cost:0;poItems.push({sku:it.sku,name:it.name,color:it.color||'',sizes:it.sizes,qty:it.qty,soId:sp.so_id,customer:sp.customer,soMemo:sp.so_memo,srcPoId:sp.po_id||'',itemIdx:it.item_idx,unitCost:unit,lineCost:unit*it.qty})})});
         } else {
           matchedPO.lines.forEach(pl=>{
             const szs={};Object.entries(pl.poLine).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k))szs[k]=v});
@@ -9383,6 +9400,14 @@ export default function App(){
           });
         }
         const totalUnits=poItems.reduce((a,it)=>a+it.qty,0);
+        // Bulk-set every receive input: full=true fills to ordered qty, false clears to 0.
+        const _setAll=(full)=>{poItems.forEach((it,i)=>{Object.entries(it.sizes||{}).filter(([,v])=>v>0).forEach(([sz,v])=>{const el=document.getElementById('rcv-'+i+'-'+sz);if(el)el.value=full?v:0})})};
+        // Single source-PO label print (one 4×6) — used by the per-row print button.
+        const _printOnePO=(srcPoId)=>{
+          const sp=isBatch?(batchMatch.source_pos||[]).find(s=>(s.po_id||'')===srcPoId):null;
+          if(sp){printBatchSeparateLabels([sp],sp.po_id||poId,'RECEIVING — '+new Date().toLocaleDateString());nf('🖨️ Label printed for '+(sp.po_id||poId))}
+          else{const labelItems=poItems.filter(it=>(it.srcPoId||'')===srcPoId).map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.sizes}));printLabel(labelItems.length?labelItems:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.sizes})),srcPoId||poId,'RECEIVING — '+new Date().toLocaleDateString());nf('🖨️ Label printed for '+(srcPoId||poId))}
+        };
         const submittedInfo=batchMatch;
         const statusBadge=submittedInfo?.status==='received'?'badge-green':'badge-amber';
 
@@ -9410,6 +9435,13 @@ export default function App(){
 
           {/* Flat item list — this is what warehouse sees */}
           <div className="card-body" style={{padding:0}}>
+            {submittedInfo?.status!=='received'&&<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 16px',borderBottom:'1px solid #f1f5f9',background:'#f8fafc',flexWrap:'wrap',gap:8}}>
+              <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>Enter received quantities (start at 0), or use Receive All</span>
+              <div style={{display:'flex',gap:6}}>
+                <button className="btn btn-sm" style={{fontSize:11,color:'#166534',borderColor:'#86efac',fontWeight:700}} onClick={()=>_setAll(true)}>Receive All</button>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>_setAll(false)}>Clear</button>
+              </div>
+            </div>}
             <table><thead><tr>
               <th style={{width:30}}>#</th>
               <th>Source PO#</th>
@@ -9417,6 +9449,7 @@ export default function App(){
               <th>Sizes Ordered</th><th>Total</th>
               <th>Cost</th>
               <th>Receive</th>
+              <th style={{textAlign:'center'}}>Label</th>
             </tr></thead><tbody>
             {poItems.map((it,i)=>{
               const szEntries=Object.entries(it.sizes).filter(([,v])=>v>0);
@@ -9429,7 +9462,8 @@ export default function App(){
                 <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><span key={sz} style={{padding:'2px 6px',background:'#f1f5f9',borderRadius:4,fontSize:10,fontWeight:700}}>{sz}: {v}</span>)}</div></td>
                 <td style={{fontWeight:800,fontSize:14}}>{it.qty}</td>
                 <td style={{fontSize:12,color:'#166534',fontWeight:700,whiteSpace:'nowrap'}}>{it.lineCost>0?('$'+it.lineCost.toFixed(2)):'—'}{it.unitCost>0&&<div style={{fontSize:10,color:'#94a3b8',fontWeight:500}}>${it.unitCost.toFixed(2)}/ea</div>}</td>
-                <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:8,fontWeight:700,color:'#64748b'}}>{sz}</div><input id={'rcv-'+i+'-'+sz} type="number" className="form-input" style={{width:40,padding:'3px 4px',textAlign:'center',fontSize:12,fontWeight:700}} defaultValue={v} min={0}/></div>)}</div></td>
+                <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:8,fontWeight:700,color:'#64748b'}}>{sz}</div><input id={'rcv-'+i+'-'+sz} type="number" className="form-input" style={{width:40,padding:'3px 4px',textAlign:'center',fontSize:12,fontWeight:700}} defaultValue={0} min={0} max={v} title={'Ordered '+v}/></div>)}</div></td>
+                <td style={{textAlign:'center'}}><button className="btn btn-sm btn-secondary" style={{padding:'3px 8px',fontSize:12}} title={'Print 4×6 box label for '+(it.srcPoId||poId)} onClick={()=>_printOnePO(it.srcPoId||'')}>🖨️</button></td>
               </tr>})}
             </tbody></table>
             {/* SO reference — small, for back-office context */}
@@ -9466,8 +9500,13 @@ export default function App(){
               {submittedInfo?.status==='received'?
                 <span className="badge badge-green" style={{padding:'6px 12px',fontSize:12}}>✅ Received {submittedInfo.received_at||''}</span>:
                 <button className="btn btn-primary" style={{background:'#22c55e',borderColor:'#22c55e',padding:'8px 20px'}} onClick={()=>{
+                  // Tally what's actually being received from the inputs so the batch is marked
+                  // 'received' only when everything came in, otherwise 'partial'.
+                  let _grandRcvd=0;poItems.forEach((pi,ri)=>{Object.entries(pi.sizes||{}).filter(([,v])=>v>0).forEach(([sz])=>{const el=document.getElementById('rcv-'+ri+'-'+sz);_grandRcvd+=el?Math.max(0,parseInt(el.value)||0):0})});
+                  if(_grandRcvd===0){nf('Enter received quantities first (or click Receive All)','warn');return}
+                  const _batchStatus=_grandRcvd>=totalUnits?'received':'partial';
                   // Update submitted batch status
-                  if(batchMatch)setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:'received',received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
+                  if(batchMatch)setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:_batchStatus,received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
                   // Update PO lines on SOs to received — match by po_id OR batch_po_number so
                   // the NSA-#### scan also finds the source POs (PO-####-TAG) grouped under it.
                   const lcPoId=poId.toLowerCase();
@@ -9483,14 +9522,17 @@ export default function App(){
                       const it=updItems[ml.itemIdx];if(!it)return;
                       const pls=[...(it.po_lines||[])];
                       if(pls[ml.poLineIdx]){
-                        const rcv={};
-                        Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k)){
-                          // Receive inputs are rendered keyed by poItems index, not the global allPOLines index.
-                          // Map this line back to its rendered row via _pl (non-batch); batch rows have no _pl, so
-                          // the lookup misses and we fall back to the ordered qty v — unchanged from prior behavior.
-                          const _ri=poItems.findIndex(pi=>pi._pl===ml);
-                          const el=_ri>=0?document.getElementById('rcv-'+_ri+'-'+k):null;rcv[k]=el?parseInt(el.value)||0:v}});
-                        pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:'received',received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
+                        const _META=new Set(['po_id','status','unit_cost','shipping','batch_queue_id','batch_po_number']);
+                        // Map this line back to its rendered receive row: non-batch rows carry _pl;
+                        // batch rows match on SO + item index (+ source PO# when present).
+                        const _ri=poItems.findIndex(pi=>pi._pl?pi._pl===ml:(pi.soId===ml.soId&&pi.itemIdx===ml.itemIdx&&(!ml.poId||!pi.srcPoId||pi.srcPoId===ml.poId)));
+                        const rcv={};let _ord=0,_rcvd=0;
+                        Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!_META.has(k)){
+                          _ord+=v;
+                          const el=_ri>=0?document.getElementById('rcv-'+_ri+'-'+k):null;
+                          const rv=el?Math.max(0,parseInt(el.value)||0):0;rcv[k]=rv;_rcvd+=rv}});
+                        const _newStatus=_rcvd>=_ord&&_ord>0?'received':_rcvd>0?'partial':'waiting';
+                        pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:_newStatus,received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
                         updItems[ml.itemIdx]={...it,po_lines:pls};
                       }
                     });
@@ -9512,7 +9554,7 @@ export default function App(){
                     });
                     savSO({...so,items:updItems,jobs:updatedJobs,updated_at:new Date().toLocaleString()});
                   });
-                  nf('✅ '+poId+' received — '+totalUnits+' units. SO items updated.');
+                  nf('✅ '+poId+' '+(_batchStatus==='partial'?'partially received':'received')+' — '+_grandRcvd+'/'+totalUnits+' units. SO items updated.');
                   // Print label(s) after receiving — separate per source PO for batches
                   if(isBatch&&batchMatch.source_pos&&batchMatch.source_pos.length>1){
                     printBatchSeparateLabels(batchMatch.source_pos,poId,'RECEIVED — '+new Date().toLocaleDateString());
@@ -9561,49 +9603,74 @@ export default function App(){
 
       {/* Pending queue */}
       {!batchScan.trim()&&<>
-      <div className="stats-row">
-        <div className="stat-card"><div className="stat-label">Queued</div><div className="stat-value">{batchPOs.length}</div></div>
-        <div className="stat-card"><div className="stat-label">Vendors</div><div className="stat-value">{vendorGroups.length}</div></div>
-        <div className="stat-card"><div className="stat-label">Queue Value</div><div className="stat-value">${batchPOs.reduce((a,bp)=>a+bp.total_cost,0).toFixed(2)}</div></div>
-        <div className="stat-card"><div className="stat-label">Ordered</div><div className="stat-value">{submittedBatches.length}</div></div>
+      <div style={{display:'flex',gap:18,alignItems:'center',flexWrap:'wrap',padding:'10px 18px',background:'white',border:'1px solid #e2e8f0',borderRadius:10,marginBottom:16}}>
+        <div style={{fontSize:13,color:'#475569'}}><strong style={{fontSize:18,color:'#0f172a'}}>{batchPOs.length}</strong> queued</div>
+        <div style={{width:1,height:20,background:'#e2e8f0'}}/>
+        <div style={{fontSize:13,color:'#475569'}}><strong style={{fontSize:18,color:'#0f172a'}}>{vendorGroups.length}</strong> vendor{vendorGroups.length!==1?'s':''}</div>
+        <div style={{width:1,height:20,background:'#e2e8f0'}}/>
+        <div style={{fontSize:13,color:'#475569'}}>Queue value <strong style={{fontSize:18,color:'#166534'}}>${batchPOs.reduce((a,bp)=>a+bp.total_cost,0).toFixed(2)}</strong></div>
+        <div style={{width:1,height:20,background:'#e2e8f0'}}/>
+        <div style={{fontSize:13,color:'#475569'}}><strong style={{fontSize:18,color:'#0f172a'}}>{submittedBatches.length}</strong> ordered</div>
       </div>
       {vendorGroups.length===0&&submittedBatches.length===0&&<div className="card"><div className="empty" style={{padding:40}}>
         <div style={{fontSize:32,marginBottom:8}}>📦</div>
         <div style={{fontWeight:700,fontSize:16,marginBottom:4}}>No batch POs queued</div>
         <div style={{maxWidth:400,margin:'0 auto'}}>When creating a PO for S&S, SanMar, Richardson, Momentec, A4, Adidas, or Under Armour — click "Add to Batch" to queue it. Order when the batch hits free shipping threshold.</div>
       </div></div>}
+      {vendorGroups.length>0&&<div style={{display:'flex',alignItems:'center',gap:8,margin:'4px 2px 10px'}}><span style={{fontSize:13,fontWeight:800,color:'#0f172a',textTransform:'uppercase',letterSpacing:0.5}}>Ready to Order</span><span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 8px',borderRadius:999}}>{vendorGroups.length} vendor{vendorGroups.length!==1?'s':''}</span></div>}
       {vendorGroups.map(([vk,vg])=>{
         const total=vg.pos.reduce((a,bp)=>a+bp.total_cost,0);
         const totalUnits=vg.pos.reduce((a,bp)=>a+bp.items.reduce((a2,it)=>a2+it.qty,0),0);
         const hitThreshold=total>=vg.threshold;
         const nextPO='NSA '+batchCounter;
+        const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
+        const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
         return<div key={vk} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
-          <div className="card-header">
-            <div><h2>{vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
-            <div style={{textAlign:'right'}}>
-              <div style={{fontSize:20,fontWeight:800,color:hitThreshold?'#166534':'#d97706'}}>${total.toFixed(2)}</div>
-              <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:600}}>{vg.threshold>0?(hitThreshold?'✅ Free shipping!':'$'+(vg.threshold-total).toFixed(2)+' to free ship'):'Batch orders'}</div>
+          <div className="card-header" style={{flexDirection:'column',alignItems:'stretch',gap:10}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+              <div><h2>{vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
+              <div style={{textAlign:'right',flexShrink:0}}>
+                <div style={{fontSize:22,fontWeight:800,color:hitThreshold?'#166534':'#d97706'}}>${total.toFixed(2)}</div>
+                <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:700}}>{vg.threshold>0?(hitThreshold?'✅ Free shipping unlocked':'$'+(vg.threshold-total).toFixed(2)+' to free ship'):'Batch orders'}</div>
+              </div>
             </div>
+            {vg.threshold>0&&(()=>{const pct=Math.max(0,Math.min(100,Math.round(total/vg.threshold*100)));return<div>
+              <div style={{height:9,background:'#e2e8f0',borderRadius:999,overflow:'hidden'}}><div style={{height:'100%',width:pct+'%',background:hitThreshold?'linear-gradient(90deg,#22c55e,#16a34a)':'linear-gradient(90deg,#fbbf24,#d97706)',borderRadius:999,transition:'width .3s'}}/></div>
+              <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'#94a3b8',marginTop:4}}><span>$0</span><span style={{fontWeight:700,color:hitThreshold?'#166534':'#b45309'}}>{hitThreshold?'Free shipping ✓':pct+'% · $'+(vg.threshold-total).toFixed(2)+' to go'}</span><span>Free ship ${vg.threshold}</span></div>
+            </div>})()}
           </div>
           <div className="card-body" style={{padding:0}}>
             {vg.pos.map((bp,bpi)=>{const isEditing=editingBatchId===bp.id;return<div key={bp.id} style={{padding:'12px 16px',borderBottom:bpi<vg.pos.length-1?'1px solid #f1f5f9':'none',background:isEditing?'#f5f3ff':'transparent'}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-                <div>{bp.po_id&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:12,marginRight:8}}>{bp.po_id}</span>}<span style={{fontWeight:700,color:'#1e40af'}}>{bp.so_id}</span><span style={{fontSize:12,color:'#64748b',marginLeft:8}}>{bp.customer} — {bp.so_memo}</span></div>
-                <div style={{display:'flex',alignItems:'center',gap:8}}>
-                  <span style={{fontWeight:700}}>${bp.total_cost.toFixed(2)}</span>
-                  <span style={{fontSize:10,color:'#94a3b8'}}>{bp.created_by_name?.split(' ')[0]}</span>
-                  <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'2px 6px',fontSize:10}} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
-                  <button className="btn btn-sm" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'2px 6px'}} onClick={()=>{if(!window.confirm('Remove this batch PO from queue?'))return;
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8,gap:8}}>
+                <div style={{minWidth:0}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                    {bp.po_id&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:12,background:'#f5f3ff',padding:'1px 7px',borderRadius:4}}>{bp.po_id}</span>}
+                    <span onClick={()=>{const so=sos.find(s=>s.id===bp.so_id);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf(bp.so_id+' not found','error')}}} title={'Open '+bp.so_id} style={{fontWeight:800,color:'#1e40af',fontSize:15,cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}}>{bp.so_id}</span>
+                  </div>
+                  <div style={{fontSize:12,color:'#64748b',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{bp.customer}{bp.so_memo?' — '+bp.so_memo:''}</div>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+                  <div style={{textAlign:'right'}}><div style={{fontWeight:800,fontSize:14,color:'#0f172a'}}>${bp.total_cost.toFixed(2)}</div>{bp.created_by_name&&<div style={{fontSize:10,color:'#94a3b8'}}>by {bp.created_by_name.split(' ')[0]}</div>}</div>
+                  <button className="btn btn-sm" style={{color:'#7c3aed',borderColor:'#ddd6fe',padding:'3px 10px',fontSize:11}} onClick={()=>setEditingBatchId(isEditing?null:bp.id)}>{isEditing?'Close':'Edit'}</button>
+                  <button className="btn btn-sm" title="Remove from queue" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'3px 9px',fontSize:11}} onClick={()=>{if(!window.confirm('Remove this batch PO from queue?'))return;
                     const so=sos.find(s=>s.id===bp.so_id);
                     if(so){const updatedItems=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()})}
                     setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id))}}>✕</button>
                 </div>
               </div>
-              {!isEditing&&<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                {bp.items.map((it,i)=><div key={i} style={{fontSize:11,padding:'3px 8px',background:'#f8fafc',borderRadius:4,border:'1px solid #e2e8f0'}}>
-                  <span style={{fontFamily:'monospace',fontWeight:600}}>{it.sku}</span> {it.name} <span style={{color:'#64748b'}}>({it.qty})</span>
-                  <div style={{display:'flex',gap:4,marginTop:2}}>{Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0]))).map(([sz,v])=><span key={sz} style={{fontSize:10,padding:'1px 4px',background:'#e2e8f0',borderRadius:3,fontWeight:600}}>{sz}:<span style={{color:'#1e40af'}}>{v}</span></span>)}</div>
-                </div>)}
+              {!isEditing&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                {bp.items.map((it,i)=>{const _sw=_bSwatch(it.color);const _img=(prod.find(p=>p.sku===it.sku)||{}).image_url;return<div key={i} style={{display:'flex',gap:10,fontSize:13,padding:'8px 11px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0'}}>
+                  {_img?<img src={_img} alt="" style={{width:42,height:42,objectFit:'contain',background:'white',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>:<div style={{width:42,height:42,borderRadius:4,background:'#eef2f7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>👕</div>}
+                  <div style={{minWidth:0}}>
+                    <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap',marginBottom:6}}>
+                      <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:13}}>{it.sku}</span>
+                      <span style={{fontWeight:600,fontSize:13}}>{it.name}</span>
+                      {it.color&&<span style={{display:'inline-flex',alignItems:'center',gap:5,padding:'2px 8px',background:'white',border:'1px solid '+(_sw||'#d1d5db'),borderRadius:5,fontSize:12,fontWeight:700,color:'#334155'}}><span style={{width:12,height:12,borderRadius:3,background:_sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{it.color}</span>}
+                      <span style={{color:'#64748b',fontWeight:700,fontSize:13}}>({it.qty})</span>
+                    </div>
+                    <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>{Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0]))).map(([sz,v])=><span key={sz} style={{fontSize:12,padding:'3px 8px',background:'#e2e8f0',borderRadius:4,fontWeight:600}}>{sz}:<span style={{color:'#1e40af',fontWeight:700}}>{v}</span></span>)}</div>
+                  </div>
+                </div>})}
               </div>}
               {isEditing&&<div style={{padding:8,border:'1px solid #ddd6fe',borderRadius:6,background:'#faf5ff',marginTop:4}}>
                 {bp.items.map((it,ii)=>{const itSzs=Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
@@ -26527,7 +26594,7 @@ export default function App(){
         {section('Sales Orders',rs,so=>{const cc=cust.find(x=>x.id===so.customer_id);return row(<><Icon name="box" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{so.id}</span><span>{so.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</>,()=>{setESO(so);setESOC(cc);setPg('orders')},so.id)})}
         {section('Products',rp,p=>row(<><Icon name="package" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span><span>{p.name}</span>{p.color&&<span style={{color:'#64748b',fontSize:11}}>{p.color}</span>}</>,()=>{setSelP(p);setPg('products');setQ('')},p.id))}
         {section('Item Fulfillments',rpk,pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return row(<><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></>,()=>{setESO(pk.so);setESOC(cc);setPg('orders')},pk.pick_id)})}
-        {section('Purchase Orders',rpo,po=>row(<><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.isInvPO&&<span style={{fontSize:9,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>INV</span>}{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'||po.status==='shipped'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status==='received'?'Received':po.status==='shipped'?'Shipped':po.status==='partial'?'Partially Received':po.status==='waiting'?'Waiting':po.status}</span></>,()=>{if(po.isInvPO){setPOF(f=>({...f,search:po.po_id,status:'all',booking:false}));setPg('purchase_orders')}else if(po.isBatch){setBatchScan(po.po_id);setPg('purchase_orders')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')}},po.po_id))}
+        {section('Purchase Orders',rpo,po=>row(<><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.isInvPO&&<span style={{fontSize:9,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>INV</span>}{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'||po.status==='shipped'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status==='received'?'Received':po.status==='shipped'?'Shipped':po.status==='partial'?'Partially Received':po.status==='waiting'?'Waiting':po.status}</span></>,()=>{if(po.isInvPO){setPOF(f=>({...f,search:po.po_id,status:'all',booking:false}));setPg('purchase_orders')}else if(po.isBatch){setBatchScan(po.po_id);setPg('batch_pos')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')}},po.po_id))}
         {section('Jobs',rj,j=>row(<><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span><span>{j.art_name||j.deco_type}</span><span style={{color:'#64748b'}}>→ {j.so_id}</span></>,()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')},j.id+j.so_id))}
         {section('Invoices',ri,inv=>row(<><Icon name="file" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span><span>{cust.find(c=>c.id===inv.customer_id)?.name||''}</span><span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='partial'?'badge-amber':'badge-blue'}`}>{inv.status}</span></>,()=>{setViewInvoice(inv);setPg('invoices')},inv.id))}
         {section('Vendors',rv,v=>row(<><Icon name="building" size={14}/><span style={{fontWeight:600}}>{v.name}</span>{v.rep_name&&<span style={{color:'#64748b',fontSize:11}}>{v.rep_name}</span>}</>,()=>{setSelV(v);setPg('vendors')},v.id))}
@@ -26645,7 +26712,7 @@ export default function App(){
   // LOGIN GATE
   if(!cu)return<ComponentErrorBoundary name="LoginGate"><React.Suspense fallback={<LazyFallback/>}><LoginGate onLogin={handleLogin} reps={REPS} supabase={supabase} sbSignIn={_sbSignIn} sbSignUp={_sbSignUp} sbResendSignup={_sbResendSignup} sbResetPassword={_sbResetPassword} sbGetSession={_sbGetSession} sbLinkTeamAuth={_sbLinkTeamAuth} sbGetMyProfile={_sbGetMyProfile}/></React.Suspense></ComponentErrorBoundary>;
   // MOBILE PORTAL GATE
-  if(mobileMode)return<ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO}/></ComponentErrorBoundary>;
+  if(mobileMode)return<ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO} onAssignBot={assignBotTask}/></ComponentErrorBoundary>;
 
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     {/* Mobile sidebar backdrop */}
@@ -26710,7 +26777,7 @@ export default function App(){
               {rpk.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Item Fulfillments</div>
                 {rpk.map(pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return<a key={pk.pick_id} href={_newTabHref({so:pk.so_id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setESO(pk.so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></a>})}</>}
               {rpo.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Purchase Orders</div>
-                {rpo.map(po=>{const poHref=po.so_id?_newTabHref({so:po.so_id}):null;const RowTag=poHref?'a':'div';return<RowTag key={po.po_id} {...(poHref?{href:poHref}:{})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(poHref&&(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1))return;ev.preventDefault&&ev.preventDefault();if(po.isInvPO){setPOF(f=>({...f,search:po.po_id,status:'all',booking:false}));setPg('purchase_orders')}else if(po.isBatch){setBatchScan(po.po_id);setPg('purchase_orders')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')};setGQ('');setGOpen(false)}}><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.isInvPO&&<span style={{fontSize:9,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>INV</span>}{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'||po.status==='shipped'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status==='received'?'Received':po.status==='shipped'?'Shipped':po.status==='partial'?'Partially Received':po.status==='waiting'?'Waiting':po.status}</span></RowTag>})}</>}
+                {rpo.map(po=>{const poHref=po.so_id?_newTabHref({so:po.so_id}):null;const RowTag=poHref?'a':'div';return<RowTag key={po.po_id} {...(poHref?{href:poHref}:{})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(poHref&&(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1))return;ev.preventDefault&&ev.preventDefault();if(po.isInvPO){setPOF(f=>({...f,search:po.po_id,status:'all',booking:false}));setPg('purchase_orders')}else if(po.isBatch){setBatchScan(po.po_id);setPg('batch_pos')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')};setGQ('');setGOpen(false)}}><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.isInvPO&&<span style={{fontSize:9,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>INV</span>}{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'||po.status==='shipped'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status==='received'?'Received':po.status==='shipped'?'Shipped':po.status==='partial'?'Partially Received':po.status==='waiting'?'Waiting':po.status}</span></RowTag>})}</>}
               {rj.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Jobs</div>
                 {rj.map(j=><a key={j.id+j.so_id} href={_newTabHref({so:j.so_id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span><span>{j.art_name||j.deco_type}</span><span style={{color:'#64748b'}}>→ {j.so_id}</span></a>)}</>}
               {ri.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Invoices</div>
@@ -26823,6 +26890,10 @@ export default function App(){
           <input className="form-input" value={todoModal.title} onChange={e=>setTodoModal(m=>({...m,title:e.target.value}))} placeholder="e.g. Order blanks for CSM"/></div>
         <div style={{marginBottom:12}}><label className="form-label">Description</label>
           <textarea className="form-input" rows={3} value={todoModal.description} onChange={e=>setTodoModal(m=>({...m,description:e.target.value}))} placeholder="Details..."/></div>
+        {todoModal.bot_payload&&<div style={{marginBottom:12,padding:'8px 12px',background:'#f0fdfa',border:'1px solid #99f6e4',borderRadius:8}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#0f766e',textTransform:'uppercase',letterSpacing:0.5,marginBottom:4}}>🤖 Bot task · {todoModal.bot_payload.target||'cart'}</div>
+          <div style={{fontSize:12,color:'#134e4a'}}>{(todoModal.bot_payload.totals?.line_count)||0} line{((todoModal.bot_payload.totals?.line_count)||0)===1?'':'s'} · {(todoModal.bot_payload.totals?.qty)||0} pcs → {todoModal.bot_payload.vendor_name||'vendor'} cart · PO {todoModal.bot_payload.po_number||'—'}. Claude fills the cart then stops for your approval before submitting.</div>
+        </div>}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
           <div><label className="form-label">Assign To *</label>
             <select className="form-select" value={todoModal.assigned_to} onChange={e=>setTodoModal(m=>({...m,assigned_to:e.target.value}))}>
@@ -26830,14 +26901,19 @@ export default function App(){
               {(()=>{
                 const isAdminGm=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
                 const isWhLead=WAREHOUSE_LEAD_IDS.includes(cu.id);
+                // The Claude bot is just another assignee (role 'bot'); offer it everywhere except warehouse-only contexts.
+                const bots=isBotOwner(cu)?REPS.filter(r=>r.is_active!==false&&r.role==='bot'):[];
+                const botOpt=bots.length>0&&<optgroup key="bots" label="🤖 Automation">{bots.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>;
                 // Warehouse-context tasks (from the warehouse page / item rows) only assign to warehouse crew.
                 if(todoModal.wh_only){return REPS.filter(r=>r.is_active!==false&&r.role==='warehouse').map(r=><option key={r.id} value={r.id}>{r.name}{r.id===cu.id?' (me)':''}</option>)}
                 if(isAdminGm){
-                  const office=REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='rep'||r.role==='admin'));
+                  // CSRs only (no sales reps) + warehouse, plus Claude for the bot owner.
+                  const office=REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='admin'));
                   const warehouse=REPS.filter(r=>r.is_active!==false&&r.role==='warehouse');
                   return[
-                    <optgroup key="office" label="Office / Sales">{office.map(r=><option key={r.id} value={r.id}>{r.name} ({r.role}){getPrimaryCsrForRep(cu.id)===r.id?' ★':''}</option>)}</optgroup>,
-                    warehouse.length>0&&<optgroup key="warehouse" label="Warehouse">{warehouse.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>
+                    <optgroup key="office" label="CSRs">{office.map(r=><option key={r.id} value={r.id}>{r.name} ({r.role}){getPrimaryCsrForRep(cu.id)===r.id?' ★':''}</option>)}</optgroup>,
+                    warehouse.length>0&&<optgroup key="warehouse" label="Warehouse">{warehouse.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>,
+                    botOpt
                   ];
                 }
                 if(isWhLead){return REPS.filter(r=>r.is_active!==false&&r.role==='warehouse').map(r=><option key={r.id} value={r.id}>{r.name}{r.id===cu.id?' (me)':''}</option>)}
@@ -26846,7 +26922,8 @@ export default function App(){
                 const otherCsrs=REPS.filter(r=>r.is_active!==false&&r.role==='csr'&&!myCsrIds.includes(r.id));
                 return[
                   myCsrs.length>0&&<optgroup key="my-csrs" label="My CSRs">{myCsrs.map(r=><option key={r.id} value={r.id}>{r.name}{getPrimaryCsrForRep(cu.id)===r.id?' ★ Primary':''}</option>)}</optgroup>,
-                  otherCsrs.length>0&&<optgroup key="other-csrs" label="Other CSRs">{otherCsrs.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>
+                  otherCsrs.length>0&&<optgroup key="other-csrs" label="Other CSRs">{otherCsrs.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>,
+                  botOpt
                 ];
               })()}
             </select></div>
@@ -26884,8 +26961,14 @@ export default function App(){
           // A PO-assigned task carries the PO number in doc_label (it differs from the SO id and isn't an IF/EST/SO ref).
           const _poId=todoModal.po_id||((todoModal.doc_label&&todoModal.doc_label!==todoModal.so_id&&!_ifId&&!/^(IF-|EST-|SO-)/i.test(todoModal.doc_label))?todoModal.doc_label:null);
           const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,if_id:_ifId,po_id:_poId,priority:todoModal.priority,due_date:todoModal.due_date||null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
+          // Bot task: queue it for the worker. Attach structured payload when present
+          // (batch button); otherwise queue from the title/description alone.
+          if(REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'){
+            newTodo.bot_status='queued';
+            if(todoModal.bot_payload)newTodo.bot_payload=todoModal.bot_payload;
+          }
           setAssignedTodos(prev=>[newTodo,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false});
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null});
           nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
         }}>Assign Task</button>
       </div>

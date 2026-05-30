@@ -1,0 +1,85 @@
+// Bot tasks — helpers for assigning work to the Claude bot via the normal
+// "Assign Task" flow. The bot is just another team member (role 'bot'); you
+// assign it an assigned_todos row whose `bot_payload` carries the structured
+// details it needs to act (e.g. add a PO's items to a vendor cart).
+//
+// See supabase/migrations/00099_assigned_todos_bot.sql for the schema and the
+// bot_status lifecycle (queued -> in_progress -> needs_review -> done/failed).
+
+// Only this portal user sees/uses the Claude bot (status pill, Assign-to-Claude
+// button, and the bot option in the Assign Task dropdown). Tasks themselves are
+// already private to their creator/assignee; this just hides the controls from
+// other reps/CSRs. Matched by team_members.id OR email, so it can't misfire if
+// the logged-in profile resolves a different id than expected.
+export const BOT_OWNER_ID = '00000000-0000-0000-0000-000000000001'; // Steve Peterson
+export const BOT_OWNER_EMAIL = 'steve@nationalsportsapparel.com';
+export const isBotOwner = (cu) =>
+  !!cu && (cu.id === BOT_OWNER_ID || (cu.email || '').toLowerCase() === BOT_OWNER_EMAIL);
+
+
+
+// Values for assigned_todos.bot_status (the worker's own progress).
+export const BOT_STATUS = {
+  QUEUED: 'queued',
+  IN_PROGRESS: 'in_progress',
+  NEEDS_REVIEW: 'needs_review', // cart filled — stop before submit, await human OK
+  DONE: 'done',
+  FAILED: 'failed',
+};
+
+// Map a batch/source vendor name to the external portal the worker drives.
+export function botTargetForVendor(vendorName) {
+  const v = String(vendorName || '').toLowerCase();
+  if (v.includes('adidas')) return 'adidas_click';
+  if (v.includes('silver')) return 'silver_screen';
+  if (v.includes('sanmar')) return 'sanmar';
+  return v.replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'unknown';
+}
+
+// Flatten queued batch POs into a flat, worker-friendly line-item list.
+// Each batch (bp) has { id, po_id, so_id, customer, items:[{sku,name,color,qty,unit_cost,sizes}] }.
+function batchesToLines(batches) {
+  const lines = [];
+  (batches || []).forEach((bp) => {
+    (bp.items || []).forEach((it) => {
+      lines.push({
+        sku: it.sku,
+        name: it.name || '',
+        color: it.color || '',
+        qty: it.qty || 0,
+        unit_cost: it.unit_cost || 0,
+        sizes: it.sizes || {},
+        source_batch_id: bp.id || null,
+        source_po_id: bp.po_id || null,
+        so_id: bp.so_id || null,
+        customer: bp.customer || null,
+      });
+    });
+  });
+  return lines;
+}
+
+// Build the title/description/bot_payload for an "add all items to the vendor
+// cart" task from a ready batch. The caller hands the result to onAssignTodo,
+// which opens the standard Assign Task modal pre-filled for the Claude bot.
+export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null }) {
+  const target = botTargetForVendor(vendorName);
+  const lines = batchesToLines(batches);
+  const totalQty = lines.reduce((a, l) => a + (l.qty || 0), 0);
+  const totalCost = lines.reduce((a, l) => a + (l.qty || 0) * (l.unit_cost || 0), 0);
+  const label = vendorName || target;
+
+  return {
+    title: `Add ${lines.length} item${lines.length === 1 ? '' : 's'} (${totalQty} pcs) to ${label} cart · PO ${poNumber || '—'}`,
+    description: `Log in to ${label}, add every line in the attached list to the cart at the given sizes/quantities, then enter PO# ${poNumber || '(none)'} on the cart. STOP before submitting — set bot_status to needs_review and comment here for approval.`,
+    so_id: soId,
+    bot_payload: {
+      task_type: 'add_to_cart',
+      target,
+      vendor_name: vendorName || null,
+      po_number: poNumber || null,
+      lines,
+      totals: { line_count: lines.length, qty: totalQty, cost: Number(totalCost.toFixed(2)) },
+    },
+  };
+}
