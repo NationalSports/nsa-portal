@@ -6578,7 +6578,7 @@ export default function App(){
           {_poId&&<div style={{marginBottom:12,border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,padding:'8px 12px',background:'#f0f9ff',borderBottom:'1px solid #e2e8f0'}}>
               <div style={{fontWeight:800,fontSize:12,color:'#0c4a6e',display:'flex',alignItems:'center',gap:6,minWidth:0}}>
-                <span style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>🛒 PO {_poId}{(()=>{const v=_poLines[0]?.pl?.vendor||_poLines[0]?.pl?.deco_vendor;return v?' · '+v:''})()}{_poLines[0]?.pl?.status?' · '+_poLines[0].pl.status:''}{_poDropShip?' · Drop Ship':''}</span>
+                <span style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>🛒 {/^\s*P\.?O/i.test(_poId)?_poId:'PO '+_poId}{(()=>{const v=_poLines[0]?.pl?.vendor||_poLines[0]?.pl?.deco_vendor;return v?' · '+v:''})()}{_poLines[0]?.pl?.status?' · '+_poLines[0].pl.status:''}{_poDropShip?' · Drop Ship':''}</span>
                 <button title="Copy PO number" style={{background:'none',border:'1px solid #bae6fd',borderRadius:6,cursor:'pointer',padding:'1px 6px',fontSize:11,color:'#0369a1',flexShrink:0}} onClick={()=>{navigator.clipboard?.writeText(_poId);nf('Copied PO '+_poId)}}>⧉ Copy</button>
               </div>
               <button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap',flexShrink:0}} onClick={_openPO}>Open PO →</button>
