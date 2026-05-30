@@ -11,6 +11,7 @@
 // Supabase directly and to the three omg-* Netlify functions.
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
+import { shipStationCall } from './vendorApis';
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const PDFJS_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
@@ -234,8 +235,63 @@ export default function OmgOrderTracking() {
     flash(`All ${ids.length} orders marked ${ls.replace(/_/g, ' ')}.`);
   };
 
+  // Push an OMG order into ShipStation as an awaiting-shipment order. We use the
+  // same 'WS-<order id>' orderNumber the webstore flow uses, so when the
+  // warehouse buys a label, the existing shipstation-webhook fires: it records
+  // the shipment, marks items shipped, and emails the parent — no extra wiring.
+  const pushToShipStation = async (o) => {
+    const a = o.ship_address || {};
+    if (!a.street1 || !a.city || !a.zip) { flash('Add a shipping address first (upload the packing slip).', 'err'); return; }
+    setBusy('ss-' + o.id);
+    try {
+      const payload = {
+        orderNumber: 'WS-' + o.id, orderKey: 'ws-' + o.id,
+        orderDate: o.created_at || new Date().toISOString(), orderStatus: 'awaiting_shipment',
+        customerUsername: sel.name, customerEmail: o.buyer_email || '',
+        billTo: { name: o.buyer_name || a.name || 'Customer' },
+        shipTo: { name: a.name || o.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: o.buyer_phone || '', residential: true },
+        items: o.items.map((i) => ({
+          sku: i.sku || '', name: [i.name || i.sku, i.size && ('Size ' + i.size), i.player_name].filter(Boolean).join(' · '),
+          quantity: i.qty || 1, unitPrice: Number(i.unit_price) || 0,
+          imageUrl: i.image_url || undefined,
+          options: [i.size && { name: 'Size', value: i.size }, i.color && { name: 'Color', value: i.color }].filter(Boolean),
+        })),
+        amountPaid: Number(o.total) || 0,
+        advancedOptions: { source: 'NSA OMG', customField1: sel.name, customField2: sel.omg_sale_code || '', ...(sel.shipstation_store_id ? { storeId: Number(sel.shipstation_store_id) || undefined } : {}) },
+      };
+      const ss = await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(payload) });
+      if (!ss || !ss.orderId) throw new Error('ShipStation did not accept the order.');
+      flash(`Order ${o.omg_order_number} sent to ShipStation — buy the label there; the parent is emailed automatically on ship.`);
+    } catch (e) { flash('ShipStation: ' + e.message, 'err'); } finally { setBusy(''); }
+  };
+
+  // Bulk: push every address-complete order to ShipStation in one go.
+  const pushAllToShipStation = async () => {
+    const ready = orders.filter((o) => o.ship_address && o.ship_address.street1 && o.ship_address.zip);
+    if (!ready.length) { flash('No orders have a shipping address yet — upload the packing slip first.', 'err'); return; }
+    setBusy('ss-all');
+    let ok = 0, fail = 0;
+    for (const o of ready) {
+      try {
+        const a = o.ship_address;
+        await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify({
+          orderNumber: 'WS-' + o.id, orderKey: 'ws-' + o.id, orderDate: o.created_at || new Date().toISOString(), orderStatus: 'awaiting_shipment',
+          customerUsername: sel.name, customerEmail: o.buyer_email || '', billTo: { name: o.buyer_name || a.name || 'Customer' },
+          shipTo: { name: a.name || o.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: o.buyer_phone || '', residential: true },
+          items: o.items.map((i) => ({ sku: i.sku || '', name: [i.name || i.sku, i.size && ('Size ' + i.size), i.player_name].filter(Boolean).join(' · '), quantity: i.qty || 1, unitPrice: Number(i.unit_price) || 0, imageUrl: i.image_url || undefined })),
+          amountPaid: Number(o.total) || 0,
+          advancedOptions: { source: 'NSA OMG', customField1: sel.name, customField2: sel.omg_sale_code || '', ...(sel.shipstation_store_id ? { storeId: Number(sel.shipstation_store_id) || undefined } : {}) },
+        }) });
+        ok++;
+      } catch { fail++; }
+    }
+    setBusy('');
+    flash(`Pushed ${ok} order(s) to ShipStation${fail ? `, ${fail} failed` : ''}. Buy labels there — parents are emailed automatically on ship.`, fail ? 'err' : 'ok');
+  };
+
   const updateDraft = (idx, field, value) => setDraftContacts((cs) => cs.map((c, i) => i === idx ? { ...c, [field]: value } : c));
   const trackUrl = (o) => `${window.location.origin}/shop/order/${o.status_token}`;
+  const withAddress = orders.filter((o) => o.ship_address && o.ship_address.street1).length;
   const notified = orders.filter((o) => o.processing_email_sent).length;
 
   return (
@@ -330,7 +386,9 @@ export default function OmgOrderTracking() {
                     {[['pending', 'Received'], ['in_production', 'In production'], ['shipped', 'Shipped'], ['complete', 'Complete']].map(([ls, label]) => (
                       <button key={ls} onClick={() => advanceAll(ls)} disabled={busy === 'advance'} style={stageBtn(ls)}>{label}</button>
                     ))}
-                    <span style={{ fontSize: 11.5, color: '#94a3b8', marginLeft: 4 }}>Updates the parent portal instantly. Use per-order controls below for partials.</span>
+                    <span style={{ width: 1, height: 22, background: '#e2e8f0', margin: '0 4px' }} />
+                    <button onClick={pushAllToShipStation} disabled={busy === 'ss-all' || !withAddress} style={{ ...secondaryBtn, opacity: withAddress ? 1 : 0.5 }} title={withAddress ? '' : 'Upload the packing slip to add addresses first'}>{busy === 'ss-all' ? 'Pushing…' : `🚚 Push ${withAddress} to ShipStation`}</button>
+                    <span style={{ fontSize: 11.5, color: '#94a3b8', marginLeft: 4 }}>Status updates the portal instantly. ShipStation auto-emails parents on ship.</span>
                   </div>
                 </div>
               )}
@@ -375,6 +433,8 @@ export default function OmgOrderTracking() {
                                       {[['pending', 'Received'], ['in_production', 'In production'], ['shipped', 'Shipped'], ['complete', 'Complete']].map(([ls, label]) => (
                                         <button key={ls} onClick={() => setLineStatus(o.id, ls)} disabled={busy === 'status-' + o.id} style={{ ...stageBtn(ls), opacity: st === ls ? 1 : 0.72, outline: st === ls ? '2px solid #0f172a' : 'none' }}>{label}</button>
                                       ))}
+                                      <span style={{ width: 1, height: 20, background: '#e2e8f0', margin: '0 2px' }} />
+                                      <button onClick={() => pushToShipStation(o)} disabled={busy === 'ss-' + o.id} style={{ ...secondaryBtn, padding: '7px 13px', fontSize: 12.5 }} title="Create the ShipStation order; buy the label there">{busy === 'ss-' + o.id ? 'Pushing…' : '🚚 ShipStation'}</button>
                                     </div>
                                     {/* Per-line items with a "missing" qty control */}
                                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
