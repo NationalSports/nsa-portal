@@ -6,6 +6,14 @@
 // See supabase/migrations/00099_assigned_todos_bot.sql for the schema and the
 // bot_status lifecycle (queued -> in_progress -> needs_review -> done/failed).
 
+// Only this portal user sees/uses the Claude bot (status pill, Assign-to-Claude
+// button, and the bot option in the Assign Task dropdown). Tasks themselves are
+// already private to their creator/assignee; this just hides the controls from
+// other reps/CSRs. Set to a team_members.id.
+export const BOT_OWNER_ID = '00000000-0000-0000-0000-000000000001'; // Steve Peterson
+export const isBotOwner = (cu) => cu?.id === BOT_OWNER_ID;
+
+
 // Values for assigned_todos.bot_status (the worker's own progress).
 export const BOT_STATUS = {
   QUEUED: 'queued',

@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import './portal.css';
 import MobilePortal from './MobilePortal';
 import BotStatus from './BotStatus';
+import { isBotOwner } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
@@ -6172,7 +6173,7 @@ export default function App(){
       <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>📌 Assigned Tasks ({myAssignedTodos.length})</h2>
         <div style={{display:'flex',alignItems:'center',gap:8}}>
-          <BotStatus assignedTodos={assignedTodos}/>
+          <BotStatus assignedTodos={assignedTodos} hidden={!isBotOwner(cu)}/>
           <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2,due_date:''})}>+ New Task</button>
         </div>
       </div>
@@ -26865,7 +26866,7 @@ export default function App(){
                 const isAdminGm=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
                 const isWhLead=WAREHOUSE_LEAD_IDS.includes(cu.id);
                 // The Claude bot is just another assignee (role 'bot'); offer it everywhere except warehouse-only contexts.
-                const bots=REPS.filter(r=>r.is_active!==false&&r.role==='bot');
+                const bots=isBotOwner(cu)?REPS.filter(r=>r.is_active!==false&&r.role==='bot'):[];
                 const botOpt=bots.length>0&&<optgroup key="bots" label="🤖 Automation">{bots.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>;
                 // Warehouse-context tasks (from the warehouse page / item rows) only assign to warehouse crew.
                 if(todoModal.wh_only){return REPS.filter(r=>r.is_active!==false&&r.role==='warehouse').map(r=><option key={r.id} value={r.id}>{r.name}{r.id===cu.id?' (me)':''}</option>)}
