@@ -26871,10 +26871,11 @@ export default function App(){
                 // Warehouse-context tasks (from the warehouse page / item rows) only assign to warehouse crew.
                 if(todoModal.wh_only){return REPS.filter(r=>r.is_active!==false&&r.role==='warehouse').map(r=><option key={r.id} value={r.id}>{r.name}{r.id===cu.id?' (me)':''}</option>)}
                 if(isAdminGm){
-                  const office=REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='rep'||r.role==='admin'));
+                  // CSRs only (no sales reps) + warehouse, plus Claude for the bot owner.
+                  const office=REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='admin'));
                   const warehouse=REPS.filter(r=>r.is_active!==false&&r.role==='warehouse');
                   return[
-                    <optgroup key="office" label="Office / Sales">{office.map(r=><option key={r.id} value={r.id}>{r.name} ({r.role}){getPrimaryCsrForRep(cu.id)===r.id?' ★':''}</option>)}</optgroup>,
+                    <optgroup key="office" label="CSRs">{office.map(r=><option key={r.id} value={r.id}>{r.name} ({r.role}){getPrimaryCsrForRep(cu.id)===r.id?' ★':''}</option>)}</optgroup>,
                     warehouse.length>0&&<optgroup key="warehouse" label="Warehouse">{warehouse.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>,
                     botOpt
                   ];

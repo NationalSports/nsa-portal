@@ -9,9 +9,13 @@
 // Only this portal user sees/uses the Claude bot (status pill, Assign-to-Claude
 // button, and the bot option in the Assign Task dropdown). Tasks themselves are
 // already private to their creator/assignee; this just hides the controls from
-// other reps/CSRs. Set to a team_members.id.
+// other reps/CSRs. Matched by team_members.id OR email, so it can't misfire if
+// the logged-in profile resolves a different id than expected.
 export const BOT_OWNER_ID = '00000000-0000-0000-0000-000000000001'; // Steve Peterson
-export const isBotOwner = (cu) => cu?.id === BOT_OWNER_ID;
+export const BOT_OWNER_EMAIL = 'steve@nationalsportsapparel.com';
+export const isBotOwner = (cu) =>
+  !!cu && (cu.id === BOT_OWNER_ID || (cu.email || '').toLowerCase() === BOT_OWNER_EMAIL);
+
 
 
 // Values for assigned_todos.bot_status (the worker's own progress).
