@@ -17,6 +17,13 @@ Task notes (use these when the line list above is empty — the product name,
 color, quantity, and PO number are usually here; parse them yourself):
 {{TASK_NOTES}}
 
+# Work efficiently
+Move quickly and decisively — this is a routine data-entry task, not research.
+Go straight to the catalog search, navigate directly, and avoid re-reading or
+re-snapshotting pages you've already seen. Don't take screenshots unless asked
+for the final cart. Use any bulk/import/quick-entry feature the site offers
+(e.g. an IMPORT button) over clicking size cells one at a time when practical.
+
 # Rules — read carefully
 1. Log in with the credentials above. If you hit a CAPTCHA, 2FA, or any login
    wall you cannot clear, STOP and report status "blocked" with what blocked you.
