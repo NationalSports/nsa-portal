@@ -3064,7 +3064,7 @@ export default function App(){
   // reminder. baseline=true marks stores already present when this shipped, so
   // we don't backfill tasks for the entire history.
   const[omgFirstSeen,setOmgFirstSeen]=useState(()=>loadState('omg_first_seen',{}));
-  const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',wh_only:false});
+  const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false});
   const[todoDetailId,setTodoDetailId]=useState(null);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
@@ -6549,6 +6549,17 @@ export default function App(){
       const creator=REPS.find(r=>r.id===td.created_by);const assignee=REPS.find(r=>r.id===td.assigned_to);
       const soRef=td.so_id?sos.find(s=>s.id===td.so_id):null;const custRef=td.customer_id?cust.find(c=>c.id===td.customer_id):null;
       const ifId=td.if_id||((td.title||'').match(/\bIF-\d+/i)||[])[0]||'';
+      // ── Resolve a PO referenced by this task (stored po_id, else parsed from title/description) ──
+      const _poMetaKeys=new Set(['status','po_id','received','cancelled','shipments','vendor','created_at','expected_date','memo','notes','po_type','deco_vendor','deco_type','unit_cost','drop_ship','billed','tracking_numbers','batch_queue_id','batch_po_number','preexisting','email_history','shipping','_bill_details','_bill_cost','_billed','_tracking_numbers']);
+      const _poText=(td.title||'')+' '+(td.description||'');
+      const _poSearchSos=soRef?[soRef]:sos;
+      const _gatherPOs=(s)=>{const out=[];safeItems(s).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(pl.po_id)out.push({pl,it})})});(s.deco_pos||[]).forEach(dp=>{if(dp.po_id)out.push({pl:dp,it:null})});return out};
+      let _poId=td.po_id||'';let _poLines=[];let _poSo=null;
+      if(_poId){for(const s of _poSearchSos){const g=_gatherPOs(s).filter(x=>x.pl.po_id===_poId);if(g.length){_poLines=g;_poSo=s;break}}}
+      if(!_poLines.length){for(const s of _poSearchSos){const cand=_gatherPOs(s);let hit=cand.filter(x=>_poText.includes(x.pl.po_id));if(!hit.length){const nums=(_poText.match(/\d{3,}/g)||[]);if(nums.length)hit=cand.filter(x=>nums.some(n=>String(x.pl.po_id).includes(n)))}if(hit.length){_poId=hit[0].pl.po_id;_poLines=hit.filter(x=>x.pl.po_id===_poId);_poSo=s;break}}}
+      const _poDropShip=_poLines.some(x=>x.pl.drop_ship);
+      const _poShipAddr=(()=>{if(!_poDropShip)return'';const s=_poSo||soRef;const c=custRef||(s&&cust.find(x=>x.id===s.customer_id));if(s&&s.ship_to_id==='custom'&&s.ship_to_custom)return s.ship_to_custom;if(c){const al=getAddrs(c,cust)||[];if(s&&s.ship_to_id){const sel=al.find(a=>a.id===s.ship_to_id);if(sel?.addr)return sel.addr}if(al[0]?.addr)return al[0].addr;if(c.shipping_address_line1)return[c.shipping_address_line1,c.shipping_address_line2,[c.shipping_city,c.shipping_state,c.shipping_zip].filter(Boolean).join(', ')].filter(Boolean).join(', ')}return''})();
+      const _openPO=()=>{const s=_poSo||soRef;if(s){setTodoDetailId(null);setESO(s);setESOC(cust.find(c=>c.id===s.customer_id));setESOOpenPO(_poId);setPg('orders')}else{nf('PO '+_poId+' not found','warn')}};
       return<div className="modal-overlay" onClick={()=>setTodoDetailId(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
         <div className="modal-header"><h2>📌 {td.title}</h2><button className="modal-close" onClick={()=>setTodoDetailId(null)}>×</button></div>
         <div className="modal-body">
@@ -6563,6 +6574,26 @@ export default function App(){
             {td.due_date&&<div><span style={{color:'#64748b'}}>Due:</span> <span style={{fontWeight:600,color:_todoDueColor(td.due_date)}}>{_fmtDueDate(td.due_date)}</span></div>}
           </div>
           {td.description&&<div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:13,marginBottom:12,border:'1px solid #e2e8f0'}}>{td.description}</div>}
+          {/* PO detail — items, ship-to, and a link to the PO page */}
+          {_poId&&<div style={{marginBottom:12,border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,padding:'8px 12px',background:'#f0f9ff',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontWeight:800,fontSize:12,color:'#0c4a6e'}}>🛒 PO {_poId}{(()=>{const v=_poLines[0]?.pl?.vendor||_poLines[0]?.pl?.deco_vendor;return v?' · '+v:''})()}{_poLines[0]?.pl?.status?' · '+_poLines[0].pl.status:''}{_poDropShip?' · Drop Ship':''}</div>
+              <button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap',flexShrink:0}} onClick={_openPO}>Open PO →</button>
+            </div>
+            {_poShipAddr&&<div style={{padding:'6px 12px',fontSize:11,color:'#475569',borderBottom:'1px solid #f1f5f9'}}><span style={{color:'#64748b',fontWeight:600}}>📦 Ship to:</span> {_poShipAddr}</div>}
+            <div style={{maxHeight:200,overflow:'auto'}}>
+              {_poLines.map((x,i)=>{const pl=x.pl;const it=x.it;const sizes=Object.entries(pl).filter(([k,v])=>!_poMetaKeys.has(k)&&typeof v==='number'&&v>0);const tot=sizes.reduce((a,[,v])=>a+v,0);
+                return<div key={i} style={{padding:'8px 12px',borderBottom:'1px solid #f1f5f9',fontSize:12}}>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:8}}>
+                    <span style={{fontWeight:700,color:'#1e293b'}}>{it?.sku||pl.deco_type||'—'}</span>
+                    {tot>0&&<span style={{color:'#64748b',flexShrink:0}}>{tot} units</span>}
+                  </div>
+                  {(it?.name||it?.color)&&<div style={{color:'#64748b',fontSize:11}}>{it?.name||''}{it?.color?' · '+it.color:''}</div>}
+                  {sizes.length>0&&<div style={{display:'flex',flexWrap:'wrap',gap:4,marginTop:4}}>{sizes.map(([sz,q])=><span key={sz} style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:6,color:'#334155'}}>{sz}: {q}</span>)}</div>}
+                </div>})}
+              {_poLines.length===0&&<div style={{padding:'8px 12px',fontSize:11,color:'#94a3b8'}}>No item lines found for this PO on {(_poSo||soRef)?.id||'the order'}.</div>}
+            </div>
+          </div>}
           {/* Comments */}
           <div style={{marginBottom:12}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Comments ({(td.comments||[]).length})</div>
@@ -26845,9 +26876,11 @@ export default function App(){
         <button className="btn btn-secondary" onClick={()=>setTodoModal(m=>({...m,open:false}))}>Cancel</button>
         <button className="btn btn-primary" disabled={!todoModal.title.trim()||!todoModal.assigned_to} onClick={()=>{
           const _ifId=todoModal.if_id||(/^IF-/i.test(todoModal.doc_label||'')?todoModal.doc_label:'')||null;
-          const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,if_id:_ifId,priority:todoModal.priority,due_date:todoModal.due_date||null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
+          // A PO-assigned task carries the PO number in doc_label (it differs from the SO id and isn't an IF/EST/SO ref).
+          const _poId=todoModal.po_id||((todoModal.doc_label&&todoModal.doc_label!==todoModal.so_id&&!_ifId&&!/^(IF-|EST-|SO-)/i.test(todoModal.doc_label))?todoModal.doc_label:null);
+          const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,if_id:_ifId,po_id:_poId,priority:todoModal.priority,due_date:todoModal.due_date||null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
           setAssignedTodos(prev=>[newTodo,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',wh_only:false});
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false});
           nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
         }}>Assign Task</button>
       </div>
