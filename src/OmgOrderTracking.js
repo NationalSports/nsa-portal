@@ -107,6 +107,7 @@ export default function OmgOrderTracking() {
   const [msg, setMsg] = useState(null);          // {kind,text}
   const [reportUrl, setReportUrl] = useState('');
   const [draftContacts, setDraftContacts] = useState(null); // parsed, editable
+  const [expanded, setExpanded] = useState(null);  // order id whose detail row is open
   const fileRef = useRef(null);
 
   const flash = (text, kind = 'ok') => { setMsg({ text, kind }); setTimeout(() => setMsg(null), 6000); };
@@ -198,10 +199,43 @@ export default function OmgOrderTracking() {
     } catch (e) { flash(e.message, 'err'); } finally { setBusy(''); }
   };
 
+  // ── Warehouse fulfillment controls ──────────────────────────────────
+  // OMG shadow orders have no linked sales order, so the webstore_sync_status
+  // trigger never fires for them. The warehouse drives line_status directly
+  // here (received → in_production → shipped → complete) and flags shortages.
+  const setLineStatus = async (orderId, ls) => {
+    setBusy('status-' + orderId);
+    const { error } = await supabase.from('webstore_order_items').update({ line_status: ls }).eq('order_id', orderId);
+    setBusy('');
+    if (error) { flash('Could not update status: ' + error.message, 'err'); return; }
+    // Keep the parent order's shipped_at in sync so the portal/email logic agrees.
+    if (ls === 'shipped' || ls === 'complete') await supabase.from('webstore_orders').update({ shipped_at: new Date().toISOString() }).eq('id', orderId);
+    setOrders((os) => os.map((o) => o.id === orderId ? { ...o, items: o.items.map((i) => ({ ...i, line_status: ls })) } : o));
+    flash(`Order marked ${ls.replace(/_/g, ' ')}.`);
+  };
+
+  const setItemMissing = async (orderId, itemId, missingQty) => {
+    const q = Math.max(0, Number(missingQty) || 0);
+    const { error } = await supabase.from('webstore_order_items').update({ missing_qty: q }).eq('id', itemId);
+    if (error) { flash('Could not flag item: ' + error.message, 'err'); return; }
+    setOrders((os) => os.map((o) => o.id === orderId ? { ...o, items: o.items.map((i) => i.id === itemId ? { ...i, missing_qty: q } : i) } : o));
+  };
+
+  // Bulk-advance every order in the store to a stage (warehouse convenience).
+  const advanceAll = async (ls) => {
+    if (!sel || !orders.length) return;
+    setBusy('advance');
+    const ids = orders.map((o) => o.id);
+    const { error } = await supabase.from('webstore_order_items').update({ line_status: ls }).in('order_id', ids);
+    if (!error && (ls === 'shipped' || ls === 'complete')) await supabase.from('webstore_orders').update({ shipped_at: new Date().toISOString() }).in('id', ids);
+    setBusy('');
+    if (error) { flash('Bulk update failed: ' + error.message, 'err'); return; }
+    await loadOrders(sel);
+    flash(`All ${ids.length} orders marked ${ls.replace(/_/g, ' ')}.`);
+  };
+
   const updateDraft = (idx, field, value) => setDraftContacts((cs) => cs.map((c, i) => i === idx ? { ...c, [field]: value } : c));
   const trackUrl = (o) => `${window.location.origin}/shop/order/${o.status_token}`;
-
-  const withEmail = orders.filter((o) => o.buyer_email).length;
   const notified = orders.filter((o) => o.processing_email_sent).length;
 
   return (
@@ -288,33 +322,86 @@ export default function OmgOrderTracking() {
                 </div>
               )}
 
-              {/* Orders table */}
+              {/* Fulfillment toolbar — bulk advance the whole store */}
+              {orders.length > 0 && (
+                <div className="card" style={{ ...card, marginBottom: 14 }}>
+                  <div style={cardHead}>🏭 Fulfillment — move every order to a stage</div>
+                  <div style={{ padding: 12, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    {[['pending', 'Received'], ['in_production', 'In production'], ['shipped', 'Shipped'], ['complete', 'Complete']].map(([ls, label]) => (
+                      <button key={ls} onClick={() => advanceAll(ls)} disabled={busy === 'advance'} style={stageBtn(ls)}>{label}</button>
+                    ))}
+                    <span style={{ fontSize: 11.5, color: '#94a3b8', marginLeft: 4 }}>Updates the parent portal instantly. Use per-order controls below for partials.</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Orders table (expandable rows with warehouse controls) */}
               <div className="card" style={card}>
                 <div style={cardHead}>Orders</div>
                 {!orders.length ? <div style={{ padding: 16, color: '#94a3b8', fontSize: 13 }}>No orders yet — import the player report.</div> : (
                   <div style={{ overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                       <thead><tr style={{ textAlign: 'left', color: '#64748b' }}>
-                        {['Order #', 'Player', 'Email', 'Items', 'Status', 'Total', 'Link'].map((h) => <th key={h} style={th}>{h}</th>)}
+                        {['', 'Order #', 'Player', 'Email', 'Items', 'Status', 'Total', 'Link'].map((h, i) => <th key={i} style={th}>{h}</th>)}
                       </tr></thead>
                       <tbody>
                         {orders.map((o) => {
                           const st = o.items[0] ? o.items[0].line_status : 'pending';
+                          const isOpen = expanded === o.id;
+                          const missing = o.items.reduce((a, i) => a + (Number(i.missing_qty) || 0), 0);
                           return (
-                            <tr key={o.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                              <td style={td}>{o.omg_order_number}</td>
-                              <td style={td}>{o.buyer_name || '—'}</td>
-                              <td style={td}>{o.buyer_email
-                                ? <span style={{ color: o.processing_email_sent ? '#166534' : '#0f172a' }}>{o.buyer_email}{o.processing_email_sent ? ' ✓' : ''}</span>
-                                : <span style={{ color: '#b45309', fontWeight: 600 }}>missing</span>}</td>
-                              <td style={td}>{o.items.length}</td>
-                              <td style={td}><StatusPill s={st} /></td>
-                              <td style={td}>{money(o.total)}</td>
-                              <td style={td}>
-                                <button onClick={() => { navigator.clipboard && navigator.clipboard.writeText(trackUrl(o)); flash('Link copied.'); }} style={linkBtn} title={trackUrl(o)}>Copy</button>
-                                <a href={trackUrl(o)} target="_blank" rel="noopener noreferrer" style={{ ...linkBtn, textDecoration: 'none' }}>Open</a>
-                              </td>
-                            </tr>
+                            <React.Fragment key={o.id}>
+                              <tr style={{ borderTop: '1px solid #f1f5f9', background: isOpen ? '#f8fafc' : '#fff', cursor: 'pointer' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
+                                <td style={{ ...td, width: 28, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
+                                <td style={td}>{o.omg_order_number}</td>
+                                <td style={td}>{o.buyer_name || '—'}</td>
+                                <td style={td}>{o.buyer_email
+                                  ? <span style={{ color: o.processing_email_sent ? '#166534' : '#0f172a' }}>{o.buyer_email}{o.processing_email_sent ? ' ✓' : ''}</span>
+                                  : <span style={{ color: '#b45309', fontWeight: 600 }}>missing</span>}</td>
+                                <td style={td}>{o.items.length}{missing > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> · {missing} short</span>}</td>
+                                <td style={td}><StatusPill s={st} /></td>
+                                <td style={td}>{money(o.total)}</td>
+                                <td style={td} onClick={(e) => e.stopPropagation()}>
+                                  <button onClick={() => { navigator.clipboard && navigator.clipboard.writeText(trackUrl(o)); flash('Link copied.'); }} style={linkBtn} title={trackUrl(o)}>Copy</button>
+                                  <a href={trackUrl(o)} target="_blank" rel="noopener noreferrer" style={{ ...linkBtn, textDecoration: 'none' }}>Open</a>
+                                </td>
+                              </tr>
+                              {isOpen && (
+                                <tr style={{ background: '#f8fafc' }}>
+                                  <td colSpan={8} style={{ padding: '4px 16px 16px' }} onClick={(e) => e.stopPropagation()}>
+                                    {/* Stage controls for the whole order */}
+                                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '10px 0' }}>
+                                      <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Set status:</span>
+                                      {[['pending', 'Received'], ['in_production', 'In production'], ['shipped', 'Shipped'], ['complete', 'Complete']].map(([ls, label]) => (
+                                        <button key={ls} onClick={() => setLineStatus(o.id, ls)} disabled={busy === 'status-' + o.id} style={{ ...stageBtn(ls), opacity: st === ls ? 1 : 0.72, outline: st === ls ? '2px solid #0f172a' : 'none' }}>{label}</button>
+                                      ))}
+                                    </div>
+                                    {/* Per-line items with a "missing" qty control */}
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
+                                      <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>
+                                        {['Item', 'Color', 'Size', 'Qty', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}
+                                      </tr></thead>
+                                      <tbody>
+                                        {o.items.map((i) => (
+                                          <tr key={i.id} style={{ borderTop: '1px solid #eef1f5' }}>
+                                            <td style={td}>{i.name || i.sku || '—'}</td>
+                                            <td style={td}>{i.color || '—'}</td>
+                                            <td style={td}>{i.size || '—'}</td>
+                                            <td style={td}>{i.qty}</td>
+                                            <td style={td}>
+                                              <input type="number" min={0} max={i.qty} value={Number(i.missing_qty) || 0}
+                                                onChange={(e) => setItemMissing(o.id, i.id, e.target.value)}
+                                                style={{ ...cell, width: 64, ...(Number(i.missing_qty) > 0 ? { background: '#fffbeb', borderColor: '#fde68a' } : {}) }} />
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                    <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>Anything marked short shows a “delayed” notice on the parent’s tracking page.</div>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
                           );
                         })}
                       </tbody>
@@ -352,3 +439,8 @@ const td = { padding: '8px 10px', verticalAlign: 'middle' };
 const primaryBtn = { padding: '9px 16px', borderRadius: 8, border: 'none', background: '#2563eb', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' };
 const secondaryBtn = { padding: '9px 16px', borderRadius: 8, border: '1.5px solid #e2e8f0', background: '#fff', color: '#0f172a', fontWeight: 700, fontSize: 13, cursor: 'pointer', display: 'inline-flex', alignItems: 'center' };
 const linkBtn = { background: 'none', border: 'none', color: '#64748b', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', padding: '2px 6px' };
+// Stage button colored to match its destination status pill.
+function stageBtn(ls) {
+  const c = { pending: ['#eef2ff', '#3730a3'], in_production: ['#fef3c7', '#92400e'], shipped: ['#dbeafe', '#1e40af'], complete: ['#dcfce7', '#166534'] }[ls] || ['#f1f5f9', '#475569'];
+  return { padding: '7px 13px', borderRadius: 8, border: 'none', background: c[0], color: c[1], fontWeight: 700, fontSize: 12.5, cursor: 'pointer' };
+}
