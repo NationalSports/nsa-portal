@@ -9448,6 +9448,8 @@ export default function App(){
         const totalUnits=vg.pos.reduce((a,bp)=>a+bp.items.reduce((a2,it)=>a2+it.qty,0),0);
         const hitThreshold=total>=vg.threshold;
         const nextPO='NSA '+batchCounter;
+        const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
+        const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
         return<div key={vk} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
           <div className="card-header">
             <div><h2>{vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
@@ -9459,7 +9461,7 @@ export default function App(){
           <div className="card-body" style={{padding:0}}>
             {vg.pos.map((bp,bpi)=>{const isEditing=editingBatchId===bp.id;return<div key={bp.id} style={{padding:'12px 16px',borderBottom:bpi<vg.pos.length-1?'1px solid #f1f5f9':'none',background:isEditing?'#f5f3ff':'transparent'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-                <div>{bp.po_id&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:12,marginRight:8}}>{bp.po_id}</span>}<span style={{fontWeight:700,color:'#1e40af'}}>{bp.so_id}</span><span style={{fontSize:12,color:'#64748b',marginLeft:8}}>{bp.customer} — {bp.so_memo}</span></div>
+                <div>{bp.po_id&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:13,marginRight:8}}>{bp.po_id}</span>}<span style={{fontWeight:700,color:'#1e40af',fontSize:15}}>{bp.so_id}</span><span style={{fontSize:13,color:'#64748b',marginLeft:8}}>{bp.customer} — {bp.so_memo}</span></div>
                 <div style={{display:'flex',alignItems:'center',gap:8}}>
                   <span style={{fontWeight:700}}>${bp.total_cost.toFixed(2)}</span>
                   <span style={{fontSize:10,color:'#94a3b8'}}>{bp.created_by_name?.split(' ')[0]}</span>
@@ -9470,11 +9472,16 @@ export default function App(){
                     setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id))}}>✕</button>
                 </div>
               </div>
-              {!isEditing&&<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                {bp.items.map((it,i)=><div key={i} style={{fontSize:11,padding:'3px 8px',background:'#f8fafc',borderRadius:4,border:'1px solid #e2e8f0'}}>
-                  <span style={{fontFamily:'monospace',fontWeight:600}}>{it.sku}</span> {it.name} <span style={{color:'#64748b'}}>({it.qty})</span>
-                  <div style={{display:'flex',gap:4,marginTop:2}}>{Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0]))).map(([sz,v])=><span key={sz} style={{fontSize:10,padding:'1px 4px',background:'#e2e8f0',borderRadius:3,fontWeight:600}}>{sz}:<span style={{color:'#1e40af'}}>{v}</span></span>)}</div>
-                </div>)}
+              {!isEditing&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                {bp.items.map((it,i)=>{const _sw=_bSwatch(it.color);return<div key={i} style={{fontSize:13,padding:'8px 11px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap',marginBottom:6}}>
+                    <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:13}}>{it.sku}</span>
+                    <span style={{fontWeight:600,fontSize:13}}>{it.name}</span>
+                    {it.color&&<span style={{display:'inline-flex',alignItems:'center',gap:5,padding:'2px 8px',background:'white',border:'1px solid '+(_sw||'#d1d5db'),borderRadius:5,fontSize:12,fontWeight:700,color:'#334155'}}><span style={{width:12,height:12,borderRadius:3,background:_sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{it.color}</span>}
+                    <span style={{color:'#64748b',fontWeight:700,fontSize:13}}>({it.qty})</span>
+                  </div>
+                  <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>{Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0]))).map(([sz,v])=><span key={sz} style={{fontSize:12,padding:'3px 8px',background:'#e2e8f0',borderRadius:4,fontWeight:600}}>{sz}:<span style={{color:'#1e40af',fontWeight:700}}>{v}</span></span>)}</div>
+                </div>})}
               </div>}
               {isEditing&&<div style={{padding:8,border:'1px solid #ddd6fe',borderRadius:6,background:'#faf5ff',marginTop:4}}>
                 {bp.items.map((it,ii)=>{const itSzs=Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));

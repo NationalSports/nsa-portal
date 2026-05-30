@@ -8401,6 +8401,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
         </div>
         <div className="modal-body">
+          {/* Vendor — who this PO is written to */}
+          {(()=>{
+            const _vRec=po.po_type==='outside_deco'?null:vendorList.find(v=>v.id===item?.vendor_id);
+            const _vName=po.po_type==='outside_deco'?(po.deco_vendor||'Outside Decorator'):(po.vendor||_vRec?.name||D_V.find(v=>v.id===item?.vendor_id)?.name||item?.brand||'');
+            const _vEmail=_vRec?.contact_email||'';
+            return<div style={{padding:'8px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,marginBottom:12,display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+              <span style={{fontSize:10,fontWeight:700,color:'#1e40af',textTransform:'uppercase',letterSpacing:0.5}}>Written to</span>
+              <span style={{fontSize:14,fontWeight:800,color:_vName?'#0f172a':'#b45309'}}>{_vName||'— no vendor set —'}</span>
+              {isDropShip&&<span style={{fontSize:10,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
+              {_vEmail&&<span style={{fontSize:11,color:'#64748b'}}>✉ {_vEmail}</span>}
+            </div>;
+          })()}
           {/* All items on this PO */}
           {allLines.length>1&&<div style={{marginBottom:12}}>
             <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Items on this PO ({allLines.length})</div>
