@@ -12,7 +12,7 @@ const BOT_ID = 'bot-claude';
 // Online if we've heard from the worker within ~2.5 polls (default poll 30s).
 const ONLINE_WINDOW_MS = 75000;
 
-export default function BotStatus({ assignedTodos = [], onClick }) {
+export default function BotStatus({ assignedTodos = [], onClick, hidden = false }) {
   const [hb, setHb] = useState(null);
   const [now, setNow] = useState(Date.now());
 
@@ -45,6 +45,10 @@ export default function BotStatus({ assignedTodos = [], onClick }) {
     });
     return { queued: q, needsReview: r };
   }, [assignedTodos]);
+
+  // Gated to the bot owner — other reps/CSRs never see the pill. (Hooks above
+  // still run unconditionally to satisfy the Rules of Hooks.)
+  if (hidden) return null;
 
   const lastSeen = hb?.last_seen ? new Date(hb.last_seen).getTime() : 0;
   const online = lastSeen > 0 && now - lastSeen < ONLINE_WINDOW_MS;

@@ -16,7 +16,7 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isIm
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { jobScreenKey, jobGroupKey } from './businessLogic';
-import { buildBotCartPayload } from './lib/botTasks';
+import { buildBotCartPayload, isBotOwner } from './lib/botTasks';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -6066,7 +6066,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setBatchReadyPopup(null)}>Continue working</button>
-          {onAssignTodo&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-secondary" style={{color:'#0f766e',borderColor:'#5eead4'}} title="Assign this batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, then stops before submit for your review" onClick={()=>{
+          {onAssignTodo&&isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-secondary" style={{color:'#0f766e',borderColor:'#5eead4'}} title="Assign this batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, then stops before submit for your review" onClick={()=>{
             const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
             if(!bot){nf('No bot user found — apply the bot migration first','error');return}
             const{title,description,bot_payload}=buildBotCartPayload({poNumber:nextBatchPONumber||'',vendorName:batchReadyPopup.vendorName,batches:liveBatches,soId:o.id});
