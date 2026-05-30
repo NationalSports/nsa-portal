@@ -7623,6 +7623,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         });
         const updated={...o,jobs:[...preservedJobs,...newJobs],art_files:updArtFiles,updated_at:new Date().toLocaleString()};
         setO(updated);onSave(updated);setDirty(false);setJobWizard(null);
+        // After releasing a quick mock, jump straight to that job's detail (where "Send to
+        // Coach" lives) instead of dropping the rep on the jobs list, so they can send it.
+        if(activateAll){const _qmIdx=newJobs.findIndex(j=>j.quick_mock);if(_qmIdx>=0)setSelJob(preservedJobs.length+_qmIdx);}
         const artSent=activateAll?newJobs.filter(j=>j.art_status==='art_requested'&&(j.art_requests||[]).length>0).length:0;
         const artSkipped=activateAll?newJobs.filter(j=>j.art_status==='art_complete').length:0;
         const quickMocked=activateAll?newJobs.filter(j=>j.quick_mock).length:0;
