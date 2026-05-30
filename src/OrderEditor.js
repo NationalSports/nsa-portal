@@ -2680,9 +2680,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       <div style={{height:1,background:'#e2e8f0',margin:'2px 0 4px'}}/>
                     </>})()}
                   <button onClick={()=>{setEditingItemName(idx);setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#0f766e',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f0fdfa'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>✏️</span> Edit name</button>
-                  <button onClick={()=>{copyI(idx);setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#2563eb',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={14}/> Copy item</button>
+                  <button onClick={()=>{setCopySkuModal({itemIdx:idx,search:'',intent:'copy',mode:'clone'});setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#2563eb',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={14}/> Copy item</button>
                   {_itemImg(item)&&<button onClick={()=>{copyItemImage(item);setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#0369a1',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f0f9ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>🖼️</span> Copy image</button>}
-                  <button onClick={()=>{const canReplace=safePicks(item).length===0&&safePOs(item).length===0;setCopySkuModal({itemIdx:idx,search:'',mode:canReplace?'replace':'copy'});setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#7c3aed',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f5f3ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:10,fontWeight:800}}>SKU</span> Change SKU</button>
+                  <button onClick={()=>{setCopySkuModal({itemIdx:idx,search:'',intent:'change',mode:'replace'});setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#7c3aed',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#f5f3ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:10,fontWeight:800}}>SKU</span> Change SKU</button>
                   {onAssignTodo&&<button onClick={()=>{onAssignTodo({title:'Pull '+(isSO?o.id:'')+' — '+item.sku,description:item.name+(item.color?' · '+item.color:''),so_id:isSO?o.id:'',customer_id:o.customer_id||'',priority:2,doc_label:isSO?o.id:'',wh_only:true});setShowItemMenu(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#0891b2',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#ecfeff'} onMouseLeave={e=>e.currentTarget.style.background='none'}><span style={{display:'inline-block',width:14,textAlign:'center',fontSize:12}}>👤</span> Assign to warehouse</button>}
                   <div style={{height:1,background:'#e2e8f0',margin:'4px 0'}}/>
                   <button onClick={()=>{rmI(idx);setShowItemMenu(null);setItemMenuPos(null)}} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'6px 10px',background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:12,fontWeight:600,textAlign:'left',borderRadius:4}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="trash" size={14}/> Delete item</button>
@@ -9360,8 +9360,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {/* Copy Item → New SKU Modal */}
       {copySkuModal&&(()=>{const srcIt=o.items[copySkuModal.itemIdx];if(!srcIt)return null;const sq=copySkuModal.search?.toLowerCase()||'';
         const canReplace=safePicks(srcIt).length===0&&safePOs(srcIt).length===0;
-        const mode=canReplace?(copySkuModal.mode||'replace'):'copy';
-        const isReplace=mode==='replace';
+        const intent=copySkuModal.intent||'change';// 'copy' = Copy item, 'change' = Change SKU in place
+        const isCopy=intent==='copy';
+        const mode=isCopy?(copySkuModal.mode||'clone'):'replace';
+        const isReplace=mode==='replace';// change SKU on this line in place
+        const isClone=mode==='clone';// copy this line as-is (same SKU)
         const onPickCatalog=p=>isReplace?changeItemSku(copySkuModal.itemIdx,p):copyIWithSku(copySkuModal.itemIdx,p);
         const onPickVendor=(st,c,src)=>isReplace?changeItemWithVendorResult(copySkuModal.itemIdx,st,c,src):copyIWithVendorResult(copySkuModal.itemIdx,st,c,src);
         const matches=sq.length>=2?products.filter(p=>p.sku.toLowerCase().includes(sq)||p.name.toLowerCase().includes(sq)||p.brand?.toLowerCase().includes(sq)||p.color?.toLowerCase().includes(sq)).slice(0,8):[];
@@ -9391,16 +9394,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
         </div>;
         return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setCopySkuModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
-          <div className="modal-header"><h2>{isReplace?'Change SKU':'Copy Item → New SKU'}</h2><button className="modal-close" onClick={()=>setCopySkuModal(null)}>×</button></div>
+          <div className="modal-header"><h2>{isCopy?'Copy Item':'Change SKU'}</h2><button className="modal-close" onClick={()=>setCopySkuModal(null)}>×</button></div>
           <div className="modal-body">
             <div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:12,fontSize:12}}>
-              <div style={{fontWeight:700}}>{isReplace?'Changing':'Copying from'}: {srcIt.sku} — {srcIt.name}</div>
+              <div style={{fontWeight:700}}>{isClone?'Copying':isCopy?'Copying from':'Changing'}: {srcIt.sku} — {srcIt.name}</div>
               <div style={{color:'#64748b'}}>{safeDecos(srcIt).length} decoration(s) + sizes will {isReplace?'be kept on this line':'carry over'}</div>
             </div>
-            <div style={{display:'flex',gap:6,marginBottom:10,padding:4,background:'#f1f5f9',borderRadius:8}}>
-              <button onClick={()=>canReplace&&setCopySkuModal(m=>({...m,mode:'replace'}))} disabled={!canReplace} title={canReplace?'Update this line in place — keep decorations, sizes, qty':'Disabled — item has PO or IF. Remove them first to edit in place.'} style={{flex:1,padding:'6px 10px',borderRadius:6,border:'none',cursor:canReplace?'pointer':'not-allowed',fontSize:11,fontWeight:700,background:isReplace?'#7c3aed':'transparent',color:isReplace?'white':canReplace?'#475569':'#cbd5e1'}}>🔄 Change SKU on this line{!canReplace&&' (locked)'}</button>
-              <button onClick={()=>setCopySkuModal(m=>({...m,mode:'copy'}))} style={{flex:1,padding:'6px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,background:!isReplace?'#7c3aed':'transparent',color:!isReplace?'white':'#475569'}}>📋 Copy as new line</button>
-            </div>
+            {isCopy&&<div style={{display:'flex',gap:6,marginBottom:10,padding:4,background:'#f1f5f9',borderRadius:8}}>
+              <button onClick={()=>setCopySkuModal(m=>({...m,mode:'clone'}))} style={{flex:1,padding:'6px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,background:isClone?'#2563eb':'transparent',color:isClone?'white':'#475569'}}>📋 Copy as-is (same SKU)</button>
+              <button onClick={()=>setCopySkuModal(m=>({...m,mode:'copy'}))} style={{flex:1,padding:'6px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,background:!isClone?'#2563eb':'transparent',color:!isClone?'white':'#475569'}}>🆕 Copy to new line with new SKU</button>
+            </div>}
+            {isClone?<div style={{display:'flex',flexDirection:'column',gap:10}}>
+              <div style={{fontSize:12,color:'#64748b'}}>Adds an exact duplicate of this line (same SKU, sizes, and decorations) below it.</div>
+              <button className="btn btn-primary" onClick={()=>{copyI(copySkuModal.itemIdx);setCopySkuModal(null)}} style={{alignSelf:'flex-start'}}><Icon name="file" size={14}/> Add duplicate line</button>
+            </div>:<>
+            {isReplace&&!canReplace&&<div style={{padding:'8px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:10,fontSize:11,color:'#dc2626',fontWeight:600}}>⚠️ This line has a PO or IF — remove them first to change its SKU in place. (Use Copy item → new SKU to add it as a separate line instead.)</div>}
             <label className="form-label">Search for {isReplace?'replacement':'new'} product/SKU (catalog + S&S, SanMar, Momentec, Richardson live)</label>
             <input className="form-input" placeholder="Type SKU, name, or brand..." value={copySkuModal.search||''} onChange={e=>setCopySkuModal(m=>({...m,search:e.target.value}))} autoFocus/>
             {matches.length>0&&<div style={{maxHeight:200,overflowY:'auto',marginTop:8,border:'1px solid #e2e8f0',borderRadius:6}}>
@@ -9416,6 +9424,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {renderVendorBlock('Richardson','#dc2626','#fecaca',rsResults,rsSearching,'rs')}
             {sq.length>=2&&matches.length===0&&!anyVendor&&!anySearching&&<div style={{textAlign:'center',padding:16,color:'#94a3b8',fontSize:12}}>No products found</div>}
             {sq.length>=2&&anySearching&&!anyVendor&&matches.length===0&&<div style={{textAlign:'center',padding:16,color:'#94a3b8',fontSize:12}}>Searching vendors...</div>}
+            </>}
           </div>
         </div></div>})()}
 
