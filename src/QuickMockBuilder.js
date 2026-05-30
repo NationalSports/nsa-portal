@@ -214,21 +214,46 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
     markDirty();
   };
 
+  const isSvgUrl = u => /\.svg(\?|$)/i.test(u || '');
+
+  // Fetch an SVG's markup (through the CORS proxy, so the canvas stays exportable) so it can
+  // be rendered as vectors. Existing art on file arrives as a URL only — no inline string.
+  const fetchSvgString = url => {
+    const src = /^data:/.test(url) ? url : ('/.netlify/functions/image-proxy?url=' + encodeURIComponent(url));
+    return fetch(src).then(r => { if (!r.ok) throw new Error('proxy ' + r.status); return r.text(); })
+      .then(s => { if (!/<svg[\s>]/i.test(s)) throw new Error('not an svg'); return s; });
+  };
+
+  // Render SVG markup as a positioned, selectable vector group. Rejects on empty/unparseable
+  // SVG so callers can fall back to raster loading.
+  const renderSvgString = (svgString, layer) => fabric.loadSVGFromString(svgString).then(result => {
+    const objects = (result && result.objects || []).filter(Boolean);
+    if (!objects.length) throw new Error('empty svg');
+    const group = fabric.util.groupSVGElements(objects, result.options);
+    // Some SVGs (viewBox only, no width/height) parse with a zero/NaN width; guard the scale
+    // so the art never collapses to an invisible, blank object.
+    const w = group.width || (group.getScaledWidth ? group.getScaledWidth() : 0);
+    const scale = w > 0 ? 170 / w : 1;
+    group.set({left: 230, top: 250, scaleX: scale, scaleY: scale});
+    styleArt(group); group._layerId = layer.artFileId;
+    canvas.add(group); canvas.setActiveObject(group); canvas.renderAll();
+    markDirty();
+  });
+
   const placeLayer = layer => {
     if (!canvas) return;
     clearLayer(layer.artFileId);
     const preview = layer.preview;
     if (!preview) { placeStandIn(layer); return; }
+    // Freshly dropped SVG: we already have the markup inline.
     if (preview.svgString) {
-      fabric.loadSVGFromString(preview.svgString).then(result => {
-        if (!result || !result.objects || !result.objects.length) return;
-        const group = fabric.util.groupSVGElements(result.objects, result.options);
-        const scale = 170 / group.width;
-        group.set({left: 230, top: 250, scaleX: scale, scaleY: scale});
-        styleArt(group); group._layerId = layer.artFileId;
-        canvas.add(group); canvas.setActiveObject(group); canvas.renderAll();
-        markDirty();
-      }).catch(() => addImg(preview.url, layer));
+      renderSvgString(preview.svgString, layer).catch(() => addImg(preview.url, layer));
+      return;
+    }
+    // Existing SVG art on file (URL only): loading it via <img> renders blank when the SVG has
+    // no width/height attributes, so fetch the markup and render it as vectors instead.
+    if (isSvgUrl(preview.url) && !preview.vectorSrc) {
+      fetchSvgString(preview.url).then(s => renderSvgString(s, layer)).catch(() => addImg(preview.url, layer));
       return;
     }
     const url = preview.vectorSrc ? vecThumb(preview.vectorSrc, 1) : preview.url;
@@ -253,8 +278,12 @@ export default function QuickMockBuilder({garments, locations, initialMocks, ini
     const tryLoad = () => {
       const el = new Image(); el.crossOrigin = 'anonymous';
       el.onload = () => {
+        // A 0-width decode (e.g. an SVG with no intrinsic size) would scale to nothing — treat
+        // it as a load failure so the stand-in fallback runs instead of placing a blank object.
+        const w = el.naturalWidth || el.width;
+        if (!w) { nf && nf('Could not render that art — placed a stand-in you can position', 'error'); placeStandIn(layer); return; }
         const img = new fabric.FabricImage(el);
-        const scale = 150 / img.width;
+        const scale = 150 / w;
         img.set({left: 230, top: 250, scaleX: scale, scaleY: scale});
         styleArt(img); img._layerId = layer.artFileId;
         canvas.add(img); canvas.setActiveObject(img); canvas.renderAll();
