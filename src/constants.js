@@ -332,6 +332,8 @@ td{padding:2px 6px;border-bottom:1px solid #ddd;font-size:10px;line-height:1.3}
 `;
 
 export let CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Footwear','Jersey Tops','Jersey Bottoms','Balls'];
+// Warehouse bin / stock locations — admin-managed in Settings → Lists & Options. Empty by default.
+export let BINS=[];
 export const COLOR_CATEGORIES=['Black','White','Red','Navy','Royal','Dark Green','Cardinal','Maroon','Light Grey','Dark Grey','Vegas Gold','Athletic Gold','Orange'];
 
 export const EXTRA_SIZES=['XXS','XS','3XL','4XL','5XL','6XL','LT','XLT','2XLT','3XLT','OSFA'];

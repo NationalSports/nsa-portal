@@ -15,7 +15,7 @@ import { jsPDF } from 'jspdf';
 import { svg2pdf } from 'svg2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
@@ -1788,7 +1788,7 @@ const _dbSaveProduct = async (p) => {
     const row={id:p.id,vendor_id:p.vendor_id||null,sku:p.sku,name:p.name,brand:p.brand||null,color:p.color||null,
       color_category:p.color_category||null,category:p.category||null,retail_price:p.retail_price||0,nsa_cost:p.nsa_cost||0,
       is_active:p.is_active!==false,is_archived:p.is_archived||false,available_sizes:p.available_sizes||[],_colors:p._colors||null,
-      is_clearance:p.is_clearance||false,clearance_cost:p.clearance_cost!=null?p.clearance_cost:null,
+      is_clearance:p.is_clearance||false,clearance_cost:p.clearance_cost!=null?p.clearance_cost:null,bin:p.bin||null,
       image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
     const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
     if(error){
@@ -1798,8 +1798,8 @@ const _dbSaveProduct = async (p) => {
         _dbDuplicateSkuIds.add(p.id);_persistDuplicateSkuIds();_dbSaveFailedIds.delete(p.id);_clearSaveError(p.id);_persistFailedIds();return true;
       }
       // If image columns don't exist yet, retry without them (product data still saves)
-      if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('color_category')||error.message?.includes('is_archived')||error.message?.includes('is_clearance')||error.message?.includes('clearance_cost')){
-        const{image_front_url,image_back_url,color_category,is_archived,is_clearance,clearance_cost,...rowNoExtra}=row;
+      if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('color_category')||error.message?.includes('is_archived')||error.message?.includes('is_clearance')||error.message?.includes('clearance_cost')||error.message?.includes('bin')){
+        const{image_front_url,image_back_url,color_category,is_archived,is_clearance,clearance_cost,bin,...rowNoExtra}=row;
         const{error:e2}=await supabase.from('products').upsert(rowNoExtra,{onConflict:'id'});
         if(e2){if(e2.message?.includes('products_sku_unique')||e2.message?.includes('duplicate key value')){console.warn('[DB] Skipping duplicate SKU:',p.sku);return false}console.error('[DB] save product (no extra cols):',e2.message);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,'products: '+e2.message);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
       }else{console.error('[DB] save product:',error.message);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,'products: '+error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error');return false}
@@ -2446,7 +2446,7 @@ let SP={_v:2,bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},
 let EM={_v:3,sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[4.8,5.1,4.8,4.5],[5.4,5.1,4.8,4.8],[6,5.7,5.4,5.4],[7.2,7.5,7.2,6]],mk:1.6};
 let NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};let DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
 // Load settings overrides from localStorage. SP/EM honored only when _v matches current schema.
-try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP&&_s.SP._v===SP._v)SP=_s.SP;if(_s.EM&&_s.EM._v===EM._v)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.CATEGORIES)CATEGORIES=_s.CATEGORIES;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
+try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP&&_s.SP._v===SP._v)SP=_s.SP;if(_s.EM&&_s.EM._v===EM._v)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.CATEGORIES)CATEGORIES=_s.CATEGORIES;if(_s.BINS)BINS=_s.BINS;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
 // Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
 function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0||c<1||c>5)return 0;const v=SP.pr[bi]?.[c-1];if(v==null)return 0;if(bi===0)return s?v:rQ(v/SP.mk);return s?rT(v*SP.mk):v}
 // EM.pr stores cost; sell = rT(cost × EM.mk).
@@ -7061,6 +7061,7 @@ export default function App(){
                 <span>{ep.color}{ep.color_category&&<> (<strong>{ep.color_category}</strong>)</>}</span>
                 <span>Category: <strong>{ep.category}</strong></span>
                 {v&&<span>Vendor: <strong>{v.name}</strong></span>}
+                {ep.bin&&<span style={{padding:'1px 8px',borderRadius:4,background:'#ecfeff',color:'#0e7490',fontWeight:700}}>📍 Bin {ep.bin}</span>}
               </div>
               <div style={{display:'flex',gap:16,fontSize:13,marginBottom:8,flexWrap:'wrap'}}>
                 <span>Cost: <strong>${ep.nsa_cost?.toFixed(2)}</strong></span>
@@ -7084,6 +7085,7 @@ export default function App(){
                 <div><label className="form-label">Color</label><input className="form-input" value={ep.color} onChange={e=>setEp(x=>({...x,color:e.target.value}))}/></div>
                 <div><label className="form-label">Color Category</label><select className="form-select" value={ep.color_category||''} onChange={e=>setEp(x=>({...x,color_category:e.target.value}))}><option value="">Select...</option>{COLOR_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
                 <div><label className="form-label">Category</label><select className="form-select" value={ep.category} onChange={e=>setEp(x=>({...x,category:e.target.value}))}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
+                <div><label className="form-label">📍 Bin / Location</label><input className="form-input" list="nsa-bins" placeholder="e.g. A-12" value={ep.bin||''} onChange={e=>setEp(x=>({...x,bin:e.target.value}))}/><datalist id="nsa-bins">{BINS.map(b=><option key={b} value={b}/>)}</datalist></div>
                 <div><label className="form-label">NSA Cost</label><input className="form-input" type="number" step="0.01" value={ep.nsa_cost} onChange={e=>setEp(x=>({...x,nsa_cost:parseFloat(e.target.value)||0}))}/></div>
                 <div><label className="form-label">Retail Price</label><input className="form-input" type="number" step="0.01" value={ep.retail_price} onChange={e=>setEp(x=>({...x,retail_price:parseFloat(e.target.value)||0}))}/></div>
                 {(()=>{const curAvail=ep.available_sizes||[];const isFw=(ep.category||'').toLowerCase()==='footwear';const curMode=isFw?'footwear':(curAvail.join(',')==='OSFA'?'osfa':'apparel');
@@ -15023,6 +15025,7 @@ export default function App(){
                         <span style={{fontWeight:700,fontSize:14}}>{pi.name}</span>
                         {pi.color&&<span className="badge badge-gray">{pi.color}</span>}
                         {pi.brand&&<span style={{fontSize:11,color:'#64748b'}}>{pi.brand}</span>}
+                        {pi.p?.bin&&<span style={{fontSize:12,fontWeight:800,padding:'2px 10px',borderRadius:6,background:'#cffafe',color:'#0e7490'}}>📍 Bin {pi.p.bin}</span>}
                       </div>
                       <div style={{marginTop:4,fontSize:12,color:'#64748b'}}>
                         Need to pull: <strong style={{color:'#d97706'}}>{pi.needsPull} units</strong>
@@ -15785,7 +15788,7 @@ export default function App(){
         <div className="card"><div className="card-body" style={{padding:0}}>
           <table style={{fontSize:11}}><thead><tr>
             <th style={{width:20}}></th><th>SO#</th><th>IF#</th><th>Customer</th><th>SKU</th><th>Item</th>
-            <th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Dest</th><th>Rep</th><th style={{textAlign:'center'}}>Days Open</th><th style={{width:60}}></th>
+            <th style={{textAlign:'center'}}>Bin</th><th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Dest</th><th>Rep</th><th style={{textAlign:'center'}}>Days Open</th><th style={{width:60}}></th>
           </tr></thead><tbody>
           {fPull.map((t,ti)=>{const subs=t._subTasks||[t];const extraSkus=subs.length-1;
             return<tr key={ti} style={{cursor:'pointer',background:t.urgent?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
@@ -15796,6 +15799,7 @@ export default function App(){
             <td style={{fontWeight:600,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cName}</td>
             <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#475569'}}>{t.sku}{t._extraCount>0?<span style={{marginLeft:4,padding:'1px 4px',background:'#dbeafe',color:'#1e40af',borderRadius:3,fontSize:9}}>+{t._extraCount}</span>:null}</td>
             <td style={{fontSize:10,color:'#64748b',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t._extraCount>0?(t.name+' & '+t._extraCount+' more'):(t.name+(t.color?' · '+t.color:''))}</td>
+            <td style={{textAlign:'center'}}>{(()=>{if(subs.length>1)return<span style={{fontSize:9,color:'#94a3b8'}}>multi</span>;const bin=(prod.find(pp=>pp.sku===subs[0].sku)||{}).bin;return bin?<span style={{fontSize:10,fontWeight:800,padding:'1px 6px',borderRadius:4,background:'#cffafe',color:'#0e7490',whiteSpace:'nowrap'}}>{bin}</span>:<span style={{color:'#cbd5e1'}}>—</span>})()}</td>
             <td style={{textAlign:'center',fontWeight:800,color:'#d97706'}}>{t.needsPull}</td>
             <td style={{textAlign:'center'}}>{(()=>{if(subs.length>1)return<span style={{fontSize:9,color:'#94a3b8'}}>multi</span>;const p=prod.find(pp=>pp.sku===subs[0].sku);if(!p||!p._inv)return<span style={{color:'#cbd5e1'}}>—</span>;
               const total=Object.values(p._inv).reduce((a,v)=>a+(typeof v==='number'?v:0),0);
@@ -24919,7 +24923,7 @@ export default function App(){
   const savSettings=(key,val)=>{
     try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;_lsSet('nsa_settings',JSON.stringify(s));
       if(key==='SP')SP=val;if(key==='EM')EM=val;if(key==='NP')NP=val;if(key==='DTF')DTF=val;
-      if(key==='CATEGORIES')CATEGORIES=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
+      if(key==='CATEGORIES')CATEGORIES=val;if(key==='BINS')BINS=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
     const tabs=[['company','Company Info'],['pricing','Decoration Pricing'],['deco_vendors','Deco Vendors'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['payments','Payments'],['taxcloud','TaxCloud']];
@@ -25208,6 +25212,7 @@ export default function App(){
           {key:'CATEGORIES',label:'Product Categories',val:CATEGORIES,save:v=>{CATEGORIES.length=0;CATEGORIES.push(...v);savSettings('CATEGORIES',v)}},
           {key:'POSITIONS',label:'Decoration Positions',val:POSITIONS,save:v=>{POSITIONS.length=0;POSITIONS.push(...v);savSettings('POSITIONS',v)}},
           {key:'CONTACT_ROLES',label:'Contact Roles',val:CONTACT_ROLES,save:v=>{CONTACT_ROLES.length=0;CONTACT_ROLES.push(...v);savSettings('CONTACT_ROLES',v)}},
+          {key:'BINS',label:'Warehouse Bins / Locations',val:BINS,save:v=>{BINS.length=0;BINS.push(...v);savSettings('BINS',v)}},
         ].map(({key,label,val,save})=><div key={key} className="card" style={{marginBottom:16}}><div className="card-header"><h3>{label}</h3></div><div className="card-body">
           <div style={{display:'flex',flexDirection:'column',gap:4}}>
             {val.map((item,i)=><div key={i} style={{display:'flex',gap:4,alignItems:'center'}}>
