@@ -9245,7 +9245,7 @@ export default function App(){
         // Flat items: every line item on this PO
         const poItems=[];
         if(isBatch){
-          batchMatch.source_pos.forEach(sp=>{sp.items.forEach(it=>{const unit=typeof it.unit_cost==='number'?it.unit_cost:0;poItems.push({sku:it.sku,name:it.name,color:it.color||'',sizes:it.sizes,qty:it.qty,soId:sp.so_id,customer:sp.customer,soMemo:sp.so_memo,srcPoId:sp.po_id||'',unitCost:unit,lineCost:unit*it.qty})})});
+          batchMatch.source_pos.forEach(sp=>{sp.items.forEach(it=>{const unit=typeof it.unit_cost==='number'?it.unit_cost:0;poItems.push({sku:it.sku,name:it.name,color:it.color||'',sizes:it.sizes,qty:it.qty,soId:sp.so_id,customer:sp.customer,soMemo:sp.so_memo,srcPoId:sp.po_id||'',itemIdx:it.item_idx,unitCost:unit,lineCost:unit*it.qty})})});
         } else {
           matchedPO.lines.forEach(pl=>{
             const szs={};Object.entries(pl.poLine).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k))szs[k]=v});
@@ -9254,6 +9254,14 @@ export default function App(){
           });
         }
         const totalUnits=poItems.reduce((a,it)=>a+it.qty,0);
+        // Bulk-set every receive input: full=true fills to ordered qty, false clears to 0.
+        const _setAll=(full)=>{poItems.forEach((it,i)=>{Object.entries(it.sizes||{}).filter(([,v])=>v>0).forEach(([sz,v])=>{const el=document.getElementById('rcv-'+i+'-'+sz);if(el)el.value=full?v:0})})};
+        // Single source-PO label print (one 4×6) — used by the per-row print button.
+        const _printOnePO=(srcPoId)=>{
+          const sp=isBatch?(batchMatch.source_pos||[]).find(s=>(s.po_id||'')===srcPoId):null;
+          if(sp){printBatchSeparateLabels([sp],sp.po_id||poId,'RECEIVING — '+new Date().toLocaleDateString());nf('🖨️ Label printed for '+(sp.po_id||poId))}
+          else{const labelItems=poItems.filter(it=>(it.srcPoId||'')===srcPoId).map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.sizes}));printLabel(labelItems.length?labelItems:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.sizes})),srcPoId||poId,'RECEIVING — '+new Date().toLocaleDateString());nf('🖨️ Label printed for '+(srcPoId||poId))}
+        };
         const submittedInfo=batchMatch;
         const statusBadge=submittedInfo?.status==='received'?'badge-green':'badge-amber';
 
@@ -9281,6 +9289,13 @@ export default function App(){
 
           {/* Flat item list — this is what warehouse sees */}
           <div className="card-body" style={{padding:0}}>
+            {submittedInfo?.status!=='received'&&<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 16px',borderBottom:'1px solid #f1f5f9',background:'#f8fafc',flexWrap:'wrap',gap:8}}>
+              <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>Enter received quantities (start at 0), or use Receive All</span>
+              <div style={{display:'flex',gap:6}}>
+                <button className="btn btn-sm" style={{fontSize:11,color:'#166534',borderColor:'#86efac',fontWeight:700}} onClick={()=>_setAll(true)}>Receive All</button>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>_setAll(false)}>Clear</button>
+              </div>
+            </div>}
             <table><thead><tr>
               <th style={{width:30}}>#</th>
               <th>Source PO#</th>
@@ -9288,6 +9303,7 @@ export default function App(){
               <th>Sizes Ordered</th><th>Total</th>
               <th>Cost</th>
               <th>Receive</th>
+              <th style={{textAlign:'center'}}>Label</th>
             </tr></thead><tbody>
             {poItems.map((it,i)=>{
               const szEntries=Object.entries(it.sizes).filter(([,v])=>v>0);
@@ -9300,7 +9316,8 @@ export default function App(){
                 <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><span key={sz} style={{padding:'2px 6px',background:'#f1f5f9',borderRadius:4,fontSize:10,fontWeight:700}}>{sz}: {v}</span>)}</div></td>
                 <td style={{fontWeight:800,fontSize:14}}>{it.qty}</td>
                 <td style={{fontSize:12,color:'#166534',fontWeight:700,whiteSpace:'nowrap'}}>{it.lineCost>0?('$'+it.lineCost.toFixed(2)):'—'}{it.unitCost>0&&<div style={{fontSize:10,color:'#94a3b8',fontWeight:500}}>${it.unitCost.toFixed(2)}/ea</div>}</td>
-                <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:8,fontWeight:700,color:'#64748b'}}>{sz}</div><input id={'rcv-'+i+'-'+sz} type="number" className="form-input" style={{width:40,padding:'3px 4px',textAlign:'center',fontSize:12,fontWeight:700}} defaultValue={v} min={0}/></div>)}</div></td>
+                <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:8,fontWeight:700,color:'#64748b'}}>{sz}</div><input id={'rcv-'+i+'-'+sz} type="number" className="form-input" style={{width:40,padding:'3px 4px',textAlign:'center',fontSize:12,fontWeight:700}} defaultValue={0} min={0} max={v} title={'Ordered '+v}/></div>)}</div></td>
+                <td style={{textAlign:'center'}}><button className="btn btn-sm btn-secondary" style={{padding:'3px 8px',fontSize:12}} title={'Print 4×6 box label for '+(it.srcPoId||poId)} onClick={()=>_printOnePO(it.srcPoId||'')}>🖨️</button></td>
               </tr>})}
             </tbody></table>
             {/* SO reference — small, for back-office context */}
@@ -9337,8 +9354,13 @@ export default function App(){
               {submittedInfo?.status==='received'?
                 <span className="badge badge-green" style={{padding:'6px 12px',fontSize:12}}>✅ Received {submittedInfo.received_at||''}</span>:
                 <button className="btn btn-primary" style={{background:'#22c55e',borderColor:'#22c55e',padding:'8px 20px'}} onClick={()=>{
+                  // Tally what's actually being received from the inputs so the batch is marked
+                  // 'received' only when everything came in, otherwise 'partial'.
+                  let _grandRcvd=0;poItems.forEach((pi,ri)=>{Object.entries(pi.sizes||{}).filter(([,v])=>v>0).forEach(([sz])=>{const el=document.getElementById('rcv-'+ri+'-'+sz);_grandRcvd+=el?Math.max(0,parseInt(el.value)||0):0})});
+                  if(_grandRcvd===0){nf('Enter received quantities first (or click Receive All)','warn');return}
+                  const _batchStatus=_grandRcvd>=totalUnits?'received':'partial';
                   // Update submitted batch status
-                  if(batchMatch)setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:'received',received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
+                  if(batchMatch)setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:_batchStatus,received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
                   // Update PO lines on SOs to received — match by po_id OR batch_po_number so
                   // the NSA-#### scan also finds the source POs (PO-####-TAG) grouped under it.
                   const lcPoId=poId.toLowerCase();
@@ -9354,14 +9376,17 @@ export default function App(){
                       const it=updItems[ml.itemIdx];if(!it)return;
                       const pls=[...(it.po_lines||[])];
                       if(pls[ml.poLineIdx]){
-                        const rcv={};
-                        Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k)){
-                          // Receive inputs are rendered keyed by poItems index, not the global allPOLines index.
-                          // Map this line back to its rendered row via _pl (non-batch); batch rows have no _pl, so
-                          // the lookup misses and we fall back to the ordered qty v — unchanged from prior behavior.
-                          const _ri=poItems.findIndex(pi=>pi._pl===ml);
-                          const el=_ri>=0?document.getElementById('rcv-'+_ri+'-'+k):null;rcv[k]=el?parseInt(el.value)||0:v}});
-                        pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:'received',received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
+                        const _META=new Set(['po_id','status','unit_cost','shipping','batch_queue_id','batch_po_number']);
+                        // Map this line back to its rendered receive row: non-batch rows carry _pl;
+                        // batch rows match on SO + item index (+ source PO# when present).
+                        const _ri=poItems.findIndex(pi=>pi._pl?pi._pl===ml:(pi.soId===ml.soId&&pi.itemIdx===ml.itemIdx&&(!ml.poId||!pi.srcPoId||pi.srcPoId===ml.poId)));
+                        const rcv={};let _ord=0,_rcvd=0;
+                        Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!_META.has(k)){
+                          _ord+=v;
+                          const el=_ri>=0?document.getElementById('rcv-'+_ri+'-'+k):null;
+                          const rv=el?Math.max(0,parseInt(el.value)||0):0;rcv[k]=rv;_rcvd+=rv}});
+                        const _newStatus=_rcvd>=_ord&&_ord>0?'received':_rcvd>0?'partial':'waiting';
+                        pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:_newStatus,received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
                         updItems[ml.itemIdx]={...it,po_lines:pls};
                       }
                     });
@@ -9383,7 +9408,7 @@ export default function App(){
                     });
                     savSO({...so,items:updItems,jobs:updatedJobs,updated_at:new Date().toLocaleString()});
                   });
-                  nf('✅ '+poId+' received — '+totalUnits+' units. SO items updated.');
+                  nf('✅ '+poId+' '+(_batchStatus==='partial'?'partially received':'received')+' — '+_grandRcvd+'/'+totalUnits+' units. SO items updated.');
                   // Print label(s) after receiving — separate per source PO for batches
                   if(isBatch&&batchMatch.source_pos&&batchMatch.source_pos.length>1){
                     printBatchSeparateLabels(batchMatch.source_pos,poId,'RECEIVED — '+new Date().toLocaleDateString());
