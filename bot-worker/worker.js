@@ -196,7 +196,7 @@ async function claim(task) {
 async function processOne() {
   const { data: tasks, error } = await supabase
     .from('assigned_todos')
-    .select('id,title,description,bot_payload,bot_status,status')
+    .select('id,title,description,so_id,bot_payload,bot_status,status')
     .eq('assigned_to', BOT_MEMBER_ID)
     .eq('status', 'open')
     .eq('bot_status', 'queued')
@@ -212,7 +212,17 @@ async function processOne() {
 
   let result;
   try {
-    result = await runClaude(buildPrompt(task));
+    // Prefer the structured payload (batch button); otherwise pull the real
+    // PO line items from the DB; otherwise fall back to the task notes.
+    let order = (task.bot_payload && Array.isArray(task.bot_payload.lines) && task.bot_payload.lines.length)
+      ? task.bot_payload
+      : null;
+    if (!order) {
+      try { order = await resolveOrderFromDb(task); } catch (e) { log('resolveOrder error:', e?.message || e); }
+    }
+    if (order) log(`order resolved: ${order.lines.length} line(s), PO ${order.po_number || '?'}, vendor ${order.vendor_name || order.target}`);
+    else log('no structured order — running from task notes');
+    result = await runClaude(buildPrompt(task, order || {}));
   } catch (e) {
     result = { status: 'failed', summary: 'Worker exception: ' + (e?.message || e) };
   }
