@@ -17,6 +17,11 @@ Task notes (use these when the line list above is empty — the product name,
 color, quantity, and PO number are usually here; parse them yourself):
 {{TASK_NOTES}}
 
+# Use the exact URL given
+The portal URL above is correct. If the page is slow or a navigation times out,
+WAIT and retry the SAME url (it can take 30–60s) — do NOT guess or try other
+adidas domains. Only that URL is valid.
+
 # Work efficiently
 Move quickly and decisively — this is a routine data-entry task, not research.
 Go straight to the catalog search, navigate directly, and avoid re-reading or
