@@ -150,18 +150,23 @@ export default function OrderTrack() {
           {items.map((i) => {
             const idx = stageIndex(i.line_status);
             const missing = Number(i.missing_qty) > 0;
+            const qty = i.qty || 1;
+            const pill = (text) => <span key={text} style={{ display: 'inline-block', fontSize: 11.5, fontWeight: 600, color: '#475569', background: '#f1f5f9', borderRadius: 6, padding: '2px 8px' }}>{text}</span>;
+            const attrs = [i.size && `Size ${i.size}`, i.color, i.player_number && `#${i.player_number}`, i.player_name].filter(Boolean);
             return (
-              <div key={i.id} style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '12px 0', borderBottom: '1px solid #f1f5f9' }}>
-                {i.image_url
-                  ? <img src={i.image_url} alt="" width={52} height={52} style={{ width: 52, height: 52, objectFit: 'cover', borderRadius: 9, background: '#f4f6f9', flex: '0 0 52px' }} />
-                  : <div style={{ width: 52, height: 52, borderRadius: 9, background: '#f1f5f9', flex: '0 0 52px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>👕</div>}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 700, fontSize: 14.5 }}>{i.name || i.sku || 'Item'}</div>
-                  <div style={{ fontSize: 12.5, color: '#64748b' }}>
-                    {[i.color, i.size && `Size ${i.size}`, `Qty ${i.qty || 1}`, i.player_number && `#${i.player_number}`, i.player_name].filter(Boolean).join(' · ')}
-                  </div>
+              <div key={i.id} style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '14px 0', borderBottom: '1px solid #f1f5f9' }}>
+                {/* Image with a quantity badge, like an order line */}
+                <div style={{ position: 'relative', flex: '0 0 56px' }}>
+                  {i.image_url
+                    ? <img src={i.image_url} alt="" width={56} height={56} style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 10, background: '#f4f6f9' }} />
+                    : <div style={{ width: 56, height: 56, borderRadius: 10, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>👕</div>}
+                  <div style={{ position: 'absolute', top: -7, right: -7, minWidth: 22, height: 22, padding: '0 6px', borderRadius: 11, background: theme.primary, color: '#fff', fontSize: 12, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 6px rgba(11,18,32,.25)' }}>×{qty}</div>
                 </div>
-                <div style={{ textAlign: 'right' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14.5, marginBottom: 5 }}>{i.name || i.sku || 'Item'}</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>{attrs.map(pill)}</div>
+                </div>
+                <div style={{ textAlign: 'right', flex: '0 0 auto' }}>
                   <StatusChip stage={idx} accent={theme.accent} />
                   {missing && <div style={{ fontSize: 11, color: '#b45309', fontWeight: 700, marginTop: 4 }}>{i.missing_qty} delayed</div>}
                 </div>
