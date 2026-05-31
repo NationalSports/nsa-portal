@@ -514,8 +514,12 @@ export default function OmgOrderPortal({ saleCode, storeName }) {
                           <td style={td}><StatusPill s={st} /></td>
                           <td style={td}>{money(o.total)}</td>
                           <td style={td} onClick={(e) => e.stopPropagation()}>
-                            <button onClick={() => { navigator.clipboard && navigator.clipboard.writeText(trackUrl(o)); flash('Link copied.'); }} style={linkBtn} title={trackUrl(o)}>Copy</button>
-                            <a href={trackUrl(o)} target="_blank" rel="noopener noreferrer" style={{ ...linkBtn, textDecoration: 'none' }}>Open</a>
+                            {o.status_token ? (
+                              <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                                <button onClick={() => { navigator.clipboard && navigator.clipboard.writeText(trackUrl(o)); flash('Tracking link copied.'); }} style={{ ...linkBtn, color: '#2563eb', fontWeight: 700 }} title={trackUrl(o)}>🔗 Copy</button>
+                                <a href={trackUrl(o)} target="_blank" rel="noopener noreferrer" style={{ ...linkBtn, color: '#2563eb', fontWeight: 700, textDecoration: 'none' }} title={trackUrl(o)}>Open ↗</a>
+                              </span>
+                            ) : <span style={{ fontSize: 11, color: '#cbd5e1' }}>—</span>}
                           </td>
                         </tr>
                         {isOpen && (
