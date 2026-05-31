@@ -4479,6 +4479,11 @@ export default function App(){
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);const[omgBulkSel,setOmgBulkSel]=useState(()=>new Set());const[omgBulkArt,setOmgBulkArt]=useState('');
+  // Live completion status reported up from the Parent Order Portal for the
+  // selected store: {saleCode, orders, withEmail, withAddress, notified}. Gates
+  // the Create Sales Order button at the bottom of the store detail.
+  const[omgPortalStatus,setOmgPortalStatus]=useState(null);
+  React.useEffect(()=>{setOmgPortalStatus(null)},[omgSel?.id]);
   React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
   const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);
 
@@ -14046,82 +14051,24 @@ export default function App(){
       const custArtById=_artLib.byId;
       const setStoreCustomer=(cid)=>{const upd={...s,customer_id:cid||null};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
       const _applyStoreProds=newProds=>{const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
-      const _decoFields=decos=>({decorations:decos,deco_type:decos.length>0?decos.map(d=>d.type).join('|'):'',art_group:decos.map(d=>d.art_group).join('|')});
-      const applyBulkArt=()=>{
-        if(!omgBulkArt||omgBulkSel.size===0)return;
-        let deco=null;
-        if(omgBulkArt.startsWith('lib:')){const a=custArtById[omgBulkArt.slice(4)];if(!a)return;deco={type:a.deco_type||'screen_print',art_group:a.name||'Logo',_cust_art_id:a.id};}
-        else if(omgBulkArt.startsWith('new:')){const type=omgBulkArt.slice(4);const pfx=type==='embroidery'?'EMB':type==='heat_press'?'DTF':'SP';const existing=[...new Set((s.products||[]).flatMap(pr=>(pr.decorations||[]).filter(d=>d.type===type).map(d=>d.art_group)).filter(Boolean))];const nums=existing.filter(g=>g.startsWith(pfx+'-')).map(g=>parseInt(g.split('-')[1])||0);deco={type,art_group:`${pfx}-${nums.length?Math.max(...nums)+1:1}`};}
-        if(!deco)return;
-        const newProds=(s.products||[]).map((pr,j)=>{
-          if(!omgBulkSel.has(j))return pr;
-          const decos=pr.decorations||[];
-          const dup=deco._cust_art_id?decos.some(d=>d._cust_art_id===deco._cust_art_id):decos.some(d=>d.art_group===deco.art_group&&d.type===deco.type);
-          return{...pr,no_deco:false,..._decoFields(dup?decos:[...decos,{...deco}])};
-        });
-        _applyStoreProds(newProds);
-        nf(`Applied “${deco.art_group}” to ${omgBulkSel.size} item${omgBulkSel.size>1?'s':''}`);
-        setOmgBulkSel(new Set());setOmgBulkArt('');
-      };
-      const bulkNoDeco=()=>{
-        if(omgBulkSel.size===0)return;
-        _applyStoreProds((s.products||[]).map((pr,j)=>omgBulkSel.has(j)?{...pr,no_deco:true,decorations:[],deco_type:'no_deco',art_group:''}:pr));
-        nf(`Marked ${omgBulkSel.size} item${omgBulkSel.size>1?'s':''} as No Deco`);
-        setOmgBulkSel(new Set());
-      };
-      const _toggleRow=j=>setOmgBulkSel(prev=>{const n=new Set(prev);if(n.has(j))n.delete(j);else n.add(j);return n});
-      const _custOpts=[...cust].filter(cc=>cc&&cc.id).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
-      const totalCost=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
-      const totalRetail=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
-      const storeFees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);
-      const margin=totalRetail-totalCost-storeFees;const pct=totalRetail>0?Math.round(margin/totalRetail*100):0;
-
-      return(<>
-        <button className="btn btn-sm btn-secondary" onClick={()=>setOmgSel(null)} style={{marginBottom:12}}>← Back to All Stores</button>
-
-        <div className="card" style={{marginBottom:12}}><div style={{padding:16}}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-            <div>
-              <div style={{fontSize:20,fontWeight:800}}>{s.store_name}</div>
-              <div style={{fontSize:13,color:'#64748b',display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
-                {s._omg_sale_code&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{s._omg_sale_code}</span>}
-                {(()=>{
-                  if(omgCustEdit===null)return <button onClick={()=>setOmgCustEdit('')}
-                    title="Link / change the customer for this store — enables the art library and sets the customer on any sales order created from this store"
-                    style={{fontSize:12,fontWeight:700,padding:'2px 8px',borderRadius:4,border:`1px solid ${c?'#cbd5e1':'#fca5a5'}`,background:c?'#fff':'#fef2f2',color:c?'#0f172a':'#dc2626',cursor:'pointer'}}>
-                    {c?`${c.name}${c.alpha_tag?' ('+c.alpha_tag+')':''}`:'⚠ Link a customer…'} ▾
-                  </button>;
-                  const toks=omgCustEdit.toLowerCase().split(/\s+/).filter(Boolean);
-                  const matches=_custOpts.filter(cc=>{const hay=((cc.name||'')+' '+(cc.alpha_tag||'')).toLowerCase();return toks.every(t=>hay.includes(t))}).slice(0,12);
-                  return <span style={{position:'relative',display:'inline-block'}}>
-                    <input autoFocus value={omgCustEdit} onChange={e=>setOmgCustEdit(e.target.value)} placeholder="Search customers…"
-                      onKeyDown={e=>{if(e.key==='Escape')setOmgCustEdit(null)}} onBlur={()=>setTimeout(()=>setOmgCustEdit(null),150)}
-                      style={{fontSize:12,padding:'3px 8px',borderRadius:4,border:'1px solid #2563eb',width:220,outline:'none'}}/>
-                    {matches.length>0&&<div style={{position:'absolute',top:'100%',left:0,zIndex:50,background:'#fff',border:'1px solid #cbd5e1',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.12)',maxHeight:260,overflowY:'auto',minWidth:240,marginTop:2}}>
-                      {matches.map(cc=><div key={cc.id} onMouseDown={e=>{e.preventDefault();setStoreCustomer(cc.id);setOmgCustEdit(null)}}
-                        onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='#fff'}
-                        style={{padding:'6px 10px',fontSize:12,cursor:'pointer',borderBottom:'1px solid #f1f5f9',whiteSpace:'nowrap',display:'flex',justifyContent:'space-between',gap:12}}>
-                        <span style={{fontWeight:600,color:'#0f172a'}}>{cc.name}</span>
-                        <span style={{color:'#94a3b8'}}>{cc.alpha_tag||''}{!cc.parent_id?' · parent':''}</span>
-                      </div>)}
-                    </div>}
-                    {c&&<button onMouseDown={e=>{e.preventDefault();setStoreCustomer(null);setOmgCustEdit(null)}} title="Unlink customer" style={{marginLeft:4,fontSize:11,color:'#94a3b8',border:'none',background:'none',cursor:'pointer'}}>unlink</button>}
-                  </span>;
-                })()}
-                · Rep: {rep?.name} · {s.id}
-              </div>
-              {s._omg_id&&<div style={{fontSize:12,marginTop:2,display:'flex',gap:10}}>
-                <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" style={{color:'#2563eb',textDecoration:'none',fontWeight:600}}>🔗 OMG Admin</a>
-                {s.subdomain&&<a href={`https://${s.subdomain}.ordermygear.com`} target="_blank" rel="noopener noreferrer" style={{color:'#64748b',textDecoration:'none'}}>🌐 {s.subdomain}.ordermygear.com</a>}
-              </div>}
-              <div style={{marginTop:4}}><span style={{padding:'3px 10px',borderRadius:8,fontSize:11,fontWeight:700,
-                background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':s.status==='draft'?'#f1f5f9':'#fef3c7',
-                color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':s.status==='draft'?'#64748b':'#92400e'}}>{s.status.toUpperCase()}</span>
-                {s.open_date&&<span style={{marginLeft:8,fontSize:11,color:'#64748b'}}>📅 {s.open_date} → {s.close_date}</span>}
-                <button onClick={()=>{const el=document.getElementById('omg-parent-portal');if(el)el.scrollIntoView({behavior:'smooth',block:'start'})}} title="Jump to the Parent Order Portal — player report, packing slip, parent emails & tracking" style={{marginLeft:8,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer'}}>📦 Parent Order Portal ↓</button>
-              </div>
-            </div>
-            {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
+      // ── Pre-flight gates for creating the Sales Order ─────────────────
+      // Everything below the page must be complete before the SO can be pulled.
+      const _alreadyPulled=sos.some(so=>so.omg_store_id===s.id);
+      const _needArt=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);
+      const _hasDollar=(s._omg_grand_total||0)>0;                       // Dollar Report entered (top)
+      const _ps=omgPortalStatus&&omgPortalStatus.saleCode===s._omg_sale_code?omgPortalStatus:null;
+      const _portalImported=!!_ps&&_ps.orders>0;                        // player report / packing slip imported
+      const _portalEmailed=!!_ps&&_ps.notified>0&&_ps.notified>=_ps.withEmail&&_ps.withEmail>0; // all parents emailed
+      const soGate=(()=>{
+        const reasons=[];
+        if(!s.customer_id)reasons.push('Link a customer (top of page)');
+        if(!_hasDollar)reasons.push('Enter the Dollar Report financials (top)');
+        if(_needArt.length)reasons.push(`${_needArt.length} item${_needArt.length>1?'s':''} need deco or “No Deco”`);
+        if(!_portalImported)reasons.push('Import parent orders in the Parent Order Portal');
+        if(!_portalEmailed)reasons.push('Send the parent “processing” emails');
+        return{ok:reasons.length===0,reasons};
+      })();
+      const createOmgSO=()=>{
               if(sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
               if(!s.customer_id){nf('Link this store to a customer first (top of the page).','error');return}
               const generatedId=nextSOId(sos);
@@ -14214,8 +14161,83 @@ export default function App(){
                 setCust(prev=>prev.map(cc=>{if(!isFamily(cc))return cc;const has=(cc.promo_periods||[]).some(p=>p.id===savedPeriod.id);const periods=has?(cc.promo_periods||[]).map(p=>p.id===savedPeriod.id?savedPeriod:p):[...(cc.promo_periods||[]),savedPeriod];return{...cc,promo_periods:periods}}));
               }
               nf(`Created SO with ${soItems.length} items from ${s.store_name}`+(_fund>0?` · $${_fund.toFixed(2)} fundraising added as promo credit`:''));
-            }}>📋 Create Sales Order ({(s.products||[]).length} items)</button>}
-            {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&(()=>{const na=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);return na.length>0?<div style={{marginTop:6,padding:'6px 10px',background:'#fef3c7',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⚠️ {na.length} item{na.length>1?'s':''} need an art group or “No Deco” before creating the SO</div>:null})()}
+      };
+      const _decoFields=decos=>({decorations:decos,deco_type:decos.length>0?decos.map(d=>d.type).join('|'):'',art_group:decos.map(d=>d.art_group).join('|')});
+      const applyBulkArt=()=>{
+        if(!omgBulkArt||omgBulkSel.size===0)return;
+        let deco=null;
+        if(omgBulkArt.startsWith('lib:')){const a=custArtById[omgBulkArt.slice(4)];if(!a)return;deco={type:a.deco_type||'screen_print',art_group:a.name||'Logo',_cust_art_id:a.id};}
+        else if(omgBulkArt.startsWith('new:')){const type=omgBulkArt.slice(4);const pfx=type==='embroidery'?'EMB':type==='heat_press'?'DTF':'SP';const existing=[...new Set((s.products||[]).flatMap(pr=>(pr.decorations||[]).filter(d=>d.type===type).map(d=>d.art_group)).filter(Boolean))];const nums=existing.filter(g=>g.startsWith(pfx+'-')).map(g=>parseInt(g.split('-')[1])||0);deco={type,art_group:`${pfx}-${nums.length?Math.max(...nums)+1:1}`};}
+        if(!deco)return;
+        const newProds=(s.products||[]).map((pr,j)=>{
+          if(!omgBulkSel.has(j))return pr;
+          const decos=pr.decorations||[];
+          const dup=deco._cust_art_id?decos.some(d=>d._cust_art_id===deco._cust_art_id):decos.some(d=>d.art_group===deco.art_group&&d.type===deco.type);
+          return{...pr,no_deco:false,..._decoFields(dup?decos:[...decos,{...deco}])};
+        });
+        _applyStoreProds(newProds);
+        nf(`Applied “${deco.art_group}” to ${omgBulkSel.size} item${omgBulkSel.size>1?'s':''}`);
+        setOmgBulkSel(new Set());setOmgBulkArt('');
+      };
+      const bulkNoDeco=()=>{
+        if(omgBulkSel.size===0)return;
+        _applyStoreProds((s.products||[]).map((pr,j)=>omgBulkSel.has(j)?{...pr,no_deco:true,decorations:[],deco_type:'no_deco',art_group:''}:pr));
+        nf(`Marked ${omgBulkSel.size} item${omgBulkSel.size>1?'s':''} as No Deco`);
+        setOmgBulkSel(new Set());
+      };
+      const _toggleRow=j=>setOmgBulkSel(prev=>{const n=new Set(prev);if(n.has(j))n.delete(j);else n.add(j);return n});
+      const _custOpts=[...cust].filter(cc=>cc&&cc.id).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+      const totalCost=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
+      const totalRetail=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
+      const storeFees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);
+      const margin=totalRetail-totalCost-storeFees;const pct=totalRetail>0?Math.round(margin/totalRetail*100):0;
+
+      return(<>
+        <button className="btn btn-sm btn-secondary" onClick={()=>setOmgSel(null)} style={{marginBottom:12}}>← Back to All Stores</button>
+
+        <div className="card" style={{marginBottom:12}}><div style={{padding:16}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+            <div>
+              <div style={{fontSize:20,fontWeight:800}}>{s.store_name}</div>
+              <div style={{fontSize:13,color:'#64748b',display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                {s._omg_sale_code&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{s._omg_sale_code}</span>}
+                {(()=>{
+                  if(omgCustEdit===null)return <button onClick={()=>setOmgCustEdit('')}
+                    title="Link / change the customer for this store — enables the art library and sets the customer on any sales order created from this store"
+                    style={{fontSize:12,fontWeight:700,padding:'2px 8px',borderRadius:4,border:`1px solid ${c?'#cbd5e1':'#fca5a5'}`,background:c?'#fff':'#fef2f2',color:c?'#0f172a':'#dc2626',cursor:'pointer'}}>
+                    {c?`${c.name}${c.alpha_tag?' ('+c.alpha_tag+')':''}`:'⚠ Link a customer…'} ▾
+                  </button>;
+                  const toks=omgCustEdit.toLowerCase().split(/\s+/).filter(Boolean);
+                  const matches=_custOpts.filter(cc=>{const hay=((cc.name||'')+' '+(cc.alpha_tag||'')).toLowerCase();return toks.every(t=>hay.includes(t))}).slice(0,12);
+                  return <span style={{position:'relative',display:'inline-block'}}>
+                    <input autoFocus value={omgCustEdit} onChange={e=>setOmgCustEdit(e.target.value)} placeholder="Search customers…"
+                      onKeyDown={e=>{if(e.key==='Escape')setOmgCustEdit(null)}} onBlur={()=>setTimeout(()=>setOmgCustEdit(null),150)}
+                      style={{fontSize:12,padding:'3px 8px',borderRadius:4,border:'1px solid #2563eb',width:220,outline:'none'}}/>
+                    {matches.length>0&&<div style={{position:'absolute',top:'100%',left:0,zIndex:50,background:'#fff',border:'1px solid #cbd5e1',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.12)',maxHeight:260,overflowY:'auto',minWidth:240,marginTop:2}}>
+                      {matches.map(cc=><div key={cc.id} onMouseDown={e=>{e.preventDefault();setStoreCustomer(cc.id);setOmgCustEdit(null)}}
+                        onMouseEnter={e=>e.currentTarget.style.background='#eff6ff'} onMouseLeave={e=>e.currentTarget.style.background='#fff'}
+                        style={{padding:'6px 10px',fontSize:12,cursor:'pointer',borderBottom:'1px solid #f1f5f9',whiteSpace:'nowrap',display:'flex',justifyContent:'space-between',gap:12}}>
+                        <span style={{fontWeight:600,color:'#0f172a'}}>{cc.name}</span>
+                        <span style={{color:'#94a3b8'}}>{cc.alpha_tag||''}{!cc.parent_id?' · parent':''}</span>
+                      </div>)}
+                    </div>}
+                    {c&&<button onMouseDown={e=>{e.preventDefault();setStoreCustomer(null);setOmgCustEdit(null)}} title="Unlink customer" style={{marginLeft:4,fontSize:11,color:'#94a3b8',border:'none',background:'none',cursor:'pointer'}}>unlink</button>}
+                  </span>;
+                })()}
+                · Rep: {rep?.name} · {s.id}
+              </div>
+              {s._omg_id&&<div style={{fontSize:12,marginTop:2,display:'flex',gap:10}}>
+                <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" style={{color:'#2563eb',textDecoration:'none',fontWeight:600}}>🔗 OMG Admin</a>
+                {s.subdomain&&<a href={`https://${s.subdomain}.ordermygear.com`} target="_blank" rel="noopener noreferrer" style={{color:'#64748b',textDecoration:'none'}}>🌐 {s.subdomain}.ordermygear.com</a>}
+              </div>}
+              <div style={{marginTop:4}}><span style={{padding:'3px 10px',borderRadius:8,fontSize:11,fontWeight:700,
+                background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':s.status==='draft'?'#f1f5f9':'#fef3c7',
+                color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':s.status==='draft'?'#64748b':'#92400e'}}>{s.status.toUpperCase()}</span>
+                {s.open_date&&<span style={{marginLeft:8,fontSize:11,color:'#64748b'}}>📅 {s.open_date} → {s.close_date}</span>}
+                <button onClick={()=>{const el=document.getElementById('omg-parent-portal');if(el)el.scrollIntoView({behavior:'smooth',block:'start'})}} title="Jump to the Parent Order Portal — player report, packing slip, parent emails & tracking" style={{marginLeft:8,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer'}}>📦 Parent Order Portal ↓</button>
+              </div>
+            </div>
+            {!_alreadyPulled&&(s.products||[]).length>0&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{const el=document.getElementById('omg-create-so');if(el)el.scrollIntoView({behavior:'smooth',block:'center'})}} title="Finish the page below — financials, deco, parent orders & emails — then create the Sales Order at the bottom">📋 Create Sales Order ↓</button>}
             {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
               ✅ Already pulled → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>}
             {s.status!=='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -14577,9 +14599,43 @@ export default function App(){
             each OMG store has one flow: Store Products (above) + Parent Orders. */}
         <ComponentErrorBoundary name="OmgOrderPortal">
           <React.Suspense fallback={<LazyFallback/>}>
-            <OmgOrderPortal saleCode={s._omg_sale_code} storeName={s.store_name}/>
+            <OmgOrderPortal saleCode={s._omg_sale_code} storeName={s.store_name} onStatus={setOmgPortalStatus}/>
           </React.Suspense>
         </ComponentErrorBoundary>
+
+        {/* ── Create Sales Order — the final step, gated on completing the page ── */}
+        {!_alreadyPulled&&(s.products||[]).length>0&&<div id="omg-create-so" className="card" style={{marginTop:16,scrollMarginTop:80,border:`2px solid ${soGate.ok?'#166534':'#e2e8f0'}`}}>
+          <div className="card-body" style={{padding:20}}>
+            <div style={{fontSize:16,fontWeight:800,color:'#0f172a',marginBottom:4}}>Create the Sales Order</div>
+            <div style={{fontSize:12.5,color:'#64748b',marginBottom:14}}>Finish every step above, then pull this store into a Sales Order. Items, art, financials and parent tracking all carry over.</div>
+            {/* Checklist of gates */}
+            <div style={{display:'grid',gap:6,marginBottom:14}}>
+              {[
+                [!!s.customer_id,'Customer linked',!s.customer_id?'Link a customer at the top of the page':''],
+                [_hasDollar,'Dollar Report entered',!_hasDollar?'Enter the store financials (Store Financials, top)':''],
+                [_needArt.length===0,'All items have deco or “No Deco”',_needArt.length?`${_needArt.length} item${_needArt.length>1?'s':''} still need an art group or “No Deco”`:''],
+                [_portalImported,'Parent orders imported',!_portalImported?'Import the player report / packing slip in the Parent Order Portal':''],
+                [_portalEmailed,'Parents emailed',!_portalEmailed?'Send the “order is being processed” emails':''],
+              ].map(([ok,label,hint],i)=>(
+                <div key={i} style={{display:'flex',alignItems:'center',gap:10,fontSize:13}}>
+                  <span style={{width:20,height:20,flex:'0 0 20px',borderRadius:'50%',background:ok?'#16a34a':'#e2e8f0',color:ok?'#fff':'#94a3b8',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:800}}>{ok?'✓':i+1}</span>
+                  <span style={{fontWeight:700,color:ok?'#0f172a':'#64748b'}}>{label}</span>
+                  {!ok&&hint&&<span style={{fontSize:11.5,color:'#94a3b8'}}>— {hint}</span>}
+                </div>
+              ))}
+            </div>
+            <button className="btn btn-primary" style={{background:soGate.ok?'#166534':'#cbd5e1',borderColor:soGate.ok?'#166534':'#cbd5e1',cursor:soGate.ok?'pointer':'not-allowed',fontSize:15,padding:'10px 22px'}}
+              disabled={!soGate.ok}
+              onClick={()=>{if(!soGate.ok){nf('Finish the steps above first: '+soGate.reasons.join(' · '),'error');return}createOmgSO()}}>
+              📋 Create Sales Order ({(s.products||[]).length} items)
+            </button>
+            {!soGate.ok&&<div style={{marginTop:8,fontSize:11.5,color:'#92400e'}}>Complete the {soGate.reasons.length} step{soGate.reasons.length>1?'s':''} above to enable this.</div>}
+          </div>
+        </div>}
+        {_alreadyPulled&&<div className="card" style={{marginTop:16}}><div className="card-body" style={{padding:20,display:'flex',alignItems:'center',gap:12}}>
+          <span style={{fontSize:13,fontWeight:700,color:'#166534'}}>✅ Sales Order created</span>
+          <button className="btn btn-sm btn-secondary" onClick={()=>{const so=sos.find(x=>x.omg_store_id===s.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}}>View {sos.find(so=>so.omg_store_id===s.id)?.id} →</button>
+        </div></div>}
 
         {/* Step-by-step guide */}
         <div className="card" style={{borderLeft:'3px solid #2563eb'}}><div className="card-header"><h2>📋 OMG Store Pull Process — Step by Step</h2></div>

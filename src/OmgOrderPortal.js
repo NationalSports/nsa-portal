@@ -166,7 +166,7 @@ async function parsePackingSlip(file) {
 //   saleCode   — OMG sale code (e.g. "WVD87"); identifies the shadow store
 //   storeName  — display name (for ingest fallback)
 // ─────────────────────────────────────────────────────────────────────
-export default function OmgOrderPortal({ saleCode, storeName }) {
+export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
   const [store, setStore] = useState(null);       // shadow webstore row (null until first import)
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -363,6 +363,12 @@ export default function OmgOrderPortal({ saleCode, storeName }) {
   const withEmail = orders.filter((o) => o.buyer_email).length;
   const withAddress = orders.filter((o) => o.ship_address && o.ship_address.street1).length;
   const notified = orders.filter((o) => o.processing_email_sent).length;
+
+  // Report completion up to the parent (App) so it can gate the Create Sales
+  // Order button. Recomputes whenever the order set changes.
+  useEffect(() => {
+    if (onStatus) onStatus({ saleCode, orders: orders.length, withEmail, withAddress, notified });
+  }, [onStatus, saleCode, orders.length, withEmail, withAddress, notified]);
 
   return (
     <div id="omg-parent-portal" className="card" style={{ marginTop: 16, scrollMarginTop: 80 }}>
