@@ -14270,17 +14270,26 @@ export default function App(){
           <div className="stat-card"><div className="stat-label">Margin</div><div className="stat-value" style={{color:pct>=30?'#166534':'#dc2626'}}>{pct}%</div></div>
         </div>})()}
 
-        {/* OMG Store Financials — OCR from Dollar Report screenshot or manual entry */}
-        {(s.products||[]).length>0&&<div className="card" style={{marginBottom:12}}><div style={{padding:16}}>
-          <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>① Dollar Report <span style={{fontSize:11,color:'#64748b',fontWeight:400}}>— revenue collected from parents (shipping, processing & tax are charges added to each order). Drop the screenshot or enter manually.</span></div>
+        {/* OMG Financials — two reports: ① Dollar (revenue) and ② Accounting (costs) */}
+        {(s.products||[]).length>0&&<div style={{marginBottom:6,padding:'10px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,fontSize:12,color:'#475569'}}>
+          <b style={{color:'#0f172a'}}>📊 Store financials — upload two screenshots from OMG:</b>{' '}
+          <span style={{color:'#166534',fontWeight:700}}>① Dollar Report = money collected (revenue)</span> · <span style={{color:'#b91c1c',fontWeight:700}}>② Accounting Report = fees NSA pays (costs)</span>. Both are required before creating the Sales Order.
+        </div>}
+        {/* ① DOLLAR REPORT — REVENUE (green) */}
+        {(s.products||[]).length>0&&<div className="card" style={{marginBottom:12,borderLeft:'4px solid #16a34a'}}><div style={{padding:16}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+            <span style={{fontSize:11,fontWeight:800,background:'#dcfce7',color:'#166534',padding:'2px 8px',borderRadius:4,textTransform:'uppercase',letterSpacing:0.5}}>① Revenue ↑</span>
+            <span style={{fontSize:14,fontWeight:800,color:'#0f172a'}}>Dollar Report</span>
+          </div>
+          <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>Money <b>collected from parents</b>. Shipping, processing fee &amp; sales tax are charges added to each order (so they’re revenue). Drop the OMG <b>Dollar Report</b> screenshot, or enter manually.</div>
           {/* Drop zone for Dollar Report screenshot */}
-          <div style={{marginBottom:12,border:'2px dashed #cbd5e1',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f8fafc',transition:'all 0.2s'}}
-            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#2563eb';e.currentTarget.style.background='#eff6ff'}}
-            onDragLeave={e=>{e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc'}}
+          <div style={{marginBottom:12,border:'2px dashed #86efac',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f0fdf4',transition:'all 0.2s'}}
+            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#16a34a';e.currentTarget.style.background='#dcfce7'}}
+            onDragLeave={e=>{e.currentTarget.style.borderColor='#86efac';e.currentTarget.style.background='#f0fdf4'}}
             onDrop={async e=>{
-              e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc';
+              e.preventDefault();e.currentTarget.style.borderColor='#86efac';e.currentTarget.style.background='#f0fdf4';
               const file=e.dataTransfer.files?.[0];if(!file||!file.type.startsWith('image/'))return nf('Drop an image file','error');
-              nf('Reading screenshot…');
+              nf('Reading Dollar Report…');
               try{
                 const{createWorker}=await import('tesseract.js');
                 const worker=await createWorker('eng');
@@ -14320,8 +14329,8 @@ export default function App(){
             data-ocr-drop="true"
           >
             <div style={{fontSize:24,marginBottom:4}}>📸</div>
-            <div style={{fontSize:12,fontWeight:600,color:'#475569'}}>Drop Dollar Report screenshot here</div>
-            <div style={{fontSize:11,color:'#94a3b8'}}>or click to select — extracts Shipping, Processing, Tax, Fundraising, Grand Total</div>
+            <div style={{fontSize:12.5,fontWeight:700,color:'#166534'}}>Drop the <u>Dollar Report</u> screenshot here</div>
+            <div style={{fontSize:11,color:'#16a34a'}}>or click to select — extracts Shipping, Processing, Tax, Fundraising, Grand Total</div>
           </div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10}}>
             {[['_omg_shipping','Shipping'],['_omg_processing','Processing'],['_omg_tax','Sales Tax'],['_omg_fundraise','Fundraise'],['_omg_grand_total','Grand Total']].map(([key,label])=>
@@ -14350,15 +14359,19 @@ export default function App(){
           })()}
         </div></div>}
 
-        {/* OMG Accounting Report — the fees NSA actually pays (costs on the SO) */}
-        {(s.products||[]).length>0&&<div className="card" style={{marginBottom:12}}><div style={{padding:16}}>
-          <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>② Accounting Report <span style={{fontSize:11,color:'#64748b',fontWeight:400}}>— the fees NSA pays (OMG fees + credit card fees). These become COSTS on the sales order. Drop the screenshot or enter manually.</span></div>
+        {/* ② ACCOUNTING REPORT — COSTS (red) */}
+        {(s.products||[]).length>0&&<div className="card" style={{marginBottom:12,borderLeft:'4px solid #dc2626'}}><div style={{padding:16}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+            <span style={{fontSize:11,fontWeight:800,background:'#fee2e2',color:'#b91c1c',padding:'2px 8px',borderRadius:4,textTransform:'uppercase',letterSpacing:0.5}}>② Costs ↓</span>
+            <span style={{fontSize:14,fontWeight:800,color:'#0f172a'}}>Accounting Report</span>
+          </div>
+          <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>Fees <b>NSA pays</b> (OMG fees + credit card fees). These become <b>costs</b> on the sales order. Drop the OMG <b>Accounting Report</b> screenshot (top-right of that page), or enter manually.</div>
           {/* Drop zone for Accounting Report screenshot */}
-          <div style={{marginBottom:12,border:'2px dashed #cbd5e1',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f8fafc',transition:'all 0.2s'}}
-            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#2563eb';e.currentTarget.style.background='#eff6ff'}}
-            onDragLeave={e=>{e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc'}}
+          <div style={{marginBottom:12,border:'2px dashed #fca5a5',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#fef2f2',transition:'all 0.2s'}}
+            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#dc2626';e.currentTarget.style.background='#fee2e2'}}
+            onDragLeave={e=>{e.currentTarget.style.borderColor='#fca5a5';e.currentTarget.style.background='#fef2f2'}}
             onDrop={async e=>{
-              e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc';
+              e.preventDefault();e.currentTarget.style.borderColor='#fca5a5';e.currentTarget.style.background='#fef2f2';
               const file=e.dataTransfer.files?.[0];if(!file||!file.type.startsWith('image/'))return nf('Drop an image file','error');
               nf('Reading Accounting Report…');
               try{
@@ -14378,10 +14391,16 @@ export default function App(){
                 nf(`Extracted: Collected $${collected} | OMG Fees $${omgFees} | CC Fees $${ccFees} | Net $${net}`);
               }catch(err){console.error('[OCR]',err);nf('OCR failed: '+err.message,'error')}
             }}
+            onClick={()=>{
+              const inp=document.createElement('input');inp.type='file';inp.accept='image/*';
+              inp.onchange=e=>{const f=e.target.files?.[0];if(f){const dt=new DataTransfer();dt.items.add(f);const dropEvt=new DragEvent('drop',{dataTransfer:dt});document.querySelector('[data-acct-drop]')?.dispatchEvent(dropEvt)}};
+              inp.click();
+            }}
+            data-acct-drop="true"
           >
             <div style={{fontSize:24,marginBottom:4}}>📸</div>
-            <div style={{fontSize:12,fontWeight:600,color:'#475569'}}>Drop Accounting Report screenshot here</div>
-            <div style={{fontSize:11,color:'#94a3b8'}}>or click to select — extracts Total Collected, OMG Fees, Credit Card Fees, Net Revenue</div>
+            <div style={{fontSize:12.5,fontWeight:700,color:'#b91c1c'}}>Drop the <u>Accounting Report</u> screenshot here</div>
+            <div style={{fontSize:11,color:'#dc2626'}}>or click to select — extracts Total Collected, OMG Fees, Credit Card Fees, Net Revenue</div>
             <input type="file" accept="image/*" style={{display:'none'}} ref={el=>{if(el)el._acctInput=true}} onClick={e=>e.stopPropagation()}/>
           </div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10}}>
