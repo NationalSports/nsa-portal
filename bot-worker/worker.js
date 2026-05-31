@@ -137,11 +137,37 @@ async function resolveOrderFromDb(task) {
 
   const vendorName = lines.find((l) => l.vendor)?.vendor
     || (lines.find((l) => /adidas/i.test(l.name)) ? 'Adidas' : (lines[0].name || ''));
+  const drop_ship = lines.some((l) => l.drop_ship);
   return {
     target: botTargetForVendor(vendorName),
     vendor_name: vendorName || null,
     po_number: poId,
     lines,
+    drop_ship,
+    ship_to: drop_ship ? await resolveShipTo(task.so_id) : null,
+  };
+}
+
+// For a drop-ship PO, resolve the program's ship-to address (the customer's
+// shipping address, or an alternate ship-to customer if ship_to_id points to
+// one). Returns {name,line1,city,state,zip} or null.
+async function resolveShipTo(soId) {
+  if (!soId) return null;
+  const { data: so } = await supabase
+    .from('sales_orders').select('customer_id,ship_to_id').eq('id', soId).maybeSingle();
+  if (!so) return null;
+  const addrCustId = (so.ship_to_id && so.ship_to_id !== 'default') ? so.ship_to_id : so.customer_id;
+  const { data: c } = await supabase
+    .from('customers')
+    .select('name,alpha_tag,shipping_address_line1,shipping_city,shipping_state,shipping_zip')
+    .eq('id', addrCustId).maybeSingle();
+  if (!c || !(c.shipping_address_line1 || c.shipping_city)) return null;
+  return {
+    name: c.name || c.alpha_tag || '',
+    line1: c.shipping_address_line1 || '',
+    city: c.shipping_city || '',
+    state: c.shipping_state || '',
+    zip: c.shipping_zip || '',
   };
 }
 
@@ -158,6 +184,17 @@ function buildPrompt(task, p = {}) {
   const notes = (task.title || task.description)
     ? `Task: ${task.title || ''}${task.description ? '\n' + task.description : ''}`
     : '(none)';
+  const s = p.ship_to;
+  const delivery = (p.drop_ship && s && (s.line1 || s.city))
+    ? `THIS IS A DROP SHIP — the order must deliver directly to the program below, NOT National Sports' default address.\n`
+      + `On the cart's Delivery Location, click it and choose "Add one-time delivery location", then fill the form exactly:\n`
+      + `- Attention 1: ${s.name}\n`
+      + `- Street Address: ${s.line1}\n`
+      + `- City/Town: ${s.city}\n`
+      + `- State: ${s.state}\n`
+      + `- ZIP code: ${s.zip}\n`
+      + `Country is United States. Then click "Use this address" so it becomes the cart's delivery location. (No PO boxes.)`
+    : `Not a drop ship — leave the default delivery location as-is.`;
   return tpl
     .replaceAll('{{VENDOR_NAME}}', p.vendor_name || target)
     .replaceAll('{{TARGET}}', target)
@@ -166,7 +203,8 @@ function buildPrompt(task, p = {}) {
     .replaceAll('{{VENDOR_PASS}}', creds.pass || '(missing)')
     .replaceAll('{{PO_NUMBER}}', p.po_number || '(see task notes)')
     .replaceAll('{{LINES}}', lines)
-    .replaceAll('{{TASK_NOTES}}', notes);
+    .replaceAll('{{TASK_NOTES}}', notes)
+    .replaceAll('{{DELIVERY}}', delivery);
 }
 
 // Run Claude Code headlessly with the Playwright MCP. Returns the parsed
@@ -327,7 +365,12 @@ async function processOne() {
     if (!order) {
       try { order = await resolveOrderFromDb(task); } catch (e) { log('resolveOrder error:', e?.message || e); }
     }
-    if (order) log(`order resolved: ${order.lines.length} line(s), PO ${order.po_number || '?'}, vendor ${order.vendor_name || order.target} · model ${WORKER_MODEL || 'default'}`);
+    // Drop-ship: make sure we have the program's ship-to address even when the
+    // order came from a structured payload that didn't include it.
+    if (order && order.drop_ship && !order.ship_to && task.so_id) {
+      try { order.ship_to = await resolveShipTo(task.so_id); } catch (e) { log('resolveShipTo error:', e?.message || e); }
+    }
+    if (order) log(`order resolved: ${order.lines.length} line(s), PO ${order.po_number || '?'}, vendor ${order.vendor_name || order.target}${order.drop_ship ? ' · DROP SHIP' + (order.ship_to ? ' → ' + order.ship_to.name : ' (no address!)') : ''} · model ${WORKER_MODEL || 'default'}`);
     else log('no structured order — running from task notes');
     result = await runClaude(buildPrompt(task, order || {}));
   } catch (e) {
