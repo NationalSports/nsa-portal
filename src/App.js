@@ -6619,7 +6619,7 @@ export default function App(){
           {/* Comments */}
           <div style={{marginBottom:12}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Comments ({(td.comments||[]).length})</div>
-            {(td.comments||[]).map(c=>{const auth=REPS.find(r=>r.id===c.author_id);
+            {(td.comments||[]).map(c=>{const auth=REPS.find(r=>r.id===(c.author_id||c.user_id));
               return<div key={c.id} style={{padding:'8px 10px',marginBottom:4,background:c.author_id===cu.id?'#dbeafe':'#f1f5f9',borderRadius:6,fontSize:12}}>
                 <div style={{fontWeight:600,marginBottom:2}}>{auth?.name||'Unknown'} <span style={{fontWeight:400,color:'#94a3b8',fontSize:10}}>{c.created_at?new Date(c.created_at).toLocaleString():''}</span></div>
                 <div>{c.text}</div>
@@ -6628,11 +6628,11 @@ export default function App(){
               <input className="form-input" placeholder="Add a comment or question..." style={{flex:1,fontSize:12}} id="_todo_comment_input"
                 onKeyDown={e=>{if(e.key==='Enter'&&e.target.value.trim()){
                   const text=e.target.value.trim();const newComment={id:'tc-'+Date.now(),todo_id:td.id,author_id:cu.id,text,created_at:new Date().toISOString()};
-                  setAssignedTodos(prev=>prev.map(t=>t.id===td.id?{...t,comments:[...(t.comments||[]),newComment],updated_at:new Date().toISOString()}:t));
+                  setAssignedTodos(prev=>prev.map(t=>{if(t.id!==td.id)return t;const u={...t,comments:[...(t.comments||[]),newComment],updated_at:new Date().toISOString()};if(t.assigned_to==='bot-claude'&&t.bot_status==='needs_input'){u.bot_status='queued';if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update({bot_status:'queued',updated_at:u.updated_at}).eq('id',td.id).then(r=>{if(r.error)console.error('[DB] bot resume:',r.error.message)}));nf('🤖 Reply sent — Claude will resume')}return u}));
                   e.target.value='';nf('Comment added')}}}/>
               <button className="btn btn-sm btn-secondary" onClick={()=>{const inp=document.getElementById('_todo_comment_input');if(inp?.value?.trim()){
                 const text=inp.value.trim();const newComment={id:'tc-'+Date.now(),todo_id:td.id,author_id:cu.id,text,created_at:new Date().toISOString()};
-                setAssignedTodos(prev=>prev.map(t=>t.id===td.id?{...t,comments:[...(t.comments||[]),newComment],updated_at:new Date().toISOString()}:t));
+                setAssignedTodos(prev=>prev.map(t=>{if(t.id!==td.id)return t;const u={...t,comments:[...(t.comments||[]),newComment],updated_at:new Date().toISOString()};if(t.assigned_to==='bot-claude'&&t.bot_status==='needs_input'){u.bot_status='queued';if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update({bot_status:'queued',updated_at:u.updated_at}).eq('id',td.id).then(r=>{if(r.error)console.error('[DB] bot resume:',r.error.message)}));nf('🤖 Reply sent — Claude will resume')}return u}));
                 inp.value='';nf('Comment added')}}}>Send</button>
             </div>}
           </div>
@@ -26990,7 +26990,7 @@ export default function App(){
             if(Object.keys(_bp).length)newTodo.bot_payload=_bp;
           }
           setAssignedTodos(prev=>[newTodo,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null});
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_schedule:''});
           nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
         }}>Assign Task</button>
       </div>
