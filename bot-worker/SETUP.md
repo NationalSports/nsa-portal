@@ -120,3 +120,15 @@ in a comment.
   `src/lib/botTasks.js` (`botTargetForVendor`).
 - New task type (beyond `add_to_cart`): add a prompt template under `prompts/`
   and branch on `bot_payload.task_type` in `worker.js`.
+
+## TODO / Backlog
+
+- **Backorder handling (deferred):** When a size/SKU is backordered on Adidas
+  CLICK (cell shows 0 now but has a future delivery date, vs. truly
+  unavailable), the bot should add what it can and **flag the backordered
+  portion as a follow-up TODO/notice on the task** (in its needs_review
+  comment) so a human can track it — not silently skip it. Use the Adidas
+  availability + future-date info (the portal already stores futureDate/
+  futureQty for Adidas inventory). Refine after observing a real backordered
+  order. Decide: leave the backordered qty in the cart (approve as backorder)
+  vs. remove it and reorder later.
