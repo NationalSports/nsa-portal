@@ -41,20 +41,30 @@ exports.handler = async (event) => {
     for (const c of contacts) {
       const orderNumber = c.orderNumber != null ? String(c.orderNumber) : '';
       if (!orderNumber) continue;
+
+      // The packing slip is primarily the EMAIL source — name + address already
+      // come from the player report. Look up the existing order so we don't
+      // clobber report-provided name/address with the slip's looser parse.
+      const { data: existing } = await sb.from('webstore_orders')
+        .select('id,buyer_name,ship_address').eq('store_id', storeId).eq('omg_order_number', orderNumber).maybeSingle();
+      if (!existing) { unmatched.push(orderNumber); continue; }
+
       const patch = {};
       if (c.email) patch.buyer_email = String(c.email).trim();
-      if (c.name) patch.buyer_name = String(c.name).trim();
       if (c.phone) patch.buyer_phone = String(c.phone).trim();
-      if (c.address && (c.address.street1 || c.address.city)) {
+      // Only fill name if the order doesn't already have one.
+      if (c.name && !(existing.buyer_name && existing.buyer_name.trim())) patch.buyer_name = String(c.name).trim();
+      // Only fill address if the report didn't already provide one.
+      const hasAddr = existing.ship_address && (existing.ship_address.street1 || existing.ship_address.city);
+      if (!hasAddr && c.address && (c.address.street1 || c.address.city)) {
         patch.ship_address = c.address;
         patch.ship_method = 'ship_home';
       }
-      if (!Object.keys(patch).length) continue;
+      if (!Object.keys(patch).length) { matched++; continue; }
 
-      const { data, error } = await sb.from('webstore_orders')
-        .update(patch).eq('store_id', storeId).eq('omg_order_number', orderNumber).select('id');
+      const { error } = await sb.from('webstore_orders').update(patch).eq('id', existing.id);
       if (error) throw new Error(`Update failed (${orderNumber}): ${error.message}`);
-      if (data && data.length) matched += data.length; else unmatched.push(orderNumber);
+      matched++;
     }
 
     return { statusCode: 200, headers, body: JSON.stringify({ success: true, matched, unmatched }) };

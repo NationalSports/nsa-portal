@@ -328,7 +328,7 @@ export default function OmgOrderPortal({ saleCode, storeName }) {
           </StepCard>
 
           {/* 2 — Packing slip */}
-          <StepCard n={2} title="Packing slip PDF" done={withAddress > 0 || withEmail > 0} hint={withEmail ? `${withEmail} have email · ${withAddress} have address` : 'Upload for emails & addresses'}>
+          <StepCard n={2} title="Packing slip PDF" done={withEmail > 0} hint={withEmail ? `${withEmail} have email · ${withAddress} have address` : 'Upload for parent emails'}>
             <label
               onDragOver={(e) => { e.preventDefault(); if (!dragging) setDragging(true); }}
               onDragLeave={() => setDragging(false)}

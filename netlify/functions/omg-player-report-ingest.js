@@ -11,9 +11,10 @@
 // POST /.netlify/functions/omg-player-report-ingest
 // Body: { "reportUrl": "https://report.ordermygear.com/<uuid>" }
 //
-// IMPORTANT: the player report contains NO buyer email or shipping address —
-// those live only on the packing slip. This function creates the orders and
-// line items; contact enrichment is a separate step (omg-packing-slip-ingest).
+// NOTE: the player report carries billing_name and, for shipped orders, the
+// shipping_address — so name + ship-to come from here. The buyer EMAIL is not
+// in the report (only on the packing slip), so emailing parents still needs the
+// slip enrichment step. Pickup/non-shipped orders have no address in the report.
 //
 // Env: REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY
 const { createClient } = require('@supabase/supabase-js');
@@ -25,6 +26,34 @@ const extractSku = (str) => {
 };
 // "Black/White (KB9093)" → "Black/White"
 const cleanColor = (str) => (str || '').replace(/\s*\([A-Za-z0-9]{4,10}\)\s*/g, '').trim();
+
+// "Last, First" → "First Last" (OMG billing_name format). Leaves other formats as-is.
+const flipName = (s) => {
+  const t = (s || '').trim();
+  const m = t.match(/^([^,]+),\s*(.+)$/);
+  return m ? `${m[2].trim()} ${m[1].trim()}`.replace(/\s+/g, ' ').trim() : t;
+};
+
+// Parse "726 N Voluntario St, Santa Barbara, CA 93103-2414, US" into a ship_address
+// object. Returns null if it doesn't look like a full US address (e.g. pickup
+// orders, where the report has no address). street2 captured from a trailing
+// apt/unit isn't separated — we keep the full street in street1 to stay faithful.
+const parseAddress = (str, name) => {
+  let a = (str || '').trim();
+  if (!a) return null;
+  a = a.replace(/,?\s*US$/i, '').trim();           // drop trailing country
+  const m = a.match(/^(.*),\s*([^,]+),\s*([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$/);
+  if (!m) return null;
+  return {
+    name: name || '',
+    street1: m[1].replace(/\s+/g, ' ').trim(),
+    street2: '',
+    city: m[2].trim(),
+    state: m[3].toUpperCase(),
+    zip: m[4],
+    country: 'US',
+  };
+};
 
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json' };
@@ -95,7 +124,10 @@ exports.handler = async (event) => {
         if (!orderNumber) { skipped++; continue; }
 
         const playerName = meta.player_name || '';
-        const buyerName = (meta.billing_name || playerName || '').trim();
+        // Display name as "First Last" (billing_name comes "Last, First").
+        const buyerName = flipName(meta.billing_name || playerName || '');
+        // Ship-to from the report when present (shipped orders); null for pickup.
+        const shipAddress = parseAddress(meta.shipping_address, buyerName);
 
         // Build line items from rows.
         const lineItems = (section.rows || []).map((row) => {
@@ -126,6 +158,7 @@ exports.handler = async (event) => {
           orderId = existingOrder.id; statusToken = existingOrder.status_token;
           await sb.from('webstore_orders').update({
             buyer_name: buyerName, subtotal, total,
+            ...(shipAddress ? { ship_address: shipAddress, ship_method: 'ship_home' } : {}),
           }).eq('id', orderId);
           // Replace line items so re-ingest reflects the latest report.
           await sb.from('webstore_order_items').delete().eq('order_id', orderId);
@@ -134,6 +167,7 @@ exports.handler = async (event) => {
             store_id: store.id, status: 'paid', payment_mode: 'paid',
             order_kind: 'individual', buyer_name: buyerName,
             subtotal, total, omg_order_number: orderNumber,
+            ...(shipAddress ? { ship_address: shipAddress, ship_method: 'ship_home' } : {}),
             notes: `OMG order ${orderNumber} · ${meta.order_date || ''}`.trim(),
           }).select('id,status_token').single();
           if (oErr) throw new Error(`Order insert failed (${orderNumber}): ${oErr.message}`);
