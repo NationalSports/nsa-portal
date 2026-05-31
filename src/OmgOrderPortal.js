@@ -304,6 +304,17 @@ export default function OmgOrderPortal({ saleCode, storeName, reportUrlDefault =
           </StepCard>
         </div>
 
+        {/* Test mode — rehearse the parent experience without emailing real parents. */}
+        {orders.length > 0 && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14, padding: '10px 12px', borderRadius: 8, background: '#fffbeb', border: '1px solid #fde68a' }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: '#92400e' }}>🧪 Test mode</span>
+            <span style={{ fontSize: 12, color: '#92400e' }}>Send every parent email to one address instead of the real buyers:</span>
+            <input type="email" value={testEmail} onChange={(e) => setTestEmail(e.target.value)} placeholder="you@nationalsportsapparel.com" style={{ flex: '1 1 220px', minWidth: 180, padding: '7px 9px', border: '1px solid #fcd34d', borderRadius: 6, fontSize: 12.5, boxSizing: 'border-box' }} />
+            <button style={{ ...secondaryBtn, borderColor: '#f59e0b', color: '#92400e' }} onClick={() => sendEmails(true, testEmail.trim())} disabled={busy === 'test' || !/.+@.+\..+/.test(testEmail.trim())}>{busy === 'test' ? 'Sending test…' : 'Send test emails to me'}</button>
+            <span style={{ width: '100%', fontSize: 11, color: '#b45309' }}>Real parents are never contacted in test mode, and orders aren’t marked as emailed.</span>
+          </div>
+        )}
+
         {/* Review grid for parsed contacts (shows after a packing slip is parsed). */}
         {draftContacts && !orders.length && (
           <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 8, fontSize: 12.5, background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' }}>
