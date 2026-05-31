@@ -21,6 +21,108 @@ const WSDL_MAP = {
   invoice:        'https://ws.sanmar.com:8080/SanMarWebService/InvoicePort',
 };
 
+// PromoStandards Purchase Order (sendPO) bindings. Onboarding/test submissions go
+// to the TEST host; production submissions to the prod host. Controlled by the
+// `env` query param (defaults to 'test' so an accidental call can't ship goods).
+const PO_ENDPOINTS = {
+  test: 'https://test-ws.sanmar.com:8080/promostandards/POServiceBinding',
+  prod: 'https://ws.sanmar.com:8080/promostandards/POServiceBinding',
+};
+
+const xmlEsc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// Render a <ContactDetails> block for OrderContact / ShipTo.
+function poContactDetails(c, withAttention) {
+  if (!c) return '';
+  const attn = withAttention && c.attentionTo ? `\n              <shar:attentionTo>${xmlEsc(c.attentionTo)}</shar:attentionTo>` : '';
+  return `<shar:ContactDetails>${attn}
+              <shar:companyName>${xmlEsc(c.companyName)}</shar:companyName>
+              <shar:address1>${xmlEsc(c.address1)}</shar:address1>${c.address2 ? `\n              <shar:address2>${xmlEsc(c.address2)}</shar:address2>` : ''}
+              <shar:city>${xmlEsc(c.city)}</shar:city>
+              <shar:region>${xmlEsc(c.region)}</shar:region>
+              <shar:postalCode>${xmlEsc(c.postalCode)}</shar:postalCode>
+              <shar:country>${xmlEsc(c.country || 'US')}</shar:country>${c.email ? `\n              <shar:email>${xmlEsc(c.email)}</shar:email>` : ''}
+            </shar:ContactDetails>`;
+}
+
+// Build the SanMar v24.3 PromoStandards SendPO SOAP envelope from a structured
+// PO payload (see src/sanmarPO.js for the shape). Credentials are injected here,
+// server-side only. Mirrors buildSanMarPOSoap() — keep the two in sync.
+function buildSendPOEnvelope(payload, id, password) {
+  const po = payload.PO || {};
+  const lineItemsXml = (po.lineItems || []).map(l => `
+        <ns:LineItem>
+          <ns:lineNumber>${xmlEsc(l.lineNumber)}</ns:lineNumber>
+          <shar:description>${xmlEsc(l.description || l.style)}</shar:description>
+          <ns:lineType>${xmlEsc(po.lineType || 'New')}</ns:lineType>
+          <shar:ToleranceDetails>
+            <shar:tolerance>AllowOverrun</shar:tolerance>
+          </shar:ToleranceDetails>
+          <ns:allowPartialShipments>false</ns:allowPartialShipments>
+          <ns:lineItemTotal>${xmlEsc((l.quantity * (l.unitPrice || 0)).toFixed(2))}</ns:lineItemTotal>
+          <ns:PartArray>
+            <shar:Part>
+              <shar:partId>${xmlEsc(l.partId)}</shar:partId>
+              <shar:customerSupplied>false</shar:customerSupplied>
+              <shar:Quantity>
+                <shar:uom>${xmlEsc(l.uom || 'EA')}</shar:uom>
+                <shar:value>${xmlEsc(l.quantity)}</shar:value>
+              </shar:Quantity>
+            </shar:Part>
+          </ns:PartArray>
+        </ns:LineItem>`).join('');
+  const shp = po.shipment || {};
+  const shipmentXml = `
+        <ns:ShipmentArray>
+          <shar:Shipment>
+            <shar:shipReferences>${xmlEsc(shp.shipReferences || po.orderNumber)}</shar:shipReferences>
+            <shar:allowConsolidation>${shp.allowConsolidation === false ? 'false' : 'true'}</shar:allowConsolidation>
+            <shar:blindShip>${shp.blindShip ? 'true' : 'false'}</shar:blindShip>
+            <shar:packingListRequired>${shp.packingListRequired ? 'true' : 'false'}</shar:packingListRequired>
+            <shar:FreightDetails>
+              <shar:carrier>${xmlEsc(shp.carrier || 'UPS')}</shar:carrier>
+              <shar:service>${xmlEsc(shp.service || 'Ground')}</shar:service>
+            </shar:FreightDetails>
+            <shar:ShipTo>
+              <shar:customerPickup>${shp.customerPickup ? 'true' : 'false'}</shar:customerPickup>
+              ${poContactDetails(shp.shipTo, true)}
+              <shar:shipmentId>${xmlEsc(shp.shipmentId || 1)}</shar:shipmentId>
+            </shar:ShipTo>
+          </shar:Shipment>
+        </ns:ShipmentArray>`;
+  const orderContactXml = po.orderContact ? `
+        <ns:OrderContactArray>
+          <shar:Contact>
+            <shar:contactType>Order</shar:contactType>
+            ${poContactDetails(po.orderContact, false)}
+          </shar:Contact>
+        </ns:OrderContactArray>` : '';
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:ns="http://www.promostandards.org/WSDL/PO/1.0.0/"
+                  xmlns:shar="http://www.promostandards.org/WSDL/PO/1.0.0/SharedObjects/">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <ns:SendPORequest>
+      <shar:wsVersion>${xmlEsc(payload.wsVersion || '1.0.0')}</shar:wsVersion>
+      <shar:id>${xmlEsc(id)}</shar:id>
+      <shar:password>${xmlEsc(password)}</shar:password>
+      <ns:PO>
+        <ns:orderType>${xmlEsc(po.orderType || 'Blank')}</ns:orderType>
+        <ns:orderNumber>${xmlEsc(po.orderNumber || '')}</ns:orderNumber>
+        <ns:orderDate>${xmlEsc(po.orderDate || '')}</ns:orderDate>
+        <ns:totalAmount>${xmlEsc(Number(po.totalAmount || 0).toFixed(2))}</ns:totalAmount>
+        <ns:rush>${po.rush ? 'true' : 'false'}</ns:rush>
+        <shar:currency>${xmlEsc(po.currency || 'USD')}</shar:currency>${orderContactXml}${shipmentXml}
+        <ns:LineItemArray>${lineItemsXml}
+        </ns:LineItemArray>
+        <ns:termsAndConditions>${xmlEsc(po.termsAndConditions || 'N/A')}</ns:termsAndConditions>
+      </ns:PO>
+    </ns:SendPORequest>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+}
+
 // Build a SOAP envelope for SanMar methods that use complex-type args
 // Product & Pricing services: product params in <arg0>, auth credentials in <arg1>
 // Namespace: http://impl.webservice.integration.sanmar.com/
@@ -190,6 +292,58 @@ exports.handler = async (event) => {
 
   const service = event.queryStringParameters?.service || 'product';
   const action = event.queryStringParameters?.action || '';
+
+  // ─── PromoStandards Purchase Order (sendPO) ───
+  // service=po&action=sendPO&env=test|prod  — body is a structured PO payload
+  // (built by src/sanmarPO.js). Credentials are injected here, server-side.
+  // The `id` is the SanMar.com username (NOT the numeric customer number).
+  if (service === 'po') {
+    const env = (event.queryStringParameters?.env || 'test').toLowerCase();
+    const poUrl = PO_ENDPOINTS[env];
+    if (!poUrl) {
+      return { statusCode: 400, headers, body: JSON.stringify({ error: `Unknown PO env "${env}". Use test or prod.` }) };
+    }
+    let payload;
+    try { payload = JSON.parse(event.body || '{}'); }
+    catch { return { statusCode: 400, headers, body: JSON.stringify({ error: 'PO submit requires a JSON body.' }) }; }
+    if (!payload.PO || !(payload.PO.lineItems || []).length) {
+      return { statusCode: 400, headers, body: JSON.stringify({ error: 'PO payload missing PO.lineItems.' }) };
+    }
+    const missingPart = (payload.PO.lineItems || []).find(l => !l.partId);
+    if (missingPart) {
+      return { statusCode: 400, headers,
+        body: JSON.stringify({ error: `Line ${missingPart.lineNumber} is missing a partId (SanMar Unique_Key). Resolve all partIds before submitting.` }) };
+    }
+    const envelope = buildSendPOEnvelope(payload, username, password);
+    try {
+      console.log(`[SanMar] sendPO → ${poUrl} (env: ${env}, order: ${payload.PO.orderNumber}, lines: ${payload.PO.lineItems.length}, user: ${username})`);
+      const resp = await fetch(poUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/xml;charset=UTF-8', 'SOAPAction': '""' },
+        body: envelope,
+      });
+      const xml = await resp.text();
+      console.log(`[SanMar] sendPO response: ${resp.status} (${xml.length} bytes)`);
+      const parsed = parseXmlToJson(xml);
+      const transactionId = extractTag(xml, 'transactionId');
+      // Errors arrive as <errorMessage>, a SOAP fault, or a ServiceMessage
+      // (code/description/severity) — surface whichever is present.
+      const svcDesc = extractTag(xml, 'description');
+      const svcCode = extractTag(xml, 'code');
+      const errorMessage = extractTag(xml, 'errorMessage')
+        || (svcDesc ? `[${svcCode || '?'}] ${svcDesc.trim()}` : null)
+        || (parsed.error ? parsed.faultString : null);
+      if (transactionId) {
+        return { statusCode: 200, headers, body: JSON.stringify({ ok: true, env, transactionId, orderNumber: payload.PO.orderNumber }) };
+      }
+      console.error(`[SanMar] sendPO failed:`, errorMessage, xml.slice(0, 800));
+      return { statusCode: resp.ok ? 400 : resp.status, headers,
+        body: JSON.stringify({ error: errorMessage || `SanMar sendPO failed (${resp.status})`, raw: xml.slice(0, 800) }) };
+    } catch (error) {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: `SanMar sendPO call failed: ${error.message}` }) };
+    }
+  }
+
   const baseUrl = WSDL_MAP[service];
   if (!baseUrl) {
     return { statusCode: 400, headers,
