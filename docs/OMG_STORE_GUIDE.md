@@ -98,13 +98,26 @@ carry over. On the SO:
 - **Costs** = OMG fees + credit card fees (on the Costs tab).
 - Margin reflects NSA's true net (matches the Accounting Report's Net Revenue).
 
-## After the SO is created
+> **This step links the parent orders to the SO** — which turns on automatic
+> status. From here you don't status parents by hand; the Sales Order drives it.
 
-7. **Create POs** for any blanks not in stock (Batch PO for efficiency).
-8. **Production & decoration** — send jobs to the Production Board; art is already
-   assigned from store setup.
-9. **Invoice & ship** — invoice from the SO; the warehouse can push parent orders
-   to ShipStation, which auto-emails tracking to each parent.
+## After the SO is created — parent status updates automatically
+
+Work the Sales Order normally. Each parent's tracking advances on its own as you
+go (you do **not** click anything in the Parent Order Portal):
+
+7. **Create POs** for blanks not in stock (Batch PO). 
+8. **Receive blanks** → parents auto-advance to **Received**. Backordered
+   SKU+sizes stay at **On order** until their stock arrives.
+9. **Production & decoration** — send jobs to the board; when the jobs are
+   **completed**, parents auto-advance to **Bagging**.
+10. **Ship** — push to ShipStation and create the label → parents auto-advance to
+    **Shipped** and each gets a tracking email. Partial shipments show
+    **Partially shipped**. Then invoice from the SO.
+
+The stages — **On order → Received → In production → Bagging → Shipped** — are
+driven by the SO's receiving + jobs + ShipStation. The **Move all** / per-order
+buttons in the portal are manual overrides for edge cases only.
 
 ---
 

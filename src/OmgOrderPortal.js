@@ -334,52 +334,9 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync }
     flash(`All ${ids.length} orders marked ${ls.replace(/_/g, ' ')}.`);
   };
 
-  // ── Sync each item's status from the linked Sales Order (soSync, computed in
-  // App from receiving + jobs). Store moves together to soSync.storeStage, but
-  // an item whose SKU+size isn't fully received holds at 'on order' (backorder).
-  // Never downgrades shipped items, and never moves an item BACKWARD. ──
-  const STAGE_ORD = { pending: 0, on_order: 0, received: 1, in_production: 2, bagging: 3, shipped: 4, complete: 4 };
-  const normSku = (x) => String(x || '').trim().toUpperCase();
-  const syncFromSO = async () => {
-    if (!soSync || !soSync.storeStage) { flash('Nothing to sync — create the Sales Order, then receive/produce.', 'err'); return; }
-    setBusy('sync');
-    try {
-      const storeIdx = STAGE_ORD[soSync.storeStage] ?? 0;
-      // Tally how many of each SKU+size the whole store ordered, so we can mark
-      // exactly the received quantity and leave the shortfall on-order.
-      const allItems = orders.flatMap((o) => o.items.map((i) => ({ ...i, _oid: o.id })));
-      const orderedBy = {}; allItems.forEach((i) => { const k = normSku(i.sku) + '|' + normSku(i.size); orderedBy[k] = (orderedBy[k] || 0) + (i.qty || 1); });
-      // Greedy allocation: walk items in order; the first received-qty units of
-      // each SKU+size are "received", the rest stay on-order (backordered).
-      const used = {};
-      const updates = []; // { id, ls }
-      for (const i of allItems) {
-        if (i.line_status === 'shipped' || i.line_status === 'cancelled') continue; // ShipStation/cancel own these
-        const k = normSku(i.sku) + '|' + normSku(i.size);
-        const recvAvail = soSync.recvBySkuSize[k] || 0;
-        used[k] = used[k] || 0;
-        const qty = i.qty || 1;
-        const isReceived = (used[k] + qty) <= recvAvail; // this whole line's units are covered
-        used[k] += qty;
-        // Item target = store stage, but capped at 'received' until its goods are in.
-        const targetIdx = isReceived ? storeIdx : Math.min(storeIdx, 0); // not received → hold at on-order
-        const curIdx = STAGE_ORD[i.line_status] ?? 0;
-        if (targetIdx > curIdx) {
-          const targetLs = ['pending', 'received', 'in_production', 'bagging', 'shipped'][targetIdx];
-          updates.push({ id: i.id, ls: targetLs });
-        }
-      }
-      if (!updates.length) { setBusy(''); flash('Already in sync with the Sales Order.'); return; }
-      // Group by target status for fewer round-trips.
-      const byLs = {}; updates.forEach((u) => { (byLs[u.ls] = byLs[u.ls] || []).push(u.id); });
-      for (const [ls, idList] of Object.entries(byLs)) {
-        const { error } = await supabase.from('webstore_order_items').update({ line_status: ls }).in('id', idList);
-        if (error) throw new Error(error.message);
-      }
-      await loadOrders(store);
-      flash(`Synced ${updates.length} item${updates.length === 1 ? '' : 's'} from the Sales Order (${soSync.soId}).`);
-    } catch (e) { flash('Sync failed: ' + e.message, 'err'); } finally { setBusy(''); }
-  };
+  // Status auto-syncs from the linked Sales Order in App.js (pushOmgStatusSync,
+  // fired from savSO on every receiving/jobs change). The portal just reads the
+  // result; no manual sync action here. soSync is used only to show SO state.
 
   // Push to ShipStation using the 'WS-<id>' convention so the existing
   // shipstation-webhook records the shipment and emails the parent on ship.
@@ -586,12 +543,11 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync }
             {/* Fulfillment toolbar — hidden during review to keep focus on saving */}
             {!draftContacts && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '10px 12px', background: '#f8fafc', borderRadius: 8, marginBottom: 12 }}>
               {/* Status auto-syncs from the linked SO as the warehouse receives &
-                  produces; this button is a manual refresh. Backordered SKU+sizes
-                  hold at on-order. */}
-              <button onClick={syncFromSO} disabled={busy === 'sync' || !soSync || !soSync.storeStage} style={soSync && soSync.storeStage ? { ...primaryBtn, background: '#0f766e' } : { ...secondaryBtn, opacity: 0.55 }} title={soSync && soSync.storeStage ? `Refresh from Sales Order ${soSync.soId} (auto-syncs on receiving/jobs too)` : 'Auto-syncs once the Sales Order exists and items are received/produced'}>{busy === 'sync' ? 'Syncing…' : '🔄 Refresh from Sales Order'}</button>
+                  produces (backordered SKU+sizes hold at on-order). The Move-all
+                  buttons remain as manual overrides. */}
               {soSync && soSync.storeStage
-                ? <span style={{ fontSize: 11, color: '#64748b' }}>SO {soSync.soId}: {soSync.soStatus.replace(/_/g, ' ')} · auto-syncs</span>
-                : <span style={{ fontSize: 11, color: '#94a3b8' }}>Auto-syncs from the Sales Order during fulfillment</span>}
+                ? <span style={{ fontSize: 11.5, color: '#166534', fontWeight: 700 }}>🔄 Auto-syncing from SO {soSync.soId} · {soSync.soStatus.replace(/_/g, ' ')}</span>
+                : <span style={{ fontSize: 11.5, color: '#94a3b8' }}>🔄 Status auto-syncs from the Sales Order during fulfillment</span>}
               <span style={{ width: 1, height: 22, background: '#e2e8f0', margin: '0 4px' }} />
               <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Move all:</span>
               {[['pending', 'On order'], ['received', 'Received'], ['in_production', 'In production'], ['bagging', 'Bagging'], ['shipped', 'Shipped']].map(([ls, label]) => (
