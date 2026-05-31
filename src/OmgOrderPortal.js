@@ -37,6 +37,19 @@ const EMAIL_RE = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i;
 const PHONE_RE = /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/;
 const STATE_ZIP_RE = /\b([A-Z]{2})\s+(\d{5}(?:-\d{4})?)\b/;
 
+// Normalize a name to a set of word tokens for loose matching across the two
+// docs. Handles "Last, First" vs "First Last" by ignoring order, and strips
+// punctuation/middle initials so "Vincent L Carpino" ≈ "Carpino, Vincent".
+const nameTokens = (s) => new Set(String(s || '').toLowerCase().replace(/[^a-z\s,]/g, ' ').split(/[\s,]+/).filter((t) => t.length > 1));
+// Two names "match" if they share at least 2 tokens, or share 1 token when one
+// side only has a single usable token.
+function namesMatch(a, b) {
+  const ta = nameTokens(a), tb = nameTokens(b);
+  if (!ta.size || !tb.size) return false;
+  let common = 0; ta.forEach((t) => { if (tb.has(t)) common++; });
+  return common >= 2 || (common >= 1 && (ta.size === 1 || tb.size === 1));
+}
+
 // From one packing-slip page's text lines, pull a contact record. The admin
 // reviews/edits everything before saving, so heuristics are fine.
 function parsePage(lines) {
@@ -400,16 +413,46 @@ export default function OmgOrderPortal({ saleCode, storeName }) {
             {draftContacts && (
               <div style={{ border: '1px solid #bfdbfe', borderRadius: 10, marginBottom: 14, overflow: 'hidden' }}>
                 <div style={{ padding: '9px 12px', background: '#eff6ff', color: '#1e40af', fontWeight: 700, fontSize: 12.5 }}>Review parsed contacts ({draftContacts.length}) — edit anything, then save</div>
+                {/* Cross-check the two docs by order number + name. */}
+                {(() => {
+                  const byNum = {}; orders.forEach((o) => { byNum[String(o.omg_order_number)] = o; });
+                  const slipNums = new Set(draftContacts.map((c) => String(c.orderNumber || '').trim()).filter(Boolean));
+                  const noMatch = draftContacts.filter((c) => { const n = String(c.orderNumber || '').trim(); return !n || !byNum[n]; });
+                  const nameMismatch = draftContacts.filter((c) => { const o = byNum[String(c.orderNumber || '').trim()]; return o && c.name && !namesMatch(c.name, o.buyer_name || o.player_name); });
+                  const ordersNoSlip = orders.filter((o) => !slipNums.has(String(o.omg_order_number)));
+                  const ok = draftContacts.length - noMatch.length - nameMismatch.length;
+                  const allGood = !noMatch.length && !nameMismatch.length && !ordersNoSlip.length;
+                  return (
+                    <div style={{ padding: '10px 12px', borderBottom: '1px solid #eef1f5', background: allGood ? '#f0fdf4' : '#fffbeb' }}>
+                      {allGood ? (
+                        <div style={{ fontSize: 12.5, fontWeight: 700, color: '#166534' }}>✓ All {draftContacts.length} packing slips match a player order by number and name.</div>
+                      ) : (
+                        <div style={{ fontSize: 12.5, color: '#92400e' }}>
+                          <div style={{ fontWeight: 800, marginBottom: 4 }}>⚠️ Cross-check found differences — review before saving:</div>
+                          <div>✓ {ok} match cleanly{noMatch.length ? ` · ${noMatch.length} slip${noMatch.length > 1 ? 's' : ''} with no matching order #` : ''}{nameMismatch.length ? ` · ${nameMismatch.length} name mismatch${nameMismatch.length > 1 ? 'es' : ''}` : ''}{ordersNoSlip.length ? ` · ${ordersNoSlip.length} order${ordersNoSlip.length > 1 ? 's' : ''} with no packing slip` : ''}</div>
+                          {noMatch.length > 0 && <div style={{ marginTop: 4 }}>No order # match: {noMatch.slice(0, 8).map((c) => c.orderNumber || c.name || '?').join(', ')}{noMatch.length > 8 ? '…' : ''}</div>}
+                          {nameMismatch.length > 0 && <div style={{ marginTop: 4 }}>Name differs: {nameMismatch.slice(0, 6).map((c) => { const o = byNum[String(c.orderNumber).trim()]; return `#${c.orderNumber} "${c.name}" vs "${o.buyer_name || o.player_name || '?'}"`; }).join('; ')}</div>}
+                          {ordersNoSlip.length > 0 && <div style={{ marginTop: 4 }}>Orders without a slip: {ordersNoSlip.slice(0, 8).map((o) => `#${o.omg_order_number}`).join(', ')}{ordersNoSlip.length > 8 ? '…' : ''}</div>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
                 <div style={{ overflowX: 'auto' }}>
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
                     <thead><tr style={{ textAlign: 'left', color: '#64748b' }}>
                       {['Order #', 'Name', 'Email', 'Phone', 'Street', 'City', 'State', 'ZIP'].map((h) => <th key={h} style={th}>{h}</th>)}
                     </tr></thead>
                     <tbody>
-                      {draftContacts.map((c, i) => (
+                      {draftContacts.map((c, i) => {
+                        const _o = orders.find((o) => String(o.omg_order_number) === String(c.orderNumber || '').trim());
+                        const _numBad = !c.orderNumber || !_o;
+                        const _nameBad = _o && c.name && !namesMatch(c.name, _o.buyer_name || _o.player_name);
+                        const flag = (bad) => bad ? { background: '#fff7ed', borderColor: '#fdba74' } : {};
+                        return (
                         <tr key={i}>
-                          <td style={td}><input value={c.orderNumber || ''} onChange={(e) => updateDraft(i, 'orderNumber', e.target.value)} style={cell} /></td>
-                          <td style={td}><input value={c.name || ''} onChange={(e) => updateDraft(i, 'name', e.target.value)} style={cell} /></td>
+                          <td style={td}><input value={c.orderNumber || ''} onChange={(e) => updateDraft(i, 'orderNumber', e.target.value)} style={{ ...cell, ...flag(_numBad) }} title={_numBad ? 'No player order with this number' : (_o ? `Matches order for ${_o.buyer_name || _o.player_name || ''}` : '')} /></td>
+                          <td style={td}><input value={c.name || ''} onChange={(e) => updateDraft(i, 'name', e.target.value)} style={{ ...cell, ...flag(_nameBad) }} title={_nameBad ? `Player order name is "${_o.buyer_name || _o.player_name || ''}"` : ''} /></td>
                           <td style={td}><input value={c.email || ''} onChange={(e) => updateDraft(i, 'email', e.target.value)} style={{ ...cell, minWidth: 170, ...(c.email ? {} : { background: '#fff7ed' }) }} /></td>
                           <td style={td}><input value={c.phone || ''} onChange={(e) => updateDraft(i, 'phone', e.target.value)} style={cell} /></td>
                           <td style={td}><input value={(c.address && c.address.street1) || ''} onChange={(e) => updateDraft(i, 'address', { ...(c.address || {}), street1: e.target.value })} style={{ ...cell, minWidth: 150 }} /></td>
@@ -417,7 +460,8 @@ export default function OmgOrderPortal({ saleCode, storeName }) {
                           <td style={td}><input value={(c.address && c.address.state) || ''} onChange={(e) => updateDraft(i, 'address', { ...(c.address || {}), state: e.target.value })} style={{ ...cell, width: 50 }} /></td>
                           <td style={td}><input value={(c.address && c.address.zip) || ''} onChange={(e) => updateDraft(i, 'address', { ...(c.address || {}), zip: e.target.value })} style={{ ...cell, width: 80 }} /></td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
