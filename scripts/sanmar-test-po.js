@@ -138,6 +138,7 @@ function buildEnvelope({ id, password, poNumber, orderType, carrier, service, cu
         </ns:ShipmentArray>
         <ns:LineItemArray>${lineItemsXml}
         </ns:LineItemArray>
+        <ns:termsAndConditions>N/A</ns:termsAndConditions>
       </ns:PO>
     </ns:SendPORequest>
   </soapenv:Body>

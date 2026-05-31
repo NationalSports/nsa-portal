@@ -97,6 +97,7 @@ export function buildSanMarPOPayload({
   currency = 'USD',
   customerPickup = false,
   allowConsolidation = true,   // Warehouse Consolidation = ship complete from closest warehouse
+  termsAndConditions = 'N/A',  // schema-required by PromoStandards; SanMar does not use it
 } = {}) {
   let lines = lineItems;
   let warnings = [];
@@ -132,6 +133,7 @@ export function buildSanMarPOPayload({
       },
       lineType,
       lineItems: lines,
+      termsAndConditions,
     },
     _summary: { totalQty, totalCost: totalAmount, lineCount: lines.length },
     _warnings: warnings,
@@ -233,6 +235,7 @@ export function buildSanMarPOSoap(payload, { id = '<from env>', password, includ
         <shar:currency>${esc(po.currency || 'USD')}</shar:currency>${orderContactXml}${shipmentXml}
         <ns:LineItemArray>${lineItemsXml}
         </ns:LineItemArray>
+        <ns:termsAndConditions>${esc(po.termsAndConditions || 'N/A')}</ns:termsAndConditions>
       </ns:PO>
     </ns:SendPORequest>
   </soapenv:Body>

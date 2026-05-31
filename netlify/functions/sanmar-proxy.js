@@ -116,6 +116,7 @@ function buildSendPOEnvelope(payload, id, password) {
         <shar:currency>${xmlEsc(po.currency || 'USD')}</shar:currency>${orderContactXml}${shipmentXml}
         <ns:LineItemArray>${lineItemsXml}
         </ns:LineItemArray>
+        <ns:termsAndConditions>${xmlEsc(po.termsAndConditions || 'N/A')}</ns:termsAndConditions>
       </ns:PO>
     </ns:SendPORequest>
   </soapenv:Body>
