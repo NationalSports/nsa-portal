@@ -231,22 +231,16 @@ try { if (_stripePk) stripePromise = loadStripe(_stripePk); }
 catch(e) { console.warn('[Stripe] Init failed:', e.message); }
 
 // ─── Brevo Setup ───
-const _brevoKey = process.env.REACT_APP_BREVO_API_KEY || '';
+// Public availability flag — NOT the API key (which lives only in the server-side
+// BREVO_API_KEY env var used by netlify/functions/brevo-proxy). Gates UI badges and
+// the open-tracking poller. Defaults on; set REACT_APP_BREVO_ENABLED=false to disable.
+const _brevoKey = (process.env.REACT_APP_BREVO_ENABLED || 'true') !== 'false';
 
 // ─── Brevo SMS Setup ───
-const _brevoSmsSender=process.env.REACT_APP_BREVO_SMS_SENDER||'NatSportsAp';
-const sendBrevoSms=async({to,content,sender})=>{
-  if(!_brevoKey){return{ok:false,error:'Brevo API key not configured'}}
-  try{
-    const phone=to.replace(/[^\d+]/g,'');
-    if(phone.length<10)return{ok:false,error:'Invalid phone number'};
-    const formatted=phone.startsWith('+')?phone:(phone.startsWith('1')&&phone.length===11?'+'+phone:'+1'+phone);
-    const payload={type:'transactional',unicodeEnabled:false,sender:sender||_brevoSmsSender,recipient:formatted,content:content.substring(0,160),tag:'invoice'};
-    const r=await fetch('https://api.brevo.com/v3/transactionalSMS/send',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
-    body:JSON.stringify(payload)});
-    const d=await r.json();if(!r.ok)return{ok:false,error:d.message||d.code||'SMS send failed ('+r.status+')'};return{ok:true,messageId:d.messageId,reference:d.reference}}
-  catch(e){return{ok:false,error:e.message}}
-};
+// SMS is currently disabled (see _smsUiEnabled). The browser must never hold the
+// Brevo key, so this no longer calls Brevo directly. To re-enable SMS, add a
+// transactionalSMS branch to netlify/functions/brevo-proxy and route through it.
+const sendBrevoSms=async()=>({ok:false,error:'SMS sending is disabled. Route it through the server-side brevo-proxy to re-enable.'});
 
 // ─── Brevo Email Open Tracking ───
 // Brevo's statistics/events endpoint is aggressively rate-limited. When we get a 429,
@@ -257,7 +251,7 @@ const checkBrevoEmailOpens=async(messageId)=>{
   if(!_brevoKey||!messageId)return null;
   if(Date.now()<_brevoBackoffUntil)return null;
   try{
-    const r=await fetch('https://api.brevo.com/v3/smtp/statistics/events?messageId='+encodeURIComponent(messageId)+'&event=opened&limit=1',{headers:{'accept':'application/json','api-key':_brevoKey}});
+    const r=await fetch('/.netlify/functions/brevo-proxy?endpoint=stats&messageId='+encodeURIComponent(messageId)+'&event=opened&limit=1',{headers:{'accept':'application/json'}});
     if(r.status===429){_brevoBackoffUntil=Date.now()+600000;return null}// rate-limited: back off 10 min
     if(!r.ok)return null;const d=await r.json();
     if(d.events&&d.events.length>0){const ev=d.events[0];return{opened_at:ev.date,email:ev.email||null}}
