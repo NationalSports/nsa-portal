@@ -306,7 +306,7 @@ export default function OmgOrderPortal({ saleCode, storeName, reportUrlDefault =
 
           {/* 3 — Notify parents */}
           <StepCard n={3} title="Email parents" done={notified > 0 && notified >= withEmail && withEmail > 0} hint={notified ? `${notified} of ${withEmail} emailed` : 'Send the tracking link'}>
-            <button style={{ ...primaryBtn, width: '100%', opacity: withEmail ? 1 : 0.5 }} onClick={() => sendEmails(false)} disabled={busy === 'notify' || !withEmail}>{busy === 'notify' ? 'Sending…' : '✉️ Send processing emails'}</button>
+            <button style={{ ...primaryBtn, width: '100%', opacity: withEmail ? 1 : 0.5 }} onClick={() => setConfirmSend({ resend: false, testEmail: '' })} disabled={busy === 'notify' || !withEmail || !orders.length}>{busy === 'notify' ? 'Sending…' : '✉️ Send processing emails'}</button>
           </StepCard>
         </div>
 
@@ -316,10 +316,63 @@ export default function OmgOrderPortal({ saleCode, storeName, reportUrlDefault =
             <span style={{ fontSize: 12.5, fontWeight: 700, color: '#92400e' }}>🧪 Test mode</span>
             <span style={{ fontSize: 12, color: '#92400e' }}>Send every parent email to one address instead of the real buyers:</span>
             <input type="email" value={testEmail} onChange={(e) => setTestEmail(e.target.value)} placeholder="you@nationalsportsapparel.com" style={{ flex: '1 1 220px', minWidth: 180, padding: '7px 9px', border: '1px solid #fcd34d', borderRadius: 6, fontSize: 12.5, boxSizing: 'border-box' }} />
-            <button style={{ ...secondaryBtn, borderColor: '#f59e0b', color: '#92400e' }} onClick={() => sendEmails(true, testEmail.trim())} disabled={busy === 'test' || !/.+@.+\..+/.test(testEmail.trim())}>{busy === 'test' ? 'Sending test…' : 'Send test emails to me'}</button>
+            <button style={{ ...secondaryBtn, borderColor: '#f59e0b', color: '#92400e' }} onClick={() => setConfirmSend({ resend: true, testEmail: testEmail.trim() })} disabled={busy === 'test' || !/.+@.+\..+/.test(testEmail.trim())}>{busy === 'test' ? 'Sending test…' : 'Send test emails to me'}</button>
             <span style={{ width: '100%', fontSize: 11, color: '#b45309' }}>Real parents are never contacted in test mode, and orders aren’t marked as emailed.</span>
           </div>
         )}
+
+        {/* Pre-send preview — list every recipient before anything goes out. */}
+        {confirmSend && (() => {
+          const isTest = !!confirmSend.testEmail;
+          const recips = recipientsFor(confirmSend.resend, isTest);
+          const noEmail = isTest ? [] : orders.filter((o) => !o.buyer_email);
+          return (
+            <div onClick={() => setConfirmSend(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+              <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: 'min(640px, 96vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 60px rgba(0,0,0,0.3)' }}>
+                <div style={{ padding: '16px 20px', borderBottom: '1px solid #eef1f5' }}>
+                  <div style={{ fontSize: 17, fontWeight: 800, color: '#0f172a' }}>{isTest ? '🧪 Confirm TEST send' : '✉️ Confirm — send processing emails'}</div>
+                  <div style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>
+                    {isTest
+                      ? <>All <b>{recips.length}</b> emails will go to <b>{confirmSend.testEmail}</b> — no real parents are contacted.</>
+                      : <><b>{recips.length}</b> {recips.length === 1 ? 'parent' : 'parents'} will be emailed their private tracking link.{confirmSend.resend ? ' (Includes already-emailed orders.)' : ''}</>}
+                  </div>
+                </div>
+                <div style={{ overflowY: 'auto', padding: '4px 20px' }}>
+                  {!recips.length ? (
+                    <div style={{ padding: '24px 0', textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>No one to email. Upload the packing slip to add parent emails first.</div>
+                  ) : (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                      <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>
+                        {['Order #', 'Parent', isTest ? 'Routes to' : 'Email', 'Status'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}
+                      </tr></thead>
+                      <tbody>
+                        {recips.map((o) => (
+                          <tr key={o.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                            <td style={td}>{o.omg_order_number}</td>
+                            <td style={td}>{o.buyer_name || '—'}</td>
+                            <td style={td}>{isTest ? confirmSend.testEmail : o.buyer_email}</td>
+                            <td style={td}>{o.processing_email_sent ? <span style={{ color: '#16a34a', fontSize: 12 }}>already emailed</span> : <span style={{ color: '#64748b', fontSize: 12 }}>new</span>}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  {noEmail.length > 0 && (
+                    <div style={{ margin: '12px 0', padding: '10px 12px', borderRadius: 8, background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', fontSize: 12.5 }}>
+                      ⚠️ {noEmail.length} order{noEmail.length > 1 ? 's have' : ' has'} no email and will be skipped: {noEmail.slice(0, 8).map((o) => o.omg_order_number).join(', ')}{noEmail.length > 8 ? '…' : ''}. Upload the packing slip to fill these in.
+                    </div>
+                  )}
+                </div>
+                <div style={{ padding: '14px 20px', borderTop: '1px solid #eef1f5', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button onClick={() => setConfirmSend(null)} style={secondaryBtn}>Cancel</button>
+                  <button onClick={() => { const cs = confirmSend; setConfirmSend(null); sendEmails(cs.resend, cs.testEmail); }} disabled={!recips.length} style={{ ...primaryBtn, opacity: recips.length ? 1 : 0.5, ...(isTest ? { background: '#d97706' } : {}) }}>
+                    {isTest ? `Send ${recips.length} test email${recips.length === 1 ? '' : 's'}` : `Send to ${recips.length} parent${recips.length === 1 ? '' : 's'}`}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Review grid for parsed contacts (shows after a packing slip is parsed). */}
         {draftContacts && !orders.length && (
