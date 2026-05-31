@@ -166,7 +166,7 @@ async function parsePackingSlip(file) {
 //   saleCode   — OMG sale code (e.g. "WVD87"); identifies the shadow store
 //   storeName  — display name (for ingest fallback)
 // ─────────────────────────────────────────────────────────────────────
-export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
+export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync }) {
   const [store, setStore] = useState(null);       // shadow webstore row (null until first import)
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -332,6 +332,53 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
     if (error) { flash('Bulk update failed: ' + error.message, 'err'); return; }
     await loadOrders(store);
     flash(`All ${ids.length} orders marked ${ls.replace(/_/g, ' ')}.`);
+  };
+
+  // ── Sync each item's status from the linked Sales Order (soSync, computed in
+  // App from receiving + jobs). Store moves together to soSync.storeStage, but
+  // an item whose SKU+size isn't fully received holds at 'on order' (backorder).
+  // Never downgrades shipped items, and never moves an item BACKWARD. ──
+  const STAGE_ORD = { pending: 0, on_order: 0, received: 1, in_production: 2, bagging: 3, shipped: 4, complete: 4 };
+  const normSku = (x) => String(x || '').trim().toUpperCase();
+  const syncFromSO = async () => {
+    if (!soSync || !soSync.storeStage) { flash('Nothing to sync — create the Sales Order, then receive/produce.', 'err'); return; }
+    setBusy('sync');
+    try {
+      const storeIdx = STAGE_ORD[soSync.storeStage] ?? 0;
+      // Tally how many of each SKU+size the whole store ordered, so we can mark
+      // exactly the received quantity and leave the shortfall on-order.
+      const allItems = orders.flatMap((o) => o.items.map((i) => ({ ...i, _oid: o.id })));
+      const orderedBy = {}; allItems.forEach((i) => { const k = normSku(i.sku) + '|' + normSku(i.size); orderedBy[k] = (orderedBy[k] || 0) + (i.qty || 1); });
+      // Greedy allocation: walk items in order; the first received-qty units of
+      // each SKU+size are "received", the rest stay on-order (backordered).
+      const used = {};
+      const updates = []; // { id, ls }
+      for (const i of allItems) {
+        if (i.line_status === 'shipped' || i.line_status === 'cancelled') continue; // ShipStation/cancel own these
+        const k = normSku(i.sku) + '|' + normSku(i.size);
+        const recvAvail = soSync.recvBySkuSize[k] || 0;
+        used[k] = used[k] || 0;
+        const qty = i.qty || 1;
+        const isReceived = (used[k] + qty) <= recvAvail; // this whole line's units are covered
+        used[k] += qty;
+        // Item target = store stage, but capped at 'received' until its goods are in.
+        const targetIdx = isReceived ? storeIdx : Math.min(storeIdx, 0); // not received → hold at on-order
+        const curIdx = STAGE_ORD[i.line_status] ?? 0;
+        if (targetIdx > curIdx) {
+          const targetLs = ['pending', 'received', 'in_production', 'bagging', 'shipped'][targetIdx];
+          updates.push({ id: i.id, ls: targetLs });
+        }
+      }
+      if (!updates.length) { setBusy(''); flash('Already in sync with the Sales Order.'); return; }
+      // Group by target status for fewer round-trips.
+      const byLs = {}; updates.forEach((u) => { (byLs[u.ls] = byLs[u.ls] || []).push(u.id); });
+      for (const [ls, idList] of Object.entries(byLs)) {
+        const { error } = await supabase.from('webstore_order_items').update({ line_status: ls }).in('id', idList);
+        if (error) throw new Error(error.message);
+      }
+      await loadOrders(store);
+      flash(`Synced ${updates.length} item${updates.length === 1 ? '' : 's'} from the Sales Order (${soSync.soId}).`);
+    } catch (e) { flash('Sync failed: ' + e.message, 'err'); } finally { setBusy(''); }
   };
 
   // Push to ShipStation using the 'WS-<id>' convention so the existing
@@ -538,6 +585,11 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
             {orders.length > 0 && <>
             {/* Fulfillment toolbar — hidden during review to keep focus on saving */}
             {!draftContacts && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '10px 12px', background: '#f8fafc', borderRadius: 8, marginBottom: 12 }}>
+              {/* Auto-sync from the linked Sales Order (receiving + jobs) — the
+                  primary driver; backordered SKU+sizes hold at on-order. */}
+              <button onClick={syncFromSO} disabled={busy === 'sync' || !soSync || !soSync.storeStage} style={{ ...primaryBtn, background: '#0f766e' }} title={soSync && soSync.storeStage ? `Sales Order ${soSync.soId} is at ${soSync.soStatus}` : 'Create the Sales Order, then receive/produce to enable'}>{busy === 'sync' ? 'Syncing…' : '🔄 Sync from Sales Order'}</button>
+              {soSync && soSync.storeStage && <span style={{ fontSize: 11, color: '#64748b' }}>SO: {soSync.soStatus.replace(/_/g, ' ')}</span>}
+              <span style={{ width: 1, height: 22, background: '#e2e8f0', margin: '0 4px' }} />
               <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Move all:</span>
               {[['pending', 'On order'], ['received', 'Received'], ['in_production', 'In production'], ['bagging', 'Bagging'], ['shipped', 'Shipped']].map(([ls, label]) => (
                 <button key={ls} onClick={() => advanceAll(ls)} disabled={busy === 'advance'} style={stageBtn(ls)}>{label}</button>

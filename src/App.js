@@ -33,6 +33,34 @@ const _searchPOStatus=(so,poId)=>{
   if(anyDS)return bld>=ord&&ord>0?'shipped':bld>0?'partial':'waiting';
   return open<=0&&rcvd>0?'received':rcvd>0?'partial':'waiting';
 };
+// App-side OMG status sync (no DB triggers). From the linked sales order's
+// receiving + jobs, derive (a) the store-wide stage and (b) a per-SKU+size
+// received-quantity map so backordered sizes hold their parents at on-order.
+// Returns null when there's no linked SO. Reuses calcSOStatus for the stage so
+// it matches the rest of the app exactly.
+const computeOmgSoSync=(so)=>{
+  if(!so)return null;
+  const soStatus=calcSOStatus(so);
+  // SO status → parent store stage. 'shipped' is never set here (ShipStation
+  // owns it). Jobs-all-done (ready_to_invoice/complete) = 'bagging'.
+  const storeStage=
+    (soStatus==='ready_to_invoice'||soStatus==='complete')?'bagging':
+    (soStatus==='in_production')?'in_production':
+    (soStatus==='items_received')?'received':
+    null; // need_order / waiting_receive / booking → leave parents at on-order
+  // Per-SKU+size received qty = pulled picks + PO receipts (matches calcSOStatus).
+  const recvBySkuSize={};
+  safeItems(so).forEach(it=>{
+    const sk=(it.sku||'').trim().toUpperCase();if(!sk)return;
+    Object.keys(safeSizes(it)).forEach(sz=>{
+      const k=sk+'|'+String(sz).toUpperCase();
+      const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+      const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+      recvBySkuSize[k]=(recvBySkuSize[k]||0)+pulled+rcvd;
+    });
+  });
+  return { soId:so.id, soStatus, storeStage, recvBySkuSize };
+};
 const _syncDbMaxIds=async()=>{if(!supabase)return;try{const[e,s,i]=await Promise.all([supabase.from('estimates').select('id').order('id',{ascending:false}).limit(1),supabase.from('sales_orders').select('id').order('id',{ascending:false}).limit(1),supabase.from('invoices').select('id').order('id',{ascending:false}).limit(1)]);const p=r=>{const m=String(r?.data?.[0]?.id||'').match(/(\d+)/);return m?parseInt(m[1]):0};_dbMaxIds.est=p(e);_dbMaxIds.so=p(s);_dbMaxIds.inv=p(i)}catch(e){console.warn('[DB] Failed to sync max IDs:',e)}};
 const nextEstId=ests=>'EST-'+(Math.max(_maxNum(ests),_dbMaxIds.est,1000)+1);
 const nextSOId=sos=>'SO-'+(Math.max(_maxNum(sos),_dbMaxIds.so,1000)+1);
@@ -14218,6 +14246,18 @@ export default function App(){
                 _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_fundraise:s._omg_fundraise||0,_omg_grand_total:s._omg_grand_total||0,
                 _omg_omg_fees:s._omg_omg_fees||0,_omg_cc_fees:s._omg_cc_fees||0,_omg_acct_collected:s._omg_acct_collected||0};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
+              // Link the OMG parent orders (shadow webstore) to this SO so the
+              // status-sync trigger drives their tracking from receiving/jobs/SO.
+              // Sets sales_orders.webstore_id + each webstore_orders.so_id, keyed
+              // by the OMG sale code. Best-effort: tracking still works manually
+              // if this fails (e.g. orders not imported yet).
+              if(supabase&&s._omg_sale_code){(async()=>{try{
+                const{data:ws}=await supabase.from('webstores').select('id').eq('omg_sale_code',s._omg_sale_code).eq('source','omg').maybeSingle();
+                if(ws&&ws.id){
+                  await supabase.from('sales_orders').update({webstore_id:ws.id}).eq('id',generatedId);
+                  await supabase.from('webstore_orders').update({so_id:generatedId}).eq('store_id',ws.id);
+                }
+              }catch(e){console.warn('[OMG] SO link failed:',e.message)}})()}
               // OMG store fundraising profit becomes a promo credit the school can
               // spend on future NSA orders. Add to (or create) the customer's
               // current promo period so the existing apply-promo flow can use it.
@@ -14757,10 +14797,13 @@ export default function App(){
 
         {/* Parent Order Portal — player report → per-order tracking, packing-slip
             enrichment, parent emails, fulfillment, ShipStation. Unified here so
-            each OMG store has one flow: Store Products (above) + Parent Orders. */}
+            each OMG store has one flow: Store Products (above) + Parent Orders.
+            soSync (App-side, no DB triggers): from the linked SO's receiving +
+            jobs we compute the store-wide stage and a per-SKU+size received map
+            so backordered sizes hold their parents back. */}
         <ComponentErrorBoundary name="OmgOrderPortal">
           <React.Suspense fallback={<LazyFallback/>}>
-            <OmgOrderPortal saleCode={s._omg_sale_code} storeName={s.store_name} onStatus={setOmgPortalStatus}/>
+            <OmgOrderPortal saleCode={s._omg_sale_code} storeName={s.store_name} onStatus={setOmgPortalStatus} soSync={computeOmgSoSync(sos.find(x=>x.omg_store_id===s.id))}/>
           </React.Suspense>
         </ComponentErrorBoundary>
 
