@@ -22,12 +22,29 @@ The portal URL above is correct. If the page is slow or a navigation times out,
 WAIT and retry the SAME url (it can take 30–60s) — do NOT guess or try other
 adidas domains. Only that URL is valid.
 
+# How to find each product (fast — don't guess URLs)
+Click the search box and TYPE the SKU. An autocomplete DROPDOWN appears listing
+the matching product — click that suggestion to open the product page. Do NOT
+press Enter/submit, do NOT use a ?search= URL, and do NOT guess /product/<sku>
+URLs (they don't work). If the dropdown doesn't show after typing, wait ~2s and
+re-check before trying anything else.
+
+# How to enter sizes correctly — READ EVERY COLUMN HEADER
+This is critical: the size grid does NOT start at XS. For these products the
+columns run **2XS, XS, S, M, L, XL, ...**. You must match each size to the cell
+directly under the EXACT matching column header text — never by position/order.
+- Read the header label above a cell before typing into it.
+- Example: to enter "XS:2 S:11 M:8 L:2", put 2 under the **XS** header (the
+  SECOND column, not the first), 11 under **S**, 8 under **M**, 2 under **L**,
+  and leave 2XS and all other columns blank.
+- After entering, re-read the row and confirm each quantity sits under the right
+  header. If your total doesn't match the line's total qty, you mis-mapped —
+  fix it before moving on.
+
 # Work efficiently
-Move quickly and decisively — this is a routine data-entry task, not research.
-Go straight to the catalog search, navigate directly, and avoid re-reading or
-re-snapshotting pages you've already seen. Don't take screenshots unless asked
-for the final cart. Use any bulk/import/quick-entry feature the site offers
-(e.g. an IMPORT button) over clicking size cells one at a time when practical.
+Move quickly and decisively — this is routine data entry, not research. Go
+straight to the search dropdown, avoid re-snapshotting pages you've already
+seen, and don't take screenshots except the final cart.
 
 # Rules — read carefully
 1. Log in with the credentials above. If you hit a CAPTCHA, 2FA, or any login
