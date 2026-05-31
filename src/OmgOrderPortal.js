@@ -108,6 +108,7 @@ export default function OmgOrderPortal({ saleCode, storeName, reportUrlDefault =
   const [draftContacts, setDraftContacts] = useState(null);
   const [expanded, setExpanded] = useState(null);
   const [testEmail, setTestEmail] = useState('');
+  const [confirmSend, setConfirmSend] = useState(null); // { resend, testEmail } when the preview modal is open
   const fileRef = useRef(null);
 
   const flash = (text, kind = 'ok') => { setMsg({ text, kind }); setTimeout(() => setMsg(null), 6000); };
@@ -184,6 +185,11 @@ export default function OmgOrderPortal({ saleCode, storeName, reportUrlDefault =
       await loadOrders(store);
     } catch (e) { flash(e.message, 'err'); } finally { setBusy(''); }
   };
+
+  // Who would actually receive an email for a given send (mirrors the server's
+  // filter): real send → orders with an email not yet notified (or all, if
+  // resend); test send → every order (routed to the test address).
+  const recipientsFor = (resend, isTest) => orders.filter((o) => isTest ? true : (o.buyer_email && (resend || !o.processing_email_sent)));
 
   // 4) Send "order is being processed" emails.
   //    testEmail set → every email routes to that address (real parents are
