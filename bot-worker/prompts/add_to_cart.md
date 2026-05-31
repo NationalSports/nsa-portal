@@ -58,6 +58,8 @@ seen, and don't take screenshots except the final cart.
    notes don't name any product to add).
 3. After all available lines are in the cart, enter the PO number "{{PO_NUMBER}}"
    in the cart's PO / reference field if one exists.
+3b. Delivery location:
+   {{DELIVERY}}
 4. **DO NOT place, submit, or check out the order under any circumstance.**
    Leave the filled cart exactly at the review step. A human approves the submit.
 5. Take a screenshot of the final cart for the reviewer.
