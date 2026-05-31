@@ -14349,7 +14349,7 @@ export default function App(){
             <span style={{fontSize:11,fontWeight:800,background:'#dcfce7',color:'#166534',padding:'2px 8px',borderRadius:4,textTransform:'uppercase',letterSpacing:0.5}}>① Revenue ↑</span>
             <span style={{fontSize:14,fontWeight:800,color:'#0f172a'}}>Dollar Report</span>
           </div>
-          <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>Money <b>collected from parents</b>. Shipping, processing fee &amp; sales tax are charges added to each order (so they’re revenue). Drop the OMG <b>Dollar Report</b> — screenshot or PDF printout — or enter manually.</div>
+          <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>Money <b>collected from parents</b>. Shipping, processing fee &amp; sales tax are charges added to each order. Drop the OMG <b>Dollar Report</b> — screenshot or PDF printout — or enter manually.</div>
           {/* Drop zone for Dollar Report — image (OCR) or PDF (text) */}
           <div style={{marginBottom:12,border:'2px dashed #86efac',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f0fdf4',transition:'all 0.2s'}}
             onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#16a34a';e.currentTarget.style.background='#dcfce7'}}

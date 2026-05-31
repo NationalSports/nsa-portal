@@ -118,7 +118,7 @@ function buildHtml({ store, order, items, portal, testFor }) {
     const img = i.image_url
       ? `<td style="width:52px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"><img src="${i.image_url}" width="44" height="44" style="width:44px;height:44px;object-fit:cover;border-radius:6px;display:block;background:#f4f6f9"></td>`
       : `<td style="width:52px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"></td>`;
-    const det = [i.color, i.size && `Size ${i.size}`, i.qty > 1 && `Qty ${i.qty}`].filter(Boolean).join(' · ');
+    const det = [i.color, i.size && `Size ${i.size}`, `Qty ${i.qty || 1}`, i.player_number && `#${i.player_number}`].filter(Boolean).join(' · ');
     return `<tr>${img}<td style="padding:8px 0;border-bottom:1px solid #eef1f5">${i.name || i.sku || 'Item'}${det ? `<div style="font-size:12px;color:#64748b">${det}</div>` : ''}</td></tr>`;
   }).join('');
   const logoBar = `<table width="100%" style="border-collapse:collapse"><tr>

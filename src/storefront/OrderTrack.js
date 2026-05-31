@@ -158,7 +158,7 @@ export default function OrderTrack() {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 700, fontSize: 14.5 }}>{i.name || i.sku || 'Item'}</div>
                   <div style={{ fontSize: 12.5, color: '#64748b' }}>
-                    {[i.color, i.size && `Size ${i.size}`, i.qty > 1 && `Qty ${i.qty}`, i.player_name].filter(Boolean).join(' · ')}
+                    {[i.color, i.size && `Size ${i.size}`, `Qty ${i.qty || 1}`, i.player_number && `#${i.player_number}`, i.player_name].filter(Boolean).join(' · ')}
                   </div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
