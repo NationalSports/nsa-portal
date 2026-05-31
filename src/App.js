@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import './portal.css';
 import MobilePortal from './MobilePortal';
 import BotStatus from './BotStatus';
-import { isBotOwner } from './lib/botTasks';
+import { isBotOwner, buildBotCartPayload } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
@@ -9634,6 +9634,11 @@ export default function App(){
               <div style={{textAlign:'right',flexShrink:0}}>
                 <div style={{fontSize:22,fontWeight:800,color:hitThreshold?'#166534':'#d97706'}}>${total.toFixed(2)}</div>
                 <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:700}}>{vg.threshold>0?(hitThreshold?'✅ Free shipping unlocked':'$'+(vg.threshold-total).toFixed(2)+' to free ship'):'Batch orders'}</div>
+                {isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-sm" style={{marginTop:6,fontSize:11,fontWeight:700,color:'#0f766e',background:'#f0fdfa',border:'1px solid #5eead4',borderRadius:8,padding:'3px 10px',whiteSpace:'nowrap'}} title="Assign this whole batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, stopping before submit for your review" onClick={()=>{
+                  const poNum=vg.pos.map(bp=>bp.po_id).filter(Boolean).join(' / ');
+                  const{title,description,bot_payload}=buildBotCartPayload({poNumber:poNum,vendorName:vg.name,batches:vg.pos,soId:vg.pos.find(bp=>bp.so_id)?.so_id||null});
+                  assignBotTask({title,description,priority:1,bot_payload});
+                }}>🤖 Assign to Claude</button>}
               </div>
             </div>
             {vg.threshold>0&&(()=>{const pct=Math.max(0,Math.min(100,Math.round(total/vg.threshold*100)));return<div>
