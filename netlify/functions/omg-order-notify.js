@@ -67,7 +67,7 @@ exports.handler = async (event) => {
     const { data: stores } = await sb.from('webstores').select('id,name,slug,logo_url,primary_color,accent_color').in('id', sIds);
     const storeById = {}; (stores || []).forEach((s) => { storeById[s.id] = s; });
 
-    let sent = 0, failures = [];
+    let sent = 0, failures = [], firstMsgId = null;
     for (const o of targets) {
       const store = storeById[o.store_id] || { name: 'Your order' };
       const { data: its } = await sb.from('webstore_order_items').select('*').eq('order_id', o.id);
@@ -96,11 +96,12 @@ exports.handler = async (event) => {
         // Only mark real sends; test mode leaves processing_email_sent untouched.
         if (!testMode) await sb.from('webstore_orders').update({ processing_email_sent: true, processing_email_sent_at: new Date().toISOString() }).eq('id', o.id);
         sent++;
+        if (!firstMsgId) { try { const j = await resp.json(); firstMsgId = j.messageId || j.messageIds || 'accepted'; } catch { firstMsgId = 'accepted'; } }
       } catch (e) { failures.push({ order: o.omg_order_number, to: toEmail, error: e.message }); }
     }
 
     const firstErr = failures[0] ? (failures[0].detail || failures[0].error || `HTTP ${failures[0].status}`) : null;
-    return { statusCode: 200, headers, body: JSON.stringify({ success: true, sent, failed: failures.length, firstError: firstErr, failures }) };
+    return { statusCode: 200, headers, body: JSON.stringify({ success: true, sent, failed: failures.length, firstError: firstErr, brevoMessageId: firstMsgId, sentTo: testMode ? testEmail : undefined, failures }) };
   } catch (e) {
     console.error('[omg-order-notify] failed:', e);
     return { statusCode: 500, headers, body: JSON.stringify({ error: e.message }) };

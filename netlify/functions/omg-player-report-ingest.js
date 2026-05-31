@@ -113,6 +113,17 @@ exports.handler = async (event) => {
       }
     }
 
+    // Product images live on the OMG store-products import (omg_store_products),
+    // not in the player report. Build a SKU → image map so each parent's line
+    // items show the same photo as the store. Keyed by normalized SKU.
+    const normSku = (x) => String(x || '').trim().toUpperCase();
+    const imgBySku = {};
+    {
+      const { data: sp } = await sb.from('omg_store_products')
+        .select('sku,image_url').eq('store_id', `OMG-sale_${saleCode}`);
+      (sp || []).forEach((p) => { if (p.image_url) imgBySku[normSku(p.sku)] = p.image_url; });
+    }
+
     // ── 2. Parse each section into an order + its line items ──
     let ordersUpserted = 0, itemsInserted = 0, skipped = 0;
     const results = [];
@@ -132,6 +143,9 @@ exports.handler = async (event) => {
         // Build line items from rows.
         const lineItems = (section.rows || []).map((row) => {
           const sku = extractSku(row.color) || (row.sku || '').toUpperCase();
+          // Match this line to a store product's image by SKU (exact, then by the
+          // leading style code before the " - " variant suffix).
+          const img = imgBySku[normSku(sku)] || imgBySku[normSku((sku || '').split(/[-\s]/)[0])] || '';
           return {
             sku,
             name: row.product || '',
@@ -140,6 +154,7 @@ exports.handler = async (event) => {
             qty: row.quantity || 0,
             unit_price: row.quantity ? (Number(row.paid || 0) / row.quantity) : Number(row.paid || 0),
             player_name: playerName,
+            image_url: img,
             line_status: 'pending',
           };
         }).filter((li) => li.qty > 0);
