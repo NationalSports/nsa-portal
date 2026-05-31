@@ -4585,6 +4585,10 @@ export default function App(){
         const m = (str || '').match(/\(([A-Za-z0-9]{4,10})\)/);
         return m ? m[1].toUpperCase() : '';
       };
+      // OMG appends an internal variant index to the style number, e.g.
+      // "KF5972 - 7" or "5159368 - 8". NSA SKUs never contain a space, so the
+      // real catalog SKU is simply the first whitespace-delimited token.
+      const cleanSku = (str) => ((str || '').trim().split(/\s+/)[0] || '').toUpperCase();
       (report.reports || []).forEach(r => {
         (r.sections || []).forEach(section => {
           const meta = section.meta || {};
@@ -4594,7 +4598,10 @@ export default function App(){
           // like a real SKU (no spaces, not absurdly long) — otherwise it's
           // a product name and we rely on the per-row color SKU instead.
           const sectionSku = meta.sku || '';
-          const sectionSkuOk = sectionSku && !sectionSku.includes(' ') && sectionSku.length <= 15;
+          // Strip OMG's " - N" variant suffix to get the catalog SKU, then judge
+          // if it looks like a real SKU (single token, not absurdly long).
+          const cleanSectionSku = cleanSku(sectionSku);
+          const sectionSkuOk = cleanSectionSku && !cleanSectionSku.includes(' ') && cleanSectionSku.length <= 15;
 
           // Same product can ship multiple SKUs (one per color), e.g. the
           // 3-stripe short is KB9093 in black and KB9097 in grey. Split each
@@ -4604,7 +4611,7 @@ export default function App(){
             const rawSz = (row.size || 'OS').trim().replace(/["''″]+$/,'');
             const sz = SZ_NORM[rawSz.toUpperCase()] || (/^adult\b/i.test(rawSz)?'OSFA':rawSz);
             const qty = row.quantity || 0;
-            const rowSku = extractSku(row.color) || (sectionSkuOk ? sectionSku.toUpperCase() : '');
+            const rowSku = extractSku(row.color) || (sectionSkuOk ? cleanSectionSku : '');
             const key = rowSku || '__nosku__';
             if (!groups[key]) groups[key] = { sku: rowSku, sizes: {}, qty: 0, paid: 0, colors: new Set() };
             const g = groups[key];
@@ -4623,7 +4630,7 @@ export default function App(){
             let sku = g.sku;
             if (!sku) {
               const fromText = extractSku([...g.colors].join(' ') + ' ' + (meta.name || ''));
-              sku = fromText || (sectionSkuOk ? sectionSku.toUpperCase() : sectionSku);
+              sku = fromText || (sectionSkuOk ? cleanSectionSku : cleanSku(sectionSku));
             }
 
             // Match this SKU's mockup image (each color has its own art),

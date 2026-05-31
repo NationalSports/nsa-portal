@@ -117,11 +117,15 @@ exports.handler = async (event) => {
     // not in the player report. Build a SKU → image map so each parent's line
     // items show the same photo as the store. Keyed by normalized SKU.
     const normSku = (x) => String(x || '').trim().toUpperCase();
+    // NSA SKUs never contain a space, so the catalog SKU is the first token —
+    // drops OMG's " - N" variant suffix so player items match store SKUs.
+    const baseSku = (x) => (normSku(x).split(/\s+/)[0] || '');
     const imgBySku = {};
     {
       const { data: sp } = await sb.from('omg_store_products')
         .select('sku,image_url').eq('store_id', `OMG-sale_${saleCode}`);
-      (sp || []).forEach((p) => { if (p.image_url) imgBySku[normSku(p.sku)] = p.image_url; });
+      // Key by both the full and base SKU so matching works either way.
+      (sp || []).forEach((p) => { if (p.image_url) { imgBySku[normSku(p.sku)] = p.image_url; imgBySku[baseSku(p.sku)] = p.image_url; } });
     }
 
     // ── 2. Parse each section into an order + its line items ──
@@ -145,7 +149,7 @@ exports.handler = async (event) => {
           const sku = extractSku(row.color) || (row.sku || '').toUpperCase();
           // Match this line to a store product's image by SKU (exact, then by the
           // leading style code before the " - " variant suffix).
-          const img = imgBySku[normSku(sku)] || imgBySku[normSku((sku || '').split(/[-\s]/)[0])] || '';
+          const img = imgBySku[normSku(sku)] || imgBySku[baseSku(sku)] || '';
           return {
             sku,
             name: row.product || '',
