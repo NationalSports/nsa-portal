@@ -539,7 +539,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
             {/* Fulfillment toolbar — hidden during review to keep focus on saving */}
             {!draftContacts && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '10px 12px', background: '#f8fafc', borderRadius: 8, marginBottom: 12 }}>
               <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Move all:</span>
-              {[['pending', 'Received'], ['in_production', 'In production'], ['shipped', 'Shipped'], ['complete', 'Complete']].map(([ls, label]) => (
+              {[['pending', 'On order'], ['received', 'Received'], ['in_production', 'In production'], ['bagging', 'Bagging'], ['shipped', 'Shipped']].map(([ls, label]) => (
                 <button key={ls} onClick={() => advanceAll(ls)} disabled={busy === 'advance'} style={stageBtn(ls)}>{label}</button>
               ))}
               <span style={{ width: 1, height: 22, background: '#e2e8f0', margin: '0 4px' }} />
@@ -554,7 +554,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
                 </tr></thead>
                 <tbody>
                   {orders.map((o) => {
-                    const st = o.items[0] ? o.items[0].line_status : 'pending';
+                    const st = orderStatus(o.items);
                     const isOpen = expanded === o.id;
                     const missing = o.items.reduce((a, i) => a + (Number(i.missing_qty) || 0), 0);
                     const di = draftIdxByNum ? draftIdxByNum[String(o.omg_order_number)] : null;
@@ -605,7 +605,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
                               )}
                               {!draftContacts && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '6px 0 10px' }}>
                                 <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Set status:</span>
-                                {[['pending', 'Received'], ['in_production', 'In production'], ['shipped', 'Shipped'], ['complete', 'Complete']].map(([ls, label]) => (
+                                {[['pending', 'On order'], ['received', 'Received'], ['in_production', 'In production'], ['bagging', 'Bagging'], ['shipped', 'Shipped']].map(([ls, label]) => (
                                   <button key={ls} onClick={() => setLineStatus(o.id, ls)} disabled={busy === 'status-' + o.id} style={{ ...stageBtn(ls), opacity: st === ls ? 1 : 0.72, outline: st === ls ? '2px solid #0f172a' : 'none' }}>{label}</button>
                                 ))}
                                 <span style={{ width: 1, height: 20, background: '#e2e8f0', margin: '0 2px' }} />
@@ -661,12 +661,32 @@ function StepCard({ n, title, hint, done, children }) {
   );
 }
 
+// Warehouse pipeline. 'pending' is the initial "On order" state; 'shipped' is
+// the final stage (set when ShipStation creates the label).
+const OMG_STAGES = [
+  ['pending', 'On order', '#f1f5f9', '#475569'],
+  ['received', 'Received', '#eef2ff', '#3730a3'],
+  ['in_production', 'In production', '#fef3c7', '#92400e'],
+  ['bagging', 'Bagging', '#fae8ff', '#86198f'],
+  ['shipped', 'Shipped', '#dcfce7', '#166534'],
+];
+const OMG_STAGE_COLORS = Object.fromEntries(OMG_STAGES.map(([k, , bg, fg]) => [k, [bg, fg]]));
+const OMG_STAGE_ORDER = { pending: 0, received: 1, in_production: 2, bagging: 3, shipped: 4, complete: 4 };
+// Roll up the per-item line_status into one order-level status. If SOME but not
+// all items are shipped, the order is "partially shipped"; otherwise it's the
+// least-advanced stage across the items.
+function orderStatus(items) {
+  const live = (items || []).filter((i) => i.line_status !== 'cancelled');
+  if (!live.length) return 'pending';
+  const idxs = live.map((i) => OMG_STAGE_ORDER[i.line_status] ?? 0);
+  const shipped = idxs.filter((x) => x >= 4).length;
+  if (shipped > 0 && shipped < live.length) return 'partial_shipped';
+  return OMG_STAGES[Math.min(...idxs)][0];
+}
 function StatusPill({ s }) {
-  const map = {
-    pending: ['Received', '#eef2ff', '#3730a3'], in_production: ['In production', '#fef3c7', '#92400e'],
-    shipped: ['Shipped', '#dbeafe', '#1e40af'], complete: ['Complete', '#dcfce7', '#166534'], cancelled: ['Cancelled', '#fee2e2', '#991b1b'],
-  };
-  const [label, bg, fg] = map[s] || map.pending;
+  const m = s === 'partial_shipped' ? ['partial_shipped', 'Partially shipped', '#fef9c3', '#854d0e']
+    : OMG_STAGES.find((x) => x[0] === s) || (s === 'complete' ? OMG_STAGES[4] : s === 'cancelled' ? ['cancelled', 'Cancelled', '#fee2e2', '#991b1b'] : OMG_STAGES[0]);
+  const [, label, bg, fg] = m;
   return <span style={{ display: 'inline-block', fontSize: 11.5, fontWeight: 700, padding: '4px 10px', borderRadius: 20, background: bg, color: fg }}>{label}</span>;
 }
 
@@ -677,6 +697,6 @@ const primaryBtn = { padding: '9px 16px', borderRadius: 8, border: 'none', backg
 const secondaryBtn = { padding: '9px 16px', borderRadius: 8, border: '1.5px solid #e2e8f0', background: '#fff', color: '#0f172a', fontWeight: 700, fontSize: 13, cursor: 'pointer', display: 'inline-flex', alignItems: 'center' };
 const linkBtn = { background: 'none', border: 'none', color: '#64748b', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', padding: '2px 6px' };
 function stageBtn(ls) {
-  const c = { pending: ['#eef2ff', '#3730a3'], in_production: ['#fef3c7', '#92400e'], shipped: ['#dbeafe', '#1e40af'], complete: ['#dcfce7', '#166534'] }[ls] || ['#f1f5f9', '#475569'];
+  const c = OMG_STAGE_COLORS[ls] || ['#f1f5f9', '#475569'];
   return { padding: '7px 13px', borderRadius: 8, border: 'none', background: c[0], color: c[1], fontWeight: 700, fontSize: 12.5, cursor: 'pointer' };
 }

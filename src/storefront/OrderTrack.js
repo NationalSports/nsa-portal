@@ -33,18 +33,22 @@ function readToken() {
 // friendlier, more granular story (received → in production/decorating →
 // shipped → complete) so parents see warehouse + decoration progress.
 const STAGES = [
-  { key: 'received', label: 'Order received', blurb: 'We’ve got your order', icon: '📥' },
+  { key: 'on_order', label: 'On order', blurb: 'Your order is placed', icon: '🧾' },
+  { key: 'received', label: 'Received', blurb: 'Items in the warehouse', icon: '📥' },
   { key: 'in_production', label: 'In production', blurb: 'Items pulled & being decorated', icon: '🎨' },
-  { key: 'shipped', label: 'Shipped', blurb: 'On its way to you', icon: '📦' },
-  { key: 'complete', label: 'Complete', blurb: 'All done — enjoy!', icon: '✅' },
+  { key: 'bagging', label: 'Bagging', blurb: 'Decorated — packing your order', icon: '🛍️' },
+  { key: 'shipped', label: 'Shipped', blurb: 'On its way to you — all done!', icon: '📦' },
 ];
-// line_status → stage index reached.
+// line_status → stage index reached. 'pending' is the initial on-order state;
+// 'complete' is treated the same as 'shipped' (the final stage).
 function stageIndex(lineStatus) {
   switch (lineStatus) {
-    case 'complete': return 3;
-    case 'shipped': return 2;
-    case 'in_production': return 1;
-    default: return 0; // pending
+    case 'complete':
+    case 'shipped': return 4;
+    case 'bagging': return 3;
+    case 'in_production': return 2;
+    case 'received': return 1;
+    default: return 0; // pending / on_order
   }
 }
 
@@ -87,6 +91,12 @@ export default function OrderTrack() {
   // "complete" until every item is). Cancelled lines are ignored.
   const active = items.filter((i) => i.line_status !== 'cancelled');
   const reached = active.length ? Math.min(...active.map((i) => stageIndex(i.line_status))) : 0;
+  // Partial shipment: some items shipped, but not all.
+  const shippedCount = active.filter((i) => stageIndex(i.line_status) >= 4).length;
+  const partialShipped = shippedCount > 0 && shippedCount < active.length;
+  const hero = partialShipped
+    ? { icon: '📦', label: 'Partially shipped', blurb: 'Some items are on the way — the rest will follow' }
+    : STAGES[reached];
   const anyMissing = items.some((i) => Number(i.missing_qty) > 0);
   const tracking = order.tracking_number || (shipments[0] && shipments[0].tracking_number);
   const carrier = order.carrier || (shipments[0] && shipments[0].carrier);
@@ -101,9 +111,9 @@ export default function OrderTrack() {
         <div style={{ background: `linear-gradient(135deg, ${theme.primary}, ${shade(theme.primary, -14)})`, color: '#fff', borderRadius: 18, padding: '28px 26px', marginTop: 22, boxShadow: '0 20px 48px rgba(11,18,32,.22)' }}>
           <div style={{ fontSize: 12, letterSpacing: 1.6, textTransform: 'uppercase', opacity: 0.85 }}>{store.name}</div>
           <div style={{ fontFamily: DISPLAY, fontSize: 34, lineHeight: 1.05, textTransform: 'uppercase', marginTop: 6 }}>
-            {STAGES[reached].icon} {STAGES[reached].label}
+            {hero.icon} {hero.label}
           </div>
-          <div style={{ fontSize: 15, opacity: 0.9, marginTop: 6 }}>{STAGES[reached].blurb}</div>
+          <div style={{ fontSize: 15, opacity: 0.9, marginTop: 6 }}>{hero.blurb}</div>
           {order.omg_order_number && <div style={{ fontSize: 12, opacity: 0.7, marginTop: 12 }}>Order #{order.omg_order_number}{order.buyer_name ? ` · ${order.buyer_name}` : ''}</div>}
         </div>
 
@@ -200,9 +210,9 @@ export default function OrderTrack() {
 
 // ── building blocks ───────────────────────────────────────────────────
 function StatusChip({ stage, accent }) {
-  const map = ['Received', 'In production', 'Shipped', 'Complete'];
-  const bg = ['#eef2ff', '#fef3c7', '#dbeafe', '#dcfce7'][stage];
-  const fg = ['#3730a3', '#92400e', '#1e40af', '#166534'][stage];
+  const map = ['On order', 'Received', 'In production', 'Bagging', 'Shipped'];
+  const bg = ['#f1f5f9', '#eef2ff', '#fef3c7', '#fae8ff', '#dcfce7'][stage];
+  const fg = ['#475569', '#3730a3', '#92400e', '#86198f', '#166534'][stage];
   return <span style={{ display: 'inline-block', fontSize: 11.5, fontWeight: 800, padding: '5px 11px', borderRadius: 20, background: bg, color: fg, whiteSpace: 'nowrap' }}>{map[stage]}</span>;
 }
 
