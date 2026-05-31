@@ -79,7 +79,7 @@ exports.handler = async (event) => {
           method: 'POST',
           headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
           body: JSON.stringify({
-            sender: { name: store.name || 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+            sender: { name: store.name || 'National Sports Apparel', email: 'stores@nationalsportsapparel.com' },
             to: [{ email: toEmail, name: o.buyer_name || '' }],
             subject: `${testMode ? '[TEST] ' : ''}We’ve started processing your ${store.name} order`,
             htmlContent: html,
