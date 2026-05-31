@@ -56,8 +56,18 @@ seen, and don't take screenshots except the final cart.
    do NOT substitute — record it in `issues` and continue with the rest.
    Only report "blocked" if you truly cannot proceed (e.g. can't log in, or the
    notes don't name any product to add).
-3. After all available lines are in the cart, enter the PO number "{{PO_NUMBER}}"
-   in the cart's PO / reference field if one exists.
+3. After all available lines are in the cart, open YOUR cart to finalize it.
+   Finding the right cart (important — carts can be confusing):
+   - Use the cart icon in the top-right nav, or go to Cart Overview.
+   - Identify the cart that CONTAINS YOUR ITEMS by matching the totals you just
+     added (e.g. the cart showing the right total units / total price). Ignore
+     empty carts and other leftover carts.
+   - Open THAT cart. If it shows an "inactive / Activate" banner, click
+     ACTIVATE **on the cart that has your items** (never activate a different or
+     empty cart) so it becomes editable.
+   Then enter the PO number "{{PO_NUMBER}}" in the cart's "Customer PO #" field.
+   Do NOT create a new cart, and do NOT guess cart URLs/IDs — navigate via the
+   cart icon / overview and match by contents.
 3b. Delivery location:
    {{DELIVERY}}
 4. **DO NOT place, submit, or check out the order under any circumstance.**
