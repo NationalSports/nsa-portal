@@ -61,6 +61,42 @@ const computeOmgSoSync=(so)=>{
   });
   return { soId:so.id, soStatus, storeStage, recvBySkuSize };
 };
+// Auto-push the computed OMG status onto the linked parent order items. Called
+// from savSO whenever an OMG-linked SO changes (receiving, jobs, picks), so the
+// parent portal/tracking stays current without a manual sync. Mirrors the
+// portal's syncFromSO allocation: store moves together to the SO stage, but an
+// item whose SKU+size isn't fully received holds at on-order (backorder).
+// Never downgrades, never touches shipped/cancelled. Best-effort + silent.
+const _OMG_STAGE_ORD = { pending:0, on_order:0, received:1, in_production:2, bagging:3, shipped:4, complete:4 };
+const _OMG_STAGE_LABEL = ['pending','received','in_production','bagging','shipped'];
+const pushOmgStatusSync=async(so)=>{
+  try{
+    if(!supabase||!so||!so.omg_store_id)return;
+    const sync=computeOmgSoSync(so);
+    if(!sync||!sync.storeStage)return; // nothing received/produced yet
+    const storeIdx=_OMG_STAGE_ORD[sync.storeStage]??0;
+    // Find the shadow webstore + its orders/items linked to this SO.
+    const{data:ws}=await supabase.from('webstores').select('id').eq('omg_sale_code',so.omg_store_id.replace(/^OMG-sale_/,'')).eq('source','omg').maybeSingle();
+    if(!ws||!ws.id)return;
+    const{data:ords}=await supabase.from('webstore_orders').select('id').eq('store_id',ws.id);
+    const ids=(ords||[]).map(o=>o.id);if(!ids.length)return;
+    const{data:items}=await supabase.from('webstore_order_items').select('id,sku,size,qty,line_status').in('order_id',ids).order('id');
+    const norm=x=>String(x||'').trim().toUpperCase();
+    const used={};const byLs={};
+    (items||[]).forEach(i=>{
+      if(i.line_status==='shipped'||i.line_status==='cancelled')return; // ShipStation/cancel own these
+      const k=norm(i.sku)+'|'+norm(i.size);const qty=i.qty||1;
+      const recvAvail=sync.recvBySkuSize[k]||0;used[k]=used[k]||0;
+      const isReceived=(used[k]+qty)<=recvAvail;used[k]+=qty;
+      const targetIdx=isReceived?storeIdx:0; // not received → hold at on-order
+      const curIdx=_OMG_STAGE_ORD[i.line_status]??0;
+      if(targetIdx>curIdx){const ls=_OMG_STAGE_LABEL[targetIdx];(byLs[ls]=byLs[ls]||[]).push(i.id)}
+    });
+    for(const[ls,idList]of Object.entries(byLs)){
+      await supabase.from('webstore_order_items').update({line_status:ls}).in('id',idList);
+    }
+  }catch(e){console.warn('[OMG] auto status sync failed:',e.message)}
+};
 const _syncDbMaxIds=async()=>{if(!supabase)return;try{const[e,s,i]=await Promise.all([supabase.from('estimates').select('id').order('id',{ascending:false}).limit(1),supabase.from('sales_orders').select('id').order('id',{ascending:false}).limit(1),supabase.from('invoices').select('id').order('id',{ascending:false}).limit(1)]);const p=r=>{const m=String(r?.data?.[0]?.id||'').match(/(\d+)/);return m?parseInt(m[1]):0};_dbMaxIds.est=p(e);_dbMaxIds.so=p(s);_dbMaxIds.inv=p(i)}catch(e){console.warn('[DB] Failed to sync max IDs:',e)}};
 const nextEstId=ests=>'EST-'+(Math.max(_maxNum(ests),_dbMaxIds.est,1000)+1);
 const nextSOId=sos=>'SO-'+(Math.max(_maxNum(sos),_dbMaxIds.so,1000)+1);
@@ -5130,6 +5166,9 @@ export default function App(){
     }
     setSOs(p=>{const ex=p.find(x=>x.id===sl.id);return ex?p.map(x=>x.id===sl.id?sl:x):[...p,sl]});
     logChange(prev?'updated':'created','SO',sl.id,sl.memo||'');
+    // OMG team stores: auto-advance the linked parent orders' tracking status
+    // from this SO's receiving + jobs (fire-and-forget; never blocks the save).
+    if(sl.omg_store_id)pushOmgStatusSync(sl);
     // Promo usage is recorded in convertSO only — savSO does not duplicate it
     // Invoices are created explicitly via the Create Invoice modal — no auto-generation on status change.
     return sl;

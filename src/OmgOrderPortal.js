@@ -585,10 +585,13 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync }
             {orders.length > 0 && <>
             {/* Fulfillment toolbar — hidden during review to keep focus on saving */}
             {!draftContacts && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '10px 12px', background: '#f8fafc', borderRadius: 8, marginBottom: 12 }}>
-              {/* Auto-sync from the linked Sales Order (receiving + jobs) — the
-                  primary driver; backordered SKU+sizes hold at on-order. */}
-              <button onClick={syncFromSO} disabled={busy === 'sync' || !soSync || !soSync.storeStage} style={{ ...primaryBtn, background: '#0f766e' }} title={soSync && soSync.storeStage ? `Sales Order ${soSync.soId} is at ${soSync.soStatus}` : 'Create the Sales Order, then receive/produce to enable'}>{busy === 'sync' ? 'Syncing…' : '🔄 Sync from Sales Order'}</button>
-              {soSync && soSync.storeStage && <span style={{ fontSize: 11, color: '#64748b' }}>SO: {soSync.soStatus.replace(/_/g, ' ')}</span>}
+              {/* Status auto-syncs from the linked SO as the warehouse receives &
+                  produces; this button is a manual refresh. Backordered SKU+sizes
+                  hold at on-order. */}
+              <button onClick={syncFromSO} disabled={busy === 'sync' || !soSync || !soSync.storeStage} style={soSync && soSync.storeStage ? { ...primaryBtn, background: '#0f766e' } : { ...secondaryBtn, opacity: 0.55 }} title={soSync && soSync.storeStage ? `Refresh from Sales Order ${soSync.soId} (auto-syncs on receiving/jobs too)` : 'Auto-syncs once the Sales Order exists and items are received/produced'}>{busy === 'sync' ? 'Syncing…' : '🔄 Refresh from Sales Order'}</button>
+              {soSync && soSync.storeStage
+                ? <span style={{ fontSize: 11, color: '#64748b' }}>SO {soSync.soId}: {soSync.soStatus.replace(/_/g, ' ')} · auto-syncs</span>
+                : <span style={{ fontSize: 11, color: '#94a3b8' }}>Auto-syncs from the Sales Order during fulfillment</span>}
               <span style={{ width: 1, height: 22, background: '#e2e8f0', margin: '0 4px' }} />
               <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Move all:</span>
               {[['pending', 'On order'], ['received', 'Received'], ['in_production', 'In production'], ['bagging', 'Bagging'], ['shipped', 'Shipped']].map(([ls, label]) => (
