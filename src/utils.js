@@ -3,7 +3,13 @@ import html2pdf from 'html2pdf.js';
 import { NSA as _NSA_CONST } from './constants';
 
 // ── Brevo Email ──
-export const _brevoKey = process.env.REACT_APP_BREVO_API_KEY || '';
+// Public availability flag — NOT the API key. The real key lives only in the
+// server-side BREVO_API_KEY env var and is used by netlify/functions/brevo-proxy.
+// All browser email/stats calls go through that proxy so the key never ships in
+// the bundle. UI gates ("Sends directly" badges, mailto fallbacks) read this flag.
+// Defaults on; set REACT_APP_BREVO_ENABLED=false to force mailto fallback.
+export const _brevoKey = (process.env.REACT_APP_BREVO_ENABLED || 'true') !== 'false';
+const _brevoProxy = '/.netlify/functions/brevo-proxy';
 
 // Returns an absolute URL for the company logo so it renders inside external
 // email clients (Gmail, Apple Mail, etc.) which won't follow relative paths.
@@ -32,13 +38,12 @@ export const buildBrandedEmailHtml=(innerHtml,companyInfo)=>{
 // remain intact so re-enabling is a one-line change.
 export const _smsUiEnabled = false;
 export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,senderName,senderEmail,replyTo,attachment})=>{
-  if(!_brevoKey){return{ok:false,error:'Brevo API key not configured (set REACT_APP_BREVO_API_KEY)'}}
   try{const payload={sender:{name:senderName||'National Sports Apparel',email:senderEmail||'noreply@nationalsportsapparel.com'},to:Array.isArray(to)?to:[{email:to}],subject,htmlContent:htmlContent||undefined,textContent:textContent||undefined};
     if(replyTo)payload.replyTo={email:replyTo.email,name:replyTo.name||senderName||'National Sports Apparel'};
     if(cc){const ccArr=Array.isArray(cc)?cc:[cc];const _toEmails=new Set(payload.to.map(t=>(t.email||'').toLowerCase()));const _filtered=ccArr.filter(c=>c&&c.email&&!_toEmails.has(c.email.toLowerCase()));if(_filtered.length>0)payload.cc=_filtered}
     if(bcc){const bccArr=Array.isArray(bcc)?bcc:[bcc];if(bccArr.length>0)payload.bcc=bccArr}
     if(attachment&&attachment.length>0)payload.attachment=attachment;
-    const r=await fetch('https://api.brevo.com/v3/smtp/email',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
+    const r=await fetch(_brevoProxy,{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},
     body:JSON.stringify(payload)});
     const d=await r.json();if(!r.ok)return{ok:false,error:d.message||'Send failed'};return{ok:true,messageId:d.messageId}}
   catch(e){return{ok:false,error:e.message}}
@@ -107,20 +112,11 @@ export const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return
   return t.replace('/image/upload/','/image/upload/pg_1,f_png/')};
 
 // ── Brevo SMS ──
+// SMS is currently disabled (see _smsUiEnabled). The browser must never hold the
+// Brevo key, so this no longer calls Brevo directly. To re-enable SMS, add a
+// transactionalSMS branch to netlify/functions/brevo-proxy and route through it.
 export const _brevoSmsSender='NSA';
-export const sendBrevoSms=async({to,content,sender})=>{
-  const _brevoKey2=process.env.REACT_APP_BREVO_API_KEY||'';
-  if(!_brevoKey2){return{ok:false,error:'Brevo API key not configured'}}
-  try{
-    const phone=to.replace(/[^\d+]/g,'');
-    if(phone.length<10)return{ok:false,error:'Invalid phone number'};
-    const formatted=phone.startsWith('+')?phone:(phone.startsWith('1')&&phone.length===11?'+'+phone:'+1'+phone);
-    const payload={type:'transactional',unicodeEnabled:false,sender:sender||_brevoSmsSender,recipient:formatted,content:content.substring(0,160),tag:'invoice'};
-    const r=await fetch('https://api.brevo.com/v3/transactionalSMS/send',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey2},
-    body:JSON.stringify(payload)});
-    const d=await r.json();if(!r.ok)return{ok:false,error:d.message||d.code||'SMS send failed ('+r.status+')'};return{ok:true,messageId:d.messageId,reference:d.reference}}
-  catch(e){return{ok:false,error:e.message}}
-};
+export const sendBrevoSms=async()=>({ok:false,error:'SMS sending is disabled. Route it through the server-side brevo-proxy to re-enable.'});
 
 // ── Document/print helpers ──
 export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tables,notes,footer,showPricing,portalLink,css,companyInfo})=>{
