@@ -141,6 +141,7 @@ const AiInventoryPoWizard = lazyRetry(() => import('./AiInventoryPoWizard').then
 const CustDetail = lazyRetry(() => import('./CustDetail'));
 const CoachPortal = lazyRetry(() => import('./CoachPortal'));
 const Webstores = lazyRetry(() => import('./Webstores'));
+const OmgOrderPortal = lazyRetry(() => import('./OmgOrderPortal'));
 const SalesHistory = lazyRetry(() => import('./SalesHistory'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
