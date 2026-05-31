@@ -273,7 +273,7 @@ export default function OmgOrderPortal({ saleCode, storeName, reportUrlDefault =
   const notified = orders.filter((o) => o.processing_email_sent).length;
 
   return (
-    <div className="card" style={{ marginTop: 16 }}>
+    <div id="omg-parent-portal" className="card" style={{ marginTop: 16, scrollMarginTop: 80 }}>
       <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2>📦 Parent Order Portal{orders.length ? ` — ${orders.length} orders` : ''}</h2>
         {orders.length > 0 && <span style={{ fontSize: 11.5, color: '#64748b' }}>{withEmail} with email · {withAddress} with address · {notified} emailed</span>}
