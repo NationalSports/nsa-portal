@@ -218,7 +218,13 @@ async function main() {
   });
   const xml = await resp.text();
   const transactionId = tag(xml, 'transactionId');
-  const errorMessage = tag(xml, 'errorMessage') || tag(xml, 'faultstring');
+  // PromoStandards returns errors either as <errorMessage>, a SOAP <faultstring>,
+  // or a <ServiceMessageArray><ServiceMessage> with code/description/severity.
+  const svcCode = tag(xml, 'code');
+  const svcDesc = tag(xml, 'description');
+  const errorMessage = tag(xml, 'errorMessage')
+    || (svcDesc ? `[${svcCode || '?'}] ${svcDesc.trim()}` : null)
+    || tag(xml, 'faultstring');
   if (transactionId) {
     console.log(`\n✓ Success — transactionId: ${transactionId}`);
     console.log(`  PO number to report: ${poNumber}`);

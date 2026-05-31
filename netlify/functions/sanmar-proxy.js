@@ -326,7 +326,13 @@ exports.handler = async (event) => {
       console.log(`[SanMar] sendPO response: ${resp.status} (${xml.length} bytes)`);
       const parsed = parseXmlToJson(xml);
       const transactionId = extractTag(xml, 'transactionId');
-      const errorMessage = extractTag(xml, 'errorMessage') || (parsed.error ? parsed.faultString : null);
+      // Errors arrive as <errorMessage>, a SOAP fault, or a ServiceMessage
+      // (code/description/severity) — surface whichever is present.
+      const svcDesc = extractTag(xml, 'description');
+      const svcCode = extractTag(xml, 'code');
+      const errorMessage = extractTag(xml, 'errorMessage')
+        || (svcDesc ? `[${svcCode || '?'}] ${svcDesc.trim()}` : null)
+        || (parsed.error ? parsed.faultString : null);
       if (transactionId) {
         return { statusCode: 200, headers, body: JSON.stringify({ ok: true, env, transactionId, orderNumber: payload.PO.orderNumber }) };
       }
