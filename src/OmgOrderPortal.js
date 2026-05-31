@@ -465,10 +465,10 @@ export default function OmgOrderPortal({ saleCode, storeName }) {
           );
         })()}
 
-        {/* Review grid for parsed contacts (shows after a packing slip is parsed). */}
+        {/* The packing slip creates orders on its own — no player report needed first. */}
         {draftContacts && !orders.length && (
-          <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 8, fontSize: 12.5, background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' }}>
-            Import the player report (Step 1) before saving these contacts — they’re matched to orders by order number.
+          <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 8, fontSize: 12.5, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe' }}>
+            Saving will create {draftContacts.length} order{draftContacts.length === 1 ? '' : 's'} from this packing slip (name, email, address &amp; items). The player report link is only needed if the slip’s line items don’t come through.
           </div>
         )}
 
