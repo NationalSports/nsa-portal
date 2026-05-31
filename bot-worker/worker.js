@@ -171,7 +171,7 @@ async function resolveShipTo(soId) {
   };
 }
 
-function buildPrompt(task, p = {}) {
+function buildPrompt(task, p = {}, conversation = []) {
   const hasLines = Array.isArray(p.lines) && p.lines.length > 0;
   // Resolved/structured order -> use its vendor. Otherwise default to Adidas
   // CLICK so creds fill in, and let Claude work from the task notes.
@@ -195,7 +195,13 @@ function buildPrompt(task, p = {}) {
       + `- ZIP code: ${s.zip}\n`
       + `Country is United States. Then click "Use this address" so it becomes the cart's delivery location. (No PO boxes.)`
     : `Not a drop ship — leave the default delivery location as-is.`;
+  // Prior human comments so the agent can act on answers (e.g. backorder
+  // guidance) it received after a previous "needs_input" pass.
+  const convo = (conversation || [])
+    .map((c) => `- ${c.user_id === BOT_MEMBER_ID ? 'Claude' : 'Human'}: ${c.text}`)
+    .join('\n') || '(no prior messages)';
   return tpl
+    .replaceAll('{{CONVERSATION}}', convo)
     .replaceAll('{{VENDOR_NAME}}', p.vendor_name || target)
     .replaceAll('{{TARGET}}', target)
     .replaceAll('{{VENDOR_URL}}', creds.url || '(unknown — find it)')
@@ -330,7 +336,7 @@ async function claim(task) {
     .from('assigned_todos')
     .update({ bot_status: 'in_progress', updated_at: new Date().toISOString() })
     .eq('id', task.id)
-    .eq('bot_status', 'queued')
+    .in('bot_status', ['queued', 'scheduled'])
     .select('id')
     .maybeSingle();
   if (error) { log('claim error:', error.message); return false; }
@@ -338,21 +344,39 @@ async function claim(task) {
 }
 
 async function processOne() {
+  // Pick up tasks that are ready to run: queued now, or scheduled for later
+  // whose time has arrived. (needs_input/needs_review wait for a human; a reply
+  // flips them back to 'queued' in the portal.)
   const { data: tasks, error } = await supabase
     .from('assigned_todos')
     .select('id,title,description,so_id,bot_payload,bot_status,status')
     .eq('assigned_to', BOT_MEMBER_ID)
     .eq('status', 'open')
-    .eq('bot_status', 'queued')
+    .in('bot_status', ['queued', 'scheduled'])
     .order('created_at', { ascending: true })
-    .limit(1);
+    .limit(10);
   if (error) { log('poll error:', error.message); return false; }
-  const task = tasks?.[0];
+  const now = Date.now();
+  // Skip scheduled tasks whose run time hasn't arrived yet.
+  const task = (tasks || []).find((t) => {
+    const when = t.bot_payload?.scheduled_for;
+    return !when || new Date(when).getTime() <= now;
+  });
   if (!task) return false;
 
   if (!(await claim(task))) return false; // someone else got it
   log('claimed task', task.id, '—', task.title);
   await heartbeat('working', task.id);
+
+  // Load the comment thread so Claude sees any human answers (e.g. how to
+  // handle a backorder it asked about on a previous pass).
+  let conversation = [];
+  try {
+    const { data: cmts } = await supabase
+      .from('todo_comments').select('user_id,text,created_at')
+      .eq('todo_id', task.id).order('created_at', { ascending: true });
+    conversation = cmts || [];
+  } catch (e) { log('comments fetch error:', e?.message || e); }
 
   let order = null;
   let result;
@@ -372,25 +396,31 @@ async function processOne() {
     }
     if (order) log(`order resolved: ${order.lines.length} line(s), PO ${order.po_number || '?'}, vendor ${order.vendor_name || order.target}${order.drop_ship ? ' · DROP SHIP' + (order.ship_to ? ' → ' + order.ship_to.name : ' (no address!)') : ''} · model ${WORKER_MODEL || 'default'}`);
     else log('no structured order — running from task notes');
-    result = await runClaude(buildPrompt(task, order || {}));
+    result = await runClaude(buildPrompt(task, order || {}, conversation));
   } catch (e) {
     result = { status: 'failed', summary: 'Worker exception: ' + (e?.message || e) };
   }
 
-  const status = ['needs_review', 'blocked', 'failed'].includes(result.status) ? result.status : 'needs_review';
+  // needs_input = the bot has a question (e.g. a backorder) and is waiting on a
+  // human answer. Replying in the portal re-queues the task so it resumes.
+  const ALLOWED = ['needs_review', 'needs_input', 'blocked', 'failed'];
+  const status = ALLOWED.includes(result.status) ? result.status : 'needs_review';
   const merged = { ...(task.bot_payload || {}), ...(order || {}), result };
   await supabase
     .from('assigned_todos')
     .update({ bot_status: status, bot_payload: merged, updated_at: new Date().toISOString() })
     .eq('id', task.id);
 
-  const emoji = status === 'needs_review' ? '🛒' : status === 'blocked' ? '🚧' : '❌';
+  const emoji = status === 'needs_review' ? '🛒' : status === 'needs_input' ? '❓' : status === 'blocked' ? '🚧' : '❌';
   const reportLines = [
     `${emoji} **Bot ${status}** — ${result.summary || ''}`,
+    result.question ? `**Question:** ${result.question}` : '',
     result.cart_url ? `Cart: ${result.cart_url}` : '',
     result.po_entered ? `PO entered: yes` : '',
+    (result.backordered && result.backordered.length) ? `⏳ Backordered: ${result.backordered.join('; ')}` : '',
     (result.issues && result.issues.length) ? `Issues: ${result.issues.join('; ')}` : '',
     status === 'needs_review' ? `Review the cart and submit it if it looks right, then close this task.` : '',
+    status === 'needs_input' ? `Reply on this task to tell Claude how to proceed — it will resume automatically.` : '',
   ].filter(Boolean).join('\n');
   await comment(task.id, reportLines);
   await heartbeat('idle', null);

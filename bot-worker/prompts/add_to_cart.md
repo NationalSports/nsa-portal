@@ -17,6 +17,24 @@ Task notes (use these when the line list above is empty — the product name,
 color, quantity, and PO number are usually here; parse them yourself):
 {{TASK_NOTES}}
 
+# Conversation so far (read this — it may contain answers to act on)
+This task may have run before and asked the human a question. Their replies are
+below. If the human told you how to handle something (e.g. a backorder), DO what
+they said. If they answered a previous question, continue accordingly.
+{{CONVERSATION}}
+
+# Backorders / unavailable sizes — ASK, don't guess
+On the size grid each cell shows availability (e.g. 300+, 180, 0). If a size you
+need shows 0 / is out of stock / can only ship on a FUTURE date (backordered):
+- Add every size that IS available now.
+- For the backordered size(s): if the Conversation above already tells you what
+  to do, follow it. Otherwise DO NOT decide on your own — finish adding the
+  available items, then STOP and set status to "needs_input", listing exactly
+  which SKU/size/qty is backordered (and the future date if shown) and asking
+  how to proceed (e.g. "order anyway as backorder, skip it, or order later?").
+  Put the backordered details in the `backordered` array and your question in
+  `question`. Do not enter the PO# or submit when you stop for input.
+
 # Use the exact URL given
 The portal URL above is correct. If the page is slow or a navigation times out,
 WAIT and retry the SAME url (it can take 30–60s) — do NOT guess or try other
@@ -75,11 +93,17 @@ nothing after it, matching this shape:
 
 ```json
 {
-  "status": "needs_review | blocked | failed",
+  "status": "needs_review | needs_input | blocked | failed",
   "summary": "one or two sentences a human can read",
+  "question": "if status is needs_input, the exact question for the human; else null",
   "cart_url": "url of the filled cart, or null",
   "po_entered": true,
   "lines_added": [{"sku": "...", "qty": 0}],
+  "backordered": ["SKU size qty — future date if known"],
   "issues": ["any SKUs/sizes skipped and why"]
 }
 ```
+
+Use **needs_input** when you need the human to decide something (like a
+backorder) before finishing. Use **needs_review** when the cart is fully built
+and just needs human review/submit.

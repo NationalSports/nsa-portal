@@ -3949,7 +3949,7 @@ export default function App(){
   // Rep-CSR assignments auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.repCsr||[];const changed=repCsrAssignments.filter(a=>{const old=snap.find(p=>p.id===a.id);return!old||JSON.stringify(old)!==JSON.stringify(a)});if(changed.length)_dbSave('rep_csr_assignments',changed);_dbSnap.current.repCsr=repCsrAssignments},[repCsrAssignments]);
   // Assigned todos auto-save
-  React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.assignedTodos||[];assignedTodos.forEach(t=>{const old=snap.find(p=>p.id===t.id);if(!old||JSON.stringify(old)!==JSON.stringify(t)){const{comments,...row}=t;_dbSave('assigned_todos',[row]);if(comments?.length){const oldComments=old?.comments||[];const newComments=comments.filter(c=>!oldComments.find(oc=>oc.id===c.id));if(newComments.length)_dbSave('todo_comments',newComments)}}});_dbSnap.current.assignedTodos=assignedTodos},[assignedTodos]);
+  React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.assignedTodos||[];assignedTodos.forEach(t=>{const old=snap.find(p=>p.id===t.id);if(!old||JSON.stringify(old)!==JSON.stringify(t)){const{comments,...row}=t;_dbSave('assigned_todos',[row]);if(comments?.length){const oldComments=old?.comments||[];const newComments=comments.filter(c=>!oldComments.find(oc=>oc.id===c.id));if(newComments.length)_dbSave('todo_comments',newComments.map(c=>({id:c.id,todo_id:c.todo_id,user_id:c.author_id||c.user_id||null,text:c.text,created_at:c.created_at})))}}});_dbSnap.current.assignedTodos=assignedTodos},[assignedTodos]);
   // Auto-complete assigned todos when the underlying action is fulfilled
   React.useEffect(()=>{if(!_initialLoadDone.current)return;
     const now=new Date().toISOString();
@@ -26904,6 +26904,14 @@ export default function App(){
           <div style={{fontSize:11,fontWeight:700,color:'#0f766e',textTransform:'uppercase',letterSpacing:0.5,marginBottom:4}}>🤖 Bot task · {todoModal.bot_payload.target||'cart'}</div>
           <div style={{fontSize:12,color:'#134e4a'}}>{(todoModal.bot_payload.totals?.line_count)||0} line{((todoModal.bot_payload.totals?.line_count)||0)===1?'':'s'} · {(todoModal.bot_payload.totals?.qty)||0} pcs → {todoModal.bot_payload.vendor_name||'vendor'} cart · PO {todoModal.bot_payload.po_number||'—'}. Claude fills the cart then stops for your approval before submitting.</div>
         </div>}
+        {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&<div style={{marginBottom:12}}>
+          <label className="form-label">🗓 Order later (optional)</label>
+          <div style={{display:'flex',gap:6,alignItems:'center'}}>
+            <input type="datetime-local" className="form-input" value={todoModal.bot_schedule||''} onChange={e=>setTodoModal(m=>({...m,bot_schedule:e.target.value}))} style={{flex:1}}/>
+            {todoModal.bot_schedule&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>setTodoModal(m=>({...m,bot_schedule:''}))}>Now</button>}
+          </div>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>{todoModal.bot_schedule?'Claude will run this at the scheduled time.':'Leave blank to have Claude do it now.'}</div>
+        </div>}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
           <div><label className="form-label">Assign To *</label>
             <select className="form-select" value={todoModal.assigned_to} onChange={e=>setTodoModal(m=>({...m,assigned_to:e.target.value}))}>
@@ -26974,8 +26982,12 @@ export default function App(){
           // Bot task: queue it for the worker. Attach structured payload when present
           // (batch button); otherwise queue from the title/description alone.
           if(REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'){
-            newTodo.bot_status='queued';
-            if(todoModal.bot_payload)newTodo.bot_payload=todoModal.bot_payload;
+            const _when=todoModal.bot_schedule?new Date(todoModal.bot_schedule):null;
+            const _future=_when&&_when.getTime()>Date.now();
+            newTodo.bot_status=_future?'scheduled':'queued';
+            const _bp={...(todoModal.bot_payload||{})};
+            if(_future)_bp.scheduled_for=_when.toISOString();
+            if(Object.keys(_bp).length)newTodo.bot_payload=_bp;
           }
           setAssignedTodos(prev=>[newTodo,...prev]);
           setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null});

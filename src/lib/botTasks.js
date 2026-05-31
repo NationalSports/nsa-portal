@@ -90,6 +90,8 @@ export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null
 export function botRowUI(botStatus) {
   switch (botStatus) {
     case 'queued':       return { label: '🤖 Queued',                  bg: '#f8fafc', bar: '#94a3b8', pillBg: '#e2e8f0', pillFg: '#475569' };
+    case 'scheduled':    return { label: '🗓 Scheduled',               bg: '#faf5ff', bar: '#a855f7', pillBg: '#f3e8ff', pillFg: '#7e22ce' };
+    case 'needs_input':  return { label: '❓ Needs your answer',        bg: '#fff1f2', bar: '#fb7185', pillBg: '#ffe4e6', pillFg: '#be123c' };
     case 'in_progress':  return { label: '🤖 Bot working…',            bg: '#eff6ff', bar: '#3b82f6', pillBg: '#dbeafe', pillFg: '#1e40af' };
     case 'needs_review': return { label: '🛒 Ready to review & order',  bg: '#fefce8', bar: '#f59e0b', pillBg: '#fde68a', pillFg: '#92400e' };
     case 'blocked':      return { label: '🚧 Bot blocked',             bg: '#fff7ed', bar: '#fb923c', pillBg: '#fed7aa', pillFg: '#9a3412' };
