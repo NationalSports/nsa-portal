@@ -52,9 +52,14 @@ exports.handler = async (event) => {
     const { data: orders, error } = await q;
     if (error) throw new Error(error.message);
 
+    // Optional explicit selection from the confirm modal (the rep's checkboxes).
+    const pick = Array.isArray(body.orderIds) && body.orderIds.length ? new Set(body.orderIds.map(String)) : null;
+
     // In test mode we still need orders, but they don't need a buyer email
     // (everything routes to testEmail) and the sent-guard is ignored.
-    const targets = (orders || []).filter((o) => testMode ? true : (o.buyer_email && (body.resend || !o.processing_email_sent)));
+    const targets = (orders || [])
+      .filter((o) => !pick || pick.has(String(o.id)))
+      .filter((o) => testMode ? true : (o.buyer_email && (body.resend || !o.processing_email_sent)));
     if (!targets.length) return { statusCode: 200, headers, body: JSON.stringify({ success: true, sent: 0, note: testMode ? 'No orders in this store to test with.' : 'No orders need notifying (missing emails or already sent).' }) };
 
     // Store branding (one fetch).
@@ -80,14 +85,22 @@ exports.handler = async (event) => {
             htmlContent: html,
           }),
         });
-        if (!resp.ok) { failures.push({ order: o.omg_order_number, status: resp.status }); continue; }
+        if (!resp.ok) {
+          // Capture Brevo's actual error so the UI can show WHY (bad key,
+          // unverified sender, invalid recipient, etc.) instead of failing silently.
+          let detail = '';
+          try { const j = await resp.json(); detail = j.message || j.code || JSON.stringify(j); } catch { detail = await resp.text().catch(() => ''); }
+          failures.push({ order: o.omg_order_number, to: toEmail, status: resp.status, detail });
+          continue;
+        }
         // Only mark real sends; test mode leaves processing_email_sent untouched.
         if (!testMode) await sb.from('webstore_orders').update({ processing_email_sent: true, processing_email_sent_at: new Date().toISOString() }).eq('id', o.id);
         sent++;
-      } catch (e) { failures.push({ order: o.omg_order_number, error: e.message }); }
+      } catch (e) { failures.push({ order: o.omg_order_number, to: toEmail, error: e.message }); }
     }
 
-    return { statusCode: 200, headers, body: JSON.stringify({ success: true, sent, failures }) };
+    const firstErr = failures[0] ? (failures[0].detail || failures[0].error || `HTTP ${failures[0].status}`) : null;
+    return { statusCode: 200, headers, body: JSON.stringify({ success: true, sent, failed: failures.length, firstError: firstErr, failures }) };
   } catch (e) {
     console.error('[omg-order-notify] failed:', e);
     return { statusCode: 500, headers, body: JSON.stringify({ error: e.message }) };

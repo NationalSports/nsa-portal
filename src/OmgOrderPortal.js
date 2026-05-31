@@ -177,6 +177,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
   const [expanded, setExpanded] = useState(null);
   const [testEmail, setTestEmail] = useState('');
   const [confirmSend, setConfirmSend] = useState(null); // { resend, testEmail } when the preview modal is open
+  const [pickIds, setPickIds] = useState(null);         // Set of order ids selected in the confirm modal (null = all)
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef(null);
 
@@ -280,18 +281,26 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
   // 4) Send "order is being processed" emails.
   //    testEmail set → every email routes to that address (real parents are
   //    never contacted, orders aren't marked sent) so you can rehearse safely.
-  const sendEmails = async (resend = false, testEmail = '') => {
+  const sendEmails = async (resend = false, testEmail = '', orderIds = null) => {
     if (!store) return;
     setBusy(testEmail ? 'test' : 'notify');
     try {
       const r = await fetch('/.netlify/functions/omg-order-notify', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storeId: store.id, resend, ...(testEmail ? { testEmail } : {}) }),
+        body: JSON.stringify({ storeId: store.id, resend, ...(testEmail ? { testEmail } : {}), ...(orderIds && orderIds.length ? { orderIds } : {}) }),
       });
       const d = await r.json();
       if (!r.ok || !d.success) throw new Error(d.error || 'Send failed');
-      if (testEmail) flash(d.sent ? `Sent ${d.sent} TEST email(s) to ${testEmail} — no real parents emailed.` : (d.note || 'Nothing to test.'));
-      else flash(d.sent ? `Sent ${d.sent} processing email(s).` : (d.note || 'Nothing to send.'));
+      // Surface Brevo's actual error so a silent non-delivery is visible.
+      if (d.failed > 0 && d.sent === 0) {
+        flash(`Email failed for all ${d.failed}: ${d.firstError || 'unknown error'}. (Check BREVO_API_KEY and that the sender domain is verified in Brevo.)`, 'err');
+      } else if (d.failed > 0) {
+        flash(`Sent ${d.sent}, but ${d.failed} failed: ${d.firstError || 'unknown error'}.`, 'err');
+      } else if (testEmail) {
+        flash(d.sent ? `Sent ${d.sent} TEST email(s) to ${testEmail} — no real parents emailed.` : (d.note || 'Nothing to test.'));
+      } else {
+        flash(d.sent ? `Sent ${d.sent} processing email(s).` : (d.note || 'Nothing to send.'));
+      }
       await loadOrders(store);
     } catch (e) { flash(e.message, 'err'); } finally { setBusy(''); }
   };
@@ -359,10 +368,15 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
   };
 
   const updateDraft = (idx, field, value) => setDraftContacts((cs) => cs.map((c, i) => i === idx ? { ...c, [field]: value } : c));
+  // Map order number → its parsed-slip draft index, so the orders table itself
+  // becomes the review surface (one section instead of a separate grid).
+  const draftIdxByNum = draftContacts ? Object.fromEntries(draftContacts.map((c, i) => [String(c.orderNumber || '').trim(), i])) : null;
   const trackUrl = (o) => `${window.location.origin}/shop/order/${o.status_token}`;
   const withEmail = orders.filter((o) => o.buyer_email).length;
   const withAddress = orders.filter((o) => o.ship_address && o.ship_address.street1).length;
   const notified = orders.filter((o) => o.processing_email_sent).length;
+  // Most recent send time across all notified orders (for the success UI).
+  const lastSentAt = orders.reduce((max, o) => (o.processing_email_sent_at && (!max || o.processing_email_sent_at > max)) ? o.processing_email_sent_at : max, null);
 
   // Report completion up to the parent (App) so it can gate the Create Sales
   // Order button. Recomputes whenever the order set changes.
@@ -402,8 +416,9 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
           </StepCard>
 
           {/* 3 — Notify parents */}
-          <StepCard n={3} title="Email parents" done={notified > 0 && notified >= withEmail && withEmail > 0} hint={notified ? `${notified} of ${withEmail} emailed` : 'Send the tracking link'}>
-            <button style={{ ...primaryBtn, width: '100%', opacity: withEmail ? 1 : 0.5 }} onClick={() => setConfirmSend({ resend: false, testEmail: '' })} disabled={busy === 'notify' || !withEmail || !orders.length}>{busy === 'notify' ? 'Sending…' : '✉️ Send processing emails'}</button>
+          <StepCard n={3} title="Email parents" done={notified > 0 && notified >= withEmail && withEmail > 0} hint={notified ? `${notified} of ${withEmail} emailed${lastSentAt ? ' · last ' + new Date(lastSentAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''}` : 'Send the tracking link'}>
+            <button style={{ ...primaryBtn, width: '100%', opacity: withEmail ? 1 : 0.5 }} onClick={() => setConfirmSend({ resend: false, testEmail: '' })} disabled={busy === 'notify' || !withEmail || !orders.length}>{busy === 'notify' ? 'Sending…' : (notified > 0 ? '✉️ Send to remaining' : '✉️ Send processing emails')}</button>
+            {notified > 0 && <div style={{ marginTop: 6, fontSize: 11, color: '#166534', fontWeight: 700 }}>✓ {notified} sent{lastSentAt ? ` · ${new Date(lastSentAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}</div>}
           </StepCard>
         </div>
 
@@ -418,20 +433,24 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
           </div>
         )}
 
-        {/* Pre-send preview — list every recipient before anything goes out. */}
+        {/* Pre-send preview — pick which recipients to email (default all). */}
         {confirmSend && (() => {
           const isTest = !!confirmSend.testEmail;
           const recips = recipientsFor(confirmSend.resend, isTest);
           const noEmail = isTest ? [] : orders.filter((o) => !o.buyer_email);
+          const sel = pickIds || new Set(recips.map((o) => o.id)); // null = all selected
+          const chosen = recips.filter((o) => sel.has(o.id));
+          const toggle = (id) => { const next = new Set(sel); next.has(id) ? next.delete(id) : next.add(id); setPickIds(next); };
+          const allOn = chosen.length === recips.length, noneOn = chosen.length === 0;
           return (
-            <div onClick={() => setConfirmSend(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-              <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: 'min(640px, 96vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 60px rgba(0,0,0,0.3)' }}>
+            <div onClick={() => { setConfirmSend(null); setPickIds(null); }} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+              <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: 'min(660px, 96vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 60px rgba(0,0,0,0.3)' }}>
                 <div style={{ padding: '16px 20px', borderBottom: '1px solid #eef1f5' }}>
                   <div style={{ fontSize: 17, fontWeight: 800, color: '#0f172a' }}>{isTest ? '🧪 Confirm TEST send' : '✉️ Confirm — send processing emails'}</div>
                   <div style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>
                     {isTest
-                      ? <>All <b>{recips.length}</b> emails will go to <b>{confirmSend.testEmail}</b> — no real parents are contacted.</>
-                      : <><b>{recips.length}</b> {recips.length === 1 ? 'parent' : 'parents'} will be emailed their private tracking link.{confirmSend.resend ? ' (Includes already-emailed orders.)' : ''}</>}
+                      ? <>The <b>{chosen.length}</b> selected email{chosen.length === 1 ? '' : 's'} will go to <b>{confirmSend.testEmail}</b> — no real parents are contacted.</>
+                      : <><b>{chosen.length}</b> of {recips.length} {recips.length === 1 ? 'parent' : 'parents'} will be emailed their private tracking link.{confirmSend.resend ? ' (Includes already-emailed orders.)' : ''}</>}
                   </div>
                 </div>
                 <div style={{ overflowY: 'auto', padding: '4px 20px' }}>
@@ -440,15 +459,17 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
                   ) : (
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                       <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>
+                        <th style={{ ...th, fontSize: 10.5, width: 34 }}><input type="checkbox" checked={allOn} ref={(el) => { if (el) el.indeterminate = !allOn && !noneOn; }} onChange={() => setPickIds(allOn ? new Set() : new Set(recips.map((o) => o.id)))} title="Select all" /></th>
                         {['Order #', 'Parent', isTest ? 'Routes to' : 'Email', 'Status'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}
                       </tr></thead>
                       <tbody>
                         {recips.map((o) => (
-                          <tr key={o.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                          <tr key={o.id} style={{ borderTop: '1px solid #f1f5f9', background: sel.has(o.id) ? '#fff' : '#f8fafc', opacity: sel.has(o.id) ? 1 : 0.55, cursor: 'pointer' }} onClick={() => toggle(o.id)}>
+                            <td style={td}><input type="checkbox" checked={sel.has(o.id)} onChange={() => toggle(o.id)} onClick={(e) => e.stopPropagation()} /></td>
                             <td style={td}>{o.omg_order_number}</td>
                             <td style={td}>{o.buyer_name || '—'}</td>
                             <td style={td}>{isTest ? confirmSend.testEmail : o.buyer_email}</td>
-                            <td style={td}>{o.processing_email_sent ? <span style={{ color: '#16a34a', fontSize: 12 }}>already emailed</span> : <span style={{ color: '#64748b', fontSize: 12 }}>new</span>}</td>
+                            <td style={td}>{o.processing_email_sent ? <span style={{ color: '#16a34a', fontSize: 12 }}>emailed{o.processing_email_sent_at ? ' ' + new Date(o.processing_email_sent_at).toLocaleDateString() : ''}</span> : <span style={{ color: '#64748b', fontSize: 12 }}>new</span>}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -461,9 +482,9 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
                   )}
                 </div>
                 <div style={{ padding: '14px 20px', borderTop: '1px solid #eef1f5', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                  <button onClick={() => setConfirmSend(null)} style={secondaryBtn}>Cancel</button>
-                  <button onClick={() => { const cs = confirmSend; setConfirmSend(null); sendEmails(cs.resend, cs.testEmail); }} disabled={!recips.length} style={{ ...primaryBtn, opacity: recips.length ? 1 : 0.5, ...(isTest ? { background: '#d97706' } : {}) }}>
-                    {isTest ? `Send ${recips.length} test email${recips.length === 1 ? '' : 's'}` : `Send to ${recips.length} parent${recips.length === 1 ? '' : 's'}`}
+                  <button onClick={() => { setConfirmSend(null); setPickIds(null); }} style={secondaryBtn}>Cancel</button>
+                  <button onClick={() => { const cs = confirmSend; const ids = chosen.map((o) => o.id); setConfirmSend(null); setPickIds(null); sendEmails(cs.resend, cs.testEmail, ids); }} disabled={!chosen.length} style={{ ...primaryBtn, opacity: chosen.length ? 1 : 0.5, ...(isTest ? { background: '#d97706' } : {}) }}>
+                    {isTest ? `Send ${chosen.length} test email${chosen.length === 1 ? '' : 's'}` : `Send to ${chosen.length} parent${chosen.length === 1 ? '' : 's'}`}
                   </button>
                 </div>
               </div>
@@ -486,100 +507,68 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
           </div>
         ) : (
           <>
-            {/* Review grid for parsed contacts */}
-            {draftContacts && (
-              <div style={{ border: '1px solid #bfdbfe', borderRadius: 10, marginBottom: 14, overflow: 'hidden' }}>
-                <div style={{ padding: '9px 12px', background: '#eff6ff', color: '#1e40af', fontWeight: 700, fontSize: 12.5 }}>Review parsed contacts ({draftContacts.length}) — edit anything, then save</div>
-                {/* Cross-check the two docs by order number + name. */}
-                {(() => {
-                  const byNum = {}; orders.forEach((o) => { byNum[String(o.omg_order_number)] = o; });
-                  const slipNums = new Set(draftContacts.map((c) => String(c.orderNumber || '').trim()).filter(Boolean));
-                  const noMatch = draftContacts.filter((c) => { const n = String(c.orderNumber || '').trim(); return !n || !byNum[n]; });
-                  const nameMismatch = draftContacts.filter((c) => { const o = byNum[String(c.orderNumber || '').trim()]; return o && c.name && !namesMatch(c.name, o.buyer_name || o.player_name); });
-                  const ordersNoSlip = orders.filter((o) => !slipNums.has(String(o.omg_order_number)));
-                  const ok = draftContacts.length - noMatch.length - nameMismatch.length;
-                  const allGood = !noMatch.length && !nameMismatch.length && !ordersNoSlip.length;
-                  return (
-                    <div style={{ padding: '10px 12px', borderBottom: '1px solid #eef1f5', background: allGood ? '#f0fdf4' : '#fffbeb' }}>
-                      {allGood ? (
-                        <div style={{ fontSize: 12.5, fontWeight: 700, color: '#166534' }}>✓ All {draftContacts.length} packing slips match a player order by number and name.</div>
-                      ) : (
-                        <div style={{ fontSize: 12.5, color: '#92400e' }}>
-                          <div style={{ fontWeight: 800, marginBottom: 4 }}>⚠️ Cross-check found differences — review before saving:</div>
-                          <div>✓ {ok} match cleanly{noMatch.length ? ` · ${noMatch.length} slip${noMatch.length > 1 ? 's' : ''} with no matching order #` : ''}{nameMismatch.length ? ` · ${nameMismatch.length} name mismatch${nameMismatch.length > 1 ? 'es' : ''}` : ''}{ordersNoSlip.length ? ` · ${ordersNoSlip.length} order${ordersNoSlip.length > 1 ? 's' : ''} with no packing slip` : ''}</div>
-                          {noMatch.length > 0 && <div style={{ marginTop: 4 }}>No order # match: {noMatch.slice(0, 8).map((c) => c.orderNumber || c.name || '?').join(', ')}{noMatch.length > 8 ? '…' : ''}</div>}
-                          {nameMismatch.length > 0 && <div style={{ marginTop: 4 }}>Name differs: {nameMismatch.slice(0, 6).map((c) => { const o = byNum[String(c.orderNumber).trim()]; return `#${c.orderNumber} "${c.name}" vs "${o.buyer_name || o.player_name || '?'}"`; }).join('; ')}</div>}
-                          {ordersNoSlip.length > 0 && <div style={{ marginTop: 4 }}>Orders without a slip: {ordersNoSlip.slice(0, 8).map((o) => `#${o.omg_order_number}`).join(', ')}{ordersNoSlip.length > 8 ? '…' : ''}</div>}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
-                    <thead><tr style={{ textAlign: 'left', color: '#64748b' }}>
-                      {['Order #', 'Name', 'Email', 'Phone', 'Street', 'City', 'State', 'ZIP'].map((h) => <th key={h} style={th}>{h}</th>)}
-                    </tr></thead>
-                    <tbody>
-                      {draftContacts.map((c, i) => {
-                        const _o = orders.find((o) => String(o.omg_order_number) === String(c.orderNumber || '').trim());
-                        const _numBad = !c.orderNumber || !_o;
-                        const _nameBad = _o && c.name && !namesMatch(c.name, _o.buyer_name || _o.player_name);
-                        const flag = (bad) => bad ? { background: '#fff7ed', borderColor: '#fdba74' } : {};
-                        return (
-                        <tr key={i}>
-                          <td style={td}><input value={c.orderNumber || ''} onChange={(e) => updateDraft(i, 'orderNumber', e.target.value)} style={{ ...cell, ...flag(_numBad) }} title={_numBad ? 'No player order with this number' : (_o ? `Matches order for ${_o.buyer_name || _o.player_name || ''}` : '')} /></td>
-                          <td style={td}><input value={c.name || ''} onChange={(e) => updateDraft(i, 'name', e.target.value)} style={{ ...cell, ...flag(_nameBad) }} title={_nameBad ? `Player order name is "${_o.buyer_name || _o.player_name || ''}"` : ''} /></td>
-                          <td style={td}><input value={c.email || ''} onChange={(e) => updateDraft(i, 'email', e.target.value)} style={{ ...cell, minWidth: 170, ...(c.email ? {} : { background: '#fff7ed' }) }} /></td>
-                          <td style={td}><input value={c.phone || ''} onChange={(e) => updateDraft(i, 'phone', e.target.value)} style={cell} /></td>
-                          <td style={td}><input value={(c.address && c.address.street1) || ''} onChange={(e) => updateDraft(i, 'address', { ...(c.address || {}), street1: e.target.value })} style={{ ...cell, minWidth: 150 }} /></td>
-                          <td style={td}><input value={(c.address && c.address.city) || ''} onChange={(e) => updateDraft(i, 'address', { ...(c.address || {}), city: e.target.value })} style={cell} /></td>
-                          <td style={td}><input value={(c.address && c.address.state) || ''} onChange={(e) => updateDraft(i, 'address', { ...(c.address || {}), state: e.target.value })} style={{ ...cell, width: 50 }} /></td>
-                          <td style={td}><input value={(c.address && c.address.zip) || ''} onChange={(e) => updateDraft(i, 'address', { ...(c.address || {}), zip: e.target.value })} style={{ ...cell, width: 80 }} /></td>
-                        </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+            {/* When a packing slip is parsed, the orders table below becomes the
+                review surface — a single section. This is just the banner + Save bar. */}
+            {draftContacts && (() => {
+              const byNum = {}; orders.forEach((o) => { byNum[String(o.omg_order_number)] = o; });
+              const slipNums = new Set(draftContacts.map((c) => String(c.orderNumber || '').trim()).filter(Boolean));
+              const noMatch = draftContacts.filter((c) => { const n = String(c.orderNumber || '').trim(); return !n || !byNum[n]; });
+              const nameMismatch = draftContacts.filter((c) => { const o = byNum[String(c.orderNumber || '').trim()]; return o && c.name && !namesMatch(c.name, o.buyer_name || o.player_name); });
+              const ordersNoSlip = orders.filter((o) => !slipNums.has(String(o.omg_order_number)));
+              const ok = draftContacts.length - noMatch.length - nameMismatch.length;
+              const allGood = !noMatch.length && !nameMismatch.length && !ordersNoSlip.length;
+              return (
+                <div style={{ border: '1px solid #bfdbfe', borderRadius: 10, marginBottom: 12, overflow: 'hidden' }}>
+                  <div style={{ padding: '9px 12px', background: '#eff6ff', color: '#1e40af', fontWeight: 700, fontSize: 12.5 }}>Reviewing {draftContacts.length} packing slip{draftContacts.length === 1 ? '' : 's'} — edit emails/addresses inline in the table below, then save.</div>
+                  <div style={{ padding: '10px 12px', background: allGood ? '#f0fdf4' : '#fffbeb' }}>
+                    {allGood ? <div style={{ fontSize: 12.5, fontWeight: 700, color: '#166534' }}>✓ All {draftContacts.length} slips match a player order by number and name.</div>
+                      : <div style={{ fontSize: 12.5, color: '#92400e' }}>
+                          <div style={{ fontWeight: 800, marginBottom: 4 }}>⚠️ Cross-check found differences:</div>
+                          <div>✓ {ok} match cleanly{noMatch.length ? ` · ${noMatch.length} slip${noMatch.length > 1 ? 's' : ''} with no matching order #` : ''}{nameMismatch.length ? ` · ${nameMismatch.length} name mismatch${nameMismatch.length > 1 ? 'es' : ''}` : ''}{ordersNoSlip.length ? ` · ${ordersNoSlip.length} order${ordersNoSlip.length > 1 ? 's' : ''} with no slip` : ''}</div>
+                        </div>}
+                  </div>
+                  <div style={{ padding: 12, display: 'flex', gap: 8, borderTop: '1px solid #eef1f5' }}>
+                    <button onClick={saveContacts} disabled={busy === 'enrich'} style={primaryBtn}>{busy === 'enrich' ? 'Saving…' : `Save ${draftContacts.length} contact${draftContacts.length === 1 ? '' : 's'}`}</button>
+                    <button onClick={() => setDraftContacts(null)} style={secondaryBtn}>Cancel</button>
+                  </div>
                 </div>
-                <div style={{ padding: 12, display: 'flex', gap: 8, borderTop: '1px solid #f1f5f9' }}>
-                  <button onClick={saveContacts} disabled={busy === 'enrich'} style={primaryBtn}>{busy === 'enrich' ? 'Saving…' : 'Save contacts'}</button>
-                  <button onClick={() => setDraftContacts(null)} style={secondaryBtn}>Cancel</button>
-                </div>
-              </div>
-            )}
+              );
+            })()}
 
             {orders.length > 0 && <>
-            {/* Fulfillment toolbar */}
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '10px 12px', background: '#f8fafc', borderRadius: 8, marginBottom: 12 }}>
+            {/* Fulfillment toolbar — hidden during review to keep focus on saving */}
+            {!draftContacts && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '10px 12px', background: '#f8fafc', borderRadius: 8, marginBottom: 12 }}>
               <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Move all:</span>
               {[['pending', 'Received'], ['in_production', 'In production'], ['shipped', 'Shipped'], ['complete', 'Complete']].map(([ls, label]) => (
                 <button key={ls} onClick={() => advanceAll(ls)} disabled={busy === 'advance'} style={stageBtn(ls)}>{label}</button>
               ))}
               <span style={{ width: 1, height: 22, background: '#e2e8f0', margin: '0 4px' }} />
               <button onClick={pushAllToShipStation} disabled={busy === 'ss-all' || !withAddress} style={{ ...secondaryBtn, opacity: withAddress ? 1 : 0.5 }}>{busy === 'ss-all' ? 'Pushing…' : `🚚 Push ${withAddress} to ShipStation`}</button>
-            </div>
+            </div>}
 
-            {/* Orders table (expandable) */}
+            {/* Orders table (expandable) — doubles as the contact-review surface */}
             <div style={{ overflowX: 'auto', border: '1px solid #eef1f5', borderRadius: 8 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead><tr style={{ textAlign: 'left', color: '#64748b', background: '#f8fafc' }}>
-                  {['', 'Order #', 'Player', 'Email', 'Items', 'Status', 'Total', 'Link'].map((h, i) => <th key={i} style={th}>{h}</th>)}
+                  {['', 'Order #', 'Player', draftContacts ? 'Email' : '✉', 'Items', 'Status', 'Total', 'Link'].map((h, i) => <th key={i} style={th}>{h}</th>)}
                 </tr></thead>
                 <tbody>
                   {orders.map((o) => {
                     const st = o.items[0] ? o.items[0].line_status : 'pending';
                     const isOpen = expanded === o.id;
                     const missing = o.items.reduce((a, i) => a + (Number(i.missing_qty) || 0), 0);
+                    const di = draftIdxByNum ? draftIdxByNum[String(o.omg_order_number)] : null;
                     return (
                       <React.Fragment key={o.id}>
                         <tr style={{ borderTop: '1px solid #f1f5f9', background: isOpen ? '#f8fafc' : '#fff', cursor: 'pointer' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
                           <td style={{ ...td, width: 24, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
                           <td style={td}>{o.omg_order_number}</td>
                           <td style={td}>{o.buyer_name || '—'}</td>
-                          <td style={td}>{o.buyer_email
-                            ? <span style={{ color: o.processing_email_sent ? '#166534' : '#0f172a' }}>{o.buyer_email}{o.processing_email_sent ? ' ✓' : ''}</span>
-                            : <span style={{ color: '#b45309', fontWeight: 600 }}>missing</span>}</td>
+                          {di != null
+                            ? <td style={td} onClick={(e) => e.stopPropagation()}><input value={(draftContacts[di].email) || ''} onChange={(e) => updateDraft(di, 'email', e.target.value)} placeholder="email…" style={{ ...cell, minWidth: 150, ...(draftContacts[di].email ? {} : { background: '#fff7ed', borderColor: '#fdba74' }) }} /></td>
+                            : <td style={{ ...td, textAlign: 'center' }} title={o.buyer_email || 'No email — expand to add'}>{o.buyer_email
+                                ? <span style={{ color: o.processing_email_sent ? '#166534' : '#16a34a', fontSize: 14 }}>{o.processing_email_sent ? '✓' : '●'}</span>
+                                : <span style={{ color: '#dc2626', fontSize: 14 }} title="No email">⚠</span>}</td>}
                           <td style={td}>{o.items.length}{missing > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> · {missing} short</span>}</td>
                           <td style={td}><StatusPill s={st} /></td>
                           <td style={td}>{money(o.total)}</td>
@@ -595,14 +584,33 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus }) {
                         {isOpen && (
                           <tr style={{ background: '#f8fafc' }}>
                             <td colSpan={8} style={{ padding: '4px 16px 16px' }} onClick={(e) => e.stopPropagation()}>
-                              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '10px 0' }}>
+                              {/* Contact + ship-to. During review (di set) these are
+                                  editable from the parsed slip; otherwise read-only. */}
+                              {di != null ? (
+                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '10px 0 6px', alignItems: 'center' }}>
+                                  <span style={{ fontSize: 11, color: '#94a3b8' }}>Phone</span>
+                                  <input value={draftContacts[di].phone || ''} onChange={(e) => updateDraft(di, 'phone', e.target.value)} placeholder="phone" style={{ ...cell, width: 130 }} />
+                                  <span style={{ fontSize: 11, color: '#94a3b8' }}>Street</span>
+                                  <input value={(draftContacts[di].address && draftContacts[di].address.street1) || ''} onChange={(e) => updateDraft(di, 'address', { ...(draftContacts[di].address || {}), street1: e.target.value })} placeholder="street" style={{ ...cell, minWidth: 160 }} />
+                                  <input value={(draftContacts[di].address && draftContacts[di].address.city) || ''} onChange={(e) => updateDraft(di, 'address', { ...(draftContacts[di].address || {}), city: e.target.value })} placeholder="city" style={{ ...cell, width: 120 }} />
+                                  <input value={(draftContacts[di].address && draftContacts[di].address.state) || ''} onChange={(e) => updateDraft(di, 'address', { ...(draftContacts[di].address || {}), state: e.target.value })} placeholder="ST" style={{ ...cell, width: 48 }} />
+                                  <input value={(draftContacts[di].address && draftContacts[di].address.zip) || ''} onChange={(e) => updateDraft(di, 'address', { ...(draftContacts[di].address || {}), zip: e.target.value })} placeholder="zip" style={{ ...cell, width: 80 }} />
+                                </div>
+                              ) : (
+                                <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', padding: '10px 0 4px', fontSize: 12.5 }}>
+                                  <div><span style={{ color: '#94a3b8' }}>Email </span>{o.buyer_email ? <b>{o.buyer_email}{o.processing_email_sent ? ' ✓ emailed' : ''}</b> : <span style={{ color: '#dc2626', fontWeight: 700 }}>missing — upload the packing slip to add</span>}</div>
+                                  {o.buyer_phone && <div><span style={{ color: '#94a3b8' }}>Phone </span>{o.buyer_phone}</div>}
+                                  {o.ship_address && o.ship_address.street1 && <div><span style={{ color: '#94a3b8' }}>Ship to </span>{[o.ship_address.street1, o.ship_address.city, o.ship_address.state, o.ship_address.zip].filter(Boolean).join(', ')}</div>}
+                                </div>
+                              )}
+                              {!draftContacts && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '6px 0 10px' }}>
                                 <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Set status:</span>
                                 {[['pending', 'Received'], ['in_production', 'In production'], ['shipped', 'Shipped'], ['complete', 'Complete']].map(([ls, label]) => (
                                   <button key={ls} onClick={() => setLineStatus(o.id, ls)} disabled={busy === 'status-' + o.id} style={{ ...stageBtn(ls), opacity: st === ls ? 1 : 0.72, outline: st === ls ? '2px solid #0f172a' : 'none' }}>{label}</button>
                                 ))}
                                 <span style={{ width: 1, height: 20, background: '#e2e8f0', margin: '0 2px' }} />
                                 <button onClick={() => pushToShipStation(o)} disabled={busy === 'ss-' + o.id} style={{ ...secondaryBtn, padding: '7px 13px', fontSize: 12.5 }}>{busy === 'ss-' + o.id ? 'Pushing…' : '🚚 ShipStation'}</button>
-                              </div>
+                              </div>}
                               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
                                 <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>
                                   {['Item', 'Color', 'Size', 'Qty', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}
