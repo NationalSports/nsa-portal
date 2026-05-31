@@ -4705,7 +4705,18 @@ export default function App(){
 
       setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
       setOmgSel(updated);
-      nf(`Imported ${products.length} products from OMG report (${totalQty} total items)${_autoLinked ? ` · linked to ${_autoLinked.name}` : ''}`);
+      // Product images only come through when "include images" is checked when
+      // sharing the OMG report. If most/all products have no image, the share
+      // was almost certainly exported without it — warn so the rep re-shares.
+      const _noImg = (products || []).filter(p => !p.image_url).length;
+      const _total = (products || []).length;
+      if (_total > 0 && _noImg === _total) {
+        nf(`⚠ Imported ${_total} products but NONE have images. In OMG, re-share the report with “Include product images” checked, then Re-import.`, 'error');
+      } else if (_noImg > 0) {
+        nf(`⚠ Imported ${_total} products — ${_noImg} are missing images. Re-share the OMG report with “Include product images” checked and Re-import if you need them.`, 'warn');
+      } else {
+        nf(`Imported ${_total} products from OMG report (${totalQty} total items)${_autoLinked ? ` · linked to ${_autoLinked.name}` : ''}`);
+      }
       return updated;
     } catch (e) {
       console.error('[OMG Report] Import failed:', e);
@@ -14413,7 +14424,7 @@ export default function App(){
           <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10}}>
             {[['_omg_acct_collected','Total Collected','rev'],['_omg_omg_fees','OMG Fees','cost'],['_omg_cc_fees','Credit Card Fees','cost'],['_omg_invoiced_fees','Invoiced Fees','cost'],['_omg_net_revenue','Net Revenue','rev']].map(([key,label,kind])=>
               <div key={key}>
-                <div style={{fontSize:10,color:kind==='cost'?'#b91c1c':'#64748b',marginBottom:3}}>{label}{kind==='cost'?' (cost)':''}</div>
+                <div style={{fontSize:10,color:kind==='cost'?'#b91c1c':'#64748b',marginBottom:3}}>{label}</div>
                 <div style={{display:'flex',alignItems:'center',gap:3}}>
                   <span style={{color:'#94a3b8',fontSize:12}}>$</span>
                   <input type="number" step="0.01" value={s[key]||''} placeholder="0"
@@ -14453,6 +14464,9 @@ export default function App(){
               {(s.products||[]).length===0&&<div style={{marginBottom:12}}>
                 <div style={{fontSize:15,fontWeight:700,color:'#166534',marginBottom:4}}>{s.status==='closed'?'Store closed — ready for pull':'Paste the OMG report to load products'}</div>
                 <div style={{fontSize:12,color:'#64748b'}}>Share the report from OMG admin and paste the link below.</div>
+                <div style={{marginTop:8,padding:'8px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:12,color:'#92400e',fontWeight:600}}>
+                  📷 Before sharing in OMG, check <b>“Include product images”</b> — without it, products import with no photos and you’ll have to re-share &amp; re-import.
+                </div>
               </div>}
               <div style={{display:'flex',gap:8,alignItems:'center'}}>
                 <input type="text" placeholder="https://report.ordermygear.com/..." value={omgReportUrl||s._report_url||''} onChange={e=>setOmgReportUrl(e.target.value)}
@@ -14461,6 +14475,14 @@ export default function App(){
                   importOMGReport(s, omgReportUrl||s._report_url);
                 }}>{omgReportLoading?'⏳ Importing…':(s._report_url?'Re-import':'Import')}</button>
               </div>
+              {/* Missing-images warning — products only carry photos when the OMG
+                  share had "Include product images" checked. */}
+              {(s.products||[]).length>0&&(()=>{const noImg=(s.products||[]).filter(p=>!p.image_url).length;if(noImg===0)return null;const all=noImg===(s.products||[]).length;return(
+                <div style={{marginTop:8,padding:'8px 12px',background:all?'#fef2f2':'#fffbeb',border:`1px solid ${all?'#fca5a5':'#fde68a'}`,borderRadius:6,fontSize:12,color:all?'#b91c1c':'#92400e',fontWeight:600,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                  <span>📷 {all?'No products have images':`${noImg} of ${(s.products||[]).length} products have no image`}. Re-share the OMG report with <b>“Include product images”</b> checked, then</span>
+                  <button className="btn btn-sm" disabled={omgReportLoading} style={{fontSize:11,padding:'2px 10px',background:'#166534',color:'#fff',whiteSpace:'nowrap'}} onClick={()=>importOMGReport(s, omgReportUrl||s._report_url)}>{omgReportLoading?'⏳ Re-importing…':'Re-import'}</button>
+                </div>
+              )})()}
               {s._report_imported_at&&<div style={{display:'flex',alignItems:'center',gap:8,marginTop:6}}>
                 <div style={{fontSize:11,color:'#64748b'}}>Last imported: {new Date(s._report_imported_at).toLocaleString()}</div>
                 {(s.products||[]).some(p=>!p.cost||p.cost<=0)&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#fef3c7',color:'#92400e',border:'1px solid #fbbf24'}} onClick={async()=>{
