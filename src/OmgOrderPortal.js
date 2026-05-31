@@ -90,6 +90,56 @@ function parsePage(lines) {
   return { orderNumber, email, phone, name, address };
 }
 
+// Extract line items from a slip page using the column x-positions in the
+// "Item / Details / Color / Size / Options / Qty" header row. Product names
+// wrap across several rows, so we bucket every text fragment into its nearest
+// column and split items on the "Item N of M" marker. Best-effort by design —
+// the order is still created even if this returns nothing.
+function extractItems(raw) {
+  if (!raw.length) return [];
+  const rowsMap = {};
+  raw.forEach((it) => { const y = Math.round(it.y); (rowsMap[y] = rowsMap[y] || []).push(it); });
+  const ys = Object.keys(rowsMap).map(Number).sort((a, b) => b - a); // top → bottom
+
+  // Find the header row and each column's x anchor.
+  let headerY = null, cols = null;
+  for (const y of ys) {
+    const cells = rowsMap[y];
+    const t = cells.map((c) => c.s).join(' ').toLowerCase();
+    if (t.includes('color') && t.includes('size') && (t.includes('qty') || t.includes('quantity'))) {
+      headerY = y;
+      const findX = (label) => { const c = cells.find((cc) => cc.s.trim().toLowerCase().startsWith(label)); return c ? c.x : null; };
+      cols = { details: findX('details') ?? findX('item'), color: findX('color'), size: findX('size'), options: findX('options'), qty: (findX('qty') ?? findX('quantity')) };
+      break;
+    }
+  }
+  if (!cols || cols.color == null || cols.size == null || cols.qty == null) return [];
+  const anchors = [['details', cols.details], ['color', cols.color], ['size', cols.size], ['options', cols.options], ['qty', cols.qty]]
+    .filter((a) => a[1] != null).sort((a, b) => a[1] - b[1]);
+  const colOf = (x) => { let best = anchors[0][0], bd = Infinity; for (const [n, ax] of anchors) { const d = Math.abs(x - ax); if (d < bd) { bd = d; best = n; } } return best; };
+
+  const items = [];
+  let cur = null;
+  const flush = () => { if (cur && (cur.product || cur.color)) items.push(cur); cur = null; };
+  for (const y of ys) {
+    if (y >= headerY) continue; // skip header and everything above it
+    const cells = rowsMap[y].slice().sort((a, b) => a.x - b.x);
+    const rowText = cells.map((c) => c.s).join(' ');
+    if (/dealer info|returns\s*&|disclaimer|page \d+ of/i.test(rowText)) break; // footer
+    const bucket = { details: [], color: [], size: [], options: [], qty: [] };
+    cells.forEach((c) => { const s = c.s.trim(); if (s) bucket[colOf(c.x)].push(s); });
+    if (!cur) cur = { product: '', color: '', size: '', qty: 0 };
+    if (bucket.details.length) cur.product = (cur.product ? cur.product + ' ' : '') + bucket.details.join(' ');
+    if (bucket.color.length) cur.color = (cur.color ? cur.color + ' ' : '') + bucket.color.join(' ');
+    if (bucket.size.length && !cur.size) cur.size = bucket.size.join(' ');
+    if (bucket.qty.length) { const n = parseInt(bucket.qty.join('').replace(/\D/g, ''), 10); if (n) cur.qty = n; }
+    if (/item\s+\d+\s+of\s+\d+/i.test(rowText)) flush();
+  }
+  flush();
+  return items.map((it) => ({ product: it.product.replace(/\s+/g, ' ').trim(), color: it.color.replace(/\s+/g, ' ').trim(), size: (it.size || '').trim(), qty: it.qty || 1 }))
+    .filter((it) => it.product || it.color);
+}
+
 async function parsePackingSlip(file) {
   const pdfjsLib = await loadPdfJs();
   const buf = await file.arrayBuffer();
@@ -98,15 +148,14 @@ async function parsePackingSlip(file) {
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p);
     const content = await page.getTextContent();
+    const raw = content.items.map((it) => ({ x: it.transform[4], y: it.transform[5], s: it.str })).filter((o) => o.s);
     const byRow = {};
-    content.items.forEach((it) => {
-      const y = Math.round(it.transform[5]);
-      (byRow[y] = byRow[y] || []).push({ x: it.transform[4], s: it.str });
-    });
+    raw.forEach((it) => { const y = Math.round(it.y); (byRow[y] = byRow[y] || []).push(it); });
     const lines = Object.keys(byRow).map(Number).sort((a, b) => b - a)
       .map((y) => byRow[y].sort((a, b) => a.x - b.x).map((o) => o.s).join(' ').replace(/\s+/g, ' ').trim())
       .filter(Boolean);
     const c = parsePage(lines);
+    c.items = extractItems(raw);
     if (c.orderNumber || c.email) contacts.push(c);
   }
   return contacts;
@@ -200,20 +249,26 @@ export default function OmgOrderPortal({ saleCode, storeName }) {
   const onPickFile = (e) => handleFile(e.target.files && e.target.files[0]);
   const onDrop = (e) => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files && e.dataTransfer.files[0]); };
 
-  // 3) Save reviewed contacts → enrich orders.
+  // 3) Save the parsed slip → create/update orders (incl. line items) from it.
+  //    The packing slip is the primary importer now: it creates the shadow
+  //    store and the orders itself, so the player report link is optional.
   const saveContacts = async () => {
-    if (!store || !draftContacts) return;
+    if (!draftContacts) return;
     setBusy('enrich');
     try {
-      const r = await fetch('/.netlify/functions/omg-order-enrich', {
+      const r = await fetch('/.netlify/functions/omg-packing-slip-ingest', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storeId: store.id, contacts: draftContacts }),
+        body: JSON.stringify({ saleCode, storeName, orders: draftContacts }),
       });
       const d = await r.json();
-      if (!r.ok || !d.success) throw new Error(d.error || 'Enrich failed');
-      flash(`Saved contacts for ${d.matched} order(s).${d.unmatched && d.unmatched.length ? ` ${d.unmatched.length} order # didn't match.` : ''}`);
+      if (!r.ok || !d.success) throw new Error(d.error || 'Import failed');
+      const parts = [];
+      if (d.created) parts.push(`${d.created} created`);
+      if (d.updated) parts.push(`${d.updated} updated`);
+      if (d.itemsWritten) parts.push(`${d.itemsWritten} items`);
+      flash(`Imported from packing slip: ${parts.join(' · ') || 'done'}.`);
       setDraftContacts(null);
-      await loadOrders(store);
+      await loadStore();
     } catch (e) { flash(e.message, 'err'); } finally { setBusy(''); }
   };
 
