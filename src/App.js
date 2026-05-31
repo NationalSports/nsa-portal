@@ -14055,14 +14055,18 @@ export default function App(){
       // Everything below the page must be complete before the SO can be pulled.
       const _alreadyPulled=sos.some(so=>so.omg_store_id===s.id);
       const _needArt=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);
-      const _hasDollar=(s._omg_grand_total||0)>0;                       // Dollar Report entered (top)
+      const _hasDollar=(s._omg_grand_total||0)>0;                       // ① Dollar Report entered
+      const _hasAcct=(s._omg_acct_collected||0)>0;                      // ② Accounting Report entered
+      const _reportsMatch=!(_hasDollar&&_hasAcct)||Math.abs((s._omg_acct_collected||0)-(s._omg_grand_total||0))<1; // collected == grand total
       const _ps=omgPortalStatus&&omgPortalStatus.saleCode===s._omg_sale_code?omgPortalStatus:null;
       const _portalImported=!!_ps&&_ps.orders>0;                        // player report / packing slip imported
       const _portalEmailed=!!_ps&&_ps.notified>0&&_ps.notified>=_ps.withEmail&&_ps.withEmail>0; // all parents emailed
       const soGate=(()=>{
         const reasons=[];
         if(!s.customer_id)reasons.push('Link a customer (top of page)');
-        if(!_hasDollar)reasons.push('Enter the Dollar Report financials (top)');
+        if(!_hasDollar)reasons.push('Enter the Dollar Report (revenue, top)');
+        if(!_hasAcct)reasons.push('Enter the Accounting Report (fees, top)');
+        if(!_reportsMatch)reasons.push('Reports disagree — Total Collected ≠ Grand Total');
         if(_needArt.length)reasons.push(`${_needArt.length} item${_needArt.length>1?'s':''} need deco or “No Deco”`);
         if(!_portalImported)reasons.push('Import parent orders in the Parent Order Portal');
         if(!_portalEmailed)reasons.push('Send the parent “processing” emails');
@@ -14131,16 +14135,22 @@ export default function App(){
               const newSO={id:generatedId,customer_id:s.customer_id,memo:'OMG Store: '+s.store_name+(s._omg_sale_code?' ('+s._omg_sale_code+')':''),status:'need_order',
                 created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
                 expected_date:'',production_notes:'OMG Store '+s.store_name+' — '+soItems.length+' items imported from report. Deco cost is $0 (bundled in store price).'
-                  +(s._omg_shipping?'\nShipping collected: $'+s._omg_shipping.toFixed(2):'')
-                  +(s._omg_processing?'\nProcessing fees (counted as NSA cost): $'+s._omg_processing.toFixed(2):'')
-                  +(s._omg_tax?'\nSales tax collected & remitted by OMG: $'+s._omg_tax.toFixed(2)+' (SO tax left at $0)':'')
-                  +(s._omg_fundraise?'\nFundraising added to customer as promo credit: $'+s._omg_fundraise.toFixed(2):'')
-                  +(s._omg_grand_total?'\nGrand total: $'+s._omg_grand_total.toFixed(2):''),
+                  +'\n— REVENUE (collected from parents, Dollar Report) —'
+                  +(s._omg_shipping?'\nShipping collected (= SO shipping charge): $'+s._omg_shipping.toFixed(2):'')
+                  +(s._omg_processing?'\nOnline processing fee (revenue, covers fees): $'+s._omg_processing.toFixed(2):'')
+                  +(s._omg_tax?'\nSales tax collected (NSA revenue / NSA remits): $'+s._omg_tax.toFixed(2):'')
+                  +(s._omg_grand_total?'\nGrand total collected: $'+s._omg_grand_total.toFixed(2):'')
+                  +'\n— COSTS (fees NSA pays, Accounting Report) —'
+                  +(s._omg_omg_fees?'\nOMG fees: $'+(s._omg_omg_fees||0).toFixed(2):'')
+                  +(s._omg_cc_fees?'\nCredit card fees: $'+(s._omg_cc_fees||0).toFixed(2):'')
+                  +((s._omg_omg_fees||s._omg_cc_fees)?'\nNet after fees: $'+(((s._omg_acct_collected||s._omg_grand_total||0))-(s._omg_omg_fees||0)-(s._omg_cc_fees||0)).toFixed(2):'')
+                  +(s._omg_fundraise?'\n— Fundraising added to customer as promo credit: $'+s._omg_fundraise.toFixed(2):''),
                 shipping_type:'flat',shipping_value:s._omg_shipping||0,
                 tax_rate:0,tax_exempt:true,
                 ship_to_id:'default',firm_dates:[],art_files:artFiles,
                 jobs:[],items:soItems,omg_store_id:s.id,
-                _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_fundraise:s._omg_fundraise||0,_omg_grand_total:s._omg_grand_total||0};
+                _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_fundraise:s._omg_fundraise||0,_omg_grand_total:s._omg_grand_total||0,
+                _omg_omg_fees:s._omg_omg_fees||0,_omg_cc_fees:s._omg_cc_fees||0,_omg_acct_collected:s._omg_acct_collected||0};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
               // OMG store fundraising profit becomes a promo credit the school can
               // spend on future NSA orders. Add to (or create) the customer's
@@ -14262,7 +14272,7 @@ export default function App(){
 
         {/* OMG Store Financials — OCR from Dollar Report screenshot or manual entry */}
         {(s.products||[]).length>0&&<div className="card" style={{marginBottom:12}}><div style={{padding:16}}>
-          <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Store Financials <span style={{fontSize:11,color:'#64748b',fontWeight:400}}>— screenshot the OMG Dollar Report and drop here, or enter manually</span></div>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>① Dollar Report <span style={{fontSize:11,color:'#64748b',fontWeight:400}}>— revenue collected from parents (shipping, processing & tax are charges added to each order). Drop the screenshot or enter manually.</span></div>
           {/* Drop zone for Dollar Report screenshot */}
           <div style={{marginBottom:12,border:'2px dashed #cbd5e1',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f8fafc',transition:'all 0.2s'}}
             onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#2563eb';e.currentTarget.style.background='#eff6ff'}}
@@ -14336,6 +14346,69 @@ export default function App(){
               <span>Product Revenue (${productRev.toLocaleString()}) + Fees (${((s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0)+(s._omg_fundraise||0)).toLocaleString()}) = ${computed.toLocaleString()}</span>
               {match?<span style={{color:'#166534',fontWeight:700}}>✓ Matches Grand Total</span>
                 :<span style={{color:'#dc2626',fontWeight:700}}>⚠ Off by ${diff.toFixed(2)} from Grand Total (${s._omg_grand_total.toLocaleString()})</span>}
+            </div>;
+          })()}
+        </div></div>}
+
+        {/* OMG Accounting Report — the fees NSA actually pays (costs on the SO) */}
+        {(s.products||[]).length>0&&<div className="card" style={{marginBottom:12}}><div style={{padding:16}}>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>② Accounting Report <span style={{fontSize:11,color:'#64748b',fontWeight:400}}>— the fees NSA pays (OMG fees + credit card fees). These become COSTS on the sales order. Drop the screenshot or enter manually.</span></div>
+          {/* Drop zone for Accounting Report screenshot */}
+          <div style={{marginBottom:12,border:'2px dashed #cbd5e1',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f8fafc',transition:'all 0.2s'}}
+            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#2563eb';e.currentTarget.style.background='#eff6ff'}}
+            onDragLeave={e=>{e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc'}}
+            onDrop={async e=>{
+              e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc';
+              const file=e.dataTransfer.files?.[0];if(!file||!file.type.startsWith('image/'))return nf('Drop an image file','error');
+              nf('Reading Accounting Report…');
+              try{
+                const{createWorker}=await import('tesseract.js');
+                const worker=await createWorker('eng');
+                const{data:{text}}=await worker.recognize(file);
+                await worker.terminate();
+                console.log('[OCR] Accounting Report text:',text);
+                const parseAmt=(pattern)=>{const m=text.match(pattern);return m?parseFloat(m[1].replace(/,/g,''))||0:0};
+                const collected=parseAmt(/Total\s*Collected[^$]*\$?([\d,]+\.?\d*)/i);
+                const omgFees=parseAmt(/OMG\s*Fees[^$(]*\(?\$?([\d,]+\.?\d*)/i);
+                const ccFees=parseAmt(/Credit\s*Card\s*Fees[^$(]*\(?\$?([\d,]+\.?\d*)/i);
+                const invFees=parseAmt(/Invoiced\s*Fees[^$(]*\(?\$?([\d,]+\.?\d*)/i);
+                const net=parseAmt(/Net\s*Revenue[^$]*\$?([\d,]+\.?\d*)/i);
+                const upd={...s,_omg_acct_collected:collected,_omg_omg_fees:omgFees,_omg_cc_fees:ccFees,_omg_invoiced_fees:invFees,_omg_net_revenue:net};
+                setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
+                nf(`Extracted: Collected $${collected} | OMG Fees $${omgFees} | CC Fees $${ccFees} | Net $${net}`);
+              }catch(err){console.error('[OCR]',err);nf('OCR failed: '+err.message,'error')}
+            }}
+          >
+            <div style={{fontSize:24,marginBottom:4}}>📸</div>
+            <div style={{fontSize:12,fontWeight:600,color:'#475569'}}>Drop Accounting Report screenshot here</div>
+            <div style={{fontSize:11,color:'#94a3b8'}}>or click to select — extracts Total Collected, OMG Fees, Credit Card Fees, Net Revenue</div>
+            <input type="file" accept="image/*" style={{display:'none'}} ref={el=>{if(el)el._acctInput=true}} onClick={e=>e.stopPropagation()}/>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10}}>
+            {[['_omg_acct_collected','Total Collected','rev'],['_omg_omg_fees','OMG Fees','cost'],['_omg_cc_fees','Credit Card Fees','cost'],['_omg_invoiced_fees','Invoiced Fees','cost'],['_omg_net_revenue','Net Revenue','rev']].map(([key,label,kind])=>
+              <div key={key}>
+                <div style={{fontSize:10,color:kind==='cost'?'#b91c1c':'#64748b',marginBottom:3}}>{label}{kind==='cost'?' (cost)':''}</div>
+                <div style={{display:'flex',alignItems:'center',gap:3}}>
+                  <span style={{color:'#94a3b8',fontSize:12}}>$</span>
+                  <input type="number" step="0.01" value={s[key]||''} placeholder="0"
+                    onChange={e=>{const upd={...s,[key]:parseFloat(e.target.value)||0};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)}}
+                    style={{width:'100%',padding:'4px 6px',border:'1px solid #d1d5db',borderRadius:4,fontSize:12,fontFamily:'monospace'}}/>
+                </div>
+              </div>
+            )}
+          </div>
+          {/* Cross-check: Total Collected must equal the Dollar Report Grand Total */}
+          {(s._omg_acct_collected>0||s._omg_grand_total>0)&&(()=>{
+            const collected=s._omg_acct_collected||0,grand=s._omg_grand_total||0;
+            const diff=Math.abs(collected-grand);const match=diff<1;
+            const computedNet=collected-(s._omg_omg_fees||0)-(s._omg_cc_fees||0)-(s._omg_invoiced_fees||0);
+            const netDiff=Math.abs(computedNet-(s._omg_net_revenue||0));
+            return <div style={{padding:'8px 16px',borderTop:'1px solid #e2e8f0',fontSize:11}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <span>Total Collected (${collected.toLocaleString()}) vs Dollar Report Grand Total (${grand.toLocaleString()})</span>
+                {grand>0?(match?<span style={{color:'#166534',fontWeight:700}}>✓ Reports match</span>:<span style={{color:'#dc2626',fontWeight:700}}>⚠ Off by ${diff.toFixed(2)} — check the screenshots</span>):<span style={{color:'#94a3b8'}}>Enter the Dollar Report above to cross-check</span>}
+              </div>
+              {(s._omg_net_revenue>0)&&<div style={{marginTop:4,color:netDiff<1?'#64748b':'#b45309'}}>Collected − fees = ${computedNet.toLocaleString()} {netDiff<1?'✓ matches Net Revenue':`(report shows $${(s._omg_net_revenue||0).toLocaleString()})`}</div>}
             </div>;
           })()}
         </div></div>}
@@ -14612,7 +14685,9 @@ export default function App(){
             <div style={{display:'grid',gap:6,marginBottom:14}}>
               {[
                 [!!s.customer_id,'Customer linked',!s.customer_id?'Link a customer at the top of the page':''],
-                [_hasDollar,'Dollar Report entered',!_hasDollar?'Enter the store financials (Store Financials, top)':''],
+                [_hasDollar,'Dollar Report entered (revenue)',!_hasDollar?'Enter the ① Dollar Report at the top':''],
+                [_hasAcct,'Accounting Report entered (fees)',!_hasAcct?'Enter the ② Accounting Report at the top':''],
+                [_reportsMatch,'Reports match',!_reportsMatch?'Total Collected ≠ Dollar Report Grand Total — check the screenshots':''],
                 [_needArt.length===0,'All items have deco or “No Deco”',_needArt.length?`${_needArt.length} item${_needArt.length>1?'s':''} still need an art group or “No Deco”`:''],
                 [_portalImported,'Parent orders imported',!_portalImported?'Import the player report / packing slip in the Parent Order Portal':''],
                 [_portalEmailed,'Parents emailed',!_portalEmailed?'Send the “order is being processed” emails':''],
