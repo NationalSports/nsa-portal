@@ -14577,7 +14577,7 @@ export default function App(){
             each OMG store has one flow: Store Products (above) + Parent Orders. */}
         <ComponentErrorBoundary name="OmgOrderPortal">
           <React.Suspense fallback={<LazyFallback/>}>
-            <OmgOrderPortal saleCode={s._omg_sale_code} storeName={s.store_name} reportUrlDefault={s._report_url||''}/>
+            <OmgOrderPortal saleCode={s._omg_sale_code} storeName={s.store_name}/>
           </React.Suspense>
         </ComponentErrorBoundary>
 

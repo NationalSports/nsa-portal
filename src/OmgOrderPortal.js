@@ -96,19 +96,19 @@ async function parsePackingSlip(file) {
 // Embedded section. Props:
 //   saleCode   — OMG sale code (e.g. "WVD87"); identifies the shadow store
 //   storeName  — display name (for ingest fallback)
-//   reportUrlDefault — optional prefill for the player report URL
 // ─────────────────────────────────────────────────────────────────────
-export default function OmgOrderPortal({ saleCode, storeName, reportUrlDefault = '' }) {
+export default function OmgOrderPortal({ saleCode, storeName }) {
   const [store, setStore] = useState(null);       // shadow webstore row (null until first import)
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [msg, setMsg] = useState(null);           // {kind,text}
-  const [reportUrl, setReportUrl] = useState(reportUrlDefault);
+  const [reportUrl, setReportUrl] = useState('');
   const [draftContacts, setDraftContacts] = useState(null);
   const [expanded, setExpanded] = useState(null);
   const [testEmail, setTestEmail] = useState('');
   const [confirmSend, setConfirmSend] = useState(null); // { resend, testEmail } when the preview modal is open
+  const [dragging, setDragging] = useState(false);
   const fileRef = useRef(null);
 
   const flash = (text, kind = 'ok') => { setMsg({ text, kind }); setTimeout(() => setMsg(null), 6000); };
@@ -157,9 +157,9 @@ export default function OmgOrderPortal({ saleCode, storeName, reportUrlDefault =
   };
 
   // 2) Parse the packing slip → editable review grid.
-  const onPickFile = async (e) => {
-    const file = e.target.files && e.target.files[0];
+  const handleFile = async (file) => {
     if (!file) return;
+    if (file.type && file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name || '')) { flash('Please choose a PDF packing slip.', 'err'); return; }
     setBusy('parse');
     try {
       const contacts = await parsePackingSlip(file);
@@ -168,6 +168,8 @@ export default function OmgOrderPortal({ saleCode, storeName, reportUrlDefault =
       flash(`Parsed ${contacts.length} packing slip${contacts.length === 1 ? '' : 's'} — review below, then save.`);
     } catch (err) { flash(err.message, 'err'); } finally { setBusy(''); if (fileRef.current) fileRef.current.value = ''; }
   };
+  const onPickFile = (e) => handleFile(e.target.files && e.target.files[0]);
+  const onDrop = (e) => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files && e.dataTransfer.files[0]); };
 
   // 3) Save reviewed contacts → enrich orders.
   const saveContacts = async () => {
@@ -298,8 +300,13 @@ export default function OmgOrderPortal({ saleCode, storeName, reportUrlDefault =
 
           {/* 2 — Packing slip */}
           <StepCard n={2} title="Packing slip PDF" done={withAddress > 0 || withEmail > 0} hint={withEmail ? `${withEmail} have email · ${withAddress} have address` : 'Upload for emails & addresses'}>
-            <label style={{ ...secondaryBtn, width: '100%', justifyContent: 'center', cursor: busy === 'parse' ? 'wait' : 'pointer', boxSizing: 'border-box' }}>
-              {busy === 'parse' ? 'Reading PDF…' : '📄 Upload packing slip'}
+            <label
+              onDragOver={(e) => { e.preventDefault(); if (!dragging) setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={onDrop}
+              style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2, width: '100%', minHeight: 64, padding: '10px 12px', borderRadius: 8, border: `1.5px dashed ${dragging ? '#2563eb' : '#cbd5e1'}`, background: dragging ? '#eff6ff' : '#f8fafc', color: dragging ? '#1e40af' : '#475569', textAlign: 'center', cursor: busy === 'parse' ? 'wait' : 'pointer', boxSizing: 'border-box', transition: 'all .12s' }}>
+              <span style={{ fontWeight: 700, fontSize: 13 }}>{busy === 'parse' ? 'Reading PDF…' : dragging ? 'Drop the PDF here' : '📄 Upload packing slip'}</span>
+              {busy !== 'parse' && <span style={{ fontSize: 11, color: '#94a3b8' }}>drag &amp; drop, or click to browse</span>}
               <input ref={fileRef} type="file" accept="application/pdf" onChange={onPickFile} style={{ display: 'none' }} disabled={busy === 'parse'} />
             </label>
           </StepCard>
