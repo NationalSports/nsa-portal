@@ -278,33 +278,43 @@ export default function OmgOrderPortal({ saleCode, storeName, reportUrlDefault =
       <div style={{ padding: '12px 16px' }}>
         {msg && <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 8, fontWeight: 600, fontSize: 13, background: msg.kind === 'err' ? '#fef2f2' : '#f0fdf4', color: msg.kind === 'err' ? '#991b1b' : '#166534', border: `1px solid ${msg.kind === 'err' ? '#fecaca' : '#bbf7d0'}` }}>{msg.text}</div>}
 
-        {/* Step 1 — player report import */}
-        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>
-          <b>Step 1.</b> Paste the OMG <b>Player Report</b> link (one row per player) — this is a different report than the Store Products one above.
+        {/* The three things to have ready — always visible, top of the section. */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
+          {/* 1 — Player report */}
+          <StepCard n={1} title="Player report" done={orders.length > 0} hint={orders.length ? `${orders.length} orders imported` : 'Paste the link & import'}>
+            <input type="text" value={reportUrl} onChange={(e) => setReportUrl(e.target.value)} placeholder="report.ordermygear.com/… (player report)" style={{ width: '100%', padding: '7px 9px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12, boxSizing: 'border-box', marginBottom: 6 }} />
+            <button className="btn btn-primary" style={{ width: '100%' }} onClick={ingestReport} disabled={busy === 'ingest'}>{busy === 'ingest' ? 'Importing…' : orders.length ? 'Re-import' : 'Import orders'}</button>
+          </StepCard>
+
+          {/* 2 — Packing slip */}
+          <StepCard n={2} title="Packing slip PDF" done={withAddress > 0 || withEmail > 0} hint={withEmail ? `${withEmail} have email · ${withAddress} have address` : 'Upload for emails & addresses'}>
+            <label style={{ ...secondaryBtn, width: '100%', justifyContent: 'center', cursor: busy === 'parse' ? 'wait' : 'pointer', boxSizing: 'border-box' }}>
+              {busy === 'parse' ? 'Reading PDF…' : '📄 Upload packing slip'}
+              <input ref={fileRef} type="file" accept="application/pdf" onChange={onPickFile} style={{ display: 'none' }} disabled={busy === 'parse'} />
+            </label>
+          </StepCard>
+
+          {/* 3 — Notify parents */}
+          <StepCard n={3} title="Email parents" done={notified > 0 && notified >= withEmail && withEmail > 0} hint={notified ? `${notified} of ${withEmail} emailed` : 'Send the tracking link'}>
+            <button style={{ ...primaryBtn, width: '100%', opacity: withEmail ? 1 : 0.5 }} onClick={() => sendEmails(false)} disabled={busy === 'notify' || !withEmail}>{busy === 'notify' ? 'Sending…' : '✉️ Send processing emails'}</button>
+          </StepCard>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 14 }}>
-          <input type="text" value={reportUrl} onChange={(e) => setReportUrl(e.target.value)} placeholder="https://report.ordermygear.com/… (player report)" style={{ flex: 1, padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }} />
-          <button className="btn btn-primary" onClick={ingestReport} disabled={busy === 'ingest'}>{busy === 'ingest' ? 'Importing…' : orders.length ? 'Re-import' : 'Import orders'}</button>
-        </div>
+
+        {/* Review grid for parsed contacts (shows after a packing slip is parsed). */}
+        {draftContacts && !orders.length && (
+          <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 8, fontSize: 12.5, background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' }}>
+            Import the player report (Step 1) before saving these contacts — they’re matched to orders by order number.
+          </div>
+        )}
 
         {loading ? (
           <div style={{ padding: 16, color: '#94a3b8', fontSize: 13 }}>Loading…</div>
-        ) : !orders.length ? (
+        ) : !orders.length && !draftContacts ? (
           <div style={{ padding: '20px 16px', textAlign: 'center', color: '#94a3b8', fontSize: 13, background: '#f8fafc', borderRadius: 8 }}>
-            No parent orders yet. Import the player report above to create trackable orders with private status links.
+            No parent orders yet. Import the player report (Step 1) to create trackable orders with private status links.
           </div>
         ) : (
           <>
-            {/* Step 2/3 toolbar */}
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-              <label style={{ ...secondaryBtn, cursor: busy === 'parse' ? 'wait' : 'pointer' }}>
-                {busy === 'parse' ? 'Reading PDF…' : '📄 Upload packing slip'}
-                <input ref={fileRef} type="file" accept="application/pdf" onChange={onPickFile} style={{ display: 'none' }} disabled={busy === 'parse'} />
-              </label>
-              <button onClick={() => sendEmails(false)} disabled={busy === 'notify' || !withEmail} style={{ ...primaryBtn, opacity: withEmail ? 1 : 0.5 }}>{busy === 'notify' ? 'Sending…' : '✉️ Send processing emails'}</button>
-              <span style={{ fontSize: 11.5, color: '#94a3b8' }}><b>Step 2.</b> Upload the packing slip for emails/addresses · <b>Step 3.</b> Notify parents.</span>
-            </div>
-
             {/* Review grid for parsed contacts */}
             {draftContacts && (
               <div style={{ border: '1px solid #bfdbfe', borderRadius: 10, marginBottom: 14, overflow: 'hidden' }}>
@@ -337,6 +347,7 @@ export default function OmgOrderPortal({ saleCode, storeName, reportUrlDefault =
               </div>
             )}
 
+            {orders.length > 0 && <>
             {/* Fulfillment toolbar */}
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '10px 12px', background: '#f8fafc', borderRadius: 8, marginBottom: 12 }}>
               <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Move all:</span>
@@ -413,9 +424,25 @@ export default function OmgOrderPortal({ saleCode, storeName, reportUrlDefault =
               </table>
             </div>
             {notified > 0 && <div style={{ marginTop: 10, fontSize: 12, color: '#64748b' }}>Already-emailed parents won’t be re-sent. <button onClick={() => sendEmails(true)} disabled={busy === 'notify'} style={{ ...linkBtn, color: '#2563eb' }}>Force re-send all</button></div>}
+            </>}
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// One of the three "have these ready" cards at the top. Shows a numbered badge
+// that turns into a green check once the step is satisfied.
+function StepCard({ n, title, hint, done, children }) {
+  return (
+    <div style={{ border: `1px solid ${done ? '#bbf7d0' : '#e5e9f0'}`, background: done ? '#f0fdf4' : '#fff', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={{ width: 22, height: 22, flex: '0 0 22px', borderRadius: '50%', background: done ? '#16a34a' : '#2563eb', color: '#fff', fontSize: 12, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{done ? '✓' : n}</span>
+        <span style={{ fontWeight: 800, fontSize: 13, color: '#0f172a' }}>{title}</span>
+      </div>
+      <div style={{ marginTop: 'auto' }}>{children}</div>
+      <div style={{ fontSize: 11, color: done ? '#166534' : '#94a3b8', marginTop: 6 }}>{hint}</div>
     </div>
   );
 }
