@@ -184,8 +184,17 @@ export default function OmgOrderPortal({ saleCode, storeName }) {
     try {
       const contacts = await parsePackingSlip(file);
       if (!contacts.length) throw new Error('No orders found in that PDF.');
-      setDraftContacts(contacts);
-      flash(`Parsed ${contacts.length} packing slip${contacts.length === 1 ? '' : 's'} — review below, then save.`);
+      // The slip's multi-column layout makes the buyer name unreliable to parse,
+      // but each order already carries the authoritative name from the player
+      // report. Backfill any blank parsed name from the matched order.
+      const byNum = {}; orders.forEach((o) => { byNum[String(o.omg_order_number)] = o; });
+      const filled = contacts.map((c) => {
+        if (c.name && c.name.trim()) return c;
+        const o = byNum[String(c.orderNumber || '').trim()];
+        return o ? { ...c, name: o.buyer_name || o.player_name || '' } : c;
+      });
+      setDraftContacts(filled);
+      flash(`Parsed ${filled.length} packing slip${filled.length === 1 ? '' : 's'} — review below, then save.`);
     } catch (err) { flash(err.message, 'err'); } finally { setBusy(''); if (fileRef.current) fileRef.current.value = ''; }
   };
   const onPickFile = (e) => handleFile(e.target.files && e.target.files[0]);
