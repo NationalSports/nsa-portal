@@ -4530,6 +4530,8 @@ export default function App(){
   // the Create Sales Order button at the bottom of the store detail.
   const[omgPortalStatus,setOmgPortalStatus]=useState(null);
   React.useEffect(()=>{setOmgPortalStatus(null)},[omgSel?.id]);
+  // Step-by-step help modal (opened from the button on the OMG store detail).
+  const[omgGuideOpen,setOmgGuideOpen]=useState(false);
   React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
   const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);
 
@@ -14302,6 +14304,7 @@ export default function App(){
                 color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':s.status==='draft'?'#64748b':'#92400e'}}>{s.status.toUpperCase()}</span>
                 {s.open_date&&<span style={{marginLeft:8,fontSize:11,color:'#64748b'}}>📅 {s.open_date} → {s.close_date}</span>}
                 <button onClick={()=>{const el=document.getElementById('omg-parent-portal');if(el)el.scrollIntoView({behavior:'smooth',block:'start'})}} title="Jump to the Parent Order Portal — player report, packing slip, parent emails & tracking" style={{marginLeft:8,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer'}}>📦 Parent Order Portal ↓</button>
+                <button onClick={()=>setOmgGuideOpen(true)} title="How to create an OMG store, step by step" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #fcd34d',background:'#fffbeb',color:'#92400e',cursor:'pointer'}}>📖 Step-by-step</button>
               </div>
             </div>
             {!_alreadyPulled&&(s.products||[]).length>0&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{const el=document.getElementById('omg-create-so');if(el)el.scrollIntoView({behavior:'smooth',block:'center'})}} title="Finish the page below — financials, deco, parent orders & emails — then create the Sales Order at the bottom">📋 Create Sales Order ↓</button>}
@@ -14809,6 +14812,36 @@ export default function App(){
             </div>
           </div>
         </div>
+
+        {/* Step-by-step help modal */}
+        {omgGuideOpen&&<div className="modal-overlay" onClick={()=>setOmgGuideOpen(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:720,maxHeight:'90vh',display:'flex',flexDirection:'column'}}>
+            <div className="modal-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <h2 style={{margin:0}}>📖 OMG Store — Step by Step</h2>
+              <button onClick={()=>setOmgGuideOpen(false)} style={{background:'none',border:'none',fontSize:22,lineHeight:1,cursor:'pointer',color:'#94a3b8'}}>×</button>
+            </div>
+            <div className="modal-body" style={{overflowY:'auto',padding:'4px 20px 20px'}}>
+              <div style={{padding:'10px 14px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,fontSize:12.5,color:'#92400e',marginBottom:14}}>
+                Work the page <b>top to bottom</b> — the <b>Create Sales Order</b> button at the bottom unlocks only once every step is done. In OMG, when sharing the product report, check <b>“Include product images”</b>.
+              </div>
+              {[
+                {n:1,icon:'🔗',title:'Add the store from the OMG Report',desc:'Paste the Store/Product report link at the top and Import. If you get a “missing images” warning, re-share from OMG with images checked and Re-import.'},
+                {n:2,icon:'🏷️',title:'Link the customer',desc:'Click “⚠ Link a customer…” at the top and pick the club/team. This enables the art library and sets the customer on the Sales Order.'},
+                {n:3,icon:'📊',title:'Enter the two financial reports',desc:'① Dollar Report (green = revenue collected from parents) and ② Accounting Report (red = fees NSA pays). Each accepts a screenshot OR a PDF printout, or type the numbers. The panel checks that Total Collected = Grand Total and Collected − fees = Net Revenue — fix any value the import got wrong.'},
+                {n:4,icon:'🎨',title:'Assign deco to every product',desc:'In Store Products, each item must have an art group or be marked “No Deco”. Use Bulk assign art and “Select items needing art” to move fast.'},
+                {n:5,icon:'📦',title:'Set up the Parent Order Portal',desc:'In the 📦 Parent Order Portal: (1) paste the Player Report link & Import orders, (2) drop the packing-slip PDF to add parent emails (review the grid, then Save), (3) Send processing emails. Use 🧪 Test mode to rehearse without emailing real parents.'},
+                {n:6,icon:'✅',title:'Create the Sales Order',desc:'At the bottom, the checklist must be all green: customer linked · both reports entered & matching · all items deco/No-Deco · parent orders imported · parents emailed. Then click Create Sales Order — items, art, financials and parent tracking carry over.'},
+                {n:7,icon:'🛒',title:'After the SO: POs, production, ship',desc:'Create POs for blanks not in stock (Batch PO), send jobs to the Production Board, then invoice & ship. The warehouse can push parent orders to ShipStation, which auto-emails tracking to each parent.'},
+              ].map(step=><div key={step.n} style={{display:'flex',gap:12,alignItems:'flex-start',padding:'10px 0',borderBottom:'1px solid #f1f5f9'}}>
+                <div style={{width:32,height:32,borderRadius:16,background:'#eff6ff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,color:'#1e40af',flexShrink:0,fontSize:13}}>{step.n}</div>
+                <div><div style={{fontWeight:700,fontSize:13.5}}>{step.icon} {step.title}</div><div style={{fontSize:12.5,color:'#64748b',marginTop:2,lineHeight:1.5}}>{step.desc}</div></div>
+              </div>)}
+              <div style={{marginTop:14,padding:'10px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,fontSize:12,color:'#475569'}}>
+                <b>Money model:</b> parents pay the Grand Total. Processing fee &amp; sales tax are <b>revenue</b>; OMG fees &amp; credit card fees are the <b>costs</b> NSA pays. Revenue − fees = Net Revenue = the SO margin.
+              </div>
+            </div>
+          </div>
+        </div>}
       </>);
     }
 
