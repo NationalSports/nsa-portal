@@ -2066,6 +2066,52 @@ const extractPdfText=async(file)=>{
   }
   return{fullText,pages};
 };
+// ── OMG financial report parsers (work on text from OCR OR a PDF printout) ──
+const _omgAmt=(s)=>{const m=String(s).replace(/[(),]/g,'').match(/-?[\d.]+/);return m?parseFloat(m[0])||0:0;};
+// Find the dollar amount on the line that matches labelRe (handles "$1,234.56"
+// and parenthesized "($1,234.56)" negatives, anywhere on the line).
+const _omgLineVal=(text,labelRe)=>{
+  for(const ln of String(text||'').split('\n')){
+    if(!labelRe.test(ln))continue;
+    const all=[...ln.matchAll(/\(?\$?\s?([\d,]+\.\d{2})\)?/g)];
+    if(all.length)return _omgAmt(all[all.length-1][1]); // last $ on the line = the value column
+  }
+  return 0;
+};
+// ① Dollar Report → revenue pieces collected from parents.
+const parseOmgDollar=(text)=>({
+  shipping:  _omgLineVal(text,/^\s*\t*Shipping\b/i)||_omgLineVal(text,/\bShipping\b/i),
+  processing:_omgLineVal(text,/Processing/i),
+  tax:       _omgLineVal(text,/Sales\s*Tax/i),
+  fundraise: _omgLineVal(text,/Fundrais/i),
+  grand:     _omgLineVal(text,/Grand\s*Total/i),
+});
+// ② Accounting Report → the fees NSA pays. The top summary box sometimes has
+// labels with no adjacent value (PDF printouts), so we fall back to the
+// "Deposit Subtotal" row, which carries Collected / OMG Fee / Credit Card Fee.
+const parseOmgAccounting=(text)=>{
+  let collected=_omgLineVal(text,/Total\s*Collected/i);
+  let omg      =_omgLineVal(text,/^\s*\t*OMG\s*Fees?\b/i)||_omgLineVal(text,/\bOMG\s*Fees?\b/i);
+  let cc       =_omgLineVal(text,/Credit\s*Card\s*Fees?/i);
+  let invoiced =_omgLineVal(text,/Invoiced\s*Fees?/i);
+  let net      =_omgLineVal(text,/Net\s*Revenue/i);
+  const dep=String(text||'').split('\n').find(l=>/Deposit\s*Subtotal/i.test(l));
+  if(dep){const nums=[...dep.matchAll(/\(?\$?\s?([\d,]+\.\d{2})\)?/g)].map(m=>_omgAmt(m[1]));
+    if(!collected&&nums[0])collected=nums[0];if(!omg&&nums[1])omg=nums[1];if(!cc&&nums[2])cc=nums[2];}
+  if(!net&&collected)net=Math.round((collected-omg-cc-invoiced)*100)/100;
+  return{collected,omg,cc,invoiced,net};
+};
+// Read a dropped/selected financial file as text — PDF via pdf.js, image via OCR.
+const omgReadReportText=async(file)=>{
+  if(file.type==='application/pdf'||/\.pdf$/i.test(file.name||'')){
+    const{fullText}=await extractPdfText(file);return fullText;
+  }
+  const{createWorker}=await import('tesseract.js');
+  const worker=await createWorker('eng');
+  const{data:{text}}=await worker.recognize(file);
+  await worker.terminate();
+  return text;
+};
 const parseNetSuitePdf=(text,docType,products)=>{
   const result={docNumber:'',date:'',customerName:'',terms:'',memo:'',subtotal:0,tax:0,shipping:0,total:0,lineItems:[],rawText:text,confidence:'low',warnings:[]};
   const _products=products||[];
@@ -14283,7 +14329,7 @@ export default function App(){
 
         {/* OMG Financials — two reports: ① Dollar (revenue) and ② Accounting (costs) */}
         {(s.products||[]).length>0&&<div style={{marginBottom:6,padding:'10px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,fontSize:12,color:'#475569'}}>
-          <b style={{color:'#0f172a'}}>📊 Store financials — upload two screenshots from OMG:</b>{' '}
+          <b style={{color:'#0f172a'}}>📊 Store financials — upload two reports from OMG (screenshot or PDF):</b>{' '}
           <span style={{color:'#166534',fontWeight:700}}>① Dollar Report = money collected (revenue)</span> · <span style={{color:'#b91c1c',fontWeight:700}}>② Accounting Report = fees NSA pays (costs)</span>. Both are required before creating the Sales Order.
         </div>}
         {/* ①② FINANCIAL REPORTS — side by side: Revenue (green) | Costs (red) */}
@@ -14294,31 +14340,23 @@ export default function App(){
             <span style={{fontSize:11,fontWeight:800,background:'#dcfce7',color:'#166534',padding:'2px 8px',borderRadius:4,textTransform:'uppercase',letterSpacing:0.5}}>① Revenue ↑</span>
             <span style={{fontSize:14,fontWeight:800,color:'#0f172a'}}>Dollar Report</span>
           </div>
-          <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>Money <b>collected from parents</b>. Shipping, processing fee &amp; sales tax are charges added to each order (so they’re revenue). Drop the OMG <b>Dollar Report</b> screenshot, or enter manually.</div>
-          {/* Drop zone for Dollar Report screenshot */}
+          <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>Money <b>collected from parents</b>. Shipping, processing fee &amp; sales tax are charges added to each order (so they’re revenue). Drop the OMG <b>Dollar Report</b> — screenshot or PDF printout — or enter manually.</div>
+          {/* Drop zone for Dollar Report — image (OCR) or PDF (text) */}
           <div style={{marginBottom:12,border:'2px dashed #86efac',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f0fdf4',transition:'all 0.2s'}}
             onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#16a34a';e.currentTarget.style.background='#dcfce7'}}
             onDragLeave={e=>{e.currentTarget.style.borderColor='#86efac';e.currentTarget.style.background='#f0fdf4'}}
             onDrop={async e=>{
               e.preventDefault();e.currentTarget.style.borderColor='#86efac';e.currentTarget.style.background='#f0fdf4';
-              const file=e.dataTransfer.files?.[0];if(!file||!file.type.startsWith('image/'))return nf('Drop an image file','error');
-              nf('Reading Dollar Report…');
+              const file=e.dataTransfer.files?.[0];
+              if(!file||!(file.type.startsWith('image/')||file.type==='application/pdf'||/\.pdf$/i.test(file.name||'')))return nf('Drop a screenshot image or a PDF printout','error');
+              nf(`Reading Dollar Report ${file.type==='application/pdf'?'PDF':'screenshot'}…`);
               try{
-                const{createWorker}=await import('tesseract.js');
-                const worker=await createWorker('eng');
-                const{data:{text}}=await worker.recognize(file);
-                await worker.terminate();
-                console.log('[OCR] Dollar Report text:',text);
-                // Parse known patterns from Dollar Report
-                const parseAmt=(pattern)=>{const m=text.match(pattern);return m?parseFloat(m[1].replace(/,/g,''))||0:0};
-                const shipping=parseAmt(/Shipping\s*\$?([\d,]+\.?\d*)/i);
-                const processing=parseAmt(/(?:Online\s*)?Processing\s*(?:Fee)?\s*\$?([\d,]+\.?\d*)/i);
-                const tax=parseAmt(/Sales\s*Tax\s*\$?([\d,]+\.?\d*)/i);
-                const fundraise=parseAmt(/Fundrais(?:ing|e)\s*(?:Collected)?\s*\$?([\d,]+\.?\d*)/i);
-                const grandTotal=parseAmt(/Grand\s*Total[:\s]*\$?([\d,]+\.?\d*)/i);
+                const text=await omgReadReportText(file);
+                console.log('[OMG Dollar] text:',text);
+                const {shipping,processing,tax,fundraise,grand:grandTotal}=parseOmgDollar(text);
                 const upd={...s,_omg_shipping:shipping,_omg_processing:processing,_omg_tax:tax,_omg_fundraise:fundraise,_omg_grand_total:grandTotal};
                 setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
-                nf(`Extracted: Shipping $${shipping} | Processing $${processing} | Tax $${tax} | Fundraise $${fundraise} | Grand Total $${grandTotal}`);
+                nf(`Dollar Report: Shipping $${shipping} | Processing $${processing} | Tax $${tax} | Fundraise $${fundraise} | Grand Total $${grandTotal}`);
                 // Auto-add fundraise to customer promo funds
                 if(fundraise>0&&s.customer_id){
                   const custMatch=cust.find(cx=>cx.id===s.customer_id);
@@ -14332,18 +14370,18 @@ export default function App(){
                     nf(`Added $${fundraise.toFixed(2)} fundraise to ${custMatch.name} promo funds`);
                   }
                 }
-              }catch(err){console.error('[OCR]',err);nf('OCR failed: '+err.message,'error')}
+              }catch(err){console.error('[OMG Dollar]',err);nf('Could not read the file: '+err.message,'error')}
             }}
             onClick={()=>{
-              const inp=document.createElement('input');inp.type='file';inp.accept='image/*';
+              const inp=document.createElement('input');inp.type='file';inp.accept='image/*,application/pdf';
               inp.onchange=e=>{const f=e.target.files?.[0];if(f){const dt=new DataTransfer();dt.items.add(f);const dropEvt=new DragEvent('drop',{dataTransfer:dt});document.querySelector('[data-ocr-drop]')?.dispatchEvent(dropEvt)}};
               inp.click();
             }}
             data-ocr-drop="true"
           >
             <div style={{fontSize:24,marginBottom:4}}>📸</div>
-            <div style={{fontSize:12.5,fontWeight:700,color:'#166534'}}>Drop the <u>Dollar Report</u> screenshot here</div>
-            <div style={{fontSize:11,color:'#16a34a'}}>or click to select — extracts Shipping, Processing, Tax, Fundraising, Grand Total</div>
+            <div style={{fontSize:12.5,fontWeight:700,color:'#166534'}}>Drop the <u>Dollar Report</u> here</div>
+            <div style={{fontSize:11,color:'#16a34a'}}>screenshot or PDF · click to select — extracts Shipping, Processing, Tax, Fundraising, Grand Total</div>
           </div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10}}>
             {[['_omg_shipping','Shipping'],['_omg_processing','Processing'],['_omg_tax','Sales Tax'],['_omg_fundraise','Fundraise'],['_omg_grand_total','Grand Total']].map(([key,label])=>
@@ -14383,43 +14421,35 @@ export default function App(){
             <span style={{fontSize:11,fontWeight:800,background:'#fee2e2',color:'#b91c1c',padding:'2px 8px',borderRadius:4,textTransform:'uppercase',letterSpacing:0.5}}>② Costs ↓</span>
             <span style={{fontSize:14,fontWeight:800,color:'#0f172a'}}>Accounting Report</span>
           </div>
-          <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>Fees <b>NSA pays</b> (OMG fees + credit card fees). These become <b>costs</b> on the sales order. Drop the OMG <b>Accounting Report</b> screenshot (top-right of that page), or enter manually.</div>
-          {/* Drop zone for Accounting Report screenshot */}
+          <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>Fees <b>NSA pays</b> (OMG fees + credit card fees). These become <b>costs</b> on the sales order. Drop the OMG <b>Accounting Report</b> — screenshot or PDF printout — or enter manually.</div>
+          {/* Drop zone for Accounting Report — image (OCR) or PDF (text) */}
           <div style={{marginBottom:12,border:'2px dashed #fca5a5',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#fef2f2',transition:'all 0.2s'}}
             onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#dc2626';e.currentTarget.style.background='#fee2e2'}}
             onDragLeave={e=>{e.currentTarget.style.borderColor='#fca5a5';e.currentTarget.style.background='#fef2f2'}}
             onDrop={async e=>{
               e.preventDefault();e.currentTarget.style.borderColor='#fca5a5';e.currentTarget.style.background='#fef2f2';
-              const file=e.dataTransfer.files?.[0];if(!file||!file.type.startsWith('image/'))return nf('Drop an image file','error');
-              nf('Reading Accounting Report…');
+              const file=e.dataTransfer.files?.[0];
+              if(!file||!(file.type.startsWith('image/')||file.type==='application/pdf'||/\.pdf$/i.test(file.name||'')))return nf('Drop a screenshot image or a PDF printout','error');
+              nf(`Reading Accounting Report ${file.type==='application/pdf'?'PDF':'screenshot'}…`);
               try{
-                const{createWorker}=await import('tesseract.js');
-                const worker=await createWorker('eng');
-                const{data:{text}}=await worker.recognize(file);
-                await worker.terminate();
-                console.log('[OCR] Accounting Report text:',text);
-                const parseAmt=(pattern)=>{const m=text.match(pattern);return m?parseFloat(m[1].replace(/,/g,''))||0:0};
-                const collected=parseAmt(/Total\s*Collected[^$]*\$?([\d,]+\.?\d*)/i);
-                const omgFees=parseAmt(/OMG\s*Fees[^$(]*\(?\$?([\d,]+\.?\d*)/i);
-                const ccFees=parseAmt(/Credit\s*Card\s*Fees[^$(]*\(?\$?([\d,]+\.?\d*)/i);
-                const invFees=parseAmt(/Invoiced\s*Fees[^$(]*\(?\$?([\d,]+\.?\d*)/i);
-                const net=parseAmt(/Net\s*Revenue[^$]*\$?([\d,]+\.?\d*)/i);
+                const text=await omgReadReportText(file);
+                console.log('[OMG Accounting] text:',text);
+                const {collected,omg:omgFees,cc:ccFees,invoiced:invFees,net}=parseOmgAccounting(text);
                 const upd={...s,_omg_acct_collected:collected,_omg_omg_fees:omgFees,_omg_cc_fees:ccFees,_omg_invoiced_fees:invFees,_omg_net_revenue:net};
                 setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
-                nf(`Extracted: Collected $${collected} | OMG Fees $${omgFees} | CC Fees $${ccFees} | Net $${net}`);
-              }catch(err){console.error('[OCR]',err);nf('OCR failed: '+err.message,'error')}
+                nf(`Accounting Report: Collected $${collected} | OMG Fees $${omgFees} | CC Fees $${ccFees} | Net $${net}`);
+              }catch(err){console.error('[OMG Accounting]',err);nf('Could not read the file: '+err.message,'error')}
             }}
             onClick={()=>{
-              const inp=document.createElement('input');inp.type='file';inp.accept='image/*';
+              const inp=document.createElement('input');inp.type='file';inp.accept='image/*,application/pdf';
               inp.onchange=e=>{const f=e.target.files?.[0];if(f){const dt=new DataTransfer();dt.items.add(f);const dropEvt=new DragEvent('drop',{dataTransfer:dt});document.querySelector('[data-acct-drop]')?.dispatchEvent(dropEvt)}};
               inp.click();
             }}
             data-acct-drop="true"
           >
             <div style={{fontSize:24,marginBottom:4}}>📸</div>
-            <div style={{fontSize:12.5,fontWeight:700,color:'#b91c1c'}}>Drop the <u>Accounting Report</u> screenshot here</div>
-            <div style={{fontSize:11,color:'#dc2626'}}>or click to select — extracts Total Collected, OMG Fees, Credit Card Fees, Net Revenue</div>
-            <input type="file" accept="image/*" style={{display:'none'}} ref={el=>{if(el)el._acctInput=true}} onClick={e=>e.stopPropagation()}/>
+            <div style={{fontSize:12.5,fontWeight:700,color:'#b91c1c'}}>Drop the <u>Accounting Report</u> here</div>
+            <div style={{fontSize:11,color:'#dc2626'}}>screenshot or PDF · click to select — extracts Total Collected, OMG Fees, Credit Card Fees, Net Revenue</div>
           </div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10}}>
             {[['_omg_acct_collected','Total Collected','rev'],['_omg_omg_fees','OMG Fees','cost'],['_omg_cc_fees','Credit Card Fees','cost'],['_omg_invoiced_fees','Invoiced Fees','cost'],['_omg_net_revenue','Net Revenue','rev']].map(([key,label,kind])=>
