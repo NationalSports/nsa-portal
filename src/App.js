@@ -14275,8 +14275,10 @@ export default function App(){
           <b style={{color:'#0f172a'}}>📊 Store financials — upload two screenshots from OMG:</b>{' '}
           <span style={{color:'#166534',fontWeight:700}}>① Dollar Report = money collected (revenue)</span> · <span style={{color:'#b91c1c',fontWeight:700}}>② Accounting Report = fees NSA pays (costs)</span>. Both are required before creating the Sales Order.
         </div>}
+        {/* ①② FINANCIAL REPORTS — side by side: Revenue (green) | Costs (red) */}
+        {(s.products||[]).length>0&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12,alignItems:'start'}}>
         {/* ① DOLLAR REPORT — REVENUE (green) */}
-        {(s.products||[]).length>0&&<div className="card" style={{marginBottom:12,borderLeft:'4px solid #16a34a'}}><div style={{padding:16}}>
+        <div className="card" style={{borderLeft:'4px solid #16a34a',margin:0}}><div style={{padding:16}}>
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
             <span style={{fontSize:11,fontWeight:800,background:'#dcfce7',color:'#166534',padding:'2px 8px',borderRadius:4,textTransform:'uppercase',letterSpacing:0.5}}>① Revenue ↑</span>
             <span style={{fontSize:14,fontWeight:800,color:'#0f172a'}}>Dollar Report</span>
@@ -14345,22 +14347,27 @@ export default function App(){
               </div>
             )}
           </div>
-          {/* Totals validation */}
+          {/* Totals reconciliation — only meaningful once products are priced.
+              The authoritative cross-report check (Collected = Grand Total) lives
+              on the Accounting panel; this is just an internal sanity line. */}
           {s._omg_grand_total>0&&(()=>{
             const productRev=totalRetail;
-            const computed=productRev+(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0)+(s._omg_fundraise||0);
+            const fees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0)+(s._omg_fundraise||0);
+            const computed=productRev+fees;
             const diff=Math.abs(computed-s._omg_grand_total);
-            const match=diff<1;
-            return <div style={{padding:'8px 16px',borderTop:'1px solid #e2e8f0',fontSize:11,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <span>Product Revenue (${productRev.toLocaleString()}) + Fees (${((s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0)+(s._omg_fundraise||0)).toLocaleString()}) = ${computed.toLocaleString()}</span>
-              {match?<span style={{color:'#166534',fontWeight:700}}>✓ Matches Grand Total</span>
-                :<span style={{color:'#dc2626',fontWeight:700}}>⚠ Off by ${diff.toFixed(2)} from Grand Total (${s._omg_grand_total.toLocaleString()})</span>}
+            const match=diff<1, priced=productRev>0;
+            return <div style={{padding:'8px 16px',borderTop:'1px solid #e2e8f0',fontSize:11}}>
+              {!priced
+                ? <span style={{color:'#64748b'}}>Grand Total ${s._omg_grand_total.toLocaleString()} entered. Product revenue isn’t priced yet — this reconciles once item retail loads.</span>
+                : match
+                  ? <span style={{color:'#166534',fontWeight:700}}>✓ Product ${productRev.toLocaleString()} + fees ${fees.toLocaleString()} = Grand Total ${s._omg_grand_total.toLocaleString()}</span>
+                  : <span style={{color:'#b45309',fontWeight:700}}>⚠ Product ${productRev.toLocaleString()} + fees ${fees.toLocaleString()} = ${computed.toLocaleString()} (off ${diff.toFixed(2)} from Grand Total ${s._omg_grand_total.toLocaleString()})</span>}
             </div>;
           })()}
-        </div></div>}
+        </div></div>
 
         {/* ② ACCOUNTING REPORT — COSTS (red) */}
-        {(s.products||[]).length>0&&<div className="card" style={{marginBottom:12,borderLeft:'4px solid #dc2626'}}><div style={{padding:16}}>
+        <div className="card" style={{borderLeft:'4px solid #dc2626',margin:0}}><div style={{padding:16}}>
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
             <span style={{fontSize:11,fontWeight:800,background:'#fee2e2',color:'#b91c1c',padding:'2px 8px',borderRadius:4,textTransform:'uppercase',letterSpacing:0.5}}>② Costs ↓</span>
             <span style={{fontSize:14,fontWeight:800,color:'#0f172a'}}>Accounting Report</span>
@@ -14430,7 +14437,8 @@ export default function App(){
               {(s._omg_net_revenue>0)&&<div style={{marginTop:4,color:netDiff<1?'#64748b':'#b45309'}}>Collected − fees = ${computedNet.toLocaleString()} {netDiff<1?'✓ matches Net Revenue':`(report shows $${(s._omg_net_revenue||0).toLocaleString()})`}</div>}
             </div>;
           })()}
-        </div></div>}
+        </div></div>
+        </div>}
 
         {/* Import from OMG Report */}
         <div className="card" style={{marginBottom:12,border:(s.products||[]).length===0&&s.status==='closed'?'2px solid #166534':undefined}}>
