@@ -107,6 +107,7 @@ export default function OmgOrderPortal({ saleCode, storeName, reportUrlDefault =
   const [reportUrl, setReportUrl] = useState(reportUrlDefault);
   const [draftContacts, setDraftContacts] = useState(null);
   const [expanded, setExpanded] = useState(null);
+  const [testEmail, setTestEmail] = useState('');
   const fileRef = useRef(null);
 
   const flash = (text, kind = 'ok') => { setMsg({ text, kind }); setTimeout(() => setMsg(null), 6000); };
@@ -185,17 +186,20 @@ export default function OmgOrderPortal({ saleCode, storeName, reportUrlDefault =
   };
 
   // 4) Send "order is being processed" emails.
-  const sendEmails = async (resend = false) => {
+  //    testEmail set → every email routes to that address (real parents are
+  //    never contacted, orders aren't marked sent) so you can rehearse safely.
+  const sendEmails = async (resend = false, testEmail = '') => {
     if (!store) return;
-    setBusy('notify');
+    setBusy(testEmail ? 'test' : 'notify');
     try {
       const r = await fetch('/.netlify/functions/omg-order-notify', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storeId: store.id, resend }),
+        body: JSON.stringify({ storeId: store.id, resend, ...(testEmail ? { testEmail } : {}) }),
       });
       const d = await r.json();
       if (!r.ok || !d.success) throw new Error(d.error || 'Send failed');
-      flash(d.sent ? `Sent ${d.sent} processing email(s).` : (d.note || 'Nothing to send.'));
+      if (testEmail) flash(d.sent ? `Sent ${d.sent} TEST email(s) to ${testEmail} — no real parents emailed.` : (d.note || 'Nothing to test.'));
+      else flash(d.sent ? `Sent ${d.sent} processing email(s).` : (d.note || 'Nothing to send.'));
       await loadOrders(store);
     } catch (e) { flash(e.message, 'err'); } finally { setBusy(''); }
   };

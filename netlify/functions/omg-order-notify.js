@@ -31,6 +31,12 @@ exports.handler = async (event) => {
   try { body = JSON.parse(event.body || '{}'); } catch { return { statusCode: 400, headers, body: JSON.stringify({ error: 'Invalid JSON' }) }; }
   const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
 
+  // Test mode: redirect EVERY email to testEmail instead of the real buyer, and
+  // don't mark orders as notified — so you can rehearse the parent experience
+  // safely on a deploy preview without emailing real parents.
+  const testEmail = (body.testEmail || '').trim();
+  const testMode = !!testEmail;
+
   try {
     let storeId = body.storeId;
     if (!storeId && body.saleCode) {
@@ -46,8 +52,10 @@ exports.handler = async (event) => {
     const { data: orders, error } = await q;
     if (error) throw new Error(error.message);
 
-    const targets = (orders || []).filter((o) => o.buyer_email && (body.resend || !o.processing_email_sent));
-    if (!targets.length) return { statusCode: 200, headers, body: JSON.stringify({ success: true, sent: 0, note: 'No orders need notifying (missing emails or already sent).' }) };
+    // In test mode we still need orders, but they don't need a buyer email
+    // (everything routes to testEmail) and the sent-guard is ignored.
+    const targets = (orders || []).filter((o) => testMode ? true : (o.buyer_email && (body.resend || !o.processing_email_sent)));
+    if (!targets.length) return { statusCode: 200, headers, body: JSON.stringify({ success: true, sent: 0, note: testMode ? 'No orders in this store to test with.' : 'No orders need notifying (missing emails or already sent).' }) };
 
     // Store branding (one fetch).
     const sIds = [...new Set(targets.map((o) => o.store_id))];
@@ -59,20 +67,22 @@ exports.handler = async (event) => {
       const store = storeById[o.store_id] || { name: 'Your order' };
       const { data: its } = await sb.from('webstore_order_items').select('*').eq('order_id', o.id);
       const items = (its || []).filter((i) => !i.is_bundle_parent);
-      const html = buildHtml({ store, order: o, items, portal });
+      const html = buildHtml({ store, order: o, items, portal, testFor: testMode ? (o.buyer_email || o.buyer_name || `order ${o.omg_order_number}`) : null });
+      const toEmail = testMode ? testEmail : o.buyer_email;
       try {
         const resp = await fetch('https://api.brevo.com/v3/smtp/email', {
           method: 'POST',
           headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
           body: JSON.stringify({
             sender: { name: store.name || 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
-            to: [{ email: o.buyer_email, name: o.buyer_name || '' }],
-            subject: `We’ve started processing your ${store.name} order`,
+            to: [{ email: toEmail, name: o.buyer_name || '' }],
+            subject: `${testMode ? '[TEST] ' : ''}We’ve started processing your ${store.name} order`,
             htmlContent: html,
           }),
         });
         if (!resp.ok) { failures.push({ order: o.omg_order_number, status: resp.status }); continue; }
-        await sb.from('webstore_orders').update({ processing_email_sent: true, processing_email_sent_at: new Date().toISOString() }).eq('id', o.id);
+        // Only mark real sends; test mode leaves processing_email_sent untouched.
+        if (!testMode) await sb.from('webstore_orders').update({ processing_email_sent: true, processing_email_sent_at: new Date().toISOString() }).eq('id', o.id);
         sent++;
       } catch (e) { failures.push({ order: o.omg_order_number, error: e.message }); }
     }
@@ -84,10 +94,11 @@ exports.handler = async (event) => {
   }
 };
 
-function buildHtml({ store, order, items, portal }) {
+function buildHtml({ store, order, items, portal, testFor }) {
   const accent = store.accent_color || '#e11d2a';
   const primary = store.primary_color || '#0b1f3a';
   const link = `${portal}/shop/order/${order.status_token}`;
+  const testBanner = testFor ? `<div style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin:0 0 14px;font-size:13px;font-weight:600">⚠️ TEST EMAIL — in production this would go to <b>${testFor}</b>. No real parent was emailed.</div>` : '';
   const nsaLogo = `${portal}/NEW%20NSA%20Logo%20on%20white.png`;
   const rows = items.map((i) => {
     const img = i.image_url
@@ -107,6 +118,7 @@ function buildHtml({ store, order, items, portal }) {
       <div style="font-size:23px;font-weight:800;margin-top:4px">Your order is being processed 🎬</div>
     </div>
     <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:24px">
+      ${testBanner}
       <p style="margin:0 0 14px">Hi ${order.buyer_name || 'there'}, good news — we’ve received your order${order.omg_order_number ? ` (#${order.omg_order_number})` : ''} and started getting it ready. You can follow every step — received, in production, shipped — from the link below.</p>
       <div style="text-align:center;margin:22px 0">
         <a href="${link}" style="display:inline-block;background:${accent};color:#fff;text-decoration:none;padding:14px 32px;border-radius:9px;font-weight:800;font-size:16px">Track your order →</a>
