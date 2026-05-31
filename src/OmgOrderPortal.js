@@ -50,12 +50,19 @@ function namesMatch(a, b) {
   return common >= 2 || (common >= 1 && (ta.size === 1 || tb.size === 1));
 }
 
+// NSA's own contact block ("Dealer Info") sits at the bottom of every packing
+// slip — never capture it as a parent's contact.
+const DEALER_EMAIL_RE = /@nationalsportsapparel\.com$/i;
+const DEALER_PHONE_DIGITS = '7142798777';
+const onlyDigits = (s) => String(s || '').replace(/\D/g, '');
+
 // From one packing-slip page's text lines, pull a contact record. The admin
 // reviews/edits everything before saving, so heuristics are fine.
 function parsePage(lines) {
   const text = lines.join('\n');
-  const email = (text.match(EMAIL_RE) || [])[0] || '';
-  const phone = (text.match(PHONE_RE) || [])[0] || '';
+  // Pick the first email/phone that isn't NSA's dealer footer.
+  const email = (text.match(new RegExp(EMAIL_RE.source, 'ig')) || []).find((e) => !DEALER_EMAIL_RE.test(e)) || '';
+  const phone = (text.match(new RegExp(PHONE_RE.source, 'g')) || []).find((p) => onlyDigits(p) !== DEALER_PHONE_DIGITS) || '';
   let orderNumber = '';
   const omLabeled = text.match(/Order\s*#?\s*[:\-]?\s*(\d{6,})/i);
   if (omLabeled) orderNumber = omLabeled[1];
