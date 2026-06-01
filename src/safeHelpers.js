@@ -110,10 +110,24 @@ export const safeFirm = (o) => safeArr(o?.firm_dates);
 export const skusMissingMockups = (job, so) => {
   const items = safeArr(job?.items);
   if (items.length === 0) return [];
-  const jobArtIds = new Set(safeArr(job?._art_ids).filter(Boolean));
-  if (jobArtIds.size === 0 && job?.art_file_id) jobArtIds.add(job.art_file_id);
   const allArt = safeArt(so);
   const soItems = safeItems(so);
+  // A job's declared _art_ids only carry the FIRST item's art (see buildJobs in
+  // OrderEditor). Items beyond the first reference their own art files via their
+  // decorations, and that's where their mockups live. Augment the job art set
+  // with every art file any item's decorations reference, so the per-item check
+  // below looks at the right art file instead of falling back to the job's
+  // primary art and falsely reporting a missing mockup. Mirrors the approval
+  // renderer at OrderEditor.js:6568.
+  const jobArtIds = new Set(safeArr(job?._art_ids).filter(Boolean));
+  if (jobArtIds.size === 0 && job?.art_file_id) jobArtIds.add(job.art_file_id);
+  items.forEach(gi => {
+    const it = soItems[gi?.item_idx];
+    if (!it) return;
+    safeDecos(it).forEach(d => {
+      if (d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd') jobArtIds.add(d.art_file_id);
+    });
+  });
   const missing = [];
   items.forEach(gi => {
     const it = soItems[gi?.item_idx];
