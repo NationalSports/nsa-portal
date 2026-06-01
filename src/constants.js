@@ -222,7 +222,7 @@ export const threadHex=(name)=>{if(!name)return null;const n=name.toLowerCase().
 export const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes','b2b_url','b2b_username','b2b_password','catalog_files'];
 export const _firmDateCols=['item_desc','date','approved'];
 export const _issueCols=['id','status','description','priority','page','viewing','reported_by','role','timestamp','resolved_at','resolution'];
-export const _omgStoreCols=['id','store_name','customer_id','rep_id','status','open_date','close_date','orders','total_sales','fundraise_total','items_sold','unique_buyers','_omg_source','_omg_id','_omg_sale_code','_last_synced','subdomain','channel_type','_report_url','_report_id','_report_imported_at','_omg_shipping','_omg_processing','_omg_tax','_omg_fundraise','_omg_grand_total','_omg_acct_collected','_omg_omg_fees','_omg_cc_fees','_omg_invoiced_fees','_omg_net_revenue'];
+export const _omgStoreCols=['id','store_name','customer_id','rep_id','status','open_date','close_date','orders','total_sales','fundraise_total','items_sold','unique_buyers','_omg_source','_omg_id','_omg_sale_code','_last_synced','subdomain','channel_type','_report_url','_report_id','_report_imported_at','_omg_shipping','_omg_processing','_omg_tax','_omg_fundraise','_omg_grand_total','_omg_acct_collected','_omg_omg_fees','_omg_cc_fees','_omg_invoiced_fees','_omg_net_revenue','delivery_mode'];
 
 // ─── Team & Company Defaults ───
 // Warehouse staff who can delegate tasks to other warehouse workers (in addition to admins/GM).

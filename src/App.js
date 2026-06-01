@@ -14197,12 +14197,12 @@ export default function App(){
       const soGate=(()=>{
         const reasons=[];
         if(!s.customer_id)reasons.push('Link a customer (top of page)');
+        if(!s.delivery_mode)reasons.push('Choose a delivery method (ship to home / deliver to school)');
         if(!_hasDollar)reasons.push('Enter the Dollar Report (revenue, top)');
         if(!_hasAcct)reasons.push('Enter the Accounting Report (fees, top)');
         if(!_reportsMatch)reasons.push('Reports disagree — Total Collected ≠ Grand Total');
         if(_needArt.length)reasons.push(`${_needArt.length} item${_needArt.length>1?'s':''} need deco or “No Deco”`);
         if(!_portalImported)reasons.push('Import parent orders in the Parent Order Portal');
-        if(!_portalEmailed)reasons.push('Send the parent “processing” emails');
         return{ok:reasons.length===0,reasons};
       })();
       const createOmgSO=()=>{
@@ -14406,6 +14406,31 @@ export default function App(){
               return null})()}
           </div>
         </div></div>
+
+        {/* ── Delivery mode — required before the Sales Order ──────────────── */}
+        {(()=>{
+          const dm=s.delivery_mode||'';
+          const setDM=mode=>{const upd={...s,delivery_mode:mode};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
+          const opt=(mode,icon,title,sub)=>{
+            const on=dm===mode;
+            return<button onClick={()=>setDM(mode)} style={{flex:1,textAlign:'left',padding:'12px 14px',borderRadius:8,cursor:'pointer',
+              border:`2px solid ${on?'#2563eb':'#e2e8f0'}`,background:on?'#eff6ff':'#fff',transition:'all 0.15s'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{width:18,height:18,flex:'0 0 18px',borderRadius:'50%',border:`2px solid ${on?'#2563eb':'#cbd5e1'}`,background:on?'#2563eb':'#fff',display:'flex',alignItems:'center',justifyContent:'center'}}>{on&&<span style={{width:7,height:7,borderRadius:'50%',background:'#fff'}}/>}</span>
+                <span style={{fontSize:14,fontWeight:800,color:on?'#1e40af':'#0f172a'}}>{icon} {title}</span>
+              </div>
+              <div style={{fontSize:11.5,color:'#64748b',marginTop:4,marginLeft:26}}>{sub}</div>
+            </button>;
+          };
+          return<div className="card" style={{marginBottom:12,borderLeft:`4px solid ${dm?'#2563eb':'#f59e0b'}`}}><div style={{padding:16}}>
+            <div style={{fontSize:14,fontWeight:800,color:'#0f172a',marginBottom:2}}>🚚 Delivery method {dm?'':<span style={{fontSize:11,fontWeight:700,color:'#b45309'}}>— required before the Sales Order</span>}</div>
+            <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>How does this store get to the parents? This decides whether each player needs a shipping label.</div>
+            <div style={{display:'flex',gap:10}}>
+              {opt('ship_home','🏠','Ship to home','Each parent order is shipped to their address — a ShipStation label is created per player.')}
+              {opt('deliver_school','🏫','Deliver to school','Everything is bulk-delivered to the school/club — no per-player shipping labels.')}
+            </div>
+          </div></div>;
+        })()}
 
         {(()=>{const fees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);return<div className="stats-row" style={{marginBottom:12}}>
           <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{(s.products||[]).reduce((a,p)=>a+Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0),0)}</div></div>
@@ -14842,7 +14867,7 @@ export default function App(){
             so backordered sizes hold their parents back. */}
         <ComponentErrorBoundary name="OmgOrderPortal">
           <React.Suspense fallback={<LazyFallback/>}>
-            <OmgOrderPortal saleCode={s._omg_sale_code} storeName={s.store_name} onStatus={setOmgPortalStatus} soSync={computeOmgSoSync(sos.find(x=>x.omg_store_id===s.id))}/>
+            <OmgOrderPortal saleCode={s._omg_sale_code} storeName={s.store_name} deliveryMode={s.delivery_mode||''} onStatus={setOmgPortalStatus} soSync={computeOmgSoSync(sos.find(x=>x.omg_store_id===s.id))}/>
           </React.Suspense>
         </ComponentErrorBoundary>
 
@@ -14854,16 +14879,18 @@ export default function App(){
             {/* Checklist of gates */}
             <div style={{display:'grid',gap:6,marginBottom:14}}>
               {[
-                [!!s.customer_id,'Customer linked',!s.customer_id?'Link a customer at the top of the page':''],
-                [_hasDollar,'Dollar Report entered (revenue)',!_hasDollar?'Enter the ① Dollar Report at the top':''],
-                [_hasAcct,'Accounting Report entered (fees)',!_hasAcct?'Enter the ② Accounting Report at the top':''],
-                [_reportsMatch,'Reports match',!_reportsMatch?'Total Collected ≠ Dollar Report Grand Total — check the screenshots':''],
-                [_needArt.length===0,'All items have deco or “No Deco”',_needArt.length?`${_needArt.length} item${_needArt.length>1?'s':''} still need an art group or “No Deco”`:''],
-                [_portalImported,'Parent orders imported',!_portalImported?'Import the player report / packing slip in the Parent Order Portal':''],
-                [_portalEmailed,'Parents emailed',!_portalEmailed?'Send the “order is being processed” emails':''],
-              ].map(([ok,label,hint],i)=>(
-                <div key={i} style={{display:'flex',alignItems:'center',gap:10,fontSize:13}}>
-                  <span style={{width:20,height:20,flex:'0 0 20px',borderRadius:'50%',background:ok?'#16a34a':'#e2e8f0',color:ok?'#fff':'#94a3b8',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:800}}>{ok?'✓':i+1}</span>
+                [!!s.customer_id,'Customer linked',!s.customer_id?'Link a customer at the top of the page':'',false],
+                [!!s.delivery_mode,'Delivery method chosen',!s.delivery_mode?'Pick “Ship to home” or “Deliver to school” at the top':(s.delivery_mode==='deliver_school'?'Deliver to school — no per-player shipping labels':'Ship to home — labels per player'),false],
+                [_hasDollar,'Dollar Report entered (revenue)',!_hasDollar?'Enter the ① Dollar Report at the top':'',false],
+                [_hasAcct,'Accounting Report entered (fees)',!_hasAcct?'Enter the ② Accounting Report at the top':'',false],
+                [_reportsMatch,'Reports match',!_reportsMatch?'Total Collected ≠ Dollar Report Grand Total — check the screenshots':'',false],
+                [_needArt.length===0,'All items have deco or “No Deco”',_needArt.length?`${_needArt.length} item${_needArt.length>1?'s':''} still need an art group or “No Deco”`:'',false],
+                [_portalImported,'Parent orders imported',!_portalImported?'Import the player report / packing slip in the Parent Order Portal':'',false],
+                [_portalEmailed,'Parents emailed (optional)',!_portalEmailed?'You can send the “order is being processed” emails now or later — not required to create the SO':'',true],
+              ].map(([ok,label,hint,optional],i)=>(
+                // Required steps are numbered (1-6); the optional email row never blocks the gate.
+                <div key={i} style={{display:'flex',alignItems:'center',gap:10,fontSize:13,opacity:optional&&!ok?0.85:1}}>
+                  <span style={{width:20,height:20,flex:'0 0 20px',borderRadius:'50%',background:ok?'#16a34a':(optional?'#f1f5f9':'#e2e8f0'),color:ok?'#fff':'#94a3b8',display:'flex',alignItems:'center',justifyContent:'center',fontSize:optional?13:12,fontWeight:800}}>{ok?'✓':(optional?'•':i+1)}</span>
                   <span style={{fontWeight:700,color:ok?'#0f172a':'#64748b'}}>{label}</span>
                   {!ok&&hint&&<span style={{fontSize:11.5,color:'#94a3b8'}}>— {hint}</span>}
                 </div>
@@ -14914,11 +14941,11 @@ export default function App(){
               </div>
               {[
                 {n:1,icon:'🔗',title:'Add the store from the OMG Report',desc:'Paste the Store/Product report link at the top and Import. If you get a “missing images” warning, re-share from OMG with images checked and Re-import.'},
-                {n:2,icon:'🏷️',title:'Link the customer',desc:'Click “⚠ Link a customer…” at the top and pick the club/team. This enables the art library and sets the customer on the Sales Order.'},
+                {n:2,icon:'🏷️',title:'Link the customer & pick delivery method',desc:'Click “⚠ Link a customer…” at the top and pick the club/team (enables the art library and sets the SO customer). Then choose the 🚚 Delivery method: “Ship to home” creates a ShipStation label per player; “Deliver to school” is bulk-delivered to the club with no per-player labels. Both are required before the SO.'},
                 {n:3,icon:'📊',title:'Enter the two financial reports',desc:'① Dollar Report (green = revenue collected from parents) and ② Accounting Report (red = fees NSA pays). Each accepts a screenshot OR a PDF printout, or type the numbers. The panel checks that Total Collected = Grand Total and Collected − fees = Net Revenue — fix any value the import got wrong.'},
                 {n:4,icon:'🎨',title:'Assign deco to every product',desc:'In Store Products, each item must have an art group or be marked “No Deco”. Use Bulk assign art and “Select items needing art” to move fast.'},
                 {n:5,icon:'📦',title:'Set up the Parent Order Portal',desc:'In the 📦 Parent Order Portal: (1) paste the Player Report link & Import orders, (2) drop the packing-slip PDF to add parent emails (review the grid, then Save), (3) Send processing emails. Use 🧪 Test mode to rehearse without emailing real parents.'},
-                {n:6,icon:'✅',title:'Create the Sales Order',desc:'At the bottom, the checklist must be all green: customer linked · both reports entered & matching · all items deco/No-Deco · parent orders imported · parents emailed. Then click Create Sales Order — items, art, financials and parent tracking carry over, and the parent orders are LINKED to this SO (which turns on auto-status).'},
+                {n:6,icon:'✅',title:'Create the Sales Order',desc:'At the bottom, the required checklist must be all green: customer linked · delivery method chosen · both reports entered & matching · all items deco/No-Deco · parent orders imported. Emailing parents is optional (do it now or later). Then click Create Sales Order — items, art, financials and parent tracking carry over, and the parent orders are LINKED to this SO (which turns on auto-status).'},
                 {n:7,icon:'🛒',title:'Fulfill — parent status updates automatically',desc:'Work the SO normally. As you RECEIVE blanks, parents auto-advance to Received; when production COMPLETES the jobs, they auto-advance to Bagging; pushing to ShipStation (label created) auto-advances to Shipped and emails tracking. Backordered SKU+sizes hold at On order until their stock arrives. No manual status step — the “Move all” buttons are just overrides.'},
               ].map(step=><div key={step.n} style={{display:'flex',gap:12,alignItems:'flex-start',padding:'10px 0',borderBottom:'1px solid #f1f5f9'}}>
                 <div style={{width:32,height:32,borderRadius:16,background:'#eff6ff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,color:'#1e40af',flexShrink:0,fontSize:13}}>{step.n}</div>

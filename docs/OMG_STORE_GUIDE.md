@@ -31,10 +31,18 @@ step is complete.
 3. If you see a **"products are missing images"** warning, go back to OMG, re-share
    the report **with images checked**, and click **Re-import**.
 
-## Step 2 — Link the customer
+## Step 2 — Link the customer & pick the delivery method
 
 At the top of the store, click **⚠ Link a customer…** and pick the club/team.
 This enables the art library and sets the customer on the Sales Order.
+
+Then choose the **🚚 Delivery method** (required before the Sales Order):
+
+- **🏠 Ship to home** — each parent order ships to their address; a ShipStation
+  label is created **per player**.
+- **🏫 Deliver to school** — everything is bulk-delivered to the school/club, so
+  **no per-player shipping labels** are needed (the Push-to-ShipStation buttons
+  in the portal are hidden).
 
 ## Step 3 — Enter the financials (two reports)
 
@@ -72,9 +80,11 @@ shown as cards:
 2. **Packing slip** — drag the packing-slip **PDF** in. It adds each parent's
    **email** (the one thing the player report doesn't have) and is cross-checked
    against the orders by order number + name. Review the grid, then **Save**.
-3. **Email parents** — click **Send processing emails**. A confirmation popup
-   lists every recipient first. Use **🧪 Test mode** (enter your own email) to
-   rehearse without contacting real parents.
+3. **Email parents** *(optional)* — click **Send processing emails**. A
+   confirmation popup lists every recipient first. Use **🧪 Test mode** (enter
+   your own email) to rehearse without contacting real parents. This step is
+   **not required** to create the Sales Order — you can email parents now or any
+   time later.
 
 Each parent gets a private tracking link (`/shop/order/…`) that updates as the
 warehouse advances status and can show shipping/tracking.
@@ -85,12 +95,13 @@ At the very bottom, the **Create Sales Order** card shows a checklist. The butto
 turns green and unlocks only when **all** are done:
 
 - Customer linked
+- Delivery method chosen (ship to home / deliver to school)
 - Dollar Report entered (revenue)
 - Accounting Report entered (fees)
 - Reports match (Total Collected = Grand Total)
 - Every item has deco or "No Deco"
 - Parent orders imported
-- Parents emailed
+- Parents emailed *(optional — send now or later, not required to create the SO)*
 
 Click **Create Sales Order**. Items, art, financials and parent tracking all
 carry over. On the SO:
@@ -111,9 +122,11 @@ go (you do **not** click anything in the Parent Order Portal):
    SKU+sizes stay at **On order** until their stock arrives.
 9. **Production & decoration** — send jobs to the board; when the jobs are
    **completed**, parents auto-advance to **Bagging**.
-10. **Ship** — push to ShipStation and create the label → parents auto-advance to
-    **Shipped** and each gets a tracking email. Partial shipments show
-    **Partially shipped**. Then invoice from the SO.
+10. **Ship** — for **ship-to-home** stores, push to ShipStation and create the
+    label → parents auto-advance to **Shipped** and each gets a tracking email.
+    Partial shipments show **Partially shipped**. For **deliver-to-school**
+    stores there are no per-player labels — mark **Shipped** when the bulk
+    delivery goes out. Then invoice from the SO.
 
 The stages — **On order → Received → In production → Bagging → Shipped** — are
 driven by the SO's receiving + jobs + ShipStation. The **Move all** / per-order

@@ -166,7 +166,9 @@ async function parsePackingSlip(file) {
 //   saleCode   — OMG sale code (e.g. "WVD87"); identifies the shadow store
 //   storeName  — display name (for ingest fallback)
 // ─────────────────────────────────────────────────────────────────────
-export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync }) {
+export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, deliveryMode }) {
+  // Ship-to-school stores are bulk-delivered to the club; no per-player labels.
+  const shipToSchool = deliveryMode === 'deliver_school';
   const [store, setStore] = useState(null);       // shadow webstore row (null until first import)
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -554,7 +556,9 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync }
                 <button key={ls} onClick={() => advanceAll(ls)} disabled={busy === 'advance'} style={stageBtn(ls)}>{label}</button>
               ))}
               <span style={{ width: 1, height: 22, background: '#e2e8f0', margin: '0 4px' }} />
-              <button onClick={pushAllToShipStation} disabled={busy === 'ss-all' || !withAddress} style={{ ...secondaryBtn, opacity: withAddress ? 1 : 0.5 }}>{busy === 'ss-all' ? 'Pushing…' : `🚚 Push ${withAddress} to ShipStation`}</button>
+              {shipToSchool
+                ? <span style={{ fontSize: 11.5, color: '#1e40af', fontWeight: 700 }}>🏫 Deliver to school — bulk delivery, no per-player shipping labels</span>
+                : <button onClick={pushAllToShipStation} disabled={busy === 'ss-all' || !withAddress} style={{ ...secondaryBtn, opacity: withAddress ? 1 : 0.5 }}>{busy === 'ss-all' ? 'Pushing…' : `🚚 Push ${withAddress} to ShipStation`}</button>}
             </div>}
 
             {/* Orders table (expandable) — doubles as the contact-review surface */}
@@ -619,8 +623,10 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync }
                                 {[['pending', 'On order'], ['received', 'Received'], ['in_production', 'In production'], ['bagging', 'Bagging'], ['shipped', 'Shipped']].map(([ls, label]) => (
                                   <button key={ls} onClick={() => setLineStatus(o.id, ls)} disabled={busy === 'status-' + o.id} style={{ ...stageBtn(ls), opacity: st === ls ? 1 : 0.72, outline: st === ls ? '2px solid #0f172a' : 'none' }}>{label}</button>
                                 ))}
-                                <span style={{ width: 1, height: 20, background: '#e2e8f0', margin: '0 2px' }} />
-                                <button onClick={() => pushToShipStation(o)} disabled={busy === 'ss-' + o.id} style={{ ...secondaryBtn, padding: '7px 13px', fontSize: 12.5 }}>{busy === 'ss-' + o.id ? 'Pushing…' : '🚚 ShipStation'}</button>
+                                {!shipToSchool && <>
+                                  <span style={{ width: 1, height: 20, background: '#e2e8f0', margin: '0 2px' }} />
+                                  <button onClick={() => pushToShipStation(o)} disabled={busy === 'ss-' + o.id} style={{ ...secondaryBtn, padding: '7px 13px', fontSize: 12.5 }}>{busy === 'ss-' + o.id ? 'Pushing…' : '🚚 ShipStation'}</button>
+                                </>}
                               </div>}
                               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
                                 <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>
