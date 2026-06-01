@@ -1641,12 +1641,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     });
     // Outside-deco POs live at SO level (so.deco_pos), not under items
     (o.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
-    // OMG team-store fees NSA is charged (e.g. processing) are a real cost, so
-    // fold them into cost — the order's margin then reflects NSA's true net
-    // after OMG's cut rather than a product-only number.
-    const omgFee=safeNum(o._omg_processing||0);cost+=omgFee;
+    // OMG team-store money model (set when an SO is pulled from an OMG store):
+    //  • _omg_processing = the online-processing fee CHARGED TO PARENTS — it's
+    //    revenue collected to cover fees, so it adds to rev (not cost).
+    //  • _omg_omg_fees + _omg_cc_fees = the actual fees NSA PAYS (from the OMG
+    //    Accounting Report) — real costs, so they add to cost.
+    const omgRevFee=safeNum(o._omg_processing||0);rev+=omgRevFee;          // processing fee = revenue
+    // Sales tax collected at the OMG store is booked as NSA revenue (NSA remits
+    // it). The SO itself stays tax_exempt (OMG already computed it), so we fold
+    // the collected amount into revenue rather than re-deriving a tax line.
+    const omgTaxRev=safeNum(o._omg_tax||0);rev+=omgTaxRev;                  // collected tax = revenue
+    const omgCostFees=safeNum(o._omg_omg_fees||0)+safeNum(o._omg_cc_fees||0);cost+=omgCostFees; // OMG + CC fees = cost
+    const omgFee=omgCostFees; // back-compat alias used elsewhere in this component
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const tax=rev*taxRate;
-    return{rev,cost,ship,tax,taxRate,omgFee,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust]); // eslint-disable-line
+    return{rev,cost,ship,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust]); // eslint-disable-line
 
   // Promo totals — separate calc to not disturb existing totals
   const promoTotals=useMemo(()=>{
@@ -4445,10 +4453,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           costLines.push({category:'Shipping',sku:'—',name:'Inbound Freight (Supplier Bills)',vendor:'Supplier',qty:1,expected:0,actual:freightVal,isShipping:true,isShippingDetail:true,poCount:freightVal>0?1:0,poIds:'',allReceived:true});
           costLines.push({category:'Shipping',sku:'',name:'Shipping Total',vendor:'',qty:'',expected:quotedShip,actual:shipCostVal+freightVal,isShipping:true,isShippingSubtotal:true,poCount:1,poIds:'',allReceived:true});
         }
-        // OMG team-store fees NSA is charged (processing) — a real order cost,
-        // shown here so the Costs tab matches the margin in the header.
-        const _omgFee=safeNum(o._omg_processing||0);
-        if(_omgFee>0){costLines.push({category:'OMG Fees',sku:'—',name:'OMG Processing Fee',vendor:'OrderMyGear',qty:1,expected:_omgFee,actual:_omgFee,poCount:1,poIds:'',allReceived:true});}
+        // OMG Accounting-Report fees NSA actually pays — the real order costs,
+        // shown here so the Costs tab matches the margin in the header. (The
+        // online processing fee charged to parents is REVENUE, handled in the
+        // totals calc above — not a cost line.)
+        const _omgFeeOmg=safeNum(o._omg_omg_fees||0);
+        const _omgFeeCc=safeNum(o._omg_cc_fees||0);
+        if(_omgFeeOmg>0){costLines.push({category:'OMG Fees',sku:'—',name:'OMG Fees',vendor:'OrderMyGear',qty:1,expected:_omgFeeOmg,actual:_omgFeeOmg,poCount:1,poIds:'',allReceived:true});}
+        if(_omgFeeCc>0){costLines.push({category:'OMG Fees',sku:'—',name:'Credit Card Fees',vendor:'OrderMyGear',qty:1,expected:_omgFeeCc,actual:_omgFeeCc,poCount:1,poIds:'',allReceived:true});}
         // Totals computed AFTER shipping lines added
         const totalExpected=costLines.reduce((a,l)=>a+(l.isShippingSubtotal?0:l.expected),0)+quotedShip;
         const totalActual=costLines.reduce((a,l)=>a+(l.isShippingSubtotal?0:l.actual),0);

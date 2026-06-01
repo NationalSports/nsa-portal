@@ -34,6 +34,70 @@ const _searchPOStatus=(so,poId)=>{
   if(anyDS)return bld>=ord&&ord>0?'shipped':bld>0?'partial':'waiting';
   return open<=0&&rcvd>0?'received':rcvd>0?'partial':'waiting';
 };
+// App-side OMG status sync (no DB triggers). From the linked sales order's
+// receiving + jobs, derive (a) the store-wide stage and (b) a per-SKU+size
+// received-quantity map so backordered sizes hold their parents at on-order.
+// Returns null when there's no linked SO. Reuses calcSOStatus for the stage so
+// it matches the rest of the app exactly.
+const computeOmgSoSync=(so)=>{
+  if(!so)return null;
+  const soStatus=calcSOStatus(so);
+  // SO status → parent store stage. 'shipped' is never set here (ShipStation
+  // owns it). Jobs-all-done (ready_to_invoice/complete) = 'bagging'.
+  const storeStage=
+    (soStatus==='ready_to_invoice'||soStatus==='complete')?'bagging':
+    (soStatus==='in_production')?'in_production':
+    (soStatus==='items_received')?'received':
+    null; // need_order / waiting_receive / booking → leave parents at on-order
+  // Per-SKU+size received qty = pulled picks + PO receipts (matches calcSOStatus).
+  const recvBySkuSize={};
+  safeItems(so).forEach(it=>{
+    const sk=(it.sku||'').trim().toUpperCase();if(!sk)return;
+    Object.keys(safeSizes(it)).forEach(sz=>{
+      const k=sk+'|'+String(sz).toUpperCase();
+      const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+      const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+      recvBySkuSize[k]=(recvBySkuSize[k]||0)+pulled+rcvd;
+    });
+  });
+  return { soId:so.id, soStatus, storeStage, recvBySkuSize };
+};
+// Auto-push the computed OMG status onto the linked parent order items. Called
+// from savSO whenever an OMG-linked SO changes (receiving, jobs, picks), so the
+// parent portal/tracking stays current without a manual sync. Mirrors the
+// portal's syncFromSO allocation: store moves together to the SO stage, but an
+// item whose SKU+size isn't fully received holds at on-order (backorder).
+// Never downgrades, never touches shipped/cancelled. Best-effort + silent.
+const _OMG_STAGE_ORD = { pending:0, on_order:0, received:1, in_production:2, bagging:3, shipped:4, complete:4 };
+const _OMG_STAGE_LABEL = ['pending','received','in_production','bagging','shipped'];
+const pushOmgStatusSync=async(so)=>{
+  try{
+    if(!supabase||!so||!so.omg_store_id)return;
+    const sync=computeOmgSoSync(so);
+    if(!sync||!sync.storeStage)return; // nothing received/produced yet
+    const storeIdx=_OMG_STAGE_ORD[sync.storeStage]??0;
+    // Find the shadow webstore + its orders/items linked to this SO.
+    const{data:ws}=await supabase.from('webstores').select('id').eq('omg_sale_code',so.omg_store_id.replace(/^OMG-sale_/,'')).eq('source','omg').maybeSingle();
+    if(!ws||!ws.id)return;
+    const{data:ords}=await supabase.from('webstore_orders').select('id').eq('store_id',ws.id);
+    const ids=(ords||[]).map(o=>o.id);if(!ids.length)return;
+    const{data:items}=await supabase.from('webstore_order_items').select('id,sku,size,qty,line_status').in('order_id',ids).order('id');
+    const norm=x=>String(x||'').trim().toUpperCase();
+    const used={};const byLs={};
+    (items||[]).forEach(i=>{
+      if(i.line_status==='shipped'||i.line_status==='cancelled')return; // ShipStation/cancel own these
+      const k=norm(i.sku)+'|'+norm(i.size);const qty=i.qty||1;
+      const recvAvail=sync.recvBySkuSize[k]||0;used[k]=used[k]||0;
+      const isReceived=(used[k]+qty)<=recvAvail;used[k]+=qty;
+      const targetIdx=isReceived?storeIdx:0; // not received → hold at on-order
+      const curIdx=_OMG_STAGE_ORD[i.line_status]??0;
+      if(targetIdx>curIdx){const ls=_OMG_STAGE_LABEL[targetIdx];(byLs[ls]=byLs[ls]||[]).push(i.id)}
+    });
+    for(const[ls,idList]of Object.entries(byLs)){
+      await supabase.from('webstore_order_items').update({line_status:ls}).in('id',idList);
+    }
+  }catch(e){console.warn('[OMG] auto status sync failed:',e.message)}
+};
 const _syncDbMaxIds=async()=>{if(!supabase)return;try{const[e,s,i]=await Promise.all([supabase.from('estimates').select('id').order('id',{ascending:false}).limit(1),supabase.from('sales_orders').select('id').order('id',{ascending:false}).limit(1),supabase.from('invoices').select('id').order('id',{ascending:false}).limit(1)]);const p=r=>{const m=String(r?.data?.[0]?.id||'').match(/(\d+)/);return m?parseInt(m[1]):0};_dbMaxIds.est=p(e);_dbMaxIds.so=p(s);_dbMaxIds.inv=p(i)}catch(e){console.warn('[DB] Failed to sync max IDs:',e)}};
 const nextEstId=ests=>'EST-'+(Math.max(_maxNum(ests),_dbMaxIds.est,1000)+1);
 const nextSOId=sos=>'SO-'+(Math.max(_maxNum(sos),_dbMaxIds.so,1000)+1);
@@ -142,6 +206,7 @@ const AiInventoryPoWizard = lazyRetry(() => import('./AiInventoryPoWizard').then
 const CustDetail = lazyRetry(() => import('./CustDetail'));
 const CoachPortal = lazyRetry(() => import('./CoachPortal'));
 const Webstores = lazyRetry(() => import('./Webstores'));
+const OmgOrderPortal = lazyRetry(() => import('./OmgOrderPortal'));
 const SalesHistory = lazyRetry(() => import('./SalesHistory'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
@@ -2059,6 +2124,52 @@ const extractPdfText=async(file)=>{
     fullText+=pageText+'\n';
   }
   return{fullText,pages};
+};
+// ── OMG financial report parsers (work on text from OCR OR a PDF printout) ──
+const _omgAmt=(s)=>{const m=String(s).replace(/[(),]/g,'').match(/-?[\d.]+/);return m?parseFloat(m[0])||0:0;};
+// Find the dollar amount on the line that matches labelRe (handles "$1,234.56"
+// and parenthesized "($1,234.56)" negatives, anywhere on the line).
+const _omgLineVal=(text,labelRe)=>{
+  for(const ln of String(text||'').split('\n')){
+    if(!labelRe.test(ln))continue;
+    const all=[...ln.matchAll(/\(?\$?\s?([\d,]+\.\d{2})\)?/g)];
+    if(all.length)return _omgAmt(all[all.length-1][1]); // last $ on the line = the value column
+  }
+  return 0;
+};
+// ① Dollar Report → revenue pieces collected from parents.
+const parseOmgDollar=(text)=>({
+  shipping:  _omgLineVal(text,/^\s*\t*Shipping\b/i)||_omgLineVal(text,/\bShipping\b/i),
+  processing:_omgLineVal(text,/Processing/i),
+  tax:       _omgLineVal(text,/Sales\s*Tax/i),
+  fundraise: _omgLineVal(text,/Fundrais/i),
+  grand:     _omgLineVal(text,/Grand\s*Total/i),
+});
+// ② Accounting Report → the fees NSA pays. The top summary box sometimes has
+// labels with no adjacent value (PDF printouts), so we fall back to the
+// "Deposit Subtotal" row, which carries Collected / OMG Fee / Credit Card Fee.
+const parseOmgAccounting=(text)=>{
+  let collected=_omgLineVal(text,/Total\s*Collected/i);
+  let omg      =_omgLineVal(text,/^\s*\t*OMG\s*Fees?\b/i)||_omgLineVal(text,/\bOMG\s*Fees?\b/i);
+  let cc       =_omgLineVal(text,/Credit\s*Card\s*Fees?/i);
+  let invoiced =_omgLineVal(text,/Invoiced\s*Fees?/i);
+  let net      =_omgLineVal(text,/Net\s*Revenue/i);
+  const dep=String(text||'').split('\n').find(l=>/Deposit\s*Subtotal/i.test(l));
+  if(dep){const nums=[...dep.matchAll(/\(?\$?\s?([\d,]+\.\d{2})\)?/g)].map(m=>_omgAmt(m[1]));
+    if(!collected&&nums[0])collected=nums[0];if(!omg&&nums[1])omg=nums[1];if(!cc&&nums[2])cc=nums[2];}
+  if(!net&&collected)net=Math.round((collected-omg-cc-invoiced)*100)/100;
+  return{collected,omg,cc,invoiced,net};
+};
+// Read a dropped/selected financial file as text — PDF via pdf.js, image via OCR.
+const omgReadReportText=async(file)=>{
+  if(file.type==='application/pdf'||/\.pdf$/i.test(file.name||'')){
+    const{fullText}=await extractPdfText(file);return fullText;
+  }
+  const{createWorker}=await import('tesseract.js');
+  const worker=await createWorker('eng');
+  const{data:{text}}=await worker.recognize(file);
+  await worker.terminate();
+  return text;
 };
 const parseNetSuitePdf=(text,docType,products)=>{
   const result={docNumber:'',date:'',customerName:'',terms:'',memo:'',subtotal:0,tax:0,shipping:0,total:0,lineItems:[],rawText:text,confidence:'low',warnings:[]};
@@ -4473,6 +4584,13 @@ export default function App(){
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);const[omgBulkSel,setOmgBulkSel]=useState(()=>new Set());const[omgBulkArt,setOmgBulkArt]=useState('');
+  // Live completion status reported up from the Parent Order Portal for the
+  // selected store: {saleCode, orders, withEmail, withAddress, notified}. Gates
+  // the Create Sales Order button at the bottom of the store detail.
+  const[omgPortalStatus,setOmgPortalStatus]=useState(null);
+  React.useEffect(()=>{setOmgPortalStatus(null)},[omgSel?.id]);
+  // Step-by-step help modal (opened from the button on the OMG store detail).
+  const[omgGuideOpen,setOmgGuideOpen]=useState(false);
   React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
   const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);
 
@@ -4526,6 +4644,10 @@ export default function App(){
         const m = (str || '').match(/\(([A-Za-z0-9]{4,10})\)/);
         return m ? m[1].toUpperCase() : '';
       };
+      // OMG appends an internal variant index to the style number, e.g.
+      // "KF5972 - 7" or "5159368 - 8". NSA SKUs never contain a space, so the
+      // real catalog SKU is simply the first whitespace-delimited token.
+      const cleanSku = (str) => ((str || '').trim().split(/\s+/)[0] || '').toUpperCase();
       (report.reports || []).forEach(r => {
         (r.sections || []).forEach(section => {
           const meta = section.meta || {};
@@ -4535,7 +4657,10 @@ export default function App(){
           // like a real SKU (no spaces, not absurdly long) — otherwise it's
           // a product name and we rely on the per-row color SKU instead.
           const sectionSku = meta.sku || '';
-          const sectionSkuOk = sectionSku && !sectionSku.includes(' ') && sectionSku.length <= 15;
+          // Strip OMG's " - N" variant suffix to get the catalog SKU, then judge
+          // if it looks like a real SKU (single token, not absurdly long).
+          const cleanSectionSku = cleanSku(sectionSku);
+          const sectionSkuOk = cleanSectionSku && !cleanSectionSku.includes(' ') && cleanSectionSku.length <= 15;
 
           // Same product can ship multiple SKUs (one per color), e.g. the
           // 3-stripe short is KB9093 in black and KB9097 in grey. Split each
@@ -4545,7 +4670,7 @@ export default function App(){
             const rawSz = (row.size || 'OS').trim().replace(/["''″]+$/,'');
             const sz = SZ_NORM[rawSz.toUpperCase()] || (/^adult\b/i.test(rawSz)?'OSFA':rawSz);
             const qty = row.quantity || 0;
-            const rowSku = extractSku(row.color) || (sectionSkuOk ? sectionSku.toUpperCase() : '');
+            const rowSku = extractSku(row.color) || (sectionSkuOk ? cleanSectionSku : '');
             const key = rowSku || '__nosku__';
             if (!groups[key]) groups[key] = { sku: rowSku, sizes: {}, qty: 0, paid: 0, colors: new Set() };
             const g = groups[key];
@@ -4564,7 +4689,7 @@ export default function App(){
             let sku = g.sku;
             if (!sku) {
               const fromText = extractSku([...g.colors].join(' ') + ' ' + (meta.name || ''));
-              sku = fromText || (sectionSkuOk ? sectionSku.toUpperCase() : sectionSku);
+              sku = fromText || (sectionSkuOk ? cleanSectionSku : cleanSku(sectionSku));
             }
 
             // Match this SKU's mockup image (each color has its own art),
@@ -4694,7 +4819,18 @@ export default function App(){
 
       setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
       setOmgSel(updated);
-      nf(`Imported ${products.length} products from OMG report (${totalQty} total items)${_autoLinked ? ` · linked to ${_autoLinked.name}` : ''}`);
+      // Product images only come through when "include images" is checked when
+      // sharing the OMG report. If most/all products have no image, the share
+      // was almost certainly exported without it — warn so the rep re-shares.
+      const _noImg = (products || []).filter(p => !p.image_url).length;
+      const _total = (products || []).length;
+      if (_total > 0 && _noImg === _total) {
+        nf(`⚠ Imported ${_total} products but NONE have images. In OMG, re-share the report with “Include product images” checked, then Re-import.`, 'error');
+      } else if (_noImg > 0) {
+        nf(`⚠ Imported ${_total} products — ${_noImg} are missing images. Re-share the OMG report with “Include product images” checked and Re-import if you need them.`, 'warn');
+      } else {
+        nf(`Imported ${_total} products from OMG report (${totalQty} total items)${_autoLinked ? ` · linked to ${_autoLinked.name}` : ''}`);
+      }
       return updated;
     } catch (e) {
       console.error('[OMG Report] Import failed:', e);
@@ -5025,6 +5161,9 @@ export default function App(){
     }
     setSOs(p=>{const ex=p.find(x=>x.id===sl.id);return ex?p.map(x=>x.id===sl.id?sl:x):[...p,sl]});
     logChange(prev?'updated':'created','SO',sl.id,sl.memo||'');
+    // OMG team stores: auto-advance the linked parent orders' tracking status
+    // from this SO's receiving + jobs (fire-and-forget; never blocks the save).
+    if(sl.omg_store_id)pushOmgStatusSync(sl);
     // Promo usage is recorded in convertSO only — savSO does not duplicate it
     // Invoices are created explicitly via the Create Invoice modal — no auto-generation on status change.
     return sl;
@@ -14083,6 +14222,139 @@ export default function App(){
       const custArtById=_artLib.byId;
       const setStoreCustomer=(cid)=>{const upd={...s,customer_id:cid||null};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
       const _applyStoreProds=newProds=>{const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
+      // ── Pre-flight gates for creating the Sales Order ─────────────────
+      // Everything below the page must be complete before the SO can be pulled.
+      const _alreadyPulled=sos.some(so=>so.omg_store_id===s.id);
+      const _needArt=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);
+      const _hasDollar=(s._omg_grand_total||0)>0;                       // ① Dollar Report entered
+      const _hasAcct=(s._omg_acct_collected||0)>0;                      // ② Accounting Report entered
+      const _reportsMatch=!(_hasDollar&&_hasAcct)||Math.abs((s._omg_acct_collected||0)-(s._omg_grand_total||0))<1; // collected == grand total
+      const _ps=omgPortalStatus&&omgPortalStatus.saleCode===s._omg_sale_code?omgPortalStatus:null;
+      const _portalImported=!!_ps&&_ps.orders>0;                        // player report / packing slip imported
+      const _portalEmailed=!!_ps&&_ps.notified>0&&_ps.notified>=_ps.withEmail&&_ps.withEmail>0; // all parents emailed
+      const soGate=(()=>{
+        const reasons=[];
+        if(!s.customer_id)reasons.push('Link a customer (top of page)');
+        if(!s.delivery_mode)reasons.push('Choose a delivery method (ship to home / deliver to school)');
+        if(!_hasDollar)reasons.push('Enter the Dollar Report (revenue, top)');
+        if(!_hasAcct)reasons.push('Enter the Accounting Report (fees, top)');
+        if(!_reportsMatch)reasons.push('Reports disagree — Total Collected ≠ Grand Total');
+        if(_needArt.length)reasons.push(`${_needArt.length} item${_needArt.length>1?'s':''} need deco or “No Deco”`);
+        if(!_portalImported)reasons.push('Import parent orders in the Parent Order Portal');
+        return{ok:reasons.length===0,reasons};
+      })();
+      const createOmgSO=()=>{
+              if(sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
+              if(!s.customer_id){nf('Link this store to a customer first (top of the page).','error');return}
+              const generatedId=nextSOId(sos);
+              // Every product must be assigned an art group or explicitly marked
+              // "No Deco" (shoes, socks, equipment) before it can become an SO.
+              const needArt=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);
+              if(needArt.length){nf(`${needArt.length} item(s) need an art group or "No Deco": ${needArt.slice(0,6).map(p=>p.sku).join(', ')}${needArt.length>6?'…':''}`,'error');return;}
+              // Build art files from unique art_group labels across all decorations
+              // Each distinct art is either a customer-library logo (keyed by its
+              // saved art id) or a new named group. Build one art file per identity.
+              const artKeyOf=d=>d._cust_art_id?'lib:'+d._cust_art_id:(d.art_group?'name:'+d.art_group:null);
+              const artKeys=[];const seenArtKey=new Set();
+              (s.products||[]).forEach(p=>(p.decorations||[]).forEach(d=>{const k=artKeyOf(d);if(k&&!seenArtKey.has(k)){seenArtKey.add(k);artKeys.push({key:k,deco:d})}}));
+              const artKeyToId={};
+              const artFiles=artKeys.map(({key,deco},idx)=>{
+                const id='af_omg_'+idx;artKeyToId[key]=id;
+                const groupProds=(s.products||[]).filter(p=>(p.decorations||[]).some(d=>artKeyOf(d)===key));
+                // OMG mockup per SKU in this group, keyed sku|color.
+                const omgMocks={};let preview='';
+                groupProds.forEach(p=>{const img=p.image_url||'';if(!img)return;if(!preview)preview=img;omgMocks[p.sku+'|'+(p.color||'')]=[img]});
+                const src=deco._cust_art_id?custArtById[deco._cust_art_id]:null;
+                if(src){
+                  // Apply the customer's saved logo — its files, color ways, and
+                  // approval/production status come with it (so a fully-prepped
+                  // logo lands art-complete) — then layer in the OMG mockups.
+                  const copy=JSON.parse(JSON.stringify(src));
+                  const item_mockups={...(copy.item_mockups||{})};
+                  Object.entries(omgMocks).forEach(([k2,v])=>{if(!item_mockups[k2])item_mockups[k2]=v});
+                  return{...copy,id,item_mockups,preview_url:copy.preview_url||preview,uploaded:new Date().toLocaleDateString(),
+                    notes:(copy.notes?copy.notes+' · ':'')+'Applied from customer library — OMG store '+s.store_name};
+                }
+                // New logo: the OMG mockup is the approved proof, so the art file
+                // starts approved and the job lands in the "needs files" stage.
+                // "On file" adds the standard production marker → art-complete.
+                const ready=groupProds.length>0&&groupProds.every(p=>p.art_ready);
+                const prod_files=ready?[{name:'Existing art on file',on_file:true,at:new Date().toISOString(),by:cu?.name||'Rep'}]:[];
+                return{id,name:deco.art_group,deco_type:deco.type||'screen_print',
+                  ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],item_mockups:omgMocks,preview_url:preview,prod_files,
+                  notes:'From OMG store '+s.store_name+(ready?' — logo on file, art ready':' — mockup is the approved proof'),status:'approved',approved_at:new Date().toISOString(),uploaded:new Date().toLocaleDateString()};
+              });
+              // Build SO items from imported products
+              const soItems=(s.products||[]).map(p=>{
+                const catP=prod.find(cp=>cp.sku===p.sku||cp.sku?.toLowerCase()===p.sku?.toLowerCase());
+                const decos=(p.decorations||[]);
+                const positions=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve'];
+                return{
+                  sku:p.sku,name:p.name,brand:p.manufacturer||catP?.brand||'',
+                  color:p.color,product_id:catP?.id||null,vendor_id:p.vendor_id||catP?.vendor_id||null,
+                  nsa_cost:p.cost||catP?.nsa_cost||0,
+                  retail_price:p.retail||0,
+                  unit_sell:p.retail||0,
+                  sizes:p.sizes||{},
+                  available_sizes:Object.keys(p.sizes||{}),
+                  _colorImage:p.image_url||'',
+                  no_deco:p.no_deco||decos.length===0,
+                  decorations:decos.map((d,di)=>{const k=artKeyOf(d);const artFileId=k?artKeyToId[k]||null:null;return{kind:'art',position:positions[di]||'Position '+(di+1),type:d.type||(d._cust_art_id&&custArtById[d._cust_art_id]?.deco_type)||'screen_print',art_file_id:artFileId,sell_override:0,sell_each:0,cost_each:0}}),
+                  pick_lines:[],po_lines:[],
+                };
+              });
+              const newSO={id:generatedId,customer_id:s.customer_id,memo:'OMG Store: '+s.store_name+(s._omg_sale_code?' ('+s._omg_sale_code+')':''),status:'need_order',
+                created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
+                expected_date:'',production_notes:'OMG Store '+s.store_name+' — '+soItems.length+' items imported from report. Deco cost is $0 (bundled in store price).'
+                  +'\n— REVENUE (collected from parents, Dollar Report) —'
+                  +(s._omg_shipping?'\nShipping collected (= SO shipping charge): $'+s._omg_shipping.toFixed(2):'')
+                  +(s._omg_processing?'\nOnline processing fee (revenue, covers fees): $'+s._omg_processing.toFixed(2):'')
+                  +(s._omg_tax?'\nSales tax collected (NSA revenue / NSA remits): $'+s._omg_tax.toFixed(2):'')
+                  +(s._omg_grand_total?'\nGrand total collected: $'+s._omg_grand_total.toFixed(2):'')
+                  +'\n— COSTS (fees NSA pays, Accounting Report) —'
+                  +(s._omg_omg_fees?'\nOMG fees: $'+(s._omg_omg_fees||0).toFixed(2):'')
+                  +(s._omg_cc_fees?'\nCredit card fees: $'+(s._omg_cc_fees||0).toFixed(2):'')
+                  +((s._omg_omg_fees||s._omg_cc_fees)?'\nNet after fees: $'+(((s._omg_acct_collected||s._omg_grand_total||0))-(s._omg_omg_fees||0)-(s._omg_cc_fees||0)).toFixed(2):'')
+                  +(s._omg_fundraise?'\n— Fundraising added to customer as promo credit: $'+s._omg_fundraise.toFixed(2):''),
+                shipping_type:'flat',shipping_value:s._omg_shipping||0,
+                tax_rate:0,tax_exempt:true,
+                ship_to_id:'default',firm_dates:[],art_files:artFiles,
+                jobs:[],items:soItems,omg_store_id:s.id,
+                _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_fundraise:s._omg_fundraise||0,_omg_grand_total:s._omg_grand_total||0,
+                _omg_omg_fees:s._omg_omg_fees||0,_omg_cc_fees:s._omg_cc_fees||0,_omg_acct_collected:s._omg_acct_collected||0};
+              setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
+              // Link the OMG parent orders (shadow webstore) to this SO so the
+              // status-sync trigger drives their tracking from receiving/jobs/SO.
+              // Sets sales_orders.webstore_id + each webstore_orders.so_id, keyed
+              // by the OMG sale code. Best-effort: tracking still works manually
+              // if this fails (e.g. orders not imported yet).
+              if(supabase&&s._omg_sale_code){(async()=>{try{
+                const{data:ws}=await supabase.from('webstores').select('id').eq('omg_sale_code',s._omg_sale_code).eq('source','omg').maybeSingle();
+                if(ws&&ws.id){
+                  await supabase.from('sales_orders').update({webstore_id:ws.id}).eq('id',generatedId);
+                  await supabase.from('webstore_orders').update({so_id:generatedId}).eq('store_id',ws.id);
+                }
+              }catch(e){console.warn('[OMG] SO link failed:',e.message)}})()}
+              // OMG store fundraising profit becomes a promo credit the school can
+              // spend on future NSA orders. Add to (or create) the customer's
+              // current promo period so the existing apply-promo flow can use it.
+              const _fund=s._omg_fundraise||0;
+              if(_fund>0&&c){
+                const promoOwnerId=c.parent_id||c.id;
+                const isFamily=cc=>cc.id===promoOwnerId||cc.parent_id===promoOwnerId;
+                const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
+                const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
+                const owner=cust.find(x=>x.id===promoOwnerId)||c;
+                const existing=(owner.promo_periods||[]).find(p=>p.period_start===_pStart);
+                const note='OMG fundraising: '+s.store_name;
+                const savedPeriod=existing
+                  ?{...existing,allocated:(existing.allocated||0)+_fund,notes:existing.notes?existing.notes+' · '+note:note}
+                  :{id:'pp_'+Date.now(),customer_id:promoOwnerId,program_id:null,period_start:_pStart,period_end:_pEnd,allocated:_fund,used:0,notes:note,created_at:new Date().toISOString()};
+                _dbSavePromoPeriod(savedPeriod);
+                setCust(prev=>prev.map(cc=>{if(!isFamily(cc))return cc;const has=(cc.promo_periods||[]).some(p=>p.id===savedPeriod.id);const periods=has?(cc.promo_periods||[]).map(p=>p.id===savedPeriod.id?savedPeriod:p):[...(cc.promo_periods||[]),savedPeriod];return{...cc,promo_periods:periods}}));
+              }
+              nf(`Created SO with ${soItems.length} items from ${s.store_name}`+(_fund>0?` · $${_fund.toFixed(2)} fundraising added as promo credit`:''));
+      };
       const _decoFields=decos=>({decorations:decos,deco_type:decos.length>0?decos.map(d=>d.type).join('|'):'',art_group:decos.map(d=>d.art_group).join('|')});
       const applyBulkArt=()=>{
         if(!omgBulkArt||omgBulkSel.size===0)return;
@@ -14155,103 +14427,10 @@ export default function App(){
                 background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':s.status==='draft'?'#f1f5f9':'#fef3c7',
                 color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':s.status==='draft'?'#64748b':'#92400e'}}>{s.status.toUpperCase()}</span>
                 {s.open_date&&<span style={{marginLeft:8,fontSize:11,color:'#64748b'}}>📅 {s.open_date} → {s.close_date}</span>}
+                <button onClick={()=>{const el=document.getElementById('omg-parent-portal');if(el)el.scrollIntoView({behavior:'smooth',block:'start'})}} title="Jump to the Parent Order Portal — player report, packing slip, parent emails & tracking" style={{marginLeft:8,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer'}}>📦 Parent Order Portal ↓</button>
+                <button onClick={()=>setOmgGuideOpen(true)} title="How to create an OMG store, step by step" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #fcd34d',background:'#fffbeb',color:'#92400e',cursor:'pointer'}}>📖 Step-by-step</button>
               </div>
             </div>
-            {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
-              if(sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
-              if(!s.customer_id){nf('Link this store to a customer first (top of the page).','error');return}
-              const generatedId=nextSOId(sos);
-              // Every product must be assigned an art group or explicitly marked
-              // "No Deco" (shoes, socks, equipment) before it can become an SO.
-              const needArt=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);
-              if(needArt.length){nf(`${needArt.length} item(s) need an art group or "No Deco": ${needArt.slice(0,6).map(p=>p.sku).join(', ')}${needArt.length>6?'…':''}`,'error');return;}
-              // Build art files from unique art_group labels across all decorations
-              // Each distinct art is either a customer-library logo (keyed by its
-              // saved art id) or a new named group. Build one art file per identity.
-              const artKeyOf=d=>d._cust_art_id?'lib:'+d._cust_art_id:(d.art_group?'name:'+d.art_group:null);
-              const artKeys=[];const seenArtKey=new Set();
-              (s.products||[]).forEach(p=>(p.decorations||[]).forEach(d=>{const k=artKeyOf(d);if(k&&!seenArtKey.has(k)){seenArtKey.add(k);artKeys.push({key:k,deco:d})}}));
-              const artKeyToId={};
-              const artFiles=artKeys.map(({key,deco},idx)=>{
-                const id='af_omg_'+idx;artKeyToId[key]=id;
-                const groupProds=(s.products||[]).filter(p=>(p.decorations||[]).some(d=>artKeyOf(d)===key));
-                // OMG mockup per SKU in this group, keyed sku|color.
-                const omgMocks={};let preview='';
-                groupProds.forEach(p=>{const img=p.image_url||'';if(!img)return;if(!preview)preview=img;omgMocks[p.sku+'|'+(p.color||'')]=[img]});
-                const src=deco._cust_art_id?custArtById[deco._cust_art_id]:null;
-                if(src){
-                  // Apply the customer's saved logo — its files, color ways, and
-                  // approval/production status come with it (so a fully-prepped
-                  // logo lands art-complete) — then layer in the OMG mockups.
-                  const copy=JSON.parse(JSON.stringify(src));
-                  const item_mockups={...(copy.item_mockups||{})};
-                  Object.entries(omgMocks).forEach(([k2,v])=>{if(!item_mockups[k2])item_mockups[k2]=v});
-                  return{...copy,id,item_mockups,preview_url:copy.preview_url||preview,uploaded:new Date().toLocaleDateString(),
-                    notes:(copy.notes?copy.notes+' · ':'')+'Applied from customer library — OMG store '+s.store_name};
-                }
-                // New logo: the OMG mockup is the approved proof, so the art file
-                // starts approved and the job lands in the "needs files" stage.
-                // "On file" adds the standard production marker → art-complete.
-                const ready=groupProds.length>0&&groupProds.every(p=>p.art_ready);
-                const prod_files=ready?[{name:'Existing art on file',on_file:true,at:new Date().toISOString(),by:cu?.name||'Rep'}]:[];
-                return{id,name:deco.art_group,deco_type:deco.type||'screen_print',
-                  ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],item_mockups:omgMocks,preview_url:preview,prod_files,
-                  notes:'From OMG store '+s.store_name+(ready?' — logo on file, art ready':' — mockup is the approved proof'),status:'approved',approved_at:new Date().toISOString(),uploaded:new Date().toLocaleDateString()};
-              });
-              // Build SO items from imported products
-              const soItems=(s.products||[]).map(p=>{
-                const catP=prod.find(cp=>cp.sku===p.sku||cp.sku?.toLowerCase()===p.sku?.toLowerCase());
-                const decos=(p.decorations||[]);
-                const positions=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve'];
-                return{
-                  sku:p.sku,name:p.name,brand:p.manufacturer||catP?.brand||'',
-                  color:p.color,product_id:catP?.id||null,vendor_id:p.vendor_id||catP?.vendor_id||null,
-                  nsa_cost:p.cost||catP?.nsa_cost||0,
-                  retail_price:p.retail||0,
-                  unit_sell:p.retail||0,
-                  sizes:p.sizes||{},
-                  available_sizes:Object.keys(p.sizes||{}),
-                  _colorImage:p.image_url||'',
-                  no_deco:p.no_deco||decos.length===0,
-                  decorations:decos.map((d,di)=>{const k=artKeyOf(d);const artFileId=k?artKeyToId[k]||null:null;return{kind:'art',position:positions[di]||'Position '+(di+1),type:d.type||(d._cust_art_id&&custArtById[d._cust_art_id]?.deco_type)||'screen_print',art_file_id:artFileId,sell_override:0,sell_each:0,cost_each:0}}),
-                  pick_lines:[],po_lines:[],
-                };
-              });
-              const newSO={id:generatedId,customer_id:s.customer_id,memo:'OMG Store: '+s.store_name+(s._omg_sale_code?' ('+s._omg_sale_code+')':''),status:'need_order',
-                created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
-                expected_date:'',production_notes:'OMG Store '+s.store_name+' — '+soItems.length+' items imported from report. Deco cost is $0 (bundled in store price).'
-                  +(s._omg_shipping?'\nShipping collected: $'+s._omg_shipping.toFixed(2):'')
-                  +(s._omg_processing?'\nProcessing fees (counted as NSA cost): $'+s._omg_processing.toFixed(2):'')
-                  +(s._omg_tax?'\nSales tax collected & remitted by OMG: $'+s._omg_tax.toFixed(2)+' (SO tax left at $0)':'')
-                  +(s._omg_fundraise?'\nFundraising added to customer as promo credit: $'+s._omg_fundraise.toFixed(2):'')
-                  +(s._omg_grand_total?'\nGrand total: $'+s._omg_grand_total.toFixed(2):''),
-                shipping_type:'flat',shipping_value:s._omg_shipping||0,
-                tax_rate:0,tax_exempt:true,
-                ship_to_id:'default',firm_dates:[],art_files:artFiles,
-                jobs:[],items:soItems,omg_store_id:s.id,
-                _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_fundraise:s._omg_fundraise||0,_omg_grand_total:s._omg_grand_total||0};
-              setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
-              // OMG store fundraising profit becomes a promo credit the school can
-              // spend on future NSA orders. Add to (or create) the customer's
-              // current promo period so the existing apply-promo flow can use it.
-              const _fund=s._omg_fundraise||0;
-              if(_fund>0&&c){
-                const promoOwnerId=c.parent_id||c.id;
-                const isFamily=cc=>cc.id===promoOwnerId||cc.parent_id===promoOwnerId;
-                const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
-                const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
-                const owner=cust.find(x=>x.id===promoOwnerId)||c;
-                const existing=(owner.promo_periods||[]).find(p=>p.period_start===_pStart);
-                const note='OMG fundraising: '+s.store_name;
-                const savedPeriod=existing
-                  ?{...existing,allocated:(existing.allocated||0)+_fund,notes:existing.notes?existing.notes+' · '+note:note}
-                  :{id:'pp_'+Date.now(),customer_id:promoOwnerId,program_id:null,period_start:_pStart,period_end:_pEnd,allocated:_fund,used:0,notes:note,created_at:new Date().toISOString()};
-                _dbSavePromoPeriod(savedPeriod);
-                setCust(prev=>prev.map(cc=>{if(!isFamily(cc))return cc;const has=(cc.promo_periods||[]).some(p=>p.id===savedPeriod.id);const periods=has?(cc.promo_periods||[]).map(p=>p.id===savedPeriod.id?savedPeriod:p):[...(cc.promo_periods||[]),savedPeriod];return{...cc,promo_periods:periods}}));
-              }
-              nf(`Created SO with ${soItems.length} items from ${s.store_name}`+(_fund>0?` · $${_fund.toFixed(2)} fundraising added as promo credit`:''));
-            }}>📋 Create Sales Order ({(s.products||[]).length} items)</button>}
-            {!sos.some(so=>so.omg_store_id===s.id)&&(s.products||[]).length>0&&(()=>{const na=(s.products||[]).filter(p=>!p.no_deco&&(p.decorations||[]).length===0);return na.length>0?<div style={{marginTop:6,padding:'6px 10px',background:'#fef3c7',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⚠️ {na.length} item{na.length>1?'s':''} need an art group or “No Deco” before creating the SO</div>:null})()}
             {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
               ✅ Already pulled → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>}
             {s.status!=='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -14266,6 +14445,31 @@ export default function App(){
           </div>
         </div></div>
 
+        {/* ── Delivery mode — required before the Sales Order ──────────────── */}
+        {(()=>{
+          const dm=s.delivery_mode||'';
+          const setDM=mode=>{const upd={...s,delivery_mode:mode};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
+          const opt=(mode,icon,title,sub)=>{
+            const on=dm===mode;
+            return<button onClick={()=>setDM(mode)} style={{flex:1,textAlign:'left',padding:'12px 14px',borderRadius:8,cursor:'pointer',
+              border:`2px solid ${on?'#2563eb':'#e2e8f0'}`,background:on?'#eff6ff':'#fff',transition:'all 0.15s'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{width:18,height:18,flex:'0 0 18px',borderRadius:'50%',border:`2px solid ${on?'#2563eb':'#cbd5e1'}`,background:on?'#2563eb':'#fff',display:'flex',alignItems:'center',justifyContent:'center'}}>{on&&<span style={{width:7,height:7,borderRadius:'50%',background:'#fff'}}/>}</span>
+                <span style={{fontSize:14,fontWeight:800,color:on?'#1e40af':'#0f172a'}}>{icon} {title}</span>
+              </div>
+              <div style={{fontSize:11.5,color:'#64748b',marginTop:4,marginLeft:26}}>{sub}</div>
+            </button>;
+          };
+          return<div className="card" style={{marginBottom:12,borderLeft:`4px solid ${dm?'#2563eb':'#f59e0b'}`}}><div style={{padding:16}}>
+            <div style={{fontSize:14,fontWeight:800,color:'#0f172a',marginBottom:2}}>🚚 Delivery method {dm?'':<span style={{fontSize:11,fontWeight:700,color:'#b45309'}}>— required before the Sales Order</span>}</div>
+            <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>How does this store get to the parents? This decides whether each player needs a shipping label.</div>
+            <div style={{display:'flex',gap:10}}>
+              {opt('ship_home','🏠','Ship to home','Each parent order is shipped to their address — a ShipStation label is created per player.')}
+              {opt('deliver_school','🏫','Deliver to school','Everything is bulk-delivered to the school/club — no per-player shipping labels.')}
+            </div>
+          </div></div>;
+        })()}
+
         {(()=>{const fees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0);return<div className="stats-row" style={{marginBottom:12}}>
           <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{(s.products||[]).reduce((a,p)=>a+Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0),0)}</div></div>
           <div className="stat-card"><div className="stat-label">Product Revenue</div><div className="stat-value" style={{color:'#1e40af'}}>${totalRetail.toLocaleString()}</div></div>
@@ -14274,33 +14478,36 @@ export default function App(){
           <div className="stat-card"><div className="stat-label">Margin</div><div className="stat-value" style={{color:pct>=30?'#166534':'#dc2626'}}>{pct}%</div></div>
         </div>})()}
 
-        {/* OMG Store Financials — OCR from Dollar Report screenshot or manual entry */}
-        {(s.products||[]).length>0&&<div className="card" style={{marginBottom:12}}><div style={{padding:16}}>
-          <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Store Financials <span style={{fontSize:11,color:'#64748b',fontWeight:400}}>— screenshot the OMG Dollar Report and drop here, or enter manually</span></div>
-          {/* Drop zone for Dollar Report screenshot */}
-          <div style={{marginBottom:12,border:'2px dashed #cbd5e1',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f8fafc',transition:'all 0.2s'}}
-            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#2563eb';e.currentTarget.style.background='#eff6ff'}}
-            onDragLeave={e=>{e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc'}}
+        {/* OMG Financials — two reports: ① Dollar (revenue) and ② Accounting (costs) */}
+        {(s.products||[]).length>0&&<div style={{marginBottom:6,padding:'10px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,fontSize:12,color:'#475569'}}>
+          <b style={{color:'#0f172a'}}>📊 Store financials — upload two reports from OMG (screenshot or PDF):</b>{' '}
+          <span style={{color:'#166534',fontWeight:700}}>① Dollar Report = money collected (revenue)</span> · <span style={{color:'#b91c1c',fontWeight:700}}>② Accounting Report = fees NSA pays (costs)</span>. Both are required before creating the Sales Order.
+        </div>}
+        {/* ①② FINANCIAL REPORTS — side by side: Revenue (green) | Costs (red) */}
+        {(s.products||[]).length>0&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12,alignItems:'start'}}>
+        {/* ① DOLLAR REPORT — REVENUE (green) */}
+        <div className="card" style={{borderLeft:'4px solid #16a34a',margin:0}}><div style={{padding:16}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+            <span style={{fontSize:11,fontWeight:800,background:'#dcfce7',color:'#166534',padding:'2px 8px',borderRadius:4,textTransform:'uppercase',letterSpacing:0.5}}>① Revenue ↑</span>
+            <span style={{fontSize:14,fontWeight:800,color:'#0f172a'}}>Dollar Report</span>
+          </div>
+          <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>Money <b>collected from parents</b>. Shipping, processing fee &amp; sales tax are charges added to each order. Drop the OMG <b>Dollar Report</b> — screenshot or PDF printout — or enter manually.</div>
+          {/* Drop zone for Dollar Report — image (OCR) or PDF (text) */}
+          <div style={{marginBottom:12,border:'2px dashed #86efac',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f0fdf4',transition:'all 0.2s'}}
+            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#16a34a';e.currentTarget.style.background='#dcfce7'}}
+            onDragLeave={e=>{e.currentTarget.style.borderColor='#86efac';e.currentTarget.style.background='#f0fdf4'}}
             onDrop={async e=>{
-              e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc';
-              const file=e.dataTransfer.files?.[0];if(!file||!file.type.startsWith('image/'))return nf('Drop an image file','error');
-              nf('Reading screenshot…');
+              e.preventDefault();e.currentTarget.style.borderColor='#86efac';e.currentTarget.style.background='#f0fdf4';
+              const file=e.dataTransfer.files?.[0];
+              if(!file||!(file.type.startsWith('image/')||file.type==='application/pdf'||/\.pdf$/i.test(file.name||'')))return nf('Drop a screenshot image or a PDF printout','error');
+              nf(`Reading Dollar Report ${file.type==='application/pdf'?'PDF':'screenshot'}…`);
               try{
-                const{createWorker}=await import('tesseract.js');
-                const worker=await createWorker('eng');
-                const{data:{text}}=await worker.recognize(file);
-                await worker.terminate();
-                console.log('[OCR] Dollar Report text:',text);
-                // Parse known patterns from Dollar Report
-                const parseAmt=(pattern)=>{const m=text.match(pattern);return m?parseFloat(m[1].replace(/,/g,''))||0:0};
-                const shipping=parseAmt(/Shipping\s*\$?([\d,]+\.?\d*)/i);
-                const processing=parseAmt(/(?:Online\s*)?Processing\s*(?:Fee)?\s*\$?([\d,]+\.?\d*)/i);
-                const tax=parseAmt(/Sales\s*Tax\s*\$?([\d,]+\.?\d*)/i);
-                const fundraise=parseAmt(/Fundrais(?:ing|e)\s*(?:Collected)?\s*\$?([\d,]+\.?\d*)/i);
-                const grandTotal=parseAmt(/Grand\s*Total[:\s]*\$?([\d,]+\.?\d*)/i);
+                const text=await omgReadReportText(file);
+                console.log('[OMG Dollar] text:',text);
+                const {shipping,processing,tax,fundraise,grand:grandTotal}=parseOmgDollar(text);
                 const upd={...s,_omg_shipping:shipping,_omg_processing:processing,_omg_tax:tax,_omg_fundraise:fundraise,_omg_grand_total:grandTotal};
                 setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
-                nf(`Extracted: Shipping $${shipping} | Processing $${processing} | Tax $${tax} | Fundraise $${fundraise} | Grand Total $${grandTotal}`);
+                nf(`Dollar Report: Shipping $${shipping} | Processing $${processing} | Tax $${tax} | Fundraise $${fundraise} | Grand Total $${grandTotal}`);
                 // Auto-add fundraise to customer promo funds
                 if(fundraise>0&&s.customer_id){
                   const custMatch=cust.find(cx=>cx.id===s.customer_id);
@@ -14314,18 +14521,18 @@ export default function App(){
                     nf(`Added $${fundraise.toFixed(2)} fundraise to ${custMatch.name} promo funds`);
                   }
                 }
-              }catch(err){console.error('[OCR]',err);nf('OCR failed: '+err.message,'error')}
+              }catch(err){console.error('[OMG Dollar]',err);nf('Could not read the file: '+err.message,'error')}
             }}
             onClick={()=>{
-              const inp=document.createElement('input');inp.type='file';inp.accept='image/*';
+              const inp=document.createElement('input');inp.type='file';inp.accept='image/*,application/pdf';
               inp.onchange=e=>{const f=e.target.files?.[0];if(f){const dt=new DataTransfer();dt.items.add(f);const dropEvt=new DragEvent('drop',{dataTransfer:dt});document.querySelector('[data-ocr-drop]')?.dispatchEvent(dropEvt)}};
               inp.click();
             }}
             data-ocr-drop="true"
           >
             <div style={{fontSize:24,marginBottom:4}}>📸</div>
-            <div style={{fontSize:12,fontWeight:600,color:'#475569'}}>Drop Dollar Report screenshot here</div>
-            <div style={{fontSize:11,color:'#94a3b8'}}>or click to select — extracts Shipping, Processing, Tax, Fundraising, Grand Total</div>
+            <div style={{fontSize:12.5,fontWeight:700,color:'#166534'}}>Drop the <u>Dollar Report</u> here</div>
+            <div style={{fontSize:11,color:'#16a34a'}}>screenshot or PDF · click to select — extracts Shipping, Processing, Tax, Fundraising, Grand Total</div>
           </div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10}}>
             {[['_omg_shipping','Shipping'],['_omg_processing','Processing'],['_omg_tax','Sales Tax'],['_omg_fundraise','Fundraise'],['_omg_grand_total','Grand Total']].map(([key,label])=>
@@ -14340,19 +14547,90 @@ export default function App(){
               </div>
             )}
           </div>
-          {/* Totals validation */}
+          {/* Totals reconciliation — only meaningful once products are priced.
+              The authoritative cross-report check (Collected = Grand Total) lives
+              on the Accounting panel; this is just an internal sanity line. */}
           {s._omg_grand_total>0&&(()=>{
             const productRev=totalRetail;
-            const computed=productRev+(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0)+(s._omg_fundraise||0);
+            const fees=(s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0)+(s._omg_fundraise||0);
+            const computed=productRev+fees;
             const diff=Math.abs(computed-s._omg_grand_total);
-            const match=diff<1;
-            return <div style={{padding:'8px 16px',borderTop:'1px solid #e2e8f0',fontSize:11,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <span>Product Revenue (${productRev.toLocaleString()}) + Fees (${((s._omg_shipping||0)+(s._omg_processing||0)+(s._omg_tax||0)+(s._omg_fundraise||0)).toLocaleString()}) = ${computed.toLocaleString()}</span>
-              {match?<span style={{color:'#166534',fontWeight:700}}>✓ Matches Grand Total</span>
-                :<span style={{color:'#dc2626',fontWeight:700}}>⚠ Off by ${diff.toFixed(2)} from Grand Total (${s._omg_grand_total.toLocaleString()})</span>}
+            const match=diff<1, priced=productRev>0;
+            return <div style={{padding:'8px 16px',borderTop:'1px solid #e2e8f0',fontSize:11}}>
+              {!priced
+                ? <span style={{color:'#64748b'}}>Grand Total ${s._omg_grand_total.toLocaleString()} entered. Product revenue isn’t priced yet — this reconciles once item retail loads.</span>
+                : match
+                  ? <span style={{color:'#166534',fontWeight:700}}>✓ Product ${productRev.toLocaleString()} + fees ${fees.toLocaleString()} = Grand Total ${s._omg_grand_total.toLocaleString()}</span>
+                  : <span style={{color:'#b45309',fontWeight:700}}>⚠ Product ${productRev.toLocaleString()} + fees ${fees.toLocaleString()} = ${computed.toLocaleString()} (off ${diff.toFixed(2)} from Grand Total ${s._omg_grand_total.toLocaleString()})</span>}
             </div>;
           })()}
-        </div></div>}
+        </div></div>
+
+        {/* ② ACCOUNTING REPORT — COSTS (red) */}
+        <div className="card" style={{borderLeft:'4px solid #dc2626',margin:0}}><div style={{padding:16}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+            <span style={{fontSize:11,fontWeight:800,background:'#fee2e2',color:'#b91c1c',padding:'2px 8px',borderRadius:4,textTransform:'uppercase',letterSpacing:0.5}}>② Costs ↓</span>
+            <span style={{fontSize:14,fontWeight:800,color:'#0f172a'}}>Accounting Report</span>
+          </div>
+          <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>Fees <b>NSA pays</b> (OMG fees + credit card fees). These become <b>costs</b> on the sales order. Drop the OMG <b>Accounting Report</b> — screenshot or PDF printout — or enter manually.</div>
+          {/* Drop zone for Accounting Report — image (OCR) or PDF (text) */}
+          <div style={{marginBottom:12,border:'2px dashed #fca5a5',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#fef2f2',transition:'all 0.2s'}}
+            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#dc2626';e.currentTarget.style.background='#fee2e2'}}
+            onDragLeave={e=>{e.currentTarget.style.borderColor='#fca5a5';e.currentTarget.style.background='#fef2f2'}}
+            onDrop={async e=>{
+              e.preventDefault();e.currentTarget.style.borderColor='#fca5a5';e.currentTarget.style.background='#fef2f2';
+              const file=e.dataTransfer.files?.[0];
+              if(!file||!(file.type.startsWith('image/')||file.type==='application/pdf'||/\.pdf$/i.test(file.name||'')))return nf('Drop a screenshot image or a PDF printout','error');
+              nf(`Reading Accounting Report ${file.type==='application/pdf'?'PDF':'screenshot'}…`);
+              try{
+                const text=await omgReadReportText(file);
+                console.log('[OMG Accounting] text:',text);
+                const {collected,omg:omgFees,cc:ccFees,invoiced:invFees,net}=parseOmgAccounting(text);
+                const upd={...s,_omg_acct_collected:collected,_omg_omg_fees:omgFees,_omg_cc_fees:ccFees,_omg_invoiced_fees:invFees,_omg_net_revenue:net};
+                setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
+                nf(`Accounting Report: Collected $${collected} | OMG Fees $${omgFees} | CC Fees $${ccFees} | Net $${net}`);
+              }catch(err){console.error('[OMG Accounting]',err);nf('Could not read the file: '+err.message,'error')}
+            }}
+            onClick={()=>{
+              const inp=document.createElement('input');inp.type='file';inp.accept='image/*,application/pdf';
+              inp.onchange=e=>{const f=e.target.files?.[0];if(f){const dt=new DataTransfer();dt.items.add(f);const dropEvt=new DragEvent('drop',{dataTransfer:dt});document.querySelector('[data-acct-drop]')?.dispatchEvent(dropEvt)}};
+              inp.click();
+            }}
+            data-acct-drop="true"
+          >
+            <div style={{fontSize:24,marginBottom:4}}>📸</div>
+            <div style={{fontSize:12.5,fontWeight:700,color:'#b91c1c'}}>Drop the <u>Accounting Report</u> here</div>
+            <div style={{fontSize:11,color:'#dc2626'}}>screenshot or PDF · click to select — extracts Total Collected, OMG Fees, Credit Card Fees, Net Revenue</div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10}}>
+            {[['_omg_acct_collected','Total Collected','rev'],['_omg_omg_fees','OMG Fees','cost'],['_omg_cc_fees','Credit Card Fees','cost'],['_omg_invoiced_fees','Invoiced Fees','cost'],['_omg_net_revenue','Net Revenue','rev']].map(([key,label,kind])=>
+              <div key={key}>
+                <div style={{fontSize:10,color:kind==='cost'?'#b91c1c':'#64748b',marginBottom:3}}>{label}</div>
+                <div style={{display:'flex',alignItems:'center',gap:3}}>
+                  <span style={{color:'#94a3b8',fontSize:12}}>$</span>
+                  <input type="number" step="0.01" value={s[key]||''} placeholder="0"
+                    onChange={e=>{const upd={...s,[key]:parseFloat(e.target.value)||0};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)}}
+                    style={{width:'100%',padding:'4px 6px',border:'1px solid #d1d5db',borderRadius:4,fontSize:12,fontFamily:'monospace'}}/>
+                </div>
+              </div>
+            )}
+          </div>
+          {/* Cross-check: Total Collected must equal the Dollar Report Grand Total */}
+          {(s._omg_acct_collected>0||s._omg_grand_total>0)&&(()=>{
+            const collected=s._omg_acct_collected||0,grand=s._omg_grand_total||0;
+            const diff=Math.abs(collected-grand);const match=diff<1;
+            const computedNet=collected-(s._omg_omg_fees||0)-(s._omg_cc_fees||0)-(s._omg_invoiced_fees||0);
+            const netDiff=Math.abs(computedNet-(s._omg_net_revenue||0));
+            return <div style={{padding:'8px 16px',borderTop:'1px solid #e2e8f0',fontSize:11}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <span>Total Collected (${collected.toLocaleString()}) vs Dollar Report Grand Total (${grand.toLocaleString()})</span>
+                {grand>0?(match?<span style={{color:'#166534',fontWeight:700}}>✓ Reports match</span>:<span style={{color:'#dc2626',fontWeight:700}}>⚠ Off by ${diff.toFixed(2)} — check the screenshots</span>):<span style={{color:'#94a3b8'}}>Enter the Dollar Report above to cross-check</span>}
+              </div>
+              {(s._omg_net_revenue>0)&&<div style={{marginTop:4,color:netDiff<1?'#64748b':'#b45309'}}>Collected − fees = ${computedNet.toLocaleString()} {netDiff<1?'✓ matches Net Revenue':`(report shows $${(s._omg_net_revenue||0).toLocaleString()})`}</div>}
+            </div>;
+          })()}
+        </div></div>
+        </div>}
 
         {/* Import from OMG Report */}
         <div className="card" style={{marginBottom:12,border:(s.products||[]).length===0&&s.status==='closed'?'2px solid #166534':undefined}}>
@@ -14367,6 +14645,9 @@ export default function App(){
               {(s.products||[]).length===0&&<div style={{marginBottom:12}}>
                 <div style={{fontSize:15,fontWeight:700,color:'#166534',marginBottom:4}}>{s.status==='closed'?'Store closed — ready for pull':'Paste the OMG report to load products'}</div>
                 <div style={{fontSize:12,color:'#64748b'}}>Share the report from OMG admin and paste the link below.</div>
+                <div style={{marginTop:8,padding:'8px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:12,color:'#92400e',fontWeight:600}}>
+                  📷 Before sharing in OMG, check <b>“Include product images”</b> — without it, products import with no photos and you’ll have to re-share &amp; re-import.
+                </div>
               </div>}
               <div style={{display:'flex',gap:8,alignItems:'center'}}>
                 <input type="text" placeholder="https://report.ordermygear.com/..." value={omgReportUrl||s._report_url||''} onChange={e=>setOmgReportUrl(e.target.value)}
@@ -14375,6 +14656,14 @@ export default function App(){
                   importOMGReport(s, omgReportUrl||s._report_url);
                 }}>{omgReportLoading?'⏳ Importing…':(s._report_url?'Re-import':'Import')}</button>
               </div>
+              {/* Missing-images warning — products only carry photos when the OMG
+                  share had "Include product images" checked. */}
+              {(s.products||[]).length>0&&(()=>{const noImg=(s.products||[]).filter(p=>!p.image_url).length;if(noImg===0)return null;const all=noImg===(s.products||[]).length;return(
+                <div style={{marginTop:8,padding:'8px 12px',background:all?'#fef2f2':'#fffbeb',border:`1px solid ${all?'#fca5a5':'#fde68a'}`,borderRadius:6,fontSize:12,color:all?'#b91c1c':'#92400e',fontWeight:600,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                  <span>📷 {all?'No products have images':`${noImg} of ${(s.products||[]).length} products have no image`}. Re-share the OMG report with <b>“Include product images”</b> checked, then</span>
+                  <button className="btn btn-sm" disabled={omgReportLoading} style={{fontSize:11,padding:'2px 10px',background:'#166534',color:'#fff',whiteSpace:'nowrap'}} onClick={()=>importOMGReport(s, omgReportUrl||s._report_url)}>{omgReportLoading?'⏳ Re-importing…':'Re-import'}</button>
+                </div>
+              )})()}
               {s._report_imported_at&&<div style={{display:'flex',alignItems:'center',gap:8,marginTop:6}}>
                 <div style={{fontSize:11,color:'#64748b'}}>Last imported: {new Date(s._report_imported_at).toLocaleString()}</div>
                 {(s.products||[]).some(p=>!p.cost||p.cost<=0)&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#fef3c7',color:'#92400e',border:'1px solid #fbbf24'}} onClick={async()=>{
@@ -14608,6 +14897,56 @@ export default function App(){
           </div>
         </div>
 
+        {/* Parent Order Portal — player report → per-order tracking, packing-slip
+            enrichment, parent emails, fulfillment, ShipStation. Unified here so
+            each OMG store has one flow: Store Products (above) + Parent Orders.
+            soSync (App-side, no DB triggers): from the linked SO's receiving +
+            jobs we compute the store-wide stage and a per-SKU+size received map
+            so backordered sizes hold their parents back. */}
+        <ComponentErrorBoundary name="OmgOrderPortal">
+          <React.Suspense fallback={<LazyFallback/>}>
+            <OmgOrderPortal saleCode={s._omg_sale_code} storeName={s.store_name} deliveryMode={s.delivery_mode||''} onStatus={setOmgPortalStatus} soSync={computeOmgSoSync(sos.find(x=>x.omg_store_id===s.id))}/>
+          </React.Suspense>
+        </ComponentErrorBoundary>
+
+        {/* ── Create Sales Order — the final step, gated on completing the page ── */}
+        {!_alreadyPulled&&(s.products||[]).length>0&&<div id="omg-create-so" className="card" style={{marginTop:16,scrollMarginTop:80,border:`2px solid ${soGate.ok?'#166534':'#e2e8f0'}`}}>
+          <div className="card-body" style={{padding:20}}>
+            <div style={{fontSize:16,fontWeight:800,color:'#0f172a',marginBottom:4}}>Create the Sales Order</div>
+            <div style={{fontSize:12.5,color:'#64748b',marginBottom:14}}>Finish every step above, then pull this store into a Sales Order. Items, art, financials and parent tracking all carry over.</div>
+            {/* Checklist of gates */}
+            <div style={{display:'grid',gap:6,marginBottom:14}}>
+              {[
+                [!!s.customer_id,'Customer linked',!s.customer_id?'Link a customer at the top of the page':'',false],
+                [!!s.delivery_mode,'Delivery method chosen',!s.delivery_mode?'Pick “Ship to home” or “Deliver to school” at the top':(s.delivery_mode==='deliver_school'?'Deliver to school — no per-player shipping labels':'Ship to home — labels per player'),false],
+                [_hasDollar,'Dollar Report entered (revenue)',!_hasDollar?'Enter the ① Dollar Report at the top':'',false],
+                [_hasAcct,'Accounting Report entered (fees)',!_hasAcct?'Enter the ② Accounting Report at the top':'',false],
+                [_reportsMatch,'Reports match',!_reportsMatch?'Total Collected ≠ Dollar Report Grand Total — check the screenshots':'',false],
+                [_needArt.length===0,'All items have deco or “No Deco”',_needArt.length?`${_needArt.length} item${_needArt.length>1?'s':''} still need an art group or “No Deco”`:'',false],
+                [_portalImported,'Parent orders imported',!_portalImported?'Import the player report / packing slip in the Parent Order Portal':'',false],
+                [_portalEmailed,'Parents emailed (optional)',!_portalEmailed?'You can send the “order is being processed” emails now or later — not required to create the SO':'',true],
+              ].map(([ok,label,hint,optional],i)=>(
+                // Required steps are numbered (1-6); the optional email row never blocks the gate.
+                <div key={i} style={{display:'flex',alignItems:'center',gap:10,fontSize:13,opacity:optional&&!ok?0.85:1}}>
+                  <span style={{width:20,height:20,flex:'0 0 20px',borderRadius:'50%',background:ok?'#16a34a':(optional?'#f1f5f9':'#e2e8f0'),color:ok?'#fff':'#94a3b8',display:'flex',alignItems:'center',justifyContent:'center',fontSize:optional?13:12,fontWeight:800}}>{ok?'✓':(optional?'•':i+1)}</span>
+                  <span style={{fontWeight:700,color:ok?'#0f172a':'#64748b'}}>{label}</span>
+                  {!ok&&hint&&<span style={{fontSize:11.5,color:'#94a3b8'}}>— {hint}</span>}
+                </div>
+              ))}
+            </div>
+            <button className="btn btn-primary" style={{background:soGate.ok?'#166534':'#cbd5e1',borderColor:soGate.ok?'#166534':'#cbd5e1',cursor:soGate.ok?'pointer':'not-allowed',fontSize:15,padding:'10px 22px'}}
+              disabled={!soGate.ok}
+              onClick={()=>{if(!soGate.ok){nf('Finish the steps above first: '+soGate.reasons.join(' · '),'error');return}createOmgSO()}}>
+              📋 Create Sales Order ({(s.products||[]).length} items)
+            </button>
+            {!soGate.ok&&<div style={{marginTop:8,fontSize:11.5,color:'#92400e'}}>Complete the {soGate.reasons.length} step{soGate.reasons.length>1?'s':''} above to enable this.</div>}
+          </div>
+        </div>}
+        {_alreadyPulled&&<div className="card" style={{marginTop:16}}><div className="card-body" style={{padding:20,display:'flex',alignItems:'center',gap:12}}>
+          <span style={{fontSize:13,fontWeight:700,color:'#166534'}}>✅ Sales Order created</span>
+          <button className="btn btn-sm btn-secondary" onClick={()=>{const so=sos.find(x=>x.omg_store_id===s.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}}>View {sos.find(so=>so.omg_store_id===s.id)?.id} →</button>
+        </div></div>}
+
         {/* Step-by-step guide */}
         <div className="card" style={{borderLeft:'3px solid #2563eb'}}><div className="card-header"><h2>📋 OMG Store Pull Process — Step by Step</h2></div>
           <div className="card-body">
@@ -14626,6 +14965,36 @@ export default function App(){
             </div>
           </div>
         </div>
+
+        {/* Step-by-step help modal */}
+        {omgGuideOpen&&<div className="modal-overlay" onClick={()=>setOmgGuideOpen(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:720,maxHeight:'90vh',display:'flex',flexDirection:'column'}}>
+            <div className="modal-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <h2 style={{margin:0}}>📖 OMG Store — Step by Step</h2>
+              <button onClick={()=>setOmgGuideOpen(false)} style={{background:'none',border:'none',fontSize:22,lineHeight:1,cursor:'pointer',color:'#94a3b8'}}>×</button>
+            </div>
+            <div className="modal-body" style={{overflowY:'auto',padding:'4px 20px 20px'}}>
+              <div style={{padding:'10px 14px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,fontSize:12.5,color:'#92400e',marginBottom:14}}>
+                Work the page <b>top to bottom</b> — the <b>Create Sales Order</b> button at the bottom unlocks only once every step is done. In OMG, when sharing the product report, check <b>“Include product images”</b>.
+              </div>
+              {[
+                {n:1,icon:'🔗',title:'Add the store from the OMG Report',desc:'Paste the Store/Product report link at the top and Import. If you get a “missing images” warning, re-share from OMG with images checked and Re-import.'},
+                {n:2,icon:'🏷️',title:'Link the customer & pick delivery method',desc:'Click “⚠ Link a customer…” at the top and pick the club/team (enables the art library and sets the SO customer). Then choose the 🚚 Delivery method: “Ship to home” creates a ShipStation label per player; “Deliver to school” is bulk-delivered to the club with no per-player labels. Both are required before the SO.'},
+                {n:3,icon:'📊',title:'Enter the two financial reports',desc:'① Dollar Report (green = revenue collected from parents) and ② Accounting Report (red = fees NSA pays). Each accepts a screenshot OR a PDF printout, or type the numbers. The panel checks that Total Collected = Grand Total and Collected − fees = Net Revenue — fix any value the import got wrong.'},
+                {n:4,icon:'🎨',title:'Assign deco to every product',desc:'In Store Products, each item must have an art group or be marked “No Deco”. Use Bulk assign art and “Select items needing art” to move fast.'},
+                {n:5,icon:'📦',title:'Set up the Parent Order Portal',desc:'In the 📦 Parent Order Portal: (1) paste the Player Report link & Import orders, (2) drop the packing-slip PDF to add parent emails (review the grid, then Save), (3) Send processing emails. Use 🧪 Test mode to rehearse without emailing real parents.'},
+                {n:6,icon:'✅',title:'Create the Sales Order',desc:'At the bottom, the required checklist must be all green: customer linked · delivery method chosen · both reports entered & matching · all items deco/No-Deco · parent orders imported. Emailing parents is optional (do it now or later). Then click Create Sales Order — items, art, financials and parent tracking carry over, and the parent orders are LINKED to this SO (which turns on auto-status).'},
+                {n:7,icon:'🛒',title:'Fulfill — parent status updates automatically',desc:'Work the SO normally. As you RECEIVE blanks, parents auto-advance to Received; when production COMPLETES the jobs, they auto-advance to Bagging; pushing to ShipStation (label created) auto-advances to Shipped and emails tracking. Backordered SKU+sizes hold at On order until their stock arrives. No manual status step — the “Move all” buttons are just overrides.'},
+              ].map(step=><div key={step.n} style={{display:'flex',gap:12,alignItems:'flex-start',padding:'10px 0',borderBottom:'1px solid #f1f5f9'}}>
+                <div style={{width:32,height:32,borderRadius:16,background:'#eff6ff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,color:'#1e40af',flexShrink:0,fontSize:13}}>{step.n}</div>
+                <div><div style={{fontWeight:700,fontSize:13.5}}>{step.icon} {step.title}</div><div style={{fontSize:12.5,color:'#64748b',marginTop:2,lineHeight:1.5}}>{step.desc}</div></div>
+              </div>)}
+              <div style={{marginTop:14,padding:'10px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,fontSize:12,color:'#475569'}}>
+                <b>Money model:</b> parents pay the Grand Total. Processing fee &amp; sales tax are <b>revenue</b>; OMG fees &amp; credit card fees are the <b>costs</b> NSA pays. Revenue − fees = Net Revenue = the SO margin.
+              </div>
+            </div>
+          </div>
+        </div>}
       </>);
     }
 

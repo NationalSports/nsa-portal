@@ -12,8 +12,8 @@ import { supabase } from './lib/supabase';
 // summary up top, with the per-player order list as a searchable, collapsible
 // section below. No editing.
 const _cpMoney = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const _cpStages = { pending: 'Ordered', in_production: 'In production', shipped: 'Shipped', complete: 'Complete' };
-const _cpTone = (s) => s === 'complete' ? '#166534' : s === 'shipped' ? '#1e40af' : s === 'in_production' ? '#92400e' : '#64748b';
+const _cpStages = { pending: 'Ordered', received: 'Received', in_production: 'In production', bagging: 'Bagging', shipped: 'Shipped', complete: 'Complete' };
+const _cpTone = (s) => s === 'complete' ? '#166534' : s === 'shipped' ? '#1e40af' : s === 'bagging' ? '#86198f' : s === 'in_production' ? '#92400e' : s === 'received' ? '#3730a3' : '#64748b';
 
 function CoachStore({ customer }) {
   const [stores, setStores] = useState([]);

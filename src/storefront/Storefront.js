@@ -877,9 +877,10 @@ function OrderStatusPage({ store, theme, orderId }) {
   }, [orderId]);
   if (status === 'loading') return <Splash>Loading your order…</Splash>;
   if (status === 'notfound') return <div style={{ paddingTop: 26 }}><BackLink store={store} /><Splash>Order not found.</Splash></div>;
-  const steps = ['pending', 'in_production', 'shipped', 'complete'];
-  const cur = items[0]?.line_status || 'pending';
-  const curIdx = Math.max(0, steps.indexOf(cur));
+  // Stage index handles both the original 4-step flow and the OMG 6-value set
+  // (received/bagging). complete maps to the final step.
+  const stepIdxOf = (ls) => ({ pending: 0, received: 1, in_production: 2, bagging: 3, shipped: 4, complete: 4 }[ls] ?? 0);
+  const curIdx = Math.max(0, ...items.filter((i) => !i.is_bundle_parent).map((i) => stepIdxOf(i.line_status)));
   return (
     <div style={{ paddingTop: 26, maxWidth: 640 }}>
       <BackLink store={store} />
@@ -888,8 +889,8 @@ function OrderStatusPage({ store, theme, orderId }) {
       </div>
       <h1 style={{ fontFamily: DISPLAY, fontSize: 28, letterSpacing: 0.3, textTransform: 'uppercase', margin: '0 0 14px' }}>Order status</h1>
       <div style={{ display: 'flex', gap: 6, marginBottom: 20, flexWrap: 'wrap' }}>
-        {['Ordered', 'In production', 'Shipped', 'Complete'].map((s, i) => (
-          <div key={s} style={{ flex: 1, minWidth: 110, textAlign: 'center', padding: '10px 6px', borderRadius: 8, fontSize: 12, fontWeight: 700, background: i <= curIdx ? theme.accent : '#f1f5f9', color: i <= curIdx ? '#fff' : '#94a3b8' }}>{s}</div>
+        {['Ordered', 'Received', 'In production', 'Bagging', 'Shipped'].map((s, i) => (
+          <div key={s} style={{ flex: 1, minWidth: 92, textAlign: 'center', padding: '10px 6px', borderRadius: 8, fontSize: 12, fontWeight: 700, background: i <= curIdx ? theme.accent : '#f1f5f9', color: i <= curIdx ? '#fff' : '#94a3b8' }}>{s}</div>
         ))}
       </div>
       {items.filter((i) => !i.is_bundle_parent).map((i) => (
