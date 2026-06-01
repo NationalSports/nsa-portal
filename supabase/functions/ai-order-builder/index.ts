@@ -323,9 +323,16 @@ serve(async (req: Request) => {
     // 1-hour TTL on the catalog block: it's ~130k tokens and changes rarely.
     // Without this we pay the cache-write cost on every call (and burn through
     // the org's input-tokens-per-minute rate limit on back-to-back parses).
+    //
+    // Order matters: the API requires longer-TTL cache_control breakpoints to
+    // come BEFORE shorter-TTL ones in render order (tools -> system -> messages).
+    // A 1h block after a 5m block returns a 400. So the catalog (1h) goes first
+    // and the instructions (5m, default) second. This is also the better cache
+    // layout — the large, stable catalog is the shared prefix across order and
+    // roster modes, and the mode-specific instructions follow it.
     const systemBlocks: any[] = [
-      { type: "text", text: isRoster ? ROSTER_SYSTEM_PROMPT : SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
       { type: "text", text: catalogBlock, cache_control: { type: "ephemeral", ttl: "1h" } },
+      { type: "text", text: isRoster ? ROSTER_SYSTEM_PROMPT : SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
     ];
 
     const userContent: any[] = [];
