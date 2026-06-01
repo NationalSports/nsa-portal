@@ -165,7 +165,8 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
         if(d.changes?.length>0){
           setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));
         }
-        nf(d.updated+' customer rate(s) updated');
+        if(d.capped)nf(d.message||'Monthly TaxCloud call limit reached','error');
+        else nf(d.updated+' customer rate(s) updated');
       }else{setRefreshStatus({loading:false,result:{ok:false,error:typeof d?.error==='string'?d.error:d?.error?.message||JSON.stringify(d?.error)||'Refresh failed'}})}
     }catch(e){setRefreshStatus({loading:false,result:{ok:false,error:e.message}})}
   };
@@ -195,7 +196,7 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
         <div style={{marginTop:12,padding:10,background:'#f8fafc',borderRadius:6}}>
           <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>EDGE FUNCTIONS</div>
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-            {[['taxcloud-lookup','Rate Lookup','Looks up tax rate for a shipping address'],['taxcloud-capture','Capture / File','Reports paid invoices for state filing'],['taxcloud-refresh','Quarterly Refresh','Batch updates all customer rates']].map(([fn,label,desc])=>
+            {[['taxcloud-lookup','Rate Lookup','Looks up tax rate for a shipping address'],['taxcloud-capture','Capture / File','Reports paid invoices for state filing'],['taxcloud-refresh','Batch Refresh','Manual batch rate refresh — counts toward the monthly call cap']].map(([fn,label,desc])=>
               <div key={fn} style={{flex:'1 1 180px',padding:8,background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#1e40af',fontFamily:'monospace'}}>{fn}</div>
                 <div style={{fontSize:10,color:'#475569',fontWeight:600}}>{label}</div>
@@ -411,7 +412,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
       <div><label className="form-label">Markup</label><input className="form-input" type="number" step="0.05" value={f.catalog_markup||1.65} onChange={e=>sv('catalog_markup',parseFloat(e.target.value)||1.65)}/></div></div>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Tax</div>
     <div className="form-row form-row-2"><div><label className="form-label">Tax Rate (%)</label><div style={{display:'flex',gap:6}}><input className="form-input" type="number" step="0.125" min="0" max="15" value={f.tax_rate?(f.tax_rate*100).toFixed(4).replace(/0+$/,'').replace(/\.$/,''):''} onChange={e=>{const v=parseFloat(e.target.value);sv('tax_rate',v>0?v/100:0)}} placeholder="e.g. 7.875" style={{flex:1}}/><button className="btn btn-sm btn-secondary" disabled={tcLook.loading||!f.shipping_state||!f.shipping_zip} title={!f.shipping_state||!f.shipping_zip?'Enter shipping state & ZIP first':'Lookup rate from TaxCloud'} style={{whiteSpace:'nowrap',fontSize:11}} onClick={async()=>{setTcLook({loading:true,msg:''});const d=await Promise.race([doTcLookup(f),new Promise(r=>setTimeout(()=>r({ok:false,error:'Lookup timed out'}),8000))]);if(d?.ok){sv('tax_rate',d.tax_rate);setTcLook({loading:false,msg:d.tax_pct+'% (TaxCloud)'})}else{setTcLook({loading:false,msg:d?.error||'Lookup failed'})}}}>{tcLook.loading?'...':'TaxCloud'}</button></div>
-    {tcLook.msg&&<div style={{fontSize:10,marginTop:3,color:tcLook.msg.includes('fail')||tcLook.msg.includes('Error')?'#dc2626':'#166534'}}>{tcLook.msg}</div>}
+    {tcLook.msg&&<div style={{fontSize:10,marginTop:3,color:tcLook.msg.includes('fail')||tcLook.msg.includes('Error')||tcLook.msg.includes('limit')?'#dc2626':'#166534'}}>{tcLook.msg}</div>}
     {f.shipping_state&&APPAREL_EXEMPT.includes(f.shipping_state.toUpperCase())&&<div style={{fontSize:10,marginTop:3,color:'#7c3aed'}}>{f.shipping_state.toUpperCase()} does not tax apparel</div>}
     {f.shipping_state&&APPAREL_THRESHOLD.includes(f.shipping_state.toUpperCase())&&<div style={{fontSize:10,marginTop:3,color:'#b45309'}}>{f.shipping_state.toUpperCase()} exempts apparel under threshold</div>}</div>
       <div style={{paddingTop:8}}><label className="form-label">Tax Status</label><div style={{display:'flex',gap:0,borderRadius:6,overflow:'hidden',border:'1px solid #d1d5db'}}><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',cursor:'pointer',background:!f.tax_exempt?'#166534':'#f8fafc',color:!f.tax_exempt?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('tax_exempt',false)}>Taxable</button><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',borderLeft:'1px solid #d1d5db',cursor:'pointer',background:f.tax_exempt?'#dc2626':'#f8fafc',color:f.tax_exempt?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('tax_exempt',true)}>Tax Exempt</button></div><div style={{fontSize:10,color:f.tax_exempt?'#dc2626':'#64748b',marginTop:4}}>{f.tax_exempt?'No sales tax will be charged for this customer.':'Standard — sales tax will apply based on rate above.'}</div></div></div>

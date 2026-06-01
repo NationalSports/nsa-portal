@@ -5,9 +5,45 @@
 // ─────────────────────────────────────────────────────────
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const TAXCLOUD_API_ID = Deno.env.get("TAXCLOUD_API_LOGIN_ID") || "";
 const TAXCLOUD_API_KEY = Deno.env.get("TAXCLOUD_API_KEY") || "";
+
+// Monthly TaxCloud call cap (plan limit). Every call is metered in the DB so
+// we never exceed it. Configurable via env without a code change.
+const MONTHLY_CAP = parseInt(Deno.env.get("TAXCLOUD_MONTHLY_CAP") || "100", 10);
+const meter = createClient(
+  Deno.env.get("SUPABASE_URL")!,
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+);
+
+// Reserve `n` calls against this month's budget. Fails closed (denies) on any
+// metering error so the cap can never be silently overrun.
+async function consumeBudget(n: number): Promise<{ granted: boolean; used: number; cap: number }> {
+  try {
+    const { data, error } = await meter.rpc("taxcloud_try_consume", { p_count: n, p_cap: MONTHLY_CAP });
+    if (error) return { granted: false, used: -1, cap: MONTHLY_CAP };
+    const row = Array.isArray(data) ? data[0] : data;
+    return { granted: !!row?.granted, used: row?.used ?? -1, cap: row?.cap ?? MONTHLY_CAP };
+  } catch {
+    return { granted: false, used: -1, cap: MONTHLY_CAP };
+  }
+}
+
+function cappedResponse(used: number, cap: number, headers: HeadersInit) {
+  const seen = used >= 0 ? used : cap;
+  return new Response(
+    JSON.stringify({
+      ok: false,
+      capped: true,
+      used: seen,
+      cap,
+      error: `Monthly TaxCloud call limit reached (${seen}/${cap}). Lookups resume next month.`,
+    }),
+    { status: 200, headers },
+  );
+}
 
 // NSA origin address (where goods ship from)
 const ORIGIN = {
@@ -51,6 +87,10 @@ serve(async (req: Request) => {
         { status: 200, headers: CORS }
       );
     }
+
+    // Meter this call against the monthly cap before hitting TaxCloud.
+    const budget = await consumeBudget(1);
+    if (!budget.granted) return cappedResponse(budget.used, budget.cap, CORS);
 
     // TaxCloud Lookup — use a $100 generic item to get the effective rate
     // TIC 20010 = Clothing/Apparel (handles state exemptions automatically)
