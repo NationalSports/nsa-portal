@@ -6,9 +6,31 @@
 // ─────────────────────────────────────────────────────────
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const TAXCLOUD_API_ID = Deno.env.get("TAXCLOUD_API_LOGIN_ID") || "";
 const TAXCLOUD_API_KEY = Deno.env.get("TAXCLOUD_API_KEY") || "";
+
+// Monthly TaxCloud call cap (plan limit). A capture makes 2 TaxCloud calls
+// (Lookup + AuthorizedWithCapture); a return makes 1. All count against the cap.
+const MONTHLY_CAP = parseInt(Deno.env.get("TAXCLOUD_MONTHLY_CAP") || "100", 10);
+const meter = createClient(
+  Deno.env.get("SUPABASE_URL")!,
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+);
+
+// Reserve `n` calls against this month's budget. Fails closed (denies) on any
+// metering error so the cap can never be silently overrun.
+async function consumeBudget(n: number): Promise<{ granted: boolean; used: number; cap: number }> {
+  try {
+    const { data, error } = await meter.rpc("taxcloud_try_consume", { p_count: n, p_cap: MONTHLY_CAP });
+    if (error) return { granted: false, used: -1, cap: MONTHLY_CAP };
+    const row = Array.isArray(data) ? data[0] : data;
+    return { granted: !!row?.granted, used: row?.used ?? -1, cap: row?.cap ?? MONTHLY_CAP };
+  } catch {
+    return { granted: false, used: -1, cap: MONTHLY_CAP };
+  }
+}
 
 const ORIGIN = {
   Address1: Deno.env.get("NSA_ORIGIN_ADDRESS") || "123 Main St",
@@ -66,6 +88,25 @@ serve(async (req: Request) => {
       return new Response(
         JSON.stringify({ ok: false, error: "Missing required fields: customer_id, invoice_id, items, destination.state, destination.zip5" }),
         { status: 200, headers: CORS }
+      );
+    }
+
+    // Meter against the monthly cap before any TaxCloud call. A capture =
+    // Lookup + AuthorizedWithCapture (2 calls); a return = 1 call. Reserve both
+    // up front so we never file a Lookup we can't follow with a Capture.
+    const callsNeeded = action === "returned" ? 1 : 2;
+    const budget = await consumeBudget(callsNeeded);
+    if (!budget.granted) {
+      const seen = budget.used >= 0 ? budget.used : budget.cap;
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          capped: true,
+          used: seen,
+          cap: budget.cap,
+          error: `Monthly TaxCloud call limit reached (${seen}/${budget.cap}). Filing resumes next month.`,
+        }),
+        { status: 200, headers: CORS },
       );
     }
 

@@ -7017,6 +7017,7 @@ export default function App(){
             setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));
           }
           setTaxRefresh({processed:totalProcessed,updated:totalUpdated,errors:totalErrors,remaining:d.remaining,startedAt:Date.now()});
+          if(d.capped){nf(d.message||'Monthly TaxCloud call limit reached — refresh stopped','error');break}
           if(!d.remaining||d.remaining<=0)break;
           if(d.processed===0)break;// safety: nothing happened, avoid infinite loop
           // Brief pause between chunks
@@ -13285,7 +13286,7 @@ export default function App(){
         <div className="card" style={{marginBottom:12}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <div style={{display:'flex',alignItems:'center',gap:8}}><h2 style={{margin:0,fontSize:14}}>TaxCloud Filing Status</h2></div>
-            <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none'}} onClick={async()=>{if(!supabase){nf('Supabase not configured','error');return}nf('Refreshing all customer tax rates...');try{const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{});if(d?.ok){if(d.changes?.length>0)setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));nf(d.updated+' rate(s) updated out of '+d.total_customers+' checked')}else{nf(d?.error||'Refresh failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>Refresh All Rates</button>
+            <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none'}} onClick={async()=>{if(!supabase){nf('Supabase not configured','error');return}nf('Refreshing all customer tax rates...');try{const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{});if(d?.ok){if(d.changes?.length>0)setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));if(d.capped)nf(d.message||'Monthly TaxCloud call limit reached','error');else nf(d.updated+' rate(s) updated')}else{nf(d?.error||'Refresh failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>Refresh All Rates</button>
           </div>
           <div className="card-body" style={{padding:'10px 16px'}}>
             {(()=>{const reported=thisYearInvs.filter(i=>i.tc_reported);const unreported=thisYearInvs.filter(i=>!i.tc_reported&&(i.tax||0)>0&&i.status==='paid');
@@ -20415,7 +20416,7 @@ export default function App(){
       setBulkImp(x=>({...x,step:'done',added:added.length,skipped,parentCount,subCount}));
       nf('✅ Imported '+parentCount+' parents, '+subCount+' sub-accounts'+(skipped.length?' ('+skipped.length+' skipped)':''));
       // Auto-fetch tax rates from TaxCloud for imported customers missing rates
-      if(supabase&&added.length>0){const needRate=added.filter(c=>!c.tax_exempt&&!(c.tax_rate>0)&&c.shipping_state&&c.shipping_zip);if(needRate.length>0){nf('Looking up tax rates for '+needRate.length+' customers...');(async()=>{let updated=0;for(const c of needRate){try{const d=await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:c.shipping_address_line1||'',city:c.shipping_city||'',state:c.shipping_state,zip5:c.shipping_zip});if(d?.ok){setCust(prev=>prev.map(x=>x.id===c.id?{...x,tax_rate:d.tax_rate}:x));updated++}}catch(e){}await new Promise(r=>setTimeout(r,500))}nf('Tax rates updated for '+updated+'/'+needRate.length+' customers')})()}}
+      if(supabase&&added.length>0){const needRate=added.filter(c=>!c.tax_exempt&&!(c.tax_rate>0)&&c.shipping_state&&c.shipping_zip);if(needRate.length>0){nf('Looking up tax rates for '+needRate.length+' customers...');(async()=>{let updated=0,capped=false;for(const c of needRate){try{const d=await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:c.shipping_address_line1||'',city:c.shipping_city||'',state:c.shipping_state,zip5:c.shipping_zip});if(d?.capped){capped=true;break}if(d?.ok){setCust(prev=>prev.map(x=>x.id===c.id?{...x,tax_rate:d.tax_rate}:x));updated++}}catch(e){}await new Promise(r=>setTimeout(r,500))}if(capped)nf('Monthly TaxCloud limit reached — looked up '+updated+'/'+needRate.length+' before stopping; rest will need a manual lookup next month','error');else nf('Tax rates updated for '+updated+'/'+needRate.length+' customers')})()}}
     };
 
     // Import vendors

@@ -50,6 +50,22 @@ const DEFAULT_CONCURRENCY = 10;
 const CONCURRENCY_CAP = 20;
 const TAXCLOUD_TIMEOUT_MS = 8000;
 
+// Monthly TaxCloud call cap (plan limit). Each per-customer lookup counts.
+const MONTHLY_CAP = parseInt(Deno.env.get("TAXCLOUD_MONTHLY_CAP") || "100", 10);
+
+// Reserve one call against this month's budget. Fails closed (denies) on any
+// metering error so the cap can never be silently overrun.
+async function consumeBudget(): Promise<{ granted: boolean; used: number; cap: number }> {
+  try {
+    const { data, error } = await supabase.rpc("taxcloud_try_consume", { p_count: 1, p_cap: MONTHLY_CAP });
+    if (error) return { granted: false, used: -1, cap: MONTHLY_CAP };
+    const row = Array.isArray(data) ? data[0] : data;
+    return { granted: !!row?.granted, used: row?.used ?? -1, cap: row?.cap ?? MONTHLY_CAP };
+  } catch {
+    return { granted: false, used: -1, cap: MONTHLY_CAP };
+  }
+}
+
 async function lookupRate(address1: string, city: string, state: string, zip5: string): Promise<number | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TAXCLOUD_TIMEOUT_MS);
@@ -113,15 +129,24 @@ serve(async (req: Request) => {
     const errors: { id: string; name: string; error: string }[] = [];
     let processed = 0;
     let skipped = 0;
+    let cappedHit = false;
+    let usedNow = -1;
+    let capNow = MONTHLY_CAP;
 
     // Process customers in parallel batches. TaxCloud lookups are network-bound,
     // so fanning out 10 at a time turns a 100s serial run into ~10s.
     const list = customers || [];
     for (let i = 0; i < list.length; i += concurrency) {
+      if (cappedHit) break;
       const batch = list.slice(i, i + concurrency);
       await Promise.all(batch.map(async (c) => {
-        processed++;
+        if (cappedHit) return;
         if (!c.shipping_state?.trim() || !c.shipping_zip?.trim()) { skipped++; return; }
+        // Meter each lookup against the monthly cap. Stop once exhausted.
+        const b = await consumeBudget();
+        usedNow = b.used; capNow = b.cap;
+        if (!b.granted) { cappedHit = true; return; }
+        processed++;
         const newRate = await lookupRate(
           c.shipping_address_line1 || "",
           c.shipping_city || "",
@@ -144,7 +169,8 @@ serve(async (req: Request) => {
       }));
     }
 
-    const remaining = Math.max(0, totalMissing - processed);
+    // When capped, report 0 remaining so the client's chunk loop stops.
+    const remaining = cappedHit ? 0 : Math.max(0, totalMissing - processed);
 
     return new Response(
       JSON.stringify({
@@ -157,6 +183,12 @@ serve(async (req: Request) => {
         total_missing: totalMissing,
         changes: results,
         failed: errors,
+        capped: cappedHit,
+        used: usedNow,
+        cap: capNow,
+        message: cappedHit
+          ? `Monthly TaxCloud call limit reached (${capNow}/mo). Stopped after updating ${results.length} rate(s).`
+          : undefined,
       }),
       { status: 200, headers: CORS }
     );
