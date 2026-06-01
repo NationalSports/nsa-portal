@@ -130,6 +130,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[mockupLightbox,setMockupLightbox]=useState(null);// url string for image lightbox overlay
   const[copySkuModal,setCopySkuModal]=useState(null);// {itemIdx, search:''}
   const[vendorModal,setVendorModal]=useState(null);// {itemIdx} — reassign which vendor an item is ordered from
+  const[pendingCostSku,setPendingCostSku]=useState({});// {sku:true} — items reassigned to a live vendor, awaiting fresh price to recost
   const[colorPickerModal,setColorPickerModal]=useState(null);// {itemIdx, sku, source:'ss'|'sm'|'mt'|'rs'}
 
   // ─── Vendor Inventory Cache (S&S Activewear) ───
@@ -698,6 +699,35 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     });
     if(changed){setO(e=>({...e,items:next,updated_at:new Date().toLocaleString()}));setDirty(true)}
   },[vendorInv]);// eslint-disable-line react-hooks/exhaustive-deps
+
+  // After a vendor reassignment to a live API source, apply the NEW vendor's live wholesale
+  // price as the item's cost (cost only — sell price is untouched). Waits for the in-flight
+  // fetch to settle; if the new vendor returns no price for the SKU we stop waiting and keep
+  // whatever catalog cost was applied at switch time. Scoped to reassigned SKUs only.
+  React.useEffect(()=>{
+    const skus=Object.keys(pendingCostSku);if(!skus.length)return;
+    const settled=[];
+    setO(e=>{
+      let changed=false;
+      const next=safeItems(e).map(it=>{
+        if(!pendingCostSku[it.sku])return it;
+        const inv=vendorInv[it.sku];
+        if(!inv||inv.loading)return it;// still fetching — keep waiting
+        settled.push(it.sku);
+        if(safePOs(it).length||safePicks(it).length)return it;
+        const price=inv.price||{};
+        const vals=Object.values(price).map(safeNum).filter(v=>v>0);
+        if(!vals.length)return it;// vendor has no price for this SKU — keep catalog cost
+        const base=Math.min(...vals);
+        const mergedSizeCosts={...(it._sizeCosts||{})};Object.entries(price).forEach(([sz,c])=>{const n=safeNum(c);if(n>0)mergedSizeCosts[sz]=n});
+        if(Math.abs(base-safeNum(it.nsa_cost))<0.005&&JSON.stringify(mergedSizeCosts)===JSON.stringify(it._sizeCosts||{}))return it;
+        changed=true;
+        return{...it,nsa_cost:base,_sizeCosts:mergedSizeCosts};
+      });
+      return changed?{...e,items:next,updated_at:new Date().toLocaleString()}:e;
+    });
+    if(settled.length){setDirty(true);setPendingCostSku(p=>{const n={...p};settled.forEach(s=>delete n[s]);return n})}
+  },[vendorInv,pendingCostSku]);// eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-fetch Adidas B2B inventory for Adidas items on the order
   React.useEffect(()=>{
@@ -1355,10 +1385,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const cur=safeItems(o)[i];if(!cur)return;
     const{_ss_live,_sm_live,_mt_live,_rs_live,...rest}=cur;
     const next={...rest,vendor_id:vid};
+    // Refresh cost from the NEW vendor — cost only, never the customer sell price — unless
+    // the item is custom or already committed to a PO/pick. A catalog cost for the new
+    // vendor is applied synchronously as a fallback; for live API vendors the live wholesale
+    // price is fetched below and applied by the pending-cost effect when it settles (it wins).
+    const committed=safePOs(cur).length>0||safePicks(cur).length>0;
+    const canRecost=!cur.is_custom&&!committed;
+    const isLive=isSSItem(next)||isSanMarItem(next)||isMomentecItem(next)||isRichardsonItem(next);
+    if(canRecost){
+      const cp=products.find(p=>(p.sku===cur.sku||(cur.product_id&&p.id===cur.product_id))&&p.vendor_id===vid&&safeNum(p.nsa_cost)>0);
+      if(cp&&Math.abs(safeNum(cp.nsa_cost)-safeNum(cur.nsa_cost))>0.005)next.nsa_cost=safeNum(cp.nsa_cost);
+    }
     setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?next:it),updated_at:new Date().toLocaleString()}));setDirty(true);
     if(cur.sku){delete vendorInvCache.current[cur.sku];delete vendorInvFetching.current[cur.sku];setVendorInv(prev=>{const n={...prev};delete n[cur.sku];return n})}
-    if(isSSItem(next)||isSanMarItem(next)||isMomentecItem(next)||isRichardsonItem(next))fetchVendorInventory(next.sku,vid,next);
-    const vn=vendorList.find(v=>v.id===vid)?.name||'—';nf('Vendor set to '+vn+' for '+(cur.sku||'item'));setVendorModal(null);
+    if(isLive){if(canRecost&&next.sku)setPendingCostSku(p=>({...p,[next.sku]:true}));fetchVendorInventory(next.sku,vid,next)}
+    const vn=vendorList.find(v=>v.id===vid)?.name||'—';nf('Vendor set to '+vn+(isLive&&canRecost?' — refreshing live cost…':'')+' for '+(cur.sku||'item'));setVendorModal(null);
   };
   const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' with all sizes & decorations')};
   const copyIWithSku=(i,p)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=p.nsa_cost;clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;
@@ -9502,8 +9543,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{fontSize:12,color:'#64748b'}}>Currently ordered from: <strong style={{color:'#0f172a'}}>{curName||'(unassigned)'}</strong></div>
             <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Order from vendor</label>
               <SearchSelect options={vendorList.map(v=>({value:v.id,label:v.name}))} value={curVid} onChange={vid=>{if(vid&&vid!==curVid)reassignVendor(vendorModal.itemIdx,vid);else setVendorModal(null)}} placeholder="Search vendors..."/></div>
-            {hasPO&&<div style={{fontSize:11,color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:'8px 10px'}}>⚠️ This item already has a PO. Changing the vendor won't move quantities already on that PO — review the existing PO after switching.</div>}
-            <div style={{fontSize:11,color:'#94a3b8'}}>Pricing and brand are left unchanged — only the vendor the item is ordered from is updated.</div>
+            {hasPO&&<div style={{fontSize:11,color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:'8px 10px'}}>⚠️ This item already has a PO. Switching won't move quantities already on that PO or change its cost — review the existing PO after switching.</div>}
+            <div style={{fontSize:11,color:'#94a3b8'}}>Cost is refreshed from the new vendor (live wholesale price, then catalog). The customer sell price and the item's brand are left unchanged.</div>
           </div>
         </div></div>})()}
 
