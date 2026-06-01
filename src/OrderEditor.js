@@ -8915,6 +8915,34 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const expected=safeNum(dp.expected_cost||dp.qty*dp.unit_cost);
         const actual=safeNum(dp._bill_cost||0);
         const coveredItems=(dp.item_idxs||[]).map(ii=>soItems[ii]).filter(Boolean);
+        // Build the printable/downloadable doc for this decoration PO — same
+        // buildDocHtml format used by supplier POs and SO documents.
+        const _decoPdfFilename='DPO-'+String(dp.po_id||'').replace(/[^a-z0-9]+/gi,'_')+(dp.vendor?'-'+dp.vendor.replace(/[^a-z0-9]+/gi,'_'):'');
+        const _makeDecoPoDocOpts=()=>({
+          title:dp.vendor||'Decorator',docNum:dp.po_id,docType:'DECORATION PURCHASE ORDER',
+          headerRight:'<div class="ta" style="font-size:18px">Status: '+(dp.status||'waiting').replace(/^./,c=>c.toUpperCase())+'</div><div class="ts">'+(dp.qty||0)+' unit'+((dp.qty||0)!==1?'s':'')+' · Expected: <strong>$'+expected.toFixed(2)+'</strong></div>',
+          infoBoxes:[
+            {label:'Vendor',value:dp.vendor||'—',sub:dp.deco_type?dp.deco_type.replace(/_/g,' '):undefined},
+            {label:'Sales Order',value:soId||o.id,sub:(cust?.name||'')+(o.memo?' — '+o.memo:'')},
+            {label:'Expected Return',value:dp.expected_date||'TBD',sub:dp.created_at?'Created: '+dp.created_at:undefined},
+          ],
+          tables:[
+            {title:'Cost Summary',headers:['Units Covered','Unit Cost','Expected','Actual (billed)','Bills'],aligns:['center','right','right','right','center'],
+              rows:[{cells:[
+                {value:dp.qty||0,style:'text-align:center;font-weight:700'},
+                {value:'$'+safeNum(dp.unit_cost).toFixed(2),style:'text-align:right'},
+                {value:'$'+expected.toFixed(2),style:'text-align:right;font-weight:700'},
+                {value:'$'+actual.toFixed(2),style:'text-align:right'},
+                {value:(dp._bill_details||[]).length,style:'text-align:center'},
+              ]}]},
+            ...(coveredItems.length>0?[{title:'Items Covered',headers:['SKU','Item','Color'],aligns:['left','left','left'],
+              rows:coveredItems.map(it=>({cells:[it.sku||'',it.name||'',it.color||'—']}))}]:[]),
+            ...((dp._bill_details||[]).length>0?[{title:'Billing Details',headers:['Doc #','Date','Supplier','Cost','Freight','Tracking'],aligns:['left','left','left','right','right','left'],
+              rows:dp._bill_details.map(bd=>({cells:[bd.doc||'—',bd.date||'—',bd.supplier||'—',{value:'$'+safeNum(bd.cost).toFixed(2),style:'text-align:right'},{value:bd.freight?'$'+safeNum(bd.freight).toFixed(2):'—',style:'text-align:right'},bd.tracking||'—']}))}]:[]),
+          ],
+          notes:(()=>{const parts=[];if(dp.deco_type)parts.push('Deco Type: '+dp.deco_type.replace(/_/g,' '));if(dp.notes)parts.push(dp.notes);if((dp.tracking_numbers||[]).length)parts.push('Tracking: '+dp.tracking_numbers.join(', '));if(dp.drop_ship)parts.push('<strong>DROP SHIP</strong> — Please ship directly to the customer.');return parts.length?parts.join('<br/>'):null})(),
+          footer:'Expected return: '+(dp.expected_date||'TBD')
+        });
         return<div className="po-fullpage">
           <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
@@ -8926,6 +8954,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   const updated={...o,deco_pos:(o.deco_pos||[]).filter(x=>dp.id?x.id!==dp.id:x.po_id!==dp.po_id),updated_at:new Date().toLocaleString()};
                   setO(updated);onSave(updated);setPoFullPage(null);nf('Deleted '+(dp.po_id||'decoration PO'));
                 }}>🗑 Delete PO</button>
+                <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>printDoc(_makeDecoPoDocOpts())}>🖨️ Print</button>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{
+                  try{await downloadDoc(_makeDecoPoDocOpts(),_decoPdfFilename);nf('📥 Downloaded '+dp.po_id+'.pdf')}
+                  catch(err){console.warn('Decoration PO PDF download failed:',err);nf('Download failed: '+(err?.message||'unknown'),'error')}
+                }}>📥 Download</button>
                 <span className={`badge ${dp.status==='billed'||dp.status==='received'?'badge-green':dp.status==='ordered'?'badge-blue':'badge-gray'}`} style={{fontSize:11}}>{(dp.status||'waiting').replace(/^./,c=>c.toUpperCase())}</span>
                 <span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>
                 {dp.preexisting&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>Preexisting</span>}
