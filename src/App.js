@@ -518,19 +518,51 @@ const _sbGetMyProfile=async()=>{
 };
 
 // ─── Adidas B2B Inventory Fetch Helpers ───
+// Adidas Cowork publishes sizes with garment-specific suffixes that don't match
+// our canonical size-grid labels — e.g. shorts carry an inseam ("S 3\"", "XL4\"",
+// "M11\""), and Adidas uses "2XS"/"2XL" where the grid uses "XXS"/"2XL". A plain
+// string match (adidasInv.sizes[sz]) therefore finds nothing for those styles and
+// the B2B badge renders blank. Collapse each raw code to its base grid label so the
+// quantities actually surface.
+const adidasCanonSize = (raw) => {
+  if (!raw) return raw;
+  let s = String(raw).trim();
+  // Strip a trailing inseam/length token ("S 3\"", "XL3\"", "2XS4", "M11\"") — but
+  // only when an alpha size prefix survives, so purely numeric sizes (28, 200, 8.5)
+  // are left untouched.
+  const stripped = s.replace(/\s*\d+"?$/, '');
+  if (stripped && /[A-Za-z]/.test(stripped)) s = stripped;
+  const u = s.toUpperCase();
+  return SZ_NORM[u] || u;
+};
+
+// Aggregate raw adidas_inventory rows into a { sizes, lastSynced } map keyed by
+// canonical grid label, summing all variants that fold onto the same label and
+// keeping a per-code breakdown for the hover tooltip.
+const aggregateAdidasRows = (rows) => {
+  const sizes = {};
+  let lastSynced = null;
+  (rows || []).forEach(row => {
+    const label = adidasCanonSize(row.size);
+    if (!label) return;
+    const qty = row.stock_qty || 0;
+    const e = sizes[label] || (sizes[label] = { qty: 0, futureDate: null, futureQty: null, breakdown: [] });
+    e.qty += qty;
+    if (row.future_delivery_qty) e.futureQty = (e.futureQty || 0) + row.future_delivery_qty;
+    if (row.future_delivery_date && (!e.futureDate || new Date(row.future_delivery_date) < new Date(e.futureDate))) e.futureDate = row.future_delivery_date;
+    e.breakdown.push({ code: String(row.size).trim(), qty });
+    if (!lastSynced || new Date(row.last_synced) > new Date(lastSynced)) lastSynced = row.last_synced;
+  });
+  return { sizes, lastSynced };
+};
+
 const fetchAdidasInventory = async (sku) => {
   if (!supabase || !sku) return { sizes: {}, lastSynced: null };
   try {
     const { data, error } = await supabase.from('adidas_inventory').select('*').eq('sku', sku);
     if (error) { console.warn('[Adidas B2B] Fetch error:', error.message); return { sizes: {}, lastSynced: null }; }
     if (!data || data.length === 0) return { sizes: {}, lastSynced: null };
-    const sizes = {};
-    let lastSynced = null;
-    data.forEach(row => {
-      sizes[row.size] = { qty: row.stock_qty || 0, futureDate: row.future_delivery_date || null, futureQty: row.future_delivery_qty || null };
-      if (!lastSynced || new Date(row.last_synced) > new Date(lastSynced)) lastSynced = row.last_synced;
-    });
-    return { sizes, lastSynced };
+    return aggregateAdidasRows(data);
   } catch (e) { console.error('[Adidas B2B] Fetch failed:', e); return { sizes: {}, lastSynced: null }; }
 };
 
@@ -549,12 +581,10 @@ const fetchAdidasInventoryBulk = async (skus) => {
     const { data, error } = await supabase.from('adidas_inventory').select('*').in('sku', skus);
     if (error) { console.warn('[Adidas B2B] Bulk fetch error:', error.message); return {}; }
     if (!data || data.length === 0) return {};
+    const bySku = {};
+    data.forEach(row => { (bySku[row.sku] || (bySku[row.sku] = [])).push(row); });
     const result = {};
-    data.forEach(row => {
-      if (!result[row.sku]) result[row.sku] = { sizes: {}, lastSynced: null };
-      result[row.sku].sizes[row.size] = { qty: row.stock_qty || 0, futureDate: row.future_delivery_date || null, futureQty: row.future_delivery_qty || null };
-      if (!result[row.sku].lastSynced || new Date(row.last_synced) > new Date(result[row.sku].lastSynced)) result[row.sku].lastSynced = row.last_synced;
-    });
+    Object.entries(bySku).forEach(([sku, rows]) => { result[sku] = aggregateAdidasRows(rows); });
     return result;
   } catch (e) { console.error('[Adidas B2B] Bulk fetch failed:', e); return {}; }
 };
