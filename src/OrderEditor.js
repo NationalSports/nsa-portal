@@ -2689,10 +2689,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:item.unit_sell>item.nsa_cost?'#166534':'#dc2626'}}>({Math.round((item.unit_sell-item.nsa_cost)/item.unit_sell*100)}% margin)</span>}
               </div></div>
             <div style={{position:'relative'}}>
-              <button title="Item actions" onClick={e=>{if(showItemMenu===idx){setShowItemMenu(null);setItemMenuPos(null)}else{const r=e.currentTarget.getBoundingClientRect();setItemMenuPos({top:r.bottom+4,right:window.innerWidth-r.right});setShowItemMenu(idx)}}} style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',color:'#475569',padding:'4px 8px',fontSize:14,fontWeight:700,lineHeight:1}}>⋯</button>
+              <button title="Item actions" onClick={e=>{if(showItemMenu===idx){setShowItemMenu(null);setItemMenuPos(null)}else{const r=e.currentTarget.getBoundingClientRect();const right=window.innerWidth-r.right;const spaceBelow=window.innerHeight-r.bottom;const spaceAbove=r.top;
+                // Flip the menu above the button when there isn't room below (e.g. rows near
+                // the viewport bottom), and cap its height so it stays scrollable on-screen
+                // instead of running off the bottom edge where it can't be reached.
+                const openUp=spaceBelow<280&&spaceAbove>spaceBelow;setItemMenuPos(openUp?{bottom:window.innerHeight-r.top+4,right,maxH:Math.max(140,spaceAbove-12)}:{top:r.bottom+4,right,maxH:Math.max(140,spaceBelow-12)});setShowItemMenu(idx)}}} style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',color:'#475569',padding:'4px 8px',fontSize:14,fontWeight:700,lineHeight:1}}>⋯</button>
               {showItemMenu===idx&&itemMenuPos&&createPortal(<>
                 <div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:1039}} onClick={()=>{setShowItemMenu(null);setItemMenuPos(null)}}/>
-                <div style={{position:'fixed',top:itemMenuPos.top,right:itemMenuPos.right,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:1040,minWidth:200,padding:4}}>
+                <div style={{position:'fixed',...(itemMenuPos.top!=null?{top:itemMenuPos.top}:{bottom:itemMenuPos.bottom}),right:itemMenuPos.right,maxHeight:itemMenuPos.maxH,overflowY:'auto',background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:1040,minWidth:200,padding:4}}>
                   {(()=>{const curAvail=item.available_sizes||[];const curMode=item.is_footwear?'footwear':(curAvail.join(',')==='OSFA'?'osfa':'apparel');
                     const switchMode=(mode)=>{setSizeMode(idx,mode);setShowItemMenu(null)};
                     return<>
