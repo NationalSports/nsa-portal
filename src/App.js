@@ -2159,11 +2159,21 @@ const extractPdfText=async(file)=>{
 const _omgAmt=(s)=>{const m=String(s).replace(/[(),]/g,'').match(/-?[\d.]+/);return m?parseFloat(m[0])||0:0;};
 // Find the dollar amount on the line that matches labelRe (handles "$1,234.56"
 // and parenthesized "($1,234.56)" negatives, anywhere on the line).
+// Pull the dollar amounts off a single line, in column order. Prefer amounts that
+// carry a currency marker — a "$" or a common OCR look-alike (S/5/6/8) at the start
+// of the money token — so a mis-read "$" can't fold a stray leading digit onto the
+// value (e.g. OCR turns "($73.33)" into "673.33"). Only when a line has no marked
+// amount at all do we fall back to bare numbers.
+const _omgLineAmts=(ln)=>{
+  let all=[...String(ln).matchAll(/(?:^|[\s(])[$S568]\s?([\d,]+\.\d{2})/gi)];
+  if(!all.length)all=[...String(ln).matchAll(/([\d,]+\.\d{2})/g)];
+  return all.map(m=>_omgAmt(m[1]));
+};
 const _omgLineVal=(text,labelRe)=>{
   for(const ln of String(text||'').split('\n')){
     if(!labelRe.test(ln))continue;
-    const all=[...ln.matchAll(/\(?\$?\s?([\d,]+\.\d{2})\)?/g)];
-    if(all.length)return _omgAmt(all[all.length-1][1]); // last $ on the line = the value column
+    const all=_omgLineAmts(ln);
+    if(all.length)return all[all.length-1]; // last $ on the line = the value column
   }
   return 0;
 };
@@ -2185,7 +2195,7 @@ const parseOmgAccounting=(text)=>{
   let invoiced =_omgLineVal(text,/Invoiced\s*Fees?/i);
   let net      =_omgLineVal(text,/Net\s*Revenue/i);
   const dep=String(text||'').split('\n').find(l=>/Deposit\s*Subtotal/i.test(l));
-  if(dep){const nums=[...dep.matchAll(/\(?\$?\s?([\d,]+\.\d{2})\)?/g)].map(m=>_omgAmt(m[1]));
+  if(dep){const nums=_omgLineAmts(dep);
     if(!collected&&nums[0])collected=nums[0];if(!omg&&nums[1])omg=nums[1];if(!cc&&nums[2])cc=nums[2];}
   if(!net&&collected)net=Math.round((collected-omg-cc-invoiced)*100)/100;
   return{collected,omg,cc,invoiced,net};
