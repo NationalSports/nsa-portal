@@ -6393,12 +6393,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const prodStatuses=['draft','hold','staging','in_process','completed'];
       const prodLabels={draft:'Draft',hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed'};
       const artLabels=ART_LABELS;
-      const itemLabels={need_to_order:'Need to Order',needs_pull:'Waiting for Pull',partially_received:'Partially Received',items_received:'Items Received'};
+      const itemLabels={need_to_order:'Need to Order',waiting_receive:'Ordered — Waiting',needs_pull:'Waiting for Pull',partially_received:'Partially Received',items_received:'Items Received'};
       // Effective item status for display. Items that already have IF (item fulfillment)
       // picks waiting to be pulled are in-house, so show "Waiting for Pull" instead of the
-      // misleading "Need to Order". Stored item_status is left untouched (warehouse pull /
-      // PO receive flows own that); this only relabels what the rep sees.
-      const jItemStatus=j=>{const total=j.total_units||0,ful=j.fulfilled_units||0;if(total>0&&ful>=total)return'items_received';const pendingPull=(j.items||[]).some(gi=>safePicks(safeItems(o)[gi.item_idx]).some(pk=>pk.status==='pick'));if(pendingPull)return'needs_pull';if(ful>0)return'partially_received';return'need_to_order';};
+      // misleading "Need to Order". Items whose ordered sizes are already committed to POs
+      // (but not yet received) show "Ordered — Waiting" — mirroring the SO-level coverage
+      // check in calcSOStatus — instead of the misleading "Need to Order". Stored
+      // item_status is left untouched (warehouse pull / PO receive flows own that); this
+      // only relabels what the rep sees.
+      const jItemStatus=j=>{const total=j.total_units||0,ful=j.fulfilled_units||0;if(total>0&&ful>=total)return'items_received';const pendingPull=(j.items||[]).some(gi=>safePicks(safeItems(o)[gi.item_idx]).some(pk=>pk.status==='pick'));if(pendingPull)return'needs_pull';if(ful>0)return'partially_received';
+        // Nothing received/pulled yet — check whether the ordered sizes are already covered
+        // by POs (ordered − cancelled) or in-house picks. If fully covered, the job is
+        // waiting on the vendor, not awaiting an order.
+        let totalSz=0,coveredSz=0;
+        (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;
+          let entries=Object.entries(gi.sizes||safeSizes(it)).filter(([,v])=>safeNum(v)>0);
+          if(entries.length===0&&safeNum(it.est_qty)>0)entries=[['QTY',safeNum(it.est_qty)]];
+          entries.forEach(([sz,v])=>{const need=safeNum(v);totalSz+=need;
+            const picked=safePicks(it).reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const poOrd=safePOs(it).reduce((a,pk)=>a+safeNum(pk[sz])-safeNum((pk.cancelled||{})[sz]),0);
+            coveredSz+=Math.min(need,picked+poOrd);});
+        });
+        if(totalSz>0&&coveredSz>=totalSz)return'waiting_receive';
+        return'need_to_order';};
 
       // Job detail view
       if(selJob!=null){
