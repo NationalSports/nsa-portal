@@ -7,7 +7,7 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, BATCH_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced } from './safeHelpers';
-import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
+import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import QuickMockBuilder from './QuickMockBuilder';
@@ -3652,7 +3652,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
         <div style={{fontSize:12,fontWeight:700,color:'#1e40af',marginBottom:6}}>📦 Parsed Items — Review & Edit</div>
         <div style={{maxHeight:380,overflow:'auto',border:'1px solid #e2e8f0',borderRadius:6}}>
-          <table style={{fontSize:11}}><thead><tr><th style={{width:30}}>✓</th><th>SKU</th><th>Match</th><th>Name</th><th>Brand</th><th>Color</th><th>Sizes</th><th>Qty</th><th>Notes</th></tr></thead>
+          <table style={{fontSize:11}}><thead><tr><th style={{width:30}}>✓</th><th>SKU</th><th>Match</th><th>Attach item</th><th>Name</th><th>Brand</th><th>Color</th><th>Sizes</th><th>Qty</th><th>Notes</th></tr></thead>
           <tbody>{aiBuild.parsed.map((it,i)=>{
             const toggle=()=>setAiBuild(x=>({...x,parsed:x.parsed.map((p,pi)=>pi===i?{...p,_skip:!p._skip}:p)}));
             const upd=(k,v)=>setAiBuild(x=>({...x,parsed:x.parsed.map((p,pi)=>pi===i?{...p,[k]:v}:p)}));
@@ -3660,15 +3660,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const isVendor=typeof mq==='string'&&mq.startsWith('vendor_');
             const vendorName=isVendor?mq.slice('vendor_'.length):null;
             const vendorLabel=vendorName==='sanmar'?'🟦 SanMar':vendorName==='ss'?'🟪 S&S':vendorName==='momentec'?'🟧 Momentec':null;
-            const mqLabel=vendorLabel||(mq==='exact'?'✓ Exact':mq==='stripped'?'✓ Trimmed':mq==='fuzzy_name'?'~ Fuzzy':mq==='no_sku'?'? No SKU':'✗ Unmatched');
-            const mqColor=isVendor?'#1e40af':(mq==='exact'||mq==='stripped'?'#166534':mq==='fuzzy_name'?'#d97706':'#dc2626');
-            const mqBg=isVendor?'#dbeafe':(mq==='exact'||mq==='stripped'?'#dcfce7':mq==='fuzzy_name'?'#fef3c7':'#fee2e2');
+            const mqLabel=vendorLabel||(mq==='manual'?'✓ Picked':mq==='exact'?'✓ Exact':mq==='stripped'?'✓ Trimmed':mq==='fuzzy_name'?'~ Fuzzy':mq==='no_sku'?'? No SKU':'✗ Unmatched');
+            const mqColor=isVendor?'#1e40af':(mq==='manual'||mq==='exact'||mq==='stripped'?'#166534':mq==='fuzzy_name'?'#d97706':'#dc2626');
+            const mqBg=isVendor?'#dbeafe':(mq==='manual'||mq==='exact'||mq==='stripped'?'#dcfce7':mq==='fuzzy_name'?'#fef3c7':'#fee2e2');
+            const bindOrder=p=>setAiBuild(x=>({...x,parsed:x.parsed.map((q,qi)=>qi===i?{...q,product_id:p.id,sku_guess:p.sku,name:p.name||q.name,brand:p.brand||q.brand,color:p.color||q.color,match_quality:'manual',vendor_source:null}:q)}));
             const hasResolved=!!it.product_id||isVendor;
             return<tr key={i} style={{opacity:it._skip?0.4:1,background:!hasResolved?'#fffbeb':'white'}}>
               <td><input type="checkbox" checked={!it._skip} onChange={toggle}/></td>
               <td><input className="form-input" value={it.sku_guess||''} onChange={e=>upd('sku_guess',e.target.value)} style={{width:90,fontSize:10,fontFamily:'monospace'}}/></td>
               <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:mqBg,color:mqColor,fontWeight:700,whiteSpace:'nowrap'}}>{mqLabel}</span>
                 {it.confidence&&!isVendor&&!it.product_id&&<div style={{fontSize:8,color:'#64748b',marginTop:2}}>conf: {it.confidence}</div>}</td>
+              <td style={{minWidth:150}}><ProductPicker products={products} value={it.product_id} onPick={bindOrder} placeholder={it.product_id?'Change…':'🔍 Attach SKU…'}/></td>
               <td style={{maxWidth:180}}><input className="form-input" value={it.name||''} onChange={e=>upd('name',e.target.value)} style={{width:'100%',fontSize:10}}/></td>
               <td><input className="form-input" value={it.brand||''} onChange={e=>upd('brand',e.target.value)} style={{width:70,fontSize:10}}/></td>
               <td><input className="form-input" value={it.color||''} onChange={e=>upd('color',e.target.value)} style={{width:80,fontSize:10}}/></td>
