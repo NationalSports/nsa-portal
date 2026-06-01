@@ -56,7 +56,12 @@ function SearchSelect({options,value,onChange,placeholder}){const[open,setOpen]=
 
 function Bg({options,value,onChange}){return<div style={{display:'flex',gap:2,flexWrap:'wrap'}}>{options.map(o=><button key={o.value} className={`btn btn-sm ${String(value)===String(o.value)?'btn-primary':'btn-secondary'}`} onClick={()=>onChange(o.value)}>{o.label}</button>)}</div>}
 
-function $In({value,onChange,w=70}){const[raw,setRaw]=React.useState(String(value));React.useEffect(()=>{if(parseFloat(raw)!==value)setRaw(String(value))},[value]);return<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><span style={{fontSize:14,fontWeight:700,color:'#166534'}}>$</span><input value={raw} onChange={e=>{const v=e.target.value;setRaw(v);if(v===''||v==='.'){onChange(0);return}if(/^-?\d*\.?\d*$/.test(v)){const n=parseFloat(v);if(!isNaN(n))onChange(n)}}} onBlur={()=>{const n=parseFloat(raw)||0;setRaw(String(n));onChange(n)}} style={{width:w,border:'none',outline:'none',fontSize:15,fontWeight:800,color:'#166534',textAlign:'center',background:'transparent'}}/></span>}
+function $In({value,onChange,w=70}){const[raw,setRaw]=React.useState(String(value));const[focused,setFocused]=React.useState(false);
+  // Only sync the text box from the incoming value while it is NOT being edited.
+  // For size-priced items the parent recomputes a rounded "avg" on every keystroke,
+  // and syncing mid-edit would clobber what you're typing (e.g. typing 60 -> 6.50)
+  // and snap a cleared field back to "0".
+  React.useEffect(()=>{if(!focused&&parseFloat(raw)!==value)setRaw(String(value))},[value,focused]);return<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><span style={{fontSize:14,fontWeight:700,color:'#166534'}}>$</span><input value={raw} onFocus={()=>setFocused(true)} onChange={e=>{const v=e.target.value;if(!/^-?\d*\.?\d*$/.test(v))return;setRaw(v);if(v===''||v==='.'||v==='-')return;const n=parseFloat(v);if(!isNaN(n))onChange(n)}} onBlur={()=>{setFocused(false);const n=parseFloat(raw)||0;setRaw(String(n));onChange(n)}} style={{width:w,border:'none',outline:'none',fontSize:15,fontWeight:800,color:'#166534',textAlign:'center',background:'transparent'}}/></span>}
 
 function EmailBadge({e}){if(!e.email_status)return null;const s=e.email_status;return<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,padding:'2px 8px',borderRadius:10,background:s==='sent'?'#fef3c7':s==='opened'?'#dbeafe':'#dcfce7',color:s==='sent'?'#92400e':s==='opened'?'#1e40af':'#166534'}}>{s==='sent'?'✉️ Sent':s==='opened'?`👁️ Opened ${e.email_opened_at||''}`:`🔗 Viewed`}</span>}
 
