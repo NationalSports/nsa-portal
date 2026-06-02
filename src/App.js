@@ -17973,8 +17973,11 @@ export default function App(){
     // ─── Shared helpers ───
     const moveArtStatus=(j,newStatus)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return false;
-      if(newStatus==='art_complete'&&_jobNeedsProdFiles(j,so)){
-        nf('Upload production files first','error');return false;
+      if(newStatus==='art_complete'){
+        const ids=(j._art_ids&&j._art_ids.length)?j._art_ids:[j.art_file_id].filter(Boolean);
+        const afs=ids.map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
+        const missing=afs.filter(a=>!artProdFilesReady(a));
+        if(missing.length){nf('Upload production files for: '+missing.map(a=>a.name||'Unnamed').join(', '),'error');return false;}
       }
       const currentJobs=buildJobs(so);
       const updatedJobs=currentJobs.map(jj=>{
