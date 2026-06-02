@@ -15324,6 +15324,8 @@ export default function App(){
           seen[key]=g;out.push(g);
         }
       });
+      // Sort: urgent (due-soon) pinned on top, then oldest-first by days open.
+      out.sort((a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(b.openDays||0)-(a.openDays||0)});
       return out;
     })();
     const readyForDeco=decoTasks.filter(t=>t.isReady&&(t.prodStatus==='hold'||t.prodStatus==='draft')&&t.prodStatus!=='ready');const fDeco=filt(readyForDeco);
@@ -16206,7 +16208,7 @@ export default function App(){
             <th style={{textAlign:'center'}}>Bin</th><th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Dest</th><th>Rep</th><th style={{textAlign:'center'}}>Days Open</th><th style={{width:60}}></th>
           </tr></thead><tbody>
           {fPull.map((t,ti)=>{const subs=t._subTasks||[t];const extraSkus=subs.length-1;
-            return<tr key={ti} style={{cursor:'pointer',background:t.urgent?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
+            return<tr key={ti} style={{cursor:'pointer',background:(t.urgent||t.openDays>7)?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
             onClick={()=>setWhViewIF(t)}>
             <td>{t.urgent&&<span title={'Due in '+t.daysOut+'d'}>🔥</span>}{t.noDeco&&<span title="No decoration">📦</span>}</td>
             <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}</td>
