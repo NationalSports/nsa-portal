@@ -274,7 +274,7 @@ function runClaude(prompt) {
     const killer = setTimeout(() => {
       log(`run exceeded ${timeoutMs}ms — terminating`);
       try { child.kill('SIGKILL'); } catch {}
-      finish({ status: 'failed', summary: `Timed out after ${Math.round(timeoutMs / 1000)}s — the agent did not finish (likely stuck on the vendor site).` });
+      finish({ status: 'queued', summary: `Timed out after ${Math.round(timeoutMs / 1000)}s — resetting to queued for retry.` });
     }, timeoutMs);
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (err += d));
