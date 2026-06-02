@@ -9012,10 +9012,18 @@ export default function App(){
             +(_pdfGenericUrls.length>0?'<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">'+_pdfGenericUrls.map(u=>'<img src="'+u+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')+'</div>':'')
             +(_pdfFallback?'<div style="display:flex;justify-content:center"><img src="'+_pdfFallback+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/></div>':'')
             +'<div style="font-size:9px;color:#666;margin-top:4px;width:100%;text-align:center">Mockup Preview</div></div>':'';
+          // Run-together siblings — only jobs checked in and ready to run on this same screen now,
+          // so the sheet never lists a linked job whose garments aren't in hand yet.
+          const _pid=c?.parent_id||c?.id||null;
+          const _gk=jobGroupKey(j,_pid);
+          const _famPid=s2=>{const cc=cust.find(x=>x.id===s2.customer_id);return cc?.parent_id||cc?.id||null};
+          const _sibs=[];
+          if(_gk)sos.forEach(s2=>{if(_famPid(s2)!==_pid)return;safeJobs(s2).forEach(jj=>{if(s2.id===so.id&&jj.id===j.id)return;if(jobGroupKey(jj,_famPid(s2))!==_gk)return;if(!isJobReady(jj,s2))return;_sibs.push({soId:s2.id,cust:cust.find(x=>x.id===s2.customer_id)?.name||'—',qty:jj.total_units,manual:!!jj.link_group})})});
+          const _linkHtml=_sibs.length?'<div style="margin:8px 0 12px;padding:10px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px"><div style="font-size:12px;font-weight:700;color:#3730a3">🔗 Runs together — reuse one screen setup ('+(j.total_units+_sibs.reduce((a,s)=>a+s.qty,0))+' units total)</div><ul style="margin:6px 0 0;padding-left:18px;font-size:12px;color:#3730a3">'+_sibs.map(s=>'<li>'+s.soId+' · '+s.cust+' — '+s.qty+' units'+(s.manual?'':' (matched by art)')+'</li>').join('')+'</ul></div>':'';
           printDoc({title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
             headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
             infoBoxes,tables,
-            notes:(_pdfMockHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
+            notes:(_linkHtml||'')+(_pdfMockHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
             showPricing:false});
         };
 

@@ -15,7 +15,7 @@ import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIO
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
-import { jobScreenKey, jobGroupKey } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady } from './businessLogic';
 import { buildBotCartPayload, isBotOwner } from './lib/botTasks';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -7117,6 +7117,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   w.document.write('<h1>'+j.id+' — '+j.art_name+'</h1>');
                   w.document.write('<p>'+j.deco_type?.replace(/_/g,' ')+' · '+(j.positions||'').replace(/^,\s*/,'')+' · '+j.total_units+' total units</p>');
                   w.document.write('<p>SO: '+o.id+' — '+(o.memo||'')+'</p>');
+                  // Run-together siblings — only those checked in and ready to run right now, so the
+                  // press only sees jobs it can actually put on this screen setup today.
+                  const _pid=cust?.parent_id||cust?.id||null;
+                  const _famIds=new Set((allCustomers||[]).filter(c=>c.id===_pid||c.parent_id===_pid).map(c=>c.id));if(_pid)_famIds.add(_pid);
+                  const _gk=jobGroupKey(j,_pid);
+                  const _cn=id=>(allCustomers||[]).find(x=>x.id===id)?.name||'—';
+                  const _pidOf=s=>{const c=(allCustomers||[]).find(x=>x.id===s.customer_id);return c?.parent_id||c?.id||null};
+                  const _sibs=[];
+                  if(_gk)(allOrders||[]).forEach(s=>{if(!_famIds.has(s.customer_id))return;const src=s.id===o.id?o:s;safeJobs(src).forEach(jj=>{if(s.id===o.id&&jj.id===j.id)return;if(jobGroupKey(jj,_pidOf(s))!==_gk)return;if(!isJobReady(jj,src))return;_sibs.push({soId:s.id,cust:_cn(s.customer_id),qty:jj.total_units,manual:!!jj.link_group})})});
+                  if(_sibs.length){const _scrTot=j.total_units+_sibs.reduce((a,s)=>a+s.qty,0);w.document.write('<div style="margin:8px 0;padding:8px 10px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px"><div style="font-size:11px;font-weight:700;color:#3730a3">🔗 Runs together — reuse one screen setup ('+_scrTot+' units total)</div><ul style="margin:4px 0 0;padding-left:18px;font-size:12px">'+_sibs.map(s=>'<li>'+s.soId+' · '+s.cust+' — '+s.qty+' units'+(s.manual?'':' (matched by art)')+'</li>').join('')+'</ul></div>')}
                   // Mockup image at top
                   const _jsMocks=[...(artF?.mockup_files||artF?.files||[]),...Object.values(artF?.item_mockups||{}).flat()].filter(f=>f);
                   const _jsMockUrl=(()=>{for(const f of _jsMocks){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f))return u;const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)return pt}return itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url||null})();
