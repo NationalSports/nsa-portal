@@ -6630,22 +6630,47 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     setO(e2=>({...e2,jobs:safeJobs(e2).map(jj=>jj.id===j.id?{...jj,...(j.link_group?{link_group:null}:{auto_group_off:true})}:jj),updated_at:new Date().toLocaleString()}));setDirty(true);
                     nf('This job removed from the run-together group');
                   };
+                  // Confirm an artwork suggestion: turn the auto-match into an explicit manual link
+                  // so it only "runs together" once the rep has actually selected it.
+                  const confirmSuggested=members=>{
+                    const newGid=j.link_group||('lg_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7));
+                    const localIds=new Set([j.id]);
+                    members.forEach(m=>{if(m.soId===o.id)localIds.add(m.job.id);else if(onSetJobLinkGroup)onSetJobLinkGroup(m.soId,m.job.id,newGid)});
+                    setO(e2=>({...e2,jobs:safeJobs(e2).map(jj=>localIds.has(jj.id)?{...jj,link_group:newGid,auto_group_off:false}:jj),updated_at:new Date().toLocaleString()}));setDirty(true);
+                    nf('Linked — these jobs will run together');
+                  };
+                  // Auto art-matches are surfaced as suggestions to confirm; only manual links count
+                  // as an established "runs together" group.
+                  const confirmed=_isAuto?[]:linked;
+                  const suggested=_isAuto?linked:[];
+                  const memberRow=(m,actions)=>{const mj=m.job;return<div key={m.soId+'|'+mj.id} style={{display:'flex',alignItems:'center',gap:6,padding:'3px 0',flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
+                    <span style={{fontSize:11,fontWeight:600,color:'#1e293b'}}>{mj.art_name||mj.deco_type?.replace(/_/g,' ')||'Job'}</span>
+                    <span style={{fontSize:10,color:'#64748b'}}>{_custName(m.custId)} · {onViewSO?<span style={{cursor:'pointer',textDecoration:'underline',color:'#2563eb',fontWeight:600}} onClick={()=>onViewSO(m.soId)} title="Open sales order">{m.soId}</span>:m.soId}</span>
+                    <span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:SC[mj.prod_status]?.bg||'#f1f5f9',color:SC[mj.prod_status]?.c||'#475569'}}>{prodLabels[mj.prod_status]||mj.prod_status}</span>
+                    {actions}
+                  </div>};
                   return<div style={{marginTop:8,padding:'8px 10px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
-                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:linked.length?6:0,flexWrap:'wrap'}}>
-                      <span style={{fontSize:11,fontWeight:700,color:'#0f172a'}}>🔗 Runs together with</span>
-                      {!linked.length&&<span style={{fontSize:11,color:'#94a3b8'}}>nothing yet — link a job below if it uses the same screen</span>}
-                      {_isAuto&&linked.length>0&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#dbeafe',color:'#1e40af'}}>auto-matched by artwork</span>}
-                    </div>
-                    {linked.map(m=>{const mj=m.job;return<div key={m.soId+'|'+mj.id} style={{display:'flex',alignItems:'center',gap:6,padding:'3px 0',flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
-                      <span style={{fontSize:11,fontWeight:600,color:'#1e293b'}}>{mj.art_name||mj.deco_type?.replace(/_/g,' ')||'Job'}</span>
-                      <span style={{fontSize:10,color:'#64748b'}}>{_custName(m.custId)} · {onViewSO?<span style={{cursor:'pointer',textDecoration:'underline',color:'#2563eb',fontWeight:600}} onClick={()=>onViewSO(m.soId)} title="Open sales order">{m.soId}</span>:m.soId}</span>
-                      <span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:SC[mj.prod_status]?.bg||'#f1f5f9',color:SC[mj.prod_status]?.c||'#475569'}}>{prodLabels[mj.prod_status]||mj.prod_status}</span>
-                      {m.auto&&<span style={{fontSize:8,color:'#94a3b8'}}>auto</span>}
-                      <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'1px 6px'}} title={m.auto?'These aren’t the same screen — stop auto-grouping it':'Remove this manual link'} onClick={()=>unlinkMember(m)}>Unlink</button>
-                    </div>})}
-                    <div style={{display:'flex',alignItems:'center',gap:6,marginTop:6,flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
+                    {confirmed.length>0&&<div style={{marginBottom:6}}>
+                      <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6,flexWrap:'wrap'}}>
+                        <span style={{fontSize:11,fontWeight:700,color:'#0f172a'}}>🔗 Runs together with</span>
+                      </div>
+                      {confirmed.map(m=>memberRow(m,<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'1px 6px'}} title="Remove this manual link" onClick={()=>unlinkMember(m)}>Unlink</button>))}
+                    </div>}
+                    {suggested.length>0&&<div style={{marginBottom:6}}>
+                      <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4,flexWrap:'wrap'}}>
+                        <span style={{fontSize:11,fontWeight:700,color:'#0f172a'}}>💡 Suggested to run together</span>
+                        <span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#dbeafe',color:'#1e40af'}}>same artwork</span>
+                      </div>
+                      {suggested.map(m=>memberRow(m,<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'1px 6px'}} title="Not the same screen — stop suggesting this one" onClick={()=>unlinkMember(m)}>✕ not this one</button>))}
+                      <div style={{display:'flex',alignItems:'center',gap:6,marginTop:4,flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
+                        <button className="btn btn-sm btn-primary" style={{fontSize:10,padding:'2px 10px'}} onClick={()=>confirmSuggested(suggested)} title="Confirm these run together (reuse one screen setup)">🔗 Link {suggested.length>1?('all '+suggested.length):'to run together'}</button>
+                        <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 8px'}} onClick={unlinkSelf} title="This job's art isn't actually shared — stop suggesting">Not the same screen</button>
+                      </div>
+                    </div>}
+                    <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
+                      {!confirmed.length&&!suggested.length&&<span style={{fontSize:11,color:'#94a3b8'}}>🔗 not linked — pick a job below if it shares this screen</span>}
                       {candidates.length>0&&<div style={{flex:'0 1 320px',minWidth:220}}><SearchSelect options={candidates} value="" onChange={doLink} placeholder="🔗 Link another job (same parent)…"/></div>}
-                      {linked.length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 8px'}} onClick={unlinkSelf} title={j.link_group?'Remove this job from the linked group':'Stop auto-grouping this job by artwork'}>{j.link_group?'Leave group':'Not the same screen'}</button>}
+                      {confirmed.length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 8px'}} onClick={unlinkSelf} title="Remove this job from the linked group">Leave group</button>}
                     </div>
                   </div>;
                 })()}
