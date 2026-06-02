@@ -8,16 +8,12 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   const [tab, setTab] = useState('lines'); // 'lines' | 'xml'
   const [copied, setCopied] = useState(false);
 
-  const { payload, soap, lines, totals } = useMemo(() => {
-    const p = buildSanMarPOPayload({
-      poNumber,
-      batchPOs,
-      // Customer number isn't known on the client (it lives in Netlify env).
-      // Leave blank in the preview — the proxy populates it on real submit.
-      customerNumber: '',
-    });
-    const xml = buildSanMarPOSoap(p, { username: '<from env>', customerNumber: '<from env>' });
-    return { payload: p, soap: xml, lines: p.PO.lineItems, totals: p._summary };
+  const { payload, soap, lines, totals, warnings } = useMemo(() => {
+    const p = buildSanMarPOPayload({ poNumber, batchPOs });
+    // Credentials (id = SanMar.com username + password) are injected server-side
+    // by the proxy and never appear here.
+    const xml = buildSanMarPOSoap(p, { id: '<from env>' });
+    return { payload: p, soap: xml, lines: p.PO.lineItems, totals: p._summary, warnings: p._warnings || [] };
   }, [batchPOs, poNumber]);
 
   const copyXml = () => {
@@ -35,8 +31,15 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
         </div>
         <div className="modal-body">
           <div style={{ padding: 10, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
-            <strong style={{ color: '#b45309' }}>⚠ Dry-run preview only.</strong> No request has been sent to SanMar. This shows the exact PromoStandards <code>sendPO</code> payload that <em>would</em> be POSTed once live submission is enabled. Credentials are injected server-side and are not displayed here.
+            <strong style={{ color: '#b45309' }}>⚠ Dry-run preview only.</strong> No request has been sent to SanMar. This shows the exact PromoStandards v24.3 <code>sendPO</code> payload that <em>would</em> be POSTed. Credentials (SanMar.com username + password) are injected server-side and are not displayed here.
           </div>
+
+          {warnings.length > 0 && (
+            <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b' }}>
+              <strong>⚠ Cannot submit yet — {warnings.length} line(s) missing a SanMar <code>partId</code> (Unique_Key):</strong>
+              <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+            </div>
+          )}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 8, marginBottom: 12 }}>
             <Stat label="PO Number" value={poNumber} mono />
@@ -56,6 +59,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                 <thead style={{ background: '#f8fafc' }}>
                   <tr>
                     <th style={th}>#</th>
+                    <th style={th}>Part ID</th>
                     <th style={th}>Style</th>
                     <th style={th}>Color</th>
                     <th style={th}>Size</th>
@@ -69,6 +73,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                   {lines.map(l => (
                     <tr key={l.lineNumber} style={{ borderTop: '1px solid #f1f5f9' }}>
                       <td style={td}>{l.lineNumber}</td>
+                      <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: l.partId ? '#0f766e' : '#dc2626' }}>{l.partId || '⚠ missing'}</td>
                       <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af' }}>{l.style}</td>
                       <td style={td}>{l.color || '—'}</td>
                       <td style={{ ...td, fontWeight: 700 }}>{l.size}</td>
@@ -87,7 +92,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
           {tab === 'xml' && (
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <span style={{ fontSize: 11, color: '#64748b' }}>POST → <code>ws.sanmar.com:8080/promostandards/POServiceBinding</code></span>
+                <span style={{ fontSize: 11, color: '#64748b' }}>POST → <code>test-ws.sanmar.com:8080/promostandards/POServiceBinding</code> (TEST)</span>
                 <button className="btn btn-sm btn-secondary" onClick={copyXml}>{copied ? '✓ Copied' : '📋 Copy XML'}</button>
               </div>
               <pre style={{ background: '#0f172a', color: '#a5f3fc', padding: 12, borderRadius: 6, fontSize: 11, overflow: 'auto', maxHeight: 420, margin: 0 }}>{soap}</pre>
@@ -95,7 +100,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
           )}
         </div>
         <div className="modal-footer">
-          <span style={{ flex: 1, fontSize: 11, color: '#94a3b8' }}>Live submit will be enabled in a follow-up after payload review.</span>
+          <span style={{ flex: 1, fontSize: 11, color: '#94a3b8' }}>For the SanMar onboarding test order, use <code>scripts/sanmar-test-po.js</code> (documented test product IDs + TEST endpoint). In-app submit requires a SanMar <code>partId</code> on every line.</span>
           <button className="btn btn-secondary" onClick={onClose}>Close</button>
         </div>
       </div>

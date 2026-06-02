@@ -1215,7 +1215,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <input className="form-input" value={stmtEmail} onChange={e=>setStmtEmail(e.target.value)} placeholder="Email address" style={{marginBottom:6}}/>
           <textarea className="form-input" rows={4} value={stmtMsg} onChange={e=>setStmtMsg(e.target.value)} style={{fontFamily:'inherit',fontSize:13}}/>
         </div>
-        {!_brevoKey&&<div style={{padding:8,background:'#fef3c7',color:'#92400e',borderRadius:6,fontSize:11,marginTop:4}}>⚠ Brevo API key not configured — set REACT_APP_BREVO_API_KEY to enable real sending.</div>}
+        {!_brevoKey&&<div style={{padding:8,background:'#fef3c7',color:'#92400e',borderRadius:6,fontSize:11,marginTop:4}}>⚠ Brevo sending disabled (REACT_APP_BREVO_ENABLED=false) — using email-client fallback.</div>}
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setShowStatement(false)} disabled={stmtSending}>Cancel</button>

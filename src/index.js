@@ -5,7 +5,13 @@ import App from './App';
 // Public club storefront lives at /shop/<slug>. Shoppers should never load the
 // full portal bundle or hit the login gate, so we branch on the path here.
 const Storefront = React.lazy(() => import('./storefront/Storefront'));
-const isStorefront = typeof window !== 'undefined' && window.location.pathname.startsWith('/shop/');
+// Public, login-free order tracker at /shop/order/<status_token>. Kept separate
+// from the storefront because it loads an order by token regardless of store
+// status (OMG shadow stores are archived) — see src/storefront/OrderTrack.js.
+const OrderTrack = React.lazy(() => import('./storefront/OrderTrack'));
+const _path = typeof window !== 'undefined' ? window.location.pathname : '';
+const isOrderTrack = _path.startsWith('/shop/order/');
+const isStorefront = _path.startsWith('/shop/') && !isOrderTrack;
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -64,7 +70,9 @@ const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
   <React.StrictMode>
     <ErrorBoundary>
-      {isStorefront
+      {isOrderTrack
+        ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading your order…</div>}><OrderTrack /></React.Suspense>
+        : isStorefront
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading store…</div>}><Storefront /></React.Suspense>
         : <App />}
     </ErrorBoundary>

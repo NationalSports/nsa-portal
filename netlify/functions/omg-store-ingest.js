@@ -58,6 +58,9 @@ exports.handler = async (event) => {
       const m = (str || '').match(/\(([A-Za-z0-9]{4,10})\)/);
       return m ? m[1].toUpperCase() : '';
     };
+    // NSA SKUs never contain a space, so the catalog SKU is the first token
+    // ("KF5972 - 7" → "KF5972"). Drops OMG's internal " - N" variant suffix.
+    const cleanSku = (str) => ((str || '').trim().split(/\s+/)[0] || '').toUpperCase();
 
     (report.reports || []).forEach(r => {
       (r.sections || []).forEach(section => {
@@ -65,7 +68,8 @@ exports.handler = async (event) => {
         const rows = section.rows || [];
         const artworkList = meta.artwork || [];
         const sectionSku = meta.sku || '';
-        const sectionSkuOk = sectionSku && !sectionSku.includes(' ') && sectionSku.length <= 15;
+        const cleanSectionSku = cleanSku(sectionSku);
+        const sectionSkuOk = cleanSectionSku && !cleanSectionSku.includes(' ') && cleanSectionSku.length <= 15;
 
         // Same product can ship multiple SKUs (one per color), e.g. KB9093 in
         // black and KB9097 in grey — split each SKU into its own product row.
@@ -73,7 +77,7 @@ exports.handler = async (event) => {
         rows.forEach(row => {
           const sz = row.size || 'OS';
           const qty = row.quantity || 0;
-          const rowSku = extractSku(row.color) || (sectionSkuOk ? sectionSku.toUpperCase() : '');
+          const rowSku = extractSku(row.color) || (sectionSkuOk ? cleanSectionSku : '');
           const key = rowSku || '__nosku__';
           if (!groups[key]) groups[key] = { sku: rowSku, sizes: {}, qty: 0, paid: 0, colors: new Set() };
           const g = groups[key];
@@ -87,7 +91,7 @@ exports.handler = async (event) => {
           let sku = g.sku;
           if (!sku) {
             const fromText = extractSku([...g.colors].join(' ') + ' ' + (meta.name || ''));
-            sku = fromText || sectionSku;
+            sku = fromText || cleanSku(sectionSku);
           }
           const matchedArt = sku
             ? artworkList.filter(a => `${a.caption||''} ${a.color||''} ${a.name||''} ${a.label||''}`.toUpperCase().includes(sku))

@@ -18,7 +18,10 @@ Mac mini: worker.js polls ────────────────┘
 - **Node.js 18+** — `brew install node`
 - **Claude Code** — install and sign in once interactively so the worker can
   run it headlessly: see https://docs.claude.com/claude-code. Verify `claude --version`.
-- Playwright's browser is fetched automatically by the MCP server on first run.
+- Playwright's bundled Chromium. If a run stalls with no browser activity,
+  install it once explicitly: `npx -y playwright install chromium`. We use the
+  bundled browser (not your installed Chrome) so macOS doesn't prompt to grant
+  Terminal "App Management" permission.
 
 ## 2. Configure
 
@@ -70,7 +73,19 @@ Fill in `.env`:
 
 ## 4. Run it always-on (launchd)
 
-Create `~/Library/LaunchAgents/com.nsa.botworker.plist`:
+First find the exact paths on THIS machine (they differ by Mac):
+
+```bash
+which node            # e.g. /opt/homebrew/bin/node  (Apple Silicon) or /usr/local/bin/node
+which claude          # e.g. /Users/YOU/.local/bin/claude
+dirname "$(which node)"; dirname "$(which claude)"   # the two dirs for PATH below
+echo $HOME            # your home path for /Users/YOU
+```
+
+Create `~/Library/LaunchAgents/com.nsa.botworker.plist`, substituting YOUR
+paths. Two gotchas this handles: launchd starts with a bare PATH (so we set one
+that includes node, npx, AND claude), and runs can take ~10–15 min (so we raise
+`RUN_TIMEOUT_MS`):
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -84,6 +99,11 @@ Create `~/Library/LaunchAgents/com.nsa.botworker.plist`:
     <string>/Users/YOU/nsa-portal/bot-worker/worker.js</string>
   </array>
   <key>WorkingDirectory</key><string>/Users/YOU/nsa-portal/bot-worker</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/Users/YOU/.local/bin:/usr/bin:/bin</string>
+    <key>RUN_TIMEOUT_MS</key><string>1800000</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>/Users/YOU/nsa-portal/bot-worker/worker.log</string>
@@ -92,16 +112,29 @@ Create `~/Library/LaunchAgents/com.nsa.botworker.plist`:
 </plist>
 ```
 
-Then:
+Then load it:
 
 ```bash
 launchctl load ~/Library/LaunchAgents/com.nsa.botworker.plist
-launchctl start com.nsa.botworker
-tail -f bot-worker/worker.log
+tail -f ~/nsa-portal/bot-worker/worker.log    # should print "started. bot=bot-claude interval=30000ms"
 ```
 
 The worker loops on `POLL_INTERVAL_MS` (default 30s), draining any backlog each
 cycle. `KeepAlive` restarts it if it ever crashes or the Mac reboots.
+
+**Keep the Mac mini awake** so it keeps polling even with no display attached:
+```bash
+sudo pmset -a sleep 0 disksleep 0      # never sleep (plug it in)
+```
+
+To update the worker later: `cd ~/nsa-portal && git pull`, then
+`launchctl kickstart -k gui/$(id -u)/com.nsa.botworker` to restart it.
+
+To stop it: `launchctl unload ~/Library/LaunchAgents/com.nsa.botworker.plist`.
+
+> **Run it in ONE place only.** Don't also run the worker on your laptop — both
+> would poll the same queue. (It's safe if they overlap — claims are atomic, so
+> a task is only processed once — but keep it to the Mac mini.)
 
 ## Task lifecycle (bot_status)
 
@@ -117,3 +150,15 @@ in a comment.
   `src/lib/botTasks.js` (`botTargetForVendor`).
 - New task type (beyond `add_to_cart`): add a prompt template under `prompts/`
   and branch on `bot_payload.task_type` in `worker.js`.
+
+## TODO / Backlog
+
+- **Backorder handling (deferred):** When a size/SKU is backordered on Adidas
+  CLICK (cell shows 0 now but has a future delivery date, vs. truly
+  unavailable), the bot should add what it can and **flag the backordered
+  portion as a follow-up TODO/notice on the task** (in its needs_review
+  comment) so a human can track it — not silently skip it. Use the Adidas
+  availability + future-date info (the portal already stores futureDate/
+  futureQty for Adidas inventory). Refine after observing a real backordered
+  order. Decide: leave the backordered qty in the cart (approve as backorder)
+  vs. remove it and reorder later.
