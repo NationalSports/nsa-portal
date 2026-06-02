@@ -102,6 +102,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[preexistingPO,setPreexistingPO]=useState(false);const[preexistingPOId,setPreexistingPOId]=useState('');const[poExcluded,setPOExcluded]=useState({});const[poCalcTick,setPoCalcTick]=useState(0);const[poShipTo,setPoShipTo]=useState('warehouse');
     const _poCreatingRef=React.useRef(false);// in-flight latch: blocks rapid double-fire of Create PO / Add to Batch within a single render cycle
     const[topstarService,setTopstarService]=useState('dst');const[topstarImgs,setTopstarImgs]=useState([]);const[topstarNotes,setTopstarNotes]=useState('');const[topstarSending,setTopstarSending]=useState(false);
+    const[poVendorSearch,setPoVendorSearch]=useState({});// {idx: query} — searchable vendor assign for unlinked items
+    const[decoSearch,setDecoSearch]=useState('');// query for Outside Decoration PO decorator search
+    const[decoSel,setDecoSel]=useState('');// selected decorator name
     const decoVendors=decoVendorsProp||[];const decoVendorPricing=decoVendorPricingProp||[];
     const DECO_VENDORS=(()=>{const names=decoVendors.filter(v=>v.is_active!==false).map(v=>v.name);return names.length>0?[...names,'Other']:['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','BYOG Screenprinting','GraphiC323','Frontier Screen Printing','JM Branding','Other']})();
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
@@ -5644,34 +5647,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <Icon name="back" size={16} style={{transform:'rotate(180deg)'}}/></div>})}
           {unlinkedItems.length>0&&<div style={{borderTop:'2px solid #fca5a5',marginTop:8,paddingTop:8}}>
             <div style={{fontSize:10,fontWeight:700,color:'#dc2626',textTransform:'uppercase',marginBottom:6}}>⚠️ Items Without Vendor</div>
-            {unlinkedItems.map((it,i)=>{const idx=safeItems(o).findIndex(x=>x.sku===it.sku&&x.color===it.color&&x.name===it.name);return<div key={i} style={{padding:'8px 12px',border:'1px solid #fca5a5',borderRadius:8,marginBottom:4,background:'#fef2f2'}}>
+            {unlinkedItems.map((it,i)=>{const idx=safeItems(o).findIndex(x=>x.sku===it.sku&&x.color===it.color&&x.name===it.name);
+              const q=(poVendorSearch[idx]||'').trim().toLowerCase();
+              const activeVendors=vendorList.filter(v=>v.is_active!==false);
+              const matches=q?activeVendors.filter(v=>(v.name||'').toLowerCase().includes(q)):activeVendors;
+              const assignVendor=(v)=>{if(idx<0)return;uI(idx,'vendor_id',v.id);uI(idx,'brand',v.name||it.brand);nf('Assigned '+v.name+' to '+it.sku);setShowPO(null);setTimeout(()=>setShowPO('select'),100)};
+              return<div key={i} style={{padding:'8px 12px',border:'1px solid #fca5a5',borderRadius:8,marginBottom:4,background:'#fef2f2'}}>
               <div style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>{it.sku||'No SKU'} — {it.name||'Unnamed'}</div>
-              <div style={{display:'flex',gap:6,alignItems:'center',marginTop:4}}>
-                <select className="form-select" style={{flex:1,fontSize:11,padding:'3px 6px'}} defaultValue="" onChange={e=>{
-                  const vid=e.target.value;if(!vid||idx<0)return;
-                  const vn=vendorList.find(v=>v.id===vid)?.name||'';
-                  uI(idx,'vendor_id',vid);uI(idx,'brand',vn||it.brand);
-                  nf('Assigned '+vn+' to '+it.sku);setShowPO(null);setTimeout(()=>setShowPO('select'),100);
-                }}>
-                  <option value="" disabled>Assign vendor...</option>
-                  {vendorList.filter(v=>v.is_active!==false).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
-                </select>
+              <div style={{marginTop:4}}>
+                <input className="form-input" style={{width:'100%',fontSize:11,padding:'3px 6px',boxSizing:'border-box'}} placeholder="Search vendor..." value={poVendorSearch[idx]||''} onChange={e=>setPoVendorSearch(s=>({...s,[idx]:e.target.value}))}/>
+                <div style={{display:'flex',flexWrap:'wrap',gap:4,marginTop:4}}>
+                  {matches.length===0?<div style={{fontSize:11,color:'#94a3b8',padding:'2px 4px'}}>No vendors match.</div>:matches.map(v=>
+                    <button key={v.id} className="btn btn-sm" style={{fontSize:11,padding:'3px 8px',background:'#fff',border:'1px solid #cbd5e1',borderRadius:6,cursor:'pointer'}} onClick={()=>assignVendor(v)}>{v.name}</button>)}
+                </div>
               </div>
             </div>})}
           </div>}
           {/* Outside Decoration PO section */}
           <div style={{borderTop:'2px solid #e2e8f0',marginTop:8,paddingTop:8}}>
             <div style={{fontSize:10,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',marginBottom:6}}>🎨 Outside Decoration PO</div>
-            <div style={{display:'flex',gap:8,alignItems:'center'}}>
-              <select className="form-select" id="deco-vendor-select" style={{flex:1,fontSize:13}} defaultValue="">
-                <option value="" disabled>Select decorator...</option>
-                {DECO_VENDORS.filter(dv=>dv!=='Other').map(dv=><option key={dv} value={dv}>{dv}</option>)}
-              </select>
-              <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{
-                const sel=document.getElementById('deco-vendor-select')?.value;
-                if(sel)setShowPO('deco:'+sel);
-              }}>Create Deco PO</button>
-            </div>
+            {(()=>{const dq=decoSearch.trim().toLowerCase();const decoOpts=DECO_VENDORS.filter(dv=>dv!=='Other');const decoMatches=dq?decoOpts.filter(dv=>dv.toLowerCase().includes(dq)):decoOpts;return<>
+              <input className="form-input" style={{width:'100%',fontSize:13,padding:'4px 8px',boxSizing:'border-box'}} placeholder="Search decorator..." value={decoSearch} onChange={e=>{setDecoSearch(e.target.value);setDecoSel('')}}/>
+              <div style={{display:'flex',flexWrap:'wrap',gap:4,marginTop:4}}>
+                {decoMatches.length===0?<div style={{fontSize:11,color:'#94a3b8',padding:'2px 4px'}}>No decorators match.</div>:decoMatches.map(dv=>
+                  <button key={dv} className="btn btn-sm" style={{fontSize:12,padding:'3px 8px',background:decoSel===dv?'#7c3aed':'#fff',color:decoSel===dv?'#fff':'#334155',border:'1px solid '+(decoSel===dv?'#7c3aed':'#cbd5e1'),borderRadius:6,cursor:'pointer'}} onClick={()=>setDecoSel(dv)}>{dv}</button>)}
+              </div>
+              <button className="btn btn-sm" disabled={!decoSel} style={{background:decoSel?'#7c3aed':'#cbd5e1',color:'white',border:'none',width:'100%',marginTop:6,cursor:decoSel?'pointer':'not-allowed'}} onClick={()=>{if(decoSel)setShowPO('deco:'+decoSel)}}>Create Deco PO</button>
+            </>})()}
           </div>
           <div style={{borderTop:'1px solid #e2e8f0',marginTop:8,paddingTop:8}}>
             <div style={{fontSize:10,fontWeight:700,color:'#0891b2',textTransform:'uppercase',marginBottom:6}}>🧵 Digitizing / Vector File — Topstar</div>
