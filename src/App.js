@@ -18,7 +18,7 @@ import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
-import { buildJobs, isJobReady, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
+import { buildJobs, isJobReady, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
 import { calcOrderTotals, auTierDisc } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
@@ -17911,12 +17911,12 @@ export default function App(){
   // ═══════════════════════════════════════════════
   function rArtist(){
     // True when a job has art files but not all of them have production files ready yet.
-    // Mirrors isJobReady (businessLogic): checks EVERY art file on the job (via _art_ids),
-    // not just the primary j.art_file_id, and counts an embroidery .dst as its prod file.
+    // Mirrors isJobReady (businessLogic): checks every design the job's items CURRENTLY
+    // decorate with (jobLiveArtIds) — so orphaned/stale art files don't block completion —
+    // and counts an embroidery .dst or the prod_files_attached confirmation as a prod file.
     // Names/numbers-only jobs (no art files) return false so they can still be completed.
     const _jobNeedsProdFiles=(j,so)=>{
-      const ids=(j._art_ids&&j._art_ids.length)?j._art_ids:[j.art_file_id].filter(Boolean);
-      const afs=ids.map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
+      const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
       return afs.length>0&&!afs.every(a=>artProdFilesReady(a));
     };
     // Gather ALL art jobs across SOs — includes every status for rep view
@@ -17945,8 +17945,7 @@ export default function App(){
       buildJobs(so).forEach(j=>{
         if(j.art_status!=='art_complete')return;
         if(_jobNeedsProdFiles(j,so)){
-          const ids=(j._art_ids&&j._art_ids.length)?j._art_ids:[j.art_file_id].filter(Boolean);
-          const afs=ids.map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
+          const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
           const af=afs.find(a=>!artProdFilesReady(a))||afs[0];
           allArtJobs.push({...j,art_status:prodFilesStatusFor(af.deco_type),_overrideStatus:true,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
             rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
@@ -17974,8 +17973,7 @@ export default function App(){
     const moveArtStatus=(j,newStatus)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return false;
       if(newStatus==='art_complete'){
-        const ids=(j._art_ids&&j._art_ids.length)?j._art_ids:[j.art_file_id].filter(Boolean);
-        const afs=ids.map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
+        const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
         const missing=afs.filter(a=>!artProdFilesReady(a));
         if(missing.length){nf('Upload production files for: '+missing.map(a=>a.name||'Unnamed').join(', '),'error');return false;}
       }
@@ -18742,15 +18740,11 @@ export default function App(){
         const so=sos.find(s=>s.id===(j.soId||j.so?.id))||j.so;
         if(!so)return null;
         const c2=cust.find(x=>x.id===so.customer_id);
-        const allArtIds=(()=>{const ids=new Set();
-          (j._art_ids||[j.art_file_id].filter(Boolean)).forEach(id=>ids.add(id));
-          (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;
-            safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)});
-          });
-          return[...ids];
-        })();
+        // Designs the job actually decorates with (live item decorations), so orphaned/
+        // swapped-out art files don't appear in the modal or block production-file completion.
+        const allArtIds=jobLiveArtIds(j,so);
         const allArtFiles=allArtIds.map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
-        const af=j.artFile||allArtFiles[0]||null;
+        const af=allArtFiles.find(a=>a.id===j.art_file_id)||allArtFiles[0]||j.artFile||null;
         const additionalArtFiles=allArtFiles.slice(1);
         const mockupFiles=[...(af?.mockup_files||af?.files||[]),...Object.values(af?.item_mockups||{}).flat()].filter(f=>f);
         const prodFilesL=allArtFiles.flatMap(artF=>(artF?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_artName:allArtFiles.length>1?(artF?.name||''):'',_artId:artF.id})));

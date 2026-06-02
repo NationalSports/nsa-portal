@@ -203,10 +203,31 @@ const buildJobs = (o) => {
   });
 };
 
+// ── Live art files for a job ──
+// The designs a job actually decorates with, taken from its items' CURRENT
+// decorations rather than the job's stored _art_ids/art_file_id (which can go
+// stale when an item's art is swapped, leaving an orphaned art file behind).
+// Falls back to the stored ids only when the items reference no art (e.g.
+// names/numbers-only jobs). Excludes art files that no longer exist or are archived.
+const jobLiveArtIds = (j, o) => {
+  const ids = []; const seen = new Set();
+  (j?.items || []).forEach(gi => {
+    const it = safeItems(o)[gi.item_idx]; if (!it) return;
+    safeDecos(it).forEach(d => {
+      if (d.kind === 'art' && d.art_file_id && d.art_file_id !== '__tbd' && !seen.has(d.art_file_id)) {
+        seen.add(d.art_file_id); ids.push(d.art_file_id);
+      }
+    });
+  });
+  let arr = ids;
+  if (arr.length === 0) arr = (j?._art_ids && j._art_ids.length) ? j._art_ids : [j?.art_file_id].filter(Boolean);
+  return arr.filter(id => { const a = safeArr(o?.art_files).find(f => f.id === id); return a && !a.archived; });
+};
+
 // ── Job Readiness Check ──
 const isJobReady = (j, o) => {
   if (j.art_status !== 'art_complete') return false;
-  const artIds = j._art_ids || [j.art_file_id].filter(Boolean);
+  const artIds = jobLiveArtIds(j, o);
   for (const aid of artIds) {
     const af = safeArr(o?.art_files).find(f => f.id === aid);
     if (!af) continue;
@@ -558,7 +579,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, isJobReady, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, isJobReady, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
