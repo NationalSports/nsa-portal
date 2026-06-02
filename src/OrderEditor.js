@@ -6585,6 +6585,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   const srcOf=s=>(s.id===o.id?o:s);
                   const _grp=jobGroupKey(j,_parentId);
                   const _isAuto=!!_grp&&!j.link_group;
+                  // For ranking candidates: this job's artwork identity (name+deco) and its
+                  // sub-customer ("team"), so we can float same-art / same-team jobs to the top.
+                  const _selfSk=jobScreenKey(j);
+                  const _selfCust=o.customer_id;
+                  const _CLOSED=new Set(['completed','shipped']); // anything else is still "open" (in art/production)
                   const linked=[];const candidates=[];
                   (allOrders||[]).forEach(s=>{
                     if(!_familyIds.has(s.customer_id))return;
@@ -6593,9 +6598,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       if(s.id===o.id&&jj.id===j.id)return;
                       const gk=jobGroupKey(jj,_pidOf(s));
                       if(_grp&&gk===_grp){linked.push({soId:s.id,custId:s.customer_id,job:jj,auto:!jj.link_group});return}
-                      candidates.push({value:s.id+'||'+jj.id,label:(jj.art_name||jj.deco_type?.replace(/_/g,' ')||'Job')+' — '+_custName(s.customer_id)+' · '+s.id,searchText:(jj.deco_type||'')+' '+(jj.prod_status||'')+' '+s.id+' '+_custName(s.customer_id)});
+                      const _sameArt=!!_selfSk&&jobScreenKey(jj)===_selfSk; // identical artwork — almost certainly the same screen
+                      const _sameTeam=s.customer_id===_selfCust;            // same sub-customer / team
+                      const _open=!_CLOSED.has(jj.prod_status);             // still in art/production, not finished
+                      const _hint=_sameArt?'✨ same art · ':(_sameTeam?'★ same team · ':'');
+                      candidates.push({value:s.id+'||'+jj.id,label:_hint+(jj.art_name||jj.deco_type?.replace(/_/g,' ')||'Job')+' — '+_custName(s.customer_id)+' · '+s.id,searchText:(jj.art_name||'')+' '+(jj.deco_type||'')+' '+(jj.prod_status||'')+' '+s.id+' '+_custName(s.customer_id),_sameArt,_sameTeam,_open,_ts:Date.parse(jj.created_at||'')||0});
                     });
                   });
+                  // Most relevant first: identical artwork, then same team, then still-open jobs, then most recent.
+                  candidates.sort((a,b)=>(Number(b._sameArt)-Number(a._sameArt))||(Number(b._sameTeam)-Number(a._sameTeam))||(Number(b._open)-Number(a._open))||(b._ts-a._ts));
                   if(!linked.length&&!candidates.length)return null;
                   const doLink=value=>{
                     const[tSoId,tJobId]=value.split('||');
