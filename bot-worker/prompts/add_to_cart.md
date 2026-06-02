@@ -65,6 +65,11 @@ A. For EACH SKU: click the top search box and TYPE the SKU. An autocomplete
    with sizes on the product page. Do NOT press Enter to search, do NOT guess
    ?search= or /product/<sku> URLs. Repeat until every SKU is in the cart.
 
+   If the search box doesn't respond to clicks, try using
+   `browser_run_code_unsafe` to focus and type directly:
+   `await page.click('input[type="search"]'); await page.type('input[type="search"]', 'SKU', {delay:100});`
+   Wait 2 seconds for the dropdown, then click the first suggestion.
+
 B. Open the ACTIVE cart via the cart icon (top-right). There is exactly ONE
    active cart and your items are in it — ignore other/old carts, don't create
    or activate carts, don't guess cart URLs. The cart shows each product as a
