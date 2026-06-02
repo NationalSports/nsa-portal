@@ -18,7 +18,7 @@ import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
-import { buildJobs, isJobReady, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
+import { buildJobs, isJobReady, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
 import { calcOrderTotals, auTierDisc } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
@@ -17910,11 +17910,19 @@ export default function App(){
   // ARTIST DASHBOARD — dual-view (Artist workboard + Rep tracker)
   // ═══════════════════════════════════════════════
   function rArtist(){
+    // True when a job has art files but not all of them have production files ready yet.
+    // Mirrors isJobReady (businessLogic): checks every design the job's items CURRENTLY
+    // decorate with (jobLiveArtIds) — so orphaned/stale art files don't block completion —
+    // and counts an embroidery .dst or the prod_files_attached confirmation as a prod file.
+    // Names/numbers-only jobs (no art files) return false so they can still be completed.
+    const _jobNeedsProdFiles=(j,so)=>{
+      const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
+      return afs.length>0&&!afs.every(a=>artProdFilesReady(a));
+    };
     // Gather ALL art jobs across SOs — includes every status for rep view
     const allArtJobs=[];
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
       buildJobs(so).forEach(j=>{
-        const _af=safeArt(so).find(f=>f.id===j.art_file_id);
         // Skip jobs that haven't been explicitly submitted for art — only show on art dashboard if:
         // 1) Art was requested (Request Art button clicked), or 2) artist assigned, or 3) in active artist workflow,
         // 4) or art is approved but needs prod files (repeat art scenario)
@@ -17925,7 +17933,7 @@ export default function App(){
         // If art_status is 'needs_art', only show if there's an actively pending request (not just completed/recalled)
         if(j.art_status==='needs_art'&&!hasActiveArtReq&&!hasArtist)return;// skip — recalled or not yet requested
         if(!hasNonRecalledReq&&!hasArtist&&!hasArtActivity)return;// skip — art not yet requested for this job
-        if(j.art_status==='art_complete'&&_af&&(_af.prod_files||[]).length===0)return;// handled in second pass as production_files_needed
+        if(j.art_status==='art_complete'&&_jobNeedsProdFiles(j,so))return;// handled in second pass as production_files_needed
         allArtJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
@@ -17936,8 +17944,9 @@ export default function App(){
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
       buildJobs(so).forEach(j=>{
         if(j.art_status!=='art_complete')return;
-        const af=safeArt(so).find(f=>f.id===j.art_file_id);
-        if(af&&(af.prod_files||[]).length===0){
+        if(_jobNeedsProdFiles(j,so)){
+          const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
+          const af=afs.find(a=>!artProdFilesReady(a))||afs[0];
           allArtJobs.push({...j,art_status:prodFilesStatusFor(af.deco_type),_overrideStatus:true,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
             rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
             expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
@@ -17962,10 +17971,11 @@ export default function App(){
 
     // ─── Shared helpers ───
     const moveArtStatus=(j,newStatus)=>{
-      const so=sos.find(s=>s.id===j.soId);if(!so)return;
+      const so=sos.find(s=>s.id===j.soId);if(!so)return false;
       if(newStatus==='art_complete'){
-        const af=safeArt(so).find(f=>f.id===j.art_file_id);
-        if(af&&!artProdFilesReady(af)){nf('Upload production files first','error');return}
+        const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
+        const missing=afs.filter(a=>!artProdFilesReady(a));
+        if(missing.length){nf('Upload production files for: '+missing.map(a=>a.name||'Unnamed').join(', '),'error');return false;}
       }
       const currentJobs=buildJobs(so);
       const updatedJobs=currentJobs.map(jj=>{
@@ -17984,6 +17994,7 @@ export default function App(){
       savSO({...so,art_files:updArt,jobs:updatedJobs});
       if(newStatus==='art_complete'){nf('Art complete — job is Ready for Production!')}
       else nf('Art status → '+ART_LABELS[newStatus]);
+      return true;
     };
     const setArtHidden=(j,hidden)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
@@ -18729,15 +18740,11 @@ export default function App(){
         const so=sos.find(s=>s.id===(j.soId||j.so?.id))||j.so;
         if(!so)return null;
         const c2=cust.find(x=>x.id===so.customer_id);
-        const allArtIds=(()=>{const ids=new Set();
-          (j._art_ids||[j.art_file_id].filter(Boolean)).forEach(id=>ids.add(id));
-          (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;
-            safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)});
-          });
-          return[...ids];
-        })();
+        // Designs the job actually decorates with (live item decorations), so orphaned/
+        // swapped-out art files don't appear in the modal or block production-file completion.
+        const allArtIds=jobLiveArtIds(j,so);
         const allArtFiles=allArtIds.map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
-        const af=j.artFile||allArtFiles[0]||null;
+        const af=allArtFiles.find(a=>a.id===j.art_file_id)||allArtFiles[0]||j.artFile||null;
         const additionalArtFiles=allArtFiles.slice(1);
         const mockupFiles=[...(af?.mockup_files||af?.files||[]),...Object.values(af?.item_mockups||{}).flat()].filter(f=>f);
         const prodFilesL=allArtFiles.flatMap(artF=>(artF?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_artName:allArtFiles.length>1?(artF?.name||''):'',_artId:artF.id})));
@@ -19487,6 +19494,28 @@ export default function App(){
               </div>)}
             </div>}
 
+            {/* ─── Per-design production-files confirmation (visible at every stage so art can confirm before coach approval) ─── */}
+            {allArtFiles.length>0&&<div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:8}}>🎯 Production Files by Design</div>
+              <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                {allArtFiles.map(a=>{const pf=(a.prod_files||[]).length;const checked=a.prod_files_attached===true;return(
+                  <label key={a.id} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',borderRadius:8,border:'1px solid '+(checked?'#86efac':'#e2e8f0'),background:checked?'#f0fdf4':'#fff',cursor:'pointer'}}>
+                    <input type="checkbox" checked={checked} style={{width:16,height:16,cursor:'pointer',flexShrink:0}} onChange={e=>{
+                      const _chk=e.target.checked;
+                      const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+                      const updArt=safeArt(liveSO).map(x=>x.id===a.id?{...x,prod_files_attached:_chk}:x);
+                      savSO({...liveSO,art_files:updArt});
+                      setArtJobDetailModal({...j,artFile:updArt.find(x=>x.id===j.art_file_id)});
+                      nf(_chk?'✅ Production files attached — '+(a.name||'design'):'Unmarked — '+(a.name||'design'));
+                    }}/>
+                    <span style={{fontSize:12,fontWeight:700,color:'#0f172a',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.name||'Unnamed'}</span>
+                    <span style={{fontSize:10,fontWeight:600,color:pf>0?'#166534':'#94a3b8',flexShrink:0}}>{pf>0?'📁 '+pf:'no file'}</span>
+                    <span style={{fontSize:11,fontWeight:700,color:checked?'#166534':'#92400e',flexShrink:0}}>{checked?'Attached':'Not marked'}</span>
+                  </label>
+                )})}
+              </div>
+              <div style={{fontSize:10,color:'#94a3b8',marginTop:6}}>Check off each design once its production file is attached. When all are checked, coach approval sends the job straight to production.</div>
+            </div>}
             {/* ─── Upload Zone: switches between art mockups and production files ─── */}
             {PROD_FILES_STATUSES.includes(j.art_status)?<div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
               <div style={{padding:'10px 14px',background:'linear-gradient(135deg,#dcfce7,#f0fdf4)',borderRadius:8,border:'2px solid #86efac',marginBottom:12}}>
@@ -19521,7 +19550,7 @@ export default function App(){
                   <div style={{fontSize:10,color:'#a16207',marginTop:2}}>DST, AI, EPS, PDF, PNG, SVG</div></>}
               </div>
               {prodFilesL.length>0&&<button className="btn" style={{marginTop:10,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontSize:13,fontWeight:700,width:'100%'}}
-                onClick={()=>{moveArtStatus(j,'art_complete');setArtJobDetailModal(null);nf('Production files uploaded — Art Complete!')}}>✅ Mark Art Complete</button>}
+                onClick={()=>{if(moveArtStatus(j,'art_complete')!==false){setArtJobDetailModal(null)}}}>✅ Mark Art Complete</button>}
               {artProdAssignModal&&(()=>{
                 const {files,assignments}=artProdAssignModal;
                 const allAssigned=files.every((_,i)=>assignments[i]);
