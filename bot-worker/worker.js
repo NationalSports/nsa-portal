@@ -278,7 +278,7 @@ function runClaude(prompt) {
     }, timeoutMs);
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (err += d));
-    child.on('error', (e) => { clearTimeout(killer); finish({ status: 'failed', summary: 'Could not launch Claude: ' + e.message }); });
+    child.on('error', (e) => { clearTimeout(killer); finish({ status: 'queued', summary: 'Could not launch Claude: ' + e.message }); });
     child.on('close', (code) => {
       clearTimeout(killer);
       if (done) return;
@@ -410,13 +410,16 @@ async function processOne() {
 
   // needs_input = the bot has a question (e.g. a backorder) and is waiting on a
   // human answer. Replying in the portal re-queues the task so it resumes.
-  const ALLOWED = ['needs_review', 'needs_input', 'blocked', 'failed'];
+  const ALLOWED = ['needs_review', 'needs_input', 'blocked', 'failed', 'queued'];
   const status = ALLOWED.includes(result.status) ? result.status : 'needs_review';
   const merged = { ...(task.bot_payload || {}), ...(order || {}), result };
   await supabase
     .from('assigned_todos')
     .update({ bot_status: status, bot_payload: merged, updated_at: new Date().toISOString() })
     .eq('id', task.id);
+
+  // If reset to queued (e.g. Claude binary not found), skip the comment — it'll retry silently.
+  if (status === 'queued') { log('task', task.id, 'reset to queued for retry:', result.summary); await heartbeat('idle', null); return true; }
 
   const emoji = status === 'needs_review' ? '🛒' : status === 'needs_input' ? '❓' : status === 'blocked' ? '🚧' : '❌';
   const reportLines = [
