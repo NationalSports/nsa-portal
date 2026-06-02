@@ -27346,12 +27346,12 @@ export default function App(){
           <div style={{fontSize:12,color:'#134e4a'}}>{(todoModal.bot_payload.totals?.line_count)||0} line{((todoModal.bot_payload.totals?.line_count)||0)===1?'':'s'} · {(todoModal.bot_payload.totals?.qty)||0} pcs → {todoModal.bot_payload.vendor_name||'vendor'} cart · PO {todoModal.bot_payload.po_number||'—'}. Claude fills the cart then stops for your approval before submitting.</div>
         </div>}
         {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&<div style={{marginBottom:12}}>
-          <label className="form-label">🗓 Order later (optional)</label>
+          <label className="form-label">📅 Requested delivery date (optional)</label>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
-            <input type="datetime-local" className="form-input" value={todoModal.bot_schedule||''} onChange={e=>setTodoModal(m=>({...m,bot_schedule:e.target.value}))} style={{flex:1}}/>
-            {todoModal.bot_schedule&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>setTodoModal(m=>({...m,bot_schedule:''}))}>Now</button>}
+            <input type="date" className="form-input" value={todoModal.bot_delivery||''} onChange={e=>setTodoModal(m=>({...m,bot_delivery:e.target.value}))} style={{flex:1}}/>
+            {todoModal.bot_delivery&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>setTodoModal(m=>({...m,bot_delivery:''}))}>Clear</button>}
           </div>
-          <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>{todoModal.bot_schedule?'Claude will run this at the scheduled time.':'Leave blank to have Claude do it now.'}</div>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Claude orders <strong>now</strong> and sets this as the delivery date in Adidas CLICK. Leave blank for the default.</div>
         </div>}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
           <div><label className="form-label">Assign To *</label>
@@ -27423,15 +27423,13 @@ export default function App(){
           // Bot task: queue it for the worker. Attach structured payload when present
           // (batch button); otherwise queue from the title/description alone.
           if(REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'){
-            const _when=todoModal.bot_schedule?new Date(todoModal.bot_schedule):null;
-            const _future=_when&&_when.getTime()>Date.now();
-            newTodo.bot_status=_future?'scheduled':'queued';
+            newTodo.bot_status='queued';
             const _bp={...(todoModal.bot_payload||{})};
-            if(_future)_bp.scheduled_for=_when.toISOString();
+            if(todoModal.bot_delivery)_bp.delivery_date=todoModal.bot_delivery;
             if(Object.keys(_bp).length)newTodo.bot_payload=_bp;
           }
           setAssignedTodos(prev=>[newTodo,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_schedule:''});
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:''});
           nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
         }}>Assign Task</button>
       </div>

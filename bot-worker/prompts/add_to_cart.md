@@ -83,6 +83,8 @@ seen, and don't take screenshots except the final cart.
    the "Customer PO #" field.
 3b. Delivery location:
    {{DELIVERY}}
+3c. Delivery date:
+   {{DELIVERY_DATE}}
 4. **DO NOT place, submit, or check out the order under any circumstance.**
    Leave the filled cart exactly at the review step. A human approves the submit.
 5. Take a screenshot of the final cart for the reviewer.

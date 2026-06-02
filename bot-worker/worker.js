@@ -195,6 +195,9 @@ function buildPrompt(task, p = {}, conversation = []) {
       + `- ZIP code: ${s.zip}\n`
       + `Country is United States. Then click "Use this address" so it becomes the cart's delivery location. (No PO boxes.)`
     : `Not a drop ship — leave the default delivery location as-is.`;
+  const deliveryDate = p.delivery_date
+    ? `Set the requested DELIVERY DATE to ${p.delivery_date}. On Adidas CLICK this is the "Delivery Dates" selector (on the product page when adding, and/or on the cart). Use this exact date for the order's delivery date. (This is the ship/deliver date — you are still ordering now.)`
+    : `No specific delivery date requested — leave the default delivery date.`;
   // Prior human comments so the agent can act on answers (e.g. backorder
   // guidance) it received after a previous "needs_input" pass.
   const convo = (conversation || [])
@@ -210,7 +213,8 @@ function buildPrompt(task, p = {}, conversation = []) {
     .replaceAll('{{PO_NUMBER}}', p.po_number || '(see task notes)')
     .replaceAll('{{LINES}}', lines)
     .replaceAll('{{TASK_NOTES}}', notes)
-    .replaceAll('{{DELIVERY}}', delivery);
+    .replaceAll('{{DELIVERY}}', delivery)
+    .replaceAll('{{DELIVERY_DATE}}', deliveryDate);
 }
 
 // Run Claude Code headlessly with the Playwright MCP. Returns the parsed
