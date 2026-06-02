@@ -951,7 +951,7 @@ const _dbSaveEstimateInner = async (est) => {
       else console.warn('[DB] estimate saved with core columns only')
     }
     // Delete old children — must delete grandchildren (decorations) BEFORE estimate_items due to FK constraints
-    const _oldEstResp=await supabase.from('estimate_items').select('id,item_index,sku').eq('estimate_id',est.id);
+    const _oldEstResp=await _retryNet(()=>supabase.from('estimate_items').select('id,item_index,sku').eq('estimate_id',est.id));
     // Fail-closed: if reading existing items errored, refuse to proceed. Otherwise oldItemIds=[] would fail-open
     // and the unconditional `DELETE FROM estimate_items WHERE estimate_id=...` below would wipe whatever was there.
     if(_oldEstResp.error){
@@ -1171,7 +1171,7 @@ const _dbSaveSOInner = async (so) => {
       await supabase.from('so_art_files').delete().eq('so_id',so.id);
     }
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
-    const _oldItemsResp=await supabase.from('so_items').select('id,item_index,sku').eq('so_id',so.id);
+    const _oldItemsResp=await _retryNet(()=>supabase.from('so_items').select('id,item_index,sku').eq('so_id',so.id));
     // Fail-closed: refuse the save whenever reading existing items errored. A SELECT error returns oldItemIds=[],
     // which would skip the deco/pick/PO deletes' `.in([])` filter but still let the unconditional
     // `DELETE FROM so_items WHERE so_id=...` below wipe everything. Retrying later (via _dbSaveFailedIds) is safer.
@@ -1260,7 +1260,7 @@ const _dbSaveSOInner = async (so) => {
     // would be silently wiped. We read the live DB PO lines and re-inject any the client was never aware of, so
     // ONLY deliberate deletions (a PO the client loaded and then removed) actually stick.
     if(oldItemIds.length){
-      const{data:_dbPoRows,error:_dbPoErr}=await supabase.from('so_item_po_lines').select('*').in('so_item_id',oldItemIds);
+      const{data:_dbPoRows,error:_dbPoErr}=await _retryNet(()=>supabase.from('so_item_po_lines').select('*').in('so_item_id',oldItemIds));
       if(_dbPoErr){
         console.error('[DB] SAFETY: Blocking SO save — failed to read existing PO lines for',so.id,':',_dbPoErr.message);
         if(_dbNotify)_dbNotify('Save blocked — could not verify existing purchase orders. Please reload the page.','error');
