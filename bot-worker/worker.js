@@ -196,8 +196,8 @@ function buildPrompt(task, p = {}, conversation = []) {
       + `Country is United States. Then click "Use this address" so it becomes the cart's delivery location. (No PO boxes.)`
     : `Not a drop ship — leave the default delivery location as-is.`;
   const deliveryDate = p.delivery_date
-    ? `Set the requested DELIVERY DATE to ${p.delivery_date}. On Adidas CLICK this is the "Delivery Dates" selector (on the product page when adding, and/or on the cart). Use this exact date for the order's delivery date. (This is the ship/deliver date — you are still ordering now.)`
-    : `No specific delivery date requested — leave the default delivery date.`;
+    ? `Set the order's DELIVERY DATE to ${p.delivery_date}. In the cart, under the "Delivery Dates" heading, there's a date chip showing the current date (e.g. "Jun 2, 2026"). CLICK that date chip — a calendar opens — then pick ${p.delivery_date}. Confirm the chip now shows ${p.delivery_date}. (This is the ship/deliver date — you are still ordering now, not later.)`
+    : `No specific delivery date requested — leave the default delivery date, UNLESS a backorder rule below changes it.`;
   // Prior human comments so the agent can act on answers (e.g. backorder
   // guidance) it received after a previous "needs_input" pass.
   const convo = (conversation || [])

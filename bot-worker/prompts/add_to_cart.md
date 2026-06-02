@@ -31,17 +31,23 @@ below. If the human told you how to handle something (e.g. a backorder), DO what
 they said. If they answered a previous question, continue accordingly.
 {{CONVERSATION}}
 
-# Backorders / unavailable sizes — ASK, don't guess
-On the size grid each cell shows availability (e.g. 300+, 180, 0). If a size you
-need shows 0 / is out of stock / can only ship on a FUTURE date (backordered):
-- Add every size that IS available now.
-- For the backordered size(s): if the Conversation above already tells you what
-  to do, follow it. Otherwise DO NOT decide on your own — finish adding the
-  available items, then STOP and set status to "needs_input", listing exactly
-  which SKU/size/qty is backordered (and the future date if shown) and asking
-  how to proceed (e.g. "order anyway as backorder, skip it, or order later?").
-  Put the backordered details in the `backordered` array and your question in
-  `question`. Do not enter the PO# or submit when you stop for input.
+# Backorders — ship the whole order on the restock date, then ask the rep
+A size you need may be backordered: its cell shows 0 / out of stock, often with
+a restock note like "Re-stock in Jul 7, 2026" (hover the cell to see the date).
+When ANY size you need is backordered:
+1. Still enter the FULL requested quantity for every size, INCLUDING the
+   backordered one(s) — do not drop them.
+2. Find the LATEST restock date among the sizes you're ordering, and set the
+   order's DELIVERY DATE to that date (click the "Delivery Dates" date chip → a
+   calendar opens → pick the restock date), so the whole order ships once
+   everything is in stock. Confirm the chip shows the new date.
+3. Enter the PO number too, so the cart is fully built and ready.
+4. Then STOP with status "needs_input" — leave it for the rep to approve the
+   plan. In `question`, say exactly which size(s) are backordered, the restock
+   date, and that you set the whole order to ship that date — ask them to
+   confirm. Put the backordered lines in `backordered`. Do NOT submit.
+If the Conversation above already shows the rep approved (or gave other
+instructions), follow that instead and finish to needs_review.
 
 # Use the exact URL given
 The portal URL above is correct. If the page is slow or a navigation times out,
