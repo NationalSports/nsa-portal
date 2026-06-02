@@ -104,6 +104,9 @@ const nextSOId=sos=>'SO-'+(Math.max(_maxNum(sos),_dbMaxIds.so,1000)+1);
 const nextInvId=invs=>'INV-'+(Math.max(_maxNum(invs),_dbMaxIds.inv,1000)+1);
 const fmtCreatedAt=s=>{if(!s)return'—';if(String(s).includes(','))return String(s).split(',')[0];const d=new Date(s);return isNaN(d)?String(s):d.toLocaleDateString('en-US')};
 const isDualRunJob=(j)=>j&&j.items&&j.items.length>1&&j.items.some(gi=>gi.run_order);
+// Accent palette for "run together" job groups — each linked group gets a stable color so
+// clustered rows/cards read as one screen setup at a glance.
+const GRP_HUES=['#6366f1','#0ea5e9','#10b981','#f59e0b','#ec4899','#8b5cf6'];
 const mapColorCategory=color=>{if(!color)return'';const c=color.toLowerCase();if(/white|natural|cream|ivory/.test(c))return'White';if(/black|charcoal/.test(c))return'Black';if(/navy|blue|royal|columbia|carolina/.test(c))return'Blue';if(/red|cardinal|scarlet|crimson/.test(c))return'Red';if(/green|forest|kelly|lime|hunter/.test(c))return'Green';if(/grey|gray|heather|silver|graphite/.test(c))return'Grey';if(/gold|yellow|vegas|athletic/.test(c))return'Gold';if(/orange|texas/.test(c))return'Orange';if(/purple|maroon|wine|burgundy/.test(c))return'Purple';if(/pink|fuchsia/.test(c))return'Pink';if(/brown|tan|khaki|sand|coyote/.test(c))return'Brown';return''};
 // Matches a product against a color-filter selection. Picks up products where the
 // chosen category is the PRIMARY color (the part before '/' in e.g. "BLACK/WHITE"),
@@ -8025,8 +8028,9 @@ export default function App(){
   function rJobs(){
     // Build flat jobs list
     const allJobs=[];
-    sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
+    sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);const _pid=c?.parent_id||c?.id||null;
       buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>{allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
+        parentId:_pid,grpKey:jobGroupKey(j,_pid),
         repId:c?.primary_rep_id||so.created_by,rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',
         expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null})})});
     // Apply filters
@@ -8048,6 +8052,13 @@ export default function App(){
       else if(jobSortField==='art'){va=a.art_name;vb=b.art_name}
       else{va=a.id;vb=b.id}
       return jobSortDir==='asc'?(va>vb?1:-1):(va<vb?1:-1)});
+    // ── Run-together grouping ── keep linked jobs (same artwork within a parent, or a manual
+    // link) next to each other and tag them so the shared screen is obvious at a glance.
+    const _grpMembers={};allJobs.forEach(j=>{if(j.grpKey)(_grpMembers[j.grpKey]=_grpMembers[j.grpKey]||[]).push(j)});
+    const linkSiblings=j=>j.grpKey?(_grpMembers[j.grpKey]||[]).filter(x=>!(x.soId===j.soId&&x.id===j.id)&&x.prod_status!=='shipped'&&x.prod_status!=='completed'):[];
+    const grpHue=k=>{let h=0;for(let i=0;i<(k||'').length;i++)h=(h*31+k.charCodeAt(i))>>>0;return GRP_HUES[h%GRP_HUES.length]};
+    const _clusterLinked=arr=>{const seen=new Set();const out=[];arr.forEach(j=>{const g=j.grpKey;if(!g){out.push(j);return}if(seen.has(g))return;seen.add(g);arr.forEach(x=>{if(x.grpKey===g)out.push(x)})});return out;};
+    fj=_clusterLinked(fj);
     const decoTypes=[...new Set(allJobs.map(j=>j.deco_type).filter(Boolean))];
     const STATUSES=[['hold','Ready for Prod'],['staging','In Line'],['in_process','In Process'],['completed','Completed']];
     const toggleStatus=st=>{setJobFilters(prev=>{const ss=prev.statuses.includes(st)?prev.statuses.filter(s=>s!==st):[...prev.statuses,st];return{...prev,statuses:ss}})};
@@ -8147,10 +8158,11 @@ export default function App(){
         {fj.map(j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
           const ready=isJobReady(j,j.so);
           const onBoard=safeJobs(j.so).some(ej=>ej.id===j.id);
+          const sibs=linkSiblings(j);const _hue=sibs.length?grpHue(j.grpKey):null;
           return<tr key={j.id+j.soId} style={{cursor:'pointer',background:j.daysOut!=null&&j.daysOut<=3?'#fef2f2':ready&&!onBoard?'#f0fdf4':undefined}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
-            <td style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{j.id}</td>
+            <td style={{fontWeight:700,color:'#1e40af',fontSize:12,borderLeft:_hue?('4px solid '+_hue):'4px solid transparent'}}>{j.id}</td>
             <td><div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div><div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions}</div></td>
-            <td style={{fontSize:12}}>{j.customer} <span className="badge badge-gray">{j.alpha}</span></td>
+            <td style={{fontSize:12}}>{j.customer} <span className="badge badge-gray">{j.alpha}</span>{sibs.length>0&&(()=>{const _norm=s=>s==='ready'?'hold':s;const same=sibs.filter(s=>_norm(s.prod_status)===_norm(j.prod_status));return<span title={'Runs together with:\n'+sibs.map(s=>s.soId+' · '+s.customer+' ('+(s.prod_status||'').replace(/_/g,' ')+')').join('\n')+(j.link_group?'\n\n(manually linked)':'\n\n(matched by artwork)')} style={{fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:6,marginLeft:4,background:same.length?'#dcfce7':'#eef2ff',color:same.length?'#166534':'#4338ca',whiteSpace:'nowrap'}}>🔗 {same.length?'Run w/ '+(same.length+1):'Linked'}</span>})()}</td>
             <td style={{fontSize:11,color:'#64748b'}}>{j.soId}</td>
             <td style={{fontSize:11}}>{j.rep?.split(' ')[0]}</td>
             <td><span style={{fontWeight:700}}>{j.fulfilled_units}/{j.total_units}</span>
@@ -8516,6 +8528,7 @@ export default function App(){
     // Reorder a list so members of the same group sit next to each other, preserving the
     // original order of each group's first appearance and leaving ungrouped jobs in place.
     const clusterLinked=(arr)=>{const seen=new Set();const out=[];arr.forEach(j=>{const g=j.grpKey;if(!g){out.push(j);return}if(seen.has(g))return;seen.add(g);arr.forEach(x=>{if(x.grpKey===g)out.push(x)})});return out;};
+    const grpHue=k=>{let h=0;for(let i=0;i<(k||'').length;i++)h=(h*31+k.charCodeAt(i))>>>0;return GRP_HUES[h%GRP_HUES.length]};
     const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>{const cc=cust.find(x=>x.id===j.so.customer_id);return(cc?.primary_rep_id||j.so.created_by)===prodFilter});
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
     const readyOnly=byDeco.filter(j=>(j.prod_status!=='hold'||isJobReady(j,j.so))).filter(j=>j.prod_status!=='shipped');
@@ -8612,8 +8625,9 @@ export default function App(){
               const machine=MACHINES.find(m=>m.id===j.assigned_machine);
               const isExp=expandedJob===j.id+j.soId;
               const urgent=j.daysOut!=null&&j.daysOut<=3;
+              const _hue=linkSiblings(j).length?grpHue(j.grpKey):null;
 
-              return<div key={j.id+j.soId} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',transition:'all 0.15s',borderRadius:8,overflow:'hidden'}}>
+              return<div key={j.id+j.soId} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',transition:'all 0.15s',borderRadius:8,overflow:'hidden',boxShadow:_hue?('inset 4px 0 0 '+_hue):undefined}}>
                 {/* COMPACT ROW — key info visible at a glance */}
                 <div style={{padding:'8px 10px',cursor:'pointer',background:urgent?'#fef2f2':'white'}} onClick={()=>setExpandedJob(isExp?null:j.id+j.soId)}>
                   <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:3}}>
@@ -8847,9 +8861,9 @@ export default function App(){
                 </th>;
               })}
             </tr></thead><tbody>
-            {clusterLinked(sorted).map(j=><tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
-              {visibleCols.map(id=>{const c=ALL_COLS[id];return<td key={id} style={{textAlign:c.align||'left'}}>{c.render(j)}</td>;})}
-            </tr>)}
+            {clusterLinked(sorted).map(j=>{const _hue=linkSiblings(j).length?grpHue(j.grpKey):null;return<tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
+              {visibleCols.map((id,ci)=>{const c=ALL_COLS[id];return<td key={id} style={{textAlign:c.align||'left',...(ci===0?{borderLeft:_hue?('4px solid '+_hue):'4px solid transparent'}:null)}}>{c.render(j)}</td>;})}
+            </tr>})}
             </tbody></table>
           </div></div>
         </div>;
