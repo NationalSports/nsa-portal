@@ -8412,48 +8412,74 @@ export default function App(){
   const applyJobMove=(j,newStatus,machine,person)=>{
     const so=sos.find(s=>s.id===j.soId);
     if(!so)return;
-    const updatedJobs=safeJobs(so).map(jj=>{
-      if(jj.id!==j.id)return jj;
-      const upd={...jj,prod_status:newStatus,assigned_machine:machine||jj.assigned_machine,assigned_to:person||jj.assigned_to};
-      // When completing a dual-run job, mark all runs as done
-      if(newStatus==='completed'&&jj.run_order){if(!jj.run1_done)upd.run1_done=true;if(!jj.run2_done)upd.run2_done=true}
-      return upd;
+    // ── Move the run-together group as one ──
+    // Resolve this job's group (only when it's ready), then advance the job PLUS every READY
+    // linked sibling — including jobs on other sales orders — so a linked set moves through
+    // production together. Finished (completed/shipped) siblings, and siblings that aren't
+    // checked in + art-approved yet, are left where they are.
+    const _jc=cust.find(x=>x.id===so.customer_id);const _jpid=_jc?.parent_id||_jc?.id||null;
+    const _gk=isJobReady(j,so)?jobGroupKey(j,_jpid):null;
+    const moveSet=[{soId:j.soId,id:j.id,person:j.assigned_to}];
+    if(_gk)sos.forEach(s=>{
+      const sc=cust.find(x=>x.id===s.customer_id);const spid=sc?.parent_id||sc?.id||null;
+      safeJobs(s).forEach(jj=>{
+        if(s.id===j.soId&&jj.id===j.id)return;
+        if(jj.prod_status===newStatus||jj.prod_status==='completed'||jj.prod_status==='shipped')return;
+        if(!isJobReady(jj,s))return;
+        if(jobGroupKey(jj,spid)!==_gk)return;
+        moveSet.push({soId:s.id,id:jj.id,person:jj.assigned_to});
+      });
     });
-    savSO({...so,jobs:updatedJobs});
-    // Auto-clock-in when moving to in_process
-    if(newStatus==='in_process'){
-      const timerKey=j.soId+'|'+j.id;
-      if(!activeTimers[timerKey]){
-        const decoratorName=person||j.assigned_to||cu?.name||'Unknown';
-        setActiveTimers(prev=>({...prev,[timerKey]:{person:decoratorName,clockIn:Date.now(),soId:j.soId}}));
-        _idleAccum.current[timerKey]=0;
+    // Apply the status change, grouped per sales order so each SO saves once.
+    const bySo={};moveSet.forEach(m=>{(bySo[m.soId]=bySo[m.soId]||[]).push(m.id)});
+    Object.entries(bySo).forEach(([soId,ids])=>{
+      const s=sos.find(x=>x.id===soId);if(!s)return;
+      const idSet=new Set(ids);
+      const updatedJobs=safeJobs(s).map(jj=>{
+        if(!idSet.has(jj.id))return jj;
+        const upd={...jj,prod_status:newStatus,assigned_machine:machine||jj.assigned_machine,assigned_to:person||jj.assigned_to};
+        // When completing a dual-run job, mark all runs as done
+        if(newStatus==='completed'&&jj.run_order){if(!jj.run1_done)upd.run1_done=true;if(!jj.run2_done)upd.run2_done=true}
+        return upd;
+      });
+      savSO({...s,jobs:updatedJobs});
+    });
+    // Timers per moved job: auto-clock-in on In Process, auto-clock-out on Completed/Shipped.
+    moveSet.forEach(m=>{
+      const timerKey=m.soId+'|'+m.id;
+      if(newStatus==='in_process'){
+        if(!activeTimers[timerKey]){
+          const decoratorName=person||m.person||cu?.name||'Unknown';
+          setActiveTimers(prev=>({...prev,[timerKey]:{person:decoratorName,clockIn:Date.now(),soId:m.soId}}));
+          _idleAccum.current[timerKey]=0;
+        }
+      } else if(newStatus==='completed'||newStatus==='shipped'){
+        const active=activeTimers[timerKey];
+        if(active){
+          const mins=Math.round((Date.now()-active.clockIn)/60000);
+          const idleMins=Math.round((_idleAccum.current[timerKey]||0)/60000);
+          setJobTimeLogs(prev=>[...prev,{jobId:m.id,soId:m.soId,person:active.person,clockIn:new Date(active.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins}]);
+          setActiveTimers(prev=>{const n={...prev};delete n[timerKey];return n});
+          delete _idleAccum.current[timerKey];
+        }
       }
-    }
-    // Auto-clock-out if job moves to completed/shipped
-    if(newStatus==='completed'||newStatus==='shipped'){
-      const timerKey=j.soId+'|'+j.id;
-      const active=activeTimers[timerKey];
-      if(active){
-        const mins=Math.round((Date.now()-active.clockIn)/60000);
-        const idleMins=Math.round((_idleAccum.current[timerKey]||0)/60000);
-        setJobTimeLogs(prev=>[...prev,{jobId:j.id,soId:j.soId,person:active.person,clockIn:new Date(active.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins}]);
-        setActiveTimers(prev=>{const n={...prev};delete n[timerKey];return n});
-        delete _idleAccum.current[timerKey];
-      }
-    }
+    });
     const labels={hold:'Ready for Prod',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
-    // Check for sibling jobs when completing — notify if more jobs needed before shipping
+    const _extra=moveSet.length>1?' (+'+(moveSet.length-1)+' linked)':'';
+    // Check for jobs on the SAME garments when completing — notify if more jobs needed before
+    // shipping. Exclude the jobs we just completed together.
     if(newStatus==='completed'){
+      const _movedHere=new Set(moveSet.filter(m=>m.soId===j.soId).map(m=>m.id));
       const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
-      const siblingJobs=updatedJobs.filter(j2=>j2.id!==j.id&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx))&&j2.prod_status!=='completed'&&j2.prod_status!=='shipped');
+      const siblingJobs=safeJobs(so).filter(j2=>!_movedHere.has(j2.id)&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx))&&j2.prod_status!=='completed'&&j2.prod_status!=='shipped');
       if(siblingJobs.length>0){
         const names=siblingJobs.map(j2=>j2.art_name||j2.deco_type?.replace(/_/g,' ')||'Job').join(', ');
-        nf('🏭 '+j.id+' completed! Still needs: '+names+' before shipping','warning');
+        nf('🏭 '+j.id+' completed'+_extra+'! Still needs: '+names+' before shipping','warning');
       } else {
-        nf('🏭 '+j.id+' → Completed — ready to ship!'+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
+        nf('🏭 '+j.id+' → Completed'+_extra+' — ready to ship!'+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
       }
     } else {
-      nf('🏭 '+j.id+' → '+labels[newStatus]+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
+      nf('🏭 '+j.id+' → '+labels[newStatus]+_extra+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
     }
   };
   // Update a job field (for run order, marking runs done, etc.)
