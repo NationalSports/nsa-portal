@@ -40,47 +40,44 @@ The portal URL above is correct. If the page is slow or a navigation times out,
 WAIT and retry the SAME url (it can take 30–60s) — do NOT guess or try other
 adidas domains. Only that URL is valid.
 
-# How to find each product (fast — don't guess URLs)
-Click the search box and TYPE the SKU. An autocomplete DROPDOWN appears listing
-the matching product — click that suggestion to open the product page. Do NOT
-press Enter/submit, do NOT use a ?search= URL, and do NOT guess /product/<sku>
-URLs (they don't work). If the dropdown doesn't show after typing, wait ~2s and
-re-check before trying anything else.
+# Fastest workflow — add to cart from search, then enter sizes IN THE CART
+Do it in this order; it's faster and more reliable than entering sizes on each
+product page:
 
-# How to enter sizes correctly — READ EVERY COLUMN HEADER
-This is critical: the size grid does NOT start at XS. For these products the
-columns run **2XS, XS, S, M, L, XL, ...**. You must match each size to the cell
-directly under the EXACT matching column header text — never by position/order.
-- Read the header label above a cell before typing into it.
-- Example: to enter "XS:2 S:11 M:8 L:2", put 2 under the **XS** header (the
-  SECOND column, not the first), 11 under **S**, 8 under **M**, 2 under **L**,
-  and leave 2XS and all other columns blank.
-- After entering, re-read the row and confirm each quantity sits under the right
-  header. If your total doesn't match the line's total qty, you mis-mapped —
-  fix it before moving on.
+A. For EACH SKU: click the top search box and TYPE the SKU. An autocomplete
+   DROPDOWN appears — click that suggestion to open the product. Then click the
+   product's **"ADD TO CART"** button. This adds the product to the active cart
+   (quantities can be 0 for now — you'll set them in the cart). Do NOT fiddle
+   with sizes on the product page. Do NOT press Enter to search, do NOT guess
+   ?search= or /product/<sku> URLs. Repeat until every SKU is in the cart.
+
+B. Open the ACTIVE cart via the cart icon (top-right). There is exactly ONE
+   active cart and your items are in it — ignore other/old carts, don't create
+   or activate carts, don't guess cart URLs. The cart shows each product as a
+   row with an editable size grid.
+
+C. In the cart, for each product row, type the quantities into the size cells —
+   matching each qty to the EXACT column header. CRITICAL: the columns do NOT
+   start at XS; they run **2XS, XS, S, M, L, XL, ...**. Read the header above a
+   cell before typing.
+   - Example "XS:2 S:11 M:8 L:2": put 2 under **XS** (the 2nd column, not 2XS),
+     11 under **S**, 8 under **M**, 2 under **L**; leave all other columns blank.
+   - After entering a row, re-read it and confirm each qty sits under the right
+     header and the row total matches the line's total. Fix any mismatch.
 
 # Work efficiently
-Move quickly and decisively — this is routine data entry, not research. Go
-straight to the search dropdown, avoid re-snapshotting pages you've already
-seen, and don't take screenshots except the final cart.
+Move quickly and decisively — this is routine data entry, not research. Avoid
+re-snapshotting pages you've already seen; don't take screenshots except the
+final cart.
 
 # Rules — read carefully
 1. Log in with the credentials above. If you hit a CAPTCHA, 2FA, or any login
    wall you cannot clear, STOP and report status "blocked" with what blocked you.
-2. Add each line to the cart at the given quantities/sizes. Find products by SKU
-   when one is given; otherwise search by the product name/color in the task
-   notes. Do NOT give up just because there's no SKU list — work from the notes
-   like a CSR would. If a product or size is genuinely unavailable/out of stock,
-   do NOT substitute — record it in `issues` and continue with the rest.
-   Only report "blocked" if you truly cannot proceed (e.g. can't log in, or the
-   notes don't name any product to add).
-3. Cart model — IMPORTANT: there is exactly ONE active cart. Every item you add
-   goes into that single active cart automatically. Do NOT create a new cart, do
-   NOT activate or open other carts, and do NOT guess cart URLs/IDs. The other
-   carts in Cart Overview are old saved carts — ignore them completely.
-   To finalize: open the ACTIVE cart by clicking the cart icon in the top-right
-   nav (it shows your item count). Then enter the PO number "{{PO_NUMBER}}" in
-   the "Customer PO #" field.
+2. Follow the A→B→C workflow above to add every line. Find products by SKU when
+   given; otherwise search by the product name/color in the task notes. Work
+   from the notes like a CSR would. If a product is genuinely unavailable, record
+   it in `issues` and continue. Only report "blocked" if you truly cannot proceed.
+3. In the cart, enter the PO number "{{PO_NUMBER}}" in the "Customer PO #" field.
 3b. Delivery location:
    {{DELIVERY}}
 3c. Delivery date:
