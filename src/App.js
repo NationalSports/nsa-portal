@@ -8510,7 +8510,7 @@ export default function App(){
       const parentId=c?.parent_id||c?.id||null;
       safeJobs(so).forEach(j=>{
         allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
-          parentId,grpKey:jobGroupKey(j,parentId),
+          parentId,grpKey:isJobReady(j,so)?jobGroupKey(j,parentId):null,
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—',
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
         });
@@ -8520,6 +8520,9 @@ export default function App(){
     // Jobs sharing a group key (same artwork within a parent, or a manual link) should run on
     // one screen setup. Map each group key to its members so we can cluster them in the board
     // and surface a prompt when 2+ are sitting at the same production stage at once.
+    // grpKey above is only set when isJobReady is true (art approved + production files + every
+    // size pulled/received), so a job only groups/moves with others once it's actually ready to
+    // run — a sibling that isn't checked in won't cluster, badge, or trigger the run prompt.
     const grpMembers={};
     allJobs.forEach(j=>{if(j.grpKey){(grpMembers[j.grpKey]=grpMembers[j.grpKey]||[]).push(j)}});
     // Linked siblings of a job that are NOT shipped/completed (i.e. still relevant to run) —
