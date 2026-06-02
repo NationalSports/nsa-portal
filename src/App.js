@@ -734,7 +734,15 @@ const _dbLoad = async (opts={}) => {
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
       const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],preview_url:a.preview_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version}));
-      const items=estItems.filter(i=>i.estimate_id===est.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
+      // Dedup orphaned duplicate estimate_items sharing an item_index. These arise when an "insert-new-then-delete-old"
+      // save swap was interrupted after the new rows were inserted but before the old ones were deleted — leaving
+      // phantom rows with duplicate item_indexes. Keep, per item_index, the row with the most decorations (the real
+      // one; newest id breaks ties).
+      const _estItemsRaw=estItems.filter(i=>i.estimate_id===est.id);
+      const _itemChildCount=it=>estDecos.filter(d=>d.estimate_item_id===it.id).length;
+      const _itemByIdx=new Map();
+      _estItemsRaw.forEach(it=>{const cur=_itemByIdx.get(it.item_index);if(!cur){_itemByIdx.set(it.item_index,it);return}const a=_itemChildCount(it),b=_itemChildCount(cur);if(a>b||(a===b&&it.id>cur.id))_itemByIdx.set(it.item_index,it)});
+      const items=[..._itemByIdx.values()].sort((a,b)=>a.item_index-b.item_index).map(item=>{
         const decorations=estDecos.filter(d=>d.estimate_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,estimate_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
         const{id:_,estimate_id:__,item_index:___,...rest}=item;return{...rest,decorations}});
       // _itemsHydrated: true only when estimate_items loaded cleanly this session. Lets save guards tell a
@@ -1094,6 +1102,12 @@ const _dbSaveEstimateInner = async (est) => {
       }
     }
     if(insertedItems?.length){
+      // Verify item count: if DB got fewer rows than we tried to insert, treat as a failed save
+      if(insertedItems.length<allItemRows.length){
+        decoFailed=true;
+        _failMsg=_failMsg||('estimate_items: only '+insertedItems.length+' of '+allItemRows.length+' rows persisted');
+        console.error('[DB] SAFETY: estimate item insert verification failed — expected',allItemRows.length,'got',insertedItems.length);
+      }
       const allDecoRows=[];
       items.forEach((item,idx)=>{
         const itemId=insertedItems[idx]?.id;if(!itemId)return;
@@ -1130,7 +1144,8 @@ const _dbSaveEstimateInner = async (est) => {
         const _newIds=insertedItems.map(i=>i.id).filter(Boolean);
         if(_newIds.length){
           await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',_newIds);
-          await supabase.from('estimate_items').delete().in('id',_newIds);
+          const{error:_rbErr}=await supabase.from('estimate_items').delete().in('id',_newIds);
+          if(_rbErr)console.error('[DB] ROLLBACK FAILED for estimate items',_newIds,':',_rbErr.message,'— phantom rows may remain in DB');
         }
       }
     }
@@ -3510,7 +3525,7 @@ export default function App(){
           omg:d._coreOnly?_prevSnap.omg:d.omg_stores,
           issues:d._coreOnly?_prevSnap.issues:d.issues,
           assignedTodos:d._coreOnly?(_prevSnap.assignedTodos||[]):_mergeAssignedTodos(d.assignedTodos||[],_prevSnap.assignedTodos||[])};
-        setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(prev.find(p=>p.id===e.id)||e):mergeEst(e));return changed(prev,merged)?merged:prev}const merged2=d.estimates.map(mergeEst);return changed(prev,merged2)?merged2:prev});
+        setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}}else if(local?.items?.length&&e.items?.length&&e.items.length<local.items.length&&!_dbSaveFailedIds.has(e.id)){e={...e,items:local.items}};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(prev.find(p=>p.id===e.id)||e):mergeEst(e));return changed(prev,merged)?merged:prev}const merged2=d.estimates.map(mergeEst);return changed(prev,merged2)?merged2:prev});
         setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;
           // If DB has empty items/jobs (mid-save transient state), keep local entirely
           if(local.items?.length&&(!s.items||!s.items.length))return local;
