@@ -6604,7 +6604,7 @@ export default function App(){
             </div>
             {(_poShipAddr||_poShipName)&&<div style={{padding:'6px 12px',fontSize:11,color:'#475569',borderBottom:'1px solid #f1f5f9'}}><span style={{color:'#64748b',fontWeight:600}}>📦 Ship to:</span> {_poShipName?<strong style={{color:'#334155'}}>{_poShipName}</strong>:''}{_poShipName&&_poShipAddr?' — ':''}{_poShipAddr}</div>}
             <div style={{maxHeight:200,overflow:'auto'}}>
-              {_poLines.map((x,i)=>{const pl=x.pl;const it=x.it;const sizes=Object.entries(pl).filter(([k,v])=>!_poMetaKeys.has(k)&&typeof v==='number'&&v>0);const tot=sizes.reduce((a,[,v])=>a+v,0);
+              {_poLines.map((x,i)=>{const pl=x.pl;const it=x.it;const sizes=Object.entries(pl).filter(([k,v])=>!_poMetaKeys.has(k)&&typeof v==='number'&&v>0).sort((a,b)=>{const ia=SZ_ORD.indexOf(a[0]),ib=SZ_ORD.indexOf(b[0]);return(ia===-1?999:ia)-(ib===-1?999:ib)});const tot=sizes.reduce((a,[,v])=>a+v,0);
                 return<div key={i} style={{padding:'8px 12px',borderBottom:'1px solid #f1f5f9',fontSize:12}}>
                   <div style={{display:'flex',justifyContent:'space-between',gap:8}}>
                     <span style={{fontWeight:700,color:'#1e293b'}}>{it?.sku||pl.deco_type||'—'}</span>
