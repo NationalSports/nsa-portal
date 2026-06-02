@@ -70,6 +70,10 @@ B. Open the ACTIVE cart via the cart icon (top-right). There is exactly ONE
    or activate carts, don't guess cart URLs. The cart shows each product as a
    row with an editable size grid.
 
+B2. **Before entering any quantities**, set the delivery date and delivery
+   location first (see rules 3b/3c below). Click the date chip, pick the date,
+   confirm the chip updates. Only then move on to quantities.
+
 C. In the cart, for each product row, type the quantities into the size cells —
    matching each qty to the EXACT column header. CRITICAL: the columns do NOT
    start at XS; they run **2XS, XS, S, M, L, XL, ...**. Read the header above a
@@ -98,7 +102,7 @@ final cart.
    {{DELIVERY_DATE}}
 4. **DO NOT place, submit, or check out the order under any circumstance.**
    Leave the filled cart exactly at the review step. A human approves the submit.
-5. Take a screenshot of the final cart for the reviewer.
+6. Take a screenshot of the final cart for the reviewer.
 
 # Output
 When done (or blocked), end your reply with a single fenced ```json block and
