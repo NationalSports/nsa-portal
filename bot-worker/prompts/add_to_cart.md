@@ -58,12 +58,16 @@ adidas domains. Only that URL is valid.
 Do it in this order; it's faster and more reliable than entering sizes on each
 product page:
 
-A. For EACH SKU: click the top search box and TYPE the SKU. An autocomplete
-   DROPDOWN appears — click that suggestion to open the product. Then click the
-   product's **"ADD TO CART"** button. This adds the product to the active cart
-   (quantities can be 0 for now — you'll set them in the cart). Do NOT fiddle
-   with sizes on the product page. Do NOT press Enter to search, do NOT guess
-   ?search= or /product/<sku> URLs. Repeat until every SKU is in the cart.
+A. For EACH SKU, use `browser_run_code_unsafe` to type into the search box —
+   this is faster and more reliable than clicking:
+   ```
+   await page.click('input[type="search"]');
+   await page.type('input[type="search"]', 'JW6608', {delay: 100});
+   await page.waitForTimeout(2000);
+   ```
+   An autocomplete DROPDOWN appears — click that suggestion to open the product.
+   Then click **"ADD TO CART"**. Do NOT press Enter, do NOT use /product/ URLs.
+   Repeat until every SKU is in the cart.
 
 B. Open the ACTIVE cart via the cart icon (top-right). There is exactly ONE
    active cart and your items are in it — ignore other/old carts, don't create
