@@ -9617,7 +9617,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const isClone=mode==='clone';// copy this line as-is (same SKU)
         const onPickCatalog=p=>isReplace?changeItemSku(copySkuModal.itemIdx,p):copyIWithSku(copySkuModal.itemIdx,p);
         const onPickVendor=(st,c,src)=>isReplace?changeItemWithVendorResult(copySkuModal.itemIdx,st,c,src):copyIWithVendorResult(copySkuModal.itemIdx,st,c,src);
-        const matches=sq.length>=2?products.filter(p=>p.sku.toLowerCase().includes(sq)||p.name.toLowerCase().includes(sq)||p.brand?.toLowerCase().includes(sq)||p.color?.toLowerCase().includes(sq)).slice(0,8):[];
+        const sqTokens=sq.split(/\s+/).filter(Boolean);
+        const matches=sq.length>=2?products.filter(p=>{if(p.is_archived)return false;const sku=p.sku.toLowerCase(),name=p.name.toLowerCase(),brand=(p.brand||'').toLowerCase(),color=(p.color||'').toLowerCase();return sqTokens.every(t=>sku.includes(t)||name.includes(t)||brand.includes(t)||color.includes(t))}).slice(0,12):[];
         const anyVendor=ssResults.length>0||smResults.length>0||mtResults.length>0||rsResults.length>0;
         const anySearching=ssSearching||smSearching||mtSearching||rsSearching;
         const renderVendorBlock=(label,color,bg,results,searching,source)=>(results.length>0||searching)&&<div style={{marginTop:8,border:'1px solid '+bg,borderRadius:6,overflow:'hidden'}}>

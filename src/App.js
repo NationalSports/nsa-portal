@@ -951,7 +951,7 @@ const _dbSaveEstimateInner = async (est) => {
       else console.warn('[DB] estimate saved with core columns only')
     }
     // Delete old children — must delete grandchildren (decorations) BEFORE estimate_items due to FK constraints
-    const _oldEstResp=await supabase.from('estimate_items').select('id,item_index,sku').eq('estimate_id',est.id);
+    const _oldEstResp=await _retryNet(()=>supabase.from('estimate_items').select('id,item_index,sku').eq('estimate_id',est.id));
     // Fail-closed: if reading existing items errored, refuse to proceed. Otherwise oldItemIds=[] would fail-open
     // and the unconditional `DELETE FROM estimate_items WHERE estimate_id=...` below would wipe whatever was there.
     if(_oldEstResp.error){
@@ -1171,7 +1171,7 @@ const _dbSaveSOInner = async (so) => {
       await supabase.from('so_art_files').delete().eq('so_id',so.id);
     }
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
-    const _oldItemsResp=await supabase.from('so_items').select('id,item_index,sku').eq('so_id',so.id);
+    const _oldItemsResp=await _retryNet(()=>supabase.from('so_items').select('id,item_index,sku').eq('so_id',so.id));
     // Fail-closed: refuse the save whenever reading existing items errored. A SELECT error returns oldItemIds=[],
     // which would skip the deco/pick/PO deletes' `.in([])` filter but still let the unconditional
     // `DELETE FROM so_items WHERE so_id=...` below wipe everything. Retrying later (via _dbSaveFailedIds) is safer.
@@ -1260,7 +1260,7 @@ const _dbSaveSOInner = async (so) => {
     // would be silently wiped. We read the live DB PO lines and re-inject any the client was never aware of, so
     // ONLY deliberate deletions (a PO the client loaded and then removed) actually stick.
     if(oldItemIds.length){
-      const{data:_dbPoRows,error:_dbPoErr}=await supabase.from('so_item_po_lines').select('*').in('so_item_id',oldItemIds);
+      const{data:_dbPoRows,error:_dbPoErr}=await _retryNet(()=>supabase.from('so_item_po_lines').select('*').in('so_item_id',oldItemIds));
       if(_dbPoErr){
         console.error('[DB] SAFETY: Blocking SO save — failed to read existing PO lines for',so.id,':',_dbPoErr.message);
         if(_dbNotify)_dbNotify('Save blocked — could not verify existing purchase orders. Please reload the page.','error');
@@ -15324,6 +15324,8 @@ export default function App(){
           seen[key]=g;out.push(g);
         }
       });
+      // Sort: urgent (due-soon) pinned on top, then oldest-first by days open.
+      out.sort((a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(b.openDays||0)-(a.openDays||0)});
       return out;
     })();
     const readyForDeco=decoTasks.filter(t=>t.isReady&&(t.prodStatus==='hold'||t.prodStatus==='draft')&&t.prodStatus!=='ready');const fDeco=filt(readyForDeco);
@@ -16206,7 +16208,7 @@ export default function App(){
             <th style={{textAlign:'center'}}>Bin</th><th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Dest</th><th>Rep</th><th style={{textAlign:'center'}}>Days Open</th><th style={{width:60}}></th>
           </tr></thead><tbody>
           {fPull.map((t,ti)=>{const subs=t._subTasks||[t];const extraSkus=subs.length-1;
-            return<tr key={ti} style={{cursor:'pointer',background:t.urgent?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
+            return<tr key={ti} style={{cursor:'pointer',background:(t.urgent||t.openDays>7)?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
             onClick={()=>setWhViewIF(t)}>
             <td>{t.urgent&&<span title={'Due in '+t.daysOut+'d'}>🔥</span>}{t.noDeco&&<span title="No decoration">📦</span>}</td>
             <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}</td>
