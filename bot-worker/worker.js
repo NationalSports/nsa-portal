@@ -270,7 +270,7 @@ function runClaude(prompt) {
     let done = false;
     const finish = (r) => { if (!done) { done = true; resolve(r); } };
     // Safety net: kill + report a stuck run instead of hanging forever.
-    const timeoutMs = parseInt(process.env.RUN_TIMEOUT_MS || '1200000', 10);
+    const timeoutMs = parseInt(process.env.RUN_TIMEOUT_MS || '600000', 10);
     const killer = setTimeout(() => {
       log(`run exceeded ${timeoutMs}ms — terminating`);
       try { child.kill('SIGKILL'); } catch {}
