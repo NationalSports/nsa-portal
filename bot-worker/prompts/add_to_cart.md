@@ -19,11 +19,14 @@ Line items (add each at the listed sizes/quantities):
 2. For each line, find the product by SKU and add the exact quantities per size.
    If a SKU or size is unavailable/out of stock, do NOT substitute — record it
    in `issues` and continue with the rest.
-3. After all available lines are in the cart, enter the PO number "{{PO_NUMBER}}"
+3. Before entering any quantities, set the **delivery date** in the cart first
+   (if a date field or date chip is present). Only after the date is confirmed
+   should you begin entering size quantities.
+4. After all available lines are in the cart, enter the PO number "{{PO_NUMBER}}"
    in the cart's PO / reference field if one exists.
-4. **DO NOT place, submit, or check out the order under any circumstance.**
+5. **DO NOT place, submit, or check out the order under any circumstance.**
    Leave the filled cart exactly at the review step. A human approves the submit.
-5. Take a screenshot of the final cart for the reviewer.
+6. Take a screenshot of the final cart for the reviewer.
 
 # Output
 When done (or blocked), end your reply with a single fenced ```json block and
