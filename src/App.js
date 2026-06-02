@@ -17910,11 +17910,19 @@ export default function App(){
   // ARTIST DASHBOARD — dual-view (Artist workboard + Rep tracker)
   // ═══════════════════════════════════════════════
   function rArtist(){
+    // True when a job has art files but not all of them have production files ready yet.
+    // Mirrors isJobReady (businessLogic): checks EVERY art file on the job (via _art_ids),
+    // not just the primary j.art_file_id, and counts an embroidery .dst as its prod file.
+    // Names/numbers-only jobs (no art files) return false so they can still be completed.
+    const _jobNeedsProdFiles=(j,so)=>{
+      const ids=(j._art_ids&&j._art_ids.length)?j._art_ids:[j.art_file_id].filter(Boolean);
+      const afs=ids.map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
+      return afs.length>0&&!afs.every(a=>artProdFilesReady(a));
+    };
     // Gather ALL art jobs across SOs — includes every status for rep view
     const allArtJobs=[];
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
       buildJobs(so).forEach(j=>{
-        const _af=safeArt(so).find(f=>f.id===j.art_file_id);
         // Skip jobs that haven't been explicitly submitted for art — only show on art dashboard if:
         // 1) Art was requested (Request Art button clicked), or 2) artist assigned, or 3) in active artist workflow,
         // 4) or art is approved but needs prod files (repeat art scenario)
@@ -17925,7 +17933,7 @@ export default function App(){
         // If art_status is 'needs_art', only show if there's an actively pending request (not just completed/recalled)
         if(j.art_status==='needs_art'&&!hasActiveArtReq&&!hasArtist)return;// skip — recalled or not yet requested
         if(!hasNonRecalledReq&&!hasArtist&&!hasArtActivity)return;// skip — art not yet requested for this job
-        if(j.art_status==='art_complete'&&_af&&(_af.prod_files||[]).length===0)return;// handled in second pass as production_files_needed
+        if(j.art_status==='art_complete'&&_jobNeedsProdFiles(j,so))return;// handled in second pass as production_files_needed
         allArtJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
@@ -17936,8 +17944,10 @@ export default function App(){
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
       buildJobs(so).forEach(j=>{
         if(j.art_status!=='art_complete')return;
-        const af=safeArt(so).find(f=>f.id===j.art_file_id);
-        if(af&&(af.prod_files||[]).length===0){
+        if(_jobNeedsProdFiles(j,so)){
+          const ids=(j._art_ids&&j._art_ids.length)?j._art_ids:[j.art_file_id].filter(Boolean);
+          const afs=ids.map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
+          const af=afs.find(a=>!artProdFilesReady(a))||afs[0];
           allArtJobs.push({...j,art_status:prodFilesStatusFor(af.deco_type),_overrideStatus:true,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
             rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
             expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
@@ -17962,10 +17972,9 @@ export default function App(){
 
     // ─── Shared helpers ───
     const moveArtStatus=(j,newStatus)=>{
-      const so=sos.find(s=>s.id===j.soId);if(!so)return;
-      if(newStatus==='art_complete'){
-        const af=safeArt(so).find(f=>f.id===j.art_file_id);
-        if(af&&!artProdFilesReady(af)){nf('Upload production files first','error');return}
+      const so=sos.find(s=>s.id===j.soId);if(!so)return false;
+      if(newStatus==='art_complete'&&_jobNeedsProdFiles(j,so)){
+        nf('Upload production files first','error');return false;
       }
       const currentJobs=buildJobs(so);
       const updatedJobs=currentJobs.map(jj=>{
@@ -17984,6 +17993,7 @@ export default function App(){
       savSO({...so,art_files:updArt,jobs:updatedJobs});
       if(newStatus==='art_complete'){nf('Art complete — job is Ready for Production!')}
       else nf('Art status → '+ART_LABELS[newStatus]);
+      return true;
     };
     const setArtHidden=(j,hidden)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
@@ -19521,7 +19531,7 @@ export default function App(){
                   <div style={{fontSize:10,color:'#a16207',marginTop:2}}>DST, AI, EPS, PDF, PNG, SVG</div></>}
               </div>
               {prodFilesL.length>0&&<button className="btn" style={{marginTop:10,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontSize:13,fontWeight:700,width:'100%'}}
-                onClick={()=>{moveArtStatus(j,'art_complete');setArtJobDetailModal(null);nf('Production files uploaded — Art Complete!')}}>✅ Mark Art Complete</button>}
+                onClick={()=>{if(moveArtStatus(j,'art_complete')!==false){setArtJobDetailModal(null)}}}>✅ Mark Art Complete</button>}
               {artProdAssignModal&&(()=>{
                 const {files,assignments}=artProdAssignModal;
                 const allAssigned=files.every((_,i)=>assignments[i]);
