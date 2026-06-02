@@ -8742,6 +8742,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
               <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
               <input type="date" id="po-recv-date" className="form-input" style={{width:140,fontSize:12}} defaultValue={new Date().toISOString().split('T')[0]}/>
+              <label style={{display:'flex',gap:5,alignItems:'center',cursor:'pointer',fontSize:11,fontWeight:700,color:'#166534',marginLeft:4}}>
+                <input type="checkbox" style={{cursor:'pointer'}} onChange={e=>{const fill=e.target.checked;recvLines.forEach(({ln,szKeys:rsk,getOp})=>{rsk.filter(sz=>getOp(sz)>0).forEach(sz=>{const el=document.getElementById('po-recv-'+ln.lineIdx+'-'+ln.poIdx+'-'+sz);if(el){el.value=fill?getOp(sz):0;el.style.borderColor='#22c55e';el.style.background='white'}})})}}/>
+                Receive all open
+              </label>
             </div>
             {recvLines.map(({ln,item:rit,po:rpo,szKeys:rsk,rcvd:rrcvd,cncl:rcncl,getOp},ri)=><div key={ln.lineIdx+'-'+ln.poIdx} style={{marginBottom:8,padding:recvLines.length>1?'8px':'0',background:recvLines.length>1?'rgba(255,255,255,0.6)':'transparent',borderRadius:6}}>
               {recvLines.length>1&&<div style={{display:'flex',gap:6,alignItems:'center',marginBottom:4}}>
@@ -9420,6 +9424,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:12}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Date:</span>
                 <input type="date" id="po-fp-recv-date" className="form-input" style={{width:150,fontSize:12}} defaultValue={new Date().toISOString().split('T')[0]}/>
+                <label style={{display:'flex',gap:5,alignItems:'center',cursor:'pointer',fontSize:12,fontWeight:700,color:'#166534',marginLeft:4}}>
+                  <input type="checkbox" style={{cursor:'pointer'}} onChange={e=>{const fill=e.target.checked;fpRecvLines.forEach(({ln,szKeys:rsk,getOp})=>{rsk.filter(sz=>getOp(sz)>0).forEach(sz=>{const el=document.getElementById('po-fp-recv-'+ln.lineIdx+'-'+ln.poIdx+'-'+sz);if(el){el.value=fill?getOp(sz):0;el.style.borderColor='#22c55e';el.style.background='white'}})})}}/>
+                  Receive all open
+                </label>
               </div>
               {fpRecvLines.map(({ln,item:rit,szKeys:rsk,getOp})=><div key={ln.lineIdx+'-'+ln.poIdx} style={{marginBottom:10,padding:fpRecvLines.length>1?'8px 10px':'0',background:fpRecvLines.length>1?'#f8fafc':'transparent',borderRadius:6,border:fpRecvLines.length>1?'1px solid #e2e8f0':'none'}}>
                 {fpRecvLines.length>1&&<div style={{display:'flex',gap:6,alignItems:'center',marginBottom:6}}>
