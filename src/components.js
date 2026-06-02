@@ -54,6 +54,21 @@ function SearchSelect({options,value,onChange,placeholder}){const[open,setOpen]=
     {open&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:50,maxHeight:200,overflow:'auto'}}><div style={{padding:6}}><input className="form-input" placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)} autoFocus style={{fontSize:12}}/></div>
       {f.map(o=><div key={o.value} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,background:o.value===value?'#dbeafe':''}} onClick={()=>{onChange(o.value);setOpen(false);setQ('')}}>{o.label}</div>)}{f.length===0&&<div style={{padding:8,fontSize:12,color:'#94a3b8'}}>No results</div>}</div>}</div>)}
 
+// Catalog product picker built on SearchSelect. Lets the user bind a row to a
+// real catalog product by SKU/name/brand/color. Options are memoized so a table
+// of these doesn't re-map the whole catalog on every keystroke. onPick receives
+// the full product object (so callers can pull id/sku/name/color/pricing).
+function ProductPicker({products,value,onPick,placeholder,searchProducts}){
+  const opts=React.useMemo(()=>(products||[]).map(p=>({
+    value:p.id,
+    label:`${p.sku} — ${p.name||''}${p.color?' / '+p.color:''}`,
+    searchText:[p.sku,p.name,p.brand,p.color].filter(Boolean).join(' '),
+  })),[products]);
+  return<SearchSelect options={opts} value={value||null}
+    onChange={id=>{const p=(products||[]).find(pr=>pr.id===id);if(p&&onPick)onPick(p)}}
+    placeholder={placeholder||'Search catalog SKU…'} />;
+}
+
 function Bg({options,value,onChange}){return<div style={{display:'flex',gap:2,flexWrap:'wrap'}}>{options.map(o=><button key={o.value} className={`btn btn-sm ${String(value)===String(o.value)?'btn-primary':'btn-secondary'}`} onClick={()=>onChange(o.value)}>{o.label}</button>)}</div>}
 
 function $In({value,onChange,w=70}){const[raw,setRaw]=React.useState(String(value));const[focused,setFocused]=React.useState(false);
@@ -451,4 +466,4 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
     <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
-export { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
+export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };

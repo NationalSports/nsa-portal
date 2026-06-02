@@ -6,7 +6,7 @@
 // Hands off to App.js's `newE` callback which lands the user in the estimate
 // editor with all items already populated.
 import React, { useState } from 'react';
-import { Icon, SearchSelect } from './components';
+import { Icon, SearchSelect, ProductPicker } from './components';
 import { invokeEdgeFn, enrichAiLinesWithVendors } from './utils';
 import { rQ, auTierDisc } from './pricing';
 
@@ -352,6 +352,10 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
           const updP = (ri, pi, k, v) => setAi(x => ({ ...x, rosters: x.rosters.map((r, i) => i === ri ? { ...r, players: r.players.map((p, j) => j === pi ? { ...p, [k]: v } : p) } : r) }));
           const togglePlayer = (ri, pi) => setAi(x => ({ ...x, rosters: x.rosters.map((r, i) => i === ri ? { ...r, players: r.players.map((p, j) => j === pi ? { ...p, _skip: !p._skip } : p) } : r) }));
           const addPlayer = ri => setAi(x => ({ ...x, rosters: x.rosters.map((r, i) => i === ri ? { ...r, players: [...r.players, { name: '', number: '', size: 'M', _skip: false }] } : r) }));
+          // Bind a group to a real catalog product. Sets the SKU/name/color/brand
+          // from the catalog and marks it a manual match so the build step uses
+          // this product's pricing. Clears any prior vendor match.
+          const bindProductR = (ri, p) => setAi(x => ({ ...x, rosters: x.rosters.map((r, i) => i === ri ? { ...r, product_id: p.id, sku_guess: p.sku, name: p.name || r.name, color: p.color || r.color, brand: p.brand || r.brand, match_quality: 'manual', vendor_source: null } : r) }));
           return <>
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
               <div style={{ padding: 8, background: '#ede9fe', borderRadius: 6, flex: 1, textAlign: 'center' }}>
@@ -378,7 +382,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
                 const isVendor = typeof mq === 'string' && mq.startsWith('vendor_');
                 const vendorName = isVendor ? mq.slice('vendor_'.length) : null;
                 const vendorLabel = vendorName === 'sanmar' ? '🟦 SanMar' : vendorName === 'ss' ? '🟪 S&S' : vendorName === 'momentec' ? '🟧 Momentec' : null;
-                const mqLabel = vendorLabel || (mq === 'exact' ? '✓ Exact' : mq === 'stripped' ? '✓ Trimmed' : mq === 'fuzzy_name' ? '~ Fuzzy' : mq === 'no_sku' ? '? No SKU' : '✗ Unmatched');
+                const mqLabel = vendorLabel || (mq === 'manual' ? '✓ Picked' : mq === 'exact' ? '✓ Exact' : mq === 'stripped' ? '✓ Trimmed' : mq === 'fuzzy_name' ? '~ Fuzzy' : mq === 'no_sku' ? '? No SKU' : '✗ Unmatched');
                 const matchedSrc = !!r.product_id || isVendor;
                 const activePlayers = (r.players || []).filter(p => !p._skip).length;
                 return <div key={ri} style={{ marginBottom: 12, border: '1px solid #e2e8f0', borderRadius: 8, opacity: r._skip ? 0.5 : 1, background: matchedSrc ? 'white' : '#fffbeb' }}>
@@ -389,6 +393,12 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
                     <input className="form-input" value={r.name || ''} onChange={e => updR(ri, 'name', e.target.value)} placeholder="Product name" style={{ flex: 1, minWidth: 120, fontSize: 11 }} />
                     <input className="form-input" value={r.color || ''} onChange={e => updR(ri, 'color', e.target.value)} placeholder="Color" style={{ width: 80, fontSize: 11 }} />
                     <span style={{ fontSize: 10, color: '#64748b', fontWeight: 600 }}>{activePlayers} player{activePlayers === 1 ? '' : 's'}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '6px 10px', borderBottom: '1px solid #f8fafc' }}>
+                    <span style={{ fontSize: 10, color: '#64748b', fontWeight: 600, whiteSpace: 'nowrap' }}>🔗 Attach item:</span>
+                    <div style={{ flex: 1, maxWidth: 320 }}>
+                      <ProductPicker products={products} value={r.product_id} onPick={p => bindProductR(ri, p)} placeholder={r.product_id ? 'Change catalog item…' : 'Search catalog SKU / name to attach…'} />
+                    </div>
                   </div>
                   <div style={{ padding: '6px 10px' }}>
                     <table style={{ fontSize: 11, width: '100%' }}>
@@ -435,7 +445,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
           <div style={{ fontSize: 12, fontWeight: 700, color: '#1e40af', marginBottom: 6 }}>📦 Review & Edit</div>
           <div style={{ maxHeight: 380, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 6 }}>
             <table style={{ fontSize: 11 }}>
-              <thead><tr><th style={{ width: 30 }}>✓</th><th>SKU</th><th>Match</th><th>Name</th><th>Brand</th><th>Color</th><th>Sizes</th><th>Qty</th><th>Notes</th></tr></thead>
+              <thead><tr><th style={{ width: 30 }}>✓</th><th>SKU</th><th>Match</th><th>Attach item</th><th>Name</th><th>Brand</th><th>Color</th><th>Sizes</th><th>Qty</th><th>Notes</th></tr></thead>
               <tbody>{ai.parsed.map((it, i) => {
                 const toggle = () => setAi(x => ({ ...x, parsed: x.parsed.map((p, pi) => pi === i ? { ...p, _skip: !p._skip } : p) }));
                 const upd = (k, v) => setAi(x => ({ ...x, parsed: x.parsed.map((p, pi) => pi === i ? { ...p, [k]: v } : p) }));
@@ -443,15 +453,17 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
                 const isVendor = typeof mq === 'string' && mq.startsWith('vendor_');
                 const vendorName = isVendor ? mq.slice('vendor_'.length) : null;
                 const vendorLabel = vendorName === 'sanmar' ? '🟦 SanMar' : vendorName === 'ss' ? '🟪 S&S' : vendorName === 'momentec' ? '🟧 Momentec' : null;
-                const mqLabel = vendorLabel || (mq === 'exact' ? '✓ Exact' : mq === 'stripped' ? '✓ Trimmed' : mq === 'fuzzy_name' ? '~ Fuzzy' : mq === 'no_sku' ? '? No SKU' : '✗ Unmatched');
-                const mqColor = isVendor ? '#1e40af' : (mq === 'exact' || mq === 'stripped' ? '#166534' : mq === 'fuzzy_name' ? '#d97706' : '#dc2626');
-                const mqBg = isVendor ? '#dbeafe' : (mq === 'exact' || mq === 'stripped' ? '#dcfce7' : mq === 'fuzzy_name' ? '#fef3c7' : '#fee2e2');
+                const mqLabel = vendorLabel || (mq === 'manual' ? '✓ Picked' : mq === 'exact' ? '✓ Exact' : mq === 'stripped' ? '✓ Trimmed' : mq === 'fuzzy_name' ? '~ Fuzzy' : mq === 'no_sku' ? '? No SKU' : '✗ Unmatched');
+                const mqColor = isVendor ? '#1e40af' : (mq === 'manual' || mq === 'exact' || mq === 'stripped' ? '#166534' : mq === 'fuzzy_name' ? '#d97706' : '#dc2626');
+                const mqBg = isVendor ? '#dbeafe' : (mq === 'manual' || mq === 'exact' || mq === 'stripped' ? '#dcfce7' : mq === 'fuzzy_name' ? '#fef3c7' : '#fee2e2');
+                const bindOrder = p => setAi(x => ({ ...x, parsed: x.parsed.map((q, qi) => qi === i ? { ...q, product_id: p.id, sku_guess: p.sku, name: p.name || q.name, brand: p.brand || q.brand, color: p.color || q.color, match_quality: 'manual', vendor_source: null } : q) }));
                 const hasResolvedSource = !!it.product_id || isVendor;
                 return <tr key={i} style={{ opacity: it._skip ? 0.4 : 1, background: !hasResolvedSource ? '#fffbeb' : 'white' }}>
                   <td><input type="checkbox" checked={!it._skip} onChange={toggle} /></td>
                   <td><input className="form-input" value={it.sku_guess || ''} onChange={e => upd('sku_guess', e.target.value)} style={{ width: 90, fontSize: 10, fontFamily: 'monospace' }} /></td>
                   <td><span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 4, background: mqBg, color: mqColor, fontWeight: 700, whiteSpace: 'nowrap' }}>{mqLabel}</span>
                     {it.confidence && !isVendor && !it.product_id && <div style={{ fontSize: 8, color: '#64748b', marginTop: 2 }}>conf: {it.confidence}</div>}</td>
+                  <td style={{ minWidth: 150 }}><ProductPicker products={products} value={it.product_id} onPick={bindOrder} placeholder={it.product_id ? 'Change…' : '🔍 Attach SKU…'} /></td>
                   <td style={{ maxWidth: 180 }}><input className="form-input" value={it.name || ''} onChange={e => upd('name', e.target.value)} style={{ width: '100%', fontSize: 10 }} /></td>
                   <td><input className="form-input" value={it.brand || ''} onChange={e => upd('brand', e.target.value)} style={{ width: 70, fontSize: 10 }} /></td>
                   <td><input className="form-input" value={it.color || ''} onChange={e => upd('color', e.target.value)} style={{ width: 80, fontSize: 10 }} /></td>
