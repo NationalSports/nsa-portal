@@ -19500,6 +19500,28 @@ export default function App(){
               </div>)}
             </div>}
 
+            {/* ─── Per-design production-files confirmation (visible at every stage so art can confirm before coach approval) ─── */}
+            {allArtFiles.length>0&&<div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:8}}>🎯 Production Files by Design</div>
+              <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                {allArtFiles.map(a=>{const pf=(a.prod_files||[]).length;const checked=a.prod_files_attached===true;return(
+                  <label key={a.id} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',borderRadius:8,border:'1px solid '+(checked?'#86efac':'#e2e8f0'),background:checked?'#f0fdf4':'#fff',cursor:'pointer'}}>
+                    <input type="checkbox" checked={checked} style={{width:16,height:16,cursor:'pointer',flexShrink:0}} onChange={e=>{
+                      const _chk=e.target.checked;
+                      const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+                      const updArt=safeArt(liveSO).map(x=>x.id===a.id?{...x,prod_files_attached:_chk}:x);
+                      savSO({...liveSO,art_files:updArt});
+                      setArtJobDetailModal({...j,artFile:updArt.find(x=>x.id===j.art_file_id)});
+                      nf(_chk?'✅ Production files attached — '+(a.name||'design'):'Unmarked — '+(a.name||'design'));
+                    }}/>
+                    <span style={{fontSize:12,fontWeight:700,color:'#0f172a',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.name||'Unnamed'}</span>
+                    <span style={{fontSize:10,fontWeight:600,color:pf>0?'#166534':'#94a3b8',flexShrink:0}}>{pf>0?'📁 '+pf:'no file'}</span>
+                    <span style={{fontSize:11,fontWeight:700,color:checked?'#166534':'#92400e',flexShrink:0}}>{checked?'Attached':'Not marked'}</span>
+                  </label>
+                )})}
+              </div>
+              <div style={{fontSize:10,color:'#94a3b8',marginTop:6}}>Check off each design once its production file is attached. When all are checked, coach approval sends the job straight to production.</div>
+            </div>}
             {/* ─── Upload Zone: switches between art mockups and production files ─── */}
             {PROD_FILES_STATUSES.includes(j.art_status)?<div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
               <div style={{padding:'10px 14px',background:'linear-gradient(135deg,#dcfce7,#f0fdf4)',borderRadius:8,border:'2px solid #86efac',marginBottom:12}}>

@@ -176,7 +176,7 @@ const buildJobs = (o) => {
         artIds.push(d.art_file_id);
         const af = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
         if (af) { artNames.push(af.name || 'Unnamed'); decoTypes.push(af.deco_type || 'screen_print');
-          const _prodReady = (af.prod_files?.length || 0) > 0 || ((af.deco_type || '') === 'embroidery' && (af.files || []).some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); }));
+          const _prodReady = af.prod_files_attached === true || (af.prod_files?.length || 0) > 0 || ((af.deco_type || '') === 'embroidery' && (af.files || []).some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); }));
           const _prodNeededSt = (af.deco_type || '') === 'dtf' ? 'order_dtf_transfers' : (af.deco_type || '') === 'embroidery' ? 'upload_emb_files' : 'production_files_needed';
           const st = af.status === 'approved' ? (_prodReady ? 'art_complete' : _prodNeededSt) : af.status === 'needs_approval' ? 'waiting_approval' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art';
           if (st !== 'art_complete') worstArtSt = st;
@@ -210,6 +210,8 @@ const isJobReady = (j, o) => {
   for (const aid of artIds) {
     const af = safeArr(o?.art_files).find(f => f.id === aid);
     if (!af) continue;
+    // Art team explicitly confirmed production files are attached for this design.
+    if (af.prod_files_attached === true) continue;
     if ((af.prod_files || []).length > 0) continue;
     // A .dst attached to the embroidery art counts as the production file.
     if ((af.deco_type || '') === 'embroidery' && (af.files || []).some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); })) continue;
