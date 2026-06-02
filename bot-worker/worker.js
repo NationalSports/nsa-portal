@@ -233,6 +233,9 @@ function runClaude(prompt) {
       // The agent must drive the browser without interactive approval on a
       // headless worker. Scope this down if you prefer (see SETUP.md).
       '--allowedTools', 'mcp__playwright__*',
+      // Block the agent from delegating to a background workflow/subagent (it
+      // would hang waiting for a notification that never arrives headless).
+      '--disallowedTools', 'Workflow', 'Task', 'TaskOutput', 'TaskGet', 'TaskStop',
       '--dangerously-skip-permissions',
     ];
     // Close stdin (no piped input) to avoid the "no stdin data received" wait.
