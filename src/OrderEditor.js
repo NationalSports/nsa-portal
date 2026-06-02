@@ -15,7 +15,7 @@ import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIO
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
-import { jobScreenKey, jobGroupKey } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady } from './businessLogic';
 import { buildBotCartPayload, isBotOwner } from './lib/botTasks';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -6587,6 +6587,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   const srcOf=s=>(s.id===o.id?o:s);
                   const _grp=jobGroupKey(j,_parentId);
                   const _isAuto=!!_grp&&!j.link_group;
+                  // For ranking candidates: this job's artwork identity (name+deco) and its
+                  // sub-customer ("team"), so we can float same-art / same-team jobs to the top.
+                  const _selfSk=jobScreenKey(j);
+                  const _selfCust=o.customer_id;
+                  const _CLOSED=new Set(['completed','shipped']); // anything else is still "open" (in art/production)
                   const linked=[];const candidates=[];
                   (allOrders||[]).forEach(s=>{
                     if(!_familyIds.has(s.customer_id))return;
@@ -6595,9 +6600,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       if(s.id===o.id&&jj.id===j.id)return;
                       const gk=jobGroupKey(jj,_pidOf(s));
                       if(_grp&&gk===_grp){linked.push({soId:s.id,custId:s.customer_id,job:jj,auto:!jj.link_group});return}
-                      candidates.push({value:s.id+'||'+jj.id,label:(jj.art_name||jj.deco_type?.replace(/_/g,' ')||'Job')+' — '+_custName(s.customer_id)+' · '+s.id,searchText:(jj.deco_type||'')+' '+(jj.prod_status||'')+' '+s.id+' '+_custName(s.customer_id)});
+                      const _sameArt=!!_selfSk&&jobScreenKey(jj)===_selfSk; // identical artwork — almost certainly the same screen
+                      const _sameTeam=s.customer_id===_selfCust;            // same sub-customer / team
+                      const _open=!_CLOSED.has(jj.prod_status);             // still in art/production, not finished
+                      const _hint=_sameArt?'✨ same art · ':(_sameTeam?'★ same team · ':'');
+                      candidates.push({value:s.id+'||'+jj.id,label:_hint+(jj.art_name||jj.deco_type?.replace(/_/g,' ')||'Job')+' — '+_custName(s.customer_id)+' · '+s.id,searchText:(jj.art_name||'')+' '+(jj.deco_type||'')+' '+(jj.prod_status||'')+' '+s.id+' '+_custName(s.customer_id),_sameArt,_sameTeam,_open,_ts:Date.parse(jj.created_at||'')||0});
                     });
                   });
+                  // Most relevant first: identical artwork, then same team, then still-open jobs, then most recent.
+                  candidates.sort((a,b)=>(Number(b._sameArt)-Number(a._sameArt))||(Number(b._sameTeam)-Number(a._sameTeam))||(Number(b._open)-Number(a._open))||(b._ts-a._ts));
                   if(!linked.length&&!candidates.length)return null;
                   const doLink=value=>{
                     const[tSoId,tJobId]=value.split('||');
@@ -6621,22 +6632,47 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     setO(e2=>({...e2,jobs:safeJobs(e2).map(jj=>jj.id===j.id?{...jj,...(j.link_group?{link_group:null}:{auto_group_off:true})}:jj),updated_at:new Date().toLocaleString()}));setDirty(true);
                     nf('This job removed from the run-together group');
                   };
+                  // Confirm an artwork suggestion: turn the auto-match into an explicit manual link
+                  // so it only "runs together" once the rep has actually selected it.
+                  const confirmSuggested=members=>{
+                    const newGid=j.link_group||('lg_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7));
+                    const localIds=new Set([j.id]);
+                    members.forEach(m=>{if(m.soId===o.id)localIds.add(m.job.id);else if(onSetJobLinkGroup)onSetJobLinkGroup(m.soId,m.job.id,newGid)});
+                    setO(e2=>({...e2,jobs:safeJobs(e2).map(jj=>localIds.has(jj.id)?{...jj,link_group:newGid,auto_group_off:false}:jj),updated_at:new Date().toLocaleString()}));setDirty(true);
+                    nf('Linked — these jobs will run together');
+                  };
+                  // Auto art-matches are surfaced as suggestions to confirm; only manual links count
+                  // as an established "runs together" group.
+                  const confirmed=_isAuto?[]:linked;
+                  const suggested=_isAuto?linked:[];
+                  const memberRow=(m,actions)=>{const mj=m.job;return<div key={m.soId+'|'+mj.id} style={{display:'flex',alignItems:'center',gap:6,padding:'3px 0',flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
+                    <span style={{fontSize:11,fontWeight:600,color:'#1e293b'}}>{mj.art_name||mj.deco_type?.replace(/_/g,' ')||'Job'}</span>
+                    <span style={{fontSize:10,color:'#64748b'}}>{_custName(m.custId)} · {onViewSO?<span style={{cursor:'pointer',textDecoration:'underline',color:'#2563eb',fontWeight:600}} onClick={()=>onViewSO(m.soId)} title="Open sales order">{m.soId}</span>:m.soId}</span>
+                    <span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:SC[mj.prod_status]?.bg||'#f1f5f9',color:SC[mj.prod_status]?.c||'#475569'}}>{prodLabels[mj.prod_status]||mj.prod_status}</span>
+                    {actions}
+                  </div>};
                   return<div style={{marginTop:8,padding:'8px 10px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
-                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:linked.length?6:0,flexWrap:'wrap'}}>
-                      <span style={{fontSize:11,fontWeight:700,color:'#0f172a'}}>🔗 Runs together with</span>
-                      {!linked.length&&<span style={{fontSize:11,color:'#94a3b8'}}>nothing yet — link a job below if it uses the same screen</span>}
-                      {_isAuto&&linked.length>0&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#dbeafe',color:'#1e40af'}}>auto-matched by artwork</span>}
-                    </div>
-                    {linked.map(m=>{const mj=m.job;return<div key={m.soId+'|'+mj.id} style={{display:'flex',alignItems:'center',gap:6,padding:'3px 0',flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
-                      <span style={{fontSize:11,fontWeight:600,color:'#1e293b'}}>{mj.art_name||mj.deco_type?.replace(/_/g,' ')||'Job'}</span>
-                      <span style={{fontSize:10,color:'#64748b'}}>{_custName(m.custId)} · {onViewSO?<span style={{cursor:'pointer',textDecoration:'underline',color:'#2563eb',fontWeight:600}} onClick={()=>onViewSO(m.soId)} title="Open sales order">{m.soId}</span>:m.soId}</span>
-                      <span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:SC[mj.prod_status]?.bg||'#f1f5f9',color:SC[mj.prod_status]?.c||'#475569'}}>{prodLabels[mj.prod_status]||mj.prod_status}</span>
-                      {m.auto&&<span style={{fontSize:8,color:'#94a3b8'}}>auto</span>}
-                      <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'1px 6px'}} title={m.auto?'These aren’t the same screen — stop auto-grouping it':'Remove this manual link'} onClick={()=>unlinkMember(m)}>Unlink</button>
-                    </div>})}
-                    <div style={{display:'flex',alignItems:'center',gap:6,marginTop:6,flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
+                    {confirmed.length>0&&<div style={{marginBottom:6}}>
+                      <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6,flexWrap:'wrap'}}>
+                        <span style={{fontSize:11,fontWeight:700,color:'#0f172a'}}>🔗 Runs together with</span>
+                      </div>
+                      {confirmed.map(m=>memberRow(m,<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'1px 6px'}} title="Remove this manual link" onClick={()=>unlinkMember(m)}>Unlink</button>))}
+                    </div>}
+                    {suggested.length>0&&<div style={{marginBottom:6}}>
+                      <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4,flexWrap:'wrap'}}>
+                        <span style={{fontSize:11,fontWeight:700,color:'#0f172a'}}>💡 Suggested to run together</span>
+                        <span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#dbeafe',color:'#1e40af'}}>same artwork</span>
+                      </div>
+                      {suggested.map(m=>memberRow(m,<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'1px 6px'}} title="Not the same screen — stop suggesting this one" onClick={()=>unlinkMember(m)}>✕ not this one</button>))}
+                      <div style={{display:'flex',alignItems:'center',gap:6,marginTop:4,flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
+                        <button className="btn btn-sm btn-primary" style={{fontSize:10,padding:'2px 10px'}} onClick={()=>confirmSuggested(suggested)} title="Confirm these run together (reuse one screen setup)">🔗 Link {suggested.length>1?('all '+suggested.length):'to run together'}</button>
+                        <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 8px'}} onClick={unlinkSelf} title="This job's art isn't actually shared — stop suggesting">Not the same screen</button>
+                      </div>
+                    </div>}
+                    <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
+                      {!confirmed.length&&!suggested.length&&<span style={{fontSize:11,color:'#94a3b8'}}>🔗 not linked — pick a job below if it shares this screen</span>}
                       {candidates.length>0&&<div style={{flex:'0 1 320px',minWidth:220}}><SearchSelect options={candidates} value="" onChange={doLink} placeholder="🔗 Link another job (same parent)…"/></div>}
-                      {linked.length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 8px'}} onClick={unlinkSelf} title={j.link_group?'Remove this job from the linked group':'Stop auto-grouping this job by artwork'}>{j.link_group?'Leave group':'Not the same screen'}</button>}
+                      {confirmed.length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 8px'}} onClick={unlinkSelf} title="Remove this job from the linked group">Leave group</button>}
                     </div>
                   </div>;
                 })()}
@@ -7083,6 +7119,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   w.document.write('<h1>'+j.id+' — '+j.art_name+'</h1>');
                   w.document.write('<p>'+j.deco_type?.replace(/_/g,' ')+' · '+(j.positions||'').replace(/^,\s*/,'')+' · '+j.total_units+' total units</p>');
                   w.document.write('<p>SO: '+o.id+' — '+(o.memo||'')+'</p>');
+                  // Run-together siblings — only those checked in and ready to run right now, so the
+                  // press only sees jobs it can actually put on this screen setup today.
+                  const _pid=cust?.parent_id||cust?.id||null;
+                  const _famIds=new Set((allCustomers||[]).filter(c=>c.id===_pid||c.parent_id===_pid).map(c=>c.id));if(_pid)_famIds.add(_pid);
+                  const _gk=jobGroupKey(j,_pid);
+                  const _cn=id=>(allCustomers||[]).find(x=>x.id===id)?.name||'—';
+                  const _pidOf=s=>{const c=(allCustomers||[]).find(x=>x.id===s.customer_id);return c?.parent_id||c?.id||null};
+                  const _sibs=[];
+                  if(_gk)(allOrders||[]).forEach(s=>{if(!_famIds.has(s.customer_id))return;const src=s.id===o.id?o:s;safeJobs(src).forEach(jj=>{if(s.id===o.id&&jj.id===j.id)return;if(jobGroupKey(jj,_pidOf(s))!==_gk)return;if(!isJobReady(jj,src))return;_sibs.push({soId:s.id,cust:_cn(s.customer_id),qty:jj.total_units,manual:!!jj.link_group})})});
+                  if(_sibs.length){const _scrTot=j.total_units+_sibs.reduce((a,s)=>a+s.qty,0);w.document.write('<div style="margin:8px 0;padding:8px 10px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px"><div style="font-size:11px;font-weight:700;color:#3730a3">🔗 Runs together — reuse one screen setup ('+_scrTot+' units total)</div><ul style="margin:4px 0 0;padding-left:18px;font-size:12px">'+_sibs.map(s=>'<li>'+s.soId+' · '+s.cust+' — '+s.qty+' units'+(s.manual?'':' (matched by art)')+'</li>').join('')+'</ul></div>')}
                   // Mockup image at top
                   const _jsMocks=[...(artF?.mockup_files||artF?.files||[]),...Object.values(artF?.item_mockups||{}).flat()].filter(f=>f);
                   const _jsMockUrl=(()=>{for(const f of _jsMocks){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f))return u;const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)return pt}return itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url||null})();

@@ -104,6 +104,9 @@ const nextSOId=sos=>'SO-'+(Math.max(_maxNum(sos),_dbMaxIds.so,1000)+1);
 const nextInvId=invs=>'INV-'+(Math.max(_maxNum(invs),_dbMaxIds.inv,1000)+1);
 const fmtCreatedAt=s=>{if(!s)return'—';if(String(s).includes(','))return String(s).split(',')[0];const d=new Date(s);return isNaN(d)?String(s):d.toLocaleDateString('en-US')};
 const isDualRunJob=(j)=>j&&j.items&&j.items.length>1&&j.items.some(gi=>gi.run_order);
+// Accent palette for "run together" job groups — each linked group gets a stable color so
+// clustered rows/cards read as one screen setup at a glance.
+const GRP_HUES=['#6366f1','#0ea5e9','#10b981','#f59e0b','#ec4899','#8b5cf6'];
 const mapColorCategory=color=>{if(!color)return'';const c=color.toLowerCase();if(/white|natural|cream|ivory/.test(c))return'White';if(/black|charcoal/.test(c))return'Black';if(/navy|blue|royal|columbia|carolina/.test(c))return'Blue';if(/red|cardinal|scarlet|crimson/.test(c))return'Red';if(/green|forest|kelly|lime|hunter/.test(c))return'Green';if(/grey|gray|heather|silver|graphite/.test(c))return'Grey';if(/gold|yellow|vegas|athletic/.test(c))return'Gold';if(/orange|texas/.test(c))return'Orange';if(/purple|maroon|wine|burgundy/.test(c))return'Purple';if(/pink|fuchsia/.test(c))return'Pink';if(/brown|tan|khaki|sand|coyote/.test(c))return'Brown';return''};
 // Matches a product against a color-filter selection. Picks up products where the
 // chosen category is the PRIMARY color (the part before '/' in e.g. "BLACK/WHITE"),
@@ -8025,8 +8028,9 @@ export default function App(){
   function rJobs(){
     // Build flat jobs list
     const allJobs=[];
-    sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
+    sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);const _pid=c?.parent_id||c?.id||null;
       buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>{allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
+        parentId:_pid,grpKey:jobGroupKey(j,_pid),
         repId:c?.primary_rep_id||so.created_by,rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',
         expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null})})});
     // Apply filters
@@ -8048,6 +8052,13 @@ export default function App(){
       else if(jobSortField==='art'){va=a.art_name;vb=b.art_name}
       else{va=a.id;vb=b.id}
       return jobSortDir==='asc'?(va>vb?1:-1):(va<vb?1:-1)});
+    // ── Run-together grouping ── keep linked jobs (same artwork within a parent, or a manual
+    // link) next to each other and tag them so the shared screen is obvious at a glance.
+    const _grpMembers={};allJobs.forEach(j=>{if(j.grpKey)(_grpMembers[j.grpKey]=_grpMembers[j.grpKey]||[]).push(j)});
+    const linkSiblings=j=>j.grpKey?(_grpMembers[j.grpKey]||[]).filter(x=>!(x.soId===j.soId&&x.id===j.id)&&x.prod_status!=='shipped'&&x.prod_status!=='completed'):[];
+    const grpHue=k=>{let h=0;for(let i=0;i<(k||'').length;i++)h=(h*31+k.charCodeAt(i))>>>0;return GRP_HUES[h%GRP_HUES.length]};
+    const _clusterLinked=arr=>{const seen=new Set();const out=[];arr.forEach(j=>{const g=j.grpKey;if(!g){out.push(j);return}if(seen.has(g))return;seen.add(g);arr.forEach(x=>{if(x.grpKey===g)out.push(x)})});return out;};
+    fj=_clusterLinked(fj);
     const decoTypes=[...new Set(allJobs.map(j=>j.deco_type).filter(Boolean))];
     const STATUSES=[['hold','Ready for Prod'],['staging','In Line'],['in_process','In Process'],['completed','Completed']];
     const toggleStatus=st=>{setJobFilters(prev=>{const ss=prev.statuses.includes(st)?prev.statuses.filter(s=>s!==st):[...prev.statuses,st];return{...prev,statuses:ss}})};
@@ -8147,10 +8158,11 @@ export default function App(){
         {fj.map(j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
           const ready=isJobReady(j,j.so);
           const onBoard=safeJobs(j.so).some(ej=>ej.id===j.id);
+          const sibs=linkSiblings(j);const _hue=sibs.length?grpHue(j.grpKey):null;
           return<tr key={j.id+j.soId} style={{cursor:'pointer',background:j.daysOut!=null&&j.daysOut<=3?'#fef2f2':ready&&!onBoard?'#f0fdf4':undefined}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
-            <td style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{j.id}</td>
+            <td style={{fontWeight:700,color:'#1e40af',fontSize:12,borderLeft:_hue?('4px solid '+_hue):'4px solid transparent'}}>{j.id}</td>
             <td><div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div><div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions}</div></td>
-            <td style={{fontSize:12}}>{j.customer} <span className="badge badge-gray">{j.alpha}</span></td>
+            <td style={{fontSize:12}}>{j.customer} <span className="badge badge-gray">{j.alpha}</span>{sibs.length>0&&(()=>{const _norm=s=>s==='ready'?'hold':s;const same=sibs.filter(s=>_norm(s.prod_status)===_norm(j.prod_status));return<span title={'Runs together with:\n'+sibs.map(s=>s.soId+' · '+s.customer+' ('+(s.prod_status||'').replace(/_/g,' ')+')').join('\n')+(j.link_group?'\n\n(manually linked)':'\n\n(matched by artwork)')} style={{fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:6,marginLeft:4,background:same.length?'#dcfce7':'#eef2ff',color:same.length?'#166534':'#4338ca',whiteSpace:'nowrap'}}>🔗 {same.length?'Run w/ '+(same.length+1):'Linked'}</span>})()}</td>
             <td style={{fontSize:11,color:'#64748b'}}>{j.soId}</td>
             <td style={{fontSize:11}}>{j.rep?.split(' ')[0]}</td>
             <td><span style={{fontWeight:700}}>{j.fulfilled_units}/{j.total_units}</span>
@@ -8400,48 +8412,74 @@ export default function App(){
   const applyJobMove=(j,newStatus,machine,person)=>{
     const so=sos.find(s=>s.id===j.soId);
     if(!so)return;
-    const updatedJobs=safeJobs(so).map(jj=>{
-      if(jj.id!==j.id)return jj;
-      const upd={...jj,prod_status:newStatus,assigned_machine:machine||jj.assigned_machine,assigned_to:person||jj.assigned_to};
-      // When completing a dual-run job, mark all runs as done
-      if(newStatus==='completed'&&jj.run_order){if(!jj.run1_done)upd.run1_done=true;if(!jj.run2_done)upd.run2_done=true}
-      return upd;
+    // ── Move the run-together group as one ──
+    // Resolve this job's group (only when it's ready), then advance the job PLUS every READY
+    // linked sibling — including jobs on other sales orders — so a linked set moves through
+    // production together. Finished (completed/shipped) siblings, and siblings that aren't
+    // checked in + art-approved yet, are left where they are.
+    const _jc=cust.find(x=>x.id===so.customer_id);const _jpid=_jc?.parent_id||_jc?.id||null;
+    const _gk=isJobReady(j,so)?jobGroupKey(j,_jpid):null;
+    const moveSet=[{soId:j.soId,id:j.id,person:j.assigned_to}];
+    if(_gk)sos.forEach(s=>{
+      const sc=cust.find(x=>x.id===s.customer_id);const spid=sc?.parent_id||sc?.id||null;
+      safeJobs(s).forEach(jj=>{
+        if(s.id===j.soId&&jj.id===j.id)return;
+        if(jj.prod_status===newStatus||jj.prod_status==='completed'||jj.prod_status==='shipped')return;
+        if(!isJobReady(jj,s))return;
+        if(jobGroupKey(jj,spid)!==_gk)return;
+        moveSet.push({soId:s.id,id:jj.id,person:jj.assigned_to});
+      });
     });
-    savSO({...so,jobs:updatedJobs});
-    // Auto-clock-in when moving to in_process
-    if(newStatus==='in_process'){
-      const timerKey=j.soId+'|'+j.id;
-      if(!activeTimers[timerKey]){
-        const decoratorName=person||j.assigned_to||cu?.name||'Unknown';
-        setActiveTimers(prev=>({...prev,[timerKey]:{person:decoratorName,clockIn:Date.now(),soId:j.soId}}));
-        _idleAccum.current[timerKey]=0;
+    // Apply the status change, grouped per sales order so each SO saves once.
+    const bySo={};moveSet.forEach(m=>{(bySo[m.soId]=bySo[m.soId]||[]).push(m.id)});
+    Object.entries(bySo).forEach(([soId,ids])=>{
+      const s=sos.find(x=>x.id===soId);if(!s)return;
+      const idSet=new Set(ids);
+      const updatedJobs=safeJobs(s).map(jj=>{
+        if(!idSet.has(jj.id))return jj;
+        const upd={...jj,prod_status:newStatus,assigned_machine:machine||jj.assigned_machine,assigned_to:person||jj.assigned_to};
+        // When completing a dual-run job, mark all runs as done
+        if(newStatus==='completed'&&jj.run_order){if(!jj.run1_done)upd.run1_done=true;if(!jj.run2_done)upd.run2_done=true}
+        return upd;
+      });
+      savSO({...s,jobs:updatedJobs});
+    });
+    // Timers per moved job: auto-clock-in on In Process, auto-clock-out on Completed/Shipped.
+    moveSet.forEach(m=>{
+      const timerKey=m.soId+'|'+m.id;
+      if(newStatus==='in_process'){
+        if(!activeTimers[timerKey]){
+          const decoratorName=person||m.person||cu?.name||'Unknown';
+          setActiveTimers(prev=>({...prev,[timerKey]:{person:decoratorName,clockIn:Date.now(),soId:m.soId}}));
+          _idleAccum.current[timerKey]=0;
+        }
+      } else if(newStatus==='completed'||newStatus==='shipped'){
+        const active=activeTimers[timerKey];
+        if(active){
+          const mins=Math.round((Date.now()-active.clockIn)/60000);
+          const idleMins=Math.round((_idleAccum.current[timerKey]||0)/60000);
+          setJobTimeLogs(prev=>[...prev,{jobId:m.id,soId:m.soId,person:active.person,clockIn:new Date(active.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins}]);
+          setActiveTimers(prev=>{const n={...prev};delete n[timerKey];return n});
+          delete _idleAccum.current[timerKey];
+        }
       }
-    }
-    // Auto-clock-out if job moves to completed/shipped
-    if(newStatus==='completed'||newStatus==='shipped'){
-      const timerKey=j.soId+'|'+j.id;
-      const active=activeTimers[timerKey];
-      if(active){
-        const mins=Math.round((Date.now()-active.clockIn)/60000);
-        const idleMins=Math.round((_idleAccum.current[timerKey]||0)/60000);
-        setJobTimeLogs(prev=>[...prev,{jobId:j.id,soId:j.soId,person:active.person,clockIn:new Date(active.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins}]);
-        setActiveTimers(prev=>{const n={...prev};delete n[timerKey];return n});
-        delete _idleAccum.current[timerKey];
-      }
-    }
+    });
     const labels={hold:'Ready for Prod',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
-    // Check for sibling jobs when completing — notify if more jobs needed before shipping
+    const _extra=moveSet.length>1?' (+'+(moveSet.length-1)+' linked)':'';
+    // Check for jobs on the SAME garments when completing — notify if more jobs needed before
+    // shipping. Exclude the jobs we just completed together.
     if(newStatus==='completed'){
+      const _movedHere=new Set(moveSet.filter(m=>m.soId===j.soId).map(m=>m.id));
       const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
-      const siblingJobs=updatedJobs.filter(j2=>j2.id!==j.id&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx))&&j2.prod_status!=='completed'&&j2.prod_status!=='shipped');
+      const siblingJobs=safeJobs(so).filter(j2=>!_movedHere.has(j2.id)&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx))&&j2.prod_status!=='completed'&&j2.prod_status!=='shipped');
       if(siblingJobs.length>0){
         const names=siblingJobs.map(j2=>j2.art_name||j2.deco_type?.replace(/_/g,' ')||'Job').join(', ');
-        nf('🏭 '+j.id+' completed! Still needs: '+names+' before shipping','warning');
+        nf('🏭 '+j.id+' completed'+_extra+'! Still needs: '+names+' before shipping','warning');
       } else {
-        nf('🏭 '+j.id+' → Completed — ready to ship!'+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
+        nf('🏭 '+j.id+' → Completed'+_extra+' — ready to ship!'+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
       }
     } else {
-      nf('🏭 '+j.id+' → '+labels[newStatus]+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
+      nf('🏭 '+j.id+' → '+labels[newStatus]+_extra+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
     }
   };
   // Update a job field (for run order, marking runs done, etc.)
@@ -8498,7 +8536,7 @@ export default function App(){
       const parentId=c?.parent_id||c?.id||null;
       safeJobs(so).forEach(j=>{
         allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
-          parentId,grpKey:jobGroupKey(j,parentId),
+          parentId,grpKey:isJobReady(j,so)?jobGroupKey(j,parentId):null,
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—',
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
         });
@@ -8508,6 +8546,9 @@ export default function App(){
     // Jobs sharing a group key (same artwork within a parent, or a manual link) should run on
     // one screen setup. Map each group key to its members so we can cluster them in the board
     // and surface a prompt when 2+ are sitting at the same production stage at once.
+    // grpKey above is only set when isJobReady is true (art approved + production files + every
+    // size pulled/received), so a job only groups/moves with others once it's actually ready to
+    // run — a sibling that isn't checked in won't cluster, badge, or trigger the run prompt.
     const grpMembers={};
     allJobs.forEach(j=>{if(j.grpKey){(grpMembers[j.grpKey]=grpMembers[j.grpKey]||[]).push(j)}});
     // Linked siblings of a job that are NOT shipped/completed (i.e. still relevant to run) —
@@ -8516,6 +8557,7 @@ export default function App(){
     // Reorder a list so members of the same group sit next to each other, preserving the
     // original order of each group's first appearance and leaving ungrouped jobs in place.
     const clusterLinked=(arr)=>{const seen=new Set();const out=[];arr.forEach(j=>{const g=j.grpKey;if(!g){out.push(j);return}if(seen.has(g))return;seen.add(g);arr.forEach(x=>{if(x.grpKey===g)out.push(x)})});return out;};
+    const grpHue=k=>{let h=0;for(let i=0;i<(k||'').length;i++)h=(h*31+k.charCodeAt(i))>>>0;return GRP_HUES[h%GRP_HUES.length]};
     const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>{const cc=cust.find(x=>x.id===j.so.customer_id);return(cc?.primary_rep_id||j.so.created_by)===prodFilter});
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
     const readyOnly=byDeco.filter(j=>(j.prod_status!=='hold'||isJobReady(j,j.so))).filter(j=>j.prod_status!=='shipped');
@@ -8612,8 +8654,9 @@ export default function App(){
               const machine=MACHINES.find(m=>m.id===j.assigned_machine);
               const isExp=expandedJob===j.id+j.soId;
               const urgent=j.daysOut!=null&&j.daysOut<=3;
+              const _hue=linkSiblings(j).length?grpHue(j.grpKey):null;
 
-              return<div key={j.id+j.soId} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',transition:'all 0.15s',borderRadius:8,overflow:'hidden'}}>
+              return<div key={j.id+j.soId} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',transition:'all 0.15s',borderRadius:8,overflow:'hidden',boxShadow:_hue?('inset 4px 0 0 '+_hue):undefined}}>
                 {/* COMPACT ROW — key info visible at a glance */}
                 <div style={{padding:'8px 10px',cursor:'pointer',background:urgent?'#fef2f2':'white'}} onClick={()=>setExpandedJob(isExp?null:j.id+j.soId)}>
                   <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:3}}>
@@ -8847,9 +8890,9 @@ export default function App(){
                 </th>;
               })}
             </tr></thead><tbody>
-            {clusterLinked(sorted).map(j=><tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
-              {visibleCols.map(id=>{const c=ALL_COLS[id];return<td key={id} style={{textAlign:c.align||'left'}}>{c.render(j)}</td>;})}
-            </tr>)}
+            {clusterLinked(sorted).map(j=>{const _hue=linkSiblings(j).length?grpHue(j.grpKey):null;return<tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
+              {visibleCols.map((id,ci)=>{const c=ALL_COLS[id];return<td key={id} style={{textAlign:c.align||'left',...(ci===0?{borderLeft:_hue?('4px solid '+_hue):'4px solid transparent'}:null)}}>{c.render(j)}</td>;})}
+            </tr>})}
             </tbody></table>
           </div></div>
         </div>;
@@ -8998,10 +9041,18 @@ export default function App(){
             +(_pdfGenericUrls.length>0?'<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">'+_pdfGenericUrls.map(u=>'<img src="'+u+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')+'</div>':'')
             +(_pdfFallback?'<div style="display:flex;justify-content:center"><img src="'+_pdfFallback+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/></div>':'')
             +'<div style="font-size:9px;color:#666;margin-top:4px;width:100%;text-align:center">Mockup Preview</div></div>':'';
+          // Run-together siblings — only jobs checked in and ready to run on this same screen now,
+          // so the sheet never lists a linked job whose garments aren't in hand yet.
+          const _pid=c?.parent_id||c?.id||null;
+          const _gk=jobGroupKey(j,_pid);
+          const _famPid=s2=>{const cc=cust.find(x=>x.id===s2.customer_id);return cc?.parent_id||cc?.id||null};
+          const _sibs=[];
+          if(_gk)sos.forEach(s2=>{if(_famPid(s2)!==_pid)return;safeJobs(s2).forEach(jj=>{if(s2.id===so.id&&jj.id===j.id)return;if(jobGroupKey(jj,_famPid(s2))!==_gk)return;if(!isJobReady(jj,s2))return;_sibs.push({soId:s2.id,cust:cust.find(x=>x.id===s2.customer_id)?.name||'—',qty:jj.total_units,manual:!!jj.link_group})})});
+          const _linkHtml=_sibs.length?'<div style="margin:8px 0 12px;padding:10px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px"><div style="font-size:12px;font-weight:700;color:#3730a3">🔗 Runs together — reuse one screen setup ('+(j.total_units+_sibs.reduce((a,s)=>a+s.qty,0))+' units total)</div><ul style="margin:6px 0 0;padding-left:18px;font-size:12px;color:#3730a3">'+_sibs.map(s=>'<li>'+s.soId+' · '+s.cust+' — '+s.qty+' units'+(s.manual?'':' (matched by art)')+'</li>').join('')+'</ul></div>':'';
           printDoc({title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
             headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
             infoBoxes,tables,
-            notes:(_pdfMockHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
+            notes:(_linkHtml||'')+(_pdfMockHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
             showPricing:false});
         };
 
