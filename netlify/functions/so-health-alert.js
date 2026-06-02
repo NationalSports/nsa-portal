@@ -18,6 +18,8 @@
 //   SYSTEM_HEALTH_ALERT_EMAIL  (default: steve@nationalsportsapparel.com)
 //   PORTAL_PUBLIC_URL          (overrides Netlify-provided URL)
 
+const { brevoFetch, brevoConfigured } = require('./lib/brevo');
+
 const ALERT_EMAIL = process.env.SYSTEM_HEALTH_ALERT_EMAIL || 'steve@nationalsportsapparel.com';
 
 function escapeHtml(s) {
@@ -40,14 +42,13 @@ function verdictBadge(v) {
 exports.handler = async () => {
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const brevoKey = process.env.REACT_APP_BREVO_API_KEY;
   const portalUrl = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
 
   if (!sbUrl || !sbKey) {
     console.error('[health-alert] Supabase env vars missing');
     return { statusCode: 500, body: 'Supabase not configured' };
   }
-  if (!brevoKey) {
+  if (!brevoConfigured()) {
     console.error('[health-alert] Brevo env var missing');
     return { statusCode: 500, body: 'Brevo not configured' };
   }
@@ -175,12 +176,10 @@ exports.handler = async () => {
   const subject = `🚨 NSA System Health — ${subjectBits.join(' · ')}`;
 
   try {
-    const r = await fetch('https://api.brevo.com/v3/smtp/email', {
+    const r = await brevoFetch('/v3/smtp/email', {
       method: 'POST',
       headers: {
-        accept: 'application/json',
         'content-type': 'application/json',
-        'api-key': brevoKey,
       },
       body: JSON.stringify({
         sender: { name: 'NSA Portal Health Check', email: 'noreply@nationalsportsapparel.com' },

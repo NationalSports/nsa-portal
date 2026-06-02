@@ -1,21 +1,23 @@
-// Netlify serverless function to proxy Brevo API calls.
-// Keeps the BREVO_API_KEY server-side only (never exposed to the browser).
+// Netlify serverless function to proxy Brevo API calls from the browser.
+// Keeps Brevo credentials server-side only (never exposed to the browser).
 //
-// Environment variables required:
-//   BREVO_API_KEY — your Brevo API key
+// Outbound Brevo traffic is funnelled through ./lib/brevo, which routes via the
+// static-IP relay (BREVO_RELAY_URL) when configured so Brevo only ever sees one
+// IP. See /brevo-relay/README.md.
 //
 // Endpoints (selected via the ?endpoint= query param):
 //   (default) — POST: forwards the JSON body to Brevo's /v3/smtp/email
 //   stats     — GET:  proxies /v3/smtp/statistics/events for open tracking
 //                     (?endpoint=stats&messageId=...&event=opened&limit=1)
 
+const { brevoFetch, brevoConfigured } = require('./lib/brevo');
+
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 exports.handler = async (event) => {
-  const apiKey = process.env.BREVO_API_KEY;
-  if (!apiKey) {
+  if (!brevoConfigured()) {
     return { statusCode: 500, headers: JSON_HEADERS,
-      body: JSON.stringify({ error: 'BREVO_API_KEY not configured in environment variables' }) };
+      body: JSON.stringify({ error: 'Brevo not configured (set BREVO_RELAY_URL or BREVO_API_KEY)' }) };
   }
 
   const endpoint = (event.queryStringParameters && event.queryStringParameters.endpoint) || 'email';
@@ -28,14 +30,11 @@ exports.handler = async (event) => {
         return { statusCode: 400, headers: JSON_HEADERS,
           body: JSON.stringify({ error: 'messageId query param is required for stats' }) };
       }
-      const url = 'https://api.brevo.com/v3/smtp/statistics/events'
+      const path = '/v3/smtp/statistics/events'
         + '?messageId=' + encodeURIComponent(qs.messageId)
         + '&event=' + encodeURIComponent(qs.event || 'opened')
         + '&limit=' + encodeURIComponent(qs.limit || '1');
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: { 'accept': 'application/json', 'api-key': apiKey },
-      });
+      const response = await brevoFetch(path, { method: 'GET' });
       const data = await response.text();
       return { statusCode: response.status, headers: JSON_HEADERS, body: data };
     }
@@ -45,13 +44,9 @@ exports.handler = async (event) => {
       return { statusCode: 405, headers: JSON_HEADERS,
         body: JSON.stringify({ error: 'Method not allowed. Use POST.' }) };
     }
-    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+    const response = await brevoFetch('/v3/smtp/email', {
       method: 'POST',
-      headers: {
-        'accept': 'application/json',
-        'content-type': 'application/json',
-        'api-key': apiKey,
-      },
+      headers: { 'content-type': 'application/json' },
       body: event.body,
     });
     const data = await response.text();

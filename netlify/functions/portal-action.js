@@ -10,6 +10,7 @@
 // Brevo using the server-side key so it isn't exposed to the browser.
 
 const { createClient } = require('@supabase/supabase-js');
+const { brevoFetch, brevoConfigured } = require('./lib/brevo');
 
 // Only these columns may be written from the portal — defends against a crafted
 // payload setting arbitrary columns even though we don't validate the order id.
@@ -84,9 +85,8 @@ exports.handler = async (event) => {
   // Notify the rep. Failure here must not fail the approval — the write already succeeded.
   let emailSent = false, emailError = null;
   if (email && email.to) {
-    const apiKey = process.env.BREVO_API_KEY;
-    if (!apiKey) {
-      emailError = 'BREVO_API_KEY not configured';
+    if (!brevoConfigured()) {
+      emailError = 'Brevo not configured';
     } else {
       try {
         const payload = {
@@ -101,9 +101,9 @@ exports.handler = async (event) => {
           const cc = (Array.isArray(email.cc) ? email.cc : [email.cc]).filter(c => c && c.email && !toSet.has(c.email.toLowerCase()));
           if (cc.length) payload.cc = cc;
         }
-        const r = await fetch('https://api.brevo.com/v3/smtp/email', {
+        const r = await brevoFetch('/v3/smtp/email', {
           method: 'POST',
-          headers: { 'accept': 'application/json', 'content-type': 'application/json', 'api-key': apiKey },
+          headers: { 'content-type': 'application/json' },
           body: JSON.stringify(payload),
         });
         if (r.ok) emailSent = true;

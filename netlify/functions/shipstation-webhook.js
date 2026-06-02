@@ -11,6 +11,7 @@
 //   REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY,
 //   BREVO_API_KEY, and PORTAL_PUBLIC_URL (or Netlify's URL).
 const { createClient } = require('@supabase/supabase-js');
+const { brevoFetch, brevoConfigured } = require('./lib/brevo');
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -88,8 +89,7 @@ exports.handler = async (event) => {
 };
 
 async function sendShipEmail(sb, order, sh, shipItems, tracking) {
-  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
-  if (!brevoKey) return;
+  if (!brevoConfigured()) return;
   const { data: stores } = await sb.from('webstores').select('name,slug,primary_color,accent_color,logo_url').eq('id', order.store_id).limit(1);
   const store = stores && stores[0]; if (!store) return;
 
@@ -134,9 +134,9 @@ async function sendShipEmail(sb, order, sh, shipItems, tracking) {
       <p style="margin-top:18px"><a href="${orderLink}" style="color:${accent}">View your full order</a></p>
     </div></div>`;
 
-  await fetch('https://api.brevo.com/v3/smtp/email', {
+  await brevoFetch('/v3/smtp/email', {
     method: 'POST',
-    headers: { 'accept': 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       sender: { name: store.name || 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
       to: [{ email: order.buyer_email, name: order.buyer_name || '' }],

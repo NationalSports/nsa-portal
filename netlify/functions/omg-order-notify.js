@@ -13,6 +13,7 @@
 // Env: REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY,
 //      BREVO_API_KEY, PORTAL_PUBLIC_URL (or Netlify URL)
 const { createClient } = require('@supabase/supabase-js');
+const { brevoFetch, brevoConfigured } = require('./lib/brevo');
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -22,9 +23,8 @@ exports.handler = async (event) => {
 
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
   if (!sbUrl || !sbKey) return { statusCode: 500, headers, body: JSON.stringify({ error: 'Supabase not configured' }) };
-  if (!brevoKey) return { statusCode: 500, headers, body: JSON.stringify({ error: 'BREVO_API_KEY not configured' }) };
+  if (!brevoConfigured()) return { statusCode: 500, headers, body: JSON.stringify({ error: 'Brevo not configured' }) };
   const sb = createClient(sbUrl, sbKey, { auth: { autoRefreshToken: false, persistSession: false } });
 
   let body;
@@ -75,9 +75,9 @@ exports.handler = async (event) => {
       const html = buildHtml({ store, order: o, items, portal, testFor: testMode ? (o.buyer_email || o.buyer_name || `order ${o.omg_order_number}`) : null });
       const toEmail = testMode ? testEmail : o.buyer_email;
       try {
-        const resp = await fetch('https://api.brevo.com/v3/smtp/email', {
+        const resp = await brevoFetch('/v3/smtp/email', {
           method: 'POST',
-          headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+          headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             sender: { name: store.name || 'National Sports Apparel', email: 'stores@nationalsportsapparel.com' },
             to: [{ email: toEmail, name: o.buyer_name || '' }],

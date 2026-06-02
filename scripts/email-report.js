@@ -14,6 +14,7 @@
  */
 
 const https = require('https');
+const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
@@ -32,9 +33,13 @@ function loadEnv() {
 function sendReport(htmlContent, stats) {
   const env = loadEnv();
   const apiKey = process.env.REACT_APP_BREVO_API_KEY || env.REACT_APP_BREVO_API_KEY;
+  // Route through the static-IP relay when configured (see /brevo-relay) so this
+  // doesn't trip Brevo's "new IP" alerts when run from CI. Falls back to direct.
+  const relayUrl = process.env.BREVO_RELAY_URL || env.BREVO_RELAY_URL;
+  const relaySecret = process.env.BREVO_RELAY_SECRET || env.BREVO_RELAY_SECRET;
   const emailTo = process.env.TEST_REPORT_EMAIL || env.TEST_REPORT_EMAIL;
 
-  if (!apiKey) throw new Error('REACT_APP_BREVO_API_KEY not found in environment or .env file');
+  if (!apiKey && !relayUrl) throw new Error('Set BREVO_RELAY_URL (preferred) or REACT_APP_BREVO_API_KEY in environment or .env file');
   if (!emailTo) throw new Error('TEST_REPORT_EMAIL not set. Add TEST_REPORT_EMAIL=you@example.com to your .env file');
 
   const statusEmoji = stats.failed > 0 ? '❌' : '✅';
@@ -47,17 +52,35 @@ function sendReport(htmlContent, stats) {
     htmlContent
   });
 
+  // Resolve target (relay or Brevo direct) and auth header.
+  const headers = {
+    'accept': 'application/json',
+    'content-type': 'application/json',
+    'content-length': Buffer.byteLength(payload)
+  };
+  let transport, hostname, port, reqPath;
+  if (relayUrl) {
+    const u = new URL(relayUrl.replace(/\/+$/, '') + '/v3/smtp/email');
+    transport = u.protocol === 'http:' ? http : https;
+    hostname = u.hostname;
+    port = u.port || (u.protocol === 'http:' ? 80 : 443);
+    reqPath = u.pathname;
+    headers['x-relay-secret'] = relaySecret || '';
+  } else {
+    transport = https;
+    hostname = 'api.brevo.com';
+    port = 443;
+    reqPath = '/v3/smtp/email';
+    headers['api-key'] = apiKey;
+  }
+
   return new Promise((resolve, reject) => {
-    const req = https.request({
-      hostname: 'api.brevo.com',
-      path: '/v3/smtp/email',
+    const req = transport.request({
+      hostname,
+      port,
+      path: reqPath,
       method: 'POST',
-      headers: {
-        'accept': 'application/json',
-        'api-key': apiKey,
-        'content-type': 'application/json',
-        'content-length': Buffer.byteLength(payload)
-      }
+      headers
     }, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);

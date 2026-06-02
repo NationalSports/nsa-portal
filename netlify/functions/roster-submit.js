@@ -1,4 +1,6 @@
 // Netlify function: receives coach roster submission and emails CSV to rep via Brevo
+const { brevoFetch, brevoConfigured } = require('./lib/brevo');
+
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type' };
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers, body: '' };
@@ -12,8 +14,7 @@ exports.handler = async (event) => {
       return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Missing required fields: ' + (!rep_email ? 'rep_email ' : '') + (!csv ? 'csv' : '') }) };
     }
 
-    const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
-    if (!brevoKey) return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: 'Email not configured' }) };
+    if (!brevoConfigured()) return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: 'Email not configured' }) };
 
     // Count numbers in CSV
     const lines = csv.split('\n').filter(l => l.trim() && !l.toLowerCase().startsWith('size'));
@@ -51,9 +52,9 @@ exports.handler = async (event) => {
       attachment: [{ content: csvBase64, name: fileName }]
     };
 
-    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    const res = await brevoFetch('/v3/smtp/email', {
       method: 'POST',
-      headers: { 'accept': 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload)
     });
 

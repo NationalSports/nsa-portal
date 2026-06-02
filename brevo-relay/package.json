@@ -1,0 +1,11 @@
+{
+  "name": "nsa-brevo-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Static-IP egress relay for Brevo API traffic — gives Brevo a single, authorized IP so it stops emailing 'new IP' alerts.",
+  "type": "commonjs",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.js"
+  }
+}

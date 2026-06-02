@@ -11,6 +11,7 @@
 //   and SUPABASE_SERVICE_ROLE_KEY.
 const stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
+const { brevoFetch, brevoConfigured } = require('./lib/brevo');
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method not allowed' };
@@ -62,8 +63,7 @@ const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumF
 
 // Server-side confirmation email (used only when the client didn't send one).
 async function sendConfirmation(sb, order) {
-  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
-  if (!brevoKey) return;
+  if (!brevoConfigured()) return;
   const { data: stores } = await sb.from('webstores').select('name,slug,primary_color,accent_color,logo_url').eq('id', order.store_id).limit(1);
   const store = stores && stores[0];
   if (!store) return;
@@ -109,9 +109,9 @@ async function sendConfirmation(sb, order) {
       <a href="${link}" style="display:inline-block;margin-top:20px;background:${accent};color:#fff;text-decoration:none;padding:13px 26px;border-radius:8px;font-weight:700">Track your order</a>
       <p style="font-size:12px;color:#94a3b8;margin-top:18px">Save this email — the link above is how you check your order status anytime.</p>
     </div></div>`;
-  await fetch('https://api.brevo.com/v3/smtp/email', {
+  await brevoFetch('/v3/smtp/email', {
     method: 'POST',
-    headers: { 'accept': 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       sender: { name: store.name || 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
       to: [{ email: order.buyer_email, name: order.buyer_name || '' }],

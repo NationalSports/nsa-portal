@@ -16,6 +16,23 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const BREVO_API_KEY = Deno.env.get("BREVO_API_KEY") ?? "";
 
+// Route Brevo traffic through the static-IP relay when configured (see
+// /brevo-relay) so Brevo only ever sees one authorized IP and stops emailing
+// "new IP" security alerts. Falls back to calling Brevo directly with the key.
+const BREVO_RELAY_URL = Deno.env.get("BREVO_RELAY_URL") ?? "";
+const BREVO_RELAY_SECRET = Deno.env.get("BREVO_RELAY_SECRET") ?? "";
+const BREVO_CONFIGURED = !!(BREVO_RELAY_URL || BREVO_API_KEY);
+
+function brevoTarget(path: string): { url: string; headers: Record<string, string> } {
+  if (BREVO_RELAY_URL) {
+    return {
+      url: BREVO_RELAY_URL.replace(/\/+$/, "") + path,
+      headers: { "x-relay-secret": BREVO_RELAY_SECRET },
+    };
+  }
+  return { url: "https://api.brevo.com" + path, headers: { "api-key": BREVO_API_KEY } };
+}
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 // Cap how many we process per invocation so a backlog can't time the function
@@ -46,7 +63,7 @@ type ScheduledRow = {
 };
 
 async function sendOne(row: ScheduledRow): Promise<{ ok: boolean; messageId?: string; error?: string }> {
-  if (!BREVO_API_KEY) return { ok: false, error: "BREVO_API_KEY not configured" };
+  if (!BREVO_CONFIGURED) return { ok: false, error: "Brevo not configured (set BREVO_RELAY_URL or BREVO_API_KEY)" };
 
   const payload: Record<string, unknown> = {
     sender: {
@@ -62,12 +79,13 @@ async function sendOne(row: ScheduledRow): Promise<{ ok: boolean; messageId?: st
   if (row.attachments && row.attachments.length > 0) payload.attachment = row.attachments;
 
   try {
-    const r = await fetch("https://api.brevo.com/v3/smtp/email", {
+    const { url, headers } = brevoTarget("/v3/smtp/email");
+    const r = await fetch(url, {
       method: "POST",
       headers: {
         accept: "application/json",
         "content-type": "application/json",
-        "api-key": BREVO_API_KEY,
+        ...headers,
       },
       body: JSON.stringify(payload),
     });
