@@ -330,7 +330,7 @@ confirmed.
 
 ### P1 — hardcoded credential
 
-- **`richardson-inventory.js:26` — `DEFAULT_KEY = 'A9fK2Qm8ZxP7L4R3WcH6D'`**
+- **`richardson-inventory.js:26` — `DEFAULT_KEY = '[redacted]'`**
   committed to source, used as the fallback feed apikey at `:36` when
   `RICHARDSON_FEED_KEY` is unset. **Rotate it and make it env-only.** (Verified.)
 
