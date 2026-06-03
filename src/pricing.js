@@ -103,6 +103,7 @@ export const calcOrderTotals=(o,custTaxRate=0)=>{
   });
   let rev=0;
   items.forEach(it=>{
+    if(it.is_free_promo)return;
     const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
     const q=sq>0?sq:_sNum(it.est_qty);
     if(!q)return;
@@ -140,6 +141,7 @@ export const calcQualifyingSpend=(o,minMargin=0.2)=>{
   });
   let total=0;
   items.forEach(it=>{
+    if(it.is_free_promo)return;
     const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
     const q=sq>0?sq:_sNum(it.est_qty);
     if(!q)return;

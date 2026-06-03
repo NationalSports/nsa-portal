@@ -506,6 +506,7 @@ function calcQualifyingSpend(o, minMargin = 0.2) {
   });
   let total = 0;
   items.forEach(it => {
+    if (it.is_free_promo) return;
     const sq = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
     const q = sq > 0 ? sq : safeNum(it.est_qty);
     if (!q) return;
