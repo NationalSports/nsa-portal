@@ -850,7 +850,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   },[allOrders,o,products]);
   // Stock actually available to a NEW IF: on-hand minus units already reserved by open IFs.
   const availInv=(p,sz)=>p?Math.max(0,(p._inv?.[sz]||0)-(reservedInvMap[p.id+'|'+sz]||0)):0;
-  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[itemMenuPos,setItemMenuPos]=useState(null);const[editingItemName,setEditingItemName]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});
+  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[itemMenuPos,setItemMenuPos]=useState(null);const[editingItemName,setEditingItemName]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});const[showCustSupp,setShowCustSupp]=useState(false);const[custSuppItem,setCustSuppItem]=useState({name:'',color:'',item_type:'apparel',notes:''});
   const[aiBuild,setAiBuild]=useState(null);// {step:'input'|'review', inputMode:'text'|'image'|'url', text:'', images:[], url:'', loading:false, error:null, parsed:[], warnings:[], build_id:null}
 
   // ─── Live S&S Product Search ───
@@ -2737,7 +2737,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     return liveSrc?<button onClick={()=>setColorPickerModal({itemIdx:idx,sku:item.sku,source:liveSrc})} className="badge badge-gray" style={{cursor:'pointer',border:'1px dashed #94a3b8',display:'inline-flex',alignItems:'center',gap:4}} title="Click to change color">{item.color||'(set color)'} ▾</button>
                       :<span className="badge badge-gray">{item.color}</span>;
                   })()}
-                {item.is_custom&&!item.vendor_source&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Custom</span>}
+                {item.customer_supplied&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ecfeff',color:'#0e7490',fontWeight:700,border:'1px solid #a5f3fc'}}>🎁 Customer-Supplied</span>}
+                {item.is_custom&&!item.customer_supplied&&!item.vendor_source&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Custom</span>}
                 {item.vendor_source&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{item.vendor_source==='sanmar'?'🟦 via SanMar':item.vendor_source==='ss'?'🟪 via S&S':item.vendor_source==='momentec'?'🟧 via Momentec':'via vendor'}</span>}
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={dp.vendor+' — '+dp.deco_type?.replace(/_/g,' ')} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>{dp.po_id} · {dp.vendor}</span>)}
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
@@ -2747,7 +2748,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{display:'flex',alignItems:'center',gap:8,marginTop:4,flexWrap:'wrap'}}>
                 <span style={{fontSize:13,fontWeight:600}}>Sell: <$In value={item._sizeSells&&szQty>0?rQ(pRev/szQty):item.unit_sell} onChange={v=>{if(item._sizeSells&&item._sizeCosts){const ratio=item.nsa_cost>0?v/rQ(item.nsa_cost*(o.default_markup||1.65)):1;const ns={};Object.entries(item._sizeCosts).forEach(([sz,c])=>{ns[sz]=rQ(c*(o.default_markup||1.65)*ratio)});uI(idx,'_sizeSells',ns)}uI(idx,'unit_sell',v)}}/>/ea</span>
                 {item._sizeSells&&szQty>0&&Object.keys(item._sizeSells).length>1&&<span style={{fontSize:9,color:'#94a3b8'}}>(avg)</span>}
-                {item.is_custom&&<span style={{fontSize:12,color:'#64748b'}}>Cost: <$In value={item.nsa_cost} onChange={v=>{uI(idx,'nsa_cost',v);if(!isAU(item.brand)&&v>0){uI(idx,'unit_sell',rQ(v*(o.default_markup||1.65)))}}}/></span>}
+                {item.is_custom&&!item.customer_supplied&&<span style={{fontSize:12,color:'#64748b'}}>Cost: <$In value={item.nsa_cost} onChange={v=>{uI(idx,'nsa_cost',v);if(!isAU(item.brand)&&v>0){uI(idx,'unit_sell',rQ(v*(o.default_markup||1.65)))}}}/></span>}
+                {item.customer_supplied&&<span style={{fontSize:11,color:'#0e7490'}}>$0 garment — decoration charges below</span>}
                 {item.is_custom&&isAU(item.brand)&&<span style={{fontSize:12,color:'#64748b'}}>Retail: <$In value={item.retail_price||0} onChange={v=>{uI(idx,'retail_price',v);if(isAU(item.brand)&&v>0){const costMult=item.is_footwear?(item.brand==='Adidas'?0.55*0.75:0.55*0.85):(item.brand==='Adidas'?0.375:0.425);uI(idx,'nsa_cost',Math.floor(v*costMult*100)/100);uI(idx,'unit_sell',rQ(v*(1-auDisc(item.is_footwear,item.pricing_group))))}}}/></span>}
                 {!isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:'#64748b'}}>({((item._sizeSells&&szQty>0?pRev/szQty:item.unit_sell)/(item._sizeCosts&&szQty>0?pCost/szQty:item.nsa_cost)).toFixed(2)}x)</span>}
                 {isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:item.unit_sell>item.nsa_cost?'#166534':'#dc2626'}}>({Math.round((item.unit_sell-item.nsa_cost)/item.unit_sell*100)}% margin)</span>}
@@ -3292,6 +3294,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     <div className="card"><div style={{padding:'14px 18px'}}>
       {!showAdd?<div style={{display:'flex',gap:6}}><button className="btn btn-primary" onClick={()=>setShowAdd(true)} disabled={!cust}><Icon name="plus" size={14}/> Add Product</button>
       <button className="btn btn-secondary" onClick={()=>setShowCustom(!showCustom)} disabled={!cust}><Icon name="plus" size={14}/> Custom Item</button>
+      <button className="btn btn-secondary" style={{background:'#ecfeff',color:'#0e7490',borderColor:'#a5f3fc'}} onClick={()=>setShowCustSupp(!showCustSupp)} disabled={!cust} title="Add a garment the customer is providing — $0 sell price, decoration charges apply"><Icon name="plus" size={14}/> Customer Item</button>
       <button className="btn btn-secondary" style={{marginLeft:'auto',background:'#7c3aed',color:'white',borderColor:'#6d28d9'}} onClick={()=>setAiBuild({step:'input',inputMode:'text',text:'',images:[],url:'',loading:false,error:null,parsed:[],warnings:[],build_id:null})} disabled={!cust} title="Use AI to parse a coach's order (text, image, or Google Sheets link) into line items">✨ Build with AI</button></div>
       :<div><div className="search-bar" style={{marginBottom:8}}><Icon name="search"/><input placeholder="Search SKU, name, brand... (searches S&S + SanMar live)" value={pS} onChange={e=>setPS(e.target.value)} autoFocus/></div>
         <div style={{maxHeight:350,overflow:'auto'}}>
@@ -3511,6 +3514,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <input type="checkbox" checked={custItem.saveToCatalog||false} onChange={e=>setCustItem(x=>({...x,saveToCatalog:e.target.checked}))} style={{width:14,height:14}}/>
           Save to product catalog {custItem.saveToCatalog&&(!custItem.sku||custItem.sku==='CUSTOM')&&<span style={{color:'#d97706',fontSize:10}}>(enter a SKU first)</span>}
         </label>}</div>
+    </div></div>}
+
+    {showCustSupp&&<div className="card" style={{marginTop:8,borderLeft:'3px solid #0891b2'}}><div style={{padding:'14px 18px'}}>
+      <div style={{fontWeight:700,marginBottom:8}}>🎁 Customer-Supplied Item <span style={{fontWeight:400,fontSize:12,color:'#64748b'}}>— $0 garment, decoration charges only</span></div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 120px 160px',gap:8,marginBottom:8}}>
+        <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Item Name</label><input className="form-input" value={custSuppItem.name} onChange={e=>setCustSuppItem(x=>({...x,name:e.target.value}))} placeholder="Jersey, t-shirt, hat..." autoFocus/></div>
+        <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Color</label><input className="form-input" value={custSuppItem.color} onChange={e=>setCustSuppItem(x=>({...x,color:e.target.value}))} placeholder="Navy"/></div>
+        <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Item Type</label>
+          <select className="form-select" value={custSuppItem.item_type} onChange={e=>setCustSuppItem(x=>({...x,item_type:e.target.value}))}>
+            <option value="apparel">Apparel (S–2XL)</option>
+            <option value="footwear">Footwear (sizes 6–17)</option>
+            <option value="osfa">Hat / OSFA</option>
+          </select>
+        </div>
+      </div>
+      <div style={{marginBottom:8}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Notes</label><input className="form-input" value={custSuppItem.notes} onChange={e=>setCustSuppItem(x=>({...x,notes:e.target.value}))} placeholder="e.g. Customer shipping 48 jerseys — we decorate only"/></div>
+      <div style={{padding:8,background:'#ecfeff',borderRadius:6,marginBottom:10,fontSize:11,color:'#0e7490'}}><strong>$0.00 garment sell price.</strong> The customer provides the item — add decorations below to charge for the decoration work.</div>
+      <div style={{display:'flex',gap:8}}>
+        <button className="btn btn-primary" disabled={!custSuppItem.name} onClick={()=>{
+          const itType=custSuppItem.item_type;
+          const availSz=itType==='footwear'?[...FOOTWEAR_DEFAULT_SIZES]:itType==='osfa'?['OSFA']:['S','M','L','XL','2XL'];
+          sv('items',[...o.items,{product_id:null,sku:'CUST-SUPPLIED',name:custSuppItem.name,brand:'',vendor_id:null,color:custSuppItem.color,nsa_cost:0,retail_price:0,unit_sell:0,available_sizes:availSz,sizes:{},qty_only:false,decorations:[],no_deco:false,is_custom:true,customer_supplied:true,is_footwear:itType==='footwear',notes:custSuppItem.notes||''}]);
+          setShowCustSupp(false);setCustSuppItem({name:'',color:'',item_type:'apparel',notes:''});
+        }}>Add Item</button>
+        <button className="btn btn-secondary" onClick={()=>setShowCustSupp(false)}>Cancel</button>
+      </div>
     </div></div>}
 
     {/* BUILD WITH AI WIZARD */}
