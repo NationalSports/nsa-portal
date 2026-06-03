@@ -315,6 +315,24 @@ export const downloadQrSheet=async({id,qrData,title,subtitle,shipBadge,items,tot
   };
   return downloadDoc(opts,String(id||'pick-ticket'));
 };
+// Fetch the logo and return it as a base64 data URL so the HTML sent to the
+// pdf-generator function is fully self-contained. Puppeteer can then use
+// domcontentloaded instead of networkidle0, saving ~500ms+ per request.
+const _inlineLogoUrl=async(logoUrl)=>{
+  if(!logoUrl||/^data:/i.test(logoUrl))return logoUrl;
+  try{
+    const r=await fetch(logoUrl);
+    if(!r.ok)return logoUrl;
+    const blob=await r.blob();
+    return await new Promise(resolve=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve(reader.result);
+      reader.onerror=()=>resolve(logoUrl);
+      reader.readAsDataURL(blob);
+    });
+  }catch{return logoUrl;}
+};
+
 const _serverPdf=async(html,fname)=>{
   const r=await fetch('/.netlify/functions/pdf-generator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html,filename:fname})});
   if(!r.ok)throw new Error('PDF generation failed: '+r.status);
@@ -322,7 +340,7 @@ const _serverPdf=async(html,fname)=>{
 };
 
 export const downloadDoc=async(opts,filename)=>{
-  const logoUrl=_absLogoUrl(opts.companyInfo);
+  const logoUrl=await _inlineLogoUrl(_absLogoUrl(opts.companyInfo));
   const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS,companyInfo:{...(opts.companyInfo||{}),logoUrl}});
   const safe=String(filename||opts.docNum||'document').replace(/[^a-z0-9._-]+/gi,'_');
   const fname=safe.replace(/\.html?$/i,'')+'.pdf';
@@ -335,7 +353,7 @@ export const downloadDoc=async(opts,filename)=>{
 };
 
 export const buildPdfAttachment=async(opts,filename)=>{
-  const logoUrl=_absLogoUrl(opts.companyInfo);
+  const logoUrl=await _inlineLogoUrl(_absLogoUrl(opts.companyInfo));
   const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS,companyInfo:{...(opts.companyInfo||{}),logoUrl}});
   const safe=String(filename||opts.docNum||'document').replace(/[^a-z0-9._-]+/gi,'_');
   const fname=safe.replace(/\.html?$/i,'')+'.pdf';
@@ -343,7 +361,7 @@ export const buildPdfAttachment=async(opts,filename)=>{
 };
 
 export const openDocPDF=async(opts,filename)=>{
-  const logoUrl=_absLogoUrl(opts.companyInfo);
+  const logoUrl=await _inlineLogoUrl(_absLogoUrl(opts.companyInfo));
   const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS,companyInfo:{...(opts.companyInfo||{}),logoUrl}});
   const safe=String(filename||opts.docNum||'document').replace(/[^a-z0-9._-]+/gi,'_');
   const fname=safe.replace(/\.html?$/i,'')+'.pdf';
