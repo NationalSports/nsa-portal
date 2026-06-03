@@ -1,5 +1,4 @@
 /* eslint-disable */
-import html2pdf from 'html2pdf.js';
 import { NSA as _NSA_CONST } from './constants';
 
 // ── Brevo Email ──
@@ -316,86 +315,44 @@ export const downloadQrSheet=async({id,qrData,title,subtitle,shipBadge,items,tot
   };
   return downloadDoc(opts,String(id||'pick-ticket'));
 };
-// Auto-download the document as a PDF file. Renders the same HTML used for
-// printing/email attachments via html2pdf, with flex→table CSS overrides so
-// html2canvas lays it out correctly.
+const _serverPdf=async(html,fname)=>{
+  const r=await fetch('/.netlify/functions/pdf-generator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html,filename:fname})});
+  if(!r.ok)throw new Error('PDF generation failed: '+r.status);
+  return r.json();
+};
+
 export const downloadDoc=async(opts,filename)=>{
-  const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS});
+  const logoUrl=_absLogoUrl(opts.companyInfo);
+  const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS,companyInfo:{...(opts.companyInfo||{}),logoUrl}});
   const safe=String(filename||opts.docNum||'document').replace(/[^a-z0-9._-]+/gi,'_');
   const fname=safe.replace(/\.html?$/i,'')+'.pdf';
-  const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);
-  const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
-  const pdfFixCss='.header{display:table!important;width:100%!important;table-layout:fixed}.header>*{display:table-cell!important;vertical-align:top!important}.logo{width:55%!important}.logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}.doc-id{width:45%!important;text-align:right!important}.bill-total{display:table!important;width:100%!important;table-layout:fixed}.bill-total>*{display:table-cell!important;vertical-align:top!important}.total-box{width:200px!important;text-align:left!important}.info-row{display:table!important;width:100%!important;table-layout:fixed}.info-cell{display:table-cell!important;vertical-align:top!important}.footer{display:table!important;width:100%!important}.footer>*{display:table-cell!important}.footer>*:last-child{text-align:right!important}';
-  const container=document.createElement('div');
-  container.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:white;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4';
-  const styleEl=document.createElement('style');
-  styleEl.textContent=(styleMatch?styleMatch[1]:'')+pdfFixCss;
-  container.appendChild(styleEl);
-  const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;
-  container.appendChild(bodyDiv);
-  document.body.appendChild(container);
-  try{
-    await new Promise(r=>setTimeout(r,500));
-    await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:fname,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).save();
-  }finally{
-    document.body.removeChild(container);
-  }
+  const {content}=await _serverPdf(docHtml,fname);
+  const bytes=Uint8Array.from(atob(content),c=>c.charCodeAt(0));
+  const blob=new Blob([bytes],{type:'application/pdf'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=fname;a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
 };
 
-// Render the same doc HTML used for print/download to a base64-encoded PDF
-// suitable for use as a Brevo `attachment` entry ({name, content}). Used to
-// attach PO/SO PDFs to outgoing vendor and customer emails.
 export const buildPdfAttachment=async(opts,filename)=>{
-  const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS});
+  const logoUrl=_absLogoUrl(opts.companyInfo);
+  const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS,companyInfo:{...(opts.companyInfo||{}),logoUrl}});
   const safe=String(filename||opts.docNum||'document').replace(/[^a-z0-9._-]+/gi,'_');
   const fname=safe.replace(/\.html?$/i,'')+'.pdf';
-  const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);
-  const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
-  const pdfFixCss='.header{display:table!important;width:100%!important;table-layout:fixed}.header>*{display:table-cell!important;vertical-align:top!important}.logo{width:55%!important}.logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}.doc-id{width:45%!important;text-align:right!important}.bill-total{display:table!important;width:100%!important;table-layout:fixed}.bill-total>*{display:table-cell!important;vertical-align:top!important}.total-box{width:200px!important;text-align:left!important}.info-row{display:table!important;width:100%!important;table-layout:fixed}.info-cell{display:table-cell!important;vertical-align:top!important}.footer{display:table!important;width:100%!important}.footer>*{display:table-cell!important}.footer>*:last-child{text-align:right!important}';
-  const container=document.createElement('div');
-  container.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:white;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4';
-  const styleEl=document.createElement('style');
-  styleEl.textContent=(styleMatch?styleMatch[1]:'')+pdfFixCss;
-  container.appendChild(styleEl);
-  const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;
-  container.appendChild(bodyDiv);
-  document.body.appendChild(container);
-  try{
-    await new Promise(r=>setTimeout(r,500));
-    const blob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:fname,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
-    const b64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(blob)});
-    return{name:fname,content:b64};
-  }finally{
-    document.body.removeChild(container);
-  }
+  return _serverPdf(docHtml,fname);
 };
 
-// Render the document to a PDF Blob and open it in a new browser tab so the
-// user gets a real PDF viewer (not a print preview).
 export const openDocPDF=async(opts,filename)=>{
-  const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS});
+  const logoUrl=_absLogoUrl(opts.companyInfo);
+  const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS,companyInfo:{...(opts.companyInfo||{}),logoUrl}});
   const safe=String(filename||opts.docNum||'document').replace(/[^a-z0-9._-]+/gi,'_');
   const fname=safe.replace(/\.html?$/i,'')+'.pdf';
-  const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);
-  const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
-  const pdfFixCss='.header{display:table!important;width:100%!important;table-layout:fixed}.header>*{display:table-cell!important;vertical-align:top!important}.logo{width:55%!important}.logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}.doc-id{width:45%!important;text-align:right!important}.bill-total{display:table!important;width:100%!important;table-layout:fixed}.bill-total>*{display:table-cell!important;vertical-align:top!important}.total-box{width:200px!important;text-align:left!important}.info-row{display:table!important;width:100%!important;table-layout:fixed}.info-cell{display:table-cell!important;vertical-align:top!important}.footer{display:table!important;width:100%!important}.footer>*{display:table-cell!important}.footer>*:last-child{text-align:right!important}';
-  const container=document.createElement('div');
-  container.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:white;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4';
-  const styleEl=document.createElement('style');
-  styleEl.textContent=(styleMatch?styleMatch[1]:'')+pdfFixCss;
-  container.appendChild(styleEl);
-  const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;
-  container.appendChild(bodyDiv);
-  document.body.appendChild(container);
-  try{
-    await new Promise(r=>setTimeout(r,500));
-    const blob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:fname,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
-    const url=URL.createObjectURL(blob);
-    window.open(url,'_blank');
-    setTimeout(()=>URL.revokeObjectURL(url),60000);
-  }finally{
-    document.body.removeChild(container);
-  }
+  const {content}=await _serverPdf(docHtml,fname);
+  const bytes=Uint8Array.from(atob(content),c=>c.charCodeAt(0));
+  const blob=new Blob([bytes],{type:'application/pdf'});
+  const url=URL.createObjectURL(blob);
+  window.open(url,'_blank');
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
 };
 export const nextInvId=invs=>{const nums=(invs||[]).map(i=>{const m=String(i.id).match(/(\d+)$/);return m?parseInt(m[1]):0});return'INV-'+(Math.max(1000,...nums)+1)};
 
