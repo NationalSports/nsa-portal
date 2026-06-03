@@ -948,10 +948,27 @@ const _resolveArtRows=(clientArtFiles,dbRows,parentId)=>{
   if(conflicts)console.warn('[DB]',conflicts,'art file(s) for',parentId,'field-merged with newer DB copy (concurrent edit) — your content preserved');
   return out;
 };
+const _EST_STATUS_RANK={draft:0,open:1,sent:2,approved:3,converted:4};
+const _mergeDbEstStatus=async(est)=>{
+  // Fetch DB status; if DB has a higher-ranked status, merge it into est so we never downgrade
+  // an approval/conversion through a background save.
+  try{const{data:_dbRow}=await supabase.from('estimates').select('status,approved_by,approved_at').eq('id',est.id).single();
+    if(_dbRow&&(_EST_STATUS_RANK[_dbRow.status]??-1)>(_EST_STATUS_RANK[est.status]??-1)){
+      est.status=_dbRow.status;if(_dbRow.approved_by)est.approved_by=_dbRow.approved_by;if(_dbRow.approved_at)est.approved_at=_dbRow.approved_at;
+      if(_onEstStatusMerge)_onEstStatusMerge(est.id,_dbRow.status,_dbRow.approved_by,_dbRow.approved_at);
+    }
+  }catch(_){}
+};
 const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
   // Optimistic locking: check version before saving (auto-heal on conflict)
-  if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true&&typeof vc==='number')est._version=vc}
+  if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true&&typeof vc==='number'){
+    await _mergeDbEstStatus(est);
+    est._version=vc;
+  }}
+  // For background _diffSave syncs: if local status is below 'approved', always verify DB hasn't been
+  // set higher by an external write (e.g. coach portal approval) before clobbering it.
+  if(_bgSync&&(_EST_STATUS_RANK[est.status]??-1)<_EST_STATUS_RANK.approved){await _mergeDbEstStatus(est)}
   return _dbSavingGuard(async()=>{let decoFailed=false;let _failMsg='';try{
     const{items,art_files,...estRow}=est;
     let{error:estErr}=await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
@@ -1727,6 +1744,7 @@ const _dbSaveInvoice = async (inv) => {
 };
 let _dbNotify=null; // set by App component for visible error toasts
 let _dataLossAlert=null; // set by App component — logs + emails on item-wipe attempts/events
+let _onEstStatusMerge=null; // set by App component — called when a version-conflict save merges a higher status from DB
 // ─── Session-expiry recovery ───
 // When a write fails with a 401 / JWT-expired / row-level-security error it means our Supabase auth
 // session degraded to the anon role (RLS allows anon SELECT but not INSERT). Retrying the write as-is
@@ -3758,6 +3776,7 @@ export default function App(){
 
   // Notification helper — defined early so callbacks below can reference it
   const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_dbNotify=nf;
+  _onEstStatusMerge=(id,status,approved_by,approved_at)=>setEsts(prev=>prev.map(e=>e.id===id?{...e,status,...(approved_by?{approved_by}:{}),...(approved_at?{approved_at}:{})}:e));
   // Data-loss alert: logs to change_log + emails admin owner. Dedupes per SO+kind within 5 min.
   const _alertDedupeRef=React.useRef({});
   _dataLossAlert=({kind,soId,prevCount,newCount,reason})=>{
