@@ -948,22 +948,27 @@ const _resolveArtRows=(clientArtFiles,dbRows,parentId)=>{
   if(conflicts)console.warn('[DB]',conflicts,'art file(s) for',parentId,'field-merged with newer DB copy (concurrent edit) — your content preserved');
   return out;
 };
+const _EST_STATUS_RANK={draft:0,open:1,sent:2,approved:3,converted:4};
+const _mergeDbEstStatus=async(est)=>{
+  // Fetch DB status; if DB has a higher-ranked status, merge it into est so we never downgrade
+  // an approval/conversion through a background save.
+  try{const{data:_dbRow}=await supabase.from('estimates').select('status,approved_by,approved_at').eq('id',est.id).single();
+    if(_dbRow&&(_EST_STATUS_RANK[_dbRow.status]??-1)>(_EST_STATUS_RANK[est.status]??-1)){
+      est.status=_dbRow.status;if(_dbRow.approved_by)est.approved_by=_dbRow.approved_by;if(_dbRow.approved_at)est.approved_at=_dbRow.approved_at;
+      if(_onEstStatusMerge)_onEstStatusMerge(est.id,_dbRow.status,_dbRow.approved_by,_dbRow.approved_at);
+    }
+  }catch(_){}
+};
 const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
   // Optimistic locking: check version before saving (auto-heal on conflict)
   if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true&&typeof vc==='number'){
-    // DB is ahead — fetch status fields so we don't clobber external writes (e.g. a coach portal approval that
-    // happened while this client had the estimate open with an older status).
-    try{const{data:_dbRow}=await supabase.from('estimates').select('status,approved_by,approved_at').eq('id',est.id).single();
-      if(_dbRow){const _SRANK={draft:0,open:1,sent:2,approved:3,converted:4};
-        if((_SRANK[_dbRow.status]??-1)>(_SRANK[est.status]??-1)){
-          est.status=_dbRow.status;if(_dbRow.approved_by)est.approved_by=_dbRow.approved_by;if(_dbRow.approved_at)est.approved_at=_dbRow.approved_at;
-          if(_onEstStatusMerge)_onEstStatusMerge(est.id,_dbRow.status,_dbRow.approved_by,_dbRow.approved_at);
-        }
-      }
-    }catch(_){}
+    await _mergeDbEstStatus(est);
     est._version=vc;
   }}
+  // For background _diffSave syncs: if local status is below 'approved', always verify DB hasn't been
+  // set higher by an external write (e.g. coach portal approval) before clobbering it.
+  if(_bgSync&&(_EST_STATUS_RANK[est.status]??-1)<_EST_STATUS_RANK.approved){await _mergeDbEstStatus(est)}
   return _dbSavingGuard(async()=>{let decoFailed=false;let _failMsg='';try{
     const{items,art_files,...estRow}=est;
     let{error:estErr}=await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
