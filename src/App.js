@@ -3670,6 +3670,34 @@ export default function App(){
     return()=>clearInterval(timer);
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ─── Build-version polling: auto-reload stale tabs when a new deploy lands ───
+  // A stale tab running old code bypasses data-integrity guards (e.g. the _bgSync
+  // depth counter). Every 5 minutes, compare /asset-manifest.json's main.js hash to
+  // what was recorded at startup. On a hash change (new deploy), drain any in-flight
+  // saves then force a reload — the new bundle's guards are then active immediately.
+  React.useEffect(()=>{
+    let knownHash=null;
+    const check=async()=>{
+      try{
+        const res=await fetch('/asset-manifest.json?_='+Date.now(),{cache:'no-store'});
+        if(!res.ok)return;
+        const manifest=await res.json();
+        const hash=manifest?.files?.['main.js']||'';
+        if(!hash)return;
+        if(knownHash===null){knownHash=hash;return}// record on first run
+        if(hash===knownHash)return;
+        const doReload=()=>{
+          if(_dbSavePendingIds.size===0&&_bgSync===0)window.location.reload();
+          else setTimeout(doReload,2000);
+        };
+        doReload();
+      }catch(e){/* network error — skip this poll */}
+    };
+    check();
+    const t=setInterval(check,5*60*1000);
+    return()=>clearInterval(t);
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
