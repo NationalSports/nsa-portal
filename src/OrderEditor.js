@@ -13,7 +13,7 @@ import SanMarPreviewModal from './SanMarPreviewModal';
 import QuickMockBuilder from './QuickMockBuilder';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
-import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
+import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles, champroGetProductInfo } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { jobScreenKey, jobGroupKey, isJobReady } from './businessLogic';
 import { buildBotCartPayload, isBotOwner } from './lib/botTasks';
@@ -1267,38 +1267,93 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }finally{if(gen===rsSearchGen.current)setRsSearching(false)}
   },[products,vendorList]);
 
-  // Debounced S&S + SanMar + Momentec + Richardson search when typing in Add Product search OR Copy SKU modal
+  // ─── Live CHAMPRO Product Search ───
+  // CHAMPRO's ProductInfo endpoint takes an exact ProductMaster (no substring
+  // search), so the query is treated as a style code. ProductInfo returns no
+  // price or product name, so lines come in at $0 cost (entered manually).
+  const[cpResults,setCpResults]=useState([]);
+  const[cpSearching,setCpSearching]=useState(false);
+  const cpSearchTimer=useRef(null);
+  const cpSearchCache=useRef({});
+  const cpSearchGen=useRef(0);
+
+  const cpLiveSearch=useCallback(async(query)=>{
+    if(!query||query.length<2){setCpResults([]);return}
+    const q=query.toUpperCase().trim();
+    const cacheKey=q;
+    const cached=cpSearchCache.current[cacheKey];
+    if(cached&&(cached.length>0||cached._ts>Date.now()-30000)){setCpResults(cached.length?cached:[]);return}
+    const gen=cpSearchGen.current;
+    setCpSearching(true);
+    try{
+      const data=await champroGetProductInfo(q);
+      const rawSkus=data?.ProductSKUs||[];
+      if(!rawSkus.length){cpSearchCache.current[cacheKey]={length:0,_ts:Date.now()};if(gen===cpSearchGen.current)setCpResults([]);return}
+      // CHAMPRO repeats each variant row; dedupe by SKU+size and group by color.
+      const seen=new Set();
+      const colorMap={};
+      rawSkus.forEach(r=>{
+        const config=(r.Configuration||'').toUpperCase();
+        const rawSize=(r.Size||'').toUpperCase();
+        // Prefix youth sizes so Youth-S and Adult-S stay distinct (YS/YM/YL/YXL).
+        const sizeName=normSzName(config==='YOUTH'?('Y'+rawSize):rawSize);
+        const dedupeKey=(r.SKU||'')+'|'+sizeName;
+        if(seen.has(dedupeKey))return;
+        seen.add(dedupeKey);
+        const color=r.Color||'Default';
+        if(!colorMap[color])colorMap[color]={colorName:color,colorFrontImage:'',colorBackImage:'',customerPrice:0,piecePrice:0,sizes:[],totalQty:0};
+        colorMap[color].sizes.push({sizeName,qty:0,price:0});
+      });
+      const result={
+        styleID:q,styleName:'CHAMPRO '+q,brandName:'CHAMPRO',sku:q,styleImage:'',
+        customerPrice:0,piecePrice:0,totalQty:0,
+        colors:Object.values(colorMap),_source:'cp'
+      };
+      cpSearchCache.current[cacheKey]=[result];
+      if(gen===cpSearchGen.current)setCpResults([result]);
+    }catch(err){
+      // Unknown masters throw "Product Info not available" — treat as no results.
+      console.log('[CHAMPRO] Search:',err.message);
+      cpSearchCache.current[cacheKey]={length:0,_ts:Date.now()};
+      if(gen===cpSearchGen.current)setCpResults([]);
+    }finally{if(gen===cpSearchGen.current)setCpSearching(false)}
+  },[]);
+
+  // Debounced S&S + SanMar + Momentec + Richardson + CHAMPRO search when typing in Add Product search OR Copy SKU modal
   React.useEffect(()=>{
     if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);
     if(smSearchTimer.current)clearTimeout(smSearchTimer.current);
     if(mtSearchTimer.current)clearTimeout(mtSearchTimer.current);
     if(rsSearchTimer.current)clearTimeout(rsSearchTimer.current);
+    if(cpSearchTimer.current)clearTimeout(cpSearchTimer.current);
     // Determine active query: Add Product takes precedence, else Copy SKU modal
     const copyQ=copySkuModal?.search||'';
     const activeQ=showAdd?pS:copyQ;
     const isActive=showAdd||!!copySkuModal;
-    if(!isActive||!activeQ||activeQ.length<2){setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;setExpandedStyle(null);return}
+    if(!isActive||!activeQ||activeQ.length<2){setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setCpResults([]);ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;cpSearchGen.current++;setExpandedStyle(null);return}
     // Bump generation to discard in-flight results from previous keystrokes
-    ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;setExpandedStyle(null);
+    ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;cpSearchGen.current++;setExpandedStyle(null);
     const localCount=allFp.length;
     const delay=localCount>5?800:400;
     ssSearchTimer.current=setTimeout(()=>ssLiveSearch(activeQ),delay);
     smSearchTimer.current=setTimeout(()=>smLiveSearch(activeQ),delay+100);
     mtSearchTimer.current=setTimeout(()=>mtLiveSearch(activeQ),delay+200);
     rsSearchTimer.current=setTimeout(()=>rsLiveSearch(activeQ),delay+50);
-    return()=>{if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);if(smSearchTimer.current)clearTimeout(smSearchTimer.current);if(mtSearchTimer.current)clearTimeout(mtSearchTimer.current);if(rsSearchTimer.current)clearTimeout(rsSearchTimer.current)};
+    cpSearchTimer.current=setTimeout(()=>cpLiveSearch(activeQ),delay+150);
+    return()=>{if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);if(smSearchTimer.current)clearTimeout(smSearchTimer.current);if(mtSearchTimer.current)clearTimeout(mtSearchTimer.current);if(rsSearchTimer.current)clearTimeout(rsSearchTimer.current);if(cpSearchTimer.current)clearTimeout(cpSearchTimer.current)};
   },[pS,showAdd,copySkuModal?.search]);
 
   // When color picker modal opens, fetch the SKU's vendor data to populate colors list
   React.useEffect(()=>{
     if(!colorPickerModal)return;
     const{sku,source}=colorPickerModal;if(!sku||!source)return;
-    ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;
+    ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;rsSearchGen.current++;cpSearchGen.current++;
     if(source==='ss')ssLiveSearch(sku);
     else if(source==='sm')smLiveSearch(sku);
     else if(source==='mt')mtLiveSearch(sku);
     else if(source==='rs')rsLiveSearch(sku);
-  },[colorPickerModal,ssLiveSearch,smLiveSearch,mtLiveSearch,rsLiveSearch]);
+    else if(source==='cp')cpLiveSearch(sku);
+  },[colorPickerModal,ssLiveSearch,smLiveSearch,mtLiveSearch,rsLiveSearch,cpLiveSearch]);
 
   // Add a vendor search result as a line item (works for S&S, SanMar, and Momentec)
   // style = the style-level result, color = the selected color from style.colors
@@ -1306,8 +1361,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const isSM=source==='sm';
     const isMT=source==='mt';
     const isRS=source==='rs';
-    const vendor=vendorList.find(v=>isRS?(v.api_provider==='richardson'||v.name==='Richardson'):isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
-    const vId=vendor?.id||(isRS?'v5':isMT?'v8':isSM?'v3':'v4');
+    const isCP=source==='cp';
+    const vendor=vendorList.find(v=>isCP?(v.api_provider==='champro'||v.name==='CHAMPRO'):isRS?(v.api_provider==='richardson'||v.name==='Richardson'):isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
+    const vId=vendor?.id||(isCP?null:isRS?'v5':isMT?'v8':isSM?'v3':'v4');
     const cost=color.customerPrice||color.piecePrice||0;
     const sell=rQ(cost*(o.default_markup||1.65));
     // Try to match a catalog product for this SKU to get its full available_sizes
@@ -1330,7 +1386,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(s.qty>0)vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty;
       if(s.nextAvail&&(!vNextBySize[s.sizeName]||new Date(s.nextAvail)<new Date(vNextBySize[s.sizeName])))vNextBySize[s.sizeName]=s.nextAvail;
     });
-    const liveFlag=isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
+    const liveFlag=isCP?'_cp_live':isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
     const fallbackSizes=isRS?(availSizes.length?availSizes:['OSFA']):['S','M','L','XL','2XL'];
     const newItem={
       product_id:catMatch?.id||null,sku:style.sku,name:nameWithBrand(style.styleName,style.brandName),brand:style.brandName,
@@ -1356,10 +1412,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(Object.keys(vInv).length>0){
       vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
       setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
-    }else{
+    }else if(!isCP){
+      // CHAMPRO has no live-stock fetch wired yet (Inventory warehouse shape TBD).
       fetchVendorInventory(style.sku,vId,newItem);
     }
-    setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
+    setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setCpResults([]);setExpandedStyle(null);
   };
   // State for expanded style in search results (shows color picker)
   const[expandedStyle,setExpandedStyle]=useState(null);// {key:'ss-0', style:{...}}
@@ -3420,9 +3477,35 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>})}
             {!rsSearching&&rsResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No Richardson results for "{pS}"</div>}
           </>}
+          {/* CHAMPRO Live Search Results (exact style code; no price/image from API) */}
+          {pS.length>=2&&(cpSearching||cpResults.length>0)&&<>
+            <div style={{padding:'6px 12px',background:'#dcfce7',borderTop:'2px solid #86efac',borderBottom:'1px solid #bbf7d0',display:'flex',alignItems:'center',gap:6}}>
+              <span style={{fontSize:10,fontWeight:800,color:'#16a34a',textTransform:'uppercase',letterSpacing:1}}>CHAMPRO</span>
+              {cpSearching&&<span style={{fontSize:10,color:'#4ade80'}}>Searching...</span>}
+              {!cpSearching&&cpResults.length>0&&<span style={{fontSize:10,color:'#16a34a'}}>{cpResults.length} style{cpResults.length!==1?'s':''}</span>}
+            </div>
+            {cpResults.slice(0,10).map((cp,ci)=>{const eKey='cp-'+ci;const isExp=expandedStyle===eKey;return<div key={'cp'+ci}>
+              <div style={{padding:'8px 12px',borderBottom:'1px solid #dcfce7',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:isExp?'#bbf7d0':ci%2===0?'#f0fdf4':'white'}} onClick={()=>setExpandedStyle(isExp?null:eKey)}>
+                <div style={{width:32,height:32,borderRadius:4,background:'#bbf7d0',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,color:'#16a34a',fontWeight:700,flexShrink:0}}>CP</div>
+                <span style={{fontFamily:'monospace',fontWeight:700,color:'#16a34a',background:'#bbf7d0',padding:'2px 6px',borderRadius:3,fontSize:12}}>{cp.sku}</span>
+                <span style={{fontWeight:600,fontSize:13,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',flex:1}}>{cp.styleName}</span>
+                <span style={{fontSize:10,padding:'1px 6px',borderRadius:3,background:'#bbf7d0',color:'#15803d',fontWeight:600}}>CHAMPRO</span>
+                <span style={{fontSize:10,color:'#16a34a'}}>{cp.colors.length} color{cp.colors.length!==1?'s':''}</span>
+                <span style={{fontWeight:700,color:'#16a34a',fontSize:13,marginLeft:'auto'}}>Price TBD</span>
+                <span style={{fontSize:12,color:'#16a34a'}}>{isExp?'▲':'▼'}</span>
+              </div>
+              {isExp&&<div style={{background:'#f0fdf4',borderBottom:'2px solid #86efac',padding:'6px 12px',display:'flex',flexWrap:'wrap',gap:4,maxHeight:200,overflowY:'auto'}}>
+                {cp.colors.map((c,cci)=><div key={cci} style={{padding:'4px 8px',borderRadius:4,border:'1px solid #86efac',background:'white',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0}} onClick={()=>addSearchProduct(cp,c,'cp')} title={c.colorName+' — '+c.sizes.length+' size(s)'}>
+                  <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:160}}>{c.colorName||'Default'}</span>
+                  <span style={{fontSize:8,color:'#16a34a'}}>{c.sizes.length} sz</span>
+                </div>)}
+              </div>}
+            </div>})}
+            {!cpSearching&&cpResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No CHAMPRO style "{pS}" (enter an exact style code)</div>}
+          </>}
         </div>
-        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([])}} style={{marginTop:8}}>Cancel</button>
-        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setShowCustom(true)}} style={{marginTop:8,marginLeft:4}}>+ Custom Item</button></div>}
+        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setCpResults([])}} style={{marginTop:8}}>Cancel</button>
+        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setCpResults([]);setShowCustom(true)}} style={{marginTop:8,marginLeft:4}}>+ Custom Item</button></div>}
     </div></div>
     {showCustom&&<div className="card" style={{marginTop:8,borderLeft:'3px solid #d97706'}}><div style={{padding:'14px 18px'}}>
       <div style={{fontWeight:700,marginBottom:8}}>✏️ Custom Item {custItem.name&&<span style={{fontWeight:400,fontSize:12,color:'#64748b'}}>— {custItem.name}</span>}</div>
