@@ -912,7 +912,7 @@ const _sanitizeArtRow=(r)=>{if('stitches' in r){const n=parseInt(r.stitches,10);
 // filtered out as "stale". Instead we 3-way-merge: start from the DB row (keeps concurrent approval/status/mockup
 // changes), overlay THIS client's user-authored content, and union file collections so neither side's uploads are
 // lost. _version itself is never written (the DB trigger owns it), so the merged row upserts cleanly.
-const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','notes','archived'];
+const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','notes','archived','prod_files_attached'];
 const _ART_FILE_COLLECTIONS=['files','mockup_files','prod_files','sample_art'];
 const _artFileUrl=f=>typeof f==='string'?f:(f&&(f.url||f.name))||'';
 const _unionArtFiles=(dbArr,clientArr)=>{
