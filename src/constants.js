@@ -9,11 +9,11 @@ export const _soCols=['id','customer_id','estimate_id','memo','status','created_
 // React state only. Including them here would cause batch inserts to fail on
 // schemas that don't have those columns, and the retry-with-extras-stripped
 // path silently drops est_qty / qty_only along with them — losing user input.
-export const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','notes','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','est_qty','qty_only','size_availability','is_footwear'];
+export const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','notes','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','est_qty','qty_only','size_availability','is_footwear','customer_supplied'];
 export const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','vendor','deco_type','notes','custom_font_art_id','print_color','print_color_b','front_and_back','reversible','num_qty','name_qty','name_method','color_way_id','color_way_id_b'];
 // NOTE: names_list (jsonb) and _cost_locked (boolean) exist in DB but PostgREST schema cache hasn't picked them up yet — add back here once Supabase refreshes
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
-export const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','est_qty','qty_only','size_availability','notes','is_footwear']);
+export const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','est_qty','qty_only','size_availability','notes','is_footwear','customer_supplied']);
 export const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','approved_by','approved_at','credit_applied','credit_amount']);
 // deco_pos is intentionally NOT in this strip-on-retry set: the column exists in the DB, so dropping it
 // on an upsert retry silently loses decorator/Topstar POs (the SO row saves, but its POs vanish).
