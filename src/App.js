@@ -1001,6 +1001,14 @@ const _dbSaveEstimateInner = async (est) => {
     // foreground edit; a background path arriving with fewer items means stale/partial in-memory state
     // (truncated child fetch, merge gap) — which the sticky _everHydratedItems guard below would otherwise
     // wave through. Preserve the DB rows untouched; the estimate row's field changes already upserted above.
+    // Zero-wipe guard: block unconditionally when client has 0 items but DB has items.
+    // savE already prevents foreground zero-saves, so reaching here with 0 client items always means
+    // stale/raced state — not a legitimate edit. Applies regardless of _bgSync or hydration status.
+    if(oldItemIds.length>0&&_clientEstItemCount===0){
+      console.error('[DB] SAFETY: Blocking estimate zero-wipe for',est.id,'— client has 0 items but DB has',oldItemIds.length);
+      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:est.id,prevCount:oldItemIds.length,newCount:0,reason:'client has 0 items but DB has items (zero-wipe guard — likely stale/raced state)'});
+      _dbSaveFailedIds.delete(est.id);_persistFailedIds();return true;
+    }
     if(_bgSync&&oldItemIds.length>0&&_clientEstItemCount<oldItemIds.length){
       console.warn('[DB] SAFETY: background sync would shrink',est.id,'items ('+_clientEstItemCount+'<'+oldItemIds.length+') — preserving DB items, skipping child writes');
       if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:est.id,prevCount:oldItemIds.length,newCount:_clientEstItemCount,reason:'background estimate save would shrink items'});
@@ -1230,6 +1238,12 @@ const _dbSaveSOInner = async (so) => {
     // which only turns true after a later clean reload. Orders whose DB already holds items are NOT trusted here;
     // they must still load cleanly to clear the guard.
     if(oldItemIds.length===0&&_clientSoItemCount>0)_everHydratedItems.add(so.id);
+    // Zero-wipe guard: same logic as estimate path — block unconditionally when client has 0 items but DB has items.
+    if(oldItemIds.length>0&&_clientSoItemCount===0){
+      console.error('[DB] SAFETY: Blocking SO zero-wipe for',so.id,'— client has 0 items but DB has',oldItemIds.length);
+      if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:oldItemIds.length,newCount:0,reason:'client has 0 items but DB has items (zero-wipe guard — likely stale/raced state)'});
+      _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
+    }
     // SAFETY: a background sync (poll/realtime _diffSave, _bgSync=true) must NEVER shrink or empty an SO's
     // items — same root cause as the estimate item-wipe. Preserve DB rows; the SO row already upserted above.
     if(_bgSync&&oldItemIds.length>0&&_clientSoItemCount<oldItemIds.length){
