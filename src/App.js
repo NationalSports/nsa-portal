@@ -1652,6 +1652,12 @@ const _dbSaveArtFilesInner = async (so) => {
       const _knownArtIds=(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]).filter(id=>_dbAfVerById.has(id));
       if(_knownArtIds.length)await _retryNet(()=>supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',_knownArtIds));
     }
+    // Bump the order's updated_at to the value savArtFiles already set on the local copy. The lightweight art
+    // save otherwise never touches the sales_orders row, so the client's updated_at stays permanently ahead of
+    // the DB. That mismatch defeats the poll-merge fast-path (App.js mergeSO), which then wholesale-replaces this
+    // SO from a possibly-stale DB snapshot and drops a just-added art group from the open editor — even though
+    // the row persisted fine. Keeping the timestamps in sync lets the poll recognize there's nothing to change.
+    if(so.updated_at)await _retryNet(()=>supabase.from('sales_orders').update({updated_at:so.updated_at}).eq('id',so.id));
     return true;
   }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(so.id);console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
 };
@@ -5263,9 +5269,17 @@ export default function App(){
     // _dbSaveSO. We persist the art files ourselves via the lightweight path below.
     const snap=_dbSnap.current?.sos;
     if(Array.isArray(snap)&&snap.some(x=>x.id===merged.id))_dbSnap.current.sos=snap.map(x=>x.id===merged.id?merged:x);
+    // Protect this SO from a background poll/realtime merge while the art-only write is in flight (and briefly
+    // after). _dbSaveArtFiles goes through _queuedEntitySave, which — unlike the full-SO _diffSave path — never
+    // registers the id in _dbSavePendingIds. Without this, a poll firing mid-write replaces the open editor's SO
+    // from a stale DB snapshot, dropping a just-added art group; the next save then persists that drop as a real
+    // delete. Mark it pending now and keep a short recently-pulled tail on success so the poll keeps the local copy.
+    _dbSavePendingIds.add(merged.id);
     // Return the persistence promise (resolves true on success, false on failure) so callers like the
     // Art Library Save button can report a truthful result instead of optimistically claiming "saved".
-    return _dbSaveArtFiles(merged);
+    const _artSaveP=_dbSaveArtFiles(merged);
+    Promise.resolve(_artSaveP).then(ok=>{if(ok!==false)_markRecentlyPulled(merged.id)}).finally(()=>{_dbSavePendingIds.delete(merged.id)});
+    return _artSaveP;
   };
   const savI=(pid,inv,deltas,reason,adjType,availSizes)=>{
     const p=prod.find(x=>x.id===pid);

@@ -72,7 +72,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       setO(prev=>{const mergedJobs=safeJobs(prev).map(j=>{const ext=extJobs.find(ej=>ej.id===j.id);if(ext&&(ext.art_status!==j.art_status||ext.coach_approved_at!==j.coach_approved_at||ext.coach_rejected!==j.coach_rejected)){return{...j,art_status:ext.art_status,coach_approved_at:ext.coach_approved_at,coach_rejected:ext.coach_rejected,rejections:ext.rejections,sent_to_coach_at:ext.sent_to_coach_at}}return j});
         // Merge pick_line changes from external source (warehouse pulls, new IFs from other tabs)
         const mergedItems=hasExternalPickChange?safeItems(prev).map((it,idx)=>{const ext=safeItems(order)[idx];if(!ext)return it;const ePicks=safePicks(ext);const lPicks=safePicks(it);if(JSON.stringify(ePicks)===JSON.stringify(lPicks))return it;return{...it,pick_lines:ePicks}}):prev.items;
-        return{...prev,jobs:mergedJobs,items:mergedItems||prev.items,art_files:hasExternalArtChange?order.art_files:prev.art_files,updated_at:order.updated_at}})
+        // Merge external art by id: adopt incoming rows (status/approval changes, or groups added on another tab)
+        // but NEVER drop a local group the incoming copy is missing. A stale poll/refresh snapshot must not
+        // silently remove art the rep just added here — that drop would then be persisted as a DELETE on the
+        // next save (and unlink it from the line items it was applied to). Union-merge keeps local-only groups.
+        const mergedArt=hasExternalArtChange?(()=>{const ext=safeArt(order);const extById=new Map(ext.map(a=>[a.id,a]));const loc=safeArt(prev);const locIds=new Set(loc.map(a=>a.id));const out=loc.map(a=>extById.get(a.id)||a);ext.forEach(a=>{if(!locIds.has(a.id))out.push(a)});return out})():prev.art_files;
+        return{...prev,jobs:mergedJobs,items:mergedItems||prev.items,art_files:mergedArt,updated_at:order.updated_at}})
     },[order.updated_at,order.items]);
     React.useEffect(()=>{if(initTab)setTab(initTab)},[initTab]);
     React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
