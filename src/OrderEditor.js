@@ -2363,7 +2363,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               };
             };
             return<><div style={{position:'fixed',inset:0,zIndex:98}} onClick={()=>setShowActionsDD(false)}/><div style={{position:'fixed',top:(r?r.bottom+4:0),right:(r?window.innerWidth-r.right:0),background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:99,minWidth:180}}>
-            {saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);setShowSend(true)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="send" size={12}/> Send</button>}
+            {saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{if(safeItems(o).length===0){nf('Add at least one line item before sending.','error');setShowActionsDD(false);return}setShowActionsDD(false);setShowSend(true)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="send" size={12}/> Send</button>}
             <button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
               printDoc(_makeDocOpts());
               const ph=[...(o.print_history||[]),{printed_at:new Date().toLocaleString(),printed_by:cu.name||cu.id}];sv('print_history',ph);onSave({...o,print_history:ph});
@@ -4789,6 +4789,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(total)+'</strong>',style:'text-align:right'}]}]}],
         footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+_ci.depositTerms:_ci.terms});
     }} repUser={cu} companyInfo={_ci} defaultFollowUpDays={portalSettings?.estFollowUpDays||portalSettings?.followUpDays||7} onSend={({followUpDays:fuDays,toEmails:_toEmails,messageId:_msgId}={})=>{
+      if(safeItems(o).length===0){nf('Cannot send — add at least one line item first.','error');return}
       const now=new Date().toLocaleString();const fuAt=fuDays?new Date(Date.now()+fuDays*86400000).toISOString():null;
       const histEntry={sent_at:now,sent_by:cu.name||cu.id,type:isE?'estimate':'so',to:_toEmails||'',messageId:_msgId||null};
       const updates={email_status:'sent',email_sent_at:now,follow_up_at:fuAt,sent_history:[...(o.sent_history||[]),histEntry]};
