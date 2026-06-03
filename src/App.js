@@ -18057,6 +18057,13 @@ export default function App(){
         const afSt=newStatus==='waiting_approval'?'needs_approval':PROD_FILES_STATUSES.includes(newStatus)||newStatus==='art_complete'?'approved':null;
         if(afSt)updArt=updArt.map(a=>a.id===j.art_file_id?{...a,status:afSt}:a);
       }
+      // Stamp prod_files_attached=true on all live art files when completing — guards against a race
+      // where the checkbox save and this save both read the same stale so snapshot, causing this
+      // save to overwrite the checkbox's prod_files_attached=true before it lands in sos.
+      if(newStatus==='art_complete'){
+        const liveArtSet=new Set(jobLiveArtIds(j,so));
+        updArt=updArt.map(a=>liveArtSet.has(a.id)?{...a,prod_files_attached:true}:a);
+      }
       savSO({...so,art_files:updArt,jobs:updatedJobs});
       if(newStatus==='art_complete'){nf('Art complete — job is Ready for Production!')}
       else nf('Art status → '+ART_LABELS[newStatus]);
