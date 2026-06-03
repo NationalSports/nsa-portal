@@ -330,11 +330,12 @@ confirmed.
 
 ### P1 — hardcoded credential
 
-- **`richardson-inventory.js:26` — `DEFAULT_KEY = '<redacted>'`**
+- **`richardson-inventory.js:26` — `DEFAULT_KEY = '[redacted]'`**
   was committed to source and used as the fallback feed apikey when
   `RICHARDSON_FEED_KEY` is unset. **Fixed:** the hardcoded fallback has been
   removed — the function now requires `RICHARDSON_FEED_KEY` and throws if unset.
-  The leaked value must still be rotated at Richardson (it remains in git history).
+  (Richardson issues a single shared dealer feed key, so this is env-only hygiene
+  rather than a per-account secret.)
 
 ### Clean
 
