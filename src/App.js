@@ -951,7 +951,19 @@ const _resolveArtRows=(clientArtFiles,dbRows,parentId)=>{
 const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
   // Optimistic locking: check version before saving (auto-heal on conflict)
-  if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true&&typeof vc==='number')est._version=vc}
+  if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true&&typeof vc==='number'){
+    // DB is ahead — fetch status fields so we don't clobber external writes (e.g. a coach portal approval that
+    // happened while this client had the estimate open with an older status).
+    try{const{data:_dbRow}=await supabase.from('estimates').select('status,approved_by,approved_at').eq('id',est.id).single();
+      if(_dbRow){const _SRANK={draft:0,open:1,sent:2,approved:3,converted:4};
+        if((_SRANK[_dbRow.status]??-1)>(_SRANK[est.status]??-1)){
+          est.status=_dbRow.status;if(_dbRow.approved_by)est.approved_by=_dbRow.approved_by;if(_dbRow.approved_at)est.approved_at=_dbRow.approved_at;
+          if(_onEstStatusMerge)_onEstStatusMerge(est.id,_dbRow.status,_dbRow.approved_by,_dbRow.approved_at);
+        }
+      }
+    }catch(_){}
+    est._version=vc;
+  }}
   return _dbSavingGuard(async()=>{let decoFailed=false;let _failMsg='';try{
     const{items,art_files,...estRow}=est;
     let{error:estErr}=await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
@@ -1727,6 +1739,7 @@ const _dbSaveInvoice = async (inv) => {
 };
 let _dbNotify=null; // set by App component for visible error toasts
 let _dataLossAlert=null; // set by App component — logs + emails on item-wipe attempts/events
+let _onEstStatusMerge=null; // set by App component — called when a version-conflict save merges a higher status from DB
 // ─── Session-expiry recovery ───
 // When a write fails with a 401 / JWT-expired / row-level-security error it means our Supabase auth
 // session degraded to the anon role (RLS allows anon SELECT but not INSERT). Retrying the write as-is
@@ -3758,6 +3771,7 @@ export default function App(){
 
   // Notification helper — defined early so callbacks below can reference it
   const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_dbNotify=nf;
+  _onEstStatusMerge=(id,status,approved_by,approved_at)=>setEsts(prev=>prev.map(e=>e.id===id?{...e,status,...(approved_by?{approved_by}:{}),...(approved_at?{approved_at}:{})}:e));
   // Data-loss alert: logs to change_log + emails admin owner. Dedupes per SO+kind within 5 min.
   const _alertDedupeRef=React.useRef({});
   _dataLossAlert=({kind,soId,prevCount,newCount,reason})=>{
