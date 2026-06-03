@@ -8,7 +8,7 @@
 // Env vars (all optional — sensible defaults):
 //   RICHARDSON_FEED_URL — full URL to the StockInventory JSON endpoint
 //   RICHARDSON_FEED_USER — feed user (default: CustFeed)
-//   RICHARDSON_FEED_KEY  — feed apikey (default: bundled fallback)
+//   RICHARDSON_FEED_KEY  — feed apikey (required; function throws if unset)
 //
 // Query params:
 //   style    — return only the matching style (case-insensitive)
