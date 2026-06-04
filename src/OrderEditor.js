@@ -2277,7 +2277,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(validItems.length===0){nf('Add at least one item with quantities','error');return}
           const noSku=validItems.find(it=>!it.sku?.trim()&&!it.is_custom);
           if(noSku){nf('Item '+(noSku.name||'#?')+' needs a SKU or mark as custom','error');return}
-          const noPrice=validItems.find(it=>safeNum(it.unit_sell)<=0);
+          const noPrice=validItems.find(it=>!it.is_free_promo&&safeNum(it.unit_sell)<=0);
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
           onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
         {isE&&saved&&(o.status==='sent'||o.status==='draft'||o.status==='open')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{sv('status','approved');onSave({...o,status:'approved'});nf('Estimate approved')}}><Icon name="check" size={14}/> Approve</button>}
@@ -2289,7 +2289,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           /* Items with est_qty only (no size breakdown) are allowed — sizes can be added on the SO */
           const noSku=validItems.find(it=>!it.sku?.trim()&&!it.is_custom);
           if(noSku){nf('Item '+(noSku.name||'#?')+' needs a SKU or mark as custom','error');return}
-          const noPrice=validItems.find(it=>safeNum(it.unit_sell)<=0);
+          const noPrice=validItems.find(it=>!it.is_free_promo&&safeNum(it.unit_sell)<=0);
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
           onConvertSO(o)}}><Icon name="box" size={14}/> Convert to SO</button>}
         {/* Actions dropdown */}
