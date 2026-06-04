@@ -68,6 +68,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const custSOs=(sos||[]).filter(o=>ids.includes(o.customer_id));
   const custEsts=(ests||[]).filter(e=>ids.includes(e.customer_id));
   const orders=allOrders.filter(o=>ids.includes(o.customer_id));
+  const openPortalInvs=orders.filter(o=>o.type==='invoice'&&(o.status==='open'||o.status==='partial'));
+  const openInvCount=openPortalInvs.length;
+  const openBalance=Math.round(openPortalInvs.reduce((a,i)=>a+safeNum(i.total)-safeNum(i.paid),0));
+  const _30dAgo=new Date(Date.now()-30*24*60*60*1000).toISOString().slice(0,10);
+  const recentEsts=custEsts.filter(e=>e.status!=='approved'&&e.status!=='converted'&&(e.created_at||'').slice(0,10)>=_30dAgo);
   const fo=orders.filter(o=>{if(oF!=='all'&&o.type!==oF)return false;if(sF==='open')return['sent','draft','open','need_order','waiting_receive','needs_pull'].includes(o.status)||calcSOStatus(o)!=='complete';if(sF==='closed')return['approved','paid','complete'].includes(o.status)||calcSOStatus(o)==='complete';return true});
   const gn=id=>allCustomers.find(x=>x.id===id)?.alpha_tag||'';
   const teamName=id=>{const c=allCustomers.find(x=>x.id===id);if(!c)return'';const parent=c.parent_id?allCustomers.find(x=>x.id===c.parent_id):null;if(parent?.name&&c.name?.startsWith(parent.name))return c.name.slice(parent.name.length).trim().replace(/^[-—–]\s*/,'')||c.name;return c.name||c.alpha_tag||''};
@@ -149,16 +154,16 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             onClick={()=>onDelete(customer)}><Icon name="trash" size={13}/> Delete Customer</div>
         </div>}
       </div>
-      {(customer._oi||0)>0&&<>
+      {openInvCount>0&&<>
         <span style={{width:1,background:'#e2e8f0',margin:'0 2px'}}/>
-        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _greet=getBillingContacts(customer,allCustomers)[0]?.name||(customer.contacts||[])[0]?.name||'';setInvEmailMsg('Hi '+_greet+',\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setShowInvEmail(true)}}>📄 Email Invoices ({customer._oi})</button>
+        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _greet=getBillingContacts(customer,allCustomers)[0]?.name||(customer.contacts||[])[0]?.name||'';setInvEmailMsg('Hi '+_greet+',\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setShowInvEmail(true)}}>📄 Email Invoices ({openInvCount})</button>
       </>}
       <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:11}} onClick={()=>setShowPortal(true)}>🔗 Portal</button>
       {customer.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const url=window.location.origin+'/?portal='+customer.alpha_tag;try{navigator.clipboard&&navigator.clipboard.writeText(url)}catch(_){}window.open(url,'_blank','noopener,noreferrer')}}>📋 Open Portal Link</button>}
     </div>
   </div>
-  {(customer._ob||0)>0&&<div style={{textAlign:'right'}}><div style={{fontSize:11,color:'#dc2626',fontWeight:600}}>BALANCE</div><div style={{fontSize:24,fontWeight:800,color:'#dc2626'}}>${customer._ob.toLocaleString()}</div></div>}</div></div>
-  <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Est</div><div className="stat-value">{custEsts.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Open SOs</div><div className="stat-value">{custSOs.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Open Inv</div><div className="stat-value" style={{color:(customer._oi||0)>0?'#dc2626':''}}>{customer._oi||0}</div></div><div className="stat-card"><div className="stat-label">Balance</div><div className="stat-value" style={{color:(customer._ob||0)>0?'#dc2626':''}}>${(customer._ob||0).toLocaleString()}</div></div></div>
+  {openBalance>0&&<div style={{textAlign:'right'}}><div style={{fontSize:11,color:'#dc2626',fontWeight:600}}>BALANCE</div><div style={{fontSize:24,fontWeight:800,color:'#dc2626'}}>${openBalance.toLocaleString()}</div></div>}</div></div>
+  <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Est</div><div className="stat-value">{custEsts.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Open SOs</div><div className="stat-value">{custSOs.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Open Inv</div><div className="stat-value" style={{color:openInvCount>0?'#dc2626':''}}>{openInvCount}</div></div><div className="stat-card"><div className="stat-label">Balance</div><div className="stat-value" style={{color:openBalance>0?'#dc2626':''}}>${openBalance.toLocaleString()}</div></div></div>
   {isP&&subs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header" style={{cursor:'pointer'}} onClick={()=>setSubsCollapsed(!subsCollapsed)}><h2>{subsCollapsed?'▶':'▼'} Sub-Customers ({subs.length})</h2></div>
   {!subsCollapsed&&<div className="card-body" style={{padding:0}}>
   {subs.map(sub=><div key={sub.id} style={{padding:'10px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>onSelCust(sub)}>
@@ -232,6 +237,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       return<>
         {activeSOs.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Sales Orders</h2></div><div className="card-body" style={{padding:0}}>{renderTable(activeSOs)}</div></div>}
         {bookingSOs.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header" style={{background:'#eef2ff',borderBottom:'1px solid #c7d2fe'}}><h2 style={{color:'#4338ca'}}>Booking Orders ({bookingSOs.length})</h2><span style={{fontSize:11,color:'#6366f1',marginLeft:8}}>Future ship dates — not yet in production</span></div><div className="card-body" style={{padding:0}}>{renderTable(bookingSOs)}</div></div>}
+        {recentEsts.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header" style={{background:'#fdf4ff',borderBottom:'1px solid #e9d5ff'}}><h2 style={{color:'#7c3aed'}}>Open Estimates</h2><span style={{fontSize:11,color:'#a855f7',marginLeft:8}}>Pending approval — within 30 days</span></div><div className="card-body" style={{padding:0}}><table style={{fontSize:12}}><thead><tr><th>EST</th><th>Memo</th>{isP&&<th>Customer</th>}<th>Status</th><th style={{textAlign:'right'}}>Total</th><th>Created</th></tr></thead><tbody>{recentEsts.map(e=>{const o=orders.find(ord=>ord.id===e.id);const subC=allCustomers.find(c=>c.id===e.customer_id);return<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>onOpenEst&&onOpenEst(e)}><td style={{fontWeight:700,color:'#7c3aed'}}>{e.id}</td><td>{e.memo||'—'}</td>{isP&&<td><span className="badge badge-gray">{subC?.alpha_tag||''}</span></td>}<td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:e.status==='sent'?'#fef3c7':'#f1f5f9',color:e.status==='sent'?'#92400e':'#64748b'}}>{e.status==='draft'?'Draft':'Sent'}</span></td><td style={{textAlign:'right',fontWeight:700}}>{o?.total!=null?'$'+o.total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'—'}</td><td style={{color:'#64748b'}}>{(e.created_at||'').slice(0,10)}</td></tr>})}</tbody></table></div></div>}
       </>})()}
     {/* All transactions — unified: est, SO, inv, IF, PO, payments */}
     {(()=>{
