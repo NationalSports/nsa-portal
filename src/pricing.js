@@ -103,14 +103,15 @@ export const calcOrderTotals=(o,custTaxRate=0)=>{
   });
   let rev=0;
   items.forEach(it=>{
-    if(it.is_free_promo)return;
     const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
     const q=sq>0?sq:_sNum(it.est_qty);
     if(!q)return;
-    if(it._sizeSells&&sq>0){
-      Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)rev+=n*(it._sizeSells?.[sz]||_sNum(it.unit_sell))});
-    }else{
-      rev+=q*_sNum(it.unit_sell);
+    if(!it.is_free_promo){
+      if(it._sizeSells&&sq>0){
+        Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)rev+=n*(it._sizeSells?.[sz]||_sNum(it.unit_sell))});
+      }else{
+        rev+=q*_sNum(it.unit_sell);
+      }
     }
     _sDecos(it).forEach(d=>{
       const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;

@@ -1685,9 +1685,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const totals=useMemo(()=>{
     // PO size-key exclusion list — matches the per-PO modal so we count only true size qty fields.
     const _poMeta=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
-    let rev=0,cost=0;safeItems(o).forEach(it=>{if(it.is_free_promo)return;const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;
+    let rev=0,cost=0;safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;
     // Use per-size sells when available (vendor items have _sizeSells for 2XL+ upcharges)
-    if(it._sizeSells&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)rev+=n*(it._sizeSells[sz]||safeNum(it.unit_sell))})}else{rev+=q*safeNum(it.unit_sell)}
+    if(!it.is_free_promo){if(it._sizeSells&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)rev+=n*(it._sizeSells[sz]||safeNum(it.unit_sell))})}else{rev+=q*safeNum(it.unit_sell)}}
     // Garment cost — prefer actual PO unit costs when POs exist. Each PO line's covered qty
     // is costed at its own unit_cost; any remaining uncovered qty falls back to catalog cost
     // (with _sizeCosts upcharges if present).
