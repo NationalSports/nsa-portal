@@ -4727,7 +4727,7 @@ export default function App(){
   // Step-by-step help modal (opened from the button on the OMG store detail).
   const[omgGuideOpen,setOmgGuideOpen]=useState(false);
   React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
-  const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);const[omgPriceLoading,setOmgPriceLoading]=useState(false);
+  const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);const[omgPriceLoading,setOmgPriceLoading]=useState(false);const[omgNotifyLoading,setOmgNotifyLoading]=useState(false);
 
   // Import products from an OMG shared report URL.
   // Fetches report JSON via Netlify proxy, parses products with SKUs, sizes,
@@ -4798,9 +4798,15 @@ export default function App(){
       const products = [];
       let totalQty = 0, totalSales = 0;
       // Pull a SKU out of a string like "Black/White (KB9093)" → KB9093
+      // Requires at least one digit so colour descriptors like "(Solid)",
+      // "(Heather)", "(Stripe)" are never mistaken for a style number.
       const extractSku = (str) => {
-        const m = (str || '').match(/\(([A-Za-z0-9]{4,10})\)/);
-        return m ? m[1].toUpperCase() : '';
+        const m = (str || '').match(/\(([A-Za-z0-9]{2,12})\)/);
+        if (!m) return '';
+        const tok = m[1];
+        // Reject pure-alpha tokens — those are colour/material descriptors
+        if (!/\d/.test(tok)) return '';
+        return tok.toUpperCase();
       };
       // OMG appends an internal variant index to the style number, e.g.
       // "KF5972 - 7" or "5159368 - 8". NSA SKUs never contain a space, so the
@@ -5016,6 +5022,67 @@ export default function App(){
   // NSA catalog, then the catalog table in Supabase, then the supplier's API
   // (S&S, SanMar, Richardson, Momentec). Fills $0 items and refreshes
   // auto-sourced costs; never clobbers a price typed in by hand.
+  // "Notify Sales Rep" — creates a TODO for the rep and emails them that the
+  // store is ready for art assignment and to be brought into a sales order.
+  const omgNotifyRep = async (store) => {
+    const customer = cust.find(c => c.id === store.customer_id);
+    const repId = store.rep_id || customer?.primary_rep_id;
+    const rep = repId ? REPS.find(r => r.id === repId) : null;
+    if (!rep) { nf('No sales rep assigned to this store or its customer — assign one first', 'error'); return; }
+    if (!rep.email) { nf(`${rep.name} has no email on file — update their profile in Team Members`, 'error'); return; }
+    const storeName = store.store_name || store.id;
+    const zeroCount = (store.products||[]).filter(p=>!(p.cost>0)).length;
+    const totalProds = (store.products||[]).length;
+    setOmgNotifyLoading(true);
+    try {
+      // 1) Create a TODO task assigned to the rep
+      const todoId = 'todo-omg-art-'+store.id+'-'+Date.now();
+      const todoTitle = `Apply art & create SO — ${storeName}`;
+      const todoDesc = `OMG store "${storeName}" has been imported and is ready for art assignment.\n\n`
+        + `${totalProds} product${totalProds===1?'':'s'} imported`
+        + (zeroCount > 0 ? `, ${zeroCount} still missing cost (check API or enter manually)` : ', all costs confirmed') + '.\n\n'
+        + `Steps:\n1. Assign artwork/decoration to each product\n2. Create a Sales Order from the store\n3. Send to production`;
+      const newTodo = {
+        id: todoId, title: todoTitle, description: todoDesc,
+        created_by: cu?.id || null, assigned_to: rep.id,
+        so_id: null, customer_id: store.customer_id || null,
+        priority: 2, status: 'open',
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(), comments: []
+      };
+      setAssignedTodos(prev => [newTodo, ...prev]);
+      if (supabase) _dbSavingGuard(() => supabase.from('assigned_todos').upsert([newTodo], {onConflict:'id'}).then(r=>{ if(r.error) console.error('[DB] notify todo:', r.error.message); }));
+      // 2) Send an email to the rep via Brevo
+      const senderEmail = companyInfo?.email || 'team@nsa-teamwear.com';
+      const html = `<div style="font-family:sans-serif;max-width:600px">
+        <h2 style="color:#166534">OMG Store Ready: ${storeName}</h2>
+        <p>Hi ${rep.name.split(' ')[0]},</p>
+        <p><strong>${cu?.name||'The team'}</strong> has finished importing the OMG store <strong>"${storeName}"</strong> into the NSA portal. It's ready for your attention:</p>
+        <ul>
+          <li>${totalProds} product${totalProds===1?'':'s'} imported</li>
+          ${zeroCount > 0 ? `<li style="color:#b45309">${zeroCount} item${zeroCount===1?'':'s'} still need cost entered (check API Refresh or enter manually)</li>` : '<li style="color:#166534">All product costs confirmed ✓</li>'}
+        </ul>
+        <p><strong>Next steps:</strong></p>
+        <ol>
+          <li>Assign artwork / decoration to each product</li>
+          <li>Create a Sales Order from the store</li>
+          <li>Send to production</li>
+        </ol>
+        <p>A task has been added to your TODO list in the NSA portal.</p>
+        <p style="color:#64748b;font-size:12px">— NSA Portal</p>
+      </div>`;
+      await sendBrevoEmail({
+        to: [{email: rep.email, name: rep.name}],
+        subject: `Action needed: OMG store "${storeName}" ready for art & SO`,
+        htmlContent: html,
+        senderName: 'NSA Portal',
+        senderEmail,
+      });
+      nf(`Notified ${rep.name} — task created and email sent to ${rep.email}`);
+    } catch(e) {
+      console.error('[OMG Notify]', e);
+      nf('Task created but email failed: ' + e.message, 'warn');
+    } finally { setOmgNotifyLoading(false); }
+  };
   const omgLookupCosts = async (store) => {
     const targets = (store.products||[]).filter(p => p.sku && (!(p.cost>0) || _AUTO_COST_SRCS.has(p._cost_source)));
     if (!targets.length) { nf('No costs to refresh — every item already has a manual or confirmed price', 'warn'); return; }
@@ -14959,6 +15026,17 @@ export default function App(){
                 {(s.products||[]).length>0&&(()=>{const z=(s.products||[]).filter(p=>!(p.cost>0)).length;return(
                   <button className="btn btn-sm" disabled={omgPriceLoading} title="Re-check every item's cost against the NSA catalog and supplier APIs (S&S, SanMar, Richardson, Momentec). Costs you typed by hand are kept." style={{fontSize:10,padding:'2px 8px',background:z?'#fef3c7':'#eff6ff',color:z?'#92400e':'#1e40af',border:`1px solid ${z?'#fbbf24':'#93c5fd'}`}} onClick={()=>omgLookupCosts(s)}>{omgPriceLoading?'⏳ Checking prices…':`🔄 Refresh API Prices${z?` (${z} at $0)`:''}`}</button>
                 )})()}
+                {(s.products||[]).length>0&&(()=>{
+                  const customer=cust.find(c=>c.id===s.customer_id);
+                  const repId=s.rep_id||customer?.primary_rep_id;
+                  const rep=repId?REPS.find(r=>r.id===repId):null;
+                  const alreadyNotified=assignedTodos.some(t=>t.status==='open'&&t.title&&t.title.startsWith('Apply art & create SO')&&t.title.includes(s.store_name||s.id));
+                  return(
+                    <button className="btn btn-sm" disabled={omgNotifyLoading||alreadyNotified} title={rep?`Create a TODO task and email ${rep.name} that this store is ready for art + SO`:'Assign a rep to this store or its customer first'} style={{fontSize:10,padding:'2px 8px',background:alreadyNotified?'#f0fdf4':'#f0f9ff',color:alreadyNotified?'#166534':'#0369a1',border:`1px solid ${alreadyNotified?'#86efac':'#7dd3fc'}`}} onClick={()=>omgNotifyRep(s)}>
+                      {omgNotifyLoading?'⏳ Notifying…':alreadyNotified?'✓ Rep notified':`📬 Notify${rep?' '+rep.name.split(' ')[0]:' Rep'}`}
+                    </button>
+                  );
+                })()}
               </div>}
             </div>}
 
