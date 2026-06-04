@@ -3690,7 +3690,7 @@ export default function App(){
         if(knownHash===null){knownHash=hash;return}// record on first run
         if(hash===knownHash)return;
         const doReload=()=>{
-          if(_dbSavePendingIds.size===0&&_bgSync===0)window.location.reload();
+          if(_authErrorDetected||(_dbSavePendingIds.size===0&&_bgSync===0))window.location.reload();
           else setTimeout(doReload,2000);
         };
         doReload();
