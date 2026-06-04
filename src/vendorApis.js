@@ -943,13 +943,16 @@ const momentecApiCall = async (endpoint, options = {}) => {
       headers: { 'Content-Type': 'application/json' },
       ...(options.body ? { body: options.body } : {})
     });
+    // 404 = catalog entry not found (e.g. byPartNumber probes for style-level
+    // numbers). This is expected; return null quietly so callers fall back to
+    // search instead of spamming the console with errors.
+    if (response.status === 404) return null;
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
       let msg; try { msg = JSON.parse(errText)?.error; } catch {}
       throw new Error(msg || `Momentec API error: ${response.status}`);
     }
     const data = await response.json();
-    console.log('[Momentec] API response:', endpoint, data);
     return data;
   } catch (error) { console.error('[Momentec] API call failed:', endpoint, error); throw error; }
 };
