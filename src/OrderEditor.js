@@ -2320,12 +2320,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   const posLabel=d.position?' — '+d.position:'';
                   let numHtml='';
                   if(d.kind==='numbers'&&d.roster){const szOrd2=['XS','S','M','L','XL','2XL','3XL','4XL'];
-                    const sorted=Object.entries(d.roster).sort((a,b)=>(szOrd2.indexOf(a[0])===-1?99:szOrd2.indexOf(a[0]))-(szOrd2.indexOf(b[0])===-1?99:szOrd2.indexOf(b[0])));
-                    const szRows=sorted.filter(([,arr])=>(arr||[]).some(v=>v)).map(([sz,arr])=>'<tr><td style="font-weight:700;padding:1px 6px;font-size:10px">'+sz+'</td><td style="font-size:10px;padding:1px 4px">'+(arr||[]).filter(v=>v).join(', ')+'</td></tr>');
+                    const itSz=safeSizes(it);const hasSzQty=Object.values(itSz).some(v=>safeNum(v)>0);
+                    const sorted=Object.entries(d.roster).filter(([sz])=>!hasSzQty||(itSz[sz]||0)>0).sort((a,b)=>(szOrd2.indexOf(a[0])===-1?99:szOrd2.indexOf(a[0]))-(szOrd2.indexOf(b[0])===-1?99:szOrd2.indexOf(b[0])));
+                    const szRows=sorted.filter(([,arr])=>(arr||[]).some(v=>v)).map(([sz,arr])=>'<tr><td style="font-weight:700;padding:1px 6px;font-size:10px">'+sz+'</td><td style="font-size:10px;padding:1px 4px">'+(hasSzQty?(arr||[]).slice(0,safeNum(itSz[sz])||99):(arr||[])).filter(v=>v).join(', ')+'</td></tr>');
                     if(szRows.length>0)numHtml='<table style="margin:2px 0 0 20px;border-collapse:collapse">'+szRows.join('')+'</table>'}
                   if(d.kind==='names'&&d.names){const szOrd2=['XS','S','M','L','XL','2XL','3XL','4XL'];
-                    const sorted=Object.entries(d.names).sort((a,b)=>(szOrd2.indexOf(a[0])===-1?99:szOrd2.indexOf(a[0]))-(szOrd2.indexOf(b[0])===-1?99:szOrd2.indexOf(b[0])));
-                    const szRows=sorted.filter(([,arr])=>(arr||[]).some(v=>v)).map(([sz,arr])=>'<tr><td style="font-weight:700;padding:1px 6px;font-size:10px">'+sz+'</td><td style="font-size:10px;padding:1px 4px">'+(arr||[]).filter(v=>v).join(', ')+'</td></tr>');
+                    const itSz=safeSizes(it);const hasSzQty=Object.values(itSz).some(v=>safeNum(v)>0);
+                    const sorted=Object.entries(d.names).filter(([sz])=>!hasSzQty||(itSz[sz]||0)>0).sort((a,b)=>(szOrd2.indexOf(a[0])===-1?99:szOrd2.indexOf(a[0]))-(szOrd2.indexOf(b[0])===-1?99:szOrd2.indexOf(b[0])));
+                    const szRows=sorted.filter(([,arr])=>(arr||[]).some(v=>v)).map(([sz,arr])=>'<tr><td style="font-weight:700;padding:1px 6px;font-size:10px">'+sz+'</td><td style="font-size:10px;padding:1px 4px">'+(hasSzQty?(arr||[]).slice(0,safeNum(itSz[sz])||99):(arr||[])).filter(v=>v).join(', ')+'</td></tr>');
                     if(szRows.length>0)numHtml='<table style="margin:2px 0 0 20px;border-collapse:collapse">'+szRows.join('')+'</table>'}
                   if(isRolled){
                     rows.push({_class:'deco-row',cells:[{value:'',style:'text-align:center;border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'+numHtml,style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'}]});
@@ -3039,7 +3041,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(deco.kind==='numbers'){const nm=deco.num_method||'heat_transfer';const szOpts=NUM_SZ[nm]||[];
             const sizedQtys=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
             const roster=deco.roster||{};
-            const filledNums=Object.values(roster).flat().filter(v=>v&&v.trim()).length;
+            const filledNums=sizedQtys.reduce((sum,[sz,sqty])=>sum+(roster[sz]||[]).slice(0,sqty).filter(v=>v&&v.trim()).length,0);
             const numQtyOverride=safeNum(deco.num_qty)||0;
             const effectiveNumQty=filledNums||numQtyOverride||qty;
             const showRoster=deco._showRoster||false;
