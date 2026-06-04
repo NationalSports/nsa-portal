@@ -14626,13 +14626,16 @@ export default function App(){
                 groupProds.forEach(p=>{const img=p.image_url||'';if(!img)return;if(!preview)preview=img;omgMocks[p.sku+'|'+(p.color||'')]=[img]});
                 const src=deco._cust_art_id?custArtById[deco._cust_art_id]:null;
                 if(src){
-                  // Apply the customer's saved logo — its files, color ways, and
-                  // approval/production status come with it (so a fully-prepped
-                  // logo lands art-complete) — then layer in the OMG mockups.
+                  // Apply the customer's saved logo — its files, color ways, and mockups come
+                  // with it. Force status to at least 'approved' since the OMG sale is the
+                  // customer's approval; if the library art already has prod files it lands
+                  // art-complete, otherwise production_files_needed.
                   const copy=JSON.parse(JSON.stringify(src));
                   const item_mockups={...(copy.item_mockups||{})};
                   Object.entries(omgMocks).forEach(([k2,v])=>{if(!item_mockups[k2])item_mockups[k2]=v});
+                  const _libStatus=copy.status==='art_complete'?'art_complete':'approved';
                   return{...copy,id,item_mockups,preview_url:copy.preview_url||preview,uploaded:new Date().toLocaleDateString(),
+                    status:_libStatus,
                     notes:(copy.notes?copy.notes+' · ':'')+'Applied from customer library — OMG store '+s.store_name};
                 }
                 // New logo: the OMG mockup is the approved proof, so the art file
