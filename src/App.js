@@ -214,7 +214,7 @@ const SalesHistory = lazyRetry(() => import('./SalesHistory'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, resolveSkuAcrossVendors } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors } from './vendorApis';
 // ── Loading fallback for lazy components ──
 const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
 
@@ -4727,7 +4727,7 @@ export default function App(){
   // Step-by-step help modal (opened from the button on the OMG store detail).
   const[omgGuideOpen,setOmgGuideOpen]=useState(false);
   React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
-  const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);
+  const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);const[omgPriceLoading,setOmgPriceLoading]=useState(false);const[omgNotifyLoading,setOmgNotifyLoading]=useState(false);
 
   // Import products from an OMG shared report URL.
   // Fetches report JSON via Netlify proxy, parses products with SKUs, sizes,
@@ -4757,6 +4757,32 @@ export default function App(){
     }
     return bestScore>=0.9?best:null;
   };
+  // Map a resolver's vendor name to the short cost-source code shown on each
+  // cost cell, plus the set of auto-derived sources a price refresh may
+  // overwrite. Hand-typed costs ('manual') are always preserved.
+  const _vendorCostSrc = (vendor='') => ({sanmar:'sanmar','s&s':'ss',richardson:'richardson',momentec:'momentec'})[String(vendor).toLowerCase()] || 'api';
+  const _AUTO_COST_SRCS = new Set(['catalog','sanmar','ss','richardson','momentec','api']);
+  // Momentec dealer discount applied to the catalog Offer price (matches the
+  // order-form logic in OrderEditor.js so OMG costs line up with the SO).
+  const _momentecDiscount = () => (vend.find(v => v.api_provider==='momentec' || /momentec/i.test(v.name))?.api_price_discount) ?? 0.15;
+  // Manufacturer → NSA vendor (who we actually buy the blank from). Drives PO
+  // grouping and which supplier API supplies the cost. Badger is a Momentec
+  // brand, so it resolves to Momentec — there is no standalone Badger vendor.
+  const _mfgToVendor = (mfg) => {
+    if (!mfg) return null;
+    const m = mfg.toLowerCase();
+    if (/comfort\s*colors|port\s*(&|and)\s*company|port\s*authority|sport-?tek|gildan|hanes|champion|district|cornerstone|allmade|rabbit\s*skins|jerzees/i.test(m))
+      return vend.find(v => /sanmar/i.test(v.name))?.id || null;
+    if (/independent\s*trading|next\s*level|bella\s*canvas|tultex|lat|american\s*apparel|alternative|econscious|threadfast/i.test(m))
+      return vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
+    if (/richardson/i.test(m)) return vend.find(v => /richardson/i.test(v.name))?.id || null;
+    if (/otto/i.test(m)) return vend.find(v => /otto/i.test(v.name))?.id || vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
+    if (/adidas/i.test(m)) return vend.find(v => /adidas/i.test(v.name))?.id || null;
+    if (/under\s*armou?r/i.test(m)) return vend.find(v => /under\s*armou?r/i.test(v.name))?.id || null;
+    if (/badger/i.test(m)) return vend.find(v => /momentec/i.test(v.name))?.id || null;
+    if (/momentec/i.test(m)) return vend.find(v => /momentec/i.test(v.name))?.id || null;
+    return null;
+  };
   const importOMGReport = async (store, reportUrl) => {
     // Extract UUID from various URL formats
     const urlStr = (reportUrl || '').trim();
@@ -4775,9 +4801,15 @@ export default function App(){
       const products = [];
       let totalQty = 0, totalSales = 0;
       // Pull a SKU out of a string like "Black/White (KB9093)" → KB9093
+      // Requires at least one digit so colour descriptors like "(Solid)",
+      // "(Heather)", "(Stripe)" are never mistaken for a style number.
       const extractSku = (str) => {
-        const m = (str || '').match(/\(([A-Za-z0-9]{4,10})\)/);
-        return m ? m[1].toUpperCase() : '';
+        const m = (str || '').match(/\(([A-Za-z0-9]{2,12})\)/);
+        if (!m) return '';
+        const tok = m[1];
+        // Reject pure-alpha tokens — those are colour/material descriptors
+        if (!/\d/.test(tok)) return '';
+        return tok.toUpperCase();
       };
       // OMG appends an internal variant index to the style number, e.g.
       // "KF5972 - 7" or "5159368 - 8". NSA SKUs never contain a space, so the
@@ -4866,21 +4898,7 @@ export default function App(){
       console.log(`[OMG Report] Parsed ${products.length} products, ${totalQty} total units, $${totalSales} from report ${reportId}`);
 
       // ── Catalog + manufacturer → vendor mapping (instant, no API calls) ──
-      const mfgToVendor = (mfg) => {
-        if (!mfg) return null;
-        const m = mfg.toLowerCase();
-        if (/comfort\s*colors|port\s*(&|and)\s*company|port\s*authority|sport-?tek|gildan|hanes|champion|district|cornerstone|allmade|rabbit\s*skins|jerzees/i.test(m))
-          return vend.find(v => /sanmar/i.test(v.name))?.id || null;
-        if (/independent\s*trading|next\s*level|bella\s*canvas|tultex|lat|american\s*apparel|alternative|econscious|threadfast/i.test(m))
-          return vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
-        if (/richardson/i.test(m)) return vend.find(v => /richardson/i.test(v.name))?.id || null;
-        if (/otto/i.test(m)) return vend.find(v => /otto/i.test(v.name))?.id || vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
-        if (/adidas/i.test(m)) return vend.find(v => /adidas/i.test(v.name))?.id || null;
-        if (/under\s*armou?r/i.test(m)) return vend.find(v => /under\s*armou?r/i.test(v.name))?.id || null;
-        if (/badger/i.test(m)) return vend.find(v => /badger/i.test(v.name))?.id || vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
-        if (/momentec/i.test(m)) return vend.find(v => /momentec/i.test(v.name))?.id || null;
-        return null;
-      };
+      // Vendor mapping uses the shared _mfgToVendor helper defined above.
       for (const p of products) {
         if (!p.sku) continue;
         const catMatch = prod.find(cp => cp.sku === p.sku || cp.sku?.toLowerCase() === p.sku?.toLowerCase());
@@ -4889,8 +4907,35 @@ export default function App(){
           if (catCost > 0) { p.cost = catCost; p._cost_source = 'catalog'; }
           if (catMatch.vendor_id) p.vendor_id = catMatch.vendor_id;
         }
-        if (!p.vendor_id) p.vendor_id = mfgToVendor(p.manufacturer);
+        if (!p.vendor_id) p.vendor_id = _mfgToVendor(p.manufacturer);
       }
+
+      // For items still at $0, fetch live pricing from the appropriate supplier API
+      const needsPricing = products.filter(p => p.cost === 0 && p.sku);
+      if (needsPricing.length) {
+        console.log(`[OMG Report] Fetching API pricing for ${needsPricing.length} zero-cost products...`);
+        await Promise.allSettled(needsPricing.map(async (p) => {
+          const vendorName = (vend.find(v => v.id === p.vendor_id)?.name || p.manufacturer || '').toLowerCase();
+          let hit = null;
+          try {
+            if (/richardson/i.test(vendorName)) {
+              hit = richardsonResolveSku(p.sku);
+            } else if (/sanmar/i.test(vendorName)) {
+              hit = await sanmarResolveSku(p.sku);
+            } else if (/s.?s\s*activ/i.test(vendorName)) {
+              hit = await ssResolveSku(p.sku);
+            } else if (/momentec/i.test(vendorName)) {
+              hit = await momentecResolveSku(p.sku, { discount: _momentecDiscount() });
+            } else {
+              hit = await resolveSkuAcrossVendors(p.sku);
+            }
+          } catch (e) { console.warn('[OMG Report] Pricing lookup failed for', p.sku, e.message); }
+          if (hit?.rate > 0) { p.cost = hit.rate; p._cost_source = _vendorCostSrc(hit.vendor); }
+        }));
+        const priced = needsPricing.filter(p => p.cost > 0).length;
+        console.log(`[OMG Report] API pricing resolved ${priced}/${needsPricing.length} products`);
+      }
+
       console.log(`[OMG Report] Catalog/vendor mapping done. ${products.filter(p=>p.cost>0).length} with cost, ${products.filter(p=>p.vendor_id).length} with vendor.`);
 
       // Merge with existing data — preserve manual edits (SKU corrections,
@@ -4974,6 +5019,117 @@ export default function App(){
     } finally {
       setOmgReportLoading(false);
     }
+  };
+
+  // Re-pull costs for an already-imported store: check each item against the
+  // NSA catalog, then the catalog table in Supabase, then the supplier's API
+  // (S&S, SanMar, Richardson, Momentec). Fills $0 items and refreshes
+  // auto-sourced costs; never clobbers a price typed in by hand.
+  // "Notify Sales Rep" — creates a TODO for the rep and emails them that the
+  // store is ready for art assignment and to be brought into a sales order.
+  const omgNotifyRep = async (store) => {
+    const customer = cust.find(c => c.id === store.customer_id);
+    const repId = store.rep_id || customer?.primary_rep_id;
+    const rep = repId ? REPS.find(r => r.id === repId) : null;
+    if (!rep) { nf('No sales rep assigned to this store or its customer — assign one first', 'error'); return; }
+    if (!rep.email) { nf(`${rep.name} has no email on file — update their profile in Team Members`, 'error'); return; }
+    const storeName = store.store_name || store.id;
+    const zeroCount = (store.products||[]).filter(p=>!(p.cost>0)).length;
+    const totalProds = (store.products||[]).length;
+    setOmgNotifyLoading(true);
+    try {
+      // 1) Create a TODO task assigned to the rep
+      const todoId = 'todo-omg-art-'+store.id+'-'+Date.now();
+      const todoTitle = `Apply art & create SO — ${storeName}`;
+      const todoDesc = `OMG store "${storeName}" has been imported and is ready for art assignment.\n\n`
+        + `${totalProds} product${totalProds===1?'':'s'} imported`
+        + (zeroCount > 0 ? `, ${zeroCount} still missing cost (check API or enter manually)` : ', all costs confirmed') + '.\n\n'
+        + `Steps:\n1. Assign artwork/decoration to each product\n2. Create a Sales Order from the store\n3. Send to production`;
+      const newTodo = {
+        id: todoId, title: todoTitle, description: todoDesc,
+        created_by: cu?.id || null, assigned_to: rep.id,
+        so_id: null, customer_id: store.customer_id || null,
+        priority: 2, status: 'open',
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(), comments: []
+      };
+      setAssignedTodos(prev => [newTodo, ...prev]);
+      if (supabase) _dbSavingGuard(() => supabase.from('assigned_todos').upsert([newTodo], {onConflict:'id'}).then(r=>{ if(r.error) console.error('[DB] notify todo:', r.error.message); }));
+      // 2) Send an email to the rep via Brevo
+      const senderEmail = companyInfo?.email || 'team@nsa-teamwear.com';
+      const html = `<div style="font-family:sans-serif;max-width:600px">
+        <h2 style="color:#166534">OMG Store Ready: ${storeName}</h2>
+        <p>Hi ${rep.name.split(' ')[0]},</p>
+        <p><strong>${cu?.name||'The team'}</strong> has finished importing the OMG store <strong>"${storeName}"</strong> into the NSA portal. It's ready for your attention:</p>
+        <ul>
+          <li>${totalProds} product${totalProds===1?'':'s'} imported</li>
+          ${zeroCount > 0 ? `<li style="color:#b45309">${zeroCount} item${zeroCount===1?'':'s'} still need cost entered (check API Refresh or enter manually)</li>` : '<li style="color:#166534">All product costs confirmed ✓</li>'}
+        </ul>
+        <p><strong>Next steps:</strong></p>
+        <ol>
+          <li>Assign artwork / decoration to each product</li>
+          <li>Create a Sales Order from the store</li>
+          <li>Send to production</li>
+        </ol>
+        <p>A task has been added to your TODO list in the NSA portal.</p>
+        <p style="color:#64748b;font-size:12px">— NSA Portal</p>
+      </div>`;
+      await sendBrevoEmail({
+        to: [{email: rep.email, name: rep.name}],
+        subject: `Action needed: OMG store "${storeName}" ready for art & SO`,
+        htmlContent: html,
+        senderName: 'NSA Portal',
+        senderEmail,
+      });
+      nf(`Notified ${rep.name} — task created and email sent to ${rep.email}`);
+    } catch(e) {
+      console.error('[OMG Notify]', e);
+      nf('Task created but email failed: ' + e.message, 'warn');
+    } finally { setOmgNotifyLoading(false); }
+  };
+  const omgLookupCosts = async (store) => {
+    const targets = (store.products||[]).filter(p => p.sku && (!(p.cost>0) || _AUTO_COST_SRCS.has(p._cost_source)));
+    if (!targets.length) { nf('No costs to refresh — every item already has a manual or confirmed price', 'warn'); return; }
+    setOmgPriceLoading(true);
+    nf(`Checking ${targets.length} item${targets.length>1?'s':''} against catalog + supplier APIs…`);
+    let found = 0, zero = 0;
+    await Promise.allSettled(targets.map(async (p) => {
+      const skuClean = (p.sku||'').trim().toUpperCase();
+      // Re-derive the vendor from the manufacturer (auto-mapped rows only — a
+      // vendor the user picked by hand is left alone) so brands like Badger
+      // resolve to their real supplier (Momentec) before we pick which API to hit.
+      if (!p._vendor_manual) { const vid = _mfgToVendor(p.manufacturer); if (vid) p.vendor_id = vid; }
+      // 1) NSA catalog (in-memory)
+      const catMatch = prod.find(cp => { const c=(cp.sku||'').trim().toUpperCase(); return c && (c===skuClean||c.includes(skuClean)||skuClean.includes(c)); });
+      if (catMatch?.vendor_id && !p.vendor_id) p.vendor_id = catMatch.vendor_id;
+      if (catMatch && parseFloat(catMatch.nsa_cost)>0) { p.cost = parseFloat(catMatch.nsa_cost); p._cost_source = 'catalog'; found++; return; }
+      // 2) Supabase fallback — the in-memory catalog may not hold every product
+      if (supabase) {
+        try {
+          const { data } = await supabase.from('products').select('sku,nsa_cost,vendor_id').ilike('sku', skuClean).limit(1);
+          const row = data?.[0];
+          if (row?.vendor_id && !p.vendor_id) p.vendor_id = row.vendor_id;
+          if (row && parseFloat(row.nsa_cost)>0) { p.cost = parseFloat(row.nsa_cost); p._cost_source = 'catalog'; found++; return; }
+        } catch (e) { console.log(`[Cost] DB query failed for ${p.sku}: ${e.message}`); }
+      }
+      // 3) Supplier API — target the known vendor, else try all in parallel
+      const vendorName = (vend.find(v=>v.id===p.vendor_id)?.name || p.manufacturer || '').toLowerCase();
+      let hit = null;
+      try {
+        if (/richardson/i.test(vendorName)) hit = richardsonResolveSku(p.sku);
+        else if (/sanmar/i.test(vendorName)) hit = await sanmarResolveSku(p.sku);
+        else if (/s.?s\s*activ/i.test(vendorName)) hit = await ssResolveSku(p.sku);
+        else if (/momentec/i.test(vendorName)) hit = await momentecResolveSku(p.sku, { discount: _momentecDiscount() });
+        else hit = await resolveSkuAcrossVendors(p.sku);
+      } catch (e) { console.log(`[Cost] API lookup failed for ${p.sku}: ${e.message}`); }
+      if (hit?.rate > 0) { p.cost = hit.rate; p._cost_source = _vendorCostSrc(hit.vendor); found++; return; }
+      zero++;
+      console.log(`[Cost] No price found for ${p.sku} (${p.name||''})`);
+    }));
+    const upd = { ...store, products: [...(store.products||[])] };
+    setOmgStores(prev => prev.map(st => st.id===store.id ? upd : st));
+    setOmgSel(upd);
+    setOmgPriceLoading(false);
+    nf(`Updated ${found}/${targets.length} cost${found===1?'':'s'}` + (zero ? ` · ${zero} had no catalog/API match (enter manually)` : ''));
   };
   const _initRepF=(()=>{try{const s=localStorage.getItem('nsa_user');const u=s?JSON.parse(s):null;if(u&&(u.role==='rep'||u.role==='admin'||u.role==='super_admin'||u.role==='gm'))return'_me_';return'all'}catch{return'all'}})();
   const[estF,setEstF]=useState({status:'open',rep:_initRepF,search:'',sort:'date_desc'});
@@ -14868,62 +15024,22 @@ export default function App(){
                   <button className="btn btn-sm" disabled={omgReportLoading} style={{fontSize:11,padding:'2px 10px',background:'#166534',color:'#fff',whiteSpace:'nowrap'}} onClick={()=>importOMGReport(s, omgReportUrl||s._report_url)}>{omgReportLoading?'⏳ Re-importing…':'Re-import'}</button>
                 </div>
               )})()}
-              {s._report_imported_at&&<div style={{display:'flex',alignItems:'center',gap:8,marginTop:6}}>
+              {s._report_imported_at&&<div style={{display:'flex',alignItems:'center',gap:8,marginTop:6,flexWrap:'wrap'}}>
                 <div style={{fontSize:11,color:'#64748b'}}>Last imported: {new Date(s._report_imported_at).toLocaleString()}</div>
-                {(s.products||[]).some(p=>!p.cost||p.cost<=0)&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#fef3c7',color:'#92400e',border:'1px solid #fbbf24'}} onClick={async()=>{
-                  const missing=(s.products||[]).filter(p=>!p.cost||p.cost<=0);
-                  nf(`Looking up costs for ${missing.length} items…`);
-                  let found=0;
-                  for(const p of missing){
-                    if(!p.sku)continue;
-                    // 1) Check NSA catalog first — try exact, then trimmed, then partial
-                    const skuClean=p.sku.trim().toUpperCase();
-                    const catMatch=prod.find(cp=>{
-                      const cpSku=(cp.sku||'').trim().toUpperCase();
-                      return cpSku===skuClean||cpSku.includes(skuClean)||skuClean.includes(cpSku);
-                    });
-                    const catCost=catMatch?parseFloat(catMatch.nsa_cost)||0:0;
-                    if(catCost>0){
-                      console.log(`[Cost] Catalog match: ${p.sku} → ${catMatch.sku} @ $${catCost}`);
-                      p.cost=catCost;p._cost_source='catalog';if(catMatch.vendor_id&&!p.vendor_id)p.vendor_id=catMatch.vendor_id;found++;continue
-                    }
-                    // Fallback: query Supabase directly if in-memory search missed it
-                    if(supabase&&!catMatch){
-                      try{
-                        const{data:dbMatch}=await supabase.from('products').select('sku,nsa_cost,vendor_id').ilike('sku',skuClean).limit(1);
-                        const dbCost=dbMatch?.[0]?parseFloat(dbMatch[0].nsa_cost)||0:0;
-                        if(dbCost>0){
-                          console.log(`[Cost] DB fallback match: ${p.sku} → ${dbMatch[0].sku} @ $${dbCost}`);
-                          p.cost=dbCost;p._cost_source='catalog';if(dbMatch[0].vendor_id&&!p.vendor_id)p.vendor_id=dbMatch[0].vendor_id;found++;continue
-                        } else if(dbMatch?.[0]) {
-                          console.log(`[Cost] DB found ${p.sku} but nsa_cost=${dbMatch[0].nsa_cost}`);
-                          if(dbMatch[0].vendor_id&&!p.vendor_id)p.vendor_id=dbMatch[0].vendor_id;
-                        }
-                      }catch(e){console.log(`[Cost] DB query failed for ${p.sku}: ${e.message}`)}
-                    }
-                    if(catMatch){
-                      console.log(`[Cost] Catalog found ${p.sku} → ${catMatch.sku} but nsa_cost=${catMatch.nsa_cost}`);
-                      if(catMatch.vendor_id&&!p.vendor_id)p.vendor_id=catMatch.vendor_id;
-                    } else { console.log(`[Cost] No catalog match for "${p.sku}" — checked ${prod.length} products`) }
-                    // 2) Try SanMar
-                    try{
-                      const r=await sanmarGetPricing(p.sku);
-                      const price=r?.pricing?.[0]?.piecePrice||r?.PiecePrice||r?.pricing?.[0]?.PiecePrice;
-                      if(price&&parseFloat(price)>0){p.cost=parseFloat(price);p._cost_source='sanmar';found++;continue}
-                    }catch(e){console.log(`[Cost] SanMar ${p.sku}: ${e.message}`)}
-                    // 3) Try S&S
-                    try{
-                      const r=await ssGetProducts({style:p.sku});
-                      const item=Array.isArray(r)?r[0]:r;
-                      const price=item?.CustomerPrice||item?.customerPrice||item?.Price||item?.price;
-                      if(price&&parseFloat(price)>0){p.cost=parseFloat(price);p._cost_source='ss';found++;continue}
-                    }catch(e){console.log(`[Cost] S&S ${p.sku}: ${e.message}`)}
-                    console.log(`[Cost] No match for ${p.sku} (${p.name}) in catalog, SanMar, or S&S`);
-                  }
-                  const upd={...s,products:[...(s.products||[])]};
-                  setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
-                  nf(`Found costs for ${found}/${missing.length} items`+(found<missing.length?' — remaining need manual entry':''));
-                }}>🔍 Lookup Missing Costs ({(s.products||[]).filter(p=>!p.cost||p.cost<=0).length})</button>}
+                {(s.products||[]).length>0&&(()=>{const z=(s.products||[]).filter(p=>!(p.cost>0)).length;return(
+                  <button className="btn btn-sm" disabled={omgPriceLoading} title="Re-check every item's cost against the NSA catalog and supplier APIs (S&S, SanMar, Richardson, Momentec). Costs you typed by hand are kept." style={{fontSize:10,padding:'2px 8px',background:z?'#fef3c7':'#eff6ff',color:z?'#92400e':'#1e40af',border:`1px solid ${z?'#fbbf24':'#93c5fd'}`}} onClick={()=>omgLookupCosts(s)}>{omgPriceLoading?'⏳ Checking prices…':`🔄 Refresh API Prices${z?` (${z} at $0)`:''}`}</button>
+                )})()}
+                {(s.products||[]).length>0&&(()=>{
+                  const customer=cust.find(c=>c.id===s.customer_id);
+                  const repId=s.rep_id||customer?.primary_rep_id;
+                  const rep=repId?REPS.find(r=>r.id===repId):null;
+                  const alreadyNotified=assignedTodos.some(t=>t.status==='open'&&t.title&&t.title.startsWith('Apply art & create SO')&&t.title.includes(s.store_name||s.id));
+                  return(
+                    <button className="btn btn-sm" disabled={omgNotifyLoading||alreadyNotified} title={rep?`Create a TODO task and email ${rep.name} that this store is ready for art + SO`:'Assign a rep to this store or its customer first'} style={{fontSize:10,padding:'2px 8px',background:alreadyNotified?'#f0fdf4':'#f0f9ff',color:alreadyNotified?'#166534':'#0369a1',border:`1px solid ${alreadyNotified?'#86efac':'#7dd3fc'}`}} onClick={()=>omgNotifyRep(s)}>
+                      {omgNotifyLoading?'⏳ Notifying…':alreadyNotified?'✓ Rep notified':`📬 Notify${rep?' '+rep.name.split(' ')[0]:' Rep'}`}
+                    </button>
+                  );
+                })()}
               </div>}
             </div>}
 
@@ -14996,13 +15112,12 @@ export default function App(){
                 <td><input type="text" value={p.sku} onChange={e=>updateProd('sku',e.target.value)} style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12,border:'none',background:'transparent',width:90,padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/></td>
                 <td><input type="text" value={p.name} onChange={e=>updateProd('name',e.target.value)} style={{fontSize:12,fontWeight:600,border:'none',background:'transparent',width:'100%',padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/>
                   <div style={{fontSize:10,color:'#94a3b8',display:'flex',alignItems:'center',gap:3}}>{p.manufacturer||'—'}
-                    {p.vendor_id?<span style={{color:'#2563eb',fontWeight:600}}>→ {vend.find(v=>v.id===p.vendor_id)?.name||p.vendor_id}</span>
-                    :<span style={{position:'relative',display:'inline-block'}}>
-                      <input type="text" placeholder="→ vendor?" list={`vend-${s.id}-${i}`}
-                        onChange={e=>{const match=vend.find(v=>v.name.toLowerCase()===e.target.value.toLowerCase());if(match){updateProd('vendor_id',match.id);e.target.value=''}}}
-                        style={{fontSize:10,width:70,padding:'1px 3px',border:'1px solid #fca5a5',borderRadius:3,color:'#dc2626',background:'#fef2f2'}}/>
-                      <datalist id={`vend-${s.id}-${i}`}>{vend.filter(v=>v.is_active).map(v=><option key={v.id} value={v.name}/>)}</datalist>
-                    </span>}
+                    <span style={{color:p.vendor_id?'#2563eb':'#dc2626',fontWeight:600}}>→</span>
+                    <select value={p.vendor_id||''} title="Vendor we buy this blank from — drives PO grouping and which API supplies the cost. Change it here if it's wrong." onChange={e=>{const v=e.target.value;const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,vendor_id:v||null,_vendor_manual:!!v}:pr);const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);}}
+                      style={{fontSize:10,padding:'1px 3px',borderRadius:3,border:`1px solid ${p.vendor_id?'#93c5fd':'#fca5a5'}`,color:p.vendor_id?'#2563eb':'#dc2626',background:p.vendor_id?'#eff6ff':'#fef2f2',fontWeight:600,maxWidth:120}}>
+                      <option value="">vendor?</option>
+                      {vend.filter(v=>v.is_active||v.id===p.vendor_id).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+                    </select>
                   </div></td>
                 <td style={{fontSize:11}}>{p.color}</td>
                 <td>{p.no_deco?(
@@ -15068,9 +15183,9 @@ export default function App(){
                 <td style={{textAlign:'right',fontSize:12}}>
                   <div style={{display:'flex',alignItems:'center',justifyContent:'flex-end',gap:2}}>
                     <span style={{color:'#94a3b8',fontSize:11}}>$</span>
-                    <input type="number" step="0.01" value={p.cost||''} placeholder="0" onChange={e=>updateProd('cost',parseFloat(e.target.value)||0)}
+                    <input type="number" step="0.01" value={p.cost||''} placeholder="0" onChange={e=>{const v=parseFloat(e.target.value)||0;const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,cost:v,_cost_source:v>0?'manual':pr._cost_source}:pr);const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);}}
                       style={{width:55,padding:'2px 4px',border:'1px solid '+(p.cost>0?'#d1d5db':'#fca5a5'),borderRadius:3,fontSize:12,fontFamily:'monospace',textAlign:'right',background:p.cost>0?'transparent':'#fef2f2'}}/>
-                    {p._cost_source&&p.cost>0&&<span style={{fontSize:7,color:p._cost_source==='catalog'?'#22c55e':p._cost_source==='sanmar'?'#2563eb':p._cost_source==='ss'?'#7c3aed':'#94a3b8'}}>{p._cost_source==='catalog'?'CAT':p._cost_source==='sanmar'?'SM':p._cost_source==='ss'?'SS':'?'}</span>}
+                    {p._cost_source&&p.cost>0&&(()=>{const M={catalog:['CAT','#22c55e'],sanmar:['SM','#2563eb'],ss:['SS','#7c3aed'],richardson:['RICH','#b45309'],momentec:['MOM','#0891b2'],manual:['✎','#64748b'],api:['API','#94a3b8']};const[lbl,col]=M[p._cost_source]||['?','#94a3b8'];return<span title={`Cost source: ${p._cost_source}`} style={{fontSize:7,color:col}}>{lbl}</span>})()}
                   </div>
                 </td>
                 <td>{(()=>{
