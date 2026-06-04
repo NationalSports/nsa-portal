@@ -1292,7 +1292,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     if(portalJobView){
       const j=portalJobView.job;const so=portalJobView.so;
       const af2=safeArt(so).find(a=>a.id===j.art_file_id);
-      const mockupFiles2=_filterDisplayable(af2?.mockup_files||af2?.files||[]);
+      const _jAF2=[...new Set([j.art_file_id,...(j._art_ids||[])].filter(Boolean))].map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
+      const _jSkus2=new Set((j.items||[]).map(gi=>gi.sku).filter(Boolean));
+      const _mf2Seen=new Set();
+      const mockupFiles2=_filterDisplayable([...(af2?.mockup_files||af2?.files||[]),..._jAF2.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([k])=>_jSkus2.has(k.split('|')[0])).flatMap(([,arr])=>arr||[]))]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_mf2Seen.has(u))return false;_mf2Seen.add(u);return true});
       const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd2=prod.find(pp=>pp.id===it?.product_id||pp.sku===it?.sku);return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd2?.image_url||it?._colorImage||'',back_image_url:prd2?.back_image_url||it?._colorBackImage||''}});
       return<div className="modal-overlay" onClick={()=>setShowPortal(false)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
         <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'20px 24px',borderRadius:'12px 12px 0 0',position:'relative'}}>
