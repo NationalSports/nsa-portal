@@ -1887,7 +1887,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return{
         id,key:j.key,art_file_id:j.art_file_id,art_name:existing?._name_locked?(existing.art_name||j.art_name):j.art_name,deco_type:j.deco_type,
         positions:[...j.positions].filter(Boolean).join(', '),items:j.items,
-        art_status:existing?.art_status||j.art_status,item_status:itemSt,prod_status:prodSt,
+        // Preserve human-advanced states; 'needs_art' is the auto-computed default and
+        // must be re-derived so a fixed art file immediately unlocks to art_complete.
+        art_status:(existing?.art_status&&existing.art_status!=='needs_art')?existing.art_status:j.art_status,item_status:itemSt,prod_status:prodSt,
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
         assigned_machine:existing?.assigned_machine||null,assigned_to:existing?.assigned_to||null,
         ship_method:existing?.ship_method||(o.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer'),
