@@ -4762,6 +4762,9 @@ export default function App(){
   // overwrite. Hand-typed costs ('manual') are always preserved.
   const _vendorCostSrc = (vendor='') => ({sanmar:'sanmar','s&s':'ss',richardson:'richardson',momentec:'momentec'})[String(vendor).toLowerCase()] || 'api';
   const _AUTO_COST_SRCS = new Set(['catalog','sanmar','ss','richardson','momentec','api']);
+  // Momentec dealer discount applied to the catalog Offer price (matches the
+  // order-form logic in OrderEditor.js so OMG costs line up with the SO).
+  const _momentecDiscount = () => (vend.find(v => v.api_provider==='momentec' || /momentec/i.test(v.name))?.api_price_discount) ?? 0.15;
   // Manufacturer → NSA vendor (who we actually buy the blank from). Drives PO
   // grouping and which supplier API supplies the cost. Badger is a Momentec
   // brand, so it resolves to Momentec — there is no standalone Badger vendor.
@@ -4922,7 +4925,7 @@ export default function App(){
             } else if (/s.?s\s*activ/i.test(vendorName)) {
               hit = await ssResolveSku(p.sku);
             } else if (/momentec/i.test(vendorName)) {
-              hit = await momentecResolveSku(p.sku);
+              hit = await momentecResolveSku(p.sku, { discount: _momentecDiscount() });
             } else {
               hit = await resolveSkuAcrossVendors(p.sku);
             }
@@ -5115,7 +5118,7 @@ export default function App(){
         if (/richardson/i.test(vendorName)) hit = richardsonResolveSku(p.sku);
         else if (/sanmar/i.test(vendorName)) hit = await sanmarResolveSku(p.sku);
         else if (/s.?s\s*activ/i.test(vendorName)) hit = await ssResolveSku(p.sku);
-        else if (/momentec/i.test(vendorName)) hit = await momentecResolveSku(p.sku);
+        else if (/momentec/i.test(vendorName)) hit = await momentecResolveSku(p.sku, { discount: _momentecDiscount() });
         else hit = await resolveSkuAcrossVendors(p.sku);
       } catch (e) { console.log(`[Cost] API lookup failed for ${p.sku}: ${e.message}`); }
       if (hit?.rate > 0) { p.cost = hit.rate; p._cost_source = _vendorCostSrc(hit.vendor); found++; return; }

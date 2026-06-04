@@ -1035,40 +1035,85 @@ const ssResolveSku = async (sku) => {
   } catch (e) { console.warn('[Import] S&S resolve failed for', sku, e.message); return null; }
 };
 
-const momentecResolveSku = async (sku) => {
+// Pull a wholesale (Offer) price from an HCL Commerce node's Price array.
+// The live API uses SKUPriceUsage/SKUPriceValue; fall back to the lowercase
+// HCL variants and finally the lowest value present in the array.
+const _mtOfferPrice = (node) => {
+  const arr = node?.Price || node?.price || [];
+  let offer = 0, display = 0, min = Infinity;
+  for (const p of arr) {
+    const u = String(p.SKUPriceUsage || p.usage || p.priceUsage || '').toLowerCase();
+    const v = parseFloat(p.SKUPriceValue || p.priceValue || p.price || 0);
+    if (!(v > 0)) continue;
+    if (u === 'offer' || u === 'sale') offer = offer ? Math.min(offer, v) : v;
+    else if (u === 'display' || u === 'list') display = display ? Math.min(display, v) : v;
+    if (v < min) min = v;
+  }
+  if (offer > 0) return offer;
+  if (display > 0) return display;
+  return min < Infinity ? min : 0;
+};
+// Pull a size code from a SKU node's attributes (HCL field-casing varies).
+const _mtSize = (node) => {
+  const attrs = node?.Attributes || node?.attributes || node?.definingAttributes || [];
+  if (Array.isArray(attrs)) for (const a of attrs) {
+    const id = String(a.identifier || '').toLowerCase();
+    const n = String(a.name || '').toLowerCase();
+    if (id === 'asgswatchsize' || n === 'available sizes' || n === 'size') {
+      const vals = a.values || a.Values || [];
+      if (vals.length) return String(vals[0].values || vals[0].value || vals[0].identifier || '').trim();
+    }
+  }
+  return '';
+};
+const _MT_BASE_SIZES = new Set(['XS','S','SM','M','MD','L','LG','XL']);
+
+// Momentec resolver. The catalog Offer price IS public — but only on the child
+// SKUs returned by the byId *detail* call, not on the bySearchTerm result. So:
+// search to find the product → byId to get its SKUs → take the base-size Offer
+// price → apply the dealer discount. Mirrors the order-form logic in
+// OrderEditor.js (api_price_discount, default 15%) so OMG costs match the SO.
+const momentecResolveSku = async (sku, { discount = 0.15 } = {}) => {
   try {
-    const d = await momentecGetProductByPartNumber(sku).catch(() => null);
-    let e = d?.CatalogEntryView?.[0];
-    if (!e) {
-      const s = await momentecSearchProducts(sku, 10, 1).catch(() => null);
-      const entries = (s?.CatalogEntryView || []).filter((x) => String(x.partNumber || '').toLowerCase().startsWith(String(sku).toLowerCase()));
-      e = entries[0];
+    const term = String(sku || '').trim();
+    if (!term) return null;
+    // 1) Find the product (byPartNumber 404s for style-level numbers, so search)
+    const s = await momentecSearchProducts(term, 10, 1).catch(() => null);
+    const list = s?.CatalogEntryView || [];
+    const entry = list.find((x) => String(x.partNumber || '').toLowerCase().startsWith(term.toLowerCase())) || list[0];
+    if (!entry) return null;
+    // 2) Pull full detail — this carries the child SKUs that hold the prices
+    let detail = null;
+    if (entry.uniqueID) {
+      const d = await momentecGetProductById(entry.uniqueID).catch(() => null);
+      detail = d?.CatalogEntryView?.[0] || null;
     }
-    if (!e) return null;
+    const src = detail || entry;
+    // 3) Base-size dealer cost from the child SKUs
+    const skus = src.SKUs || src.sKUs || [];
+    let baseOffer = 0, anyOffer = 0;
+    for (const sk of skus) {
+      const v = _mtOfferPrice(sk);
+      if (!(v > 0)) continue;
+      anyOffer = anyOffer ? Math.min(anyOffer, v) : v;
+      if (_MT_BASE_SIZES.has(_mtSize(sk).toUpperCase())) baseOffer = baseOffer ? Math.min(baseOffer, v) : v;
+    }
+    const offer = baseOffer || anyOffer || _mtOfferPrice(src);
+    const rate = offer > 0 ? Math.round(offer * (1 - discount) * 100) / 100 : 0;
+    // 4) Color (best-effort, from the product's defining attributes)
     let color = '';
-    const attrs = e.Attributes || e.attributes || e.definingAttributes || [];
-    if (Array.isArray(attrs)) {
-      for (const a of attrs) {
-        const n = (a.name || a.identifier || '').toLowerCase();
-        if (n === 'color' || n === 'colour' || n === 'asgswatchcolor') {
-          const vals = a.values || a.Values || [];
-          if (vals.length) { color = vals.map((v) => v.values || v.value || v.identifier || v).join('/'); break; }
-        }
-      }
-    }
-    let rate = 0;
-    const prices = e.Price || e.price || [];
-    if (prices.length) {
-      for (const p of prices) {
-        const u = (p.usage || p.priceUsage || '').toLowerCase();
-        const v = parseFloat(p.SKUPriceValue || p.priceValue || 0);
-        if (v > 0 && (u === 'offer' || u === 'sale')) { rate = v; break; }
+    const attrs = src.Attributes || src.attributes || src.definingAttributes || [];
+    if (Array.isArray(attrs)) for (const a of attrs) {
+      const n = String(a.name || a.identifier || '').toLowerCase();
+      if (n === 'color' || n === 'colour' || n === 'asgswatchcolor') {
+        const vals = a.values || a.Values || [];
+        if (vals.length) { color = vals.map((v) => v.values || v.value || v.identifier || v).join('/'); break; }
       }
     }
     return {
       vendor: 'Momentec',
-      brand: e.manufacturer || 'Momentec',
-      name: e.title || e.name || String(sku),
+      brand: src.manufacturer || entry.manufacturer || 'Momentec',
+      name: src.title || src.name || entry.name || term,
       color,
       rate,
     };
