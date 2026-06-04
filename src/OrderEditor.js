@@ -7642,7 +7642,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const af2=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);
               return{item_idx:ji.item_idx,deco_idx:ji.deco_idx,deco_idxs:Array.isArray(ji.deco_idxs)&&ji.deco_idxs.length?ji.deco_idxs:(ji.deco_idx!=null?[ji.deco_idx]:[]),sku:ji.sku||it?.sku||'',name:ji.name||safeStr(it?.name),color:ji.color||it?.color||'',
                 units:ji.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0),fulfilled:ji.fulfilled||0,art_file_id:j.art_file_id,
-                art_name:af2?.name||j.art_name||'',position:j.positions||'Front Center'};
+                art_name:j.art_name||af2?.name||'',position:j.positions||'Front Center'};
             });
             return{name:j.art_name||j.deco_type.replace(/_/g,' '),deco_type:j.deco_type,items,
               artist:j.assigned_artist||'',notes:j.rep_notes||'',files:[],
@@ -8019,12 +8019,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const mergeItems=_mergeJobItems(allItems);
             const mergeUnits=mergeItems.reduce((a,gi)=>a+safeNum(gi.units),0);
             const mergeFulfilled=mergeItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);
-            // Merging combines items only — it doesn't submit or finish art. Keep the
-            // least-complete art_status across the merged jobs so a finished job can't
-            // mask others that still need art (which would hide the Submit to Art button).
-            const _artRank={needs_art:0,art_requested:1,art_in_progress:2,waiting_approval:3,production_files_needed:4,order_dtf_transfers:4,upload_emb_files:4,art_complete:5};
-            const _mergedArtStatus=sel.reduce((worst,ji)=>{const st=jobs[ji].art_status;return (_artRank[st]??0)<(_artRank[worst]??0)?st:worst;},target.art_status);
-            const merged={...target,items:mergeItems,total_units:mergeUnits,fulfilled_units:mergeFulfilled,art_status:_mergedArtStatus,_merged:true};
+            // Merging combines items only — it does NOT submit to art. Always reset to
+            // needs_art so the Submit to Art button appears and the user submits the
+            // new merged job explicitly through the wizard.
+            const merged={...target,items:mergeItems,total_units:mergeUnits,fulfilled_units:mergeFulfilled,art_status:'needs_art',_merged:true};
             const removeIdxs=new Set(sel.slice(1));const newJobs=jobs.map((j,i)=>i===sel[0]?merged:j).filter((j,i)=>!removeIdxs.has(i));
             const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setMergeMode(null);
             nf('Merged '+sel.length+' jobs into '+target.id);
