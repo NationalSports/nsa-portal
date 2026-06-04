@@ -1724,14 +1724,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const promoTotals=useMemo(()=>{
     if(!o.promo_applied)return null;
     let promoRev=0,promoCost=0,normalRev=0,normalCost=0,origPromoRev=0;
-    safeItems(o).forEach(it=>{if(it.is_free_promo)return;const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;
+    safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;
       if(it.is_promo){
-        promoRev+=q*safeNum(it.unit_sell);promoCost+=q*safeNum(it.nsa_cost);
-        // Track original revenue (pre-promo sell) for shipping base
-        origPromoRev+=q*safeNum(it._pre_promo_sell||it.unit_sell);
+        if(!it.is_free_promo){promoRev+=q*safeNum(it.unit_sell);promoCost+=q*safeNum(it.nsa_cost);origPromoRev+=q*safeNum(it._pre_promo_sell||it.unit_sell);}
         safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);promoRev+=eq*rQ(dp.sell*1.25);promoCost+=eq*dp.cost;origPromoRev+=eq*dp.sell});
       }else{
-        normalRev+=q*safeNum(it.unit_sell);normalCost+=q*safeNum(it.nsa_cost);
+        if(!it.is_free_promo){normalRev+=q*safeNum(it.unit_sell);normalCost+=q*safeNum(it.nsa_cost);}
         safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);normalRev+=eq*dp.sell;normalCost+=eq*dp.cost});
       }});
     // Shipping: use original (pre-promo) revenue for base to avoid inflation, then apply 25% to promo portion
