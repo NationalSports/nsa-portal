@@ -4762,6 +4762,24 @@ export default function App(){
   // overwrite. Hand-typed costs ('manual') are always preserved.
   const _vendorCostSrc = (vendor='') => ({sanmar:'sanmar','s&s':'ss',richardson:'richardson',momentec:'momentec'})[String(vendor).toLowerCase()] || 'api';
   const _AUTO_COST_SRCS = new Set(['catalog','sanmar','ss','richardson','momentec','api']);
+  // Manufacturer → NSA vendor (who we actually buy the blank from). Drives PO
+  // grouping and which supplier API supplies the cost. Badger is a Momentec
+  // brand, so it resolves to Momentec — there is no standalone Badger vendor.
+  const _mfgToVendor = (mfg) => {
+    if (!mfg) return null;
+    const m = mfg.toLowerCase();
+    if (/comfort\s*colors|port\s*(&|and)\s*company|port\s*authority|sport-?tek|gildan|hanes|champion|district|cornerstone|allmade|rabbit\s*skins|jerzees/i.test(m))
+      return vend.find(v => /sanmar/i.test(v.name))?.id || null;
+    if (/independent\s*trading|next\s*level|bella\s*canvas|tultex|lat|american\s*apparel|alternative|econscious|threadfast/i.test(m))
+      return vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
+    if (/richardson/i.test(m)) return vend.find(v => /richardson/i.test(v.name))?.id || null;
+    if (/otto/i.test(m)) return vend.find(v => /otto/i.test(v.name))?.id || vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
+    if (/adidas/i.test(m)) return vend.find(v => /adidas/i.test(v.name))?.id || null;
+    if (/under\s*armou?r/i.test(m)) return vend.find(v => /under\s*armou?r/i.test(v.name))?.id || null;
+    if (/badger/i.test(m)) return vend.find(v => /momentec/i.test(v.name))?.id || null;
+    if (/momentec/i.test(m)) return vend.find(v => /momentec/i.test(v.name))?.id || null;
+    return null;
+  };
   const importOMGReport = async (store, reportUrl) => {
     // Extract UUID from various URL formats
     const urlStr = (reportUrl || '').trim();
@@ -4871,21 +4889,7 @@ export default function App(){
       console.log(`[OMG Report] Parsed ${products.length} products, ${totalQty} total units, $${totalSales} from report ${reportId}`);
 
       // ── Catalog + manufacturer → vendor mapping (instant, no API calls) ──
-      const mfgToVendor = (mfg) => {
-        if (!mfg) return null;
-        const m = mfg.toLowerCase();
-        if (/comfort\s*colors|port\s*(&|and)\s*company|port\s*authority|sport-?tek|gildan|hanes|champion|district|cornerstone|allmade|rabbit\s*skins|jerzees/i.test(m))
-          return vend.find(v => /sanmar/i.test(v.name))?.id || null;
-        if (/independent\s*trading|next\s*level|bella\s*canvas|tultex|lat|american\s*apparel|alternative|econscious|threadfast/i.test(m))
-          return vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
-        if (/richardson/i.test(m)) return vend.find(v => /richardson/i.test(v.name))?.id || null;
-        if (/otto/i.test(m)) return vend.find(v => /otto/i.test(v.name))?.id || vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
-        if (/adidas/i.test(m)) return vend.find(v => /adidas/i.test(v.name))?.id || null;
-        if (/under\s*armou?r/i.test(m)) return vend.find(v => /under\s*armou?r/i.test(v.name))?.id || null;
-        if (/badger/i.test(m)) return vend.find(v => /badger/i.test(v.name))?.id || vend.find(v => /s.s\s*active/i.test(v.name))?.id || null;
-        if (/momentec/i.test(m)) return vend.find(v => /momentec/i.test(v.name))?.id || null;
-        return null;
-      };
+      // Vendor mapping uses the shared _mfgToVendor helper defined above.
       for (const p of products) {
         if (!p.sku) continue;
         const catMatch = prod.find(cp => cp.sku === p.sku || cp.sku?.toLowerCase() === p.sku?.toLowerCase());
@@ -4894,7 +4898,7 @@ export default function App(){
           if (catCost > 0) { p.cost = catCost; p._cost_source = 'catalog'; }
           if (catMatch.vendor_id) p.vendor_id = catMatch.vendor_id;
         }
-        if (!p.vendor_id) p.vendor_id = mfgToVendor(p.manufacturer);
+        if (!p.vendor_id) p.vendor_id = _mfgToVendor(p.manufacturer);
       }
 
       // For items still at $0, fetch live pricing from the appropriate supplier API
@@ -5020,6 +5024,10 @@ export default function App(){
     let found = 0, zero = 0;
     await Promise.allSettled(targets.map(async (p) => {
       const skuClean = (p.sku||'').trim().toUpperCase();
+      // Re-derive the vendor from the manufacturer (auto-mapped rows only — a
+      // vendor the user picked by hand is left alone) so brands like Badger
+      // resolve to their real supplier (Momentec) before we pick which API to hit.
+      if (!p._vendor_manual) { const vid = _mfgToVendor(p.manufacturer); if (vid) p.vendor_id = vid; }
       // 1) NSA catalog (in-memory)
       const catMatch = prod.find(cp => { const c=(cp.sku||'').trim().toUpperCase(); return c && (c===skuClean||c.includes(skuClean)||skuClean.includes(c)); });
       if (catMatch?.vendor_id && !p.vendor_id) p.vendor_id = catMatch.vendor_id;
@@ -15023,13 +15031,12 @@ export default function App(){
                 <td><input type="text" value={p.sku} onChange={e=>updateProd('sku',e.target.value)} style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12,border:'none',background:'transparent',width:90,padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/></td>
                 <td><input type="text" value={p.name} onChange={e=>updateProd('name',e.target.value)} style={{fontSize:12,fontWeight:600,border:'none',background:'transparent',width:'100%',padding:'2px 0',borderBottom:'1px solid transparent'}} onFocus={e=>{e.target.style.borderBottom='1px solid #2563eb'}} onBlur={e=>{e.target.style.borderBottom='1px solid transparent'}}/>
                   <div style={{fontSize:10,color:'#94a3b8',display:'flex',alignItems:'center',gap:3}}>{p.manufacturer||'—'}
-                    {p.vendor_id?<span style={{color:'#2563eb',fontWeight:600}}>→ {vend.find(v=>v.id===p.vendor_id)?.name||p.vendor_id}</span>
-                    :<span style={{position:'relative',display:'inline-block'}}>
-                      <input type="text" placeholder="→ vendor?" list={`vend-${s.id}-${i}`}
-                        onChange={e=>{const match=vend.find(v=>v.name.toLowerCase()===e.target.value.toLowerCase());if(match){updateProd('vendor_id',match.id);e.target.value=''}}}
-                        style={{fontSize:10,width:70,padding:'1px 3px',border:'1px solid #fca5a5',borderRadius:3,color:'#dc2626',background:'#fef2f2'}}/>
-                      <datalist id={`vend-${s.id}-${i}`}>{vend.filter(v=>v.is_active).map(v=><option key={v.id} value={v.name}/>)}</datalist>
-                    </span>}
+                    <span style={{color:p.vendor_id?'#2563eb':'#dc2626',fontWeight:600}}>→</span>
+                    <select value={p.vendor_id||''} title="Vendor we buy this blank from — drives PO grouping and which API supplies the cost. Change it here if it's wrong." onChange={e=>{const v=e.target.value;const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,vendor_id:v||null,_vendor_manual:!!v}:pr);const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);}}
+                      style={{fontSize:10,padding:'1px 3px',borderRadius:3,border:`1px solid ${p.vendor_id?'#93c5fd':'#fca5a5'}`,color:p.vendor_id?'#2563eb':'#dc2626',background:p.vendor_id?'#eff6ff':'#fef2f2',fontWeight:600,maxWidth:120}}>
+                      <option value="">vendor?</option>
+                      {vend.filter(v=>v.is_active||v.id===p.vendor_id).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+                    </select>
                   </div></td>
                 <td style={{fontSize:11}}>{p.color}</td>
                 <td>{p.no_deco?(
