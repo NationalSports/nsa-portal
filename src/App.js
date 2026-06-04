@@ -214,7 +214,7 @@ const SalesHistory = lazyRetry(() => import('./SalesHistory'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors } from './vendorApis';
 // ── Loading fallback for lazy components ──
 const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
 
@@ -4727,7 +4727,7 @@ export default function App(){
   // Step-by-step help modal (opened from the button on the OMG store detail).
   const[omgGuideOpen,setOmgGuideOpen]=useState(false);
   React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
-  const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);
+  const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);const[omgPriceLoading,setOmgPriceLoading]=useState(false);
 
   // Import products from an OMG shared report URL.
   // Fetches report JSON via Netlify proxy, parses products with SKUs, sizes,
@@ -4757,6 +4757,11 @@ export default function App(){
     }
     return bestScore>=0.9?best:null;
   };
+  // Map a resolver's vendor name to the short cost-source code shown on each
+  // cost cell, plus the set of auto-derived sources a price refresh may
+  // overwrite. Hand-typed costs ('manual') are always preserved.
+  const _vendorCostSrc = (vendor='') => ({sanmar:'sanmar','s&s':'ss',richardson:'richardson',momentec:'momentec'})[String(vendor).toLowerCase()] || 'api';
+  const _AUTO_COST_SRCS = new Set(['catalog','sanmar','ss','richardson','momentec','api']);
   const importOMGReport = async (store, reportUrl) => {
     // Extract UUID from various URL formats
     const urlStr = (reportUrl || '').trim();
@@ -4912,7 +4917,7 @@ export default function App(){
               hit = await resolveSkuAcrossVendors(p.sku);
             }
           } catch (e) { console.warn('[OMG Report] Pricing lookup failed for', p.sku, e.message); }
-          if (hit?.rate > 0) { p.cost = hit.rate; p._cost_source = (hit.vendor || 'api').toLowerCase().replace(/[^a-z]/g, '_'); }
+          if (hit?.rate > 0) { p.cost = hit.rate; p._cost_source = _vendorCostSrc(hit.vendor); }
         }));
         const priced = needsPricing.filter(p => p.cost > 0).length;
         console.log(`[OMG Report] API pricing resolved ${priced}/${needsPricing.length} products`);
@@ -5001,6 +5006,52 @@ export default function App(){
     } finally {
       setOmgReportLoading(false);
     }
+  };
+
+  // Re-pull costs for an already-imported store: check each item against the
+  // NSA catalog, then the catalog table in Supabase, then the supplier's API
+  // (S&S, SanMar, Richardson, Momentec). Fills $0 items and refreshes
+  // auto-sourced costs; never clobbers a price typed in by hand.
+  const omgLookupCosts = async (store) => {
+    const targets = (store.products||[]).filter(p => p.sku && (!(p.cost>0) || _AUTO_COST_SRCS.has(p._cost_source)));
+    if (!targets.length) { nf('No costs to refresh — every item already has a manual or confirmed price', 'warn'); return; }
+    setOmgPriceLoading(true);
+    nf(`Checking ${targets.length} item${targets.length>1?'s':''} against catalog + supplier APIs…`);
+    let found = 0, zero = 0;
+    await Promise.allSettled(targets.map(async (p) => {
+      const skuClean = (p.sku||'').trim().toUpperCase();
+      // 1) NSA catalog (in-memory)
+      const catMatch = prod.find(cp => { const c=(cp.sku||'').trim().toUpperCase(); return c && (c===skuClean||c.includes(skuClean)||skuClean.includes(c)); });
+      if (catMatch?.vendor_id && !p.vendor_id) p.vendor_id = catMatch.vendor_id;
+      if (catMatch && parseFloat(catMatch.nsa_cost)>0) { p.cost = parseFloat(catMatch.nsa_cost); p._cost_source = 'catalog'; found++; return; }
+      // 2) Supabase fallback — the in-memory catalog may not hold every product
+      if (supabase) {
+        try {
+          const { data } = await supabase.from('products').select('sku,nsa_cost,vendor_id').ilike('sku', skuClean).limit(1);
+          const row = data?.[0];
+          if (row?.vendor_id && !p.vendor_id) p.vendor_id = row.vendor_id;
+          if (row && parseFloat(row.nsa_cost)>0) { p.cost = parseFloat(row.nsa_cost); p._cost_source = 'catalog'; found++; return; }
+        } catch (e) { console.log(`[Cost] DB query failed for ${p.sku}: ${e.message}`); }
+      }
+      // 3) Supplier API — target the known vendor, else try all in parallel
+      const vendorName = (vend.find(v=>v.id===p.vendor_id)?.name || p.manufacturer || '').toLowerCase();
+      let hit = null;
+      try {
+        if (/richardson/i.test(vendorName)) hit = richardsonResolveSku(p.sku);
+        else if (/sanmar/i.test(vendorName)) hit = await sanmarResolveSku(p.sku);
+        else if (/s.?s\s*activ/i.test(vendorName)) hit = await ssResolveSku(p.sku);
+        else if (/momentec/i.test(vendorName)) hit = await momentecResolveSku(p.sku);
+        else hit = await resolveSkuAcrossVendors(p.sku);
+      } catch (e) { console.log(`[Cost] API lookup failed for ${p.sku}: ${e.message}`); }
+      if (hit?.rate > 0) { p.cost = hit.rate; p._cost_source = _vendorCostSrc(hit.vendor); found++; return; }
+      zero++;
+      console.log(`[Cost] No price found for ${p.sku} (${p.name||''})`);
+    }));
+    const upd = { ...store, products: [...(store.products||[])] };
+    setOmgStores(prev => prev.map(st => st.id===store.id ? upd : st));
+    setOmgSel(upd);
+    setOmgPriceLoading(false);
+    nf(`Updated ${found}/${targets.length} cost${found===1?'':'s'}` + (zero ? ` · ${zero} had no catalog/API match (enter manually)` : ''));
   };
   const _initRepF=(()=>{try{const s=localStorage.getItem('nsa_user');const u=s?JSON.parse(s):null;if(u&&(u.role==='rep'||u.role==='admin'||u.role==='super_admin'||u.role==='gm'))return'_me_';return'all'}catch{return'all'}})();
   const[estF,setEstF]=useState({status:'open',rep:_initRepF,search:'',sort:'date_desc'});
@@ -14895,62 +14946,11 @@ export default function App(){
                   <button className="btn btn-sm" disabled={omgReportLoading} style={{fontSize:11,padding:'2px 10px',background:'#166534',color:'#fff',whiteSpace:'nowrap'}} onClick={()=>importOMGReport(s, omgReportUrl||s._report_url)}>{omgReportLoading?'⏳ Re-importing…':'Re-import'}</button>
                 </div>
               )})()}
-              {s._report_imported_at&&<div style={{display:'flex',alignItems:'center',gap:8,marginTop:6}}>
+              {s._report_imported_at&&<div style={{display:'flex',alignItems:'center',gap:8,marginTop:6,flexWrap:'wrap'}}>
                 <div style={{fontSize:11,color:'#64748b'}}>Last imported: {new Date(s._report_imported_at).toLocaleString()}</div>
-                {(s.products||[]).some(p=>!p.cost||p.cost<=0)&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#fef3c7',color:'#92400e',border:'1px solid #fbbf24'}} onClick={async()=>{
-                  const missing=(s.products||[]).filter(p=>!p.cost||p.cost<=0);
-                  nf(`Looking up costs for ${missing.length} items…`);
-                  let found=0;
-                  for(const p of missing){
-                    if(!p.sku)continue;
-                    // 1) Check NSA catalog first — try exact, then trimmed, then partial
-                    const skuClean=p.sku.trim().toUpperCase();
-                    const catMatch=prod.find(cp=>{
-                      const cpSku=(cp.sku||'').trim().toUpperCase();
-                      return cpSku===skuClean||cpSku.includes(skuClean)||skuClean.includes(cpSku);
-                    });
-                    const catCost=catMatch?parseFloat(catMatch.nsa_cost)||0:0;
-                    if(catCost>0){
-                      console.log(`[Cost] Catalog match: ${p.sku} → ${catMatch.sku} @ $${catCost}`);
-                      p.cost=catCost;p._cost_source='catalog';if(catMatch.vendor_id&&!p.vendor_id)p.vendor_id=catMatch.vendor_id;found++;continue
-                    }
-                    // Fallback: query Supabase directly if in-memory search missed it
-                    if(supabase&&!catMatch){
-                      try{
-                        const{data:dbMatch}=await supabase.from('products').select('sku,nsa_cost,vendor_id').ilike('sku',skuClean).limit(1);
-                        const dbCost=dbMatch?.[0]?parseFloat(dbMatch[0].nsa_cost)||0:0;
-                        if(dbCost>0){
-                          console.log(`[Cost] DB fallback match: ${p.sku} → ${dbMatch[0].sku} @ $${dbCost}`);
-                          p.cost=dbCost;p._cost_source='catalog';if(dbMatch[0].vendor_id&&!p.vendor_id)p.vendor_id=dbMatch[0].vendor_id;found++;continue
-                        } else if(dbMatch?.[0]) {
-                          console.log(`[Cost] DB found ${p.sku} but nsa_cost=${dbMatch[0].nsa_cost}`);
-                          if(dbMatch[0].vendor_id&&!p.vendor_id)p.vendor_id=dbMatch[0].vendor_id;
-                        }
-                      }catch(e){console.log(`[Cost] DB query failed for ${p.sku}: ${e.message}`)}
-                    }
-                    if(catMatch){
-                      console.log(`[Cost] Catalog found ${p.sku} → ${catMatch.sku} but nsa_cost=${catMatch.nsa_cost}`);
-                      if(catMatch.vendor_id&&!p.vendor_id)p.vendor_id=catMatch.vendor_id;
-                    } else { console.log(`[Cost] No catalog match for "${p.sku}" — checked ${prod.length} products`) }
-                    // 2) Try SanMar
-                    try{
-                      const r=await sanmarGetPricing(p.sku);
-                      const price=r?.pricing?.[0]?.piecePrice||r?.PiecePrice||r?.pricing?.[0]?.PiecePrice;
-                      if(price&&parseFloat(price)>0){p.cost=parseFloat(price);p._cost_source='sanmar';found++;continue}
-                    }catch(e){console.log(`[Cost] SanMar ${p.sku}: ${e.message}`)}
-                    // 3) Try S&S
-                    try{
-                      const r=await ssGetProducts({style:p.sku});
-                      const item=Array.isArray(r)?r[0]:r;
-                      const price=item?.CustomerPrice||item?.customerPrice||item?.Price||item?.price;
-                      if(price&&parseFloat(price)>0){p.cost=parseFloat(price);p._cost_source='ss';found++;continue}
-                    }catch(e){console.log(`[Cost] S&S ${p.sku}: ${e.message}`)}
-                    console.log(`[Cost] No match for ${p.sku} (${p.name}) in catalog, SanMar, or S&S`);
-                  }
-                  const upd={...s,products:[...(s.products||[])]};
-                  setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
-                  nf(`Found costs for ${found}/${missing.length} items`+(found<missing.length?' — remaining need manual entry':''));
-                }}>🔍 Lookup Missing Costs ({(s.products||[]).filter(p=>!p.cost||p.cost<=0).length})</button>}
+                {(s.products||[]).length>0&&(()=>{const z=(s.products||[]).filter(p=>!(p.cost>0)).length;return(
+                  <button className="btn btn-sm" disabled={omgPriceLoading} title="Re-check every item's cost against the NSA catalog and supplier APIs (S&S, SanMar, Richardson, Momentec). Costs you typed by hand are kept." style={{fontSize:10,padding:'2px 8px',background:z?'#fef3c7':'#eff6ff',color:z?'#92400e':'#1e40af',border:`1px solid ${z?'#fbbf24':'#93c5fd'}`}} onClick={()=>omgLookupCosts(s)}>{omgPriceLoading?'⏳ Checking prices…':`🔄 Refresh API Prices${z?` (${z} at $0)`:''}`}</button>
+                )})()}
               </div>}
             </div>}
 
@@ -15095,9 +15095,9 @@ export default function App(){
                 <td style={{textAlign:'right',fontSize:12}}>
                   <div style={{display:'flex',alignItems:'center',justifyContent:'flex-end',gap:2}}>
                     <span style={{color:'#94a3b8',fontSize:11}}>$</span>
-                    <input type="number" step="0.01" value={p.cost||''} placeholder="0" onChange={e=>updateProd('cost',parseFloat(e.target.value)||0)}
+                    <input type="number" step="0.01" value={p.cost||''} placeholder="0" onChange={e=>{const v=parseFloat(e.target.value)||0;const newProds=(s.products||[]).map((pr,j)=>j===i?{...pr,cost:v,_cost_source:v>0?'manual':pr._cost_source}:pr);const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);}}
                       style={{width:55,padding:'2px 4px',border:'1px solid '+(p.cost>0?'#d1d5db':'#fca5a5'),borderRadius:3,fontSize:12,fontFamily:'monospace',textAlign:'right',background:p.cost>0?'transparent':'#fef2f2'}}/>
-                    {p._cost_source&&p.cost>0&&<span style={{fontSize:7,color:p._cost_source==='catalog'?'#22c55e':p._cost_source==='sanmar'?'#2563eb':p._cost_source==='ss'?'#7c3aed':'#94a3b8'}}>{p._cost_source==='catalog'?'CAT':p._cost_source==='sanmar'?'SM':p._cost_source==='ss'?'SS':'?'}</span>}
+                    {p._cost_source&&p.cost>0&&(()=>{const M={catalog:['CAT','#22c55e'],sanmar:['SM','#2563eb'],ss:['SS','#7c3aed'],richardson:['RICH','#b45309'],momentec:['MOM','#0891b2'],manual:['✎','#64748b'],api:['API','#94a3b8']};const[lbl,col]=M[p._cost_source]||['?','#94a3b8'];return<span title={`Cost source: ${p._cost_source}`} style={{fontSize:7,color:col}}>{lbl}</span>})()}
                   </div>
                 </td>
                 <td>{(()=>{
