@@ -4,6 +4,7 @@
 // ═══════════════════════════════════════════
 import { NSA } from './constants';
 import { calcSOStatus } from './components';
+import { getRichardsonLevel4Price } from './richardsonPrices';
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
 const shipStationCall = async (endpoint, options = {}) => {
@@ -1071,12 +1072,19 @@ const momentecResolveSku = async (sku) => {
   } catch (e) { console.warn('[Import] Momentec resolve failed for', sku, e.message); return null; }
 };
 
+const richardsonResolveSku = (sku) => {
+  const price = getRichardsonLevel4Price(sku);
+  if (!price) return null;
+  return { vendor: 'Richardson', brand: 'Richardson', name: String(sku), color: '', rate: price };
+};
+
 const resolveSkuAcrossVendors = async (sku) => {
   if (!sku) return null;
   const results = await Promise.all([
     sanmarResolveSku(sku),
     ssResolveSku(sku),
     momentecResolveSku(sku),
+    richardsonResolveSku(sku),
   ]);
   const hits = results.filter(Boolean);
   if (!hits.length) return null;
@@ -1085,4 +1093,4 @@ const resolveSkuAcrossVendors = async (sku) => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, resolveSkuAcrossVendors };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors };

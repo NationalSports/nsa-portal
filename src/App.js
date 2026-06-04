@@ -214,7 +214,7 @@ const SalesHistory = lazyRetry(() => import('./SalesHistory'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, resolveSkuAcrossVendors } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors } from './vendorApis';
 // ── Loading fallback for lazy components ──
 const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
 
@@ -4891,6 +4891,33 @@ export default function App(){
         }
         if (!p.vendor_id) p.vendor_id = mfgToVendor(p.manufacturer);
       }
+
+      // For items still at $0, fetch live pricing from the appropriate supplier API
+      const needsPricing = products.filter(p => p.cost === 0 && p.sku);
+      if (needsPricing.length) {
+        console.log(`[OMG Report] Fetching API pricing for ${needsPricing.length} zero-cost products...`);
+        await Promise.allSettled(needsPricing.map(async (p) => {
+          const vendorName = (vend.find(v => v.id === p.vendor_id)?.name || p.manufacturer || '').toLowerCase();
+          let hit = null;
+          try {
+            if (/richardson/i.test(vendorName)) {
+              hit = richardsonResolveSku(p.sku);
+            } else if (/sanmar/i.test(vendorName)) {
+              hit = await sanmarResolveSku(p.sku);
+            } else if (/s.?s\s*activ/i.test(vendorName)) {
+              hit = await ssResolveSku(p.sku);
+            } else if (/momentec/i.test(vendorName)) {
+              hit = await momentecResolveSku(p.sku);
+            } else {
+              hit = await resolveSkuAcrossVendors(p.sku);
+            }
+          } catch (e) { console.warn('[OMG Report] Pricing lookup failed for', p.sku, e.message); }
+          if (hit?.rate > 0) { p.cost = hit.rate; p._cost_source = (hit.vendor || 'api').toLowerCase().replace(/[^a-z]/g, '_'); }
+        }));
+        const priced = needsPricing.filter(p => p.cost > 0).length;
+        console.log(`[OMG Report] API pricing resolved ${priced}/${needsPricing.length} products`);
+      }
+
       console.log(`[OMG Report] Catalog/vendor mapping done. ${products.filter(p=>p.cost>0).length} with cost, ${products.filter(p=>p.vendor_id).length} with vendor.`);
 
       // Merge with existing data — preserve manual edits (SKU corrections,
