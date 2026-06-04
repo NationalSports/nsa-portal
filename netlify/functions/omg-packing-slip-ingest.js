@@ -24,6 +24,8 @@ const { createClient } = require('@supabase/supabase-js');
 
 const extractSku = (str) => { const m = (str || '').match(/\(([A-Za-z0-9]{4,10})\)/); return m ? m[1].toUpperCase() : ''; };
 const cleanColor = (str) => (str || '').replace(/\s*\([A-Za-z0-9]{4,10}\)\s*/g, '').trim();
+const normSku = (x) => String(x || '').trim().toUpperCase();
+const baseSku = (x) => (normSku(x).split(/\s+/)[0] || '');
 
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json' };
@@ -54,6 +56,14 @@ exports.handler = async (event) => {
       }).select().single();
       if (cErr) throw new Error(`Shadow store create failed: ${cErr.message}`);
       store = created;
+    }
+
+    // Product images from the OMG store catalog, keyed by normalized SKU.
+    const imgBySku = {};
+    {
+      const { data: sp } = await sb.from('omg_store_products')
+        .select('sku,image_url').eq('store_id', `OMG-sale_${saleCode}`);
+      (sp || []).forEach((p) => { if (p.image_url) { imgBySku[normSku(p.sku)] = p.image_url; imgBySku[baseSku(p.sku)] = p.image_url; } });
     }
 
     let created = 0, updated = 0, itemsWritten = 0, skipped = 0;
@@ -97,17 +107,21 @@ exports.handler = async (event) => {
       const items = Array.isArray(o.items) ? o.items.filter((i) => (i.product || i.color) && (i.qty || 1) > 0) : [];
       if (items.length) {
         await sb.from('webstore_order_items').delete().eq('order_id', orderId);
-        const rows = items.map((i) => ({
-          order_id: orderId,
-          sku: extractSku(i.color) || '',
-          name: i.product || '',
-          color: cleanColor(i.color) || i.color || '',
-          size: i.size || 'OS',
-          qty: i.qty || 1,
-          unit_price: 0,
-          player_name: buyerName,
-          line_status: 'pending',
-        }));
+        const rows = items.map((i) => {
+          const sku = extractSku(i.color) || '';
+          return {
+            order_id: orderId,
+            sku,
+            name: i.product || '',
+            color: cleanColor(i.color) || i.color || '',
+            size: i.size || 'OS',
+            qty: i.qty || 1,
+            unit_price: 0,
+            player_name: buyerName,
+            line_status: 'pending',
+            image_url: imgBySku[normSku(sku)] || imgBySku[baseSku(sku)] || null,
+          };
+        });
         const { error: iErr } = await sb.from('webstore_order_items').insert(rows);
         if (iErr) throw new Error(`Items insert failed (${orderNumber}): ${iErr.message}`);
         itemsWritten += rows.length;
