@@ -635,7 +635,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             const _itemArtIds=srcItem?[...new Set(safeDecos(srcItem).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id))]:[];
             const _itemArtFiles=[...new Set([artFile?.id,...(j._art_ids||[]),..._itemArtIds].filter(Boolean))].map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
             const _mk=gi.sku+'|'+(gi.color||'');
-            const itemMockups=_filterDisplayable(_itemArtFiles.flatMap(_af=>{const v=_af?.item_mockups?.[_mk];return v&&v.length>0?v:(_af?.item_mockups?.[gi.sku]||[])}));
+            const _seenIm=new Set();const itemMockups=_filterDisplayable(_itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];const base=v&&v.length>0?v:(im[gi.sku]||[]);const slots=Object.entries(im).filter(([k])=>k.startsWith(_mk+'|')).flatMap(([,arr])=>arr||[]);return[...base,...slots]})).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenIm.has(u))return false;_seenIm.add(u);return true});
             const artDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'):[];
             const artPos=artDecos.map(d=>d.position||'Front Center').filter((v,idx,arr)=>arr.indexOf(v)===idx);
             const numDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='numbers'):[];
@@ -987,7 +987,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jArtIds.add(d.art_file_id)})});
             const _jArtFiles=[..._jArtIds].map(aid=>soAF.find(a=>a.id===aid)).filter(Boolean);
             const _jSkus=new Set((j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];return it?.sku||gi.sku}).filter(Boolean));
-            const _jIm=_filterDisplayable(_jArtFiles.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([sku])=>_jSkus.has(sku)).flatMap(([,arr])=>arr||[])));
+            const _jIm=_filterDisplayable(_jArtFiles.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([k])=>_jSkus.has(k.split('|')[0])).flatMap(([,arr])=>arr||[])));
             const _jMf=_jIm.length===0?_filterDisplayable(_jArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[])):[];
             const _seen=new Set();const mockups=[..._jIm,..._jMf].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
             const firstMock=mockups[0];const fmUrl=firstMock?(typeof firstMock==='string'?firstMock:firstMock.url):'';

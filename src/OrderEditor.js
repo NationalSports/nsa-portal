@@ -6776,7 +6776,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     // Mockups: per-item (scoped to this SKU), then general (only if no per-item mockups exist for this SKU)
                     const _seen=new Set();
                     const _mk=gi.sku+'|'+(gi.color||'');
-                    const perSkuMocks=_filterDisplayable(itemArtFiles.flatMap(_af=>{const v=_af?.item_mockups?.[_mk];return v&&v.length>0?v:(_af?.item_mockups?.[gi.sku]||[])}));
+                    const perSkuMocks=_filterDisplayable(itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];const base=v&&v.length>0?v:(im[gi.sku]||[]);const slots=Object.entries(im).filter(([k])=>k.startsWith(_mk+'|')).flatMap(([,arr])=>arr||[]);return[...base,...slots]}));
                     const generalMocks=perSkuMocks.length===0?_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[])):[];
                     const itemMockups=[...perSkuMocks,...generalMocks].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
                     const artDecos=it?safeDecos(it).filter(d=>d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||_jobArtIds.has(d.art_file_id))):[];
@@ -6987,7 +6987,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
                     const _seen=new Set();
                     const _mk=gi.sku+'|'+(gi.color||'');
-                    const perSkuMocks=_filterDisplayable(itemArtFiles.flatMap(_af=>{const v=_af?.item_mockups?.[_mk];return v&&v.length>0?v:(_af?.item_mockups?.[gi.sku]||[])}));
+                    const perSkuMocks=_filterDisplayable(itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];const base=v&&v.length>0?v:(im[gi.sku]||[]);const slots=Object.entries(im).filter(([k])=>k.startsWith(_mk+'|')).flatMap(([,arr])=>arr||[]);return[...base,...slots]}));
                     const generalMocks=perSkuMocks.length===0?_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[])):[];
                     const itemMockups=[...perSkuMocks,...generalMocks].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
                     const artDecos=it?safeDecos(it).filter(d=>d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'||_jArtIds.has(d.art_file_id))):[];
