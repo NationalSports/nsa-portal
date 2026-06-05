@@ -341,6 +341,7 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
   const [img, setImg] = useState('front');
   const [num, setNum] = useState('');
   const [pname, setPname] = useState('');
+  const [qty, setQty] = useState(1);
   const [added, setAdded] = useState(false);
   if (!p) return <Splash>Product not found.</Splash>;
   const sizesArr = Array.isArray(p.available_sizes) ? p.available_sizes : [];
@@ -348,6 +349,7 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
   const total = priceOf(p) + (p.takes_name && pname.trim() ? nameUp : 0);
   const needSize = sizesArr.length > 0;
   const needNumber = !!p.takes_number;
+  const isPersonalized = needNumber || !!p.takes_name;
   const canAdd = isOpen && (!needSize || size) && (!needNumber || num.trim());
   const addToCart = () => {
     onAdd({
@@ -357,7 +359,7 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
       name_extra: p.takes_name && pname.trim() ? nameUp : 0,
       player_number: needNumber ? num.trim() : null,
       player_name: p.takes_name && pname.trim() ? pname.trim() : null,
-      qty: 1,
+      qty: isPersonalized ? 1 : qty,
     });
     setAdded(true); setTimeout(() => setAdded(false), 1500);
   };
@@ -411,6 +413,16 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
           )}
 
           {p.takes_name && nameUp > 0 && pname.trim() ? <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 10 }}>Total: {money(total)}</div> : null}
+          {!isPersonalized && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 8, marginBottom: 4 }}>
+              <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#0b1220' }}>Qty</div>
+              <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
+                <button onClick={() => setQty((q) => Math.max(1, q - 1))} disabled={qty <= 1} style={qtyBtn(qty <= 1)}>−</button>
+                <span style={{ minWidth: 36, textAlign: 'center', fontWeight: 700, fontSize: 15 }}>{qty}</span>
+                <button onClick={() => setQty((q) => Math.min(99, q + 1))} style={qtyBtn(false)}>+</button>
+              </div>
+            </div>
+          )}
           <button className="sf-btn" onClick={addToCart} disabled={!canAdd} style={{ ...cta(theme), opacity: canAdd ? 1 : 0.5, cursor: canAdd ? 'pointer' : 'not-allowed', marginTop: 8 }}>
             {!isOpen ? 'Store not open yet' : added ? '✓ Added to cart' : needSize && !size ? 'Select a size' : needNumber && !num.trim() ? 'Enter a number' : 'Add to cart'}
           </button>
