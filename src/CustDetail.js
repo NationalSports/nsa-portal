@@ -709,7 +709,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       // Find index in ownArt for editable items
       const ownIdx=art._src==='library'?ownArt.findIndex(a=>a.id===art.id):-1;
       return{...art,_st:st,_mockups:dispFiles,_imgUrl:imgUrl,_usedOnSOs:usedOnSOs,_allMockups:allMockups,_allProd:allProd,_ownIdx:ownIdx};
-    }).filter(a=>a._src==='library'||a._st!=='waiting_for_art');
+    });
     // Collapse to one card per logo (name+deco_type) — a logo reused across multiple SOs shows once.
     const _stRank={needs_approval:3,approved:2,waiting_for_art:1};
     const _byLogo={};unifiedAll.forEach(a=>{const k=(a.name||'').toLowerCase()+'||'+(a.deco_type||'');(_byLogo[k]=_byLogo[k]||[]).push(a)});
