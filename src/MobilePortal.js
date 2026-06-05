@@ -851,6 +851,11 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         </div>
         <ScopeToggle/>
       </div>
+      {/* Global search bar */}
+      <div className="mp-search-inline" onClick={()=>setShowSearch(true)} style={{cursor:'pointer'}}>
+        <MIcon name="search" size={18}/>
+        <span style={{flex:1,color:'#94a3b8',fontSize:15}}>Search orders, customers, estimates…</span>
+      </div>
       {/* Quick stats */}
       <div className="mp-stats-grid">
         <div className="mp-stat-card" onClick={()=>setTab('orders')}>
