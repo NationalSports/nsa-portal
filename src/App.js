@@ -3695,6 +3695,7 @@ export default function App(){
         if(!hash)return;
         if(knownHash===null){knownHash=hash;return}// record on first run
         if(hash===knownHash)return;
+        window.dispatchEvent(new Event('nsa:version-reload-pending'));
         const doReload=()=>{
           if(_authErrorDetected||(_dbSavePendingIds.size===0&&_bgSync===0&&!dirtyRef.current))window.location.reload();
           else setTimeout(doReload,2000);
