@@ -125,6 +125,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[editMockJob,setEditMockJob]=useState(null);// job object whose quick mock is being re-edited in place
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
+  const[changeArtworkModal,setChangeArtworkModal]=useState(null);// {jIdx, selectedArtFileId:'', newFiles:[], instructions:'', artist:''}
   const[artRevisionNote,setArtRevisionNote]=useState('');
   const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
@@ -6933,6 +6934,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
                 <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}} onClick={()=>{const _apArtIds=j._art_ids||[j.art_file_id].filter(Boolean);const _allReady=_apArtIds.length>0&&_apArtIds.every(id=>artProdFilesReady(af.find(a=>a.id===id)));const _apDeco=(af.find(a=>a.id===j.art_file_id)?.deco_type)||j.deco_type;const _apSt=_allReady?'art_complete':prodFilesStatusFor(_apDeco);const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:_apSt,art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);const updArt2=j.art_file_id?af.map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtRevisionNote('');nf('✅ Art approved — '+(_apSt==='art_complete'?'production files attached, ready for production!':_apSt==='order_dtf_transfers'?'order DTF transfers':_apSt==='upload_emb_files'?'upload embroidery files':'awaiting prod files'))}}>✅ Approve Artwork</button>
                 <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||j.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7})}}>📤 Send to Coach</button>
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#f97316,#ea580c)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(249,115,22,0.3)'}} onClick={()=>setChangeArtworkModal({jIdx:ji,targetArtFileId:j.art_file_id||((j._art_ids||[])[0]||''),mode:'new',selectedArtFileId:'',newArtName:'',newArtDecoType:j.deco_type||'screen_print',newFiles:[],instructions:'',artist:j.assigned_artist||''})}>🔄 Change Artwork</button>
               </div>
               <div style={{borderTop:'1px solid #fde68a',paddingTop:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Something wrong? Send it back to the artist:</div>
@@ -7141,7 +7143,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {activeReq?(activeReq.status==='in_progress'?'Art In Progress':'Art Requested'):'Art Complete'}</span>}
                 {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:10,background:'#dc2626',color:'white',border:'none',padding:'3px 8px',marginRight:4}} onClick={()=>{const artIds=j._art_ids||[j.art_file_id].filter(Boolean);const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;return{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:''}});const updArt=af.map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art'}:a);const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Art recalled — you can re-request with new instructions')}}>Recall Art</button>}
                 {hasAnyReqs&&<button className="btn btn-sm" style={{fontSize:10,background:'#6d28d9',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'',files:[]})}>
-                  Update Art</button>}</>})()}
+                  Update Art</button>}
+                <button className="btn btn-sm" style={{fontSize:10,background:'#f97316',color:'white',border:'none',padding:'3px 8px',marginLeft:4}} onClick={()=>setChangeArtworkModal({jIdx:ji,targetArtFileId:j.art_file_id||((j._art_ids||[])[0]||''),mode:'new',selectedArtFileId:'',newArtName:'',newArtDecoType:j.deco_type||'screen_print',newFiles:[],instructions:'',artist:j.assigned_artist||''})}>🔄 Change Artwork</button></>})()}
               {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const _appArtIds=j._art_ids||[j.art_file_id].filter(Boolean);const _allReady=_appArtIds.length>0&&_appArtIds.every(id=>artProdFilesReady(af.find(a=>a.id===id)));const _apDeco=(af.find(a=>(j._art_ids||[j.art_file_id]).includes(a.id))?.deco_type)||j.deco_type;const _apSt=_allReady?'art_complete':prodFilesStatusFor(_apDeco);const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:_apSt,art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);const updArt2=_appArtIds.length>0?af.map(a=>_appArtIds.includes(a.id)?{...a,status:'approved'}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Art approved — '+(_apSt==='art_complete'?'production files attached, ready for production!':_apSt==='order_dtf_transfers'?'order DTF transfers':_apSt==='upload_emb_files'?'upload embroidery files':'awaiting prod files'))}}>Approve Art</button>}
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Artist:</div>
               <select className="form-select" style={{width:130,fontSize:11}} value={j.assigned_artist||''} onChange={e=>updJob(ji,'assigned_artist',e.target.value)}>
@@ -7491,6 +7494,117 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={()=>setArtReqModal(null)}>Cancel</button>
             <button className="btn btn-primary" style={hasExistingReqs2?{background:'#6d28d9',borderColor:'#6d28d9'}:{}} disabled={!artReqModal.artist} onClick={submitArtReq2}>{hasExistingReqs2?'Send Update':'Send Art Request'}</button>
+          </div>
+        </div></div>
+      })()}
+      {/* Change Artwork Modal */}
+      {changeArtworkModal&&(()=>{
+        const j2=jobs[changeArtworkModal.jIdx];if(!j2)return null;
+        const cam=changeArtworkModal;
+        const jobArtIds=(j2._art_ids||[j2.art_file_id].filter(Boolean)).filter(Boolean);
+        const jobArtFiles=jobArtIds.map(id=>safeArt(o).find(a=>a.id===id)).filter(Boolean);
+        const targetId=cam.targetArtFileId||jobArtIds[0]||'';
+        const targetAf=safeArt(o).find(a=>a.id===targetId);
+        const soArtFiles=(o.art_files||[]).filter(af2=>af2.id!==targetId&&af2.id!=='__tbd');
+        const custLib=(ic?.art_files||[]).filter(a=>!(o.art_files||[]).find(sa=>sa.id===a.id)&&a.id!==targetId);
+        const artists2=REPS.filter(r=>r.role==='art'||r.role==='artist').filter(r=>r.is_active!==false);
+        const isNew=cam.mode!=='existing';
+        const decoTypes=[['screen_print','Screen Print'],['embroidery','Embroidery'],['dtf','DTF'],['heat_transfer','Heat Transfer'],['sublimation','Sublimation']];
+        const canSubmit=isNew||!!cam.selectedArtFileId;
+        const submitChangeArtwork=()=>{
+          let newArtFileId;
+          let updArtFiles2=safeArt(o);
+          if(!isNew&&cam.selectedArtFileId){
+            newArtFileId=cam.selectedArtFileId;
+            const inSO=updArtFiles2.find(a=>a.id===newArtFileId);
+            if(!inSO){
+              const libArt=custLib.find(a=>a.id===newArtFileId);
+              if(libArt)updArtFiles2=[...updArtFiles2,{...libArt,status:'waiting_for_art',mockup_files:[],item_mockups:{},prod_files:[],files:[...(libArt.files||[]),...(cam.newFiles||[])]}];
+            } else {
+              updArtFiles2=updArtFiles2.map(a=>a.id===newArtFileId?{...a,status:'waiting_for_art',mockup_files:[],item_mockups:{},files:[...(a.files||[]),...(cam.newFiles||[])]}:a);
+            }
+          } else {
+            newArtFileId='af-'+Date.now();
+            const newAf={id:newArtFileId,name:(cam.newArtName||'').trim()||(targetAf?.name||j2.art_name||'Art'),deco_type:cam.newArtDecoType||j2.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:cam.newFiles||[],mockup_files:[],item_mockups:{},prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()};
+            updArtFiles2=[...updArtFiles2,newAf];
+          }
+          const oldIds=(j2._art_ids||[j2.art_file_id].filter(Boolean)).filter(Boolean);
+          const newIds=oldIds.map(id=>id===targetId?newArtFileId:id);
+          const newPrimary=j2.art_file_id===targetId?newArtFileId:j2.art_file_id;
+          const hasMulti=newIds.length>1;
+          const newArtStatus=cam.artist?'art_requested':'needs_art';
+          const req=cam.artist?{id:'AR-'+Date.now(),artist:cam.artist,artist_name:(artists2.find(a=>a.id===cam.artist)||{}).name||'',instructions:('[Artwork changed] '+(cam.instructions||'').trim()).trim(),files:cam.newFiles||[],status:'requested',created_at:new Date().toISOString(),created_by:cu.name,artwork_change:true}:null;
+          const updJobs=safeJobs(o).map((jj,i)=>i!==changeArtworkModal.jIdx?jj:{...jj,art_file_id:newPrimary,_art_ids:hasMulti?newIds:null,art_status:newArtStatus,assigned_artist:cam.artist||jj.assigned_artist,coach_approved_at:undefined,sent_to_coach_at:undefined,coach_rejected:undefined,art_requests:[...(jj.art_requests||[]),...(req?[req]:[])],rejections:[]});
+          const updated={...o,jobs:updJobs,art_files:updArtFiles2,updated_at:new Date().toLocaleString()};
+          setO(updated);onSave(updated);setDirty(false);setChangeArtworkModal(null);
+          nf('🔄 Artwork changed'+(cam.artist?' — art request sent to '+(artists2.find(a=>a.id===cam.artist)||{}).name:''));
+        };
+        return<div className="modal-overlay" onClick={()=>setChangeArtworkModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:580}}>
+          <div className="modal-header" style={{background:'#fff7ed'}}><h2>🔄 Change Artwork — {j2.art_name}</h2><button className="modal-close" onClick={()=>setChangeArtworkModal(null)}>×</button></div>
+          <div className="modal-body">
+            <div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid #fb923c',background:'#fff7ed'}}>
+              <div style={{fontSize:12,color:'#c2410c',fontWeight:600}}>⚠️ This will replace the selected artwork for this job and restart the art process. The artist will need to create a new mockup.</div>
+            </div>
+            {jobArtFiles.length>1&&<div style={{marginBottom:12}}>
+              <div className="form-label">Which artwork to replace</div>
+              <select className="form-select" value={targetId} onChange={e=>setChangeArtworkModal(m=>({...m,targetArtFileId:e.target.value}))}>
+                {jobArtFiles.map(af2=><option key={af2.id} value={af2.id}>{af2.name||af2.title||af2.id}</option>)}
+              </select>
+            </div>}
+            <div style={{marginBottom:12}}>
+              <div className="form-label">Replace with</div>
+              <div style={{display:'flex',gap:6,marginBottom:10}}>
+                <button className={'btn btn-sm'+(isNew?' btn-primary':'')} style={!isNew?{background:'#f1f5f9',color:'#475569',border:'1px solid #cbd5e1'}:{}} onClick={()=>setChangeArtworkModal(m=>({...m,mode:'new',selectedArtFileId:''}))}>✨ New art file</button>
+                <button className={'btn btn-sm'+(!isNew?' btn-primary':'')} style={isNew?{background:'#f1f5f9',color:'#475569',border:'1px solid #cbd5e1'}:{}} onClick={()=>setChangeArtworkModal(m=>({...m,mode:'existing',selectedArtFileId:''}))}>📁 Existing art</button>
+              </div>
+              {isNew&&<div style={{display:'flex',gap:8}}>
+                <div style={{flex:2}}>
+                  <div style={{fontSize:11,fontWeight:600,color:'#475569',marginBottom:3}}>Art file name</div>
+                  <input className="form-input" style={{fontSize:12}} placeholder={targetAf?.name||j2.art_name||'Art name...'} value={cam.newArtName||''} onChange={e=>setChangeArtworkModal(m=>({...m,newArtName:e.target.value}))}/>
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:11,fontWeight:600,color:'#475569',marginBottom:3}}>Decoration type</div>
+                  <select className="form-select" style={{fontSize:12}} value={cam.newArtDecoType||j2.deco_type||'screen_print'} onChange={e=>setChangeArtworkModal(m=>({...m,newArtDecoType:e.target.value}))}>
+                    {decoTypes.map(([v,l])=><option key={v} value={v}>{l}</option>)}
+                  </select>
+                </div>
+              </div>}
+              {!isNew&&((soArtFiles.length>0||custLib.length>0)?<select className="form-select" value={cam.selectedArtFileId} onChange={e=>setChangeArtworkModal(m=>({...m,selectedArtFileId:e.target.value}))}>
+                <option value="">Select an art file...</option>
+                {soArtFiles.length>0&&<optgroup label="This Order">{soArtFiles.map(af2=><option key={af2.id} value={af2.id}>{af2.name||af2.title||af2.id}</option>)}</optgroup>}
+                {custLib.length>0&&<optgroup label="Customer Library">{custLib.map(af2=><option key={af2.id} value={af2.id}>{af2.name||af2.title||af2.id}</option>)}</optgroup>}
+              </select>:<div style={{fontSize:11,color:'#94a3b8',padding:'6px 0'}}>No other art files found — switch to "New art file" above.</div>)}
+            </div>
+            <div style={{marginBottom:12}}>
+              <div className="form-label">{isNew?'Reference Files (optional)':'Additional Reference Files (optional)'}</div>
+              <div style={{border:'2px dashed #cbd5e1',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f8fafc'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#f97316';e.currentTarget.style.background='#fff7ed'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc'}}
+                onDrop={async e=>{e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc';for(const f of Array.from(e.dataTransfer.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-requests');setChangeArtworkModal(m=>m?{...m,newFiles:[...(m.newFiles||[]),{name:f.name,size:f.size,type:f.type,url}]}:m)}catch(err){nf('Upload failed: '+err.message,'error')}}}}
+                onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.onchange=async()=>{for(const f of Array.from(inp.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-requests');setChangeArtworkModal(m=>m?{...m,newFiles:[...(m.newFiles||[]),{name:f.name,size:f.size,type:f.type,url}]}:m)}catch(err){nf('Upload failed: '+err.message,'error')}}};inp.click()}}>
+                <div style={{fontSize:12,color:'#64748b'}}>Drop files here or click to browse</div>
+                <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>PNG, PDF, AI, EPS, JPG</div>
+              </div>
+              {(cam.newFiles||[]).length>0&&<div style={{marginTop:8}}>{(cam.newFiles||[]).map((f,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 8px',background:'#f1f5f9',borderRadius:4,fontSize:11,marginBottom:4}}>
+                <span>{f.name}</span><span style={{color:'#94a3b8',marginLeft:'auto'}}>{(f.size/1024).toFixed(0)}KB</span>
+                <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:14,padding:0}} onClick={()=>setChangeArtworkModal(m=>({...m,newFiles:(m.newFiles||[]).filter((_,fi)=>fi!==i)}))}>×</button>
+              </div>)}</div>}
+            </div>
+            <div style={{marginBottom:12}}>
+              <div className="form-label">Instructions for Artist</div>
+              <textarea className="form-input" rows={3} placeholder="Describe the new artwork — new logo, different design, color changes, etc." value={cam.instructions} onChange={e=>setChangeArtworkModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
+            </div>
+            <div style={{marginBottom:4}}>
+              <div className="form-label">Assign Artist <span style={{fontWeight:400,color:'#94a3b8'}}>(optional — skips to needs_art if blank)</span></div>
+              <select className="form-select" value={cam.artist} onChange={e=>setChangeArtworkModal(m=>({...m,artist:e.target.value}))}>
+                <option value="">No artist yet — assign later</option>
+                {artists2.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="modal-footer">
+            <button className="btn btn-secondary" onClick={()=>setChangeArtworkModal(null)}>Cancel</button>
+            <button className="btn" style={{background:'linear-gradient(135deg,#f97316,#ea580c)',color:'white',border:'none',fontWeight:800}} disabled={!canSubmit} onClick={submitChangeArtwork}>🔄 Change Artwork{cam.artist?' & Send to Artist':''}</button>
           </div>
         </div></div>
       })()}
