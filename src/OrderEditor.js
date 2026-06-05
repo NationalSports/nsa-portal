@@ -6522,7 +6522,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const prodStatuses=['draft','hold','staging','in_process','completed'];
       const prodLabels={draft:'Draft',hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed'};
       const artLabels=ART_LABELS;
-      const itemLabels={need_to_order:'Need to Order',waiting_receive:'Ordered — Waiting',needs_pull:'Waiting for Pull',partially_received:'Partially Received',items_received:'Items Received'};
+      const itemLabels={need_to_order:'Need to Order',on_order:'On Order',waiting_receive:'Ordered — Waiting',needs_pull:'Waiting for Pull',partially_received:'Partially Received',items_received:'Items Received'};
       // Effective item status for display. Items that already have IF (item fulfillment)
       // picks waiting to be pulled are in-house, so show "Waiting for Pull" instead of the
       // misleading "Need to Order". Items whose ordered sizes are already committed to POs
@@ -6544,6 +6544,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             coveredSz+=Math.min(need,picked+poOrd);});
         });
         if(totalSz>0&&coveredSz>=totalSz)return'waiting_receive';
+        if(coveredSz>0)return'on_order';
         return'need_to_order';};
 
       // Job detail view

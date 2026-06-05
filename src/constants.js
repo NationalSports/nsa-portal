@@ -379,7 +379,7 @@ export const SC={
   // SO statuses (5)
   booking:{bg:'#e0e7ff',c:'#4338ca'},need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},needs_pull:{bg:'#fef9c3',c:'#a16207'},items_received:{bg:'#d1fae5',c:'#065f46'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},ready_to_invoice:{bg:'#fef0c7',c:'#c2410c'},reverted:{bg:'#fef3c7',c:'#d97706'},
   // Job item statuses
-  need_to_order:{bg:'#fef3c7',c:'#92400e'},partially_received:{bg:'#fef9c3',c:'#854d0e'},
+  need_to_order:{bg:'#fef3c7',c:'#92400e'},on_order:{bg:'#ede9fe',c:'#6d28d9'},partially_received:{bg:'#fef9c3',c:'#854d0e'},
   // Job production statuses
   draft:{bg:'#fef9c3',c:'#a16207'},ready:{bg:'#dcfce7',c:'#166534'},staging:{bg:'#fef3c7',c:'#92400e'},in_process:{bg:'#dbeafe',c:'#1e40af'},completed:{bg:'#dcfce7',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'},
   // Job art statuses
