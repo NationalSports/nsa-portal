@@ -774,7 +774,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const iv=setInterval(doAutoSave,30000);
     const handleUnload=()=>doAutoSave();
     window.addEventListener('beforeunload',handleUnload);
-    return()=>{clearInterval(iv);window.removeEventListener('beforeunload',handleUnload)};
+    window.addEventListener('nsa:version-reload-pending',doAutoSave);
+    return()=>{clearInterval(iv);window.removeEventListener('beforeunload',handleUnload);window.removeEventListener('nsa:version-reload-pending',doAutoSave)};
   },[]);
   // Warn user before closing tab if there are unsaved order changes
   React.useEffect(()=>{
