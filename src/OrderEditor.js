@@ -1026,15 +1026,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           styleName:(it.brandName||it.brand||'')+' '+(it.productTitle||it.styleName||it.description||query),
           brandName:it.brandName||it.brand||'',
           sku:sid,
-          styleImage:it.colorProductImageThumbnail||it.thumbnailImage||it.colorProductImage||it.productImage||'',
+          styleImage:it.colorProductImage||it.productImage||it.colorProductImageThumbnail||it.thumbnailImage||'',
           customerPrice:0,piecePrice:0,totalQty:0,
           colors:{},_source:'sm',_availSizes:it.availableSizes||''
         };
         const cKey=sid+'|'+color;
         if(!styleMap[sid].colors[cKey])styleMap[sid].colors[cKey]={
           colorName:color,
-          colorFrontImage:it.colorProductImageThumbnail||it.colorProductImage||it.colorSwatchImage||it.productImage||'',
-          colorBackImage:it.colorProductImageBackThumbnail||it.colorProductImageBack||it.colorProductBackImage||'',
+          colorFrontImage:it.colorProductImage||it.productImage||it.colorProductImageThumbnail||it.colorSwatchImage||'',
+          colorBackImage:it.colorProductImageBack||it.colorProductBackImage||it.colorProductImageBackThumbnail||'',
           customerPrice:0,
           piecePrice:0,
           sizes:[],totalQty:0
