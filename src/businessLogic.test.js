@@ -7,6 +7,7 @@ const {
   buildQBSalesOrder, buildQBInvoice,
   checkInventoryConflicts,
   calcQualifyingSpend,
+  itemEditReconciles,
 } = require('./businessLogic');
 
 // ═══════════════════════════════════════════════
@@ -1860,5 +1861,54 @@ describe('Job linking (jobScreenKey / jobGroupKey)', () => {
     // ...but a manual link still wins over auto_group_off.
     const c = { art_name: 'Eagles Logo', deco_type: 'screen_print', auto_group_off: true, link_group: 'lg_9' };
     expect(jobGroupKey(c, 'P')).toBe('m:lg_9');
+  });
+});
+
+describe('Item-edit reconciliation (itemEditReconciles)', () => {
+  const db = [{ sku: 'A' }, { sku: 'B' }, { sku: 'C' }];
+
+  // ── The cases that MUST be allowed (verified deliberate edits) ──
+  test('deletion: client is a strict SKU-subset of the DB → reconciles (allow)', () => {
+    expect(itemEditReconciles([{ sku: 'A' }, { sku: 'B' }], db)).toBe(true); // user removed C
+    expect(itemEditReconciles([{ sku: 'A' }], db)).toBe(true);               // user removed B and C
+  });
+
+  test('addition: client is a SKU-superset of the DB → reconciles (allow)', () => {
+    expect(itemEditReconciles([{ sku: 'A' }, { sku: 'B' }, { sku: 'C' }, { sku: 'D' }], db)).toBe(true);
+  });
+
+  test('falls back to name when SKU is absent (custom line items)', () => {
+    const dbNamed = [{ name: 'Custom Banner' }, { name: 'Setup Fee' }];
+    expect(itemEditReconciles([{ name: 'Custom Banner' }], dbNamed)).toBe(true); // removed the fee
+  });
+
+  test('SKU edits with the same multiset still reconcile through a delete', () => {
+    // Two real items share a SKU in the DB; user deletes one of the duplicates.
+    expect(itemEditReconciles([{ sku: 'A' }], [{ sku: 'A' }, { sku: 'A' }])).toBe(true);
+  });
+
+  // ── The cases that MUST stay blocked (potential data loss / unverifiable state) ──
+  test('phantom-empty load then user adds NEW rows on top → does NOT reconcile (block)', () => {
+    // The exact failure the guard protects against: client never loaded the real items (A,B,C) and
+    // typed fresh rows (X,Y). Neither subset holds, so it must stay blocked.
+    expect(itemEditReconciles([{ sku: 'X' }, { sku: 'Y' }], db)).toBe(false);
+  });
+
+  test('partial/garbage overlap (some real, some unknown) → does NOT reconcile (block)', () => {
+    expect(itemEditReconciles([{ sku: 'A' }, { sku: 'Z' }], db)).toBe(false);
+  });
+
+  test('an edited SKU combined with a deletion stays conservative (block)', () => {
+    // DB [A,B,C]; client renamed B→B2 and dropped C. B2 is not in the DB, so we cannot prove the
+    // client held the real data — fail safe and block (reload remedies it).
+    expect(itemEditReconciles([{ sku: 'A' }, { sku: 'B2' }], db)).toBe(false);
+  });
+
+  test('empty / identity-less / malformed client never reconciles (block)', () => {
+    expect(itemEditReconciles([], db)).toBe(false);
+    expect(itemEditReconciles([{}, {}], db)).toBe(false);          // items present but no sku/name
+    expect(itemEditReconciles([{ sku: '   ' }], db)).toBe(false);  // blank sku is not an identity
+    expect(itemEditReconciles(null, db)).toBe(false);
+    expect(itemEditReconciles(undefined, db)).toBe(false);
   });
 });
