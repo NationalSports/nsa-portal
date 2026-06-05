@@ -138,7 +138,7 @@ const buildJobs = (o) => {
       if (d.kind === 'art' && d.art_file_id) {
         const artF = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
         const dt = artF?.deco_type || d.deco_type || 'screen_print';
-        const part = 'art_' + d.art_file_id + '@' + (d.position || '');
+        const part = 'art_' + d.art_file_id;
         if (!decosByType[dt]) decosByType[dt] = [];
         decosByType[dt].push({ part, d, di });
       } else if (d.kind === 'numbers') {
