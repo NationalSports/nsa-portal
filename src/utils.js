@@ -456,7 +456,7 @@ export async function lookupVendorSku(sku){
         color:basic.colorName||basic.catalogColor||'',
         nsa_cost:piece,
         retail_price:cust>0?cust:piece,
-        image_url:img.colorProductImageThumbnail||img.colorProductImage||null,
+        image_url:img.colorProductImage||img.colorProductImageThumbnail||null,
       };
     }
   }
