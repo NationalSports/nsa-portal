@@ -1233,6 +1233,10 @@ const _dbSaveSOInner = async (so) => {
     }
     const _oldSoItems=_oldItemsResp.data||[];
     const oldItemIds=_oldSoItems.map(i=>i.id);
+    // Use distinct item_index count as the authoritative "how many items does this SO have" — raw row count
+    // includes duplicate rows left by interrupted saves (insert-new succeeds, delete-old never runs) and would
+    // incorrectly trip the shrink/mismatch guards. Distinct indexes = the real item count; duplicates don't add slots.
+    const _oldDistinctItemIndexCount=new Set(_oldSoItems.map(i=>i.item_index).filter(x=>x!=null)).size||oldItemIds.length;
     // Safety check: if this session never cleanly loaded the items, do NOT let it rewrite them. A timed-out
     // so_items load leaves an untrustworthy item list (blank, partial, or with new rows added on top of a
     // phantom-empty SO), and the insert-new/delete-old swap below would replace the real DB rows with it. Block on
@@ -1289,19 +1293,19 @@ const _dbSaveSOInner = async (so) => {
     // SAFETY: a background sync (poll/realtime _diffSave, _bgSync=true) must NEVER shrink or empty an SO's
     // items — same root cause as the estimate item-wipe. Preserve DB rows; the SO row already upserted above.
     // Art files were already synced above so this early return is now safe.
-    if(_bgSync&&oldItemIds.length>0&&_clientSoItemCount<oldItemIds.length){
-      console.warn('[DB] SAFETY: background sync would shrink',so.id,'items ('+_clientSoItemCount+'<'+oldItemIds.length+') — preserving DB items, skipping item writes; art files already synced');
-      if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:so.id,prevCount:oldItemIds.length,newCount:_clientSoItemCount,reason:'background SO save would shrink items'});
+    if(_bgSync&&oldItemIds.length>0&&_clientSoItemCount<_oldDistinctItemIndexCount){
+      console.warn('[DB] SAFETY: background sync would shrink',so.id,'items ('+_clientSoItemCount+'<'+_oldDistinctItemIndexCount+(oldItemIds.length!==_oldDistinctItemIndexCount?' raw='+oldItemIds.length:'')+') — preserving DB items, skipping item writes; art files already synced');
+      if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:so.id,prevCount:_oldDistinctItemIndexCount,newCount:_clientSoItemCount,reason:'background SO save would shrink items'});
       if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'so_art_files save error');_persistFailedIds();if(_dbNotify)_dbNotify('Art file save incomplete: '+(_failMsg||'see console'),'error');return false}
       _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
     }
-    if(oldItemIds.length>0&&_clientSoItemCount!==oldItemIds.length){
+    if(oldItemIds.length>0&&_clientSoItemCount!==_oldDistinctItemIndexCount){
       if(so._itemsHydrated||_everHydratedItems.has(so.id)){
-        console.warn('[DB] SO',so.id,'saving with',_clientSoItemCount,'item(s) (DB had',oldItemIds.length,') — items were hydrated, treating as intentional edit');
+        console.warn('[DB] SO',so.id,'saving with',_clientSoItemCount,'item(s) (DB had',_oldDistinctItemIndexCount,(oldItemIds.length!==_oldDistinctItemIndexCount?'distinct /'+oldItemIds.length+' raw':''),') — items were hydrated, treating as intentional edit');
       }else{
-        console.error('[DB] SAFETY: Blocking SO save —',_clientSoItemCount,'client item(s) vs',oldItemIds.length,'in DB for',so.id,'(items never hydrated this session)');
-        if(_dbNotify)_dbNotify('Save blocked — items may not have loaded fully (database has '+oldItemIds.length+', editor has '+_clientSoItemCount+'). Please reload the page.','error');
-        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:oldItemIds.length,newCount:_clientSoItemCount,reason:'Client save had '+_clientSoItemCount+' items while DB had '+oldItemIds.length+' (items not loaded this session)'});
+        console.error('[DB] SAFETY: Blocking SO save —',_clientSoItemCount,'client item(s) vs',_oldDistinctItemIndexCount,(oldItemIds.length!==_oldDistinctItemIndexCount?'distinct ('+oldItemIds.length+' raw)':''),'in DB for',so.id,'(items never hydrated this session)');
+        if(_dbNotify)_dbNotify('Save blocked — items may not have loaded fully (database has '+_oldDistinctItemIndexCount+', editor has '+_clientSoItemCount+'). Please reload the page.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:_oldDistinctItemIndexCount,newCount:_clientSoItemCount,reason:'Client save had '+_clientSoItemCount+' items while DB had '+_oldDistinctItemIndexCount+' distinct ('+oldItemIds.length+' raw) (items not loaded this session)'});
         return false;
       }
     }
