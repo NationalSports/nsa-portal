@@ -10267,11 +10267,13 @@ export default function App(){
                     return{...it,po_lines:pls};
                   });
                   // Backstop: if no queued lines matched (legacy batch entries created before the
-                  // source-PO promotion was in place), fall back to creating a line with po_id=poNum.
+                  // source-PO promotion was in place), create a line using the source PO id (bp.po_id,
+                  // e.g. "PO 3137 FPUVB") so it matches the normal-flow format and isn't mistaken for
+                  // the batch number by users or the billing matcher.
                   if(!promoted){
                     bp.items.forEach(bpIt=>{
                       const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
-                      const poLine={po_id:poNum,vendor:vg.name,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+vg.pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
+                      const poLine={po_id:bp.po_id||poNum,vendor:vg.name,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch '+poNum+' — '+vg.name,batch_po_number:poNum,received:{},shipments:[]};
                       if(bpIt.drop_ship)poLine.drop_ship=true;
                       Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
                       updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
