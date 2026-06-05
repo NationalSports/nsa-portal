@@ -3794,12 +3794,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {af.map((art,i)=>{const usedIn=safeItems(o).reduce((a,it)=>a+safeDecos(it).filter(d=>d.art_file_id===art.id).length,0);
             const afSt=art.status==='uploaded'?'needs_approval':art.status||'waiting_for_art';
             const isCollapsed=!expandedArt[art.id];
+            const _thumbUrlOf=f=>typeof f==='string'?f:(f?.url||'');
+            const _thumbMocks=[...(art.mockup_files||[]),...(art.files||[]),...Object.values(art.item_mockups||{}).flat()];
+            const thumbUrl=art.preview_url||_thumbMocks.map(_thumbUrlOf).find(u=>u&&_isImgUrl(u))||'';
             return(<div key={art.id} style={{padding:0,background:'#f8fafc',borderRadius:8,border:afSt==='approved'?'2px solid #22c55e':afSt==='needs_approval'?'2px solid #f59e0b':'1px solid #e2e8f0'}}>
               {/* Collapsible header */}
               <div style={{display:'flex',gap:12,alignItems:'center',padding:'10px 14px',cursor:'pointer',userSelect:'none'}} onClick={()=>setExpandedArt(prev=>({...prev,[art.id]:!prev[art.id]}))}>
                 <span style={{fontSize:12,color:'#64748b',transition:'transform 0.2s',transform:isCollapsed?'rotate(-90deg)':'rotate(0deg)',flexShrink:0}}>▼</span>
-                <div style={{width:36,height:36,borderRadius:6,flexShrink:0,overflow:'hidden',border:'1px solid #e2e8f0',background:art.preview_url?'white':art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':art.deco_type==='dtf'?'#fef3c7':'#f0fdf4',display:'flex',alignItems:'center',justifyContent:'center'}}>
-                  {art.preview_url?<img src={art.preview_url} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>
+                <div style={{width:36,height:36,borderRadius:6,flexShrink:0,overflow:'hidden',border:'1px solid #e2e8f0',background:thumbUrl?'white':art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':art.deco_type==='dtf'?'#fef3c7':'#f0fdf4',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                  {thumbUrl?<img src={thumbUrl} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>
                   :<span style={{fontSize:16}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':art.deco_type==='dtf'?'🔥':'#️⃣'}</span>}
                 </div>
                 <div style={{flex:1,minWidth:0}}>
@@ -3812,10 +3815,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {/* Collapsible body */}
               {!isCollapsed&&<div style={{padding:'0 14px 14px 14px'}}>
               <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
-                <div style={{width:64,height:64,borderRadius:8,flexShrink:0,position:'relative',cursor:'pointer',overflow:'hidden',border:'1px solid #e2e8f0',background:art.preview_url?'white':art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':art.deco_type==='dtf'?'#fef3c7':'#f0fdf4',display:'flex',alignItems:'center',justifyContent:'center'}}
+                <div style={{width:64,height:64,borderRadius:8,flexShrink:0,position:'relative',cursor:'pointer',overflow:'hidden',border:'1px solid #e2e8f0',background:thumbUrl?'white':art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':art.deco_type==='dtf'?'#fef3c7':'#f0fdf4',display:'flex',alignItems:'center',justifyContent:'center'}}
                   onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.jpg,.jpeg,.webp';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;nf('Uploading preview...');try{const url=await fileUpload(f,'nsa-art-previews');uArt(i,'preview_url',url);nf('Preview uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}};inp.click()}}
                   title={art.preview_url?'Click to change preview image':'Click to upload preview image'}>
-                  {art.preview_url?<img src={art.preview_url} alt="Preview" style={{width:'100%',height:'100%',objectFit:'contain'}}/>
+                  {thumbUrl?<img src={thumbUrl} alt="Preview" style={{width:'100%',height:'100%',objectFit:'contain'}}/>
                   :<div style={{textAlign:'center'}}><div style={{fontSize:20}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':art.deco_type==='dtf'?'🔥':'#️⃣'}</div><div style={{fontSize:7,color:'#94a3b8',fontWeight:600}}>+ Preview</div></div>}
                   {art.preview_url&&<button onClick={e=>{e.stopPropagation();uArt(i,'preview_url','')}} style={{position:'absolute',top:1,right:1,background:'rgba(0,0,0,0.5)',color:'white',border:'none',borderRadius:'50%',width:14,height:14,fontSize:8,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',padding:0}}>×</button>}
                 </div>
