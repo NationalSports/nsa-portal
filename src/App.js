@@ -8457,7 +8457,7 @@ export default function App(){
 
   // PRODUCTION BOARD
   // Artist Dashboard state
-  const[artFilter,setArtFilter]=useState(cu?.role==='rep'?cu.id:'all');const[artSearch,setArtSearch]=useState('');
+  const[artFilter,setArtFilter]=useState((cu?.role==='rep'||cu?.role==='admin'||cu?.role==='super_admin')?cu.id:'all');const[artSearch,setArtSearch]=useState('');
   const[artCompletedOpen,setArtCompletedOpen]=useState(false);// toggle completed jobs dropdown
   const[artHiddenOpen,setArtHiddenOpen]=useState(false);// toggle hidden jobs dropdown
   const[artInProductionOpen,setArtInProductionOpen]=useState(false);// toggle in-production jobs dropdown
@@ -18241,7 +18241,7 @@ export default function App(){
     const artistMembers=REPS.filter(r=>(r.role==='art'||r.role==='artist')&&r.is_active!==false);
 
     const _isArtistUser=cu?.role==='artist'||cu?.role==='art';
-    const _isRepUser=cu?.role==='rep';
+    const _isRepUser=cu?.role==='rep'||cu?.role==='admin'||cu?.role==='super_admin';
     const filtered=allArtJobs.filter(j=>{
       if(_isArtistUser&&j.assigned_artist!==cu.id)return false;
       if(!_isArtistUser&&artFilter!=='all'&&(_isRepUser?(j.repId||'')!==artFilter:(j.assigned_artist||'')!==artFilter))return false;
