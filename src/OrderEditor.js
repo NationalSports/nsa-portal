@@ -7641,10 +7641,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const groups=existingJobs.map(j=>{
             const items=(j.items||[]).map(ji=>{
               const it=safeItems(o)[ji.item_idx];
-              const af2=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);
-              return{item_idx:ji.item_idx,deco_idx:ji.deco_idx,deco_idxs:Array.isArray(ji.deco_idxs)&&ji.deco_idxs.length?ji.deco_idxs:(ji.deco_idx!=null?[ji.deco_idx]:[]),sku:ji.sku||it?.sku||'',name:ji.name||safeStr(it?.name),color:ji.color||it?.color||'',
-                units:ji.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0),fulfilled:ji.fulfilled||0,art_file_id:j.art_file_id,
-                art_name:j.art_name||af2?.name||'',position:j.positions||'Front Center'};
+              const decoIdxs=Array.isArray(ji.deco_idxs)&&ji.deco_idxs.length?ji.deco_idxs:(ji.deco_idx!=null?[ji.deco_idx]:[]);
+              const itemDeco=decoIdxs.length>0?safeDecos(it||{})[decoIdxs[0]]:null;
+              const itemArtFileId=itemDeco?.art_file_id||j.art_file_id;
+              const af2=safeArr(o?.art_files).find(f=>f.id===itemArtFileId);
+              return{item_idx:ji.item_idx,deco_idx:ji.deco_idx,deco_idxs:decoIdxs,sku:ji.sku||it?.sku||'',name:ji.name||safeStr(it?.name),color:ji.color||it?.color||'',
+                units:ji.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0),fulfilled:ji.fulfilled||0,art_file_id:itemArtFileId,
+                art_name:af2?.name||j.art_name||'',position:j.positions||'Front Center'};
             });
             return{name:j.art_name||j.deco_type.replace(/_/g,' '),deco_type:j.deco_type,items,
               artist:j.assigned_artist||'',notes:j.rep_notes||'',files:[],
@@ -7661,8 +7664,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(d.kind!=='art'||!d.art_file_id)return;
             const af2=safeArr(o?.art_files).find(f=>f.id===d.art_file_id);
             const dt=af2?.deco_type||d.deco_type||'screen_print';
-            if(!dtMap[dt])dtMap[dt]={name:DECO_LABELS_W[dt]||dt.replace(/_/g,' '),deco_type:dt,items:[]};
-            dtMap[dt].items.push({item_idx:idx,deco_idx:di,sku:it.sku,name:safeStr(it.name),color:it.color||'',
+            const groupKey=dt+'::'+d.art_file_id;
+            if(!dtMap[groupKey])dtMap[groupKey]={name:af2?.name||DECO_LABELS_W[dt]||dt.replace(/_/g,' '),deco_type:dt,items:[]};
+            dtMap[groupKey].items.push({item_idx:idx,deco_idx:di,sku:it.sku,name:safeStr(it.name),color:it.color||'',
               units:Object.values(safeSizes(it)).reduce((a,v)=>a+v,0),fulfilled:0,art_file_id:d.art_file_id,
               art_name:af2?.name||'',position:d.position||'Front Center'});
           });
