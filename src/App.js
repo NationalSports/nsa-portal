@@ -1251,11 +1251,48 @@ const _dbSaveSOInner = async (so) => {
       if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:oldItemIds.length,newCount:0,reason:'client has 0 items but DB has items (zero-wipe guard — likely stale/raced state)'});
       _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
     }
+    // Sync art_files BEFORE the bgSync item-shrink guard so art changes persist even when a background sync
+    // cannot safely rewrite items (e.g. duplicate-item state from an interrupted save). Art has its own
+    // optimistic locking (_version) and deletion guard (_hydratedArtIds), fully independent of item counts.
+    // Wrapped in a block so its consts don't collide with the identical block that runs after item commit.
+    {const{data:_dbAf}=await supabase.from('so_art_files').select('*').eq('so_id',so.id);
+    const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
+    if(art_files?.length){
+      const _resolved=_resolveArtRows(art_files,_dbAf,so.id);
+      {
+        let soAfRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id}));
+        let _afOk=true;
+        const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
+        if(afErr){
+          if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
+            console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
+            const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
+            const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
+            if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr2.message);_afOk=false}
+            else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
+          }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message);_afOk=false}
+        }
+        // Match the DB trigger's version bump so this client's next save isn't mistaken for stale.
+        if(_afOk)_resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
+      }
+      // Delete only art the client deliberately removed: it had loaded the row and no longer holds it.
+      const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
+      const _knownArtIds=new Set(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]);
+      const toDeleteAf=(_dbAf||[]).filter(ea=>!currentAfIds.has(ea.id)&&_knownArtIds.has(ea.id)).map(ea=>ea.id);
+      if(toDeleteAf.length)await supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',toDeleteAf);
+    }else if(Array.isArray(art_files)&&so._artHydrated!==false){
+      // User removed every art group (art_files === []). Delete only the rows the client had loaded; any art
+      // added by another user since (not in _hydratedArtIds) is preserved.
+      const _knownArtIds=(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]).filter(id=>_dbAfVerById.has(id));
+      if(_knownArtIds.length)await supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',_knownArtIds);
+    }}
     // SAFETY: a background sync (poll/realtime _diffSave, _bgSync=true) must NEVER shrink or empty an SO's
     // items — same root cause as the estimate item-wipe. Preserve DB rows; the SO row already upserted above.
+    // Art files were already synced above so this early return is now safe.
     if(_bgSync&&oldItemIds.length>0&&_clientSoItemCount<oldItemIds.length){
-      console.warn('[DB] SAFETY: background sync would shrink',so.id,'items ('+_clientSoItemCount+'<'+oldItemIds.length+') — preserving DB items, skipping child writes');
+      console.warn('[DB] SAFETY: background sync would shrink',so.id,'items ('+_clientSoItemCount+'<'+oldItemIds.length+') — preserving DB items, skipping item writes; art files already synced');
       if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:so.id,prevCount:oldItemIds.length,newCount:_clientSoItemCount,reason:'background SO save would shrink items'});
+      if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'so_art_files save error');_persistFailedIds();if(_dbNotify)_dbNotify('Art file save incomplete: '+(_failMsg||'see console'),'error');return false}
       _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
     }
     if(oldItemIds.length>0&&_clientSoItemCount!==oldItemIds.length){
@@ -1468,42 +1505,7 @@ const _dbSaveSOInner = async (so) => {
     // jobs list from item decorations, so a transiently-missing decoration would otherwise wipe a submitted
     // job. Orphaned jobs from a recycled SO number are cleaned at order creation instead (see new-SO purge).
     await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
-    // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition).
-    // Optimistic concurrency (via the _version trigger): never overwrite an art row whose DB copy is newer than
-    // the client's — that would clobber an approval/mockup another user set after this client loaded. And only
-    // delete rows the client actually loaded (_hydratedArtIds), so art another user added meanwhile is preserved.
-    const{data:_dbAf}=await supabase.from('so_art_files').select('*').eq('so_id',so.id);
-    const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
-    if(art_files?.length){
-      const _resolved=_resolveArtRows(art_files,_dbAf,so.id);
-      {
-        let soAfRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id}));
-        let _afOk=true;
-        const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
-        if(afErr){
-          if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
-            console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
-            const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
-            const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
-            if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr2.message);_afOk=false}
-            else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
-          }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message);_afOk=false}
-        }
-        // Match the DB trigger's version bump so this client's next save isn't mistaken for stale. Over-bump is safe
-        // (the merge still upserts); under-bump would make the client skip its own row.
-        if(_afOk)_resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
-      }
-      // Delete only art the client deliberately removed: it had loaded the row and no longer holds it.
-      const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
-      const _knownArtIds=new Set(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]);
-      const toDeleteAf=(_dbAf||[]).filter(ea=>!currentAfIds.has(ea.id)&&_knownArtIds.has(ea.id)).map(ea=>ea.id);
-      if(toDeleteAf.length)await supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',toDeleteAf);
-    }else if(Array.isArray(art_files)&&so._artHydrated!==false){
-      // User removed every art group (art_files === []). Delete only the rows the client had loaded; any art added
-      // by another user since (not in _hydratedArtIds) is preserved. Gated on _artHydrated so a timed-out load can't wipe data.
-      const _knownArtIds=(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]).filter(id=>_dbAfVerById.has(id));
-      if(_knownArtIds.length)await supabase.from('so_art_files').delete().eq('so_id',so.id).in('id',_knownArtIds);
-    }
+    // Art files already synced above (before the bgSync item-shrink guard). No second sync needed here.
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+fdErr.message)}}
     if(!items?.length){
