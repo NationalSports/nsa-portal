@@ -1383,13 +1383,13 @@ describe('Cross-Module Integration Scenarios', () => {
       });
       const jobs = buildJobs(so);
       // buildJobs groups by deco TYPE then by decoration signature within each type:
-      // SHIRT-1: art_af1@Front + art_af2@Back (both screen_print) → 1 screen_print job
-      // SHIRT-2: art_af1@Front (screen_print) → 1 screen_print job (different sig from SHIRT-1)
+      // SHIRT-1: art_af1 + art_af2 (both screen_print) → 1 screen_print job
+      // SHIRT-2: art_af1 (screen_print) → 1 screen_print job (different sig from SHIRT-1 — different art set)
       // SHIRT-2: numbers@Back (heat_transfer) → 1 heat_transfer job
       // = 3 separate jobs (different deco types go to different machines/vendors)
       expect(jobs).toHaveLength(3);
-      const shirt1Job = jobs.find(j => j.key === 'screen_print::art_af1@Front|art_af2@Back');
-      const shirt2ScreenJob = jobs.find(j => j.key === 'screen_print::art_af1@Front');
+      const shirt1Job = jobs.find(j => j.key === 'screen_print::art_af1|art_af2');
+      const shirt2ScreenJob = jobs.find(j => j.key === 'screen_print::art_af1');
       const shirt2HeatJob = jobs.find(j => j.key.startsWith('heat_transfer::'));
       expect(shirt1Job.items).toHaveLength(1);
       expect(shirt1Job.total_units).toBe(20);
