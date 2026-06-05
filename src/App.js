@@ -8458,8 +8458,7 @@ export default function App(){
 
   // PRODUCTION BOARD
   // Artist Dashboard state
-  const[artFilter,setArtFilter]=useState('all');const[artSearch,setArtSearch]=useState('');
-  const[artDashView,setArtDashView]=useState('artist');// 'artist' | 'rep'
+  const[artFilter,setArtFilter]=useState((cu?.role==='rep'||cu?.role==='admin'||cu?.role==='super_admin')?cu.id:'all');const[artSearch,setArtSearch]=useState('');
   const[artCompletedOpen,setArtCompletedOpen]=useState(false);// toggle completed jobs dropdown
   const[artHiddenOpen,setArtHiddenOpen]=useState(false);// toggle hidden jobs dropdown
   const[artInProductionOpen,setArtInProductionOpen]=useState(false);// toggle in-production jobs dropdown
@@ -18243,10 +18242,10 @@ export default function App(){
     const artistMembers=REPS.filter(r=>(r.role==='art'||r.role==='artist')&&r.is_active!==false);
 
     const _isArtistUser=cu?.role==='artist'||cu?.role==='art';
+    const _isRepUser=cu?.role==='rep'||cu?.role==='admin'||cu?.role==='super_admin';
     const filtered=allArtJobs.filter(j=>{
       if(_isArtistUser&&j.assigned_artist!==cu.id)return false;
-      if(artDashView==='artist'&&artFilter!=='all'&&(j.assigned_artist||'')!==artFilter)return false;
-      if(artDashView==='rep'&&artFilter!=='all'&&j.repId!==artFilter)return false;
+      if(!_isArtistUser&&artFilter!=='all'&&(_isRepUser?(j.repId||'')!==artFilter:(j.assigned_artist||'')!==artFilter))return false;
       if(artSearch){const s=artSearch.toLowerCase();
         if(!(j.customer||'').toLowerCase().includes(s)&&!(j.art_name||'').toLowerCase().includes(s)&&
           !(j.soId||'').toLowerCase().includes(s)&&!(j.id||'').toLowerCase().includes(s)&&
@@ -18357,10 +18356,6 @@ export default function App(){
     const sortedInProductionJobs=[...inProductionJobs].sort(sortByDaysOut);
     const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=artistJobs.filter(j=>getArtFileStatus(j)===c.id).length});
 
-    // ─── Rep view data — all jobs grouped by rep ───
-    const repJobs=filtered.filter(j=>!j.art_hidden).filter(j=>artDashView==='rep'?(cu.role==='admin'||cu.role==='super_admin'||j.repId===cu.id||artFilter!=='all'):true);
-    // Note: rep filtering by artFilter is now handled in filtered above
-
     // Card renderer shared between both views
     const renderArtCard=(j,view,col)=>{
       const urgent=j.daysOut!=null&&j.daysOut<=3;
@@ -18470,32 +18465,22 @@ export default function App(){
       </div>};
 
     return(<>
-      {/* View toggle: Artist / Rep */}
-      <div style={{display:'flex',gap:4,marginBottom:14,background:'#f8fafc',padding:6,borderRadius:8,border:'1px solid #e2e8f0'}}>
-        <button className={`btn btn-sm ${artDashView==='artist'?'btn-primary':'btn-secondary'}`}
-          style={{fontSize:12,padding:'6px 16px',background:artDashView==='artist'?'#7c3aed':'',borderColor:artDashView==='artist'?'#7c3aed':''}}
-          onClick={()=>{setArtDashView('artist');setArtFilter('all')}}>🎨 Artist Workboard</button>
-        <button className={`btn btn-sm ${artDashView==='rep'?'btn-primary':'btn-secondary'}`}
-          style={{fontSize:12,padding:'6px 16px',background:artDashView==='rep'?'#1e40af':'',borderColor:artDashView==='rep'?'#1e40af':''}}
-          onClick={()=>{setArtDashView('rep');setArtFilter('all')}}>💼 Rep Art Tracker</button>
-      </div>
-
-      {/* Filters (shared) */}
+      {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
-        {artDashView==='artist'&&<select className="form-select" style={{width:160,fontSize:12}} value={artFilter} onChange={e=>setArtFilter(e.target.value)}>
-          <option value="all">All Artists</option><option value="">Unassigned</option>
-          {artistMembers.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
-        </select>}
-        {artDashView==='rep'&&<select className="form-select" style={{width:160,fontSize:12}} value={artFilter} onChange={e=>setArtFilter(e.target.value)}>
+        {_isRepUser&&<select className="form-select" style={{width:160,fontSize:12}} value={artFilter} onChange={e=>setArtFilter(e.target.value)}>
           <option value="all">All Reps</option>
           {REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
         </select>}
+        {!_isArtistUser&&!_isRepUser&&<select className="form-select" style={{width:160,fontSize:12}} value={artFilter} onChange={e=>setArtFilter(e.target.value)}>
+          <option value="all">All Artists</option><option value="">Unassigned</option>
+          {artistMembers.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+        </select>}
         <input className="form-input" style={{width:200,fontSize:12}} placeholder="Search customer, SO, art name..." value={artSearch} onChange={e=>setArtSearch(e.target.value)}/>
-        <span style={{fontSize:11,color:'#64748b',marginLeft:'auto'}}>{artDashView==='artist'?artistJobs.length:repJobs.length} job{(artDashView==='artist'?artistJobs.length:repJobs.length)!==1?'s':''}</span>
+        <span style={{fontSize:11,color:'#64748b',marginLeft:'auto'}}>{artistJobs.length} job{artistJobs.length!==1?'s':''}</span>
       </div>
 
       {/* ═══ ART TIME CLOCK ═══ */}
-      {artDashView==='artist'&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed'}}>
+      {_isArtistUser&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed'}}>
         <div style={{padding:'10px 14px'}}>
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
             <span style={{fontSize:13,fontWeight:800,color:'#6d28d9'}}>⏱️ Art Time Clock</span>
@@ -18539,7 +18524,7 @@ export default function App(){
       </div>}
 
       {/* ═══ ARTIST WORKBOARD ═══ */}
-      {artDashView==='artist'&&<>
+      <>
         <div className="stats-row">
           {artistCols.map(c=><div key={c.id} className="stat-card"><div className="stat-label">{c.label}</div><div className="stat-value" style={{color:c.color}}>{artistCounts[c.id]}</div></div>)}
           <div className="stat-card"><div className="stat-label">{inProductionCol.label}</div><div className="stat-value" style={{color:inProductionCol.color}}>{inProductionJobs.length}</div></div>
@@ -18606,60 +18591,7 @@ export default function App(){
             </div>
           </div>}
         </div>}
-      </>}
-
-      {/* ═══ REP ART TRACKER ═══ */}
-      {artDashView==='rep'&&(()=>{
-        const repFiltered=repJobs;// rep filtering already applied in filtered
-        const waitingForArt=repFiltered.filter(j=>getArtFileStatus(j)==='waiting_for_art');
-        const waiting=repFiltered.filter(j=>getArtFileStatus(j)==='needs_approval');
-        const prodFiles=repFiltered.filter(j=>getArtFileStatus(j)==='approved');
-        const done=repFiltered.filter(j=>j.art_status==='art_complete');
-        return<>
-          <div className="stats-row">
-            <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Waiting for Art</div><div className="stat-value" style={{color:'#dc2626'}}>{waitingForArt.length}</div></div>
-            <div className="stat-card" style={{borderLeft:'3px solid #f59e0b'}}><div className="stat-label">Needs Approval</div><div className="stat-value" style={{color:'#d97706'}}>{waiting.length}</div></div>
-            <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Approved / Needs Files</div><div className="stat-value" style={{color:'#166534'}}>{prodFiles.length}</div></div>
-            <div className="stat-card" style={{borderLeft:'3px solid #6d28d9'}}><div className="stat-label">Complete</div><div className="stat-value" style={{color:'#6d28d9'}}>{done.length}</div></div>
-          </div>
-
-          {/* Waiting for Art */}
-          {waitingForArt.length>0&&<div style={{marginBottom:16}}>
-            <div style={{fontSize:14,fontWeight:800,color:'#dc2626',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
-              <span style={{width:10,height:10,borderRadius:5,background:'#dc2626'}}/>Waiting for Art ({waitingForArt.length})</div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:8}}>
-              {waitingForArt.map(j=>renderArtCard(j,'rep',null))}
-            </div>
-          </div>}
-
-          {/* Needs Approval */}
-          {waiting.length>0&&<div style={{marginBottom:16}}>
-            <div style={{fontSize:14,fontWeight:800,color:'#d97706',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
-              <span style={{width:10,height:10,borderRadius:5,background:'#f59e0b'}}/>Needs Approval ({waiting.length})</div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:8}}>
-              {waiting.map(j=>renderArtCard(j,'rep',null))}
-            </div>
-          </div>}
-
-          {/* Approved / Needs Files */}
-          {prodFiles.length>0&&<div style={{marginBottom:16}}>
-            <div style={{fontSize:14,fontWeight:800,color:'#166534',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
-              <span style={{width:10,height:10,borderRadius:5,background:'#166534'}}/>Approved / Needs Files ({prodFiles.length})</div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:8}}>
-              {prodFiles.map(j=>renderArtCard(j,'rep',null))}
-            </div>
-          </div>}
-
-          {/* Completed */}
-          {done.length>0&&<div style={{marginBottom:16}}>
-            <div style={{fontSize:14,fontWeight:800,color:'#6d28d9',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
-              <span style={{width:10,height:10,borderRadius:5,background:'#6d28d9'}}/>Completed ({done.length})</div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:8}}>
-              {done.slice(0,8).map(j=>renderArtCard(j,'rep',null))}
-              {done.length>8&&<div style={{padding:12,textAlign:'center',color:'#94a3b8',fontSize:11}}>+{done.length-8} more completed</div>}
-            </div>
-          </div>}
-        </>})()}
+      </>
 
       {/* ═══ REJECT ART MODAL (requires text) ═══ */}
       {artRejectModal&&<div className="modal-overlay" onClick={()=>setArtRejectModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:460}}>
