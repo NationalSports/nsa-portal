@@ -574,6 +574,30 @@ function checkInventoryConflicts(currentSO, item, newInv, allOrders) {
   return warnings;
 }
 
+// ─── Item-edit reconciliation (data-loss guard helper) ───
+// Decide whether a client's item add/remove is a VERIFIED deliberate edit when the session's bulk item load
+// timed out — in that state the global per-table hydration flag (_itemsHydrated) is false for EVERY order, so it
+// can't be trusted per-order and would otherwise gate legitimate deletions ("Save blocked — reload the page").
+// Key insight: a timed-out/partial load leaves the client with an EMPTY item list (handled separately by the
+// zero-wipe guard), never a coherent subset of THIS order's real items. So the edit is provably deliberate when
+// the client items reconcile with the freshly-read DB rows by SKU/name: client ⊆ DB (a deletion) or DB ⊆ client
+// (an addition). The dangerous "phantom-empty load, then user adds new rows on top" case is NOT a superset of the
+// DB rows, so it returns false and stays blocked. Returns false for an empty / identity-less client list (it can
+// never be "proven loaded"). NOTE: the save guards only call this once the DB already has rows (oldItemIds > 0).
+function itemEditReconciles(clientItems, dbItems) {
+  if (!Array.isArray(clientItems) || clientItems.length === 0) return false;
+  const keyOf = (x) => String((x && (x.sku || x.name)) || '').trim();
+  const toMs = (arr) => {
+    const m = new Map();
+    (arr || []).forEach((x) => { const k = keyOf(x); if (k) m.set(k, (m.get(k) || 0) + 1); });
+    return m;
+  };
+  const subset = (a, b) => { for (const [k, n] of a) { if ((b.get(k) || 0) < n) return false; } return true; };
+  const c = toMs(clientItems), d = toMs(dbItems);
+  if (c.size === 0) return false; // client has items but none carry a SKU/name — can't verify; stay safe (blocked)
+  return subset(c, d) || subset(d, c);
+}
+
 module.exports = {
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
@@ -589,4 +613,6 @@ module.exports = {
   buildQBSalesOrder, buildQBInvoice,
   // Inventory
   checkInventoryConflicts,
+  // Data-loss guards
+  itemEditReconciles,
 };
