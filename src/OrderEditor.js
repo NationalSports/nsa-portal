@@ -6667,6 +6667,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const allSizes=[...new Set(itemDetails.flatMap(gi=>Object.keys(gi.sizes||{})))];
         const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
         allSizes.sort((a,b)=>(sizeOrder.indexOf(a)===-1?99:sizeOrder.indexOf(a))-(sizeOrder.indexOf(b)===-1?99:sizeOrder.indexOf(b)));
+        // Reused art whose mock hasn't been confirmed for this garment yet — drives the Check
+        // Mock panel/badge AND downgrades the "approved / ready for production" status until the
+        // rep confirms a mock (so the job doesn't read as done when it isn't).
+        const _mockCheckGarments=(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))?garmentsNeedingMockCheck(j,o,priorMocks):[];
+        const _needsMockCheck=_mockCheckGarments.length>0;
 
         return<><div>
           <button className="btn btn-sm btn-secondary" onClick={()=>setSelJob(null)} style={{marginBottom:12}}><Icon name="back" size={12}/> All Jobs</button>
@@ -6677,10 +6682,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{flex:1}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                   <span style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{j.id}</span>
-                  {(()=>{const fSt=artF?(artF.status==='uploaded'?'needs_approval':artF.status||'waiting_for_art'):null;return fSt?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>:null})()}
+                  {_needsMockCheck?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm a mock for this garment before it's production-ready">🔍 Check Mock</span>:(()=>{const fSt=artF?(artF.status==='uploaded'?'needs_approval':artF.status||'waiting_for_art'):null;return fSt?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>:null})()}
                   {(()=>{const _is=jItemStatus(j);return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[_is]?.bg,color:SC[_is]?.c}}>{itemLabels[_is]}</span>})()}
                   <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}}>{prodLabels[j.prod_status]}</span>
-                  {(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&garmentsNeedingMockCheck(j,o,priorMocks).length>0&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm the mock matches this garment's color/style">🔍 Check Mock</span>}
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:6,marginTop:4,flexWrap:'wrap'}}>
                   {editingJobName===j.id?<input type="text" autoFocus className="form-input" defaultValue={j.art_name||''}
@@ -6820,8 +6824,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
             </div>
             {/* ── Check Mock: previously-approved art reused on a different color/style ── */}
-            {(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&(()=>{
-              const _chk=garmentsNeedingMockCheck(j,o,priorMocks);if(_chk.length===0)return null;
+            {_needsMockCheck&&(()=>{
+              const _chk=_mockCheckGarments;
               // Send to the artist for a fresh mock: recall the job to Needs Art and open the
               // existing Request Art modal (mirrors the "Update Art" flow).
               const _toArtist=g=>{const artIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:''}:jj);const updArt=safeArt(o).map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art'}:a);const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'New mock needed for '+(g.color?g.color+' ':'')+g.sku,files:[]})};
@@ -6834,20 +6838,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div style={{fontSize:12,color:'#92400e',marginBottom:6}}>This art was approved on a different color/style, so there's no mock for the garment{_chk.length>1?'s':''} below yet. Pick the prior mock that works, or get a new one.</div>
                 {_chk.map((g,ci)=><div key={ci} style={{padding:'10px 0',borderTop:ci>0?'1px solid #fde68a':'none'}}>
                   <div style={{fontSize:13,fontWeight:700,color:'#0f172a',marginBottom:6}}>{g.color?g.color+' · ':''}{g.sku}{g.name?<span style={{fontWeight:500,color:'#64748b'}}> · {g.name}</span>:null}</div>
-                  {g.artFiles.map((af2,ai)=><div key={ai} style={{marginBottom:8}}>
+                  {g.artFiles.map((af2,ai)=>{
+                    // Sort/label the prior mocks by color way: the garment prints one CW (White →
+                    // "on white"); float the mocks from like-CW garments first and tag each one.
+                    const _afObj=safeArt(o).find(a=>a.id===af2.art_file_id);
+                    const _item=safeItems(o).find(it=>(it.sku||'')===g.sku&&(it.color||'')===(g.color||''));
+                    const _cws=safeArr(_afObj?.color_ways);
+                    const _tgtCwLabel=(_cws.find(c=>c.id===_cwForItem(_afObj,_item,g.color))||{}).garment_color||'';
+                    const _grpCw=fromKey=>{if(!_cws.length)return'';const col=(String(fromKey).split('|')[1]||'');const lt=/white|natural|cream|ivory|ash|silver|sand|vegas|gold|yellow|light|heather|grey|gray/i.test(col);const m=_cws.find(c=>{const gc=(c.garment_color||'').toLowerCase();return lt?/white|light/.test(gc):/dark|black/.test(gc)});return (m&&m.garment_color)||''};
+                    const _groups=[...af2.groups].map(grp=>({...grp,_cw:_grpCw(grp.from)})).sort((x,y)=>((_tgtCwLabel&&x._cw===_tgtCwLabel)?0:1)-((_tgtCwLabel&&y._cw===_tgtCwLabel)?0:1));
+                    return<div key={ai} style={{marginBottom:8}}>
                     {g.artFiles.length>1&&<div style={{fontSize:11,fontWeight:700,color:'#7c3aed',marginBottom:4}}>{af2.art_name||('Artwork '+(ai+1))}</div>}
+                    {_tgtCwLabel&&<div style={{fontSize:10,color:'#854d0e',marginBottom:4}}>This garment prints the <b>{_tgtCwLabel}</b> color way — matching mocks are shown first.</div>}
                     <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
-                      {af2.groups.map((grp,gpi)=><div key={gpi} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 8px',background:'white',border:'1px solid #fde68a',borderRadius:8}}>
+                      {_groups.map((grp,gpi)=>{const _match=!!_tgtCwLabel&&grp._cw===_tgtCwLabel;return<div key={gpi} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 8px',background:_match?'#f0fdf4':'white',border:'1px solid '+(_match?'#86efac':'#fde68a'),borderRadius:8}}>
                         <div style={{display:'flex',gap:4}}>
                           {grp.files.slice(0,3).map((pm,pi)=>_isImgUrl(pm.url)?<img key={pi} src={pm.url} alt="" title="Click to enlarge" style={{width:64,height:78,objectFit:'contain',borderRadius:5,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(pm.url)}/>:<div key={pi} onClick={()=>openFile(pm.url)} style={{width:64,height:78,borderRadius:5,border:'1px solid #e2e8f0',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,cursor:'pointer'}}>📄</div>)}
                         </div>
                         <div style={{minWidth:120}}>
                           <div style={{fontSize:10,color:'#92400e'}}>Approved on<br/><b>{(grp.from||'').replace('|',' · ')}</b>{grp.files.length>1?' · '+grp.files.length+' images':''}</div>
+                          {grp._cw&&<div style={{fontSize:9,fontWeight:700,color:_match?'#166534':'#92400e',marginTop:2}}>CW: {grp._cw}{_match?' ✓ matches':''}</div>}
                           <button className="btn btn-sm" style={{fontSize:10,background:'#16a34a',color:'white',border:'none',fontWeight:700,padding:'4px 10px',marginTop:4}} onClick={()=>setMockApplyModal({sku:g.sku,color:g.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:j.id})}>✓ Use for {g.color||g.sku}</button>
                         </div>
-                      </div>)}
+                      </div>})}
                     </div>
-                  </div>)}
+                  </div>;})}
                   <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:4}}>
                     <button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'white',border:'none',fontWeight:700,padding:'5px 12px'}} onClick={_buildMock}>✏️ Build a new mock</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'5px 12px'}} onClick={()=>_toArtist(g)}>🎨 Send to artist</button>
@@ -7097,7 +7112,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <button className="btn btn-sm" style={{fontSize:12,fontWeight:700,background:'#166534',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={_completeProd}>✓ Production Files Attached — Mark Art Complete</button>
               </div>}
             </div>;})()}
-            {j.art_status==='art_complete'&&<div style={{margin:'0 20px',padding:'10px 16px',background:'linear-gradient(135deg,#dcfce7,#f0fdf4)',border:'2px solid #86efac',borderRadius:8}}>
+            {j.art_status==='art_complete'&&!_needsMockCheck&&<div style={{margin:'0 20px',padding:'10px 16px',background:'linear-gradient(135deg,#dcfce7,#f0fdf4)',border:'2px solid #86efac',borderRadius:8}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <span style={{fontSize:16}}>🎉</span>
                 <span style={{fontWeight:700,fontSize:14,color:'#166534'}}>Art Complete — Ready for Production</span>
