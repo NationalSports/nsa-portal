@@ -73,6 +73,12 @@ return a ~9,999,999 "unlimited" sentinel.
 - Persist the maps (localStorage/table) and reuse across runs; only re-learn when
   a brand-new conversionId appears. (True footwear SKUs use numeric sizes
   legitimately — leave those as-is.)
+- **End-of-run health check (report-only):** after upserting, log any apparel
+  conversionIds still missing labels (`window._mapGaps`). Expected: empty. A
+  non-empty report is the early warning that a map regressed and numeric codes may
+  have been written — re-learn that conversionId before the next run instead of
+  letting stale `240`-style rows pile up. The sync never deletes; pruning existing
+  code rows stays a manual, supervised step.
 
 ## Notes
 
