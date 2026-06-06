@@ -1936,8 +1936,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         nj._hasSplitOverrides=true;
       }
     });
-    // Preserve manually split jobs — they won't be auto-generated from decorations
-    const splitJobs=safeJobs(o).filter(j=>j.split_from&&!newJobs.find(nj=>nj.id===j.id));
+    // Preserve manually split jobs — they won't be auto-generated from decorations. Exclude jobs
+    // that were later released or merged: those are already preserved by releasedJobs/mergedJobs
+    // above, so counting them here too would emit the same job twice (a slice that gets merged
+    // keeps both split_from and _merged). The auto-sync effect feeds this list back in as its own
+    // input, so any such duplicate compounds exponentially on every render — that's the runaway
+    // that spawned thousands of identical split jobs. The dedupe at the return is a second backstop.
+    const splitJobs=safeJobs(o).filter(j=>j.split_from&&!j._released&&!j._merged&&!newJobs.find(nj=>nj.id===j.id));
     // Subtract split-off units from parent jobs so totals stay correct (skip parents that already
     // have per-item size overrides — those totals are derived from the preserved sizes).
     splitJobs.forEach(sj=>{
@@ -1995,7 +2000,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const wasSubmitted=j.art_status&&j.art_status!=='needs_art';
       return hasRealArt&&wasSubmitted;
     });
-    return[..._kept,...orphanedSubmitted];
+    // Final backstop: a job must never appear twice in the synced list. If a job ever satisfies
+    // more than one preservation branch above, dedupe by id here so the auto-sync feedback loop
+    // can't compound it (1→2→4→…). Keep the first occurrence.
+    const _synced=[..._kept,...orphanedSubmitted];
+    const _seenIds=new Set();
+    return _synced.filter(j=>{if(!j||!j.id)return!!j;if(_seenIds.has(j.id))return false;_seenIds.add(j.id);return true});
   },[o,af]);// eslint-disable-line
 
   // Auto-sync jobs whenever decorations or items change (does NOT mark dirty — auto-sync is not a user edit).
@@ -8035,7 +8045,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Merging combines items only — it does NOT submit to art. Always reset to
             // needs_art so the Submit to Art button appears and the user submits the
             // new merged job explicitly through the wizard.
-            const merged={...target,items:mergeItems,total_units:mergeUnits,fulfilled_units:mergeFulfilled,art_status:'needs_art',_merged:true};
+            // Clear split_from — a merged job is its own standalone job, not a split-off slice.
+            // Leaving it set would make the job match BOTH the split and merged preservation filters
+            // in syncJobs and get double-counted (the runaway-duplication bug).
+            const merged={...target,items:mergeItems,total_units:mergeUnits,fulfilled_units:mergeFulfilled,art_status:'needs_art',_merged:true,split_from:null};
             const removeIdxs=new Set(sel.slice(1));const newJobs=jobs.map((j,i)=>i===sel[0]?merged:j).filter((j,i)=>!removeIdxs.has(i));
             const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setMergeMode(null);
             nf('Merged '+sel.length+' jobs into '+target.id);
