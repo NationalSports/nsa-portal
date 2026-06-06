@@ -1,5 +1,5 @@
 /* eslint-disable */
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { auTierDisc, dP, calcOrderTotals } from './pricing';
 import { isJobReady } from './businessLogic';
 import { SZ_ORD } from './constants';
@@ -30,12 +30,13 @@ const fmtDate=(d)=>{if(!d)return'—';try{return new Date(d).toLocaleDateString(
 const fmtMoney=(n)=>{if(n==null)return'$0';return'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})};
 const timeAgo=(d)=>{if(!d)return'';const ms=Date.now()-new Date(d).getTime();const m=ms/60000;if(m<1)return'just now';if(m<60)return Math.floor(m)+'m';if(m<1440)return Math.floor(m/60)+'h';return Math.floor(m/1440)+'d'};
 const PROD_LABELS={ready:'Ready',hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped',draft:'Draft'};
+const DECO_KINDS=[{k:'art',label:'Art / Print',color:'#3b82f6'},{k:'numbers',label:'Numbers',color:'#22c55e'},{k:'names',label:'Names',color:'#f59e0b'},{k:'outside_deco',label:'Outside Deco',color:'#7c3aed'}];
 const prodLabel=(j)=>PROD_LABELS[j.prod_status]||(j.prod_status||'pending').replace(/_/g,' ');
 
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,nextEstId,nf,onMsg,invPOs=[],onPullIF,onReceiveSOPO,onReceiveInvPO,onAssignBot}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],onPullIF,onReceiveSOPO,onReceiveInvPO,onAssignBot}){
   const[tab,setTab]=useState('home');
   const[botCompose,setBotCompose]=useState(null);// {title,so_id} when the quick "Assign to Claude" form is open
   const[q,setQ]=useState('');
@@ -65,6 +66,9 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[newEstProdQ,setNewEstProdQ]=useState('');
   const[newEstStep,setNewEstStep]=useState('customer'); // customer | details | items | sizes
   const[newEstEditItem,setNewEstEditItem]=useState(null); // index of item being edited for sizes
+  // Server-side catalog search (full product DB, beyond the loaded `prod` set). null = fall back to local filter.
+  const[catResults,setCatResults]=useState(null);
+  const[catLoading,setCatLoading]=useState(false);
   // Messages filter
   const[msgFilter,setMsgFilter]=useState('for_me');
   // ─── Warehouse state ───
@@ -77,6 +81,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[whSaving,setWhSaving]=useState(false);
   // Send estimate modal
   const[sendEstModal,setSendEstModal]=useState(null); // estimate object or null
+  // Send invoice modal
+  const[sendInvModal,setSendInvModal]=useState(null); // invoice object or null
   // Compose message
   const[composeMsg,setComposeMsg]=useState(null); // null | {so_id, entity_type, entity_id, replyTo}
   const[composeTxt,setComposeTxt]=useState('');
@@ -86,6 +92,21 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   // Derived data
   const repName=(id)=>{const r=REPS.find(x=>x.id===id);return r?r.name:'—'};
   const custObj=(id)=>cust.find(x=>x.id===id);
+
+  // Full-catalog product search (debounced). Runs whenever the builder's product query changes and a
+  // server search function is wired; results replace the local `prod` filter. Falls back to local on any failure.
+  useEffect(()=>{
+    if(!searchProducts){setCatResults(null);return;}
+    const q=(newEstProdQ||'').trim();
+    if(q.length<2){setCatResults(null);setCatLoading(false);return;}
+    let cancelled=false;setCatLoading(true);
+    const t=setTimeout(async()=>{
+      try{const r=await searchProducts(q,{},0,25);if(!cancelled)setCatResults(r&&Array.isArray(r.products)?r.products:null);}
+      catch{if(!cancelled)setCatResults(null);}
+      finally{if(!cancelled)setCatLoading(false);}
+    },280);
+    return()=>{cancelled=true;clearTimeout(t);};
+  },[newEstProdQ,searchProducts]);
 
   // Merge portal invoices with NetSuite-imported history (customer_invoices), normalized
   // to the portal invoice shape. History is read-only; status 'void' maps to 'cancelled'
@@ -186,6 +207,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const items=safeItems(so);
     const jobs=safeJobs(so);
     const totalQty=items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((s,v)=>s+v,0),0);
+    const saleTotal=so.total>0?so.total:calcOrderTotals(so,cc?.tax_rate||0).grand;
     const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
     return<div className="mp-detail">
       <div className="mp-detail-header">
@@ -199,9 +221,13 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <div className="mp-info-item"><div className="mp-info-label">Rep</div><div className="mp-info-val">{repName(cc?.primary_rep_id||so.created_by)}</div></div>
           <div className="mp-info-item"><div className="mp-info-label">Due Date</div><div className="mp-info-val" style={daysOut!=null&&daysOut<=3?{color:'#dc2626',fontWeight:700}:{}}>{fmtDate(so.expected_date)}{daysOut!=null?` (${daysOut}d)`:'  '}</div></div>
           <div className="mp-info-item"><div className="mp-info-label">Created</div><div className="mp-info-val">{fmtDate(so.created_at)}</div></div>
+          <div className="mp-info-item"><div className="mp-info-label">Total Sale</div><div className="mp-info-val" style={{fontSize:18,fontWeight:800,color:'#16a34a'}}>{fmtMoney(saleTotal)}</div></div>
         </div>
         {so.memo&&<div className="mp-memo">{so.memo}</div>}
         <div style={{display:'flex',gap:8,marginTop:12,marginBottom:4}}>
+          {onSaveSO&&<button onClick={()=>startAddToSO(so)} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:13,border:'none',cursor:'pointer',minHeight:44}}>
+            <MIcon name="plus" size={16}/> Add Items
+          </button>}
           <button onClick={()=>duplicateToEstimate(so,'so')} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#f1f5f9',color:'#1e293b',borderRadius:10,fontWeight:700,fontSize:13,border:'1px solid #e2e8f0',cursor:'pointer',minHeight:44}}>
             <MIcon name="file" size={16}/> Duplicate as Estimate
           </button>
@@ -209,17 +235,28 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         <div className="mp-section-title">Items ({items.length}) — {totalQty} pcs</div>
         {items.map((it,idx)=>{
           const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+          const sell=+it.unit_sell||+it.unit_price||0;
+          const decos=it.decorations||[];
           return<div key={idx} className="mp-item-card">
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
               <div><div style={{fontWeight:700,fontSize:14}}>{it.name||it.sku}</div>
               <div style={{fontSize:12,color:'#64748b'}}>{it.sku}{it.color?' · '+it.color:''}{it.brand?' · '+it.brand:''}</div></div>
-              <div style={{textAlign:'right'}}><div style={{fontWeight:700,fontSize:14}}>{qty} pcs</div></div>
+              <div style={{textAlign:'right'}}><div style={{fontWeight:700,fontSize:14}}>{qty} pcs</div>
+              {sell>0&&<div style={{fontSize:12,color:'#16a34a',fontWeight:700,marginTop:2}}>{fmtMoney(qty*sell)}</div>}</div>
             </div>
             <div className="mp-size-row">
               {Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>
                 <div key={sz} className="mp-size-chip"><span className="mp-size-label">{sz}</span><span className="mp-size-qty">{v}</span></div>
               )}
             </div>
+            {decos.length>0&&<div style={{display:'flex',gap:4,marginTop:8,flexWrap:'wrap'}}>
+              {decos.map((d,di)=>{
+                const dk=DECO_KINDS.find(x=>x.k===d.kind);
+                let lbl=dk?.label||d.kind;
+                if(d.kind==='art'){const af=(so.art_files||[]).find(a=>a.id===d.art_file_id);if(af?.name)lbl=af.name;}
+                return<span key={di} style={{fontSize:10,fontWeight:700,padding:'2px 6px',borderRadius:6,background:(dk?.color||'#64748b')+'20',color:dk?.color||'#64748b'}}>{d.position?d.position+' · ':''}{lbl}</span>;
+              })}
+            </div>}
           </div>})}
         {jobs.length>0&&<>
           <div className="mp-section-title">Jobs ({jobs.length})</div>
@@ -333,18 +370,6 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           {cc.phone&&<a href={'tel:'+cc.phone} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#16a34a',color:'white',borderRadius:10,fontWeight:700,fontSize:13,textDecoration:'none',border:'none',cursor:'pointer'}}><MIcon name="phone" size={16}/> Call</a>}
         </div>
         {cc.notes&&<div className="mp-memo">{typeof cc.notes==='string'?cc.notes:JSON.stringify(cc.notes)}</div>}
-        {(()=>{const lib=custArtLib(cc.id);if(!lib.length)return null;
-          return<>
-            <div className="mp-section-title">Decorations ({lib.length})</div>
-            {lib.map((a,i)=><div key={a.id+'_'+i} className="mp-list-card" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <div style={{minWidth:0}}>
-                <div style={{fontWeight:700,fontSize:13,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.name}</div>
-                <div style={{fontSize:11,color:'#64748b',textTransform:'capitalize'}}>{(a.deco_type||'').replace('_',' ')||'—'}{a.ink_colors?' · '+a.ink_colors.split('\n').filter(l=>l.trim()).length+' colors':''}</div>
-              </div>
-              <span style={{fontSize:10,color:'#94a3b8',flexShrink:0,marginLeft:8}}>{a._src}</span>
-            </div>)}
-          </>;
-        })()}
         {custSOs.length>0&&<>
           <div className="mp-section-title">Recent Orders</div>
           {custSOs.slice(0,5).map(so=><div key={so.id} className="mp-list-card" onClick={()=>setDetail({type:'order',data:so})}>
@@ -393,6 +418,11 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <div className="mp-info-item"><div className="mp-info-label">Due Date</div><div className="mp-info-val">{fmtDate(inv.due_date)}</div></div>
           <div className="mp-info-item"><div className="mp-info-label">Created</div><div className="mp-info-val">{fmtDate(inv.created_at)}</div></div>
         </div>
+        {!inv._hist&&<div style={{display:'flex',gap:8,marginTop:12,marginBottom:4}}>
+          <button onClick={()=>setSendInvModal(inv)} style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'12px 16px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:14,border:'none',cursor:'pointer',minHeight:44}}>
+            <MIcon name="mail" size={16}/> Send Invoice
+          </button>
+        </div>}
         {inv.so_id&&<div className="mp-list-card" onClick={()=>{const so=sos.find(s=>s.id===inv.so_id);if(so)setDetail({type:'order',data:so})}}>
           <div style={{fontSize:12,color:'#64748b'}}>Linked Order</div>
           <div style={{fontWeight:700,color:'#1e40af'}}>{inv.so_id}</div>
@@ -442,7 +472,6 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
 
   // ─── DECORATION CONSTANTS ───
   const POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
-  const DECO_KINDS=[{k:'art',label:'Art / Print',color:'#3b82f6'},{k:'numbers',label:'Numbers',color:'#22c55e'},{k:'names',label:'Names',color:'#f59e0b'},{k:'outside_deco',label:'Outside Deco',color:'#7c3aed'}];
   const NUM_METHODS=[{k:'heat_transfer',l:'Heat Transfer'},{k:'embroidery',l:'Embroidery'},{k:'screen_print',l:'Screen Print'}];
   const OUTSIDE_TYPES=[{k:'embroidery',l:'Embroidery'},{k:'screen_print',l:'Screen Print'},{k:'dtf',l:'DTF'},{k:'heat_transfer',l:'Heat Transfer'},{k:'sublimation',l:'Sublimation'},{k:'vinyl',l:'Vinyl'}];
 
@@ -535,13 +564,38 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const cc=newEst.customer_id?custObj(newEst.customer_id):null;
     const mk=cc?.catalog_markup||1.65;
     const au=p.brand==='Adidas'||p.brand==='Under Armour'||p.brand==='New Balance';
-    const repCost=p.is_clearance&&p.clearance_cost!=null?p.clearance_cost:p.nsa_cost;
-    const sell=au?rQ(p.retail_price*(1-auTierDisc(cc?.adidas_ua_tier||'B',p.pricing_group))):rQ(repCost*mk);
-    const item={product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:repCost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...(p.available_sizes||['S','M','L','XL','2XL'])],sizes:{},decorations:[]};
+    const retail=+p.retail_price||0;
+    const repCost=+(p.is_clearance&&p.clearance_cost!=null?p.clearance_cost:p.nsa_cost)||0;
+    const sell=au?rQ(retail*(1-auTierDisc(cc?.adidas_ua_tier||'B',p.pricing_group))):rQ(repCost*mk);
+    const item={product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:repCost,retail_price:retail,unit_sell:sell,available_sizes:[...(p.available_sizes||['S','M','L','XL','2XL'])],sizes:{},decorations:[]};
     setNewEst(e=>({...e,items:[...e.items,item]}));
-    setNewEstProdQ('');
+    setNewEstProdQ('');setCatResults(null);
     setNewEstEditItem(newEst.items.length); // open size editor for new item
     setNewEstStep('sizes');
+  };
+  // ─── ADD ITEMS TO AN EXISTING SALES ORDER ───
+  // Reuses the estimate item/size/decoration builder, seeded to append onto a saved SO. New items are
+  // collected in a scratch draft (so existing SO items / pick / PO data are never touched) and appended on save.
+  const startAddToSO=(so)=>{
+    setNewEst({customer_id:so.customer_id,memo:'',items:[],art_files:JSON.parse(JSON.stringify(so.art_files||[])),_soId:so.id});
+    setNewEstStep('items');setNewEstProdQ('');setCatResults(null);setNewEstEditItem(null);
+  };
+  const saveAddToSO=()=>{
+    if(!newEst||!onSaveSO)return;
+    const so=sos.find(s=>s.id===newEst._soId);
+    if(!so){setNewEst(null);return;}
+    const newItems=(newEst.items||[]).filter(it=>Object.values(it.sizes||{}).reduce((s,v)=>s+(+v||0),0)>0);
+    if(newItems.length===0){setNewEst(null);return;}
+    // Merge any customer logos the existing-art decorations cloned into the draft so pricing/render can resolve them.
+    const mergedArt=[...(so.art_files||[])];
+    (newEst.art_files||[]).forEach(a=>{if(!mergedArt.some(x=>x.id===a.id))mergedArt.push(a)});
+    const cc=so.customer_id?custObj(so.customer_id):null;
+    const updated={...so,art_files:mergedArt,items:[...(so.items||[]),...newItems],updated_at:new Date().toLocaleString()};
+    updated.total=calcOrderTotals(updated,cc?.tax_rate||0).grand;
+    const saved=onSaveSO(updated);
+    setNewEst(null);
+    if(nf)nf(newItems.length+' item'+(newItems.length>1?'s':'')+' added to '+so.id);
+    setDetail({type:'order',data:saved&&saved.id?saved:updated});
   };
   const saveNewEstimate=()=>{
     if(!newEst||!onSaveEstimate)return;
@@ -586,19 +640,22 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     // Step 2: Memo + items list
     if(newEstStep==='details'||newEstStep==='items'){
       const cc=newEst.customer_id?custObj(newEst.customer_id):null;
+      const soMode=!!newEst._soId;
       const s=newEstProdQ.toLowerCase();
-      const prodMatches=s.length>=2?prod.filter(p=>(p.sku+' '+p.name+' '+(p.brand||'')+' '+(p.color||'')).toLowerCase().includes(s)).slice(0,15):[];
+      const localMatches=s.length>=2?prod.filter(p=>(p.sku+' '+p.name+' '+(p.brand||'')+' '+(p.color||'')).toLowerCase().includes(s)).slice(0,15):[];
+      const prodMatches=catResults!==null?catResults:localMatches; // server catalog results when available, else local
+      const onSave=soMode?saveAddToSO:saveNewEstimate;
       return<div className="mp-detail">
         <div className="mp-detail-header">
-          <button className="mp-back-btn" onClick={()=>{if(newEst.items.length===0)setNewEstStep('customer');else if(!window.confirm('Discard this estimate?'))return;else setNewEst(null)}}><MIcon name="back" size={22}/></button>
-          <div style={{flex:1}}><div className="mp-detail-id">New Estimate</div><div className="mp-detail-sub">{cc?.name||'No Customer'}</div></div>
-          {newEst.items.length>0&&<button style={{background:'#16a34a',color:'white',border:'none',borderRadius:8,padding:'8px 16px',fontWeight:700,fontSize:13,cursor:'pointer'}} onClick={saveNewEstimate}>Save</button>}
+          <button className="mp-back-btn" onClick={()=>{if(soMode){if(newEst.items.length>0&&!window.confirm('Discard added items?'))return;setNewEst(null)}else if(newEst.items.length===0)setNewEstStep('customer');else if(!window.confirm('Discard this estimate?'))return;else setNewEst(null)}}><MIcon name="back" size={22}/></button>
+          <div style={{flex:1}}><div className="mp-detail-id">{soMode?'Add Items':'New Estimate'}</div><div className="mp-detail-sub">{soMode?newEst._soId:(cc?.name||'No Customer')}</div></div>
+          {newEst.items.length>0&&<button style={{background:'#16a34a',color:'white',border:'none',borderRadius:8,padding:'8px 16px',fontWeight:700,fontSize:13,cursor:'pointer'}} onClick={onSave}>Save</button>}
         </div>
         <div className="mp-detail-body">
-          <div style={{marginBottom:12}}>
+          {!soMode&&<div style={{marginBottom:12}}>
             <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:4}}>Memo / Description</div>
             <input value={newEst.memo} onChange={e=>setNewEst(x=>({...x,memo:e.target.value}))} placeholder="e.g. Fall season jerseys" className="mp-search-input" style={{background:'white',border:'1px solid #e2e8f0',borderRadius:8,padding:'10px 12px',width:'100%',boxSizing:'border-box',fontSize:16}}/>
-          </div>
+          </div>}
           {/* Live total & margin */}
           {newEst.items.length>0&&(()=>{const m=estMath(newEst);const marginColor=m.margin>=0.45?'#16a34a':m.margin>=0.3?'#d97706':'#dc2626';
             return<div style={{background:'#0f172a',borderRadius:12,padding:'12px 14px',marginBottom:12,color:'white'}}>
@@ -637,14 +694,14 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                 </div>
               </div>})}
           </>}
-          {/* Add product search */}
+          {/* Add product search — full catalog lookup when wired, else local inventory */}
           <div className="mp-section-title" style={{marginTop:16}}>Add Product</div>
           <div className="mp-search-inline">
             <MIcon name="search" size={16}/>
-            <input placeholder="Search products by name, SKU..." value={newEstProdQ} onChange={e=>{setNewEstProdQ(e.target.value);setNewEstStep('items')}} className="mp-search-input"/>
-            {newEstProdQ&&<button onClick={()=>setNewEstProdQ('')} className="mp-clear-btn"><MIcon name="x" size={14}/></button>}
+            <input placeholder="Search catalog by name, SKU..." value={newEstProdQ} onChange={e=>{setNewEstProdQ(e.target.value);setNewEstStep('items')}} className="mp-search-input"/>
+            {newEstProdQ&&<button onClick={()=>{setNewEstProdQ('');setCatResults(null)}} className="mp-clear-btn"><MIcon name="x" size={14}/></button>}
           </div>
-          {prodMatches.map(p=><div key={p.id} className="mp-list-card" onClick={()=>addItemToEst(p)}>
+          {prodMatches.map((p,pi)=><div key={(p.id||p.sku||'p')+'_'+pi} className="mp-list-card" onClick={()=>addItemToEst(p)}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontWeight:700,fontSize:13}}>{p.name}</div>
@@ -653,7 +710,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
               <div style={{fontSize:12,fontWeight:700,color:'#16a34a',flexShrink:0}}>{fmtMoney(p.retail_price)}</div>
             </div>
           </div>)}
-          {newEstProdQ.length>=2&&prodMatches.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:16,fontSize:13}}>No products found</div>}
+          {catLoading&&prodMatches.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:16,fontSize:13}}>Searching catalog…</div>}
+          {!catLoading&&newEstProdQ.length>=2&&prodMatches.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:16,fontSize:13}}>No products found</div>}
         </div>
       </div>;
     }
@@ -1665,7 +1723,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const estUrl=window.location.origin+'/?estimate='+est.id;
     const copyLink=()=>{navigator.clipboard.writeText(estUrl).then(()=>{if(nf)nf('Link copied to clipboard');setSendEstModal(null)}).catch(()=>{window.prompt('Copy this link:',estUrl);setSendEstModal(null)})};
     const emailEst=()=>{
-      const acct=(cc?.contacts||[]).find(c=>c.role==='Coach')||(cc?.contacts||[])[0];
+      const acct=(cc?.contacts||[]).find(c=>c.role==='Coach')||(cc?.contacts||[]).find(c=>c.role==='Billing')||(cc?.contacts||[])[0];
       const toEmail=acct?.email||cc?.email||'';
       const subject='Estimate '+est.id+(est.memo?' — '+est.memo:'');
       const body='Hi '+(acct?.name||cc?.name||'')+',\n\nPlease review your estimate: '+estUrl+'\n\nThank you,\nNSA Team';
@@ -1678,12 +1736,47 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         <div style={{fontSize:16,fontWeight:800,color:'#0f172a',marginBottom:4}}>Send {est.id}</div>
         <div style={{fontSize:13,color:'#64748b',marginBottom:16}}>{cc?.name||'No customer'}{est.memo?' — '+est.memo:''}</div>
         <button onClick={emailEst} style={{width:'100%',display:'flex',alignItems:'center',gap:10,padding:'14px 16px',background:'#1e40af',color:'white',border:'none',borderRadius:12,fontSize:15,fontWeight:700,cursor:'pointer',marginBottom:10,minHeight:48}}>
-          <MIcon name="mail" size={20}/> Email PDF
+          <MIcon name="mail" size={20}/> Email Estimate
         </button>
         <button onClick={copyLink} style={{width:'100%',display:'flex',alignItems:'center',gap:10,padding:'14px 16px',background:'#f1f5f9',color:'#1e293b',border:'1px solid #e2e8f0',borderRadius:12,fontSize:15,fontWeight:700,cursor:'pointer',marginBottom:10,minHeight:48}}>
           <MIcon name="file" size={20}/> Copy Shareable Link
         </button>
         <button onClick={()=>setSendEstModal(null)} style={{width:'100%',padding:'12px',background:'none',border:'none',color:'#64748b',fontSize:14,fontWeight:600,cursor:'pointer'}}>Cancel</button>
+      </div>
+    </div>;
+  };
+
+  const renderSendInvModal=()=>{
+    if(!sendInvModal)return null;
+    const inv=sendInvModal;
+    const cc=custObj(inv.customer_id);
+    const bal=(+inv.total||0)-(+inv.amount_paid||0);
+    // Coaches portal shows the customer's open invoices + Pay Now; fall back to a plain summary if no portal tag.
+    const portalUrl=cc?.alpha_tag?window.location.origin+'/?portal='+cc.alpha_tag:'';
+    const copyLink=()=>{if(!portalUrl)return;navigator.clipboard.writeText(portalUrl).then(()=>{if(nf)nf('Link copied to clipboard');setSendInvModal(null)}).catch(()=>{window.prompt('Copy this link:',portalUrl);setSendInvModal(null)})};
+    const emailInv=()=>{
+      const acct=(cc?.contacts||[]).find(c=>c.role==='Coach')||(cc?.contacts||[]).find(c=>c.role==='Billing')||(cc?.contacts||[])[0];
+      const toEmail=acct?.email||cc?.email||'';
+      const subject='Invoice '+inv.id+' — '+(cc?.name||'');
+      const body='Hi '+(acct?.name||cc?.name||'')+',\n\nPlease find invoice '+inv.id+' for '+fmtMoney(inv.total)
+        +(bal>0?' (balance due '+fmtMoney(bal)+')':'')+'.'
+        +(portalUrl?'\n\nView and pay online: '+portalUrl:'')
+        +'\n\nThank you,\nNSA Team';
+      window.location.href='mailto:'+toEmail+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
+      setSendInvModal(null);
+    };
+    return<div style={{position:'fixed',inset:0,zIndex:110,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'flex-end',justifyContent:'center'}} onClick={()=>setSendInvModal(null)}>
+      <div style={{background:'white',borderRadius:'16px 16px 0 0',padding:'20px 16px',width:'100%',maxWidth:480}} onClick={e=>e.stopPropagation()}>
+        <div style={{width:40,height:4,borderRadius:2,background:'#cbd5e1',margin:'0 auto 16px'}}/>
+        <div style={{fontSize:16,fontWeight:800,color:'#0f172a',marginBottom:4}}>Send {inv.id}</div>
+        <div style={{fontSize:13,color:'#64748b',marginBottom:16}}>{cc?.name||'No customer'} · {fmtMoney(inv.total)}{bal>0?' · '+fmtMoney(bal)+' due':''}</div>
+        <button onClick={emailInv} style={{width:'100%',display:'flex',alignItems:'center',gap:10,padding:'14px 16px',background:'#1e40af',color:'white',border:'none',borderRadius:12,fontSize:15,fontWeight:700,cursor:'pointer',marginBottom:10,minHeight:48}}>
+          <MIcon name="mail" size={20}/> Email Invoice
+        </button>
+        {portalUrl&&<button onClick={copyLink} style={{width:'100%',display:'flex',alignItems:'center',gap:10,padding:'14px 16px',background:'#f1f5f9',color:'#1e293b',border:'1px solid #e2e8f0',borderRadius:12,fontSize:15,fontWeight:700,cursor:'pointer',marginBottom:10,minHeight:48}}>
+          <MIcon name="file" size={20}/> Copy Pay Link
+        </button>}
+        <button onClick={()=>setSendInvModal(null)} style={{width:'100%',padding:'12px',background:'none',border:'none',color:'#64748b',fontSize:14,fontWeight:600,cursor:'pointer'}}>Cancel</button>
       </div>
     </div>;
   };
@@ -1832,6 +1925,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     {renderDrawer()}
     {showSearch&&renderSearch()}
     {renderSendEstModal()}
+    {renderSendInvModal()}
     {renderComposeSheet()}
     {/* Header */}
     <div className="mp-header">
