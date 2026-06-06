@@ -26,17 +26,59 @@ Keep `adidas_inventory` current from Adidas Cowork. One row per SKU+size:
 > (`matCall`), the Supabase client, and the batch/queue runner. Only the
 > size-label mapping and the per-SKU processing below change.
 
-## Size labels (resolve before processing)
-- Each numeric size code (e.g. `220`) maps to a label (e.g. `XL`) per the SKU's
-  conversionId.
-- Build each conversionId's code→label map from the **FULL size run** — the union
-  of codes across all SKUs on that conversionId (or a SKU known to carry the full
-  run). A map learned from one short-run SKU leaves longer SKUs' extended/tall
-  sizes as raw codes (`240`).
-- **Persist** the maps to a file in this skill folder (e.g. `size-maps.json`) and
-  reuse across runs; only re-learn when a new conversionId appears.
-- Apply `label = map[conversionId][code]`. If a code has no label, log it — never
-  silently write a numeric code for apparel. (True footwear SKUs are numeric — fine.)
+## Size labels — build COMPLETE maps (resolve before processing)
+
+Each numeric size code (e.g. `220`) maps to a label (`XL`) per the SKU's
+conversionId, read from the product page's SizeBar
+(`[id^="CartModule-SizeBar-SizeTranslation-<cid>-"]`). Two failure modes to avoid:
+slow pages timing out the loader, and a single example SKU not exposing the
+conversionId's full size run (extended/tall sizes then fall back to raw codes
+like `240`).
+
+**(1) In the catalog pre-filter, record the FULL expected code set + every example per conversionId:**
+```js
+window._convExpected = window._convExpected || {}; // cid -> Set of size codes (UNION across all SKUs)
+window._convExamples = window._convExamples || {}; // cid -> [{sku, n}]
+(data.products || []).forEach(p => {
+  const cid = p.conversionId; if (!cid) return;
+  const codes = (p.sizes || []).map(String);
+  (window._convExpected[cid] = window._convExpected[cid] || new Set());
+  codes.forEach(c => window._convExpected[cid].add(c));
+  (window._convExamples[cid] = window._convExamples[cid] || []).push({ sku: p.articleNumber, n: codes.length });
+});
+Object.values(window._convExamples).forEach(a => a.sort((x,y)=>y.n-x.n)); // richest first
+```
+
+**(2) Loader tolerance:** in the iframe loader use a **90s** timeout (slow pages)
+and run **2 at a time** (not 5 — less renderer contention).
+
+**(3) Learn each conversionId to completeness (union across examples) + one retry:**
+```js
+window._mapGaps = {};
+window._learnConvMap = async function(cid, expected, examples){
+  window._sizeMaps[cid] = window._sizeMaps[cid] || {};
+  for (const ex of examples) {
+    if ([...expected].every(c => c in window._sizeMaps[cid])) break;   // already complete
+    let r = await window._loadSizeMap(ex.sku, cid);
+    if (r.c === 0) r = await window._loadSizeMap(ex.sku, cid);         // retry transient timeout
+    if (r.c > 0) Object.assign(window._sizeMaps[cid], r.m);            // MERGE, never overwrite
+  }
+  const missing = [...expected].filter(c => !(c in window._sizeMaps[cid]));
+  if (missing.length) window._mapGaps[cid] = missing;
+};
+const cids = Object.keys(window._convExpected).filter(cid => cid !== '51' && !window._footwearCids?.has(cid));
+for (let i=0;i<cids.length;i+=2) await Promise.all(
+  cids.slice(i,i+2).map(cid => window._learnConvMap(cid, window._convExpected[cid], window._convExamples[cid] || [])));
+```
+
+- **Persist** `window._sizeMaps` to `size-maps.json` after learning; reuse across
+  runs (merge, never overwrite); re-learn a conversionId whenever a richer example
+  appears.
+- **Footwear:** exclude footwear conversionIds (`window._footwearCids`, derived
+  from the catalog division/product type) — their numeric codes are real labels.
+- Apply `label = map[conversionId][code]`; report `window._mapGaps` (apparel codes
+  still unmapped — **goal: empty**). Never silently accept a numeric apparel code
+  as final.
 
 ## Per SKU
 ```js
