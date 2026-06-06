@@ -31,15 +31,15 @@ const nameWithBrand=(name,brand)=>{
 
 // Adidas B2B restock helpers (display-only). When an Adidas size is out of
 // stock its synced inventory may carry a future_delivery_date (the "Re-stock in
-// …" date the vendor portal shows on the size's calendar). We surface it so the
-// rep sees when replenishment comes: the date for a real delay, and a small
-// yellow ✓ when stock lands within RESTOCK_SOON_DAYS (arriving so soon a date
-// isn't worth flagging). The actual date is always in the cell's hover tooltip.
-// Past/stale dates are ignored.
+// …" date the vendor portal shows on the size's calendar) and a
+// future_delivery_qty (how many are coming). The B2B size cell always shows the
+// quantity, tinted amber when it's out of stock but has a known refill; hovering
+// the cell reveals the refill date and incoming amount. RESTOCK_SOON_DAYS marks
+// a refill as "within a week" in that tooltip and keeps it out of the
+// Backordered summary strip. Past/stale dates are ignored.
 const RESTOCK_SOON_DAYS=7;
 const _restockDate=(s)=>{if(!s)return null;let str=String(s).trim();if(!str)return null;if(/^\d{4}-\d{2}-\d{2}$/.test(str))str+='T00:00';const d=new Date(str);return isNaN(d.getTime())?null:d;};
 const restockDaysOut=(s)=>{const d=_restockDate(s);return d?Math.round((d.getTime()-Date.now())/86400000):null;};
-const fmtRestockShort=(s)=>{const d=_restockDate(s);return d?((d.getMonth()+1)+'/'+d.getDate()):String(s||'');};
 const fmtRestockLong=(s)=>{const d=_restockDate(s);return d?d.toLocaleDateString('en-US',{month:'short',day:'numeric'}):String(s||'');};
 
 function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,allInvoices,batchPOs,onBatchPO,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
@@ -2843,7 +2843,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:((idx+'_'+sz) in sizingDraft?(parseInt(sizingDraft[idx+'_'+sz])||0):(item.sizes[sz]||0))>0?'#0f172a':'#cbd5e1'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
               {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:9,color:'#a78bfa',minHeight:12}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#16a34a':vi.source==='sm'?'#0891b2':'#7c3aed';const sizeNext=vi.source==='rs'?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'?(vStk>0?'✓ In Stock':'✗ Out'):(vi.source==='rs'&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=vi.source==='mt'?('Momentec: '+(vStk>0?'In stock':'Out of stock')+' — Momentec does not publish exact quantities'):(srcName+' stock: '+vStk.toLocaleString()+((vi.source==='rs'&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):''));return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:vStk<=0?(vi.source==='rs'&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
-              {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:9,color:'#059669',minHeight:12}}>...</div>:null;const cell=ai.sizes?.[sz];const b2bStk=cell?.qty;if(b2bStk==null)return<div style={{fontSize:9,color:'transparent',minHeight:12}}>&nbsp;</div>;const need=item.sizes[sz]||0;const color=b2bStk<=0?'#dc2626':(need>0&&b2bStk<need)?'#ca8a04':'#166534';const bd=cell.breakdown||[];const bdTip=(bd.length>1||(bd[0]&&bd[0].code!==sz))?' ['+bd.map(b=>b.code+': '+b.qty.toLocaleString()).join(', ')+']':'';const dOut=cell.futureDate?restockDaysOut(cell.futureDate):null;const restockSoon=b2bStk<=0&&dOut!=null&&dOut>=0&&dOut<=RESTOCK_SOON_DAYS;const restockLate=b2bStk<=0&&dOut!=null&&dOut>RESTOCK_SOON_DAYS;const futQty=cell.futureQty;const restockTip=(restockSoon||restockLate)?' • restock '+fmtRestockLong(cell.futureDate)+(futQty?' ('+Number(futQty).toLocaleString()+' arriving)':'')+(restockSoon?' — within a week':''):'';return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:restockLate?'#b45309':restockSoon?'#ca8a04':color}} title={'Adidas B2B stock: '+b2bStk.toLocaleString()+bdTip+restockTip}>{restockLate?'↻'+fmtRestockShort(cell.futureDate):restockSoon?'✓':b2bStk.toLocaleString()}</div>})()}
+              {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:9,color:'#059669',minHeight:12}}>...</div>:null;const cell=ai.sizes?.[sz];const b2bStk=cell?.qty;if(b2bStk==null)return<div style={{fontSize:9,color:'transparent',minHeight:12}}>&nbsp;</div>;const need=item.sizes[sz]||0;const bd=cell.breakdown||[];const bdTip=(bd.length>1||(bd[0]&&bd[0].code!==sz))?' ['+bd.map(b=>b.code+': '+b.qty.toLocaleString()).join(', ')+']':'';const dOut=cell.futureDate?restockDaysOut(cell.futureDate):null;const hasRestock=b2bStk<=0&&dOut!=null&&dOut>=0;const futQty=cell.futureQty;const color=b2bStk>0?((need>0&&b2bStk<need)?'#ca8a04':'#166534'):(hasRestock?'#ca8a04':'#dc2626');const tip='Adidas B2B — '+sz+': '+b2bStk.toLocaleString()+(b2bStk>0?' in stock':' — out of stock')+bdTip+(hasRestock?'\nRefill '+fmtRestockLong(cell.futureDate)+(futQty?' — '+Number(futQty).toLocaleString()+' arriving':'')+(dOut<=RESTOCK_SOON_DAYS?' (within a week)':''):'');return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:color,cursor:hasRestock?'help':'default'}} title={tip}>{b2bStk.toLocaleString()}</div>})()}
               {(()=>{
                 // Per-size cost upcharge ($X.XX under larger sizes). Prefer the item's
                 // stored _sizeCosts; fall back to the live vendor pricing map so the
@@ -2902,16 +2902,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
           </div>
         </div>})()}
-        {/* Adidas B2B replenishment — list restock dates for the sizes this line
-            is ordering that are out of stock now but arriving later. Display-only
-            (does not change the order); a restock within RESTOCK_SOON_DAYS shows
-            as a yellow ✓ in the grid above and isn't repeated here. */}
+        {/* Adidas B2B replenishment — list refill dates/amounts for the sizes
+            this line is ordering that are out of stock now but arriving later.
+            Display-only; a restock within RESTOCK_SOON_DAYS is left to the cell
+            hover above and isn't repeated here. */}
         {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading||!ai.sizes)return null;
-          const delayed=szs.filter(sz=>(item.sizes[sz]||0)>0).map(sz=>{const c=ai.sizes[sz];return c?{sz,qty:c.qty||0,date:c.futureDate}:null}).filter(c=>c&&c.qty<=0&&c.date&&restockDaysOut(c.date)>RESTOCK_SOON_DAYS);
+          const delayed=szs.filter(sz=>(item.sizes[sz]||0)>0).map(sz=>{const c=ai.sizes[sz];return c?{sz,qty:c.qty||0,date:c.futureDate,futQty:c.futureQty}:null}).filter(c=>c&&c.qty<=0&&c.date&&restockDaysOut(c.date)>RESTOCK_SOON_DAYS);
           if(delayed.length===0)return null;
           return<div style={{padding:'2px 18px 8px 18px'}}><div style={{display:'inline-flex',alignItems:'center',gap:8,flexWrap:'wrap',fontSize:11,color:'#92400e',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:'5px 10px'}}>
             <span style={{fontWeight:700}}>↻ Backordered (Adidas B2B):</span>
-            {delayed.map(c=><span key={c.sz} style={{whiteSpace:'nowrap'}}><b>{c.sz}</b> arrives {fmtRestockLong(c.date)}</span>)}
+            {delayed.map(c=><span key={c.sz} style={{whiteSpace:'nowrap'}}><b>{c.sz}</b> arrives {fmtRestockLong(c.date)}{c.futQty?' ('+Number(c.futQty).toLocaleString()+' coming)':''}</span>)}
             <span style={{fontSize:10,color:'#b45309',fontStyle:'italic'}}>out of stock now</span>
           </div></div>})()}
         {/* FULFILLMENT LINES */}
