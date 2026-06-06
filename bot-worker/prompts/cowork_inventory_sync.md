@@ -1,47 +1,56 @@
 # Cowork Inventory Sync — task instructions
 
 Goal: keep the Supabase `adidas_inventory` table current from Adidas Cowork.
-For every Adidas SKU, record one row per size with:
+One row per SKU+size with:
 
 - `stock_qty` — units available now
-- `future_delivery_date` — the "Re-stock in <date>" date shown when a size is out of stock
-- `future_delivery_qty` — how many units arrive on that restock date  ← (this is the new part)
-- `last_synced` — now
+- `future_delivery_date` — the restock date for an out-of-stock size
+- `future_delivery_qty` — units arriving on that restock date  ← (this is the new part)
+- `last_synced`, `source`
 
-The portal display and the order screen already read all of these; the only
-gap today is `future_delivery_qty` (it's been coming back empty).
+The portal display and the order screen already read all of these; the only gap
+today is `future_delivery_qty` (it's always written null).
+
+## How the data is fetched (API — no UI clicking)
+
+The sync calls the Adidas materials/information API once per SKU. The default
+response is keyed by the earliest delivery date (today) and gives, per size code:
+
+- `sizes[code].inventory` → current stock → `stock_qty`
+- `sizes[code].restockDate` → the "Re-stock in <date>" date → `future_delivery_date`
+
+The **incoming quantity** for a future date comes from the *same* call with the
+request-body parameter `requestedDeliveryDates: ['YYYY-MM-DD']`. The response's
+`sizes[code].inventory` is then the quantity projected to be available by that
+date. (Confirmed: KV4646 size S returns 0 today and **41** for `2026-07-19`.)
+No calendar clicking required — it's a read-only projection.
 
 ## Per SKU
 
-1. Open the product's size table. For each size, read the current quantity → `stock_qty`.
-2. For each **out-of-stock** size (qty 0) that shows **"Re-stock in <date>"** on its
-   calendar icon, record that date → `future_delivery_date`.
-3. Capture the incoming amount → `future_delivery_qty`. **Try the cheap way first:**
-   a. **Click** the size's calendar icon (the one that shows "Re-stock in <date>" on hover).
-      If the box that opens also shows a quantity (e.g. "240 units", "240 available"),
-      record it. Done — no delivery-date change needed.
-   b. **Only if no quantity is shown there:** group the out-of-stock sizes by restock date.
-      For each distinct restock date, change the size table's **Delivery Date** (click the
-      date chip → pick that date in the calendar) and wait for the grid to reload — each
-      grouped size's number is now the amount arriving on that date → `future_delivery_qty`.
-      Reset the Delivery Date to the default when done.
-4. Upsert the row(s) to `adidas_inventory`
-   (`sku, size, stock_qty, future_delivery_date, future_delivery_qty, last_synced`),
-   on conflict (`sku,size`).
+1. Normal call (default date). For each size: `stock_qty = sizes[code].inventory`;
+   if it's out of stock, `future_delivery_date = sizes[code].restockDate`.
+2. Collect the **distinct** restock dates among the **out-of-stock** sizes.
+3. For each distinct restock date, make one extra call with
+   `requestedDeliveryDates: [thatDate]`. For each out-of-stock size whose
+   `restockDate` equals that date, read its `inventory` from this response →
+   `future_delivery_qty`.
+4. Upsert per size: `sku, size, stock_qty, future_delivery_date,
+   future_delivery_qty, last_synced, source` (on conflict `sku,size`).
 
 ## Efficiency / safety
 
-- Skip sizes that are **in stock** — they need no date or quantity.
-- Skip products with **no out-of-stock sizes** entirely (no date changes at all).
-- Change the Delivery Date **once per distinct restock date**, never per size.
-- Prefer step 3a; step 3b is the fallback and the only "slow" path.
-- **Never** change ordered quantities and **never** place/submit an order. Reset the
-  Delivery Date to the default before leaving each product.
-- If one size fails, leave its `future_delivery_qty` null and keep going — a missing
-  amount just shows the date without "· N coming"; it never blocks the sync.
+- Only **out-of-stock** sizes need the extra calls; in-stock sizes already have
+  their quantity from step 1.
+- Dedupe restock dates → ~1–2 extra calls per out-of-stock product. Products with
+  nothing out of stock make **no** extra calls.
+- Never place or submit an order — `requestedDeliveryDates` is a read-only
+  projection only.
+- If an extra call fails, leave that size's `future_delivery_qty` null and keep
+  going — the order screen just shows the date without "· N coming"; it never
+  blocks the sync.
 
 ## Notes
 
 - Dates normalize to `YYYY-MM-DD` (e.g. "Re-stock in Jun 9, 2026" → `2026-06-09`).
-- This file documents the inventory-sync task only. Adding items to a cart is a
+- This documents the inventory-sync task only. Adding items to a cart is a
   separate task (see `add_to_cart.md`).
