@@ -7884,11 +7884,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(!nj)return;
           const repFiles=g.files||[];
           const artIds=nj._art_ids||[nj.art_file_id].filter(Boolean);
-          // Artist path: if the art was previously approved (reused art sent back for a new mock),
-          // un-approve it so its status matches the new art request instead of still reading "approved".
-          if(activateAll&&g.artist&&!g.skipArtist&&!g.quickMock){
-            artIds.forEach(aid=>{updArtFiles=updArtFiles.map(a=>a.id===aid&&a.status==='approved'?{...a,status:'waiting_for_art'}:a)});
-          }
           if(repFiles.length>0){
             artIds.forEach(aid=>{
               updArtFiles=updArtFiles.map(a=>a.id===aid?{...a,sample_art:[...(a.sample_art||[]),...repFiles]}:a);
@@ -8032,6 +8027,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // routing to the artist. Picking applies it (CW inherited) and closes the wizard.
               const _gi2=g.items.filter(it=>!it._excluded);
               if(!_gi2.length)return null;
+              // Only offer the reuse-pick when resolving Check Mock on an ALREADY-complete job
+              // (scoped via _existingJobId). Applying a mock here closes the wizard without running
+              // the release, so for a brand-new / needs-art group that would lose the job — in that
+              // case the rep uses Send to Artist / Skip / Quick Mock below and the release handles it.
+              const _scopedJob=g._existingJobId?safeJobs(o).find(jj=>jj.id===g._existingJobId):null;
+              if(!_scopedJob||!(_scopedJob.art_status==='art_complete'||PROD_FILES_STATUSES.includes(_scopedJob.art_status)))return null;
               const _aids=[...new Set(_gi2.map(it=>it.art_file_id).filter(Boolean))];
               const _pseudo={_art_ids:_aids,art_file_id:_aids[0],items:_gi2.map(it=>({item_idx:it.item_idx,sku:it.sku,color:it.color,name:it.name}))};
               const _rc=garmentsNeedingMockCheck(_pseudo,o,priorMocks);
