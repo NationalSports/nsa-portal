@@ -54,6 +54,47 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       selJobIdRef.current=null;
     }
   },[selJob]);
+  // Fetch prior approved mocks for the selected job's art from the customer's OTHER orders.
+  // Reused art usually arrives as an empty clone while the real mocks live on the prior order,
+  // whose art_files aren't always hydrated in memory — so query so_art_files directly and key
+  // the result by name||deco_type for the Check Mock panel.
+  React.useEffect(()=>{
+    if(selJob==null||!supabase){setPriorMocks({});return}
+    const _jobs=safeJobs(o);const jb=_jobs[selJob]||(selJobIdRef.current&&_jobs.find(x=>x.id===selJobIdRef.current));
+    if(!jb){setPriorMocks({});return}
+    const aids=new Set(((jb._art_ids&&jb._art_ids.length?jb._art_ids:[jb.art_file_id])||[]).filter(Boolean));
+    (jb.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')aids.add(d.art_file_id)})});
+    const names=[...new Set([...aids].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean).map(a=>(a.name||'').trim()).filter(Boolean))];
+    if(!names.length){setPriorMocks({});return}
+    const pc=allCustomers.find(c=>c.id===o.customer_id);
+    const custIds=pc?.parent_id?[pc.parent_id,o.customer_id]:[o.customer_id];
+    const soIds=(allOrders||[]).filter(s=>custIds.includes(s.customer_id)&&s.id!==o.id).map(s=>s.id);
+    if(!soIds.length){setPriorMocks({});return}
+    let cancelled=false;
+    (async()=>{
+      try{
+        const namesLower=new Set(names.map(n=>n.toLowerCase()));
+        const{data,error}=await supabase.from('so_art_files').select('so_id,name,deco_type,item_mockups').in('so_id',soIds);
+        if(error||cancelled||!Array.isArray(data))return;
+        const _u=f=>typeof f==='string'?f:(f?.url||'');
+        const map={};const seen={};
+        data.forEach(row=>{
+          if(!namesLower.has((row.name||'').trim().toLowerCase()))return;
+          const im=(row.item_mockups&&typeof row.item_mockups==='object')?row.item_mockups:{};
+          const key=(row.name||'').trim().toLowerCase()+'||'+(row.deco_type||'');
+          if(!map[key]){map[key]=[];seen[key]=new Set()}
+          const sset=seen[key];
+          Object.entries(im).forEach(([k,arr])=>{
+            const files=[];(Array.isArray(arr)?arr:[]).forEach(f=>{const u=_u(f);if(u&&!sset.has(u)){sset.add(u);files.push({url:u,name:(typeof f==='object'&&f?.name)||''})}});
+            if(files.length)map[key].push({from:k,files});
+          });
+        });
+        if(!cancelled)setPriorMocks(map);
+      }catch(e){if(!cancelled)setPriorMocks({})}
+    })();
+    return()=>{cancelled=true};
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[selJob,o.id,o.customer_id,supabase,(allOrders||[]).length]);
   const[mentionQuery,setMentionQuery]=useState(null);const[mentionIdx,setMentionIdx]=useState(0);const mentionRef=useRef(null);const msgInputRef=useRef(null);
     // Sync from external updates (e.g., coach approval from portal) — merge job art_status + art_files
     // Use a ref to track the last order we synced from, to avoid re-triggering on format differences
@@ -127,6 +168,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
   const[artRevisionNote,setArtRevisionNote]=useState('');
   const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
+  const[priorMocks,setPriorMocks]=useState({});// {name||deco_type:[{from,files:[{url,name}]}]} — approved mocks for reused art, fetched from the customer's OTHER orders (their art isn't always hydrated in memory). Drives the Check Mock panel.
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
   const[expandedArt,setExpandedArt]=useState({});// Track expanded art groups by id (default collapsed)
   const[collapsedNames,setCollapsedNames]=useState({});// Track collapsed Names decos by `idx-di`
@@ -6583,14 +6625,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const allSizes=[...new Set(itemDetails.flatMap(gi=>Object.keys(gi.sizes||{})))];
         const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
         allSizes.sort((a,b)=>(sizeOrder.indexOf(a)===-1?99:sizeOrder.indexOf(a))-(sizeOrder.indexOf(b)===-1?99:sizeOrder.indexOf(b)));
-        // Cross-order/library art sources for the Check Mock panel: the artwork reused on this
-        // job often has its approved mocks on a PRIOR order (or the customer library), not on
-        // this SO's copy. Scope to the customer family, mirroring the Previous Artwork picker.
-        const _mockParentC=allCustomers.find(c=>c.id===o.customer_id);
-        const _mockCustIds=_mockParentC?.parent_id?[_mockParentC.parent_id,o.customer_id]:[o.customer_id];
-        const _mockSources=[];
-        _mockCustIds.forEach(cid=>{const c=allCustomers.find(cc=>cc.id===cid);if((c?.art_files||[]).length)_mockSources.push({id:'Library',art_files:c.art_files})});
-        (artSourceOrders||allOrders||[]).forEach(s2=>{if(s2.id!==o.id&&_mockCustIds.includes(s2.customer_id)&&(s2.art_files||[]).length)_mockSources.push({id:s2.id,art_files:s2.art_files})});
 
         return<><div>
           <button className="btn btn-sm btn-secondary" onClick={()=>setSelJob(null)} style={{marginBottom:12}}><Icon name="back" size={12}/> All Jobs</button>
@@ -6604,7 +6638,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {(()=>{const fSt=artF?(artF.status==='uploaded'?'needs_approval':artF.status||'waiting_for_art'):null;return fSt?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>:null})()}
                   {(()=>{const _is=jItemStatus(j);return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[_is]?.bg,color:SC[_is]?.c}}>{itemLabels[_is]}</span>})()}
                   <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}}>{prodLabels[j.prod_status]}</span>
-                  {(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&garmentsNeedingMockCheck(j,o,_mockSources).length>0&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm the mock matches this garment's color/style">🔍 Check Mock</span>}
+                  {(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&garmentsNeedingMockCheck(j,o,priorMocks).length>0&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm the mock matches this garment's color/style">🔍 Check Mock</span>}
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:6,marginTop:4,flexWrap:'wrap'}}>
                   {editingJobName===j.id?<input type="text" autoFocus className="form-input" defaultValue={j.art_name||''}
@@ -6745,7 +6779,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
             {/* ── Check Mock: previously-approved art reused on a different color/style ── */}
             {(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&(()=>{
-              const _chk=garmentsNeedingMockCheck(j,o,_mockSources);if(_chk.length===0)return null;
+              const _chk=garmentsNeedingMockCheck(j,o,priorMocks);if(_chk.length===0)return null;
               // The CW for a mock is inherited from the item it's applied to: prefer the item's
               // decoration color_way_id when it's valid for this art, else match the art's CWs by
               // garment color (light → "on white", dark → "on dark"), else the first CW.

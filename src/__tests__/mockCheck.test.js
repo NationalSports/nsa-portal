@@ -135,18 +135,18 @@ describe('garmentsNeedingMockCheck', () => {
     expect(res[0].artFiles[0].art_file_id).toBe('af-b');
   });
 
-  test('surfaces prior mocks from the SAME artwork on another order when this copy is empty', () => {
-    // This order's copy has no mocks; the approved per-garment mocks live on a prior order.
+  test('surfaces prior mocks supplied for the SAME artwork (name||deco) when this copy is empty', () => {
+    // This order's copy has no mocks; the approved per-garment mocks were fetched from a prior
+    // order and passed in keyed by name||deco_type.
     const here = { id: 'af-here', name: 'Dolphin Football 1 Color', deco_type: 'screen_print', item_mockups: {} };
-    const prior = {
-      id: 'af-prior', name: 'Dolphin Football 1 Color', deco_type: 'screen_print',
-      item_mockups: {
-        'KB0116|White (KB0116)': [{ url: 'http://x/white.png' }],
-        'JW6602|Black (JW6602)': [{ url: 'http://x/black.png' }],
-      },
-    };
     const { job, so } = makeCase(here); // job item A2009|White referencing af-here
-    const res = garmentsNeedingMockCheck(job, so, [{ id: 'SO-1072', art_files: [prior] }]);
+    const priorByArtKey = {
+      'dolphin football 1 color||screen_print': [
+        { from: 'KB0116|White (KB0116)', files: [{ url: 'http://x/white.png' }] },
+        { from: 'JW6602|Black (JW6602)', files: [{ url: 'http://x/black.png' }] },
+      ],
+    };
+    const res = garmentsNeedingMockCheck(job, so, priorByArtKey);
     expect(res).toHaveLength(1);
     expect(res[0].artFiles).toHaveLength(1);
     expect(res[0].artFiles[0].art_file_id).toBe('af-here'); // mocks get applied to THIS order's art file
@@ -154,19 +154,17 @@ describe('garmentsNeedingMockCheck', () => {
       .toEqual(['JW6602|Black (JW6602)', 'KB0116|White (KB0116)']);
   });
 
-  test('does not cross-match a different artwork name or deco type', () => {
+  test('ignores prior mocks keyed under a different artwork (name||deco)', () => {
     const here = { id: 'af-here', name: 'Dolphin Football 1 Color', deco_type: 'screen_print', item_mockups: {} };
-    const other = { id: 'af-other', name: 'Totally Different Logo', deco_type: 'screen_print', item_mockups: { 'KB0116|White': [{ url: 'http://x/w.png' }] } };
     const { job, so } = makeCase(here);
-    expect(garmentsNeedingMockCheck(job, so, [{ id: 'SO-9', art_files: [other] }])).toEqual([]);
+    const priorByArtKey = { 'totally different logo||screen_print': [{ from: 'KB0116|White', files: [{ url: 'http://x/w.png' }] }] };
+    expect(garmentsNeedingMockCheck(job, so, priorByArtKey)).toEqual([]);
   });
 
-  test('does NOT flag legacy art whose only prior mock is a shared mockup_files bucket', () => {
+  test('does NOT flag when there are no prior per-garment mocks for this artwork', () => {
     const here = { id: 'af-here', name: 'Dolphin Football 1 Color', deco_type: 'screen_print', item_mockups: {} };
-    const prior = { id: 'af-prior', name: 'Dolphin Football 1 Color', deco_type: 'screen_print', item_mockups: {}, mockup_files: [{ url: 'http://x/gen.png' }] };
     const { job, so } = makeCase(here);
-    // Only per-garment (item_mockups) prior mocks are offered, not shared buckets — so nothing to check.
-    expect(garmentsNeedingMockCheck(job, so, [{ id: 'SO-1072', art_files: [prior] }])).toEqual([]);
+    expect(garmentsNeedingMockCheck(job, so, {})).toEqual([]);
   });
 
   test('treats a color-way sub-key (sku|color|cwid) as this garment having its own mock', () => {

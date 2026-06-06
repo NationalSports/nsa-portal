@@ -170,15 +170,16 @@ export const skusMissingMockups = (job, so) => {
 // garment therefore has no mock of its own — but the art still carries the approved mock
 // from the original garment. This finds those garments so the rep can eyeball the prior
 // mock and either keep it for this garment or send for a new one (no need for the artist
-// if the mock already works). Prior mocks are found both on this order's own art file AND on
-// the SAME artwork reused from the customer's other orders / library (passed as `artSources`),
-// since a clone often arrives with empty mocks while the approved mocks live on the prior order.
+// if the mock already works). Prior mocks come from this order's own art file (other-garment
+// entries) plus `priorByArtKey` — a map of `name||deco_type` -> [{ from, files }] the caller
+// builds from the SAME artwork on the customer's OTHER orders. A reused art often arrives as an
+// empty clone while the approved mocks live on the prior order (whose art isn't always hydrated
+// in memory), so the caller fetches those from the DB and passes them in here.
 // Returns one entry per garment, each listing the art file(s) still needing a mock, with the
 // prior mocks grouped by where they were approved — so the rep can scroll through and pick:
 //   [{ sku, color, name,
 //      artFiles:[{ art_file_id, art_name, groups:[{ from, files:[{url,name}] }] }] }]
-// artSources: optional [{ id, art_files:[...] }] (other orders + library, same customer family).
-export const garmentsNeedingMockCheck = (job, so, artSources = []) => {
+export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
   const items = safeArr(job?.items);
   if (items.length === 0) return [];
   const allArt = safeArt(so);
@@ -230,19 +231,12 @@ export const garmentsNeedingMockCheck = (job, so, artSources = []) => {
       // mockup_files bucket is intentionally NOT offered here — a legacy single-design mock
       // already displays on the job, so surfacing it would just be noise.
       Object.entries(im).forEach(([k, arr]) => { if (!isOwnKey(k)) addGroup(k, arr); });
-      // (b) The SAME artwork reused from a prior order / the customer library — the approved
-      // per-garment mocks usually live there, not on this order's (often empty) copy.
-      const aName = (a?.name || '').trim().toLowerCase();
-      const aDeco = a?.deco_type || '';
-      if (aName) {
-        (artSources || []).forEach(src => {
-          safeArr(src?.art_files).forEach(sa => {
-            if (!sa || sa.id === a.id || sa.archived) return;
-            if ((sa.name || '').trim().toLowerCase() !== aName || (sa.deco_type || '') !== aDeco) return;
-            Object.entries(sa.item_mockups || {}).forEach(([k, arr]) => addGroup(k, arr));
-          });
-        });
-      }
+      // (b) The SAME artwork reused from a prior order — the approved per-garment mocks usually
+      // live there, not on this order's (often empty) copy. Supplied by the caller as a map of
+      // `name||deco_type` -> [{ from, files }], fetched from the DB since other orders' art is
+      // not always hydrated in memory.
+      const _ak = (a?.name || '').trim().toLowerCase() + '||' + (a?.deco_type || '');
+      ((priorByArtKey && priorByArtKey[_ak]) || []).forEach(grp => addGroup(grp.from, grp.files));
       if (groups.length === 0) return;
       groups.sort((x, y) => y.files.length - x.files.length);
       artFiles.push({ art_file_id: a.id, art_name: a.name || a.title || '', groups });
