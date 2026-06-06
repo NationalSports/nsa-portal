@@ -170,9 +170,12 @@ export const skusMissingMockups = (job, so) => {
 // garment therefore has no mock of its own — but the art still carries the approved mock
 // from the original garment. This finds those garments so the rep can eyeball the prior
 // mock and either keep it for this garment or send for a new one (no need for the artist
-// if the mock already works). Returns
-//   [{ sku, color, name, from, art_file_id, mocks:[{url,name}], otherCount }]
-// where `mocks` are the prior mock files from the single most-relevant source garment.
+// if the mock already works). Returns one entry per garment, each listing the art file(s)
+// on that garment that still need a mock, with the prior mocks grouped by the garment they
+// were approved on — so the rep can scroll through and pick which one (and a garment
+// decorated by two designs shows both):
+//   [{ sku, color, name,
+//      artFiles:[{ art_file_id, art_name, groups:[{ from, files:[{url,name}] }] }] }]
 export const garmentsNeedingMockCheck = (job, so) => {
   const items = safeArr(job?.items);
   if (items.length === 0) return [];
@@ -197,31 +200,37 @@ export const garmentsNeedingMockCheck = (job, so) => {
     const useIds = decoArtIds.length > 0
       ? decoArtIds
       : (job?.art_file_id && jobArtIds.has(job.art_file_id) ? [job.art_file_id] : []);
-    const artFiles = useIds.map(aid => allArt.find(a => a?.id === aid)).filter(Boolean);
-    if (artFiles.length === 0) return;
+    const artFilesForItem = useIds.map(aid => allArt.find(a => a?.id === aid)).filter(Boolean);
+    if (artFilesForItem.length === 0) return;
     const mColor = gi?.color || it?.color || '';
     const mockKey = (gi?.sku || '') + '|' + mColor;
     // A key belongs to THIS garment if it's the exact sku|color, the legacy bare sku, or a
     // color-way sub-key of this garment (sku|color|cwid).
     const isOwnKey = k => k === mockKey || k === gi?.sku || k.startsWith(mockKey + '|');
-    const hasOwn = artFiles.some(a =>
-      Object.entries(a?.item_mockups || {}).some(([k, v]) => isOwnKey(k) && safeArr(v).length > 0));
-    if (hasOwn) return;
-    // Collect prior mockups grouped by the (other) garment key they were approved on.
-    const groups = [];
-    artFiles.forEach(a => {
-      Object.entries(a?.item_mockups || {}).forEach(([k, arr]) => {
+    // Each art file on the garment that lacks its OWN mock but carries prior mocks from other
+    // garments needs a check — list them all, so a garment decorated by two designs (e.g. a
+    // front and a back) shows both.
+    const artFiles = [];
+    artFilesForItem.forEach(a => {
+      const im = a?.item_mockups || {};
+      const hasOwn = Object.entries(im).some(([k, v]) => isOwnKey(k) && safeArr(v).length > 0);
+      if (hasOwn) return;
+      // Group this art file's prior mocks by the garment key they were approved on, so the
+      // rep can pick which source mock to reuse (each group keeps its front/back together).
+      const groups = [];
+      Object.entries(im).forEach(([k, arr]) => {
         if (isOwnKey(k) || !safeArr(arr).length) return;
         const seen = new Set();
         const files = [];
         arr.forEach(f => { const u = urlOf(f); if (u && !seen.has(u)) { seen.add(u); files.push({ url: u, name: (typeof f === 'object' && f?.name) || '' }); } });
-        if (files.length) groups.push({ from: k, art_file_id: a.id, files });
+        if (files.length) groups.push({ from: k, files });
       });
+      if (groups.length === 0) return;
+      groups.sort((x, y) => y.files.length - x.files.length);
+      artFiles.push({ art_file_id: a.id, art_name: a.name || a.title || '', groups });
     });
-    if (groups.length === 0) return;
-    groups.sort((a, b) => b.files.length - a.files.length);
-    const best = groups[0];
-    out.push({ sku: gi?.sku || '', color: mColor, name: gi?.name || it?.name || '', from: best.from, art_file_id: best.art_file_id, mocks: best.files, otherCount: groups.length - 1 });
+    if (artFiles.length === 0) return;
+    out.push({ sku: gi?.sku || '', color: mColor, name: gi?.name || it?.name || '', artFiles });
   });
   return out;
 };

@@ -61,14 +61,12 @@ describe('garmentsNeedingMockCheck', () => {
     const { job, so } = makeCase(art);
     const res = garmentsNeedingMockCheck(job, so);
     expect(res).toHaveLength(1);
-    expect(res[0]).toMatchObject({
-      sku: 'A2009',
-      color: 'White',
-      from: 'TEE-1|Royal',
-      art_file_id: 'af1',
-      otherCount: 0,
-    });
-    expect(res[0].mocks).toEqual([{ url: 'http://x/royal.png', name: 'royal' }]);
+    expect(res[0]).toMatchObject({ sku: 'A2009', color: 'White' });
+    expect(res[0].artFiles).toHaveLength(1);
+    expect(res[0].artFiles[0].art_file_id).toBe('af1');
+    expect(res[0].artFiles[0].groups).toHaveLength(1);
+    expect(res[0].artFiles[0].groups[0]).toMatchObject({ from: 'TEE-1|Royal' });
+    expect(res[0].artFiles[0].groups[0].files).toEqual([{ url: 'http://x/royal.png', name: 'royal' }]);
   });
 
   test('does NOT flag when the garment already has its own mock', () => {
@@ -89,7 +87,7 @@ describe('garmentsNeedingMockCheck', () => {
     expect(garmentsNeedingMockCheck(job, so)).toEqual([]);
   });
 
-  test('picks the source garment with the most mock files and counts the rest', () => {
+  test('groups prior mocks by source garment, most files first, so the rep can pick which one', () => {
     const art = {
       id: 'af5',
       item_mockups: {
@@ -100,9 +98,41 @@ describe('garmentsNeedingMockCheck', () => {
     const { job, so } = makeCase(art);
     const res = garmentsNeedingMockCheck(job, so);
     expect(res).toHaveLength(1);
-    expect(res[0].from).toBe('TEE-1|Royal');
-    expect(res[0].mocks).toHaveLength(2);
-    expect(res[0].otherCount).toBe(1);
+    const groups = res[0].artFiles[0].groups;
+    expect(groups).toHaveLength(2);
+    expect(groups[0].from).toBe('TEE-1|Royal');
+    expect(groups[0].files).toHaveLength(2);
+    expect(groups[1].from).toBe('TEE-2|Navy');
+    expect(groups[1].files).toHaveLength(1);
+  });
+
+  test('shows BOTH art files when a garment is decorated by two designs', () => {
+    const front = { id: 'af-f', name: 'Front Crest', item_mockups: { 'TEE-1|Royal': [{ url: 'http://x/f.png' }] } };
+    const back = { id: 'af-b', name: 'Back Logo', item_mockups: { 'TEE-1|Royal': [{ url: 'http://x/b.png' }] } };
+    const so = {
+      items: [{ sku: 'A2009', color: 'White', decorations: [{ kind: 'art', art_file_id: 'af-f' }, { kind: 'art', art_file_id: 'af-b' }] }],
+      art_files: [front, back],
+    };
+    const job = { _art_ids: ['af-f', 'af-b'], art_file_id: 'af-f', items: [{ item_idx: 0, sku: 'A2009', color: 'White' }] };
+    const res = garmentsNeedingMockCheck(job, so);
+    expect(res).toHaveLength(1);
+    expect(res[0].artFiles).toHaveLength(2);
+    expect(res[0].artFiles.map(a => a.art_file_id).sort()).toEqual(['af-b', 'af-f']);
+    expect(res[0].artFiles.map(a => a.art_name).sort()).toEqual(['Back Logo', 'Front Crest']);
+  });
+
+  test('flags only the un-mocked design when one of two art files already has its own mock', () => {
+    const front = { id: 'af-f', name: 'Front', item_mockups: { 'A2009|White': [{ url: 'http://x/f-white.png' }] } };
+    const back = { id: 'af-b', name: 'Back', item_mockups: { 'TEE-1|Royal': [{ url: 'http://x/b-royal.png' }] } };
+    const so = {
+      items: [{ sku: 'A2009', color: 'White', decorations: [{ kind: 'art', art_file_id: 'af-f' }, { kind: 'art', art_file_id: 'af-b' }] }],
+      art_files: [front, back],
+    };
+    const job = { _art_ids: ['af-f', 'af-b'], art_file_id: 'af-f', items: [{ item_idx: 0, sku: 'A2009', color: 'White' }] };
+    const res = garmentsNeedingMockCheck(job, so);
+    expect(res).toHaveLength(1);
+    expect(res[0].artFiles).toHaveLength(1);
+    expect(res[0].artFiles[0].art_file_id).toBe('af-b');
   });
 
   test('treats a color-way sub-key (sku|color|cwid) as this garment having its own mock', () => {

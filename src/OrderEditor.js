@@ -6738,32 +6738,39 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {/* ── Check Mock: previously-approved art reused on a different color/style ── */}
             {(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&(()=>{
               const _chk=garmentsNeedingMockCheck(j,o);if(_chk.length===0)return null;
-              // Keep the prior mock for this garment: copy its file(s) under this garment's
-              // sku|color key so it counts as mocked. The rep can then send it to the coach
-              // (set Art → Waiting Approval) without involving the artist.
-              const _useMock=g=>{const key=g.sku+'|'+(g.color||'');const updArt=safeArt(o).map(a=>{if(a.id!==g.art_file_id)return a;const cur=(a.item_mockups||{})[key]||[];const have=new Set(cur.map(f=>typeof f==='string'?f:f?.url));const add=g.mocks.filter(m=>!have.has(m.url)).map(m=>({url:m.url,name:m.name||('mock-'+g.sku),art_file_id:a.id,sku:g.sku,_reused_from:g.from}));if(!add.length)return a;return{...a,item_mockups:{...(a.item_mockups||{}),[key]:[...cur,...add]}}});const updated={...o,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Mock kept for '+(g.color?g.color+' ':'')+g.sku+' — set Art to “Waiting Approval” to send it to the coach')};
+              // Keep a prior mock for this garment: copy the chosen source mock's file(s) under
+              // this garment's sku|color key (on the art file that owns it) so it counts as
+              // mocked. The rep can then send it to the coach (Art → Waiting Approval), no artist.
+              const _useMock=(g,artId,files)=>{const key=g.sku+'|'+(g.color||'');const updArt=safeArt(o).map(a=>{if(a.id!==artId)return a;const cur=(a.item_mockups||{})[key]||[];const have=new Set(cur.map(f=>typeof f==='string'?f:f?.url));const add=files.filter(m=>!have.has(m.url)).map(m=>({url:m.url,name:m.name||('mock-'+g.sku),art_file_id:a.id,sku:g.sku}));if(!add.length)return a;return{...a,item_mockups:{...(a.item_mockups||{}),[key]:[...cur,...add]}}});const updated={...o,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Mock kept for '+(g.color?g.color+' ':'')+g.sku+' — set Art to “Waiting Approval” to send it to the coach')};
               // Send to the artist for a fresh mock: recall the job to Needs Art and open the
               // existing Request Art modal (mirrors the "Update Art" flow).
-              const _toArtist=g=>{const artIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:''}:jj);const updArt=safeArt(o).map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art'}:a);const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'New mock needed for '+(g.color?g.color+' ':'')+g.sku+' — art was approved on '+(g.from||'').replace('|',' '),files:[]})};
+              const _toArtist=g=>{const artIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:''}:jj);const updArt=safeArt(o).map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art'}:a);const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'New mock needed for '+(g.color?g.color+' ':'')+g.sku,files:[]})};
               const _buildMock=()=>{(j.items||[]).forEach(gItem=>{const it=safeItems(o)[gItem.item_idx];if(it)fetchVendorImage(it.sku,it.color,it.vendor_id,it)});setEditMockJob(j)};
               return<div style={{margin:'0 20px 8px',padding:'14px 16px',background:'linear-gradient(135deg,#fef9c3,#fffbeb)',border:'2px solid #fde047',borderRadius:10}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
                   <span style={{fontSize:18}}>🔍</span>
                   <span style={{fontWeight:800,fontSize:15,color:'#854d0e'}}>Check Mock — art reused on a different garment</span>
                 </div>
-                <div style={{fontSize:12,color:'#92400e',marginBottom:6}}>This art was approved on a different color/style, so there's no mock for the garment{_chk.length>1?'s':''} below yet. Confirm the existing mock still works, or get a new one.</div>
-                {_chk.map((g,ci)=><div key={ci} style={{display:'flex',gap:12,alignItems:'flex-start',padding:'10px 0',borderTop:ci>0?'1px solid #fde68a':'none'}}>
-                  <div style={{display:'flex',gap:6,flexShrink:0}}>
-                    {g.mocks.slice(0,2).map((pm,pi)=>_isImgUrl(pm.url)?<img key={pi} src={pm.url} alt="" style={{width:80,height:96,objectFit:'contain',borderRadius:6,border:'1px solid #fcd34d',background:'white',cursor:'pointer'}} onClick={()=>openFile(pm.url)}/>:<div key={pi} onClick={()=>openFile(pm.url)} style={{width:80,height:96,borderRadius:6,border:'1px solid #fcd34d',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,cursor:'pointer'}}>📄</div>)}
-                  </div>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{g.color?g.color+' · ':''}{g.sku}{g.name?<span style={{fontWeight:500,color:'#64748b'}}> · {g.name}</span>:null}</div>
-                    <div style={{fontSize:11,color:'#92400e',margin:'2px 0 8px'}}>Mock approved on <b>{(g.from||'').replace('|',' · ')||'a different garment'}</b>. Does it work for {g.color||g.sku}?{g.otherCount>0?<span style={{color:'#a16207'}}> (+{g.otherCount} other prior mock{g.otherCount>1?'s':''})</span>:null}</div>
-                    <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                      <button className="btn btn-sm" style={{fontSize:11,background:'#16a34a',color:'white',border:'none',fontWeight:700,padding:'5px 12px'}} onClick={()=>_useMock(g)}>✓ Mock works — use for {g.color||g.sku}</button>
-                      <button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'white',border:'none',fontWeight:700,padding:'5px 12px'}} onClick={_buildMock}>✏️ Build a new mock</button>
-                      <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'5px 12px'}} onClick={()=>_toArtist(g)}>🎨 Send to artist</button>
+                <div style={{fontSize:12,color:'#92400e',marginBottom:6}}>This art was approved on a different color/style, so there's no mock for the garment{_chk.length>1?'s':''} below yet. Pick the prior mock that works, or get a new one.</div>
+                {_chk.map((g,ci)=><div key={ci} style={{padding:'10px 0',borderTop:ci>0?'1px solid #fde68a':'none'}}>
+                  <div style={{fontSize:13,fontWeight:700,color:'#0f172a',marginBottom:6}}>{g.color?g.color+' · ':''}{g.sku}{g.name?<span style={{fontWeight:500,color:'#64748b'}}> · {g.name}</span>:null}</div>
+                  {g.artFiles.map((af2,ai)=><div key={ai} style={{marginBottom:8}}>
+                    {g.artFiles.length>1&&<div style={{fontSize:11,fontWeight:700,color:'#7c3aed',marginBottom:4}}>{af2.art_name||('Artwork '+(ai+1))}</div>}
+                    <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+                      {af2.groups.map((grp,gpi)=><div key={gpi} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 8px',background:'white',border:'1px solid #fde68a',borderRadius:8}}>
+                        <div style={{display:'flex',gap:4}}>
+                          {grp.files.slice(0,3).map((pm,pi)=>_isImgUrl(pm.url)?<img key={pi} src={pm.url} alt="" title="Click to enlarge" style={{width:64,height:78,objectFit:'contain',borderRadius:5,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(pm.url)}/>:<div key={pi} onClick={()=>openFile(pm.url)} style={{width:64,height:78,borderRadius:5,border:'1px solid #e2e8f0',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,cursor:'pointer'}}>📄</div>)}
+                        </div>
+                        <div style={{minWidth:120}}>
+                          <div style={{fontSize:10,color:'#92400e'}}>Approved on<br/><b>{(grp.from||'').replace('|',' · ')}</b>{grp.files.length>1?' · '+grp.files.length+' images':''}</div>
+                          <button className="btn btn-sm" style={{fontSize:10,background:'#16a34a',color:'white',border:'none',fontWeight:700,padding:'4px 10px',marginTop:4}} onClick={()=>_useMock(g,af2.art_file_id,grp.files)}>✓ Use for {g.color||g.sku}</button>
+                        </div>
+                      </div>)}
                     </div>
+                  </div>)}
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:4}}>
+                    <button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'white',border:'none',fontWeight:700,padding:'5px 12px'}} onClick={_buildMock}>✏️ Build a new mock</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'5px 12px'}} onClick={()=>_toArtist(g)}>🎨 Send to artist</button>
                   </div>
                 </div>)}
               </div>;
