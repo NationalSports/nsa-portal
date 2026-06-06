@@ -30,6 +30,7 @@ const fmtDate=(d)=>{if(!d)return'—';try{return new Date(d).toLocaleDateString(
 const fmtMoney=(n)=>{if(n==null)return'$0';return'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})};
 const timeAgo=(d)=>{if(!d)return'';const ms=Date.now()-new Date(d).getTime();const m=ms/60000;if(m<1)return'just now';if(m<60)return Math.floor(m)+'m';if(m<1440)return Math.floor(m/60)+'h';return Math.floor(m/1440)+'d'};
 const PROD_LABELS={ready:'Ready',hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped',draft:'Draft'};
+const DECO_KINDS=[{k:'art',label:'Art / Print',color:'#3b82f6'},{k:'numbers',label:'Numbers',color:'#22c55e'},{k:'names',label:'Names',color:'#f59e0b'},{k:'outside_deco',label:'Outside Deco',color:'#7c3aed'}];
 const prodLabel=(j)=>PROD_LABELS[j.prod_status]||(j.prod_status||'pending').replace(/_/g,' ');
 
 // ═══════════════════════════════════════════
@@ -186,6 +187,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const items=safeItems(so);
     const jobs=safeJobs(so);
     const totalQty=items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((s,v)=>s+v,0),0);
+    const saleTotal=so.total>0?so.total:calcOrderTotals(so,cc?.tax_rate||0).grand;
     const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
     return<div className="mp-detail">
       <div className="mp-detail-header">
@@ -199,6 +201,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <div className="mp-info-item"><div className="mp-info-label">Rep</div><div className="mp-info-val">{repName(cc?.primary_rep_id||so.created_by)}</div></div>
           <div className="mp-info-item"><div className="mp-info-label">Due Date</div><div className="mp-info-val" style={daysOut!=null&&daysOut<=3?{color:'#dc2626',fontWeight:700}:{}}>{fmtDate(so.expected_date)}{daysOut!=null?` (${daysOut}d)`:'  '}</div></div>
           <div className="mp-info-item"><div className="mp-info-label">Created</div><div className="mp-info-val">{fmtDate(so.created_at)}</div></div>
+          <div className="mp-info-item"><div className="mp-info-label">Total Sale</div><div className="mp-info-val" style={{fontSize:18,fontWeight:800,color:'#16a34a'}}>{fmtMoney(saleTotal)}</div></div>
         </div>
         {so.memo&&<div className="mp-memo">{so.memo}</div>}
         <div style={{display:'flex',gap:8,marginTop:12,marginBottom:4}}>
@@ -209,17 +212,28 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         <div className="mp-section-title">Items ({items.length}) — {totalQty} pcs</div>
         {items.map((it,idx)=>{
           const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+          const sell=+it.unit_sell||+it.unit_price||0;
+          const decos=it.decorations||[];
           return<div key={idx} className="mp-item-card">
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
               <div><div style={{fontWeight:700,fontSize:14}}>{it.name||it.sku}</div>
               <div style={{fontSize:12,color:'#64748b'}}>{it.sku}{it.color?' · '+it.color:''}{it.brand?' · '+it.brand:''}</div></div>
-              <div style={{textAlign:'right'}}><div style={{fontWeight:700,fontSize:14}}>{qty} pcs</div></div>
+              <div style={{textAlign:'right'}}><div style={{fontWeight:700,fontSize:14}}>{qty} pcs</div>
+              {sell>0&&<div style={{fontSize:12,color:'#16a34a',fontWeight:700,marginTop:2}}>{fmtMoney(qty*sell)}</div>}</div>
             </div>
             <div className="mp-size-row">
               {Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>
                 <div key={sz} className="mp-size-chip"><span className="mp-size-label">{sz}</span><span className="mp-size-qty">{v}</span></div>
               )}
             </div>
+            {decos.length>0&&<div style={{display:'flex',gap:4,marginTop:8,flexWrap:'wrap'}}>
+              {decos.map((d,di)=>{
+                const dk=DECO_KINDS.find(x=>x.k===d.kind);
+                let lbl=dk?.label||d.kind;
+                if(d.kind==='art'){const af=(so.art_files||[]).find(a=>a.id===d.art_file_id);if(af?.name)lbl=af.name;}
+                return<span key={di} style={{fontSize:10,fontWeight:700,padding:'2px 6px',borderRadius:6,background:(dk?.color||'#64748b')+'20',color:dk?.color||'#64748b'}}>{d.position?d.position+' · ':''}{lbl}</span>;
+              })}
+            </div>}
           </div>})}
         {jobs.length>0&&<>
           <div className="mp-section-title">Jobs ({jobs.length})</div>
@@ -333,18 +347,6 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           {cc.phone&&<a href={'tel:'+cc.phone} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#16a34a',color:'white',borderRadius:10,fontWeight:700,fontSize:13,textDecoration:'none',border:'none',cursor:'pointer'}}><MIcon name="phone" size={16}/> Call</a>}
         </div>
         {cc.notes&&<div className="mp-memo">{typeof cc.notes==='string'?cc.notes:JSON.stringify(cc.notes)}</div>}
-        {(()=>{const lib=custArtLib(cc.id);if(!lib.length)return null;
-          return<>
-            <div className="mp-section-title">Decorations ({lib.length})</div>
-            {lib.map((a,i)=><div key={a.id+'_'+i} className="mp-list-card" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <div style={{minWidth:0}}>
-                <div style={{fontWeight:700,fontSize:13,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.name}</div>
-                <div style={{fontSize:11,color:'#64748b',textTransform:'capitalize'}}>{(a.deco_type||'').replace('_',' ')||'—'}{a.ink_colors?' · '+a.ink_colors.split('\n').filter(l=>l.trim()).length+' colors':''}</div>
-              </div>
-              <span style={{fontSize:10,color:'#94a3b8',flexShrink:0,marginLeft:8}}>{a._src}</span>
-            </div>)}
-          </>;
-        })()}
         {custSOs.length>0&&<>
           <div className="mp-section-title">Recent Orders</div>
           {custSOs.slice(0,5).map(so=><div key={so.id} className="mp-list-card" onClick={()=>setDetail({type:'order',data:so})}>
@@ -442,7 +444,6 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
 
   // ─── DECORATION CONSTANTS ───
   const POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
-  const DECO_KINDS=[{k:'art',label:'Art / Print',color:'#3b82f6'},{k:'numbers',label:'Numbers',color:'#22c55e'},{k:'names',label:'Names',color:'#f59e0b'},{k:'outside_deco',label:'Outside Deco',color:'#7c3aed'}];
   const NUM_METHODS=[{k:'heat_transfer',l:'Heat Transfer'},{k:'embroidery',l:'Embroidery'},{k:'screen_print',l:'Screen Print'}];
   const OUTSIDE_TYPES=[{k:'embroidery',l:'Embroidery'},{k:'screen_print',l:'Screen Print'},{k:'dtf',l:'DTF'},{k:'heat_transfer',l:'Heat Transfer'},{k:'sublimation',l:'Sublimation'},{k:'vinyl',l:'Vinyl'}];
 
