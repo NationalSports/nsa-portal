@@ -63,6 +63,17 @@ return a ~9,999,999 "unlimited" sentinel.
 - If a call fails, leave that size's `future_delivery_qty` null and continue — the
   order screen just shows the date without "· N available"; it never blocks the sync.
 
+## Size labels
+
+- Write sizes as **labels** (`S`, `M`, `2XL`, `4XL`, `XLT`…), never raw numeric
+  codes. Build each conversionId's code→label map from the **full size run** (the
+  union of codes seen across all SKUs on that conversionId, or a SKU known to
+  carry the complete run) — a map learned from one short-run SKU leaves longer
+  SKUs' extra sizes (extended/tall) as raw codes like `240`.
+- Persist the maps (localStorage/table) and reuse across runs; only re-learn when
+  a brand-new conversionId appears. (True footwear SKUs use numeric sizes
+  legitimately — leave those as-is.)
+
 ## Notes
 
 - `future_delivery_qty` is the projected available quantity for that delivery date
