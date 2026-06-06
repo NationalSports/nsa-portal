@@ -2848,6 +2848,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 // Leave size quantities blank so the user fills them in; est_qty stays
                 // as the target total and renders as a "⚠️ Sizes:" warning until filled.
               }}>+ Add Sizes</button>
+              {isAdidasItem(item)&&(()=>{const ai=adidasInv[item.sku];if(ai?.loading)return<span style={{fontSize:9,color:'#059669',marginLeft:8}}>...</span>;if(!ai?.sizes||Object.keys(ai.sizes).length===0)return null;return<button onMouseEnter={e=>{const r=e.currentTarget.getBoundingClientRect();setB2bPop({idx,top:r.bottom+6,left:Math.max(8,Math.min(r.left-40,(typeof window!=='undefined'?window.innerWidth:1280)-360)),allSizes:true})}} onMouseLeave={()=>setB2bPop(null)} style={{background:'none',border:'1px solid #6ee7b7',borderRadius:4,cursor:'help',color:'#059669',padding:'2px 8px',fontSize:9,fontWeight:700,marginLeft:8,whiteSpace:'nowrap'}}>B2B INV</button>})()}
             </>:<>
             {szs.map(sz=><div key={sz} style={{textAlign:'center',width:48}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
               <input value={sizingDraft[idx+'_'+sz]??(item.sizes[sz]||'')} onChange={e=>{const k=idx+'_'+sz;const v=e.target.value;setSizingDraft(d=>({...d,[k]:v}))}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraft))return;const v=sizingDraft[k];React.startTransition(()=>{uSz(idx,sz,v);setSizingDraft(d=>{const n={...d};delete n[k];return n})})}} placeholder="0"
@@ -2926,7 +2927,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <span style={{fontSize:10,color:'#b45309',fontStyle:'italic'}}>out of stock now</span>
           </div></div>})()}
         {/* Adidas B2B availability popover — styled grid shown when hovering a B2B cell */}
-        {b2bPop&&b2bPop.idx===idx&&isAdidasItem(item)&&(()=>{const ai=adidasInv[item.sku];if(!ai||!ai.sizes)return null;const rows=szs.filter(sz=>ai.sizes[sz]!=null);if(rows.length===0)return null;const ls=ai.lastSynced?new Date(ai.lastSynced):null;
+        {b2bPop&&b2bPop.idx===idx&&isAdidasItem(item)&&(()=>{const ai=adidasInv[item.sku];if(!ai||!ai.sizes)return null;const rows=b2bPop.allSizes?Object.keys(ai.sizes):szs.filter(sz=>ai.sizes[sz]!=null);if(rows.length===0)return null;const ls=ai.lastSynced?new Date(ai.lastSynced):null;
           return createPortal(<div style={{position:'fixed',top:b2bPop.top,left:b2bPop.left,zIndex:9999,pointerEvents:'none',background:'white',border:'1px solid #e2e8f0',borderRadius:10,boxShadow:'0 12px 32px rgba(15,23,42,0.18)',padding:'10px 12px',minWidth:250,maxWidth:360,fontSize:11,color:'#0f172a'}}>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,borderBottom:'1px solid #f1f5f9',paddingBottom:5,marginBottom:5}}>
               <span style={{fontWeight:800,fontSize:10,color:'#059669',letterSpacing:0.4}}>ADIDAS B2B AVAILABILITY</span>
