@@ -49,6 +49,17 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const timestamp = () => new Date().toISOString();
 
+// Normalize a scraped restock date ("Jun 8, 2026", "6/8/2026", "2026-06-08")
+// to a stable YYYY-MM-DD string using local date parts (no UTC shift). Falls
+// back to the raw string if it can't be parsed.
+const toISO = (s) => {
+  if (!s) return null;
+  const d = new Date(String(s).trim());
+  if (isNaN(d.getTime())) return String(s).trim();
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
 async function log(msg) {
   const ts = new Date().toLocaleString();
   console.log(`[${ts}] ${msg}`);
@@ -293,18 +304,127 @@ async function main() {
           return results;
         }, sku);
 
+        // ── RESTOCK / RE-STOCK DATES ──
+        // When a size is out of stock, Cowork shows a "Re-stock in <date>" note
+        // on that size's calendar icon (often only on hover). Capture it so the
+        // out-of-stock size carries a future_delivery_date the portal surfaces on
+        // the order. Two passes: (1) read any date already in the DOM
+        // (title/aria-label/text); (2) hover the calendar on still-missing
+        // out-of-stock sizes and read the revealed tooltip. Best-effort — any
+        // failure just leaves the date null, exactly like before.
+        let restockBySize = {};
+        try {
+          const harvest = await page.evaluate(() => {
+            const APPAREL_SIZES = new Set([
+              'XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL',
+              'LT','XLT','2XLT','3XLT','OSFA','XS/S','S/M','M/L','L/XL','XL/2XL',
+              '2XS','2XS/XS','3XS',
+            ]);
+            const RX = [
+              /([A-Z][a-z]{2,8}\.?\s+\d{1,2},?\s+\d{4})/, // Jun 8, 2026 / June 8 2026
+              /(\d{1,2}\/\d{1,2}\/\d{2,4})/,              // 6/8/2026
+              /(\d{4}-\d{2}-\d{2})/,                      // 2026-06-08
+            ];
+            const findDate = (t) => { if (!t) return null; for (const rx of RX) { const m = String(t).match(rx); if (m) return m[1].replace(/\s+/g, ' ').trim(); } return null; };
+            const looksRestock = (t) => /re-?stock|back\s*in\s*stock|expected|incoming|delivery|due|available/i.test(t || '');
+            const sizeIn = (s) => { const toks = String(s || '').replace(/[^0-9A-Za-z/]/g, ' ').trim().split(/\s+/); return toks.find((tk) => APPAREL_SIZES.has(tk)) || ''; };
+            const restock = {}; // size -> { date, qty }
+            const probes = [];  // { probe, size } — out-of-stock cells tagged for the hover pass
+
+            // (1a) Size grid as a table: size header row + quantity row beneath.
+            document.querySelectorAll('table').forEach((table) => {
+              const rows = [...table.querySelectorAll('tr')];
+              let sizeRowIdx = -1;
+              for (let i = 0; i < rows.length; i++) {
+                const cells = [...rows[i].querySelectorAll('td,th')];
+                if (cells.some((c) => APPAREL_SIZES.has((c.textContent || '').trim()))) { sizeRowIdx = i; break; }
+              }
+              if (sizeRowIdx < 0) return;
+              const sizeCells = [...rows[sizeRowIdx].querySelectorAll('td,th')];
+              const qtyCells = rows[sizeRowIdx + 1] ? [...rows[sizeRowIdx + 1].querySelectorAll('td,th')] : [];
+              sizeCells.forEach((cell, ci) => {
+                const size = sizeIn(cell.textContent) || (cell.textContent || '').trim();
+                if (!size) return;
+                const qtyCell = qtyCells[ci];
+                const qty = qtyCell ? (parseInt((qtyCell.textContent || '').replace(/[^\d-]/g, '')) || 0) : null;
+                // (1) date already in the DOM for this column?
+                let date = null, futQty = null;
+                for (const el of [cell, qtyCell].filter(Boolean)) {
+                  const texts = [el.getAttribute && el.getAttribute('title'), el.getAttribute && el.getAttribute('aria-label'), el.textContent];
+                  el.querySelectorAll && el.querySelectorAll('[title],[aria-label]').forEach((d) => texts.push(d.getAttribute('title'), d.getAttribute('aria-label')));
+                  for (const t of texts) {
+                    if (!t || !(looksRestock(t) || findDate(t))) continue;
+                    const d = findDate(t);
+                    if (d) { date = d; const qm = String(t).match(/(\d+)\s*(?:units?|pcs?|pieces?)/i); if (qm) futQty = parseInt(qm[1]); break; }
+                  }
+                  if (date) break;
+                }
+                if (date) { restock[size] = { date, qty: futQty }; return; }
+                // (2) out of stock and no date yet → tag the calendar for the hover pass
+                if (qty != null && qty <= 0) {
+                  const icon = cell.querySelector('[class*="calendar" i],[class*="cal" i],button,[role="button"],svg,img') || cell;
+                  icon.setAttribute('data-nsa-restock-probe', String(probes.length));
+                  probes.push({ probe: probes.length, size });
+                }
+              });
+            });
+
+            // (1b) Fallback: any element whose title/aria-label already carries a
+            // "Re-stock in <date>" — attach to the nearest size token above it.
+            document.querySelectorAll('[title],[aria-label]').forEach((el) => {
+              const t = (el.getAttribute('title') || '') + ' ' + (el.getAttribute('aria-label') || '');
+              const d = findDate(t);
+              if (!d || !looksRestock(t)) return;
+              let node = el, size = '';
+              for (let up = 0; up < 5 && node; up++) { size = sizeIn(node.textContent); if (size) break; node = node.parentElement; }
+              if (size && !restock[size]) restock[size] = { date: d, qty: null };
+            });
+
+            return { restock, probes };
+          });
+          restockBySize = harvest.restock || {};
+
+          // (2) Hover pass — reveal the tooltip on each tagged out-of-stock
+          // calendar and read the "Re-stock in …" date from it.
+          for (const { probe, size } of (harvest.probes || []).slice(0, 20)) {
+            if (restockBySize[size] && restockBySize[size].date) continue;
+            try {
+              const el = await page.$(`[data-nsa-restock-probe="${probe}"]`);
+              if (!el) continue;
+              await el.hover();
+              await sleep(350);
+              const found = await page.evaluate(() => {
+                const RX = [/([A-Z][a-z]{2,8}\.?\s+\d{1,2},?\s+\d{4})/, /(\d{1,2}\/\d{1,2}\/\d{2,4})/, /(\d{4}-\d{2}-\d{2})/];
+                const findDate = (t) => { if (!t) return null; for (const rx of RX) { const m = String(t).match(rx); if (m) return m[1].replace(/\s+/g, ' ').trim(); } return null; };
+                const visible = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+                const tips = [...document.querySelectorAll('[role="tooltip"],[class*="tooltip" i],[class*="popover" i],[class*="popup" i]')].filter(visible);
+                for (const e of tips) { const d = findDate(e.textContent); if (d) return d; }
+                const any = [...document.querySelectorAll('body *')].find((e) => /re-?stock/i.test(e.textContent || '') && findDate(e.textContent) && visible(e));
+                return any ? findDate(any.textContent) : null;
+              });
+              if (found) restockBySize[size] = { date: found, qty: (restockBySize[size] && restockBySize[size].qty) || null };
+            } catch { /* per-size hover failure — leave this size's date null */ }
+          }
+        } catch (e) {
+          await log(`  → ${sku}: restock-date scan skipped (${e.message})`);
+        }
+
         if (inventory.length > 0) {
+          let restockCount = 0;
           for (const item of inventory) {
+            const r = restockBySize[item.size];
+            const futDate = (r && r.date) ? toISO(r.date) : null;
+            if (futDate) restockCount++;
             allRecords.push({
               sku,
               size: item.size,
               stock_qty: item.qty,
-              future_delivery_date: item.futureDate || null,
-              future_delivery_qty: item.futureQty || null,
+              future_delivery_date: futDate,
+              future_delivery_qty: (r && r.qty) || null,
               last_synced: new Date().toISOString(),
             });
           }
-          await log(`  → ${sku}: ${inventory.length} sizes found (${inventory.map(i => i.size + ':' + i.qty).join(', ')})`);
+          await log(`  → ${sku}: ${inventory.length} sizes found (${inventory.map(i => i.size + ':' + i.qty).join(', ')})${restockCount ? ` · ${restockCount} restock date(s)` : ''}`);
           successCount++;
         } else {
           await log(`  → ${sku}: No inventory data found on page`);
@@ -360,7 +480,7 @@ main().catch(err => {
  * Then add one of these lines:
  *
  *   # Every 6 hours (recommended):
- *   0 */6 * * * cd /path/to/nsa-portal && SUPABASE_URL=https://hpslkvngulqirmbstlfx.supabase.co SUPABASE_ANON_KEY=your-key COWORK_EMAIL=your-email COWORK_PASSWORD=your-pass node scripts/adidas-cowork-sync.js >> /tmp/adidas-sync.log 2>&1
+ *   0 0,6,12,18 * * * cd /path/to/nsa-portal && SUPABASE_URL=https://hpslkvngulqirmbstlfx.supabase.co SUPABASE_ANON_KEY=your-key COWORK_EMAIL=your-email COWORK_PASSWORD=your-pass node scripts/adidas-cowork-sync.js >> /tmp/adidas-sync.log 2>&1
  *
  *   # Every morning at 7am:
  *   0 7 * * * cd /path/to/nsa-portal && ... node scripts/adidas-cowork-sync.js >> /tmp/adidas-sync.log 2>&1
@@ -369,7 +489,7 @@ main().catch(err => {
  *   0 7,13 * * * cd /path/to/nsa-portal && ... node scripts/adidas-cowork-sync.js >> /tmp/adidas-sync.log 2>&1
  *
  * Or use a .env file instead of inline vars:
- *   0 */6 * * * cd /path/to/nsa-portal/scripts && source .env && node adidas-cowork-sync.js >> /tmp/adidas-sync.log 2>&1
+ *   0 0,6,12,18 * * * cd /path/to/nsa-portal/scripts && source .env && node adidas-cowork-sync.js >> /tmp/adidas-sync.log 2>&1
  *
  * ─── FIRST-TIME SETUP ───
  *
