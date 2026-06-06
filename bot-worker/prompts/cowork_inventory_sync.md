@@ -81,3 +81,6 @@ return a ~9,999,999 "unlimited" sentinel.
 - Dates normalize to `YYYY-MM-DD` (e.g. "Re-stock in Jun 9, 2026" → `2026-06-09`).
 - This documents the inventory-sync task only. Adding items to a cart is a separate
   task (see `add_to_cart.md`).
+- A version-controlled reference copy of the live skill is in
+  `adidas-inventory-sync.SKILL.reference.md` — diff the skill against it when
+  changing the sync.
