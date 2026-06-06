@@ -54,17 +54,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       selJobIdRef.current=null;
     }
   },[selJob]);
-  // Fetch prior approved mocks for the selected job's art from the customer's OTHER orders.
+  // Fetch prior approved mocks for THIS order's artwork from the customer's OTHER orders.
   // Reused art usually arrives as an empty clone while the real mocks live on the prior order,
   // whose art_files aren't always hydrated in memory — so query so_art_files directly and key
-  // the result by name||deco_type for the Check Mock panel.
+  // the result by name||deco_type. Order-wide (not per selected job) so it's available both on
+  // the job detail and inside the Set up job wizard (which closes the job view).
   React.useEffect(()=>{
-    if(selJob==null||!supabase){setPriorMocks({});return}
-    const _jobs=safeJobs(o);const jb=_jobs[selJob]||(selJobIdRef.current&&_jobs.find(x=>x.id===selJobIdRef.current));
-    if(!jb){setPriorMocks({});return}
-    const aids=new Set(((jb._art_ids&&jb._art_ids.length?jb._art_ids:[jb.art_file_id])||[]).filter(Boolean));
-    (jb.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')aids.add(d.art_file_id)})});
-    const names=[...new Set([...aids].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean).map(a=>(a.name||'').trim()).filter(Boolean))];
+    if(!supabase){setPriorMocks({});return}
+    const names=[...new Set(safeArt(o).map(a=>(a?.name||'').trim()).filter(Boolean))];
     if(!names.length){setPriorMocks({});return}
     const pc=allCustomers.find(c=>c.id===o.customer_id);
     const custIds=pc?.parent_id?[pc.parent_id,o.customer_id]:[o.customer_id];
@@ -93,8 +90,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       }catch(e){if(!cancelled)setPriorMocks({})}
     })();
     return()=>{cancelled=true};
+  // safeArt(o).length re-runs the fetch once the order's art files hydrate (0 → N on a cold
+  // load) so the picker isn't left empty.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[selJob,o.id,o.customer_id,supabase,(allOrders||[]).length]);
+  },[o.id,o.customer_id,supabase,(allOrders||[]).length,safeArt(o).length]);
   // The CW a mock inherits from the item it's applied to: prefer the item's decoration
   // color_way_id when it's valid for this art, else match the art's CWs by garment color
   // (light → "on white", dark → "on dark"), else the first CW.
@@ -120,7 +119,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return na;
     });
     const updated={...o,art_files:updArt,...(sendToCoach&&jIdx>=0?{jobs:safeJobs(o).map((jj,i)=>i===jIdx?{...jj,art_status:'waiting_approval'}:jj)}:{}),updated_at:new Date().toLocaleString()};
-    setO(updated);onSave(updated);setDirty(false);setMockApplyModal(null);
+    setO(updated);onSave(updated);setDirty(false);setMockApplyModal(null);setJobWizard(null);
     if(sendToCoach){nf('Mock applied'+(cwLabel?' · CW: '+cwLabel:'')+' — sending to coach for approval');if(jIdx>=0)openCoachSend(jIdx);}
     else nf('Mock applied'+(cwLabel?' · CW: '+cwLabel:'')+' — art stays approved');
   };
@@ -6825,53 +6824,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
             {/* ── Check Mock: previously-approved art reused on a different color/style ── */}
             {_needsMockCheck&&(()=>{
-              const _chk=_mockCheckGarments;
-              // Send to the artist for a fresh mock: recall the job to Needs Art, then open the
-              // Set up job wizard scoped to this job — the same art-routing flow the rep uses
-              // normally (assign artist / skip / quick mock), not the focused Request Art dialog.
-              const _toArtist=g=>{const artIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:''}:jj);const updArt=safeArt(o).map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art'}:a);const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);
-                const grpItems=(j.items||[]).map(gItem=>{const it=safeItems(o)[gItem.item_idx];const af2=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);return{item_idx:gItem.item_idx,deco_idx:gItem.deco_idx,deco_idxs:Array.isArray(gItem.deco_idxs)&&gItem.deco_idxs.length?gItem.deco_idxs:(gItem.deco_idx!=null?[gItem.deco_idx]:[]),sku:gItem.sku||it?.sku||'',name:gItem.name||safeStr(it?.name),color:gItem.color||it?.color||'',units:gItem.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0),fulfilled:gItem.fulfilled||0,art_file_id:j.art_file_id,art_name:af2?.name||j.art_name||'',position:j.positions||'Front Center'};});
-                const group={name:j.art_name||(j.deco_type||'').replace(/_/g,' '),deco_type:j.deco_type,items:grpItems,artist:j.assigned_artist||'',notes:'New mock needed for '+(g.color?g.color+' ':'')+g.sku,files:[],_split:!!j.split_from,_existingJobId:j.id,_merged:!!j._merged};
-                setSelJob(null);setJobWizard({groups:[group],scopeJobId:j.id})};
-              const _buildMock=()=>{(j.items||[]).forEach(gItem=>{const it=safeItems(o)[gItem.item_idx];if(it)fetchVendorImage(it.sku,it.color,it.vendor_id,it)});setEditMockJob(j)};
+              const _gLabels=_mockCheckGarments.map(g=>(g.color?g.color+' ':'')+g.sku).join(', ');
+              // Reused art with no mock for these garments yet — route the rep into the Set up job
+              // wizard (scoped to this job), where they pick an approved mock (CW-matched) or send
+              // it to the artist. Mirrors the normal "Set up job" opener.
+              const _openSetup=()=>{const grpItems=(j.items||[]).map(gItem=>{const it=safeItems(o)[gItem.item_idx];const af2=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);return{item_idx:gItem.item_idx,deco_idx:gItem.deco_idx,deco_idxs:Array.isArray(gItem.deco_idxs)&&gItem.deco_idxs.length?gItem.deco_idxs:(gItem.deco_idx!=null?[gItem.deco_idx]:[]),sku:gItem.sku||it?.sku||'',name:gItem.name||safeStr(it?.name),color:gItem.color||it?.color||'',units:gItem.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0),fulfilled:gItem.fulfilled||0,art_file_id:j.art_file_id,art_name:af2?.name||j.art_name||'',position:j.positions||'Front Center'};});const group={name:j.art_name||(j.deco_type||'').replace(/_/g,' '),deco_type:j.deco_type,items:grpItems,artist:j.assigned_artist||'',notes:j.rep_notes||'',files:[],_split:!!j.split_from,_existingJobId:j.id,_merged:!!j._merged};setSelJob(null);setJobWizard({groups:[group],scopeJobId:j.id})};
               return<div style={{margin:'0 20px 8px',padding:'14px 16px',background:'linear-gradient(135deg,#fef9c3,#fffbeb)',border:'2px solid #fde047',borderRadius:10}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
                   <span style={{fontSize:18}}>🔍</span>
                   <span style={{fontWeight:800,fontSize:15,color:'#854d0e'}}>Check Mock — art reused on a different garment</span>
                 </div>
-                <div style={{fontSize:12,color:'#92400e',marginBottom:6}}>This art was approved on a different color/style, so there's no mock for the garment{_chk.length>1?'s':''} below yet. Pick the prior mock that works, or get a new one.</div>
-                {_chk.map((g,ci)=><div key={ci} style={{padding:'10px 0',borderTop:ci>0?'1px solid #fde68a':'none'}}>
-                  <div style={{fontSize:13,fontWeight:700,color:'#0f172a',marginBottom:6}}>{g.color?g.color+' · ':''}{g.sku}{g.name?<span style={{fontWeight:500,color:'#64748b'}}> · {g.name}</span>:null}</div>
-                  {g.artFiles.map((af2,ai)=>{
-                    // Sort/label the prior mocks by color way: the garment prints one CW (White →
-                    // "on white"); float the mocks from like-CW garments first and tag each one.
-                    const _afObj=safeArt(o).find(a=>a.id===af2.art_file_id);
-                    const _item=safeItems(o).find(it=>(it.sku||'')===g.sku&&(it.color||'')===(g.color||''));
-                    const _cws=safeArr(_afObj?.color_ways);
-                    const _tgtCwLabel=(_cws.find(c=>c.id===_cwForItem(_afObj,_item,g.color))||{}).garment_color||'';
-                    const _grpCw=fromKey=>{if(!_cws.length)return'';const col=(String(fromKey).split('|')[1]||'');const lt=/white|natural|cream|ivory|ash|silver|sand|vegas|gold|yellow|light|heather|grey|gray/i.test(col);const m=_cws.find(c=>{const gc=(c.garment_color||'').toLowerCase();return lt?/white|light/.test(gc):/dark|black/.test(gc)});return (m&&m.garment_color)||''};
-                    const _groups=[...af2.groups].map(grp=>({...grp,_cw:_grpCw(grp.from)})).sort((x,y)=>((_tgtCwLabel&&x._cw===_tgtCwLabel)?0:1)-((_tgtCwLabel&&y._cw===_tgtCwLabel)?0:1));
-                    return<div key={ai} style={{marginBottom:8}}>
-                    {g.artFiles.length>1&&<div style={{fontSize:11,fontWeight:700,color:'#7c3aed',marginBottom:4}}>{af2.art_name||('Artwork '+(ai+1))}</div>}
-                    {_tgtCwLabel&&<div style={{fontSize:10,color:'#854d0e',marginBottom:4}}>This garment prints the <b>{_tgtCwLabel}</b> color way — matching mocks are shown first.</div>}
-                    <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
-                      {_groups.map((grp,gpi)=>{const _match=!!_tgtCwLabel&&grp._cw===_tgtCwLabel;return<div key={gpi} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 8px',background:_match?'#f0fdf4':'white',border:'1px solid '+(_match?'#86efac':'#fde68a'),borderRadius:8}}>
-                        <div style={{display:'flex',gap:4}}>
-                          {grp.files.slice(0,3).map((pm,pi)=>_isImgUrl(pm.url)?<img key={pi} src={pm.url} alt="" title="Click to enlarge" style={{width:64,height:78,objectFit:'contain',borderRadius:5,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(pm.url)}/>:<div key={pi} onClick={()=>openFile(pm.url)} style={{width:64,height:78,borderRadius:5,border:'1px solid #e2e8f0',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,cursor:'pointer'}}>📄</div>)}
-                        </div>
-                        <div style={{minWidth:120}}>
-                          <div style={{fontSize:10,color:'#92400e'}}>Approved on<br/><b>{(grp.from||'').replace('|',' · ')}</b>{grp.files.length>1?' · '+grp.files.length+' images':''}</div>
-                          {grp._cw&&<div style={{fontSize:9,fontWeight:700,color:_match?'#166534':'#92400e',marginTop:2}}>CW: {grp._cw}{_match?' ✓ matches':''}</div>}
-                          <button className="btn btn-sm" style={{fontSize:10,background:'#16a34a',color:'white',border:'none',fontWeight:700,padding:'4px 10px',marginTop:4}} onClick={()=>setMockApplyModal({sku:g.sku,color:g.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:j.id})}>✓ Use for {g.color||g.sku}</button>
-                        </div>
-                      </div>})}
-                    </div>
-                  </div>;})}
-                  <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:4}}>
-                    <button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'white',border:'none',fontWeight:700,padding:'5px 12px'}} onClick={_buildMock}>✏️ Build a new mock</button>
-                    <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'5px 12px'}} onClick={()=>_toArtist(g)}>🎨 Send to artist</button>
-                  </div>
-                </div>)}
+                <div style={{fontSize:12,color:'#92400e',marginBottom:10}}>This art was approved on a different color/style, so there's no mock for <b>{_gLabels}</b> yet. Set up the job to pick an approved mock (color-way matched) or send it to the artist for a new one.</div>
+                <button className="btn btn-sm" style={{fontSize:12,background:'#7c3aed',color:'white',border:'none',fontWeight:700,padding:'6px 14px'}} onClick={_openSetup}>🎨 Set up job</button>
               </div>;
             })()}
             {/* ── Art Status Banners ── */}
@@ -7875,7 +7839,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // When releasing for art with an assigned artist, create a proper art request
           const hasArtist=activateAll&&g.artist&&!g.skipArtist&&!g.quickMock;
           const allArtTbd=artIds.length===0||artIds.every(aid=>aid==='__tbd');
-          const autoArtRequest=activateAll&&!g.skipArtist&&!g.quickMock&&artStatus==='needs_art'&&!allArtTbd;
+          // Create an art request whenever the artist path is chosen — including for art that was
+          // already approved (reused art being sent back for a fresh mock), which otherwise would
+          // skip the request and stay art_complete.
+          const autoArtRequest=activateAll&&!g.skipArtist&&!g.quickMock&&!allArtTbd&&(artStatus==='needs_art'||(hasArtist&&allApproved));
           if(autoArtRequest)artStatus='art_requested';
           const totalUnits=releaseItems.reduce((a,it)=>a+it.units,0);
           const positions=[...new Set(releaseItems.map(it=>it.position))].join(', ');
@@ -7917,6 +7884,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(!nj)return;
           const repFiles=g.files||[];
           const artIds=nj._art_ids||[nj.art_file_id].filter(Boolean);
+          // Artist path: if the art was previously approved (reused art sent back for a new mock),
+          // un-approve it so its status matches the new art request instead of still reading "approved".
+          if(activateAll&&g.artist&&!g.skipArtist&&!g.quickMock){
+            artIds.forEach(aid=>{updArtFiles=updArtFiles.map(a=>a.id===aid&&a.status==='approved'?{...a,status:'waiting_for_art'}:a)});
+          }
           if(repFiles.length>0){
             artIds.forEach(aid=>{
               updArtFiles=updArtFiles.map(a=>a.id===aid?{...a,sample_art:[...(a.sample_art||[]),...repFiles]}:a);
@@ -8054,6 +8026,42 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </table>}
           {/* Per-job artist selection and notes */}
           {g.items.length>0&&(()=>{const qmCount=Object.values(g.qmMocks||{}).filter(a=>(a||[]).length>0).length;const greenMode=g.skipArtist||g.quickMock;return<div style={{marginTop:10,padding:10,background:greenMode?'#f0fdf4':'white',borderRadius:6,border:'1px solid '+(greenMode?'#86efac':'#e2e8f0')}}>
+            {(()=>{
+              // Reuse an approved mock — when this group's garments have prior approved mocks for
+              // the design (from the customer's other orders), let the rep pick one here instead of
+              // routing to the artist. Picking applies it (CW inherited) and closes the wizard.
+              const _gi2=g.items.filter(it=>!it._excluded);
+              if(!_gi2.length)return null;
+              const _aids=[...new Set(_gi2.map(it=>it.art_file_id).filter(Boolean))];
+              const _pseudo={_art_ids:_aids,art_file_id:_aids[0],items:_gi2.map(it=>({item_idx:it.item_idx,sku:it.sku,color:it.color,name:it.name}))};
+              const _rc=garmentsNeedingMockCheck(_pseudo,o,priorMocks);
+              if(!_rc.length)return null;
+              return<div style={{marginBottom:10,padding:10,background:'#fffbeb',borderRadius:6,border:'1px solid #fde047'}}>
+                <div style={{fontSize:10,fontWeight:800,color:'#854d0e',marginBottom:4,textTransform:'uppercase',letterSpacing:0.4}}>🔍 Reuse an approved mock</div>
+                <div style={{fontSize:10,color:'#92400e',marginBottom:8}}>This art was approved on other garments. Pick the matching mock (color-way matched) to skip the artist, or choose Send to Artist below for a new one.</div>
+                {_rc.map((cg,ci)=><div key={ci} style={{marginBottom:8}}>
+                  <div style={{fontSize:11,fontWeight:700,color:'#0f172a',marginBottom:4}}>{cg.color?cg.color+' · ':''}{cg.sku}</div>
+                  {cg.artFiles.map((af2,ai)=>{
+                    const _afObj=safeArt(o).find(a=>a.id===af2.art_file_id);
+                    const _item=safeItems(o).find(it=>(it.sku||'')===cg.sku&&(it.color||'')===(cg.color||''));
+                    const _cws=safeArr(_afObj?.color_ways);
+                    const _tgtCw=(_cws.find(c=>c.id===_cwForItem(_afObj,_item,cg.color))||{}).garment_color||'';
+                    const _grpCw=fk=>{if(!_cws.length)return'';const col=(String(fk).split('|')[1]||'');const lt=/white|natural|cream|ivory|ash|silver|sand|vegas|gold|yellow|light|heather|grey|gray/i.test(col);const m=_cws.find(c=>{const gc=(c.garment_color||'').toLowerCase();return lt?/white|light/.test(gc):/dark|black/.test(gc)});return (m&&m.garment_color)||''};
+                    const _grps=[...af2.groups].map(grp=>({...grp,_cw:_grpCw(grp.from)})).sort((x,y)=>((_tgtCw&&x._cw===_tgtCw)?0:1)-((_tgtCw&&y._cw===_tgtCw)?0:1));
+                    return<div key={ai} style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                      {_grps.map((grp,gpi)=>{const _m=!!_tgtCw&&grp._cw===_tgtCw;return<div key={gpi} style={{display:'flex',gap:6,alignItems:'center',padding:'5px 7px',background:_m?'#f0fdf4':'white',border:'1px solid '+(_m?'#86efac':'#fde68a'),borderRadius:6}}>
+                        {grp.files.slice(0,2).map((pm,pi)=>_isImgUrl(pm.url)?<img key={pi} src={pm.url} alt="" style={{width:52,height:64,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(pm.url)}/>:<div key={pi} onClick={()=>openFile(pm.url)} style={{width:52,height:64,borderRadius:4,border:'1px solid #e2e8f0',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,cursor:'pointer'}}>📄</div>)}
+                        <div style={{minWidth:92}}>
+                          <div style={{fontSize:9,color:'#92400e'}}><b>{(grp.from||'').replace('|',' · ')}</b></div>
+                          {grp._cw&&<div style={{fontSize:9,fontWeight:700,color:_m?'#166534':'#92400e'}}>CW: {grp._cw}{_m?' ✓':''}</div>}
+                          <button className="btn btn-sm" style={{fontSize:9,background:'#16a34a',color:'white',border:'none',fontWeight:700,padding:'3px 8px',marginTop:3}} onClick={()=>setMockApplyModal({sku:cg.sku,color:cg.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:g._existingJobId})}>✓ Use for {cg.color||cg.sku}</button>
+                        </div>
+                      </div>})}
+                    </div>;
+                  })}
+                </div>)}
+              </div>;
+            })()}
             <div style={{marginBottom:10}}>
               <div style={{fontSize:10,fontWeight:800,color:'#64748b',marginBottom:5,textTransform:'uppercase',letterSpacing:0.4}}>How should art be handled for this job?</div>
               <div style={{display:'flex',gap:6}}>
