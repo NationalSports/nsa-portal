@@ -2912,7 +2912,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(delayed.length===0)return null;
           return<div style={{padding:'2px 18px 8px 18px'}}><div style={{display:'inline-flex',alignItems:'center',gap:8,flexWrap:'wrap',fontSize:11,color:'#92400e',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:'5px 10px'}}>
             <span style={{fontWeight:700}}>↻ Backordered (Adidas B2B):</span>
-            {delayed.map(c=><span key={c.sz} style={{whiteSpace:'nowrap'}}><b>{c.sz}</b> arrives {fmtRestockLong(c.date)}{c.futQty?' ('+Number(c.futQty).toLocaleString()+' coming)':''}</span>)}
+            {delayed.map(c=><span key={c.sz} style={{whiteSpace:'nowrap'}}><b>{c.sz}</b> arrives {fmtRestockLong(c.date)}{c.futQty&&c.futQty<1000000?' ('+Number(c.futQty).toLocaleString()+' available)':''}</span>)}
             <span style={{fontSize:10,color:'#b45309',fontStyle:'italic'}}>out of stock now</span>
           </div></div>})()}
         {/* Adidas B2B availability popover — styled grid shown when hovering a B2B cell */}
@@ -2928,7 +2928,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 return<tr key={sz} style={{borderTop:'1px solid #f8fafc'}}>
                   <td style={{padding:'3px 10px 3px 0',fontWeight:700}}>{sz}</td>
                   <td style={{padding:'3px 10px 3px 0',fontWeight:700,color:stk>0?'#166534':hasDate?'#b45309':'#dc2626'}}>{stk.toLocaleString()}</td>
-                  <td style={{padding:'3px 0',color:hasDate?'#92400e':'#cbd5e1'}}>{hasDate?<>{fmtRestockLong(c.futureDate)}{c.futureQty?<span style={{color:'#475569'}}> · {Number(c.futureQty).toLocaleString()} coming</span>:null}{soonR&&<span style={{marginLeft:5,color:'#ca8a04',fontWeight:800}}>✓ soon</span>}</>:'—'}</td>
+                  <td style={{padding:'3px 0',color:hasDate?'#92400e':'#cbd5e1'}}>{hasDate?<>{fmtRestockLong(c.futureDate)}{c.futureQty&&c.futureQty<1000000?<span style={{color:'#475569'}}> · {Number(c.futureQty).toLocaleString()} available</span>:null}{soonR&&<span style={{marginLeft:5,color:'#ca8a04',fontWeight:800}}>✓ soon</span>}</>:'—'}</td>
                 </tr>;})}</tbody></table>
           </div>,document.body)})()}
         {/* FULFILLMENT LINES */}

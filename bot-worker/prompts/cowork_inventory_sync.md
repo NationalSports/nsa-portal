@@ -5,7 +5,7 @@ One row per SKU+size with:
 
 - `stock_qty` — units available now
 - `future_delivery_date` — the next inbound delivery date for that size
-- `future_delivery_qty` — units arriving on that date  ← (this is the new part)
+- `future_delivery_qty` — projected available-to-promise for that date  ← (new)
 - `last_synced`, `source`
 
 The portal display and the order screen already read all of these; the only gap
@@ -24,8 +24,11 @@ response gives, per size code:
 
 The **quantity** projected for a future date comes from the *same* call with the
 request-body parameter `requestedDeliveryDates: ['YYYY-MM-DD']`; the response's
-`sizes[code].inventory` is the quantity available by that date. (Confirmed: KV4646
+`sizes[code].inventory` is then the **projected available-to-promise (ATP)** for
+that date — i.e. how many you could order for delivery then. (Confirmed: KV4646
 size S returns 0 today and 41 for 2026-07-19.) Read-only — no calendar clicking.
+Note: this projection can be **lower** than current stock, and far-out dates may
+return a ~9,999,999 "unlimited" sentinel.
 
 ## Per SKU
 
@@ -36,15 +39,13 @@ size S returns 0 today and 41 for 2026-07-19.) Read-only — no calendar clickin
 3. For each distinct date, make one call with `requestedDeliveryDates: [thatDate]`.
    From that one response, set `future_delivery_qty` for **every** size whose
    `restockDate` equals that date (in-stock sizes that share the date are captured
-   for free in the same response):
+   for free in the same response). Store the projected ATP **directly**:
 
-       future_delivery_qty = inventory_at_date − current stock_qty
+       future_delivery_qty = sizes[code].inventory at that date   (store as-is)
 
-   For out-of-stock sizes current stock is 0, so it's just `inventory_at_date`.
-   (This assumes the date's `inventory` is the cumulative available-by-then figure
-   — verify once on an in-stock size: XL's number for 2026-06-09 should be ≥ 36.
-   If the API instead returns only that shipment's units, store it directly without
-   subtracting.)
+   Do NOT subtract current stock — the projection can legitimately be lower than
+   current. If the value is the ~9,999,999 "unlimited" sentinel, store **null**
+   (the order screen then shows the date with no number).
 4. Upsert per size: `sku, size, stock_qty, future_delivery_date,
    future_delivery_qty, last_synced, source` (on conflict `sku,size`).
 
@@ -60,10 +61,12 @@ size S returns 0 today and 41 for 2026-07-19.) Read-only — no calendar clickin
   step 2 — but that adds ~1–3 calls to essentially every product, so only if wanted.
 - Never place or submit an order — `requestedDeliveryDates` is a read-only projection.
 - If a call fails, leave that size's `future_delivery_qty` null and continue — the
-  order screen just shows the date without "· N coming"; it never blocks the sync.
+  order screen just shows the date without "· N available"; it never blocks the sync.
 
 ## Notes
 
+- `future_delivery_qty` is the projected available quantity for that delivery date
+  (it can be lower than current stock); the order screen labels it "available".
 - Dates normalize to `YYYY-MM-DD` (e.g. "Re-stock in Jun 9, 2026" → `2026-06-09`).
 - This documents the inventory-sync task only. Adding items to a cart is a separate
   task (see `add_to_cart.md`).
