@@ -95,6 +95,35 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return()=>{cancelled=true};
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[selJob,o.id,o.customer_id,supabase,(allOrders||[]).length]);
+  // The CW a mock inherits from the item it's applied to: prefer the item's decoration
+  // color_way_id when it's valid for this art, else match the art's CWs by garment color
+  // (light → "on white", dark → "on dark"), else the first CW.
+  const _cwForItem=(artFile,item,garmentColor)=>{const cws=safeArr(artFile?.color_ways);if(!cws.length)return null;const deco=safeDecos(item).find(d=>d.kind==='art'&&d.art_file_id===artFile?.id&&d.color_way_id);if(deco&&cws.some(c=>c.id===deco.color_way_id))return deco.color_way_id;const light=/white|natural|cream|ivory|ash|silver|sand|vegas|gold|yellow|light|heather|grey|gray/i.test(garmentColor||'');const byLD=cws.find(c=>{const gc=(c.garment_color||'').toLowerCase();return light?/white|light/.test(gc):/dark|black/.test(gc)});return (byLD||cws[0]).id};
+  // Open the existing "Send to Coach for Approval" modal for a job index (same initializer as
+  // the waiting-approval banner's Send to Coach button).
+  const openCoachSend=(jIdx)=>{const jb0=safeJobs(o)[jIdx];if(!jb0)return;const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||jb0.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7})};
+  // Apply a chosen prior mock to a garment on this order's art file, tagged with the CW inherited
+  // from the item. sendToCoach=true also moves the job to Waiting Approval and opens the send
+  // modal; otherwise the art stays approved/complete.
+  const applyPriorMock=(d,sendToCoach)=>{
+    const{sku,color,artId,files,jobId}=d;const key=sku+'|'+(color||'');
+    const item=safeItems(o).find(it=>(it.sku||'')===sku&&(it.color||'')===(color||''));
+    const artFile=safeArt(o).find(a=>a.id===artId);
+    const cwId=_cwForItem(artFile,item,color);const cwLabel=cwId&&(artFile?.color_ways||[]).find(c=>c.id===cwId)?.garment_color;
+    const jIdx=safeJobs(o).findIndex(jj=>jj.id===jobId);
+    const jb=jIdx>=0?safeJobs(o)[jIdx]:null;
+    const jobArtIds=jb?((jb._art_ids&&jb._art_ids.length?jb._art_ids:[jb.art_file_id])||[]).filter(Boolean):[artId];
+    const updArt=safeArt(o).map(a=>{
+      let na=a;
+      if(a.id===artId){const cur=(a.item_mockups||{})[key]||[];const have=new Set(cur.map(f=>typeof f==='string'?f:f?.url));const add=(files||[]).filter(m=>!have.has(m.url)).map(m=>({url:m.url,name:m.name||('mock-'+sku),art_file_id:a.id,sku,...(cwId?{color_way_id:cwId}:{})}));if(add.length)na={...a,item_mockups:{...(a.item_mockups||{}),[key]:[...cur,...add]}};}
+      if(sendToCoach&&jobArtIds.includes(a.id))na={...na,status:'needs_approval'};
+      return na;
+    });
+    const updated={...o,art_files:updArt,...(sendToCoach&&jIdx>=0?{jobs:safeJobs(o).map((jj,i)=>i===jIdx?{...jj,art_status:'waiting_approval'}:jj)}:{}),updated_at:new Date().toLocaleString()};
+    setO(updated);onSave(updated);setDirty(false);setMockApplyModal(null);
+    if(sendToCoach){nf('Mock applied'+(cwLabel?' · CW: '+cwLabel:'')+' — sending to coach for approval');if(jIdx>=0)openCoachSend(jIdx);}
+    else nf('Mock applied'+(cwLabel?' · CW: '+cwLabel:'')+' — art stays approved');
+  };
   const[mentionQuery,setMentionQuery]=useState(null);const[mentionIdx,setMentionIdx]=useState(0);const mentionRef=useRef(null);const msgInputRef=useRef(null);
     // Sync from external updates (e.g., coach approval from portal) — merge job art_status + art_files
     // Use a ref to track the last order we synced from, to avoid re-triggering on format differences
@@ -169,6 +198,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[artRevisionNote,setArtRevisionNote]=useState('');
   const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
   const[priorMocks,setPriorMocks]=useState({});// {name||deco_type:[{from,files:[{url,name}]}]} — approved mocks for reused art, fetched from the customer's OTHER orders (their art isn't always hydrated in memory). Drives the Check Mock panel.
+  const[mockApplyModal,setMockApplyModal]=useState(null);// {sku,color,artId,files,mockUrl,jobId} — after picking a prior mock, choose: already approved vs send to coach.
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
   const[expandedArt,setExpandedArt]=useState({});// Track expanded art groups by id (default collapsed)
   const[collapsedNames,setCollapsedNames]=useState({});// Track collapsed Names decos by `idx-di`
@@ -2083,6 +2113,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     </div>}
     {/* Quick Mock re-edit — reopen the builder for an existing quick-mock job and write the
         updated composites back to the artwork in place (status unchanged, live to coach portal). */}
+    {mockApplyModal&&(()=>{const d=mockApplyModal;return<div className="modal-overlay" style={{zIndex:10002}} onClick={()=>setMockApplyModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
+      <div className="modal-header" style={{background:'linear-gradient(135deg,#16a34a,#22c55e)',color:'white'}}><h2 style={{color:'white',margin:0,fontSize:16}}>Apply mock — {d.color?d.color+' ':''}{d.sku}</h2><button className="modal-close" style={{color:'white'}} onClick={()=>setMockApplyModal(null)}>×</button></div>
+      <div className="modal-body" style={{padding:16}}>
+        {d.mockUrl&&_isImgUrl(d.mockUrl)&&<img src={d.mockUrl} alt="" style={{width:'100%',maxHeight:240,objectFit:'contain',borderRadius:8,border:'1px solid #e2e8f0',background:'#fafafa',marginBottom:12}}/>}
+        <div style={{fontSize:13,color:'#475569',marginBottom:14}}>Is this mock already approved for this garment, or do you want to send it to the coach to confirm?</div>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          <button className="btn" style={{fontSize:13,fontWeight:700,background:'#16a34a',color:'white',border:'none',padding:'10px 14px',borderRadius:8}} onClick={()=>applyPriorMock(d,false)}>✓ Already approved — use it</button>
+          <button className="btn" style={{fontSize:13,fontWeight:700,background:'#2563eb',color:'white',border:'none',padding:'10px 14px',borderRadius:8}} onClick={()=>applyPriorMock(d,true)}>📤 Send to coach for approval</button>
+          <button className="btn btn-secondary" style={{fontSize:12}} onClick={()=>setMockApplyModal(null)}>Cancel</button>
+        </div>
+      </div>
+    </div></div>;})()}
     {editMockJob&&(()=>{
       const j2=safeJobs(o).find(jj=>jj.id===editMockJob.id)||editMockJob;
       // The job's declared _art_ids only carry the FIRST item's art (see buildJobs), so a job
@@ -6780,14 +6822,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {/* ── Check Mock: previously-approved art reused on a different color/style ── */}
             {(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&(()=>{
               const _chk=garmentsNeedingMockCheck(j,o,priorMocks);if(_chk.length===0)return null;
-              // The CW for a mock is inherited from the item it's applied to: prefer the item's
-              // decoration color_way_id when it's valid for this art, else match the art's CWs by
-              // garment color (light → "on white", dark → "on dark"), else the first CW.
-              const _cwForItem=(artFile,item,garmentColor)=>{const cws=safeArr(artFile?.color_ways);if(!cws.length)return null;const deco=safeDecos(item).find(d=>d.kind==='art'&&d.art_file_id===artFile?.id&&d.color_way_id);if(deco&&cws.some(c=>c.id===deco.color_way_id))return deco.color_way_id;const light=/white|natural|cream|ivory|ash|silver|sand|vegas|gold|yellow|light|heather|grey|gray/i.test(garmentColor||'');const byLD=cws.find(c=>{const gc=(c.garment_color||'').toLowerCase();return light?/white|light/.test(gc):/dark|black/.test(gc)});return (byLD||cws[0]).id};
-              // Keep a prior mock for this garment: copy the chosen source mock's file(s) under this
-              // garment's sku|color key (on this order's art file), tagged with the inherited CW, so
-              // it counts as mocked. The rep can then send it to the coach (Art → Waiting Approval).
-              const _useMock=(g,artId,files)=>{const key=g.sku+'|'+(g.color||'');const item=safeItems(o).find(it=>(it.sku||'')===g.sku&&(it.color||'')===(g.color||''));const artFile=safeArt(o).find(a=>a.id===artId);const cwId=_cwForItem(artFile,item,g.color);const cwLabel=cwId&&(artFile?.color_ways||[]).find(c=>c.id===cwId)?.garment_color;const updArt=safeArt(o).map(a=>{if(a.id!==artId)return a;const cur=(a.item_mockups||{})[key]||[];const have=new Set(cur.map(f=>typeof f==='string'?f:f?.url));const add=files.filter(m=>!have.has(m.url)).map(m=>({url:m.url,name:m.name||('mock-'+g.sku),art_file_id:a.id,sku:g.sku,...(cwId?{color_way_id:cwId}:{})}));if(!add.length)return a;return{...a,item_mockups:{...(a.item_mockups||{}),[key]:[...cur,...add]}}});const updated={...o,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Mock kept for '+(g.color?g.color+' ':'')+g.sku+(cwLabel?' · CW: '+cwLabel:'')+' — set Art to “Waiting Approval” to send to the coach')};
               // Send to the artist for a fresh mock: recall the job to Needs Art and open the
               // existing Request Art modal (mirrors the "Update Art" flow).
               const _toArtist=g=>{const artIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);const updJobs=safeJobs(o).map(jj=>jj.id===j.id?{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:''}:jj);const updArt=safeArt(o).map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art'}:a);const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'New mock needed for '+(g.color?g.color+' ':'')+g.sku,files:[]})};
@@ -6809,7 +6843,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         </div>
                         <div style={{minWidth:120}}>
                           <div style={{fontSize:10,color:'#92400e'}}>Approved on<br/><b>{(grp.from||'').replace('|',' · ')}</b>{grp.files.length>1?' · '+grp.files.length+' images':''}</div>
-                          <button className="btn btn-sm" style={{fontSize:10,background:'#16a34a',color:'white',border:'none',fontWeight:700,padding:'4px 10px',marginTop:4}} onClick={()=>_useMock(g,af2.art_file_id,grp.files)}>✓ Use for {g.color||g.sku}</button>
+                          <button className="btn btn-sm" style={{fontSize:10,background:'#16a34a',color:'white',border:'none',fontWeight:700,padding:'4px 10px',marginTop:4}} onClick={()=>setMockApplyModal({sku:g.sku,color:g.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:j.id})}>✓ Use for {g.color||g.sku}</button>
                         </div>
                       </div>)}
                     </div>
