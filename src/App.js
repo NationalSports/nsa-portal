@@ -581,11 +581,23 @@ const fetchAdidasGlobalLastSync = async () => {
 const fetchAdidasInventoryBulk = async (skus) => {
   if (!supabase || !skus || skus.length === 0) return {};
   try {
-    const { data, error } = await supabase.from('adidas_inventory').select('*').in('sku', skus);
-    if (error) { console.warn('[Adidas B2B] Bulk fetch error:', error.message); return {}; }
-    if (!data || data.length === 0) return {};
+    // A single .in() with the whole Adidas catalog overflows the request URL
+    // (→ 400 Bad Request) and can exceed PostgREST's row cap. Fetch in small
+    // batches (each ~600 rows, URL-safe) with limited concurrency, then merge.
+    const uniq = [...new Set(skus.filter(Boolean))];
+    const CHUNK = 20;
+    const POOL = 8;
+    const batches = [];
+    for (let i = 0; i < uniq.length; i += CHUNK) batches.push(uniq.slice(i, i + CHUNK));
     const bySku = {};
-    data.forEach(row => { (bySku[row.sku] || (bySku[row.sku] = [])).push(row); });
+    for (let i = 0; i < batches.length; i += POOL) {
+      const results = await Promise.all(batches.slice(i, i + POOL).map(batch =>
+        supabase.from('adidas_inventory').select('*').in('sku', batch)
+          .then(r => { if (r.error) { console.warn('[Adidas B2B] Bulk fetch error:', r.error.message); return []; } return r.data || []; })
+          .catch(e => { console.warn('[Adidas B2B] Bulk fetch batch failed:', e?.message || e); return []; })
+      ));
+      results.forEach(rows => rows.forEach(row => { (bySku[row.sku] || (bySku[row.sku] = [])).push(row); }));
+    }
     const result = {};
     Object.entries(bySku).forEach(([sku, rows]) => { result[sku] = aggregateAdidasRows(rows); });
     return result;
