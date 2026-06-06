@@ -127,6 +127,34 @@ for (const d of futureDates) {
 await supabase.from('adidas_inventory').upsert(Object.values(rows), { onConflict: 'sku,size' });
 ```
 
+## Health check (run AFTER all SKUs are upserted)
+
+Surface size-map regressions so stale numeric codes can't quietly accrue again.
+`window._mapGaps` already holds the apparel conversionIds whose maps came back
+incomplete this run; just report it. Empty = every apparel code resolved to a
+label (no numeric rows written). Non-empty = a map regressed (a richer example
+wasn't reachable) and codes may have been written — re-learn that conversionId
+before the next run. This is **report-only**; it never deletes.
+```js
+const gaps = Object.entries(window._mapGaps || {})
+  .filter(([cid]) => cid !== '51' && !window._footwearCids?.has(cid));
+
+if (!gaps.length) {
+  console.log('[health] size maps complete — 0 unmapped apparel codes ✓');
+} else {
+  console.warn(`[health] ${gaps.length} conversionId(s) still unmapped:`);
+  for (const [cid, codes] of gaps) {
+    const ex = (window._convExamples?.[cid] || [])[0];      // richest example for re-learning
+    console.warn(`  conv ${cid}: [${codes.join(', ')}]${ex ? ` — re-learn from ${ex.sku}` : ''}`);
+  }
+}
+```
+- Apparel `_mapGaps` is expected to be **empty** every run. If it isn't, re-learn the
+  listed conversionId(s) (the report names a rich example SKU to learn from), then
+  re-run those SKUs — don't let numeric codes persist.
+- Pruning stale 3-digit code rows from the DB stays a **manual, supervised** step
+  (the `^[0-9]{3}$` delete, run on request) — the sync never deletes on its own.
+
 ## Rules
 - `requestedDeliveryDates` is a **read-only projection** — NEVER place/submit an order.
 - Only OUT-OF-STOCK sizes drive the extra per-date calls; fully-stocked products make none.
