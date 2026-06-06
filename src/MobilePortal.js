@@ -1723,7 +1723,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const estUrl=window.location.origin+'/?estimate='+est.id;
     const copyLink=()=>{navigator.clipboard.writeText(estUrl).then(()=>{if(nf)nf('Link copied to clipboard');setSendEstModal(null)}).catch(()=>{window.prompt('Copy this link:',estUrl);setSendEstModal(null)})};
     const emailEst=()=>{
-      const acct=(cc?.contacts||[]).find(c=>c.role==='Coach')||(cc?.contacts||[])[0];
+      const acct=(cc?.contacts||[]).find(c=>c.role==='Coach')||(cc?.contacts||[]).find(c=>c.role==='Billing')||(cc?.contacts||[])[0];
       const toEmail=acct?.email||cc?.email||'';
       const subject='Estimate '+est.id+(est.memo?' — '+est.memo:'');
       const body='Hi '+(acct?.name||cc?.name||'')+',\n\nPlease review your estimate: '+estUrl+'\n\nThank you,\nNSA Team';
@@ -1736,7 +1736,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         <div style={{fontSize:16,fontWeight:800,color:'#0f172a',marginBottom:4}}>Send {est.id}</div>
         <div style={{fontSize:13,color:'#64748b',marginBottom:16}}>{cc?.name||'No customer'}{est.memo?' — '+est.memo:''}</div>
         <button onClick={emailEst} style={{width:'100%',display:'flex',alignItems:'center',gap:10,padding:'14px 16px',background:'#1e40af',color:'white',border:'none',borderRadius:12,fontSize:15,fontWeight:700,cursor:'pointer',marginBottom:10,minHeight:48}}>
-          <MIcon name="mail" size={20}/> Email PDF
+          <MIcon name="mail" size={20}/> Email Estimate
         </button>
         <button onClick={copyLink} style={{width:'100%',display:'flex',alignItems:'center',gap:10,padding:'14px 16px',background:'#f1f5f9',color:'#1e293b',border:'1px solid #e2e8f0',borderRadius:12,fontSize:15,fontWeight:700,cursor:'pointer',marginBottom:10,minHeight:48}}>
           <MIcon name="file" size={20}/> Copy Shareable Link
