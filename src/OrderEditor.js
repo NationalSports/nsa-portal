@@ -2924,11 +2924,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
             <table style={{borderCollapse:'collapse',width:'100%'}}><thead><tr style={{textAlign:'left',color:'#94a3b8',fontSize:9,textTransform:'uppercase',letterSpacing:0.5}}>
               <th style={{padding:'2px 10px 4px 0'}}>Size</th><th style={{padding:'2px 10px 4px 0'}}>In stock</th><th style={{padding:'2px 0 4px 0'}}>Refill</th></tr></thead>
-              <tbody>{rows.map(sz=>{const c=ai.sizes[sz];const stk=c.qty||0;const d=c.futureDate?restockDaysOut(c.futureDate):null;const hasR=stk<=0&&d!=null&&d>=0;const soonR=hasR&&d<=RESTOCK_SOON_DAYS;
+              <tbody>{rows.map(sz=>{const c=ai.sizes[sz];const stk=c.qty||0;const d=c.futureDate?restockDaysOut(c.futureDate):null;const hasDate=d!=null&&d>=0;const soonR=stk<=0&&hasDate&&d<=RESTOCK_SOON_DAYS;
                 return<tr key={sz} style={{borderTop:'1px solid #f8fafc'}}>
                   <td style={{padding:'3px 10px 3px 0',fontWeight:700}}>{sz}</td>
                   <td style={{padding:'3px 10px 3px 0',fontWeight:700,color:stk>0?'#166534':hasR?'#b45309':'#dc2626'}}>{stk.toLocaleString()}</td>
-                  <td style={{padding:'3px 0',color:hasR?'#92400e':'#cbd5e1'}}>{hasR?<>{fmtRestockLong(c.futureDate)}{c.futureQty?<span style={{color:'#475569'}}> · {Number(c.futureQty).toLocaleString()} coming</span>:null}{soonR&&<span style={{marginLeft:5,color:'#ca8a04',fontWeight:800}}>✓ soon</span>}</>:'—'}</td>
+                  <td style={{padding:'3px 0',color:hasDate?'#92400e':'#cbd5e1'}}>{hasDate?<>{fmtRestockLong(c.futureDate)}{c.futureQty?<span style={{color:'#475569'}}> · {Number(c.futureQty).toLocaleString()} coming</span>:null}{soonR&&<span style={{marginLeft:5,color:'#ca8a04',fontWeight:800}}>✓ soon</span>}</>:'—'}</td>
                 </tr>;})}</tbody></table>
           </div>,document.body)})()}
         {/* FULFILLMENT LINES */}
