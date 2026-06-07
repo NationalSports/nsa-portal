@@ -7701,12 +7701,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const items=(j.items||[]).map(ji=>{
               const it=safeItems(o)[ji.item_idx];
               const decoIdxs=Array.isArray(ji.deco_idxs)&&ji.deco_idxs.length?ji.deco_idxs:(ji.deco_idx!=null?[ji.deco_idx]:[]);
-              const itemDeco=decoIdxs.length>0?safeDecos(it||{})[decoIdxs[0]]:null;
-              const itemArtFileId=itemDeco?.art_file_id||j.art_file_id;
-              const af2=safeArr(o?.art_files).find(f=>f.id===itemArtFileId);
+              const allDecos=decoIdxs.map(di=>safeDecos(it||{})[di]).filter(Boolean);
+              const artDeco=allDecos.find(d=>d.kind==='art'&&d.art_file_id)||allDecos.find(d=>d.kind==='art');
+              const itemArtFileId=artDeco?.art_file_id||null;
+              const af2=itemArtFileId?safeArr(o?.art_files).find(f=>f.id===itemArtFileId):null;
+              const itemPosition=artDeco?.position||j.positions||'Front Center';
               return{item_idx:ji.item_idx,deco_idx:ji.deco_idx,deco_idxs:decoIdxs,sku:ji.sku||it?.sku||'',name:ji.name||safeStr(it?.name),color:ji.color||it?.color||'',
-                units:ji.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0),fulfilled:ji.fulfilled||0,art_file_id:itemArtFileId,
-                art_name:af2?.name||j.art_name||'',position:j.positions||'Front Center'};
+                units:ji.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0),fulfilled:ji.fulfilled||0,art_file_id:itemArtFileId||j.art_file_id,
+                art_name:af2?.name||'',position:itemPosition};
             });
             return{name:j.art_name||j.deco_type.replace(/_/g,' '),deco_type:j.deco_type,items,
               artist:j.assigned_artist||'',notes:j.rep_notes||'',files:[],
