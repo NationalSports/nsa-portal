@@ -2006,6 +2006,36 @@ const _dbSaveProduct = async (p) => {
     _dbSaveFailedIds.delete(p.id);_clearSaveError(p.id);_persistFailedIds();return true;
   }catch(e){console.error('[DB] save product:',e);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,e.message||String(e));_persistFailedIds();return false}
 };
+// When a product's vendor is changed in the catalog, line items that still carry the product's
+// PREVIOUS vendor go stale: the PO builder groups on the line item's snapshotted vendor_id (see
+// resolveVendor in OrderEditor), so an order created before the change keeps grouping under the
+// old vendor even though the catalog now says otherwise. Re-point the open, not-yet-ordered lines
+// so they follow the product. A line is only moved when it (a) still points at the old vendor —
+// never overriding a deliberate per-order reassignment — and (b) has no committed PO lines yet;
+// already-ordered lines keep their snapshot, and any existing PO keeps its own vendor regardless.
+// Returns the affected so_ids so callers can refresh in-memory state / notify.
+const _dbPropagateVendorToOpenItems = async (productId, oldVendorId, newVendorId, newBrand) => {
+  if(!supabase||!productId||!oldVendorId||!newVendorId||oldVendorId===newVendorId)return[];
+  try{
+    const{data:cand,error}=await supabase.from('so_items').select('id,so_id').eq('product_id',productId).eq('vendor_id',oldVendorId);
+    if(error){console.error('[DB] vendor propagate — read items:',error.message);return[]}
+    if(!cand||!cand.length)return[];
+    const ids=cand.map(c=>c.id);
+    // Skip lines already placed on a PO (ordered from the old vendor).
+    const{data:poLines}=await supabase.from('so_item_po_lines').select('so_item_id').in('so_item_id',ids);
+    const ordered=new Set((poLines||[]).map(r=>r.so_item_id));
+    // Skip lines on deleted orders.
+    const soIds=[...new Set(cand.map(c=>c.so_id))];
+    const{data:liveSOs}=await supabase.from('sales_orders').select('id').in('id',soIds).is('deleted_at',null);
+    const live=new Set((liveSOs||[]).map(s=>s.id));
+    const targetIds=cand.filter(c=>!ordered.has(c.id)&&live.has(c.so_id)).map(c=>c.id);
+    if(!targetIds.length)return[];
+    const patch={vendor_id:newVendorId};if(newBrand)patch.brand=newBrand;
+    const{error:upErr}=await supabase.from('so_items').update(patch).in('id',targetIds);
+    if(upErr){console.error('[DB] vendor propagate — update items:',upErr.message);return[]}
+    return[...new Set(cand.filter(c=>targetIds.includes(c.id)).map(c=>c.so_id))];
+  }catch(e){console.error('[DB] vendor propagate:',e);return[]}
+};
 const _dbSaveMessage = async (m) => {
   if(!supabase)return;
   try{
@@ -7455,7 +7485,7 @@ export default function App(){
   // causes React to remount them on every parent re-render (losing state like editing mode)
   const _pdRef=React.useRef(null);
   if(!_pdRef.current){_pdRef.current=({product,onBack,ctx})=>{
-    const{vend,cust,ests,sos,invPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES,isA}=ctx.current;
+    const{vend,cust,ests,sos,invPOs,invs,setProd,setSOs,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES,isA}=ctx.current;
     const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());const[salesView,setSalesView]=useState('month');
     const[autoSaved,setAutoSaved]=useState(false);
     // Sync ep with product prop when inventory changes externally (e.g. AdjModal)
@@ -7463,10 +7493,25 @@ export default function App(){
     const epRef=React.useRef(ep);const editingRef=React.useRef(editing);
     React.useEffect(()=>{epRef.current=ep},[ep]);
     React.useEffect(()=>{editingRef.current=editing},[editing]);
+    // Vendor-change propagation: snapshot the product's vendor at edit-start so the save handlers
+    // can tell when the rep actually switched vendors, then push that change onto open orders.
+    const _vBaseRef=React.useRef(product.vendor_id);
+    React.useEffect(()=>{if(!editing)_vBaseRef.current=product.vendor_id},[editing,product.vendor_id]);
+    const _vPropRef=React.useRef(()=>{});
+    _vPropRef.current=(saved)=>{
+      const oldVid=_vBaseRef.current,newVid=saved.vendor_id;
+      if(!oldVid||!newVid||oldVid===newVid)return;
+      _vBaseRef.current=newVid;// don't re-fire for the same change on the next autosave tick
+      _dbPropagateVendorToOpenItems(saved.id,oldVid,newVid,saved.brand).then(soIds=>{
+        if(soIds&&soIds.length){const vn=vend.find(v=>v.id===newVid)?.name||saved.brand||'the new vendor';nf(soIds.length+' open order'+(soIds.length>1?'s':'')+' re-pointed to '+vn)}
+      });
+      // Reflect on any orders already loaded in memory (the PO builder reads the in-memory snapshot).
+      if(setSOs)setSOs(prev=>prev.map(s=>{let ch=false;const items=(s.items||[]).map(it=>{if(it.product_id===saved.id&&it.vendor_id===oldVid&&!(it.po_lines&&it.po_lines.length)){ch=true;return{...it,vendor_id:newVid,brand:saved.brand}}return it});return ch?{...s,items}:s}));
+    };
     // Auto-save: persist edits every 30s while in edit mode
     React.useEffect(()=>{
       if(!editing)return;
-      const doSave=()=>{if(editingRef.current){const cur=epRef.current;setProd(p=>p.map(x=>x.id===cur.id?cur:x));_dbSaveProduct(cur);setAutoSaved(true);setTimeout(()=>setAutoSaved(false),2000)}};
+      const doSave=()=>{if(editingRef.current){const cur=epRef.current;setProd(p=>p.map(x=>x.id===cur.id?cur:x));_dbSaveProduct(cur);_vPropRef.current(cur);setAutoSaved(true);setTimeout(()=>setAutoSaved(false),2000)}};
       const iv=setInterval(doSave,30000);
       const handleUnload=()=>doSave();
       window.addEventListener('beforeunload',handleUnload);
@@ -7506,7 +7551,7 @@ export default function App(){
     const _szDisplay=SZ_ORD.filter(s=>sizeTotals[s]);Object.keys(sizeTotals).forEach(k=>{if(!_szDisplay.includes(k))_szDisplay.push(k)});
     const sizeData=_szDisplay.map(s=>({size:s,units:sizeTotals[s].units,revenue:sizeTotals[s].revenue,months:sizeByMonth[s]||Array(12).fill(0)}));
     const maxSizeUnits=Math.max(...sizeData.map(s=>s.units),1);
-    const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));_dbSaveProduct(ep);setEditing(false);nf('Product updated')};
+    const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));_dbSaveProduct(ep);_vPropRef.current(ep);setEditing(false);nf('Product updated')};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
     const _coreSz=['XS','S','M','L','XL','2XL','3XL','4XL'];
     const _displaySz=SZ_ORD.filter(sz=>_coreSz.includes(sz)||((ep.available_sizes||[]).includes(sz)&&(ep._inv?.[sz]||0)>0));
@@ -15617,7 +15662,7 @@ export default function App(){
   const[whEditOrigSizes,setWhEditOrigSizes]=useState(null);
   const[showStockPO,setShowStockPO]=useState(null);
   // Populate ProductDetail context ref — must be after setWhTab is declared
-  _pdCtx.current={vend,cust,ests,sos,invPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES,isA};
+  _pdCtx.current={vend,cust,ests,sos,invPOs,invs,setProd,setSOs,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES,isA};
   // Ship package modal: {grp, soMap:{soId:so}, boxes:[{items:[{sku,name,color,sizes:{}}],tracking_number:'',carrier:'',weight:5,notes:''}]}
   const[shipModal,setShipModal]=useState(null);
   const[shipExpanded,setShipExpanded]=useState({});// key->bool; Ready-to-Ship cards start collapsed
