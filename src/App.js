@@ -14642,8 +14642,8 @@ export default function App(){
         if(!_portalImported)reasons.push('Import parent orders in the Parent Order Portal');
         return{ok:reasons.length===0,reasons};
       })();
-      const createOmgSO=()=>{
-              if(sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
+      const createOmgSO=(force=false)=>{
+              if(!force&&sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
               if(!s.customer_id){nf('Link this store to a customer first (top of the page).','error');return}
               const generatedId=nextSOId(sos);
               // Every product must be assigned an art group or explicitly marked
@@ -15306,6 +15306,7 @@ export default function App(){
         {_alreadyPulled&&<div className="card" style={{marginTop:16}}><div className="card-body" style={{padding:20,display:'flex',alignItems:'center',gap:12}}>
           <span style={{fontSize:13,fontWeight:700,color:'#166534'}}>✅ Sales Order created</span>
           <button className="btn btn-sm btn-secondary" onClick={()=>{const so=sos.find(x=>x.omg_store_id===s.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}}}>View {sos.find(so=>so.omg_store_id===s.id)?.id} →</button>
+          <button className="btn btn-sm btn-secondary" style={{color:'#92400e',borderColor:'#fde68a',background:'#fffbeb'}} onClick={()=>{if(window.confirm('Create a new Sales Order for this store? The existing SO will remain — you can delete it separately.')){createOmgSO(true)}}}>↩ Redo SO</button>
         </div></div>}
 
         {/* Step-by-step guide */}
