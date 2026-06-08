@@ -18860,7 +18860,7 @@ export default function App(){
                 const repPerItemDecos={};
                 (j.items||[]).forEach(gi=>{
                   const it=safeItems(so)[gi.item_idx];if(!it)return;
-                  const key=(it.sku||gi.sku)+'|'+(it.color||gi.color||'');
+                  const key=gi.item_idx;
                   if(!repPerItemDecos[key])repPerItemDecos[key]=[];
                   safeDecos(it).forEach(d=>{
                     if(d.kind==='art'){const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';const cwObj2=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;const dColors=cwObj2?cwObj2.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);repPerItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,underbase:d.underbase||false,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||'',cwLabel:cwObj2?.garment_color||'',colorWayId:d.color_way_id||null});}
@@ -18870,7 +18870,7 @@ export default function App(){
                 });
                 return itemDetails.map((gi,gii)=>{
                   const gk=gi.sku+'|'+gi.color;
-                  const decos=repPerItemDecos[gk]||[];
+                  const decos=repPerItemDecos[gi.item_idx]||[];
                   const artDecos=decos.filter(d=>d.kind==='art');
                   const numDecos=decos.filter(d=>d.kind==='numbers');
                   const nameDecos=decos.filter(d=>d.kind==='names');
@@ -19049,7 +19049,7 @@ export default function App(){
           const it=safeItems(so)[gi.item_idx];if(!it)return null;
           const sizes={};
           Object.entries(gi.sizes||safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
-          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
+          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,item_idx:gi.item_idx,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
@@ -19061,7 +19061,7 @@ export default function App(){
         const _perItemDecos={};
         (j.items||[]).forEach(gi=>{
           const it=safeItems(so)[gi.item_idx];if(!it)return;
-          const key=(it.sku||gi.sku)+'|'+(it.color||gi.color||'');
+          const key=gi.item_idx;
           if(!_perItemDecos[key])_perItemDecos[key]=[];
           safeDecos(it).forEach(d=>{
             if(d.kind==='art'){
@@ -19433,7 +19433,7 @@ export default function App(){
                 const itemMocks=_getMocks(af,gi.sku,gi.color);
                 // Per-item decoration data
                 const _gk=gi.sku+'|'+gi.color;
-                const _decos=_perItemDecos[_gk]||[];
+                const _decos=_perItemDecos[gi.item_idx]||[];
                 const _artDecos=_decos.filter(d=>d.kind==='art');
                 const _numDecos=_decos.filter(d=>d.kind==='numbers');
                 const _nameDecos=_decos.filter(d=>d.kind==='names');
