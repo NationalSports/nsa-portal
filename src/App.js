@@ -15448,8 +15448,12 @@ export default function App(){
       {/* Store list */}
       <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
         {filtered.map((s,i)=>{const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);const linkedSO=sos.find(so=>so.omg_store_id===s.id);
+          const _refDate=s.close_date||s._last_synced;
+          const _deadline=_refDate?(()=>{const d=new Date(_refDate+'T00:00:00');d.setDate(d.getDate()+30);return d})():null;
+          const _today=new Date();_today.setHours(0,0,0,0);
+          const _daysLeft=_deadline?Math.ceil((_deadline-_today)/(24*60*60*1000)):null;
           return<div key={s.id} onClick={()=>setOmgSel(s)} style={{display:'flex',alignItems:'center',gap:16,padding:'11px 16px',cursor:'pointer',background:i%2===0?'white':'#f8fafc',borderBottom:i<filtered.length-1?'1px solid #e2e8f0':'none',borderLeft:s.status==='open'?'3px solid #22c55e':'3px solid transparent'}}>
-            <div style={{flex:'0 0 280px',minWidth:0}}>
+            <div style={{flex:'0 0 260px',minWidth:0}}>
               <div style={{fontSize:14,fontWeight:800,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',color:'#0f172a'}}>{s.store_name}</div>
               <div style={{display:'flex',alignItems:'center',gap:5,marginTop:2}}>
                 {s._omg_sale_code&&<span style={{fontFamily:'monospace',fontSize:11,fontWeight:800,color:'#1e40af',background:'#eff6ff',padding:'1px 5px',borderRadius:3}}>{s._omg_sale_code}</span>}
@@ -15459,14 +15463,21 @@ export default function App(){
             </div>
             <span style={{flex:'0 0 auto',padding:'3px 8px',borderRadius:8,fontSize:11,fontWeight:700,background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':'#f1f5f9',color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':'#94a3b8'}}>{s.status}</span>
             <div style={{flex:'0 0 90px',fontSize:12,fontWeight:600,color:'#374151',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{rep?.name}</div>
-            <div style={{flex:1,fontSize:11,color:'#94a3b8',whiteSpace:'nowrap'}}>{s.open_date&&`${s.open_date} → ${s.close_date||'?'}`}</div>
+            <div style={{flex:'0 0 130px',textAlign:'right'}}>
+              {s.close_date&&<div style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>closes {s.close_date}</div>}
+              {_daysLeft!==null&&<span style={{display:'inline-block',marginTop:2,padding:'1px 6px',borderRadius:4,fontSize:10,fontWeight:800,
+                background:_daysLeft>14?'#dcfce7':_daysLeft>0?'#fef3c7':'#fee2e2',
+                color:_daysLeft>14?'#166534':_daysLeft>0?'#92400e':'#dc2626'}}>
+                {_daysLeft>0?`${_daysLeft}d left`:`${Math.abs(_daysLeft)}d overdue`}</span>}
+              {!s.close_date&&!s._last_synced&&<span style={{fontSize:10,color:'#94a3b8'}}>no close date</span>}
+            </div>
             <div style={{flex:'0 0 90px',textAlign:'right'}}>
               <div style={{fontSize:15,fontWeight:800,color:'#1e40af'}}>${(s.total_sales||0).toLocaleString()}</div>
               <div style={{fontSize:10,color:'#94a3b8'}}>sales</div>
             </div>
             <div style={{flex:'0 0 54px',textAlign:'right'}}>
-              <div style={{fontSize:15,fontWeight:800,color:'#166534'}}>{s.orders||0}</div>
-              <div style={{fontSize:10,color:'#94a3b8'}}>orders</div>
+              <div style={{fontSize:15,fontWeight:800,color:'#166534'}}>{s.unique_buyers||0}</div>
+              <div style={{fontSize:10,color:'#94a3b8'}}>buyers</div>
             </div>
             <div style={{flex:'0 0 54px',textAlign:'right'}}>
               <div style={{fontSize:15,fontWeight:800,color:'#374151'}}>{s.items_sold||0}</div>
