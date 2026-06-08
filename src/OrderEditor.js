@@ -1710,11 +1710,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         });
         if(!inJob)return[j];
         const hasActiveReq=(j.art_requests||[]).some(r=>r.status!=='recalled');
-        if(!j._released&&!hasActiveReq)return[j];
+        const _relJob=j._released||j.key?.startsWith('released_');
+        if(!_relJob&&!hasActiveReq)return[j];
         (j._art_ids||[j.art_file_id].filter(Boolean)).forEach(aid=>{if(aid&&aid!=='__tbd')oldArtIds.add(aid)});
         touched=true;
         // Released jobs are dropped so syncJobs regenerates fresh under the new art (and new name).
-        if(j._released)return[];
+        if(_relJob)return[];
         // Non-released jobs with active requests: reset status and mark requests as recalled.
         return[{...j,art_status:'needs_art',
           art_requests:(j.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),
@@ -1853,11 +1854,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // committed to art and shouldn't be re-merged into auto-generated groups.
     // Build a set of (item_idx, deco_idx) pairs already covered by a released
     // job so we can skip them when assembling itemSigs below.
-    const releasedJobs=safeJobs(o).filter(j=>j._released);
+    const _isRel=j=>j._released||j.key?.startsWith('released_');
+    const releasedJobs=safeJobs(o).filter(_isRel);
     // Manually merged jobs combine several decoration signatures into one job by hand. Like
     // released jobs, their item/deco pairs must not be re-grouped or re-split by the auto-builder.
     // (Unlike released jobs, their unit counts are still refreshed below as item sizes change.)
-    const mergedJobs=safeJobs(o).filter(j=>j._merged&&!j._released);
+    const mergedJobs=safeJobs(o).filter(j=>j._merged&&!_isRel(j));
     const frozenItemDecos=new Set();
     [...releasedJobs,...mergedJobs].forEach(j=>(j.items||[]).forEach(gi=>{
       const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx];
@@ -2042,7 +2044,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // keeps both split_from and _merged). The auto-sync effect feeds this list back in as its own
     // input, so any such duplicate compounds exponentially on every render — that's the runaway
     // that spawned thousands of identical split jobs. The dedupe at the return is a second backstop.
-    const splitJobs=safeJobs(o).filter(j=>j.split_from&&!j._released&&!j._merged&&!newJobs.find(nj=>nj.id===j.id));
+    const splitJobs=safeJobs(o).filter(j=>j.split_from&&!_isRel(j)&&!j._merged&&!newJobs.find(nj=>nj.id===j.id));
     // Subtract split-off units from parent jobs so totals stay correct (skip parents that already
     // have per-item size overrides — those totals are derived from the preserved sizes).
     splitJobs.forEach(sj=>{
@@ -2088,7 +2090,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _jobDecoPairs=j=>{const out=[];(j.items||[]).forEach(gi=>{const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:[]);dis.forEach(di=>out.push(gi.item_idx+'::'+di))});return out;};
     _kept.forEach(j=>_jobDecoPairs(j).forEach(p=>_coveredPairs.add(p)));
     const orphanedSubmitted=safeJobs(o).filter(j=>{
-      if(!j||j._released||j._merged||j.split_from)return false;// already handled above
+      if(!j||_isRel(j)||j._merged||j.split_from)return false;// already handled above
       if(_keptIds.has(j.id)||_keptKeys.has(j.key))return false;// already represented by a rebuilt job
       if(_isCarryOver(j))return false;// stale job from a prior order that reused this SO number
       // Stale duplicate — its decorations are already covered by a current job. Only the
@@ -8342,7 +8344,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(()=>{const _artIds4=j._art_ids||[j.art_file_id].filter(Boolean);if(_artIds4.length===0||(_artIds4.length===1&&_artIds4[0]==='__tbd'))return null;const hasActiveReqs=(j.art_requests||[]).some(r=>r.status!=='recalled');const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
                   const artReturned=j.art_status==='waiting_approval';const artApproved=j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status);
                   return<>{!artApproved&&hasActiveReqs&&activeReq&&<span style={{fontSize:8,padding:'1px 5px',borderRadius:8,fontWeight:700,background:artReturned?'#dbeafe':'#fef3c7',color:artReturned?'#1e40af':'#92400e',marginRight:3}}>{artReturned?'Returned':activeReq.status==='in_progress'?'In Progress':'Requested'}</span>}
-                  {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#6d28d9',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();const artIds=j._art_ids||[j.art_file_id].filter(Boolean);const wasReleased=!!j._released;
+                  {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#6d28d9',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();const artIds=j._art_ids||[j.art_file_id].filter(Boolean);const wasReleased=!!(j._released||j.key?.startsWith('released_'));
                   // For wizard-released jobs, drop them so syncJobs regenerates a fresh needs_art auto-job.
                   const updJobs=wasReleased?safeJobs(o).filter((_,i2)=>i2!==ji):safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;return{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:''}});
                   const updArt=af.map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art'}:a);const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);if(!wasReleased)setArtReqModal({jIdx:ji,artist:'',instructions:'',files:[]});else nf('Art recalled — re-submit via wizard')}} title="Recall art and re-submit with new instructions">Update Art</button>}</>})()}
