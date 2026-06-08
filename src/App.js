@@ -4754,7 +4754,7 @@ export default function App(){
   const[aiInvPoWizOpen,setAiInvPoWizOpen]=useState(false);
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
   // OMG Team Stores
-  const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);const[omgBulkSel,setOmgBulkSel]=useState(()=>new Set());const[omgBulkArt,setOmgBulkArt]=useState('');
+  const[omgFilter,setOmgFilter]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user')||'null');return{rep:u?.id||'all',status:'all',search:'',dateRange:'30d'}}catch{return{rep:'all',status:'all',search:'',dateRange:'30d'}}});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);const[omgBulkSel,setOmgBulkSel]=useState(()=>new Set());const[omgBulkArt,setOmgBulkArt]=useState('');
   // Live completion status reported up from the Parent Order Portal for the
   // selected store: {saleCode, orders, withEmail, withAddress, notified}. Gates
   // the Create Sales Order button at the bottom of the store detail.
@@ -15441,37 +15441,30 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Open Now</div><div className="stat-value" style={{color:'#d97706'}}>{filtered.filter(s=>s.status==='open').length}</div></div>
       </div>
 
-      {/* Store cards */}
-      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))',gap:12}}>
-        {filtered.map(s=>{const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
-          return<div key={s.id} className="card hover-card" style={{cursor:'pointer',border:s.status==='open'?'2px solid #22c55e':undefined}} onClick={()=>setOmgSel(s)}>
-            <div style={{padding:14}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6}}>
-                <div>
-                  <div style={{fontSize:14,fontWeight:800}}>{s.store_name}</div>
-                  <div style={{fontSize:11,color:'#64748b'}}>{s._omg_sale_code&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',marginRight:4}}>{s._omg_sale_code}</span>}{c?.name} · {rep?.name?.split(' ')[0]}</div>
-                  {s._omg_id&&<a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:10,color:'#2563eb',textDecoration:'none',fontWeight:600}}>🔗 OMG Admin</a>}
-                </div>
-                <span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,
-                  background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':'#f1f5f9',
-                  color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':'#94a3b8'}}>{s.status}</span>
+      {/* Store list */}
+      <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+        {filtered.map((s,i)=>{const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);const linkedSO=sos.find(so=>so.omg_store_id===s.id);
+          return<div key={s.id} onClick={()=>setOmgSel(s)} style={{display:'flex',alignItems:'center',gap:12,padding:'9px 14px',cursor:'pointer',background:i%2===0?'white':'#f8fafc',borderBottom:i<filtered.length-1?'1px solid #e2e8f0':'none',borderLeft:s.status==='open'?'3px solid #22c55e':'3px solid transparent'}}>
+            <div style={{flex:'0 0 260px',minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{s.store_name}</div>
+              <div style={{fontSize:10,color:'#64748b'}}>
+                {s._omg_sale_code&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',marginRight:4}}>{s._omg_sale_code}</span>}
+                {c?.name}
+                {s._omg_id&&<><span style={{margin:'0 4px'}}>·</span><a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{color:'#2563eb',textDecoration:'none',fontWeight:600}}>OMG ↗</a></>}
               </div>
-              {s.open_date&&<div style={{fontSize:10,color:'#94a3b8',marginBottom:8}}>📅 {s.open_date} → {s.close_date}</div>}
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6}}>
-                <div style={{textAlign:'center',padding:6,background:'#f8fafc',borderRadius:4}}>
-                  <div style={{fontSize:16,fontWeight:800,color:'#1e40af'}}>${(s.total_sales||0).toLocaleString()}</div><div style={{fontSize:9,color:'#64748b'}}>Sales</div></div>
-                <div style={{textAlign:'center',padding:6,background:'#f0fdf4',borderRadius:4}}>
-                  <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>{s.orders||0}</div><div style={{fontSize:9,color:'#64748b'}}>Orders</div></div>
-                <div style={{textAlign:'center',padding:6,background:'#fef3c7',borderRadius:4}}>
-                  <div style={{fontSize:16,fontWeight:800,color:'#92400e'}}>${(s.fundraise_total||0).toLocaleString()}</div><div style={{fontSize:9,color:'#64748b'}}>Fundraised</div></div>
-              </div>
-              <div style={{marginTop:6,fontSize:10,color:'#64748b'}}>{s.products?.length||0} products · {s.items_sold||0} items sold · {s.unique_buyers||0} buyers</div>
-              {s.status==='closed'&&!sos.some(so=>so.omg_store_id===s.id)&&<div style={{marginTop:6,padding:4,background:'#fef3c7',borderRadius:4,fontSize:10,color:'#92400e',fontWeight:600,textAlign:'center'}}>
-                ⚠️ Ready to pull — not yet converted to SO</div>}
-              {sos.some(so=>so.omg_store_id===s.id)&&<div style={{marginTop:6,padding:4,background:'#dcfce7',borderRadius:4,fontSize:10,color:'#166534',fontWeight:600,textAlign:'center'}}>
-                ✅ Pulled → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>}
+            </div>
+            <span style={{flex:'0 0 auto',padding:'2px 7px',borderRadius:8,fontSize:10,fontWeight:700,background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':'#f1f5f9',color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':'#94a3b8'}}>{s.status}</span>
+            <div style={{flex:1,fontSize:11,color:'#475569'}}>{rep?.name}</div>
+            <div style={{flex:'0 0 auto',fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{s.open_date&&`${s.open_date} → ${s.close_date||'?'}`}</div>
+            <div style={{flex:'0 0 100px',textAlign:'right'}}>
+              <div style={{fontSize:13,fontWeight:700,color:'#1e40af'}}>${(s.total_sales||0).toLocaleString()}</div>
+              <div style={{fontSize:10,color:'#64748b'}}>{s.items_sold||0} items · {s.unique_buyers||0} buyers</div>
+            </div>
+            <div style={{flex:'0 0 110px',textAlign:'right',fontSize:10}}>
+              {linkedSO?<span style={{color:'#166534',fontWeight:600,background:'#dcfce7',padding:'2px 6px',borderRadius:4}}>✅ {linkedSO.id}</span>:s.status==='closed'?<span style={{color:'#92400e',fontWeight:600,background:'#fef3c7',padding:'2px 6px',borderRadius:4}}>⚠️ Pull</span>:null}
             </div>
           </div>})}
+        {filtered.length===0&&<div style={{padding:32,textAlign:'center',color:'#94a3b8',fontSize:13}}>No stores match the current filters</div>}
       </div>
     </>);
   };
