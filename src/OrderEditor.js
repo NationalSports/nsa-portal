@@ -2423,7 +2423,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Build the printable/downloadable doc options. Shared by Print and Download.
             const _makeDocOpts=()=>{
               const items=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
-              const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
+              const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
               const isRolled=(o.pricing_mode||'itemized')==='rolled_up';
               const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);
               const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -4959,12 +4959,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     <SendModal isOpen={showSend} onClose={()=>setShowSend(false)} estimate={o} customer={cust} docType={isE?'estimate':'so'} buildAttachmentHtml={()=>{
       const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
       const items=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
-      const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
+      const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
       const isRolled=(o.pricing_mode||'itemized')==='rolled_up';const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);
       const rows=[];let subTotal=0;
       items.forEach(it=>{
         const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);
-        const decos=safeDecos(it);const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);return a+dp2.sell},0);
+        const decos=safeDecos(it);const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq2=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);return a+(eq2/qty)*dp2.sell},0);
         const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
         const unitPrice=isRolled?safeNum(it.unit_sell)+decoSell:safeNum(it.unit_sell);const lineAmt=qty*unitPrice;subTotal+=lineAmt;
         let itemName=(it.name||'')+(it.color?' - '+it.color:'');
@@ -4974,8 +4974,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(!isRolled){decos.forEach(d=>{
           const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const artF=af.find(a2=>a2.id===d.art_file_id);
           const decoLabel=pdfDecoLabel(d,artF);
-          const posLabel=d.position?' — '+d.position:'';const decoAmt=qty*dp2.sell;subTotal+=decoAmt;
-          rows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
+          const posLabel=d.position?' — '+d.position:'';const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);const decoAmt=eq*dp2.sell;subTotal+=decoAmt;
+          rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
         })}
       });
       const shipAmt=o.shipping_type==='pct'?subTotal*(o.shipping_value||0)/100:(o.shipping_value||0);
@@ -5431,7 +5431,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const alreadyInvoiced=invType==='deposit'?0:(invoicedQtyMap.get(soLineKey(it,idx))||0);
               const qty=Math.max(0,totalQty-alreadyInvoiced);
               if(invType!=='deposit'&&qty===0)return null;
-              const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,safeArt(o),cq);return a+dp2.sell},0);
+              const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,safeArt(o),cq);const eq2=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);return a+(eq2/qty)*dp2.sell},0);
               const lineAmt=qty*(safeNum(it.unit_sell)+decoSell);
               return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:invType==='deposit'?Math.round(lineAmt*invDepositPct/100*100)/100:lineAmt,
                 _sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,idx)}}).filter(Boolean);
@@ -5483,7 +5483,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // Build rows with decoration detail from SO items
         const rows=[];let subTotal=0;
         const soItems=irSO?safeItems(irSO):[];const soArt=irSO?safeArt(irSO):[];
-        const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
+        const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
         const isDeposit=ir.inv_type==='deposit';const depPct=isDeposit?(ir.deposit_pct||50)/100:1;
         if(soItems.length>0){
           soItems.forEach(it=>{
@@ -5498,8 +5498,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,soArt,cq);
               const artF=soArt.find(a2=>a2.id===d.art_file_id);
               const decoLabel=pdfDecoLabel(d,artF);
-              const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
-              rows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
+              const posLabel=d.position?' — '+d.position:'';const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
+              rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
             });
           });
         }else{
@@ -5704,7 +5704,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Build rows with decoration detail from SO items
             const eRows=[];let eSubTotal=0;
             const eSoItems=irSO?safeItems(irSO):[];const eSoArt=irSO?safeArt(irSO):[];
-            const _eAQ={};eSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});
+            const _eAQ={};eSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
             const eIsDeposit=ir.inv_type==='deposit';const eDepPct=eIsDeposit?(ir.deposit_pct||50)/100:1;
             if(eSoItems.length>0){
               eSoItems.forEach(it=>{
@@ -5719,8 +5719,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eSoArt,cq);
                   const artF=eSoArt.find(a2=>a2.id===d.art_file_id);
                   const decoLabel=pdfDecoLabel(d,artF);
-                  const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*eDepPct*100)/100;eSubTotal+=decoAmt;
-                  eRows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$e(dp2.sell),style:'text-align:right'},{value:_$e(decoAmt),style:'text-align:right'}]});
+                  const posLabel=d.position?' — '+d.position:'';const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*eDepPct*100)/100;eSubTotal+=decoAmt;
+                  eRows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$e(dp2.sell),style:'text-align:right'},{value:_$e(decoAmt),style:'text-align:right'}]});
                 });
               });
             }else{
