@@ -3209,6 +3209,7 @@ export default function App(){
   const[batchPOs,setBatchPOs]=useState(()=>loadState('batch_pos',[]));// pending queue
   const[submittedBatches,setSubmittedBatches]=useState(()=>loadState('submitted_batches',[]));// submitted batches for scan lookup
   const[batchCounter,setBatchCounter]=useState(()=>loadState('batch_counter',4501));// sequential PO numbers: NSA 4501, NSA 4502...
+  const[batchVendorCounters,setBatchVendorCounters]=useState(()=>loadState('batch_vendor_counters',{}));// vendorKey → assigned NSA counter value
   const[batchScan,setBatchScan]=useState('');// scan/lookup field
   const[editingBatchId,setEditingBatchId]=useState(null);// batch PO id being edited in queue
   const[sanmarPreview,setSanMarPreview]=useState(null);// {poNumber,batchPOs,vendorName} — SanMar dry-run preview modal
@@ -3376,6 +3377,7 @@ export default function App(){
           if(as.batch_pos){_batchPosApplied.current=JSON.stringify(as.batch_pos);setBatchPOs(as.batch_pos)}
           if(as.submitted_batches)setSubmittedBatches(as.submitted_batches);
           if(as.batch_counter)setBatchCounter(as.batch_counter);
+          if(as.batch_vendor_counters)setBatchVendorCounters(as.batch_vendor_counters);
           if(as.change_log)setChangeLog(as.change_log);
           if(as.so_history)setSOHistory(as.so_history);
           if(as.est_history)setEstHistory(as.est_history);
@@ -3407,7 +3409,7 @@ export default function App(){
             try{
               await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
               if(issues?.length) _dbSave('issues',issues.map(i=>_pick(i,_issueCols)));
-              const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,est_history:estHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo,wh_recent_actions:whRecentActions};
+              const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,batch_vendor_counters:batchVendorCounters,change_log:changeLog,so_history:soHistory,est_history:estHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo,wh_recent_actions:whRecentActions};
               for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
               await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
               console.log('[DB] Seeded Supabase from localStorage');
@@ -3431,7 +3433,7 @@ export default function App(){
               setIssues(d2.issues||[]);
               const as2=d2.appState||{};
               if(as2.batch_pos){_batchPosApplied.current=JSON.stringify(as2.batch_pos);setBatchPOs(as2.batch_pos)}if(as2.submitted_batches)setSubmittedBatches(as2.submitted_batches);
-              if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.change_log)setChangeLog(as2.change_log);
+              if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.batch_vendor_counters)setBatchVendorCounters(as2.batch_vendor_counters);if(as2.change_log)setChangeLog(as2.change_log);
               if(as2.so_history)setSOHistory(as2.so_history);if(as2.est_history)setEstHistory(as2.est_history);if(as2.job_time_logs)setJobTimeLogs(as2.job_time_logs);
               if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:{..._qbDef.mapping,...(as2.qb_config.mapping||{})},syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(as2.inv_adj_log);if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);
@@ -3444,7 +3446,7 @@ export default function App(){
               try{
                 await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
                 if(issues?.length) _dbSave('issues',issues.map(i=>_pick(i,_issueCols)));
-                const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,est_history:estHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo,wh_recent_actions:whRecentActions};
+                const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,batch_vendor_counters:batchVendorCounters,change_log:changeLog,so_history:soHistory,est_history:estHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo,wh_recent_actions:whRecentActions};
                 for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
                 await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
                 console.log('[DB] Seeded Supabase from localStorage (fallback)');
@@ -4298,6 +4300,18 @@ export default function App(){
   React.useEffect(()=>{const cur=JSON.stringify(batchPOs);if(_batchPosApplied.current!==cur)_batchPosDirtyUntil=Date.now()+12000;_saveAppState('batch_pos',batchPOs)},[batchPOs]);
   React.useEffect(()=>{_saveAppState('submitted_batches',submittedBatches)},[submittedBatches]);
   React.useEffect(()=>{_saveAppState('batch_counter',batchCounter)},[batchCounter]);
+  React.useEffect(()=>{_saveAppState('batch_vendor_counters',batchVendorCounters)},[batchVendorCounters]);
+  // Auto-assign a unique PO number to each vendor group when new vendors appear in the queue
+  React.useEffect(()=>{
+    const vendorKeys=[...new Set((batchPOs||[]).map(bp=>bp.vendor_key))];
+    const unassigned=vendorKeys.filter(vk=>batchVendorCounters[vk]==null);
+    if(unassigned.length===0)return;
+    let next=batchCounter;
+    const updates={};
+    unassigned.forEach(vk=>{updates[vk]=next++});
+    setBatchVendorCounters(prev=>({...prev,...updates}));
+    setBatchCounter(next);
+  },[batchPOs,batchVendorCounters]);// eslint-disable-line react-hooks/exhaustive-deps
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
   React.useEffect(()=>{_saveAppState('est_history',estHistory)},[estHistory]);
@@ -10169,7 +10183,7 @@ export default function App(){
         const total=vg.pos.reduce((a,bp)=>a+bp.total_cost,0);
         const totalUnits=vg.pos.reduce((a,bp)=>a+bp.items.reduce((a2,it)=>a2+it.qty,0),0);
         const hitThreshold=total>=vg.threshold;
-        const nextPO='NSA '+batchCounter;
+        const nextPO='NSA '+(batchVendorCounters[vk]??batchCounter);
         const _bColorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Royal':'#4169e1','Maroon':'#800000','Forest':'#228B22','Kelly':'#4CBB17','Green':'#166534','Orange':'#EA580C','Purple':'#6B21A8','Gray':'#6b7280','Grey':'#6b7280','Charcoal':'#36454F','Silver':'#C0C0C0','Carolina':'#4B9CD3','Columbia':'#9BDDFF','Cardinal':'#8C1515','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Teal':'#008080'};
         const _bSwatch=cl=>{const s=String(cl||'');return _bColorMap[s]||Object.entries(_bColorMap).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
         return<div key={vk} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
@@ -10325,7 +10339,7 @@ export default function App(){
                   savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
                 });
                 setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk));
-                setBatchCounter(ct=>ct+1);
+                setBatchVendorCounters(prev=>{const n={...prev};delete n[vk];return n;});
                 nf('🚀 '+poNum+' ordered for '+vg.name+' ($'+total.toFixed(2)+')');
                 setPg('batch_pos');
               }}>{'🚀'} Order {nextPO} for {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
@@ -10361,7 +10375,7 @@ export default function App(){
   const getFullState=()=>({
     _meta:{version:'1.0',exported_at:new Date().toISOString(),exported_by:cu.name,app:'NSA Portal'},
     customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs,
-    batch_queue:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,
+    batch_queue:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,batch_vendor_counters:batchVendorCounters,
     change_log:changeLog,so_history:soHistory,est_history:estHistory,
     inv_adj_log:invAdjLog,inv_pos:invPOs,inv_po_counter:invPOCounter
   });
@@ -10394,6 +10408,7 @@ export default function App(){
           if(data.batch_queue)setBatchPOs(data.batch_queue);
           if(data.submitted_batches)setSubmittedBatches(data.submitted_batches);
           if(data.batch_counter)setBatchCounter(data.batch_counter);
+          if(data.batch_vendor_counters)setBatchVendorCounters(data.batch_vendor_counters);
           if(data.change_log)setChangeLog(data.change_log);
           if(data.so_history)setSOHistory(data.so_history);
           if(data.est_history)setEstHistory(data.est_history);
@@ -10430,6 +10445,7 @@ export default function App(){
         if(data.batch_queue)setBatchPOs(data.batch_queue);
         if(data.submitted_batches)setSubmittedBatches(data.submitted_batches);
         if(data.batch_counter)setBatchCounter(data.batch_counter);
+        if(data.batch_vendor_counters)setBatchVendorCounters(data.batch_vendor_counters);
         if(data.change_log)setChangeLog(data.change_log);
         if(data.so_history)setSOHistory(data.so_history);if(data.est_history)setEstHistory(data.est_history);
         if(data.inv_adj_log)setInvAdjLog(data.inv_adj_log);
