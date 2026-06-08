@@ -354,7 +354,7 @@ function ProductPage({ store, theme, product: p, isOpen, onAdd }) {
   const addToCart = () => {
     onAdd({
       kind: 'single', webstore_product_id: p.webstore_product_id, product_id: p.product_id, sku: p.sku,
-      name: p.name, image: p.image_front_url || null, size: size || null,
+      name: p.name, color: p.color || null, image: p.image_front_url || null, size: size || null,
       unit_price: Number(p.retail_price) || 0, fundraise: Number(p.fundraise_amount) || 0,
       name_extra: p.takes_name && pname.trim() ? nameUp : 0,
       player_number: needNumber ? num.trim() : null,
@@ -623,12 +623,7 @@ async function sendOrderEmail({ store, order, cart, buyer, shipping, total, disc
     const a = order.ship_address || null;
     const addrBlock = (order.ship_method === 'ship_home' && a) ? `<div style="margin-top:18px"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#64748b;margin-bottom:4px">Shipping to</div><div style="font-size:14px;line-height:1.5">${a.name ? a.name + '<br>' : ''}${a.street1 || ''}${a.street2 ? ', ' + a.street2 : ''}<br>${a.city || ''}${a.city ? ', ' : ''}${a.state || ''} ${a.zip || ''}</div><div style="font-size:12px;color:#94a3b8;margin-top:4px">Need to fix this? Use the “Track your order” link below to update your address before it ships.</div></div>` : '';
     const nsaLogo = `${window.location.origin}/NEW%20NSA%20Logo%20on%20white.png`;
-    const logoBar = `<table width="100%" style="border-collapse:collapse">
-        <tr>
-          <td align="left" style="padding:12px 20px;background:#fff;border:1px solid #eef1f5;border-bottom:none;border-radius:10px 0 0 0"><img src="${nsaLogo}" alt="National Sports Apparel" height="32" style="height:32px;display:block"></td>
-          <td align="right" style="padding:12px 20px;background:#fff;border:1px solid #eef1f5;border-bottom:none;border-left:none;border-radius:0 10px 0 0">${store.logo_url ? `<img src="${store.logo_url}" alt="${store.name}" height="40" style="height:40px;max-width:130px;object-fit:contain;display:inline-block">` : `<span style="font-weight:800;color:#0b1220">${store.name}</span>`}</td>
-        </tr>
-      </table>`;
+    const logoBar = `<div style="background:#fff;border:1px solid #eef1f5;border-bottom:none;border-radius:10px 10px 0 0;padding:14px 24px;text-align:center"><img src="${nsaLogo}" alt="National Sports Apparel" height="36" style="height:36px;display:inline-block"></div>`;
     const html = `<div style="font-family:'Source Sans 3',-apple-system,Segoe UI,Roboto,sans-serif;color:#2A2F3E;max-width:560px;margin:0 auto">
       ${logoBar}
       <div style="background:${store.primary_color || '#0b1f3a'};color:#fff;padding:18px 24px">
@@ -678,10 +673,10 @@ async function placeOrder({ store, cart, buyer, ship, payMode, stripePiId, statu
   cart.forEach((l) => {
     if (l.kind === 'bundle') {
       const bref = (crypto.randomUUID && crypto.randomUUID()) || Math.random().toString(36).slice(2);
-      items.push({ order_id: order.id, product_id: null, sku: null, size: null, qty: 1, unit_price: l.unit_price, unit_fundraise: (l.fundraise || 0) + (l.name_extra || 0), player_name: null, player_number: null, bundle_ref: bref, bundle_product_id: l.webstore_product_id, is_bundle_parent: true, line_status: 'pending' });
-      (l.components || []).forEach((c) => items.push({ order_id: order.id, product_id: c.product_id, sku: c.sku, size: c.size, qty: 1, unit_price: 0, unit_fundraise: 0, player_name: c.player_name || null, player_number: c.player_number || null, bundle_ref: bref, bundle_product_id: l.webstore_product_id, is_bundle_parent: false, line_status: 'pending' }));
+      items.push({ order_id: order.id, product_id: null, sku: null, size: null, qty: 1, unit_price: l.unit_price, unit_fundraise: (l.fundraise || 0) + (l.name_extra || 0), player_name: null, player_number: null, bundle_ref: bref, bundle_product_id: l.webstore_product_id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
+      (l.components || []).forEach((c) => items.push({ order_id: order.id, product_id: c.product_id, sku: c.sku, size: c.size, qty: 1, unit_price: 0, unit_fundraise: 0, player_name: c.player_name || null, player_number: c.player_number || null, bundle_ref: bref, bundle_product_id: l.webstore_product_id, is_bundle_parent: false, name: c.name || null, image_url: c.image || null, line_status: 'pending' }));
     } else {
-      items.push({ order_id: order.id, product_id: l.product_id, sku: l.sku, size: l.size, qty: l.qty || 1, unit_price: l.unit_price, unit_fundraise: (l.fundraise || 0) + (l.name_extra || 0), player_name: l.player_name || null, player_number: l.player_number || null, line_status: 'pending' });
+      items.push({ order_id: order.id, product_id: l.product_id, sku: l.sku, size: l.size, qty: l.qty || 1, unit_price: l.unit_price, unit_fundraise: (l.fundraise || 0) + (l.name_extra || 0), player_name: l.player_name || null, player_number: l.player_number || null, name: l.name || null, color: l.color || null, image_url: l.image || null, line_status: 'pending' });
     }
   });
   await supabase.from('webstore_order_items').insert(items);
