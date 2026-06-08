@@ -184,6 +184,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[rosterSendModal,setRosterSendModal]=useState(null);// {idx,di,item,rosterUrl,linkData}
     const[rosterUploadModal,setRosterUploadModal]=useState(null);// {idx,di,item,roster,sizedQtys}
     const[rosterUploadDragOver,setRosterUploadDragOver]=useState(false);
+    const[dstUploadModal,setDstUploadModal]=useState(null);// {target: artFileId}
+    const[dstDragOver,setDstDragOver]=useState(false);
     const[rsmTo,setRsmTo]=useState('');const[rsmCustom,setRsmCustom]=useState('');const[rsmName,setRsmName]=useState('Coach');const[rsmSending,setRsmSending]=useState(false);const[rsmCopied,setRsmCopied]=useState(false);
     React.useEffect(()=>{if(rosterSendModal){const contacts=(cust?.contacts||[]).filter(c=>c.email);setRsmTo(contacts.length>0?contacts[0].email:'');setRsmCustom('');setRsmName(contacts.length>0?(contacts[0].name||'Coach'):'Coach');setRsmSending(false);setRsmCopied(false)}},[rosterSendModal]);
     const[preexistingPO,setPreexistingPO]=useState(false);const[preexistingPOId,setPreexistingPOId]=useState('');const[poExcluded,setPOExcluded]=useState({});const[poCalcTick,setPoCalcTick]=useState(0);const[poShipTo,setPoShipTo]=useState('warehouse');
@@ -4978,6 +4980,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(isE&&o.status!=='approved'&&o.status!=='converted'){sv('status','sent');Object.entries(updates).forEach(([k,v])=>sv(k,v));onSave({...o,status:'sent',...updates});nf('Estimate sent!')}
       else{Object.entries(updates).forEach(([k,v])=>sv(k,v));onSave({...o,...updates});nf((isE?'Estimate':'Sales Order')+' sent!')}}}/>
 
+    {/* DST UPLOAD DRAG & DROP MODAL */}
+    {dstUploadModal&&(()=>{
+      const _dstTarget=dstUploadModal.target;
+      const _handleDstFiles=async(files)=>{
+        for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');setO(e=>({...e,art_files:(e.art_files||[]).map(fa=>fa.id===_dstTarget?{...fa,prod_files:[...(fa.prod_files||[]),{url,name:f.name}]}:fa),updated_at:new Date().toLocaleString()}));setDirty(true);nf('📎 '+f.name+' attached — click Save to keep')}catch(err){nf('Upload failed: '+err.message,'error')}}
+        setDstUploadModal(null);setDstDragOver(false);
+      };
+      return<div className="modal-overlay" onClick={()=>{setDstUploadModal(null);setDstDragOver(false)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+        <div className="modal-header"><h2>📎 Upload DST + PDF</h2><button className="modal-close" onClick={()=>{setDstUploadModal(null);setDstDragOver(false)}}>×</button></div>
+        <div className="modal-body">
+          <div
+            onDragOver={e=>{e.preventDefault();setDstDragOver(true)}}
+            onDragLeave={e=>{e.preventDefault();setDstDragOver(false)}}
+            onDrop={e=>{e.preventDefault();setDstDragOver(false);_handleDstFiles([...e.dataTransfer.files])}}
+            onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.dst,.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.multiple=true;inp.onchange=()=>_handleDstFiles([...inp.files]);inp.click()}}
+            style={{border:'2px dashed '+(dstDragOver?'#7c3aed':'#cbd5e1'),borderRadius:12,padding:'40px 20px',textAlign:'center',cursor:'pointer',background:dstDragOver?'#f5f3ff':'#f8fafc',transition:'all 0.2s ease'}}>
+            <div style={{fontSize:36,marginBottom:8}}>{dstDragOver?'📥':'🧵'}</div>
+            <div style={{fontSize:14,fontWeight:600,color:dstDragOver?'#7c3aed':'#334155',marginBottom:4}}>{dstDragOver?'Drop files here':'Drag & drop DST + PDF here'}</div>
+            <div style={{fontSize:12,color:'#94a3b8',marginBottom:12}}>or click to browse</div>
+            <div style={{fontSize:11,color:'#94a3b8'}}>Accepts .dst, .pdf, .ai, .eps, .png, .jpg</div>
+          </div>
+        </div>
+        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setDstUploadModal(null);setDstDragOver(false)}}>Cancel</button></div>
+      </div></div>;
+    })()}
+
     {/* ROSTER UPLOAD DRAG & DROP MODAL */}
     {rosterUploadModal&&(()=>{const rum=rosterUploadModal;
       const processFile=(f)=>{if(!f)return;const reader=new FileReader();reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());if(lines.length<2){nf('CSV appears empty','error');return}
@@ -7112,7 +7140,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const _completeEmb=()=>{const curO=oRef.current;const _by=cu?.name||'Rep';const updArt2=(curO.art_files||[]).map(a=>{if(!_pIds.includes(a.id))return a;return(a.prod_files||[]).length>0?{...a,status:'approved',prod_files_attached:true}:{...a,status:'approved',prod_files_attached:true,prod_files:[{name:'Embroidery files sent to printer',emb_sent:true,at:new Date().toISOString(),by:_by}]}});const updJobs=safeJobs(curO).map((jj,i2)=>i2===ji?{...jj,art_status:'art_complete'}:jj);const updated={...curO,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('🧵 Embroidery production files marked complete')};
               const _orderDtf=()=>{const curO=oRef.current;const marker={name:'DTF films ordered',dtf_order:true,at:new Date().toISOString(),by:cu?.name||'Rep'};const updArt2=(curO.art_files||[]).map(a=>_pIds.includes(a.id)?{...a,status:'approved',prod_files_attached:true,prod_files:[...(a.prod_files||[]),marker]}:a);const updJobs=safeJobs(curO).map((jj,i2)=>i2===ji?{...jj,art_status:'art_complete'}:jj);const updated={...curO,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('🎞️ DTF films marked ordered — art complete')};
               const _completeProd=()=>{const curO=oRef.current;const updArt2=(curO.art_files||[]).map(a=>_pIds.includes(a.id)?{...a,status:'approved',prod_files_attached:true}:a);const updJobs=safeJobs(curO).map((jj,i2)=>i2===ji?{...jj,art_status:'art_complete'}:jj);const updated={...curO,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('✅ Art complete — production files attached')};
-              const _uploadEmb=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.dst,.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.multiple=true;inp.onchange=async()=>{for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');setO(e=>({...e,art_files:(e.art_files||[]).map(fa=>fa.id===_pTarget?{...fa,prod_files:[...(fa.prod_files||[]),{url,name:f.name}]}:fa),updated_at:new Date().toLocaleString()}));setDirty(true);nf('📎 '+f.name+' attached — click Save to keep')}catch(err){nf('Upload failed: '+err.message,'error')}}};inp.click()};
+              const _uploadEmb=()=>{setDstUploadModal({target:_pTarget})};
               return<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#fef9c3,#fefce8)',border:'2px solid #fde047',borderRadius:8}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <span style={{fontSize:16}}>✅</span>
