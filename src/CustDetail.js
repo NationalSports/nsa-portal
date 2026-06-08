@@ -9,7 +9,7 @@ import { StripePaymentModal } from './modals';
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveArtFiles,REPS,prod,onCopy,onDelete,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[rR,setRR]=useState('thisyear');
   const[expSOs,setExpSOs]=useState(()=>new Set());
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
@@ -681,7 +681,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const orderArt=[];
     custSOs.forEach(so=>{(so.art_files||[]).forEach(art=>{orderArt.push({...art,_src:'so',_srcLabel:so.id+(so.memo?' — '+so.memo:''),_so_id:so.id,_so_memo:so.memo||'',_srcCustId:so.customer_id})})});
     custEsts.forEach(est=>{(est.art_files||[]).forEach(art=>{if(!orderArt.some(a=>a.name===art.name&&a.deco_type===art.deco_type))orderArt.push({...art,_src:'est',_srcLabel:est.id+(est.memo?' — '+est.memo:''),_est_id:est.id,_est_memo:est.memo||'',_srcCustId:est.customer_id})})});
-    const allArt=[...custOwnArt,...parentArt,...orderArt];
+    const allArt=[...custOwnArt,...parentArt,...orderArt].filter(a=>!/^art\s+tbd/i.test((a.name||'').trim()));
     // Group by art name+deco_type to find usage across orders
     const artGroups={};allArt.forEach(a=>{const key=(a.name||'').toLowerCase()+'||'+(a.deco_type||'');if(!artGroups[key])artGroups[key]={art:a,instances:[]};artGroups[key].instances.push(a)});
     const groups=Object.values(artGroups);
@@ -727,6 +727,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const archiveLogo=(art,arch)=>{
       const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
       custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt&&!!a.archived!==arch){changed=true;return{...a,archived:arch}}return a});if(changed&&onSaveSO)onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
+      custEsts.forEach(est=>{let changed=false;const updArt=(est.art_files||[]).map(a=>{if((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt&&!!a.archived!==arch){changed=true;return{...a,archived:arch}}return a});if(changed&&onSaveEst)onSaveEst({...est,art_files:updArt})});
       if((ownArt||[]).some(a=>(a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt&&!!a.archived!==arch))saveCustArt(ownArt.map(a=>(a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt?{...a,archived:arch}:a));
       nf&&nf((arch?'Archived ':'Unarchived ')+'"'+(art.name||'art')+'"');
     };
