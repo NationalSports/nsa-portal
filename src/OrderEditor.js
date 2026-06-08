@@ -2421,7 +2421,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               items.forEach(it=>{
                 const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);
                 const decos=safeDecos(it);
-                const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);return a+dp2.sell},0);
+                const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq2=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);return a+(eq2/qty)*dp2.sell},0);
                 const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
                 const unitPrice=isRolled?safeNum(it.unit_sell)+decoSell:safeNum(it.unit_sell);
                 const lineAmt=qty*unitPrice;subTotal+=lineAmt;
@@ -2448,8 +2448,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   if(isRolled){
                     rows.push({_class:'deco-row',cells:[{value:'',style:'text-align:center;border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'+numHtml,style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'}]});
                   }else{
-                    const decoAmt=qty*dp2.sell;subTotal+=decoAmt;
-                    rows.push({_class:'deco-row',cells:[{value:qty,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'+numHtml},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
+                    const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);
+                    const decoAmt=eq*dp2.sell;subTotal+=decoAmt;
+                    rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'+numHtml},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
                   }
                 });
               });
