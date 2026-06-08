@@ -1028,8 +1028,8 @@ const _dbSaveEstimateInner = async (est) => {
       if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:est.id,prevCount:oldItemIds.length,newCount:0,reason:'client has 0 items but DB has items (zero-wipe guard — likely stale/raced state)'});
       _dbSaveFailedIds.delete(est.id);_persistFailedIds();return true;
     }
-    if(_bgSync&&oldItemIds.length>0&&_clientEstItemCount<oldItemIds.length){
-      console.warn('[DB] SAFETY: background sync would shrink',est.id,'items ('+_clientEstItemCount+'<'+oldItemIds.length+') — preserving DB items, skipping child writes');
+    if(_bgSync&&oldItemIds.length>0&&_clientEstItemCount<oldItemIds.length&&!(est._itemsHydrated||_everHydratedItems.has(est.id))){
+      console.warn('[DB] SAFETY: background sync would shrink',est.id,'items ('+_clientEstItemCount+'<'+oldItemIds.length+') — items not hydrated, preserving DB items, skipping child writes');
       if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:est.id,prevCount:oldItemIds.length,newCount:_clientEstItemCount,reason:'background estimate save would shrink items'});
       _dbSaveFailedIds.delete(est.id);_persistFailedIds();return true;
     }
@@ -1312,8 +1312,11 @@ const _dbSaveSOInner = async (so) => {
     // SAFETY: a background sync (poll/realtime _diffSave, _bgSync=true) must NEVER shrink or empty an SO's
     // items — same root cause as the estimate item-wipe. Preserve DB rows; the SO row already upserted above.
     // Art files were already synced above so this early return is now safe.
-    if(_bgSync&&oldItemIds.length>0&&_clientSoItemCount<_oldDistinctItemIndexCount){
-      console.warn('[DB] SAFETY: background sync would shrink',so.id,'items ('+_clientSoItemCount+'<'+_oldDistinctItemIndexCount+(oldItemIds.length!==_oldDistinctItemIndexCount?' raw='+oldItemIds.length:'')+') — preserving DB items, skipping item writes; art files already synced');
+    // Exception: if items were cleanly hydrated this session, shrinkage is a deliberate rep deletion (rmI)
+    // that happened to flow through _diffSave — the _bgSync flag alone can't distinguish background stale-state
+    // from a user-initiated delete. Trust the hydrated client list and fall through to the normal save path.
+    if(_bgSync&&oldItemIds.length>0&&_clientSoItemCount<_oldDistinctItemIndexCount&&!(so._itemsHydrated||_everHydratedItems.has(so.id))){
+      console.warn('[DB] SAFETY: background sync would shrink',so.id,'items ('+_clientSoItemCount+'<'+_oldDistinctItemIndexCount+(oldItemIds.length!==_oldDistinctItemIndexCount?' raw='+oldItemIds.length:'')+') — items not hydrated, preserving DB items, skipping item writes; art files already synced');
       if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:so.id,prevCount:_oldDistinctItemIndexCount,newCount:_clientSoItemCount,reason:'background SO save would shrink items'});
       if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'so_art_files save error');_persistFailedIds();if(_dbNotify)_dbNotify('Art file save incomplete: '+(_failMsg||'see console'),'error');return false}
       _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
