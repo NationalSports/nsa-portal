@@ -241,7 +241,11 @@ const isJobReady = (j, o) => {
   let totalSz = 0, fulfilledSz = 0;
   (j.items || []).forEach(gi => {
     const it = safeItems(o)[gi.item_idx]; if (!it) return;
-    Object.entries(safeSizes(it)).filter(([, v]) => v > 0).forEach(([sz, v]) => {
+    // Use the job's own size quantities when available — split jobs carry only their subset of
+    // sizes (e.g. just 3XL) so checking the full SO item would require the sibling split's
+    // garments to be received before this job is considered ready.
+    const sizeSrc = (gi.sizes && Object.keys(gi.sizes).length > 0) ? gi.sizes : safeSizes(it);
+    Object.entries(sizeSrc).filter(([, v]) => v > 0).forEach(([sz, v]) => {
       totalSz += v;
       const picked = safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
       const rcvd = safePOs(it).reduce((a, pk) => a + safeNum((pk.received || {})[sz]), 0);
