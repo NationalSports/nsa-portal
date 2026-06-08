@@ -166,12 +166,15 @@ exports.handler = async (event) => {
         // Build line items from rows.
         const lineItems = (section.rows || []).map((row) => {
           const sku = extractSku(row.color) || (row.sku || '').toUpperCase();
+          // row.quantity is the store-wide total for this SKU/size, not the
+          // per-order quantity. Use 1 per line; presence (> 0) is the signal.
+          const ordered = row.quantity > 0;
           return {
             sku,
             name: row.product || '',
             color: cleanColor(row.color),
             size: row.size || 'OS',
-            qty: row.quantity || 0,
+            qty: ordered ? 1 : 0,
             unit_price: row.quantity ? (Number(row.paid || 0) / row.quantity) : Number(row.paid || 0),
             player_name: playerName,
             image_url: imgFor(sku, row.product),
