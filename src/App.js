@@ -4754,7 +4754,23 @@ export default function App(){
   const[aiInvPoWizOpen,setAiInvPoWizOpen]=useState(false);
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
   // OMG Team Stores
-  const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);const[omgBulkSel,setOmgBulkSel]=useState(()=>new Set());const[omgBulkArt,setOmgBulkArt]=useState('');
+  const[omgFilter,setOmgFilter]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user')||'null');return{rep:u?.id||'all',status:'all',search:'',dateRange:'30d'}}catch{return{rep:'all',status:'all',search:'',dateRange:'30d'}}});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);const[omgBulkSel,setOmgBulkSel]=useState(()=>new Set());const[omgBulkArt,setOmgBulkArt]=useState('');
+  // Order counts keyed by OMG sale code — loaded from webstore_orders when the OMG page is visited.
+  // This picks up orders that were imported via the player report upload in the Parent Order Portal.
+  const[omgWsoCounts,setOmgWsoCounts]=useState({});
+  React.useEffect(()=>{
+    if(pg!=='omg'||!supabase)return;
+    const codes=omgStores.filter(s=>s._omg_sale_code).map(s=>s._omg_sale_code);
+    if(!codes.length)return;
+    (async()=>{
+      const{data:wsList}=await supabase.from('webstores').select('id,omg_sale_code').in('omg_sale_code',codes).eq('source','omg');
+      if(!wsList?.length)return;
+      const{data:orderRows}=await supabase.from('webstore_orders').select('store_id').in('store_id',wsList.map(w=>w.id));
+      const byStoreId={};(orderRows||[]).forEach(r=>{byStoreId[r.store_id]=(byStoreId[r.store_id]||0)+1});
+      const byCode={};wsList.forEach(w=>{if(byStoreId[w.id])byCode[w.omg_sale_code]=byStoreId[w.id]});
+      setOmgWsoCounts(byCode);
+    })();
+  },[pg,omgStores.length]);// eslint-disable-line
   // Live completion status reported up from the Parent Order Portal for the
   // selected store: {saleCode, orders, withEmail, withAddress, notified}. Gates
   // the Create Sales Order button at the bottom of the store detail.
@@ -14619,7 +14635,8 @@ export default function App(){
       })();
       const custArt=_artLib.list;
       const custArtById=_artLib.byId;
-      const setStoreCustomer=(cid)=>{const upd={...s,customer_id:cid||null};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
+      const setStoreCustomer=(cid)=>{const cc=cid?cust.find(x=>x.id===cid):null;const upd={...s,customer_id:cid||null,...(cc?.primary_rep_id?{rep_id:cc.primary_rep_id}:{})};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
+      const setStoreRep=(rid)=>{const upd={...s,rep_id:rid||null};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
       const _applyStoreProds=newProds=>{const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
       // ── Pre-flight gates for creating the Sales Order ─────────────────
       // Everything below the page must be complete before the SO can be pulled.
@@ -14819,7 +14836,10 @@ export default function App(){
                     {c&&<button onMouseDown={e=>{e.preventDefault();setStoreCustomer(null);setOmgCustEdit(null)}} title="Unlink customer" style={{marginLeft:4,fontSize:11,color:'#94a3b8',border:'none',background:'none',cursor:'pointer'}}>unlink</button>}
                   </span>;
                 })()}
-                · Rep: {rep?.name} · {s.id}
+                · <select value={s.rep_id||''} onChange={e=>setStoreRep(e.target.value||null)} style={{fontSize:12,padding:'1px 4px',borderRadius:4,border:'1px solid #cbd5e1',color:s.rep_id?'#0f172a':'#dc2626',background:'white',cursor:'pointer'}}>
+                    <option value="">⚠ No rep assigned</option>
+                    {REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+                  </select> · {s.id}
               </div>
               {s._omg_id&&<div style={{fontSize:12,marginTop:2,display:'flex',gap:10}}>
                 <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" style={{color:'#2563eb',textDecoration:'none',fontWeight:600}}>🔗 OMG Admin</a>
@@ -15442,37 +15462,49 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Open Now</div><div className="stat-value" style={{color:'#d97706'}}>{filtered.filter(s=>s.status==='open').length}</div></div>
       </div>
 
-      {/* Store cards */}
-      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))',gap:12}}>
-        {filtered.map(s=>{const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
-          return<div key={s.id} className="card hover-card" style={{cursor:'pointer',border:s.status==='open'?'2px solid #22c55e':undefined}} onClick={()=>setOmgSel(s)}>
-            <div style={{padding:14}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6}}>
-                <div>
-                  <div style={{fontSize:14,fontWeight:800}}>{s.store_name}</div>
-                  <div style={{fontSize:11,color:'#64748b'}}>{s._omg_sale_code&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',marginRight:4}}>{s._omg_sale_code}</span>}{c?.name} · {rep?.name?.split(' ')[0]}</div>
-                  {s._omg_id&&<a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:10,color:'#2563eb',textDecoration:'none',fontWeight:600}}>🔗 OMG Admin</a>}
-                </div>
-                <span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,
-                  background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':'#f1f5f9',
-                  color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':'#94a3b8'}}>{s.status}</span>
+      {/* Store list */}
+      <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+        {filtered.map((s,i)=>{const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);const linkedSO=sos.find(so=>so.omg_store_id===s.id);const _orderCount=(s._omg_sale_code&&omgWsoCounts[s._omg_sale_code]!=null)?omgWsoCounts[s._omg_sale_code]:(s.orders||0);
+          const _refDate=s.close_date||(s._last_synced?s._last_synced.split('T')[0]:null);
+          const _deadline=_refDate?(()=>{const d=new Date(_refDate+'T00:00:00');d.setDate(d.getDate()+30);return d})():null;
+          const _today=new Date();_today.setHours(0,0,0,0);
+          const _daysLeft=_deadline&&!isNaN(_deadline)?Math.ceil((_deadline-_today)/(24*60*60*1000)):null;
+          return<div key={s.id} onClick={()=>setOmgSel(s)} style={{display:'flex',alignItems:'center',gap:16,padding:'11px 16px',cursor:'pointer',background:i%2===0?'white':'#f8fafc',borderBottom:i<filtered.length-1?'1px solid #e2e8f0':'none',borderLeft:s.status==='open'?'3px solid #22c55e':'3px solid transparent'}}>
+            <div style={{flex:'0 0 260px',minWidth:0}}>
+              <div style={{fontSize:14,fontWeight:800,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',color:'#0f172a'}}>{s.store_name}</div>
+              <div style={{display:'flex',alignItems:'center',gap:5,marginTop:2}}>
+                {s._omg_sale_code&&<span style={{fontFamily:'monospace',fontSize:11,fontWeight:800,color:'#1e40af',background:'#eff6ff',padding:'1px 5px',borderRadius:3}}>{s._omg_sale_code}</span>}
+                <span style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{c?.name}</span>
+                {s._omg_id&&<a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:10,color:'#2563eb',textDecoration:'none',fontWeight:700,flexShrink:0}}>↗</a>}
               </div>
-              {s.open_date&&<div style={{fontSize:10,color:'#94a3b8',marginBottom:8}}>📅 {s.open_date} → {s.close_date}</div>}
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6}}>
-                <div style={{textAlign:'center',padding:6,background:'#f8fafc',borderRadius:4}}>
-                  <div style={{fontSize:16,fontWeight:800,color:'#1e40af'}}>${(s.total_sales||0).toLocaleString()}</div><div style={{fontSize:9,color:'#64748b'}}>Sales</div></div>
-                <div style={{textAlign:'center',padding:6,background:'#f0fdf4',borderRadius:4}}>
-                  <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>{s.orders||0}</div><div style={{fontSize:9,color:'#64748b'}}>Orders</div></div>
-                <div style={{textAlign:'center',padding:6,background:'#fef3c7',borderRadius:4}}>
-                  <div style={{fontSize:16,fontWeight:800,color:'#92400e'}}>${(s.fundraise_total||0).toLocaleString()}</div><div style={{fontSize:9,color:'#64748b'}}>Fundraised</div></div>
-              </div>
-              <div style={{marginTop:6,fontSize:10,color:'#64748b'}}>{s.products?.length||0} products · {s.items_sold||0} items sold · {s.unique_buyers||0} buyers</div>
-              {s.status==='closed'&&!sos.some(so=>so.omg_store_id===s.id)&&<div style={{marginTop:6,padding:4,background:'#fef3c7',borderRadius:4,fontSize:10,color:'#92400e',fontWeight:600,textAlign:'center'}}>
-                ⚠️ Ready to pull — not yet converted to SO</div>}
-              {sos.some(so=>so.omg_store_id===s.id)&&<div style={{marginTop:6,padding:4,background:'#dcfce7',borderRadius:4,fontSize:10,color:'#166534',fontWeight:600,textAlign:'center'}}>
-                ✅ Pulled → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>}
+            </div>
+            <span style={{flex:'0 0 auto',padding:'3px 8px',borderRadius:8,fontSize:11,fontWeight:700,background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':'#f1f5f9',color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':'#94a3b8'}}>{s.status}</span>
+            <div style={{flex:'0 0 90px',fontSize:12,fontWeight:600,color:'#374151',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{rep?.name}</div>
+            <div style={{flex:'0 0 130px',textAlign:'right'}}>
+              {s.close_date&&<div style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>closes {s.close_date}</div>}
+              {_daysLeft!==null&&<span style={{display:'inline-block',marginTop:2,padding:'1px 6px',borderRadius:4,fontSize:10,fontWeight:800,
+                background:_daysLeft>14?'#dcfce7':_daysLeft>0?'#fef3c7':'#fee2e2',
+                color:_daysLeft>14?'#166534':_daysLeft>0?'#92400e':'#dc2626'}}>
+                {_daysLeft>0?`${_daysLeft}d left`:`${Math.abs(_daysLeft)}d overdue`}</span>}
+              {!s.close_date&&!s._last_synced&&<span style={{fontSize:10,color:'#94a3b8'}}>no close date</span>}
+            </div>
+            <div style={{flex:'0 0 90px',textAlign:'right'}}>
+              <div style={{fontSize:15,fontWeight:800,color:'#1e40af'}}>${(s.total_sales||0).toLocaleString()}</div>
+              <div style={{fontSize:10,color:'#94a3b8'}}>sales</div>
+            </div>
+            <div style={{flex:'0 0 54px',textAlign:'right'}}>
+              <div style={{fontSize:15,fontWeight:800,color:'#166534'}}>{_orderCount}</div>
+              <div style={{fontSize:10,color:'#94a3b8'}}>orders</div>
+            </div>
+            <div style={{flex:'0 0 54px',textAlign:'right'}}>
+              <div style={{fontSize:15,fontWeight:800,color:'#374151'}}>{s.items_sold||0}</div>
+              <div style={{fontSize:10,color:'#94a3b8'}}>items</div>
+            </div>
+            <div style={{flex:'0 0 100px',textAlign:'right',fontSize:11}}>
+              {linkedSO?<span style={{color:'#166534',fontWeight:700,background:'#dcfce7',padding:'3px 7px',borderRadius:4}}>✅ {linkedSO.id}</span>:s.status==='closed'?<span style={{color:'#92400e',fontWeight:700,background:'#fef3c7',padding:'3px 7px',borderRadius:4}}>⚠️ Pull</span>:null}
             </div>
           </div>})}
+        {filtered.length===0&&<div style={{padding:32,textAlign:'center',color:'#94a3b8',fontSize:13}}>No stores match the current filters</div>}
       </div>
     </>);
   };
