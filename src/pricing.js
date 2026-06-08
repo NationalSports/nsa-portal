@@ -66,7 +66,8 @@ export function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.
 export function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
 export function dP(d,q,artFiles,cq){
   const _revMult=d.reversible?2:1;
-  const pq=(cq||q)*_revMult;
+  // cq (from artQty) already incorporates the reversible ×2; only apply _revMult as fallback
+  const pq=cq!=null?cq:q*_revMult;
   if(d.kind==='art'&&d.art_file_id&&artFiles){
     if(d.art_file_id==='__tbd'){const tType=d.art_tbd_type||'screen_print';
       if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}

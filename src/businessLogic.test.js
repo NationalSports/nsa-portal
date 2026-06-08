@@ -324,6 +324,19 @@ describe('Pricing Functions', () => {
       // Sell should be a multiple of 0.10
       expect(Math.round(result.sell * 10) / 10).toBe(result.sell);
     });
+
+    test('reversible art decoration: cq already includes ×2, no double multiplication', () => {
+      // When an art file is reversible, artQty is pre-multiplied ×2 before being passed as cq.
+      // dP must NOT multiply by _revMult a second time, or it would price at 4× the real volume.
+      const artFiles = [makeArtFile({ ink_colors: 'PMS 123' })];
+      // reversible item qty=24 → artQty passed as cq=48 (24×2)
+      const reversible = dP({ kind: 'art', art_file_id: 'af1', reversible: true }, 24, artFiles, 48);
+      // non-reversible item at effective qty=48 (baseline)
+      const baseline = dP({ kind: 'art', art_file_id: 'af1', reversible: false }, 48, artFiles, 48);
+      // Both should look up the 48-piece pricing tier and return the same per-unit price
+      expect(reversible.sell).toBe(baseline.sell);
+      expect(reversible.cost).toBe(baseline.cost);
+    });
   });
 });
 
