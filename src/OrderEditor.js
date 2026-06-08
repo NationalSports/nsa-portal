@@ -128,11 +128,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const updArt=safeArt(o).map(a=>{
       let na=a;
       if(a.id===artId){const cur=(a.item_mockups||{})[key]||[];const have=new Set(cur.map(f=>typeof f==='string'?f:f?.url));const add=(files||[]).filter(m=>!have.has(m.url)).map(m=>({url:m.url,name:m.name||('mock-'+sku),art_file_id:a.id,sku,...(cwId?{color_way_id:cwId}:{})}));if(add.length)na={...a,item_mockups:{...(a.item_mockups||{}),[key]:[...cur,...add]}};}
-      if(sendToCoach&&jobArtIds.includes(a.id))na={...na,status:'needs_approval'};
+      if(jobArtIds.includes(a.id))na={...na,status:sendToCoach?'needs_approval':'approved'};
       return na;
     });
-    const updated={...o,art_files:updArt,...(sendToCoach&&jIdx>=0?{jobs:safeJobs(o).map((jj,i)=>i===jIdx?{...jj,art_status:'waiting_approval'}:jj)}:{}),updated_at:new Date().toLocaleString()};
-    setO(updated);onSave(updated);setDirty(false);setMockApplyModal(null);setJobWizard(null);
+    const _actDeco=(artFile?.deco_type)||'';
+    const _allProd=jobArtIds.every(aid=>{const af2=updArt.find(a=>a.id===aid);return af2&&artProdFilesReady(af2)});
+    const newJobStatus=sendToCoach?'waiting_approval':(_allProd?'art_complete':prodFilesStatusFor(_actDeco));
+    const updated={...o,art_files:updArt,...(jIdx>=0?{jobs:safeJobs(o).map((jj,i)=>i===jIdx?{...jj,art_status:newJobStatus}:jj)}:{}),updated_at:new Date().toLocaleString()};
+    setO(updated);onSave(updated);setDirty(false);setMockApplyModal(null);
     if(sendToCoach){nf('Mock applied'+(cwLabel?' · CW: '+cwLabel:'')+' — sending to coach for approval');if(jIdx>=0)openCoachSend(jIdx);}
     else nf('Mock applied'+(cwLabel?' · CW: '+cwLabel:'')+' — art stays approved');
   };
@@ -2142,6 +2145,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <div className="modal-header" style={{background:'linear-gradient(135deg,#16a34a,#22c55e)',color:'white'}}><h2 style={{color:'white',margin:0,fontSize:16}}>Apply mock — {d.color?d.color+' ':''}{d.sku}</h2><button className="modal-close" style={{color:'white'}} onClick={()=>setMockApplyModal(null)}>×</button></div>
       <div className="modal-body" style={{padding:16}}>
         {d.mockUrl&&_isImgUrl(d.mockUrl)&&<img src={d.mockUrl} alt="" style={{width:'100%',maxHeight:240,objectFit:'contain',borderRadius:8,border:'1px solid #e2e8f0',background:'#fafafa',marginBottom:12}}/>}
+        {(()=>{const matching=safeItems(o).filter(it=>(it.sku||'')===d.sku&&(it.color||'')===(d.color||''));return matching.length>0&&<div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:'6px 10px',marginBottom:10,fontSize:12}}><span style={{fontWeight:700,color:'#166534'}}>Applies to: </span>{matching.map((it,i)=><span key={i}>{i>0?', ':''}<span style={{color:'#15803d'}}>{it.name||it.sku}{it.color?' · '+it.color:''}</span></span>)}</div>})()}
         <div style={{fontSize:13,color:'#475569',marginBottom:14}}>Is this mock already approved for this garment, or do you want to send it to the coach to confirm?</div>
         <div style={{display:'flex',flexDirection:'column',gap:8}}>
           <button className="btn" style={{fontSize:13,fontWeight:700,background:'#16a34a',color:'white',border:'none',padding:'10px 14px',borderRadius:8}} onClick={()=>applyPriorMock(d,false)}>✓ Already approved — use it</button>
