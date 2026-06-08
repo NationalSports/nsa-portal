@@ -7586,12 +7586,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files||[],existing_files:existingFiles2.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
           const j2job=jobs[artReqModal.jIdx];
           const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist}:jj);
-          // Store rep files as sample_art on the art file (not mockups)
+          // Store rep files as sample_art and reset art file status so it re-enters artist queue
           const repFiles=artReqModal.files||[];
           let updArtFiles2=safeArt(o);
-          if(repFiles.length>0&&j2job){
+          if(j2job){
             const artIds2=j2job._art_ids||[j2job.art_file_id].filter(Boolean);
-            updArtFiles2=updArtFiles2.map(a=>artIds2.includes(a.id)?{...a,sample_art:[...(a.sample_art||[]),...repFiles]}:a);
+            updArtFiles2=updArtFiles2.map(a=>artIds2.includes(a.id)?{...a,...(repFiles.length>0?{sample_art:[...(a.sample_art||[]),...repFiles]}:{}),status:'waiting_for_art'}:a);
           }
           const updated={...o,jobs:updatedJobs,art_files:updArtFiles2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf('Art request sent to '+(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'artist');
         };
@@ -8473,12 +8473,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const submitArtReq=()=>{
           const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files||[],existing_files:existingFiles.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
           const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist}:jj);
-          // Store rep files as sample_art on the art file (not mockups)
+          // Store rep files as sample_art and reset art file status so it re-enters artist queue
           const repFiles=artReqModal.files||[];
           let updArtFiles3=safeArt(o);
-          if(repFiles.length>0&&j){
+          if(j){
             const artIds3=j._art_ids||[j.art_file_id].filter(Boolean);
-            updArtFiles3=updArtFiles3.map(a=>artIds3.includes(a.id)?{...a,sample_art:[...(a.sample_art||[]),...repFiles]}:a);
+            updArtFiles3=updArtFiles3.map(a=>artIds3.includes(a.id)?{...a,...(repFiles.length>0?{sample_art:[...(a.sample_art||[]),...repFiles]}:{}),status:'waiting_for_art'}:a);
           }
           const updated={...o,jobs:updatedJobs,art_files:updArtFiles3,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf('Art request sent to '+(artists.find(a=>a.id===artReqModal.artist)||{}).name||'artist');
         };
