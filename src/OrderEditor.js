@@ -5858,10 +5858,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // are ordered against a single 'QTY' line so they aren't silently left off the PO.
       const QTY_SZ='QTY';
       const openSizesFor=it=>{
+        // Meta keys in po_line objects that are not size quantities
+        const _M=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
+        // Returns quantity keys from a PO line object
+        const _qk=pl=>Object.keys(pl||{}).filter(k=>!k.startsWith('_')&&!_M.has(k)&&typeof pl[k]==='number'&&pl[k]>0);
+        // Total committed units from PO lines whose size keys don't overlap szSet (bucket mismatch)
+        const _mismatch=(poLines,szSet)=>(poLines||[]).reduce((tot,pl)=>{const ks=_qk(pl);return(ks.length>0&&!ks.some(k=>szSet.has(k)))?tot+ks.reduce((a,k)=>a+Math.max(0,(pl[k]||0)-((pl.cancelled||{})[k]||0)),0):tot},0);
         const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
-        if(szList.length>0)return szList.map(([sz,v])=>{const picked=safePicks(it).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(it.po_lines,sz);return[sz,Math.max(0,v-picked-po)]}).filter(([,v])=>v>0);
+        if(szList.length>0){
+          const szSet=new Set(szList.map(([sz])=>sz));
+          const perSz=szList.map(([sz,v])=>{const picked=safePicks(it).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(it.po_lines,sz);return[sz,Math.max(0,v-picked-po)]}).filter(([,v])=>v>0);
+          let rem=_mismatch(it.po_lines,szSet);
+          // Absorb mismatched PO units (e.g. OSFA:35 on an S/M/L item) from sorted sizes
+          return rem<=0?perSz:perSz.map(([sz,v])=>{if(rem<=0)return[sz,v];const ab=Math.min(v,rem);rem-=ab;return[sz,v-ab]}).filter(([,v])=>v>0);
+        }
         const est=safeNum(it.est_qty);
-        if(est>0){const picked=safePicks(it).reduce((a,pk)=>a+(pk[QTY_SZ]||0),0);const po=poCommitted(it.po_lines,QTY_SZ);return[[QTY_SZ,Math.max(0,est-picked-po)]].filter(([,v])=>v>0)}
+        if(est>0){const picked=safePicks(it).reduce((a,pk)=>a+(pk[QTY_SZ]||0),0);const po=poCommitted(it.po_lines,QTY_SZ);const mm=_mismatch(it.po_lines,new Set([QTY_SZ]));return[[QTY_SZ,Math.max(0,est-picked-po-mm)]].filter(([,v])=>v>0)}
         return[];
       };
       const vendorMap={};safeItems(o).forEach((it,i)=>{const vk=resolveVendor(it);if(!vk)return;if(!vendorMap[vk])vendorMap[vk]=[];vendorMap[vk].push({...it,_idx:i})});
