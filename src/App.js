@@ -3325,6 +3325,9 @@ export default function App(){
   const vecCanvasRef=useRef(null);
   const[issueModal,setIssueModal]=useState({open:false,desc:'',priority:'medium'});
   const[issueFilter,setIssueFilter]=useState('open');// all|open|resolved
+  const[openIssueThreads,setOpenIssueThreads]=useState({});// {issueId:true} — which issue conversation threads are expanded
+  const[issueDrafts,setIssueDrafts]=useState({});// {issueId:draftText} — in-progress reply per issue
+  const[issueFocus,setIssueFocus]=useState(null);// issueId to auto-open + scroll to (set when arriving from a dashboard notification)
   const[editMember,setEditMember]=useState(null);
   const[showInactive,setShowInactive]=useState(false);
   // Team Access page state — admin-only invite/deactivate management.
@@ -3350,8 +3353,25 @@ export default function App(){
   const consoleErrors=React.useRef([]);
   React.useEffect(()=>{const orig=console.error;console.error=(...args)=>{consoleErrors.current=[{msg:args.map(a=>typeof a==='string'?a:JSON.stringify(a)).join(' '),ts:new Date().toISOString()},...consoleErrors.current].slice(0,5);orig.apply(console,args)};return()=>{console.error=orig}},[]);
   const getIssueContext=()=>{const t=titles[pg]||pg;let viewing='';if(eEst)viewing='Editing '+eEst.id;else if(eSO)viewing='Editing '+eSO.id;else if(selC)viewing='Viewing customer: '+selC.name;else if(selV)viewing='Viewing vendor: '+selV.name;return{page:t,viewing,user:cu.name,role:cu.role,timestamp:new Date().toISOString(),recent_errors:consoleErrors.current.slice(0,5)}};
-  const submitIssue=()=>{if(!issueModal.desc.trim())return;const ctx=getIssueContext();const issue={id:'ISS-'+Date.now(),status:'open',description:issueModal.desc.trim(),priority:issueModal.priority,page:ctx.page,viewing:ctx.viewing,reported_by:ctx.user,role:ctx.role,timestamp:ctx.timestamp,recent_errors:ctx.recent_errors,resolved_at:null,resolution:null};setIssues(prev=>[issue,...prev]);setIssueModal({open:false,desc:'',priority:'medium'});nf('Issue '+issue.id+' logged')};
+  const submitIssue=()=>{if(!issueModal.desc.trim())return;const ctx=getIssueContext();const issue={id:'ISS-'+Date.now(),status:'open',description:issueModal.desc.trim(),priority:issueModal.priority,page:ctx.page,viewing:ctx.viewing,reported_by:ctx.user,reported_by_id:cu.id,role:ctx.role,timestamp:ctx.timestamp,recent_errors:ctx.recent_errors,resolved_at:null,resolution:null};setIssues(prev=>[issue,...prev]);setIssueModal({open:false,desc:'',priority:'medium'});nf('Issue '+issue.id+' logged')};
   const resolveIssue=(id,resolution)=>{setIssues(prev=>prev.map(i=>i.id===id?{...i,status:'resolved',resolution,resolved_at:new Date().toISOString()}:i))};
+  // ─── ISSUE CONVERSATIONS ───
+  // Two-way threads on issues reuse the messages table (entity_type:'issue', entity_id:issue.id, so_id:null).
+  // Replies are auto-persisted by the msgs _diffSave effect and notify via tagged_members (surfaced on the Dashboard).
+  const _resolveMemberByName=(name)=>{if(!name)return null;const n=String(name).trim().toLowerCase();return REPS.find(r=>String(r.name||'').trim().toLowerCase()===n)||null};
+  const issueThreadMsgs=(issueId)=>msgs.filter(m=>m.entity_type==='issue'&&m.entity_id===issueId).sort((a,b)=>new Date(a.ts)-new Date(b.ts));
+  const markIssueThreadRead=(issueId)=>{setMsgs(prev=>{let changed=false;const next=prev.map(m=>{if(m.entity_type==='issue'&&m.entity_id===issueId&&!(m.read_by||[]).includes(cu.id)){changed=true;return{...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]}}return m});return changed?next:prev})};
+  const toggleIssueThread=(issueId)=>{setOpenIssueThreads(o=>{const open=!o[issueId];if(open)markIssueThreadRead(issueId);return{...o,[issueId]:open}})};
+  const sendIssueReply=(issue,rawText)=>{const text=String(rawText||'').trim();if(!text)return;
+    // Notify the original reporter plus anyone who already replied on this thread (minus the sender).
+    const reporterId=issue.reported_by_id||_resolveMemberByName(issue.reported_by)?.id||null;
+    const priorAuthors=issueThreadMsgs(issue.id).map(m=>m.author_id);
+    const tagged=[...new Set([reporterId,...priorAuthors].filter(Boolean))].filter(id=>id!==cu.id);
+    const msg={id:'m'+Date.now(),so_id:null,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'issue',tagged_members:tagged,entity_type:'issue',entity_id:issue.id};
+    setMsgs(prev=>[...prev,msg]);setIssueDrafts(d=>({...d,[issue.id]:''}));setOpenIssueThreads(o=>({...o,[issue.id]:true}));
+    nf('Reply sent'+(tagged.length?' — '+tagged.length+' notified':''))};
+  // Arriving from a dashboard notification: reveal the issue (regardless of filter), open its thread, mark read, scroll to it.
+  React.useEffect(()=>{if(!issueFocus)return;setIssueFilter('all');setOpenIssueThreads(o=>({...o,[issueFocus]:true}));markIssueThreadRead(issueFocus);const t=setTimeout(()=>{try{const el=document.getElementById('issue-'+issueFocus);if(el)el.scrollIntoView({behavior:'smooth',block:'center'})}catch(_){}setIssueFocus(null)},200);return()=>clearTimeout(t)},[issueFocus]);// eslint-disable-line react-hooks/exhaustive-deps
   const exportIssuesCSV=()=>{const hdr=['ID','Status','Priority','Description','Page','Context','Reported By','Role','Timestamp','Resolution','Resolved At'];const rows=issues.map(i=>[i.id,i.status,i.priority,'"'+i.description.replace(/"/g,'""')+'"',i.page,i.viewing||'',i.reported_by||i.reportedBy||'',i.role,i.timestamp,i.resolution||'',i.resolved_at||i.resolvedAt||'']);const csv=[hdr.join(','),...rows.map(r=>r.join(','))].join('\n');const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='issues_export_'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url)};
   // SO version history
   const[soHistory,setSOHistory]=useState(()=>loadState('so_history',{}));// {soId:[{ts,user,snapshot}]}
@@ -6588,9 +6608,9 @@ export default function App(){
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {myUnread.length===0?<div className="empty" style={{padding:20}}>No unread messages</div>:
           myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);
-            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged?'#fef3c7':'white'}} onClick={()=>{if(so){setESO(so);setESOC(c2);setPg('orders')}}}>
+            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged?'#fef3c7':'white'}} onClick={()=>{if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}}}>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:2}}>
-                <span style={{fontSize:12,fontWeight:700}}>{author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{so?.id}</span>
+                <span style={{fontSize:12,fontWeight:700}}>{author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{so?.id||(m.entity_type==='issue'?'💬 Issue reply':'')}</span>
                 {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 4px',borderRadius:6,background:'#fef3c7',color:'#92400e'}}>@you</span>}
                 <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span></div>
               <div style={{fontSize:12,color:'#475569',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.text}</div>
@@ -7074,8 +7094,8 @@ export default function App(){
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {myUnread.length===0?<div className="empty" style={{padding:20}}>All caught up!</div>:
           myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);
-            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>{if(so){setESO(so);setESOC(c2);setPg('orders')}}}>
-              <div style={{display:'flex',gap:8,alignItems:'center'}}><span style={{fontWeight:700,fontSize:12}}>{author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{so?.id}</span><span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span></div>
+            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>{if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}}}>
+              <div style={{display:'flex',gap:8,alignItems:'center'}}><span style={{fontWeight:700,fontSize:12}}>{author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{so?.id||(m.entity_type==='issue'?'💬 Issue reply':'')}</span><span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span></div>
               <div style={{fontSize:12,color:'#475569'}}>{m.text}</div>
             </div>})}
         </div></div>
@@ -25665,21 +25685,26 @@ export default function App(){
 
     // ISSUES PAGE
   function rIssues(){
-    const fi=issueFilter==='all'?issues:issues.filter(i=>i.status===issueFilter);
+    const _isAdminIssues=cu?.role==='admin'||cu?.role==='super_admin';
+    // Non-admins only see issues they reported or are part of the conversation on (so reps/CSRs who arrive from a
+    // notification can reply without browsing every internal issue). Admins see everything.
+    const _mineIssue=(i)=>i.reported_by_id===cu?.id||(i.reported_by&&cu?.name&&String(i.reported_by).trim().toLowerCase()===String(cu.name).trim().toLowerCase())||msgs.some(m=>m.entity_type==='issue'&&m.entity_id===i.id&&(m.author_id===cu?.id||(m.tagged_members||[]).includes(cu?.id)));
+    const scope=_isAdminIssues?issues:issues.filter(_mineIssue);
+    const fi=issueFilter==='all'?scope:scope.filter(i=>i.status===issueFilter);
     const prioColor={high:'#dc2626',medium:'#f59e0b',low:'#22c55e'};
     const prioLabel={high:'High',medium:'Medium',low:'Low'};
     return<>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
         <div style={{display:'flex',gap:6}}>
-          {['all','open','resolved'].map(f=><button key={f} className={`btn btn-sm ${issueFilter===f?'btn-primary':'btn-secondary'}`} onClick={()=>setIssueFilter(f)}>{f==='all'?'All ('+issues.length+')':f==='open'?'Open ('+issues.filter(i=>i.status==='open').length+')':'Resolved ('+issues.filter(i=>i.status==='resolved').length+')'}</button>)}
+          {['all','open','resolved'].map(f=><button key={f} className={`btn btn-sm ${issueFilter===f?'btn-primary':'btn-secondary'}`} onClick={()=>setIssueFilter(f)}>{f==='all'?'All ('+scope.length+')':f==='open'?'Open ('+scope.filter(i=>i.status==='open').length+')':'Resolved ('+scope.filter(i=>i.status==='resolved').length+')'}</button>)}
         </div>
         <div style={{display:'flex',gap:6}}>
           <button className="btn btn-sm btn-primary" onClick={()=>setIssueModal({open:true,desc:'',priority:'medium'})}><Icon name="plus" size={12}/> Report Issue</button>
-          {issues.length>0&&<button className="btn btn-sm btn-secondary" onClick={exportIssuesCSV}><Icon name="save" size={12}/> Export CSV</button>}
+          {_isAdminIssues&&issues.length>0&&<button className="btn btn-sm btn-secondary" onClick={exportIssuesCSV}><Icon name="save" size={12}/> Export CSV</button>}
         </div>
       </div>
       {fi.length===0&&<div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'#94a3b8'}}>{issues.length===0?'No issues reported yet. Click the flag button in the topbar to report an issue.':'No '+issueFilter+' issues.'}</div></div>}
-      {fi.map(issue=><div key={issue.id} className="card" style={{marginBottom:12,borderLeft:'4px solid '+(prioColor[issue.priority]||'#94a3b8')}}>
+      {fi.map(issue=><div key={issue.id} id={'issue-'+issue.id} className="card" style={{marginBottom:12,borderLeft:'4px solid '+(prioColor[issue.priority]||'#94a3b8')}}>
         <div className="card-body" style={{padding:16}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
             <div style={{display:'flex',gap:8,alignItems:'center'}}>
@@ -25687,7 +25712,7 @@ export default function App(){
               <span className={`badge ${issue.status==='open'?'badge-amber':'badge-green'}`}>{issue.status}</span>
               <span style={{background:prioColor[issue.priority]+'20',color:prioColor[issue.priority],borderRadius:4,padding:'2px 8px',fontSize:11,fontWeight:600}}>{prioLabel[issue.priority]}</span>
             </div>
-            {issue.status==='open'&&<div style={{display:'flex',gap:4}}>
+            {_isAdminIssues&&issue.status==='open'&&<div style={{display:'flex',gap:4}}>
               <button className="btn btn-sm btn-primary" onClick={()=>resolveIssue(issue.id,'resolved')} style={{fontSize:10}}><Icon name="check" size={12}/> Resolve</button>
               <button className="btn btn-sm btn-secondary" onClick={()=>resolveIssue(issue.id,'wont_fix')} style={{fontSize:10,color:'#94a3b8'}}>Won't Fix</button>
             </div>}
@@ -25706,6 +25731,27 @@ export default function App(){
             </div>
           </details>}
           {issue.resolution&&<div style={{marginTop:8,fontSize:11,color:'#16a34a'}}>Resolution: <strong>{issue.resolution==='wont_fix'?"Won't fix":'Resolved'}</strong> — {new Date(issue.resolved_at||issue.resolvedAt).toLocaleString()}</div>}
+          {(()=>{const tmsgs=issueThreadMsgs(issue.id);const unread=tmsgs.filter(m=>!(m.read_by||[]).includes(cu?.id)).length;const open=!!openIssueThreads[issue.id];const draft=issueDrafts[issue.id]||'';
+            return<div style={{marginTop:12,borderTop:'1px solid #f1f5f9',paddingTop:10}}>
+              <button onClick={()=>toggleIssueThread(issue.id)} style={{background:'none',border:'none',cursor:'pointer',padding:0,fontSize:12,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:6}}>
+                <span>💬 Conversation{tmsgs.length?' ('+tmsgs.length+')':''}</span>
+                {unread>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 7px',fontSize:10,fontWeight:700}}>{unread} new</span>}
+                <span style={{color:'#94a3b8',fontSize:11}}>{open?'▲':'▼'}</span>
+              </button>
+              {open&&<div style={{marginTop:8}}>
+                {tmsgs.length===0&&<div style={{fontSize:12,color:'#94a3b8',padding:'2px 0 8px'}}>No replies yet — ask {issue.reported_by||'the reporter'} a question below and they'll be notified.</div>}
+                {tmsgs.map(m=>{const au=REPS.find(r=>r.id===m.author_id);const mine=m.author_id===cu?.id;
+                  return<div key={m.id} style={{display:'flex',flexDirection:'column',alignItems:mine?'flex-end':'flex-start',marginBottom:8}}>
+                    <div style={{maxWidth:'80%',background:mine?'#dbeafe':'#f1f5f9',color:'#0f172a',borderRadius:10,padding:'7px 11px',fontSize:13,lineHeight:1.45,whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{m.text}</div>
+                    <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{au?.name?.split(' ')[0]||'Unknown'} · {m.ts}</div>
+                  </div>})}
+                <div style={{display:'flex',gap:6,marginTop:6}}>
+                  <input className="form-input" style={{flex:1,fontSize:13}} placeholder={'Reply to '+(issue.reported_by||'reporter')+'…'} value={draft} onChange={e=>setIssueDrafts(d=>({...d,[issue.id]:e.target.value}))} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendIssueReply(issue,draft)}}}/>
+                  <button className="btn btn-sm btn-primary" disabled={!draft.trim()} onClick={()=>sendIssueReply(issue,draft)}>Send</button>
+                </div>
+              </div>}
+            </div>;
+          })()}
         </div>
       </div>)}
     </>};
