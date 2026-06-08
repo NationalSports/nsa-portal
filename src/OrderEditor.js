@@ -1662,11 +1662,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(newTotal>0&&item.est_qty)uI(i,'est_qty',0);
   };
   const addSzToItem=(i,sz)=>{const it=o.items[i];const cur=it.available_sizes||[];if(!cur.includes(sz))uI(i,'available_sizes',[...cur,sz])};
+  // Total units already committed on POs for an item, summed across every size bucket (any positive
+  // numeric key that isn't PO metadata). Used to warn before a re-size orphans an existing PO's
+  // bucket — the PO keeps its old OSFA/QTY/size keys, so the item's new sizes won't line up against
+  // it (see openSizesFor), which is how an already-ordered item can re-appear as "open to order".
+  const _committedPoUnits=(it)=>{const META=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
+    return(((it&&it.po_lines)||[]).reduce((a,pl)=>a+Object.entries(pl||{}).reduce((s,[k,v])=>s+((!k.startsWith('_')&&!META.has(k)&&typeof v==='number'&&v>0)?v:0),0),0))};
   // Switch an item between apparel / footwear / OSFA size pools. Clears existing
   // size quantities (with confirmation) since the size pools don't overlap, and
   // re-derives AU cost from retail since footwear vs apparel use different multipliers.
   const setSizeMode=(i,mode)=>{const it=o.items[i];const hasQty=Object.values(it.sizes||{}).some(v=>safeNum(v)>0);
-    if(hasQty&&!window.confirm('This item has quantities filled in. Switching the size mode will clear them. Continue?'))return false;
+    const _poUnits=_committedPoUnits(it);
+    const _warns=[];
+    if(hasQty)_warns.push('• Switching the size mode will clear the quantities you have filled in.');
+    if(_poUnits>0)_warns.push('• This item already has '+_poUnits+' unit'+(_poUnits!==1?'s':'')+' on a PO under the current sizing. That PO will NOT be updated, so its quantities will no longer line up with the new sizes — you would need to re-bucket or recreate the PO.');
+    if(_warns.length&&!window.confirm(_warns.join('\n\n')+'\n\nContinue?'))return false;
     if(hasQty)uI(i,'sizes',{});
     if(mode==='footwear'){uI(i,'available_sizes',[...FOOTWEAR_DEFAULT_SIZES]);uI(i,'is_footwear',true);
       if(isAU(it.brand)&&safeNum(it.retail_price)>0){const mult=it.brand==='Adidas'?0.55*0.75:0.55*0.85;uI(i,'nsa_cost',Math.floor(it.retail_price*mult*100)/100)}
@@ -2927,6 +2937,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   style={{width:64,textAlign:'center',fontSize:24,fontWeight:800,color:safeNum(item.est_qty)>0?'#1e40af':'#cbd5e1',border:'2px dashed #93c5fd',borderRadius:6,padding:'4px 0',background:'#eff6ff'}}/>
               </div>
               <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:8,color:'#2563eb'}} onClick={()=>{
+                // Warn before breaking a qty-only line into sizes when it already has a PO placed
+                // under the 'QTY' bucket — that PO won't follow the new sizes and would orphan.
+                const _poUnits=_committedPoUnits(item);
+                if(_poUnits>0&&!window.confirm('This item already has '+_poUnits+' unit'+(_poUnits!==1?'s':'')+" on a PO under its current 'QTY' sizing. Breaking it into a size grid won't update that PO, so its quantity will no longer line up with the new sizes — you'd need to re-bucket or recreate the PO.\n\nContinue?"))return;
                 // Expand qty-only into a size grid. If the product is currently OSFA-only
                 // (or has no size list), seed it with the standard apparel/footwear sizes
                 // so users get a real size breakdown to fill in — not an OSFA bucket that
