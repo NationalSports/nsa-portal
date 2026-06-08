@@ -128,10 +128,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const updArt=safeArt(o).map(a=>{
       let na=a;
       if(a.id===artId){const cur=(a.item_mockups||{})[key]||[];const have=new Set(cur.map(f=>typeof f==='string'?f:f?.url));const add=(files||[]).filter(m=>!have.has(m.url)).map(m=>({url:m.url,name:m.name||('mock-'+sku),art_file_id:a.id,sku,...(cwId?{color_way_id:cwId}:{})}));if(add.length)na={...a,item_mockups:{...(a.item_mockups||{}),[key]:[...cur,...add]}};}
-      if(sendToCoach&&jobArtIds.includes(a.id))na={...na,status:'needs_approval'};
+      if(jobArtIds.includes(a.id))na={...na,status:sendToCoach?'needs_approval':'approved'};
       return na;
     });
-    const updated={...o,art_files:updArt,...(sendToCoach&&jIdx>=0?{jobs:safeJobs(o).map((jj,i)=>i===jIdx?{...jj,art_status:'waiting_approval'}:jj)}:{}),updated_at:new Date().toLocaleString()};
+    const _actDeco=(artFile?.deco_type)||'';
+    const _allProd=jobArtIds.every(aid=>{const af2=updArt.find(a=>a.id===aid);return af2&&artProdFilesReady(af2)});
+    const newJobStatus=sendToCoach?'waiting_approval':(_allProd?'art_complete':prodFilesStatusFor(_actDeco));
+    const updated={...o,art_files:updArt,...(jIdx>=0?{jobs:safeJobs(o).map((jj,i)=>i===jIdx?{...jj,art_status:newJobStatus}:jj)}:{}),updated_at:new Date().toLocaleString()};
     setO(updated);onSave(updated);setDirty(false);setMockApplyModal(null);
     if(sendToCoach){nf('Mock applied'+(cwLabel?' · CW: '+cwLabel:'')+' — sending to coach for approval');if(jIdx>=0)openCoachSend(jIdx);}
     else nf('Mock applied'+(cwLabel?' · CW: '+cwLabel:'')+' — art stays approved');
