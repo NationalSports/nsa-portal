@@ -2480,7 +2480,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(total)+'</strong>',style:'text-align:right'}]},
                   ]}],
                 footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+_ci.depositTerms:_ci.terms,
-                portalLink:cust?.alpha_tag?(window.location.origin+'?portal='+cust.alpha_tag):undefined
+                portalLink:cust?.alpha_tag?(window.location.origin+'?portal='+cust.alpha_tag):undefined,
+                companyInfo:_ci
               };
             };
             return<><div style={{position:'fixed',inset:0,zIndex:98}} onClick={()=>setShowActionsDD(false)}/><div style={{position:'fixed',top:(r?r.bottom+4:0),right:(r?window.innerWidth-r.right:0),background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:99,minWidth:180}}>
@@ -4976,7 +4977,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(taxRate*100).toFixed(3)+'%)</strong>',style:'text-align:right;border:none'},{value:_$(taxAmt),style:'text-align:right;border:none'}]}]:[]),
           ...(_ecApp>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$(_ecApp)+'</strong>',style:'text-align:right;border:none'}]}]:[]),
           {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(total)+'</strong>',style:'text-align:right'}]}]}],
-        footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+_ci.depositTerms:_ci.terms});
+        footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+_ci.depositTerms:_ci.terms,companyInfo:_ci});
     }} repUser={cu} companyInfo={_ci} defaultFollowUpDays={portalSettings?.estFollowUpDays||portalSettings?.followUpDays||7} onSend={({followUpDays:fuDays,toEmails:_toEmails,messageId:_msgId}={})=>{
       const now=new Date().toLocaleString();const fuAt=fuDays?new Date(Date.now()+fuDays*86400000).toISOString():null;
       const histEntry={sent_at:now,sent_by:cu.name||cu.id,type:isE?'estimate':'so',to:_toEmails||'',messageId:_msgId||null};
@@ -5509,7 +5510,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               ...(ir.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$(ir.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
               ...(bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$(bal)+'</strong>',style:'text-align:right'}]}]:[]),
             ]}],
-          footer:ir.inv_type==='deposit'?_ci.depositTerms:_ci.terms};
+          footer:ir.inv_type==='deposit'?_ci.depositTerms:_ci.terms,companyInfo:_ci};
       };
       const printInvoice=()=>printDoc(buildInvoiceDocOpts());
       const downloadInvoice=async()=>{
@@ -9251,7 +9252,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   },
                 ],
                 notes:(()=>{const parts=[];if(isDPO)parts.push('Deco Type: '+(po.deco_type||'—').replace(/_/g,' '));if(po.notes)parts.push(po.notes);if(isDropShip)parts.push('<strong>DROP SHIP</strong> — Please ship directly to the customer address above.');return parts.length?parts.join('<br/>'):null})(),
-                footer:isDPO?'Expected return: '+(po.expected_date||'TBD'):'Please confirm receipt and expected ship date.'
+                footer:isDPO?'Expected return: '+(po.expected_date||'TBD'):'Please confirm receipt and expected ship date.',
+                companyInfo:_ci
               });
               const _pdfFilename='PO-'+po.po_id+(vendor?'-'+vendor.replace(/[^a-z0-9]+/gi,'_'):'');
               return<>
@@ -9382,7 +9384,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               rows:dp._bill_details.map(bd=>({cells:[bd.doc||'—',bd.date||'—',bd.supplier||'—',{value:'$'+safeNum(bd.cost).toFixed(2),style:'text-align:right'},{value:bd.freight?'$'+safeNum(bd.freight).toFixed(2):'—',style:'text-align:right'},bd.tracking||'—']}))}]:[]),
           ],
           notes:(()=>{const parts=[];if(dp.deco_type)parts.push('Deco Type: '+dp.deco_type.replace(/_/g,' '));if(dp.notes)parts.push(dp.notes);if((dp.tracking_numbers||[]).length)parts.push('Tracking: '+dp.tracking_numbers.join(', '));if(dp.drop_ship)parts.push('<strong>DROP SHIP</strong> — Please ship directly to the customer.');return parts.length?parts.join('<br/>'):null})(),
-          footer:'Expected return: '+(dp.expected_date||'TBD')
+          footer:'Expected return: '+(dp.expected_date||'TBD'),
+          companyInfo:_ci
         });
         return<div className="po-fullpage">
           <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
