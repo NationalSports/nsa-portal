@@ -6125,6 +6125,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{marginTop:8}}><label className="form-label">Notes</label><input className="form-input" placeholder="PO notes for vendor..." id={'po-notes-'+poId}/></div></>}
         </div>
         <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse')}}>← Back</button><button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse')}}>Cancel</button>
+          {poItems.length>0&&<button className="btn btn-secondary" onClick={()=>{const skus=poItems.filter((_,vi)=>!poExcluded[vi]).map(it=>it.sku).join(' ');navigator.clipboard.writeText(skus).then(()=>nf('Copied SKUs: '+skus))}}><Icon name="copy" size={14}/> Copy SKUs</button>}
           {poItems.length>0&&isBatchEligible&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={()=>{
             if(_poCreatingRef.current)return;
             if(o._posHydrated===false){nf("⚠️ This order's existing POs haven't finished loading. Reload the page before creating a PO so you don't create a duplicate.","error");return}
