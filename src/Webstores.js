@@ -308,7 +308,7 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
 
   const loadStores = useCallback(async () => {
     setLoading(true); setErr(null); setNeedsMigration(false);
-    const { data, error } = await supabase.from('webstores').select('*').order('created_at', { ascending: false });
+    const { data, error } = await supabase.from('webstores').select('*').eq('source', 'webstore').order('created_at', { ascending: false });
     if (error) {
       if (isMissingTable(error)) setNeedsMigration(true); else setErr(error.message);
       setStores([]);
