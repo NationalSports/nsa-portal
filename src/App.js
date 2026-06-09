@@ -3275,6 +3275,34 @@ export default function App(){
   React.useEffect(()=>{try{if(localStorage.getItem('nsa_stock_pos')!==null)localStorage.removeItem('nsa_stock_pos');if(localStorage.getItem('nsa_stock_po_counter')!==null)localStorage.removeItem('nsa_stock_po_counter')}catch(e){}},[]);
   const[invTab,setInvTab]=useState('stock');// stock | log | pos
   const[invPOModal,setInvPOModal]=useState({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false});// create/edit PO modal
+  const[invPOApiResults,setInvPOApiResults]=useState([]);
+  const[invPOApiLoading,setInvPOApiLoading]=useState(false);
+  React.useEffect(()=>{
+    const vendor=vend.find(v=>v.id===invPOModal.vendor_id);
+    const isSanMar=vendor&&/sanmar/i.test(vendor.name||'');
+    const q=(invPOModal.productSearch||'').trim();
+    if(!isSanMar||q.length<2){setInvPOApiResults([]);setInvPOApiLoading(false);return}
+    setInvPOApiLoading(true);setInvPOApiResults([]);
+    const t=setTimeout(async()=>{
+      try{
+        const prodData=await sanmarGetProduct(q.toUpperCase());
+        const parsed=(prodData?.items||[]).map(r=>{
+          const bi=r.productBasicInfo||r;const pi=r.productPriceInfo||r;
+          const style=bi.style||bi.styleNumber||q.toUpperCase();
+          const color=bi.catalogColor||bi.color||bi.colorName||'';
+          const name=((bi.brandName||'')+' '+(bi.productTitle||bi.title||bi.description||'')).trim()||style;
+          const cost=parseFloat(pi.piecePrice||pi.casePrice||0)||0;
+          const uniqueKey=bi.uniqueKey||bi.Unique_Key||r.uniqueKey||'';
+          const isHat=/hat|cap|visor|beanie/i.test(name);
+          return{style,color,name,cost,uniqueKey,availSizes:isHat?['OSFA']:['S','M','L','XL','2XL']};
+        }).filter(r=>r.style);
+        setInvPOApiResults(parsed);
+      }catch(e){console.warn('[PO] SanMar search failed:',e);setInvPOApiResults([])}
+      setInvPOApiLoading(false);
+    },600);
+    return()=>{clearTimeout(t)};
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[invPOModal.vendor_id,invPOModal.productSearch,invPOModal.open]);
   const[invPOReceive,setInvPOReceive]=useState(null);// PO being received
   const[invPOSearch,setInvPOSearch]=useState('');
   // Changelog & backup system
@@ -8096,7 +8124,7 @@ export default function App(){
   const saveInvPO=()=>{
     const vendorId=invPOModal.vendor_id;const vendor=vend.find(v=>v.id===vendorId);
     if(!vendorId||!vendor){nf('Select a vendor','warn');return}
-    const validItems=invPOModal.items.filter(it=>it.product_id&&Object.values(it.sizes||{}).some(v=>v>0));
+    const validItems=invPOModal.items.filter(it=>(it.product_id||it.sku)&&Object.values(it.sizes||{}).some(v=>v>0));
     if(validItems.length===0){nf('Add at least one item with quantities','warn');return}
     const isEdit=!!invPOModal.editId;
     if(isEdit){
@@ -27952,10 +27980,13 @@ export default function App(){
             const pq=(invPOModal.productSearch||'').trim().toLowerCase();
             if(!pq)return null;
             const vendorId=invPOModal.vendor_id;
+            const vendor=vend.find(v=>v.id===vendorId);
+            const isSanMar=vendor&&/sanmar/i.test(vendor.name||'');
             const available=vendorId?prod.filter(p=>p.vendor_id===vendorId&&!invPOModal.items.find(it=>it.product_id===p.id)):prod.filter(p=>!invPOModal.items.find(it=>it.product_id===p.id));
             const matches=available.filter(p=>p.sku.toLowerCase().includes(pq)||p.name.toLowerCase().includes(pq)||(p.color||'').toLowerCase().includes(pq)||(p.brand||'').toLowerCase().includes(pq)).slice(0,15);
-            if(matches.length===0)return<div style={{padding:8,fontSize:12,color:'#94a3b8',marginTop:4}}>No products found{vendorId?' for this vendor':''}.</div>;
-            return<div style={{marginTop:4,border:'1px solid #e2e8f0',borderRadius:6,background:'white',maxHeight:200,overflowY:'auto'}}>
+            const hasLocal=matches.length>0;const hasApi=invPOApiResults.length>0;
+            if(!hasLocal&&!hasApi&&!invPOApiLoading)return<div style={{padding:8,fontSize:12,color:'#94a3b8',marginTop:4}}>No products found{vendorId?' for this vendor':''}.{isSanMar?' Searching SanMar catalog...':''}</div>;
+            return<div style={{marginTop:4,border:'1px solid #e2e8f0',borderRadius:6,background:'white',maxHeight:220,overflowY:'auto'}}>
               {matches.map(p2=><div key={p2.id} style={{padding:'8px 12px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',fontSize:12,display:'flex',gap:8,alignItems:'center'}}
                 onClick={()=>{setInvPOModal(x=>({...x,productSearch:'',items:[...x.items,{product_id:p2.id,sku:p2.sku,name:p2.name,color:p2.color||'',available_sizes:[...p2.available_sizes],sizes:{},nsa_cost:p2.nsa_cost||0}]}))}}>
                 <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p2.sku}</span>
@@ -27963,8 +27994,22 @@ export default function App(){
                 <span style={{color:'#94a3b8',fontSize:11}}>{p2.color}</span>
                 <span style={{fontSize:10,color:'#64748b'}}>${p2.nsa_cost?.toFixed(2)}</span>
               </div>)}
+              {isSanMar&&invPOApiLoading&&<div style={{padding:'8px 12px',fontSize:12,color:'#64748b',fontStyle:'italic'}}>Searching SanMar catalog...</div>}
+              {isSanMar&&!invPOApiLoading&&hasApi&&<>
+                {hasLocal&&<div style={{padding:'3px 12px',fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',borderTop:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:1}}>SanMar Catalog</div>}
+                {invPOApiResults.map((r,ri)=><div key={ri} style={{padding:'8px 12px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',fontSize:12,display:'flex',gap:8,alignItems:'center'}}
+                  onClick={()=>{setInvPOModal(x=>({...x,productSearch:'',items:[...x.items,{product_id:null,sku:r.style,name:r.name,color:r.color,available_sizes:r.availSizes,sizes:{},nsa_cost:r.cost,_sanmar_style:r.style,_sanmar_color:r.color}]}))}}>
+                  <span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed'}}>{r.style}</span>
+                  <span style={{flex:1}}>{r.name}</span>
+                  <span style={{color:'#94a3b8',fontSize:11}}>{r.color}</span>
+                  <span style={{fontSize:10,color:'#64748b'}}>${r.cost.toFixed(2)}</span>
+                  <span style={{fontSize:9,padding:'1px 5px',background:'#ede9fe',color:'#7c3aed',borderRadius:4,fontWeight:700}}>API</span>
+                </div>)}
+              </>}
             </div>;
           })()}
+          <button type="button" style={{marginTop:6,fontSize:11,padding:'3px 8px',border:'1px dashed #94a3b8',borderRadius:4,background:'white',color:'#64748b',cursor:'pointer'}}
+            onClick={()=>setInvPOModal(x=>({...x,productSearch:'',items:[...x.items,{product_id:null,sku:'',name:'',color:'',available_sizes:['S','M','L','XL','2XL'],sizes:{},nsa_cost:0,_custom:true}]}))}>+ Custom Item</button>
         </div>
 
         {/* Items list with size inputs */}
@@ -27978,7 +28023,14 @@ export default function App(){
           return<div key={idx} style={{padding:12,background:'#f8fafc',borderRadius:6,marginBottom:8,border:'1px solid #e2e8f0'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,flexWrap:'wrap',gap:8}}>
               <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
-                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</span> <span style={{fontWeight:600}}>{it.name}</span>{it.color&&<span style={{color:'#94a3b8'}}> — {it.color}</span>}
+                {it.product_id
+                  ?<><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</span> <span style={{fontWeight:600}}>{it.name}</span>{it.color&&<span style={{color:'#94a3b8'}}> — {it.color}</span>}</>
+                  :<>
+                    <input style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed',width:80,border:'1px solid #c4b5fd',borderRadius:4,padding:'2px 4px',fontSize:12}} value={it.sku} placeholder="SKU/Style" onChange={e=>setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>i2!==idx?ii:{...ii,sku:e.target.value})}))}/>
+                    <input style={{fontWeight:600,flex:1,minWidth:120,border:'1px solid #c4b5fd',borderRadius:4,padding:'2px 4px',fontSize:12}} value={it.name} placeholder="Product name" onChange={e=>setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>i2!==idx?ii:{...ii,name:e.target.value})}))}/>
+                    <input style={{color:'#94a3b8',width:90,border:'1px solid #c4b5fd',borderRadius:4,padding:'2px 4px',fontSize:11}} value={it.color} placeholder="Color" onChange={e=>setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>i2!==idx?ii:{...ii,color:e.target.value})}))}/>
+                  </>
+                }
                 <span style={{fontSize:11,color:'#64748b',marginLeft:8}}>@ $</span>
                 <input type="number" step="0.01" min="0" style={{width:70,textAlign:'right',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 4px',fontSize:12,fontWeight:600}} value={it.nsa_cost??''} placeholder="0.00"
                   onChange={e=>{const val=Math.max(0,parseFloat(e.target.value)||0);setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>i2!==idx?ii:{...ii,nsa_cost:val})}))}}/>
