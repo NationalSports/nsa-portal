@@ -8,12 +8,20 @@
 // Environment variables required:
 //   REACT_APP_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 
+const { verifyUser } = require('./_shared');
+
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json' };
 
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST only' }) };
   }
+
+  // Staff-only: this was an open webhook that could replace omg_store data via
+  // service role. No in-repo caller exists; if an external integration needs it
+  // again, give it a signed-in user token (or add a shared-secret path here).
+  const v = await verifyUser(event);
+  if (!v.ok) return { statusCode: v.status, headers, body: JSON.stringify({ error: v.error }) };
 
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

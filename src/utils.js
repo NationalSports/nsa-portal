@@ -1,5 +1,15 @@
 /* eslint-disable */
 import { NSA as _NSA_CONST } from './constants';
+import { supabase as _sbAuthClient } from './lib/supabase';
+
+// fetch() that attaches the signed-in user's Supabase JWT — required by the
+// staff-only Netlify functions (qb-api, vectorizer, OMG ingest/notify, Stripe
+// refunds, create-quote-request), which verify the caller server-side.
+export const authFetch=async(url,opts={})=>{
+  let auth={};
+  try{const{data:{session}}=await _sbAuthClient.auth.getSession();if(session?.access_token)auth={Authorization:'Bearer '+session.access_token}}catch{}
+  return fetch(url,{...opts,headers:{...(opts.headers||{}),...auth}});
+};
 
 // ── Brevo Email ──
 // Public availability flag — NOT the API key. The real key lives only in the
