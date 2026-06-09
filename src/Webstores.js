@@ -504,22 +504,38 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
   }, [sel, flash, loadDetail]);
 
   // Refund: Stripe for card orders, recorded credit for team-tab orders.
+  // Guarded against double-processing: an in-flight latch blocks double-clicks, and the
+  // already-refunded amount is re-read from the DB (not trusted from possibly-stale React
+  // state) with an over-refund cap before any money moves.
+  const refundingRef = useRef(false);
   const refundOrder = useCallback(async (order, amount) => {
-    const cents = Math.round((Number(amount) || 0) * 100);
-    if (cents <= 0) return { error: 'Enter an amount' };
-    if (order.stripe_pi_id) {
-      try {
-        const res = await fetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'refund', payment_intent_id: order.stripe_pi_id, amount_cents: cents }) });
-        const d = await res.json();
-        if (d.error) { flash('Stripe refund failed: ' + d.error); return { error: d.error }; }
-      } catch (e) { flash('Refund failed: ' + e.message); return { error: e.message }; }
-    }
-    const refunded = (Number(order.refunded_amt) || 0) + cents / 100;
-    const status = refunded >= (Number(order.total) || 0) - 0.005 ? 'refunded' : order.status;
-    const { error } = await supabase.from('webstore_orders').update({ refunded_amt: refunded, status }).eq('id', order.id);
-    if (error) { flash('Refund record failed: ' + error.message); return { error: error.message }; }
-    flash(order.stripe_pi_id ? `Refunded ${money(cents / 100)} to card` : `Recorded ${money(cents / 100)} credit`);
-    loadDetail(sel); return { ok: true };
+    if (refundingRef.current) return { error: 'A refund is already in progress' };
+    refundingRef.current = true;
+    try {
+      const cents = Math.round((Number(amount) || 0) * 100);
+      if (cents <= 0) return { error: 'Enter an amount' };
+      const { data: live, error: readErr } = await supabase.from('webstore_orders').select('refunded_amt,total,status,stripe_pi_id').eq('id', order.id).single();
+      if (readErr) { flash('Refund blocked: could not verify order — ' + readErr.message); return { error: readErr.message }; }
+      const already = Number(live.refunded_amt) || 0;
+      const total = Number(live.total) || 0;
+      if (already + cents / 100 > total + 0.005) {
+        flash(`Refund blocked: ${money(cents / 100)} would exceed the order total (${money(already)} already refunded of ${money(total)})`);
+        return { error: 'over_refund' };
+      }
+      if (live.stripe_pi_id) {
+        try {
+          const res = await fetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'refund', payment_intent_id: live.stripe_pi_id, amount_cents: cents }) });
+          const d = await res.json();
+          if (d.error) { flash('Stripe refund failed: ' + d.error); return { error: d.error }; }
+        } catch (e) { flash('Refund failed: ' + e.message); return { error: e.message }; }
+      }
+      const refunded = already + cents / 100;
+      const status = refunded >= total - 0.005 ? 'refunded' : live.status;
+      const { error } = await supabase.from('webstore_orders').update({ refunded_amt: refunded, status }).eq('id', order.id);
+      if (error) { flash('Refund record failed: ' + error.message); return { error: error.message }; }
+      flash(live.stripe_pi_id ? `Refunded ${money(cents / 100)} to card` : `Recorded ${money(cents / 100)} credit`);
+      loadDetail(sel); return { ok: true };
+    } finally { refundingRef.current = false; }
   }, [sel, flash, loadDetail]);
 
   const createBundle = useCallback(async ({ name, price, fundraise, image_url, components }) => {

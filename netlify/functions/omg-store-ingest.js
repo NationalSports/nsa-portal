@@ -147,17 +147,24 @@ exports.handler = async (event) => {
     if (!storeResp.ok) {
       const errText = await storeResp.text();
       console.error('Supabase store upsert failed:', errText);
+      return { statusCode: 502, headers, body: JSON.stringify({ error: 'Store upsert failed', detail: errText }) };
     }
 
-    // Upsert products into Supabase
+    // Replace the store's products: insert the new set FIRST, then delete the old rows by id.
+    // The old DELETE-then-INSERT wiped the store's products whenever the INSERT failed after a
+    // successful DELETE (and reported 200 anyway). Insert-first means a failure leaves the
+    // previous rows untouched; the id-scoped delete also clears any duplicate rows left behind.
     if (products.length > 0) {
-      // Delete existing products for this store first
-      await fetch(`${sbUrl}/rest/v1/omg_store_products?store_id=eq.${encodeURIComponent(storeId)}`, {
-        method: 'DELETE',
+      const oldResp = await fetch(`${sbUrl}/rest/v1/omg_store_products?store_id=eq.${encodeURIComponent(storeId)}&select=id`, {
         headers: { 'apikey': sbKey, 'Authorization': `Bearer ${sbKey}` },
       });
+      if (!oldResp.ok) {
+        const errText = await oldResp.text();
+        console.error('Supabase products pre-read failed:', errText);
+        return { statusCode: 502, headers, body: JSON.stringify({ error: 'Products pre-read failed', detail: errText }) };
+      }
+      const oldRows = await oldResp.json();
 
-      // Insert new products
       const prodResp = await fetch(`${sbUrl}/rest/v1/omg_store_products`, {
         method: 'POST',
         headers: {
@@ -167,10 +174,20 @@ exports.handler = async (event) => {
         },
         body: JSON.stringify(products),
       });
-
       if (!prodResp.ok) {
         const errText = await prodResp.text();
         console.error('Supabase products insert failed:', errText);
+        return { statusCode: 502, headers, body: JSON.stringify({ error: 'Products insert failed', detail: errText }) };
+      }
+
+      const oldIds = (Array.isArray(oldRows) ? oldRows : []).map((r) => r.id).filter((id) => id != null);
+      if (oldIds.length) {
+        const delResp = await fetch(`${sbUrl}/rest/v1/omg_store_products?id=in.(${oldIds.map((id) => encodeURIComponent(`"${String(id).replace(/"/g, '')}"`)).join(',')})`, {
+          method: 'DELETE',
+          headers: { 'apikey': sbKey, 'Authorization': `Bearer ${sbKey}` },
+        });
+        // Non-fatal: a failed cleanup leaves duplicate rows until the next ingest replaces them.
+        if (!delResp.ok) console.error('Stale product cleanup failed:', await delResp.text());
       }
     }
 
