@@ -442,8 +442,8 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
   const updateTransfer = useCallback(async (id, fields) => {
     const { error } = await supabase.from('webstore_transfers').update(fields).eq('id', id);
     if (error) { flash('Error: ' + error.message); return; }
-    loadDetail(sel);
-  }, [sel, flash, loadDetail]);
+    setDetail((prev) => ({ ...prev, transfers: prev.transfers.map((t) => t.id === id ? { ...t, ...fields } : t) }));
+  }, [flash]);
 
   const addTransfers = useCallback(async (rows) => {
     const payload = rows.map((r) => ({ store_id: sel.id, ...r }));
