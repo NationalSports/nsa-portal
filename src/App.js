@@ -6686,17 +6686,33 @@ export default function App(){
       else if(salesRepPeriod==='ytd'){pStart=new Date(nowY,0,1);pEnd=now;prevStart=new Date(nowY-1,0,1);prevEnd=new Date(nowY-1,nowM,now.getDate(),23,59,59);}
       else{pStart=new Date(nowY-1,0,1);pEnd=new Date(nowY-1,11,31,23,59,59);prevStart=new Date(nowY-2,0,1);prevEnd=new Date(nowY-2,11,31,23,59,59);}
       const inP=(d,s,e)=>{if(!d)return false;const dt=new Date(d);return dt>=s&&dt<=e};
+      // Rep's customer set (for histInvs filtering — histInvs have no created_by)
+      const repCustIds=new Set(cust.filter(c=>c.primary_rep_id===cu.id).map(c=>c.id));
+      // Combine portal SOs + NetSuite histInvs for full historical revenue.
+      // SO rev = calcOrderTotals; histInv rev = subtotal (pre-tax) or total.
+      // For each month: prefer SO data if it exists; supplement with histInvs for older months.
       const sumRev=(list)=>list.reduce((a,s)=>{const c=cust.find(x=>x.id===s.customer_id);return a+calcOrderTotals(s,c?.tax_rate||0).rev},0);
+      const sumInvRev=(list)=>list.reduce((a,i)=>a+(i.subtotal!=null?Number(i.subtotal):Number(i.total)||0),0);
+      // Portal SOs for this rep
       const mySosCur=sos.filter(s=>s.created_by===cu.id&&!['cancelled'].includes(s.status||'')&&inP(s.created_at,pStart,pEnd));
       const mySosPrev=sos.filter(s=>s.created_by===cu.id&&!['cancelled'].includes(s.status||'')&&inP(s.created_at,prevStart,prevEnd));
       const natSosCur=sos.filter(s=>!['cancelled'].includes(s.status||'')&&inP(s.created_at,pStart,pEnd));
-      const mySales=sumRev(mySosCur);const mySalesPrev=sumRev(mySosPrev);const natSales=sumRev(natSosCur);
+      // histInvs for this rep's customers (fills in months before portal launch)
+      const myHistCur=histInvs.filter(i=>repCustIds.has(i.customer_id)&&i.status!=='void'&&inP(i.date,pStart,pEnd));
+      const myHistPrev=histInvs.filter(i=>repCustIds.has(i.customer_id)&&i.status!=='void'&&inP(i.date,prevStart,prevEnd));
+      const natHistCur=histInvs.filter(i=>i.status!=='void'&&inP(i.date,pStart,pEnd));
+      const mySales=sumRev(mySosCur)+sumInvRev(myHistCur);
+      const mySalesPrev=sumRev(mySosPrev)+sumInvRev(myHistPrev);
+      const natSales=sumRev(natSosCur)+sumInvRev(natHistCur);
       const salesChg=mySalesPrev>0?((mySales-mySalesPrev)/mySalesPrev*100):null;
-      // Top customers
+      // Top customers (portal SOs + histInvs combined)
       const custMap={};
       mySosCur.forEach(s=>{const c=cust.find(x=>x.id===s.customer_id);const rev=calcOrderTotals(s,c?.tax_rate||0).rev;
         if(!custMap[s.customer_id])custMap[s.customer_id]={id:s.customer_id,name:c?.name||c?.alpha_tag||'Unknown',total:0,orders:0};
         custMap[s.customer_id].total+=rev;custMap[s.customer_id].orders++;});
+      myHistCur.forEach(i=>{const c=cust.find(x=>x.id===i.customer_id);const rev=i.subtotal!=null?Number(i.subtotal):Number(i.total)||0;
+        if(!custMap[i.customer_id])custMap[i.customer_id]={id:i.customer_id,name:c?.name||c?.alpha_tag||i.raw_customer_name||'Unknown',total:0,orders:0};
+        custMap[i.customer_id].total+=rev;custMap[i.customer_id].orders++;});
       const topCust=Object.values(custMap).sort((a,b)=>b.total-a.total).slice(0,8);
       // Open estimates
       const myOpenEsts=ests.filter(e=>e.created_by===cu.id&&['draft','pending','sent'].includes(e.status||'draft'));
@@ -6704,10 +6720,14 @@ export default function App(){
       // New customers this period
       const newCustIds=new Set();
       mySosCur.forEach(s=>{if(!sos.some(o=>o.customer_id===s.customer_id&&new Date(o.created_at)<pStart))newCustIds.add(s.customer_id);});
-      // Monthly trend (last 12 months)
+      // Monthly trend (last 12 months) — portal SOs + histInvs
       const months=[];
       for(let i=11;i>=0;i--){const d=new Date(nowY,nowM-i,1);const mS=new Date(d.getFullYear(),d.getMonth(),1);const mE=new Date(d.getFullYear(),d.getMonth()+1,0,23,59,59);
-        months.push({label:d.toLocaleDateString('en-US',{month:'short'}),y:d.getFullYear(),mySales:sumRev(sos.filter(s=>s.created_by===cu.id&&!['cancelled'].includes(s.status||'')&&inP(s.created_at,mS,mE))),natSales:sumRev(sos.filter(s=>!['cancelled'].includes(s.status||'')&&inP(s.created_at,mS,mE)))});}
+        const mMySO=sumRev(sos.filter(s=>s.created_by===cu.id&&!['cancelled'].includes(s.status||'')&&inP(s.created_at,mS,mE)));
+        const mMyHist=sumInvRev(histInvs.filter(h=>repCustIds.has(h.customer_id)&&h.status!=='void'&&inP(h.date,mS,mE)));
+        const mNatSO=sumRev(sos.filter(s=>!['cancelled'].includes(s.status||'')&&inP(s.created_at,mS,mE)));
+        const mNatHist=sumInvRev(histInvs.filter(h=>h.status!=='void'&&inP(h.date,mS,mE)));
+        months.push({label:d.toLocaleDateString('en-US',{month:'short'}),y:d.getFullYear(),mySales:mMySO+mMyHist,natSales:mNatSO+mNatHist});}
       // SVG chart
       const cW=460,cH=72,cPad=4;
       const maxV=Math.max(1,...months.map(m=>Math.max(m.mySales,m.natSales)));

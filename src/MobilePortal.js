@@ -197,18 +197,30 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     }
     const inPeriod=(d,s,e)=>{if(!d)return false;const dt=new Date(d);return dt>=s&&dt<=e};
     const sumRev=(list)=>list.reduce((a,s)=>{const c=cust.find(x=>x.id===s.customer_id);return a+calcOrderTotals(s,c?.tax_rate||0).rev},0);
+    const sumInvRev=(list)=>list.reduce((a,i)=>a+(Number(i.total)||0),0);
     const sosMy=sos.filter(s=>!['cancelled'].includes(s.status||'')&&inScope(s.customer_id,s.created_by));
     const sosNat=sos.filter(s=>!['cancelled'].includes(s.status||''));
+    // histInvs normalized: _hist:true, created_at=invoice_date, total=raw total
+    const histMy=invs.filter(i=>i._hist&&i.status!=='cancelled'&&myCustIds.has(i.customer_id));
+    const histNat=invs.filter(i=>i._hist&&i.status!=='cancelled');
     const mySosCur=sosMy.filter(s=>inPeriod(s.created_at,pStart,pEnd));
     const mySosPrev=sosMy.filter(s=>inPeriod(s.created_at,prevStart,prevEnd));
     const natSosCur=sosNat.filter(s=>inPeriod(s.created_at,pStart,pEnd));
-    const mySales=sumRev(mySosCur);const mySalesPrev=sumRev(mySosPrev);const natSales=sumRev(natSosCur);
+    const myHistCur=histMy.filter(i=>inPeriod(i.created_at,pStart,pEnd));
+    const myHistPrev=histMy.filter(i=>inPeriod(i.created_at,prevStart,prevEnd));
+    const natHistCur=histNat.filter(i=>inPeriod(i.created_at,pStart,pEnd));
+    const mySales=sumRev(mySosCur)+sumInvRev(myHistCur);
+    const mySalesPrev=sumRev(mySosPrev)+sumInvRev(myHistPrev);
+    const natSales=sumRev(natSosCur)+sumInvRev(natHistCur);
     const salesChg=mySalesPrev>0?((mySales-mySalesPrev)/mySalesPrev*100):null;
-    // Top customers by revenue in period
+    // Top customers by revenue in period (SOs + histInvs)
     const custMap={};
     mySosCur.forEach(s=>{const c=cust.find(x=>x.id===s.customer_id);const rev=calcOrderTotals(s,c?.tax_rate||0).rev;
       if(!custMap[s.customer_id])custMap[s.customer_id]={id:s.customer_id,name:c?.name||c?.alpha_tag||'Unknown',total:0,orders:0};
       custMap[s.customer_id].total+=rev;custMap[s.customer_id].orders++;});
+    myHistCur.forEach(i=>{const c=cust.find(x=>x.id===i.customer_id);const rev=Number(i.total)||0;
+      if(!custMap[i.customer_id])custMap[i.customer_id]={id:i.customer_id,name:c?.name||c?.alpha_tag||i._cname||'Unknown',total:0,orders:0};
+      custMap[i.customer_id].total+=rev;custMap[i.customer_id].orders++;});
     const topCust=Object.values(custMap).sort((a,b)=>b.total-a.total).slice(0,7);
     // Open estimates (my scope, pending/sent/draft)
     const myOpenEsts=ests.filter(e=>inScope(e.customer_id,e.created_by)&&['draft','pending','sent'].includes(e.status||'draft'));
@@ -216,15 +228,17 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     // New customers acquired in period (no prior orders)
     const newCustIds=new Set();
     mySosCur.forEach(s=>{if(!sos.some(o=>o.customer_id===s.customer_id&&new Date(o.created_at)<pStart))newCustIds.add(s.customer_id);});
-    // Monthly trend — last 12 months
+    // Monthly trend — last 12 months (SOs + histInvs)
     const months=[];
     for(let i=11;i>=0;i--){
       const d=new Date(nowY,nowM-i,1);
       const mStart=new Date(d.getFullYear(),d.getMonth(),1);const mEnd=new Date(d.getFullYear(),d.getMonth()+1,0,23,59,59);
-      months.push({label:d.toLocaleDateString('en-US',{month:'short'}),mySales:sumRev(sosMy.filter(s=>inPeriod(s.created_at,mStart,mEnd))),natSales:sumRev(sosNat.filter(s=>inPeriod(s.created_at,mStart,mEnd)))});
+      months.push({label:d.toLocaleDateString('en-US',{month:'short'}),
+        mySales:sumRev(sosMy.filter(s=>inPeriod(s.created_at,mStart,mEnd)))+sumInvRev(histMy.filter(i=>inPeriod(i.created_at,mStart,mEnd))),
+        natSales:sumRev(sosNat.filter(s=>inPeriod(s.created_at,mStart,mEnd)))+sumInvRev(histNat.filter(i=>inPeriod(i.created_at,mStart,mEnd)))});
     }
     return{mySales,mySalesPrev,salesChg,natSales,topCust,openEsts:myOpenEsts.length,openEstTotal:myOpenEstTotal,newCusts:newCustIds.size,months,orderCount:mySosCur.length};
-  },[sos,ests,salesPeriodMode,scope,myCustIds,cust]);
+  },[sos,ests,invs,salesPeriodMode,scope,myCustIds,cust]);
 
   // ─── SORT HELPER ───
   const sortList=(list,sortKey)=>{
