@@ -104,6 +104,35 @@ test.describe('PO full editing (Edit Items & Quantities)', () => {
     await expect(orderedRow).toContainText('24');
   });
 
+  test('items-grid size rebalance offers to sync the PO (S 30→24, M 30→36)', async ({ page }) => {
+    // Reducing a size below PO-committed used to hard-block; raising left the PO behind.
+    // Now both prompt to update the still-open PO line along with the item.
+    page.on('dialog', d => d.accept());
+    await navTo(page, 'Sales Orders');
+    await page.locator('text=SO-9001').first().click();
+    await page.waitForTimeout(600);
+
+    // First item card (TEST123): the size inputs sit under their size-letter headers
+    const sInput = page.locator('div:has(> div:text-is("S")) > input').first();
+    const mInput = page.locator('div:has(> div:text-is("M")) > input').first();
+    await expect(sInput).toHaveValue('30');
+
+    await sInput.fill('24');
+    await sInput.blur(); // commit fires uSz → confirm dialog → accepted
+    await page.waitForTimeout(600);
+    await mInput.fill('36');
+    await mInput.blur();
+    await page.waitForTimeout(600);
+
+    // Item sizes took the change…
+    await expect(sInput).toHaveValue('24');
+    await expect(mInput).toHaveValue('36');
+    // …and the PO chip row followed (PO line synced down to 24 and up to 36)
+    const chipRow = page.locator('div').filter({ has: page.locator('span', { hasText: 'PO 9001 TST:' }) }).last();
+    await expect(chipRow).toContainText('24', { timeout: 3000 });
+    await expect(chipRow).toContainText('36');
+  });
+
   test('add another order item (different vendor) onto the PO', async ({ page }) => {
     await navTo(page, 'Sales Orders');
     await page.locator('text=SO-9001').first().click();

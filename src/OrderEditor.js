@@ -1645,21 +1645,92 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setColorPickerModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);
     nf('🎨 Color changed to '+color.colorName);
   };
+  const _PO_SZ_META=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
   const uSz=(i,sz,v)=>{
     const n=v===''?0:parseInt(v)||0;
     const item=o.items[i];if(!item)return;
-    if(n===(item.sizes[sz]||0))return;// no-op: value unchanged, skip render + side effects
-    // Guard: don't allow reducing below committed qty (pulled picks + net POs)
+    const cur=item.sizes[sz]||0;
+    if(n===cur)return;// no-op: value unchanged, skip render + side effects
     const pickedQty=safePicks(item).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);
     const poQty=poCommitted(item.po_lines,sz);
     const committed=pickedQty+poQty;
+    // Apply the size change (optionally with synced po_lines) in ONE update so the item and its
+    // POs can't drift apart between saves.
+    const _applySizes=(po_lines,note)=>{
+      setO(e=>({...e,items:safeItems(e).map((it,x)=>{
+        if(x!==i)return it;
+        const next={...it,sizes:{...it.sizes,[sz]:n}};
+        if(po_lines)next.po_lines=po_lines;
+        if(it.est_qty&&Object.values(next.sizes).reduce((a,v2)=>a+safeNum(v2),0)>0)next.est_qty=0;
+        return next;
+      }),updated_at:new Date().toLocaleString()}));
+      setDirty(true);
+      if(note)nf(note);
+    };
+    // Per-line adjustability for this size: open (not received/billed) units on normal blanks
+    // lines. Batch-queued and outside-deco lines stay locked — they're managed elsewhere.
+    const _lineInfo=(pl)=>{
+      const ord=(pl[sz]||0)-((pl.cancelled||{})[sz]||0);
+      const locked=Math.max((pl.received||{})[sz]||0,(pl.billed||{})[sz]||0);
+      const frozen=pl.status==='queued'||pl.po_type==='outside_deco';
+      return{ord,locked,adj:frozen?0:Math.max(0,ord-locked),frozen};
+    };
+    const _recalcLineStatus=(pl)=>{
+      const szK=Object.keys(pl).filter(k=>!k.startsWith('_')&&!_PO_SZ_META.has(k)&&typeof pl[k]==='number');
+      const totR=szK.reduce((a,s2)=>a+((pl.received||{})[s2]||0),0);
+      const totOp=szK.reduce((a,s2)=>a+Math.max(0,(pl[s2]||0)-((pl.received||{})[s2]||0)-((pl.cancelled||{})[s2]||0)),0);
+      if(totR>0)pl.status=totOp<=0?'received':'partial';
+      return pl;
+    };
     if(n<committed&&committed>0){
-      nf('Cannot reduce '+sz+' below '+committed+' ('+pickedQty+' picked + '+poQty+' on PO)','error');return;
+      // Reducing into PO-committed territory: instead of hard-blocking, offer to lower the
+      // still-open PO quantities along with the item. Picked, received, billed, queued and
+      // deco units remain a hard floor.
+      const lines=item.po_lines||[];
+      const infos=lines.map(_lineInfo);
+      const adjustable=infos.reduce((a,x)=>a+x.adj,0);
+      const floor=committed-adjustable;
+      if(n<floor){
+        const lockedPo=floor-pickedQty;
+        nf('Cannot reduce '+sz+' below '+floor+' ('+pickedQty+' picked'+(lockedPo>0?' + '+lockedPo+' received/billed/queued on PO':'')+')','error');return;
+      }
+      const cut=committed-n;
+      const cutIds=[...new Set(lines.filter((pl,pi)=>infos[pi].adj>0).map(pl=>pl.po_id||'PO'))];
+      if(!window.confirm(sz+': reducing to '+n+' also lowers '+cutIds.join(', ')+' by '+cut+' unit'+(cut!==1?'s':'')+' (open units, nothing received). Update the PO'+(cutIds.length>1?'s':'')+' too?'))return;
+      let remaining=cut;
+      let newPls=lines.map(pl=>({...pl}));
+      for(let pi=newPls.length-1;pi>=0&&remaining>0;pi--){
+        const{adj}=_lineInfo(newPls[pi]);if(adj<=0)continue;
+        const take=Math.min(adj,remaining);remaining-=take;
+        const pl=newPls[pi];
+        const newOrd=(pl[sz]||0)-take;
+        if(newOrd>0)pl[sz]=newOrd;
+        else{delete pl[sz];if(pl.cancelled&&pl.cancelled[sz]!=null){const c={...pl.cancelled};delete c[sz];pl.cancelled=c}}
+        _recalcLineStatus(pl);
+      }
+      // Drop lines left with no size buckets and no receiving/billing history
+      newPls=newPls.filter(pl=>{
+        const szK=Object.keys(pl).filter(k=>!k.startsWith('_')&&!_PO_SZ_META.has(k)&&typeof pl[k]==='number');
+        if(szK.length>0)return true;
+        return Object.values(pl.received||{}).some(v2=>v2>0)||Object.values(pl.billed||{}).some(v2=>v2>0);
+      });
+      _applySizes(newPls,sz+' reduced to '+n+' — '+cutIds.join(', ')+' lowered to match');
+      return;
     }
-    const newSizes={...item.sizes,[sz]:n};
-    const newTotal=Object.values(newSizes).reduce((a,v)=>a+safeNum(v),0);
-    uI(i,'sizes',newSizes);
-    if(newTotal>0&&item.est_qty)uI(i,'est_qty',0);
+    if(n>cur&&poQty>=cur&&poQty>0){
+      // Size was fully covered by POs — offer to grow the most recent open line with it so a
+      // rebalance (e.g. S 30→24, M 30→36) flows straight through to the vendor order.
+      const lines=item.po_lines||[];
+      let target=-1;
+      for(let pi=lines.length-1;pi>=0;pi--){const pl=lines[pi];if(_lineInfo(pl).frozen)continue;if((pl[sz]||0)>0||pl.status==='waiting'||pl.status==='ordered'||!pl.status){target=pi;break}}
+      const add=n-cur;
+      if(target>=0&&window.confirm(sz+': increasing to '+n+'. Add the extra '+add+' unit'+(add!==1?'s':'')+' to '+(lines[target].po_id||'the PO')+'? (Cancel keeps the PO unchanged — the '+add+' stay open to order or pick later.)')){
+        const newPls=lines.map((pl,pi)=>{if(pi!==target)return pl;return _recalcLineStatus({...pl,[sz]:(pl[sz]||0)+add})});
+        _applySizes(newPls,sz+' increased to '+n+' — added '+add+' to '+(lines[target].po_id||'PO'));
+        return;
+      }
+    }
+    _applySizes(null);
   };
   const addSzToItem=(i,sz)=>{const it=o.items[i];const cur=it.available_sizes||[];if(!cur.includes(sz))uI(i,'available_sizes',[...cur,sz])};
   // Total units already committed on POs for an item, summed across every size bucket (any positive
