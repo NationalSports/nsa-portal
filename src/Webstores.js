@@ -239,22 +239,35 @@ function estimateWeightOz(text) {
 }
 
 // Map products -> which transfers they consume, then tally usage from order lines.
+// Supports both new array columns (transfer_codes, num_transfer_sets) and old single columns.
 function buildTransferMaps(catalog, bundleItems) {
-  const designByPid = {}, numSetByPid = {}, takesNumByPid = {};
-  (catalog || []).forEach((c) => { if (c.product_id) { if (c.transfer_code) designByPid[c.product_id] = c.transfer_code; if (c.takes_number) { takesNumByPid[c.product_id] = true; numSetByPid[c.product_id] = { size: c.num_transfer_size, color: c.num_transfer_color }; } } });
-  (bundleItems || []).forEach((b) => { if (b.product_id) { if (b.transfer_code) designByPid[b.product_id] = b.transfer_code; if (b.takes_number) { takesNumByPid[b.product_id] = true; numSetByPid[b.product_id] = { size: b.num_transfer_size, color: b.num_transfer_color }; } } });
-  return { designByPid, numSetByPid, takesNumByPid };
+  const designsByPid = {}, numSetsByPid = {}, takesNumByPid = {};
+  const process = (c) => {
+    if (!c.product_id) return;
+    const codes = c.transfer_codes?.length ? c.transfer_codes : (c.transfer_code ? [c.transfer_code] : []);
+    if (codes.length) designsByPid[c.product_id] = codes;
+    if (c.takes_number) {
+      takesNumByPid[c.product_id] = true;
+      const sets = c.num_transfer_sets?.length
+        ? c.num_transfer_sets.map((s) => { const [size, color] = s.split('|'); return { size, color }; })
+        : (c.num_transfer_size ? [{ size: c.num_transfer_size, color: c.num_transfer_color }] : []);
+      if (sets.length) numSetsByPid[c.product_id] = sets;
+    }
+  };
+  (catalog || []).forEach(process);
+  (bundleItems || []).forEach(process);
+  return { designsByPid, numSetsByPid, takesNumByPid };
 }
 function transferUsage(lines, maps) {
   const used = {};
   (lines || []).forEach((i) => {
     if (i.is_bundle_parent) return;
     const units = i.qty || 1;
-    const d = maps.designByPid[i.product_id];
-    if (d) used[d] = (used[d] || 0) + units;
+    (maps.designsByPid[i.product_id] || []).forEach((d) => { used[d] = (used[d] || 0) + units; });
     if (maps.takesNumByPid[i.product_id] && i.player_number) {
-      const set = maps.numSetByPid[i.product_id] || {};
-      String(i.player_number).replace(/[^0-9]/g, '').split('').forEach((dg) => { const code = `${dg}|${set.size || ''}|${set.color || ''}`; used[code] = (used[code] || 0) + units; });
+      (maps.numSetsByPid[i.product_id] || []).forEach((set) => {
+        String(i.player_number).replace(/[^0-9]/g, '').split('').forEach((dg) => { const code = `${dg}|${set.size || ''}|${set.color || ''}`; used[code] = (used[code] || 0) + units; });
+      });
     }
   });
   return used;
@@ -420,8 +433,8 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     flash('Transfers pulled — moved to In process'); loadDetail(sel);
   }, [detail, sel, flash, loadDetail]);
 
-  const addSingle = useCallback(async ({ product, price, fundraise, image_url, takes_number, takes_name, name_upcharge, transfer_code }) => {
-    const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, takes_number: !!takes_number, takes_name: !!takes_name, name_upcharge: Number(name_upcharge) || 0, transfer_code: transfer_code || null, active: true, sort_order: (detail?.catalog?.length || 0) };
+  const addSingle = useCallback(async ({ product, price, fundraise, image_url, takes_number, takes_name, name_upcharge, transfer_codes, num_transfer_sets }) => {
+    const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, takes_number: !!takes_number, takes_name: !!takes_name, name_upcharge: Number(name_upcharge) || 0, transfer_codes: transfer_codes || [], num_transfer_sets: takes_number ? (num_transfer_sets || []) : [], active: true, sort_order: (detail?.catalog?.length || 0) };
     const { error } = await supabase.from('webstore_products').insert(row);
     if (error) { flash('Error: ' + error.message); return; }
     flash('Added ' + (product.name || product.sku)); loadDetail(sel);
@@ -1176,28 +1189,45 @@ function CatalogTab({ catalog, bundleItems, stockByWp, transfers = [], onAddSing
 // Inline editor for an existing catalog item (single or bundle).
 function CatalogItemEditor({ item, defaultName, designOptions = [], numberSets = [], onCancel, onSave }) {
   const isBundle = item.kind === 'bundle';
-  const [name, setName] = useState(item.display_name || (isBundle ? '' : ''));
+  const [name, setName] = useState(item.display_name || '');
   const [price, setPrice] = useState(item.retail_price || 0);
   const [fundraise, setFundraise] = useState(item.fundraise_amount || 0);
   const [takesNumber, setTakesNumber] = useState(!!item.takes_number);
   const [takesName, setTakesName] = useState(!!item.takes_name);
   const [nameUp, setNameUp] = useState(item.name_upcharge || 0);
-  const [transferCode, setTransferCode] = useState(item.transfer_code || '');
-  const [numSize, setNumSize] = useState(item.num_transfer_size || null);
-  const [numColor, setNumColor] = useState(item.num_transfer_color || null);
+  // Support both new array columns and old single columns for existing records
+  const [transferCodes, setTransferCodes] = useState(
+    item.transfer_codes?.length ? item.transfer_codes : (item.transfer_code ? [item.transfer_code] : [])
+  );
+  const [numTransferSets, setNumTransferSets] = useState(
+    item.num_transfer_sets?.length ? item.num_transfer_sets
+      : (item.num_transfer_size ? [`${item.num_transfer_size}|${item.num_transfer_color || ''}`] : [])
+  );
+  const [extraImages, setExtraImages] = useState(item.extra_image_urls || []);
+  const [imgBusy, setImgBusy] = useState(false);
+  const imgRef = useRef();
   const estOz = estimateWeightOz(name || item.display_name || defaultName || item.sku);
   const [weight, setWeight] = useState(item.weight_oz != null ? item.weight_oz : '');
   const total = (Number(price) || 0) + (Number(fundraise) || 0);
+
+  const addExtraImage = async (e) => {
+    const file = e.target.files?.[0]; if (!file || !file.type.startsWith('image/')) return;
+    setImgBusy(true);
+    try { const url = await cloudUpload(file, 'nsa-webstores'); setExtraImages((p) => [...p, url]); }
+    catch (x) { /* cloudUpload surfaces error via toast */ }
+    setImgBusy(false);
+  };
+
   const save = () => {
-    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: name.trim() || null, weight_oz: weight === '' ? null : Number(weight) || 0 };
+    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, display_name: name.trim() || null, weight_oz: weight === '' ? null : Number(weight) || 0, extra_image_urls: extraImages };
     if (!isBundle) {
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
-      fields.transfer_code = transferCode || null;
-      fields.num_transfer_size = takesNumber ? numSize : null;
-      fields.num_transfer_color = takesNumber ? numColor : null;
+      fields.transfer_codes = transferCodes.filter(Boolean);
+      fields.num_transfer_sets = takesNumber ? numTransferSets.filter((s) => s && s !== '|') : [];
     }
     onSave(fields);
   };
+
   return (
     <div style={{ padding: 16 }}>
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
@@ -1213,8 +1243,21 @@ function CatalogItemEditor({ item, defaultName, designOptions = [], numberSets =
         <Toggle label="Player adds a name" checked={takesName} onChange={setTakesName} />
         {takesName && <label style={{ fontSize: 13 }}>Name upcharge +$<input className="form-input" style={{ width: 80, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={nameUp} onChange={(e) => setNameUp(e.target.value)} /></label>}
       </div>}
-      {!isBundle && <TransferFields designOptions={designOptions} numberSets={numberSets} transferCode={transferCode} setTransferCode={setTransferCode} numSize={numSize} setNumSize={setNumSize} numColor={numColor} setNumColor={setNumColor} showNumber={takesNumber} />}
+      {!isBundle && <MultiTransferFields designOptions={designOptions} numberSets={numberSets} transferCodes={transferCodes} setTransferCodes={setTransferCodes} numTransferSets={numTransferSets} setNumTransferSets={setNumTransferSets} showNumber={takesNumber} />}
       {isBundle && <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>To change which items are in this package or their number/name options, remove and re-create the package.</div>}
+      <div style={{ marginTop: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 6 }}>Additional images</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          {extraImages.map((url, i) => (
+            <div key={i} style={{ position: 'relative' }}>
+              <img src={url} alt="" style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 6, border: '1px solid #e2e8f0' }} />
+              <button type="button" onClick={() => setExtraImages((p) => p.filter((_, j) => j !== i))} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>
+            </div>
+          ))}
+          <input ref={imgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={addExtraImage} />
+          <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => imgRef.current?.click()}>{imgBusy ? '…' : '+ Add image'}</button>
+        </div>
+      </div>
       <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
         <button className="btn btn-primary" onClick={save}>Save changes</button>
         <button className="btn btn-secondary" onClick={onCancel}>Cancel</button>
@@ -1246,15 +1289,47 @@ function RowImage({ row, stockImg, onUpdateImage }) {
   );
 }
 
-// Shared transfer-inventory selectors (which transfers an item consumes).
-function TransferFields({ designOptions = [], numberSets = [], transferCode, setTransferCode, numSize, setNumSize, numColor, setNumColor, showNumber }) {
+// Multi-entry transfer selectors — supports multiple logo transfers and number sets per item.
+function MultiTransferFields({ designOptions = [], numberSets = [], transferCodes, setTransferCodes, numTransferSets, setNumTransferSets, showNumber }) {
+  const addDesign = () => setTransferCodes((p) => [...p, '']);
+  const removeDesign = (i) => setTransferCodes((p) => p.filter((_, j) => j !== i));
+  const setDesign = (i, v) => setTransferCodes((p) => p.map((x, j) => j === i ? v : x));
+  const addNumSet = () => setNumTransferSets((p) => [...p, '|']);
+  const removeNumSet = (i) => setNumTransferSets((p) => p.filter((_, j) => j !== i));
+  const setNumSet = (i, v) => setNumTransferSets((p) => p.map((x, j) => j === i ? v : x));
+  const rowStyle = { display: 'flex', gap: 6, marginBottom: 4, alignItems: 'center' };
+  const rmBtn = (onClick) => <button type="button" onClick={onClick} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 18, lineHeight: 1, padding: '0 2px' }}>×</button>;
+  const addBtn = (onClick, label) => <button type="button" onClick={onClick} style={{ fontSize: 12, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>{label}</button>;
   return (
-    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 4 }}>
-      <Row label="Logo transfer (deducts 1 per item)"><select className="form-select" value={transferCode || ''} onChange={(e) => setTransferCode(e.target.value)}><option value="">None</option>{designOptions.map((d) => <option key={d.code} value={d.code}>{d.label}</option>)}</select></Row>
-      {showNumber && <Row label="Number transfer set"><select className="form-select" value={(numSize || '') + '|' + (numColor || '')} onChange={(e) => { const [s, c] = e.target.value.split('|'); setNumSize(s || null); setNumColor(c || null); }}>
-        <option value="|">None</option>
-        {numberSets.map((s, i) => <option key={i} value={`${s.size}|${s.color}`}>{s.size} · {s.color}</option>)}
-      </select></Row>}
+    <div style={{ marginTop: 10 }}>
+      <div style={{ marginBottom: 8 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 4 }}>Logo transfers (deducts 1 per item ordered)</div>
+        {transferCodes.map((code, i) => (
+          <div key={i} style={rowStyle}>
+            <select className="form-select" style={{ flex: 1 }} value={code} onChange={(e) => setDesign(i, e.target.value)}>
+              <option value="">None</option>
+              {designOptions.map((d) => <option key={d.code} value={d.code}>{d.label}</option>)}
+            </select>
+            {rmBtn(() => removeDesign(i))}
+          </div>
+        ))}
+        {addBtn(addDesign, '+ Add logo transfer')}
+      </div>
+      {showNumber && (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 4 }}>Number transfer sets (deducts digits per item)</div>
+          {numTransferSets.map((s, i) => (
+            <div key={i} style={rowStyle}>
+              <select className="form-select" style={{ flex: 1 }} value={s} onChange={(e) => setNumSet(i, e.target.value)}>
+                <option value="|">None</option>
+                {numberSets.map((ns, j) => <option key={j} value={`${ns.size}|${ns.color}`}>{ns.size} · {ns.color}</option>)}
+              </select>
+              {rmBtn(() => removeNumSet(i))}
+            </div>
+          ))}
+          {addBtn(addNumSet, '+ Add number set')}
+        </div>
+      )}
     </div>
   );
 }
@@ -1267,9 +1342,8 @@ function SinglePriceEditor({ product, designOptions, numberSets, onAdd, onCancel
   const [takesNumber, setTakesNumber] = useState(false);
   const [takesName, setTakesName] = useState(false);
   const [nameUpcharge, setNameUpcharge] = useState(0);
-  const [transferCode, setTransferCode] = useState('');
-  const [numSize, setNumSize] = useState(null);
-  const [numColor, setNumColor] = useState(null);
+  const [transferCodes, setTransferCodes] = useState([]);
+  const [numTransferSets, setNumTransferSets] = useState([]);
   const total = (Number(price) || 0) + (Number(fundraise) || 0);
   return (
     <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 16 }}>
@@ -1286,9 +1360,9 @@ function SinglePriceEditor({ product, designOptions, numberSets, onAdd, onCancel
         <Toggle label="Player adds a name" checked={takesName} onChange={setTakesName} />
         {takesName && <label style={{ fontSize: 13 }}>Name upcharge +$<input className="form-input" style={{ width: 80, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={nameUpcharge} onChange={(e) => setNameUpcharge(e.target.value)} /></label>}
       </div>
-      <TransferFields designOptions={designOptions} numberSets={numberSets} transferCode={transferCode} setTransferCode={setTransferCode} numSize={numSize} setNumSize={setNumSize} numColor={numColor} setNumColor={setNumColor} showNumber={takesNumber} />
+      <MultiTransferFields designOptions={designOptions} numberSets={numberSets} transferCodes={transferCodes} setTransferCodes={setTransferCodes} numTransferSets={numTransferSets} setNumTransferSets={setNumTransferSets} showNumber={takesNumber} />
       <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-        <button className="btn btn-primary" onClick={() => onAdd({ product, price, fundraise, image_url: image, takes_number: takesNumber, takes_name: takesName, name_upcharge: nameUpcharge, transfer_code: transferCode || null, num_transfer_size: takesNumber ? numSize : null, num_transfer_color: takesNumber ? numColor : null })}>Add to store</button>
+        <button className="btn btn-primary" onClick={() => onAdd({ product, price, fundraise, image_url: image, takes_number: takesNumber, takes_name: takesName, name_upcharge: nameUpcharge, transfer_codes: transferCodes.filter(Boolean), num_transfer_sets: numTransferSets.filter((s) => s && s !== '|') })}>Add to store</button>
         <button className="btn btn-secondary" onClick={onCancel}>Back</button>
       </div>
     </div></div>
