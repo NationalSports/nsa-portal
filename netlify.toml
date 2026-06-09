@@ -1,7 +1,10 @@
 [build]
   command = "GENERATE_SOURCEMAP=true npm run build"
   publish = "build"
-  environment = { NODE_VERSION = "18" }
+
+[build.environment]
+  NODE_VERSION = "18"
+  PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "true"
 
 # index.html must never be cached, so a reload after a deploy always fetches the
 # current asset manifest (chunk hashes) instead of re-requesting dead chunks.
