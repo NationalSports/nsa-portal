@@ -202,7 +202,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
   const[showFirmApprove,setShowFirmApprove]=useState(false);const[firmRushPct,setFirmRushPct]=useState(0);
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('final');const[invDepositPct,setInvDepositPct]=useState(50);const[invBilling,setInvBilling]=useState('');const[invDate,setInvDate]=useState(()=>new Date().toLocaleDateString('en-CA'));
-  const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');const[invSendTo,setInvSendTo]=useState('');const[invSendCustomEmail,setInvSendCustomEmail]=useState('');const[invSendAt,setInvSendAt]=useState('');const[invSentStatus,setInvSentStatus]=useState(null);
+  const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');const[invSendTo,setInvSendTo]=useState('');const[invSendCustomEmail,setInvSendCustomEmail]=useState('');const[invSendAt,setInvSendAt]=useState('');const[invSentStatus,setInvSentStatus]=useState(null);const[invSendingState,setInvSendingState]=useState(null);
   const[invSmsEnabled,setInvSmsEnabled]=useState(false);const[invSmsPhone,setInvSmsPhone]=useState('');const[invSmsMsg,setInvSmsMsg]=useState('');
   const[invFollowUpDays,setInvFollowUpDays]=useState(7);
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
@@ -5611,7 +5611,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{display:'flex',gap:8}}>
             <button className="btn btn-secondary" onClick={printInvoice}>🖨️ Print Invoice</button>
             <button className="btn btn-secondary" onClick={downloadInvoice}>📥 Download PDF</button>
-            <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>{const _c=(cust?.contacts||[]).filter(c=>c.email);const _accts=getBillingContacts(cust,allCustomers).filter(a=>a.email);const _primary=_c.length>0?_c[0].email:null;const _sel=[...(_primary?[_primary]:[]),..._accts.map(a=>a.email).filter(e=>e!==_primary)];setInvSendTo(_sel);setInvSendCustomEmail('');setInvSendModal(true)}}>📧 Send to Coach</button>
+            <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>{const _c=(cust?.contacts||[]).filter(c=>c.email);const _accts=getBillingContacts(cust,allCustomers).filter(a=>a.email);const _primary=_c.length>0?_c[0].email:null;const _sel=[...(_primary?[_primary]:[]),..._accts.map(a=>a.email).filter(e=>e!==_primary)];setInvSendTo(_sel);setInvSendCustomEmail('');setInvSendingState(null);setInvSendModal(true)}}>📧 Send to Coach</button>
           </div>
         </div>
       </div></div>
@@ -5626,8 +5626,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const selectedEmails=Array.isArray(invSendTo)?invSendTo:invSendTo?[invSendTo]:[];
       const allRecipients=[...selectedEmails];
       const hasRecipients=allRecipients.length>0;
-      return<div className="modal-overlay" style={{zIndex:10001}} onMouseDown={e=>{if(e.target===e.currentTarget)setInvSendModal(false)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
-        <div className="modal-header"><h2>Send Invoice to Coach</h2><button className="modal-close" onClick={()=>setInvSendModal(false)}>x</button></div>
+      return<div className="modal-overlay" style={{zIndex:10001}} onMouseDown={e=>{if(e.target===e.currentTarget&&invSendingState!=='sending'){setInvSendModal(false);setInvSendingState(null)}}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
+        <div className="modal-header"><h2>Send Invoice to Coach</h2><button className="modal-close" disabled={invSendingState==='sending'} onClick={()=>{setInvSendModal(false);setInvSendingState(null)}}>x</button></div>
         <div className="modal-body">
           <div style={{marginBottom:12}}>
             <label className="form-label">Sending to</label>
@@ -5689,10 +5689,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {invFollowUpDays>0&&<span style={{fontSize:12,color:'#6d28d9'}}>days if no response</span>}
           </div>
         </div>
+        {invSendingState&&<div style={{padding:'12px 16px',background:invSendingState==='success'?'#f0fdf4':invSendingState==='sending'?'#eff6ff':'#fef2f2',borderTop:'1px solid '+(invSendingState==='success'?'#86efac':invSendingState==='sending'?'#93c5fd':'#fecaca'),display:'flex',alignItems:'center',gap:10,fontSize:13}}>
+          <span style={{fontSize:18}}>{invSendingState==='success'?'✅':invSendingState==='sending'?'⏳':'❌'}</span>
+          <div style={{flex:1}}>{invSendingState==='sending'?<span style={{color:'#1e40af',fontWeight:600}}>Sending invoice, please wait...</span>:invSendingState==='success'?<span style={{color:'#166534',fontWeight:600}}>Invoice sent successfully!</span>:<div><div style={{fontWeight:700,color:'#dc2626'}}>Failed to send</div><div style={{color:'#dc2626',fontSize:12}}>{invSendingState.error}</div></div>}</div>
+        </div>}
         <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={()=>setInvSendModal(false)}>Cancel</button>
-          <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={!hasRecipients} onClick={async()=>{
-            setInvSendModal(false);
+          <button className="btn btn-secondary" disabled={invSendingState==='sending'} onClick={()=>{setInvSendModal(false);setInvSendingState(null)}}>Cancel</button>
+          <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={!hasRecipients||invSendingState==='sending'||invSendingState==='success'} onClick={async()=>{
+            setInvSendingState('sending');
             const toList=allRecipients.map(em=>{const c=contacts.find(x=>x.email===em);return{email:em,name:c?.name||em}});
             const toEmail=toList.map(t=>t.email).join(', ');
             const toName=toList.map(t=>t.name).join(', ');
@@ -5795,6 +5799,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 res={ok:true,messageId:null,scheduledId:schedRes.id};
               }else{
                 nf('Failed to schedule invoice: '+(schedRes.error||'Unknown error'),'error');
+                setInvSendingState({error:schedRes.error||'Unknown error'});
                 res={ok:false,error:schedRes.error};
               }
             }else{
@@ -5813,6 +5818,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 setInvSentStatus({type:'sent',to:toEmail});
               }else{
                 nf('Failed to send invoice: '+(res.error||'Unknown error'),'error');
+              setInvSendingState({error:res.error||'Unknown error'});
               }
               // Send SMS if enabled (UI hidden via _smsUiEnabled but kept for future)
               if(invSmsEnabled&&invSmsPhone&&_brevoKey){
@@ -5829,7 +5835,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const _msgVerb=_scheduleFuture?('Scheduled to send on '+invSendAt+' to '):'Sent to ';
             const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] '+_msgVerb+toName+' ('+toEmail+')'+(invSmsEnabled&&invSmsPhone?' + SMS to '+invSmsPhone:'')+'\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[],entity_type:'so',entity_id:ir.so_id};
             if(onMsg)onMsg(prev=>[...prev,soMsg]);
-          }}>{(()=>{const _today=new Date().toLocaleDateString('en-CA');const _isFuture=invSendAt&&invSendAt>_today;return(_isFuture?'📅 Schedule Invoice for '+invSendAt:'📧 Send Invoice')+(hasRecipients?' to '+allRecipients.length+' recipient'+(allRecipients.length>1?'s':''):' (No email)')})()}</button>
+            setInvSendingState('success');
+            setTimeout(()=>{setInvSendModal(false);setInvSendingState(null)},1800);
+          }}>{invSendingState==='sending'?'⏳ Sending...':(()=>{const _today=new Date().toLocaleDateString('en-CA');const _isFuture=invSendAt&&invSendAt>_today;return(_isFuture?'📅 Schedule Invoice for '+invSendAt:'📧 Send Invoice')+(hasRecipients?' to '+allRecipients.length+' recipient'+(allRecipients.length>1?'s':''):' (No email)')})()}</button>
         </div>
       </div></div>
     })()}
