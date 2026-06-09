@@ -9019,6 +9019,185 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
           </div>}
 
+          {/* Full PO editor — change ordered quantities, add sizes, remove lines, and pull more
+              items from this order onto the PO (any SKU on the order, regardless of which vendor
+              it's assigned to in the catalog). Batch-queued POs are edited from the Batch POs page
+              instead so the queue entry stays in sync. */}
+          {po.batch_queue_id&&po.status==='queued'?<div style={{marginBottom:12,padding:'6px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#b45309'}}>This PO is queued in a batch — edit items and quantities from the Batch POs page (or remove it from the queue and recreate it).</div>:
+          <div style={{marginBottom:12}}>
+            <div style={{fontSize:11,color:'#64748b',cursor:'pointer',display:'flex',alignItems:'center',gap:4}} onClick={()=>{
+              if(editPO._draft){setEditPO(p=>({...p,_draft:null}));return}
+              const lines=allLines.map(ln=>{
+                const it=o.items[ln.lineIdx];const pl=it?.po_lines?.[ln.poIdx];
+                if(!it||!pl)return null;
+                const sizes={};Object.keys(pl).filter(k=>!k.startsWith('_')&&!NON_SZ_PO_KEYS.includes(k)&&typeof pl[k]==='number').forEach(sz=>{sizes[sz]=pl[sz]||0});
+                return{lineIdx:ln.lineIdx,poIdx:ln.poIdx,sku:it.sku||'',name:it.name||'',color:it.color||'',queued:pl.status==='queued',received:{...(pl.received||{})},sizes,removed:false};
+              }).filter(Boolean);
+              setEditPO(p=>({...p,_draft:{lines,adds:[]}}));
+            }}>
+              ➕ <span style={{textDecoration:'underline'}}>Edit Items & Quantities</span> <span style={{fontSize:9}}>(add items, change quantities, add sizes, remove lines)</span>
+            </div>
+            {editPO._draft&&(()=>{
+              const draft=editPO._draft;
+              const setDraft=fn=>setEditPO(p=>({...p,_draft:fn(p._draft)}));
+              const _szSort=(a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b));
+              const poVendorName=po.po_type==='outside_deco'?(po.deco_vendor||''):(po.vendor||vendorList.find(v=>v.id===item?.vendor_id)?.name||'');
+              const onPoIdxs=new Set(draft.lines.map(l=>l.lineIdx));
+              const addedIdxs=new Set(draft.adds.map(a=>a.itemIdx));
+              const addable=safeItems(o).map((it2,i2)=>({it2,i2})).filter(({it2,i2})=>!onPoIdxs.has(i2)&&!addedIdxs.has(i2)&&(it2.sku||it2.name));
+              return<div style={{marginTop:8,padding:10,border:'1px dashed #7c3aed',borderRadius:6,background:'#faf5ff'}}>
+                <div style={{fontSize:11,color:'#6d28d9',marginBottom:8}}>Change ordered quantities directly (sizes can't go below what's already received), add new sizes, remove lines, or pull more of this order's items onto the PO — including SKUs assigned to other vendors.</div>
+                {draft.lines.map((ln,li)=>{
+                  if(ln.queued)return<div key={'q'+li} style={{padding:8,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:4,marginBottom:6,fontSize:11,color:'#b45309'}}><strong>{ln.sku}</strong> — queued in a batch; edit it from the Batch POs page.</div>;
+                  const rcvT=Object.values(ln.received).reduce((a,v)=>a+safeNum(v),0);
+                  if(ln.removed)return<div key={'r'+li} style={{padding:8,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:4,marginBottom:6,fontSize:12,display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
+                    <span style={{color:'#dc2626',textDecoration:'line-through'}}><span style={{fontFamily:'monospace',fontWeight:700}}>{ln.sku}</span> {ln.name}{ln.color?' — '+ln.color:''}</span>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,removed:false}:l)}))}>Undo remove</button>
+                  </div>;
+                  const lnSzKeys=[...new Set([...Object.keys(ln.sizes),...Object.keys(ln.received).filter(sz=>safeNum(ln.received[sz])>0)])].sort(_szSort);
+                  const addableSz=[...new Set([...Object.keys(safeSizes(o.items[ln.lineIdx]||{})),...APPAREL_SIZES])].filter(sz=>!lnSzKeys.includes(sz)).sort(_szSort);
+                  return<div key={li} style={{padding:8,background:'white',border:'1px solid #e2e8f0',borderRadius:4,marginBottom:6}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,gap:8,flexWrap:'wrap'}}>
+                      <div style={{fontSize:12,fontWeight:700}}><span style={{fontFamily:'monospace',color:'#1e40af'}}>{ln.sku}</span> {ln.name}{ln.color?' — '+ln.color:''}</div>
+                      <button title={rcvT>0?'Has received units — cancel its open sizes instead of removing the line':'Remove this item from the PO'} disabled={rcvT>0} className="btn btn-sm" style={{fontSize:10,color:rcvT>0?'#cbd5e1':'#dc2626',borderColor:rcvT>0?'#e2e8f0':'#fca5a5',cursor:rcvT>0?'not-allowed':'pointer'}} onClick={()=>{if(rcvT>0)return;setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,removed:true}:l)}))}}>✕ Remove</button>
+                    </div>
+                    <div style={{display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}}>
+                      {lnSzKeys.map(sz=>{const rcv=safeNum(ln.received[sz]);const below=rcv>0&&(ln.sizes[sz]||0)<rcv;return<div key={sz} style={{textAlign:'center'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                        <input style={{width:46,textAlign:'center',border:'1px solid '+(below?'#dc2626':'#c4b5fd'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:below?'#fef2f2':'white'}} value={ln.sizes[sz]??''} placeholder="0"
+                          onChange={e=>{const v=Math.max(0,parseInt(e.target.value)||0);setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,sizes:{...l.sizes,[sz]:v}}:l)}))}}/>
+                        {rcv>0&&<div style={{fontSize:9,fontWeight:700,color:below?'#dc2626':'#166534'}} title={below?'Below received — will be kept at '+rcv+' on save':'Already received'}>rcvd {rcv}</div>}
+                      </div>})}
+                      <div style={{textAlign:'center'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',marginBottom:2}}>+ Size</div>
+                        <select value="" style={{width:62,fontSize:11,padding:'4px 2px',border:'1px dashed #c4b5fd',borderRadius:4,background:'#faf5ff',color:'#7c3aed',cursor:'pointer'}}
+                          onChange={e=>{const sz=e.target.value;if(!sz)return;setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,sizes:{...l.sizes,[sz]:l.sizes[sz]||0}}:l)}))}}>
+                          <option value="">add…</option>
+                          {addableSz.map(sz=><option key={sz} value={sz}>{sz}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                  </div>})}
+                {draft.adds.map((ad,ai)=>{
+                  const it2=o.items[ad.itemIdx]||{};
+                  const adSzKeys=Object.keys(ad.sizes).sort(_szSort);
+                  const addableSz=[...new Set([...Object.keys(safeSizes(it2)),...APPAREL_SIZES])].filter(sz=>!adSzKeys.includes(sz)).sort(_szSort);
+                  return<div key={'a'+ai} style={{padding:8,background:'#f0fdf4',border:'1px solid #86efac',borderRadius:4,marginBottom:6}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,gap:8,flexWrap:'wrap'}}>
+                      <div style={{fontSize:12,fontWeight:700}}><span style={{fontSize:9,fontWeight:800,color:'#166534',background:'#dcfce7',padding:'1px 5px',borderRadius:3,marginRight:4,verticalAlign:'middle'}}>NEW</span><span style={{fontFamily:'monospace',color:'#1e40af'}}>{ad.sku}</span> {ad.name}{ad.color?' — '+ad.color:''}</div>
+                      <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                        <span style={{fontSize:10,color:'#64748b'}}>@ $</span>
+                        <input type="number" step="0.01" min="0" style={{width:64,textAlign:'right',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 4px',fontSize:11,fontWeight:600}} value={ad.unit_cost??''} placeholder="0.00"
+                          onChange={e=>{const v=Math.max(0,parseFloat(e.target.value)||0);setDraft(d=>({...d,adds:d.adds.map((a,i)=>i===ai?{...a,unit_cost:v}:a)}))}}/>
+                        <button className="btn btn-sm" style={{fontSize:10,color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>setDraft(d=>({...d,adds:d.adds.filter((_,i)=>i!==ai)}))}>✕</button>
+                      </div>
+                    </div>
+                    <div style={{display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}}>
+                      {adSzKeys.map(sz=><div key={sz} style={{textAlign:'center'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                        <input style={{width:46,textAlign:'center',border:'1px solid #86efac',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} value={ad.sizes[sz]??''} placeholder="0"
+                          onChange={e=>{const v=Math.max(0,parseInt(e.target.value)||0);setDraft(d=>({...d,adds:d.adds.map((a,i)=>i===ai?{...a,sizes:{...a.sizes,[sz]:v}}:a)}))}}/>
+                      </div>)}
+                      <div style={{textAlign:'center'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',marginBottom:2}}>+ Size</div>
+                        <select value="" style={{width:62,fontSize:11,padding:'4px 2px',border:'1px dashed #86efac',borderRadius:4,background:'#f0fdf4',color:'#166534',cursor:'pointer'}}
+                          onChange={e=>{const sz=e.target.value;if(!sz)return;setDraft(d=>({...d,adds:d.adds.map((a,i)=>i===ai?{...a,sizes:{...a.sizes,[sz]:a.sizes[sz]||0}}:a)}))}}>
+                          <option value="">add…</option>
+                          {addableSz.map(sz=><option key={sz} value={sz}>{sz}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                  </div>})}
+                {addable.length>0&&<div style={{marginTop:4,marginBottom:8}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#6d28d9',textTransform:'uppercase',marginBottom:4}}>Add another item from this order</div>
+                  <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+                    {addable.map(({it2,i2})=>{
+                      const cat=products.find(p=>p.id===it2.product_id||p.sku===it2.sku);
+                      const itemVendor=vendorList.find(v=>v.id===(it2.vendor_id||cat?.vendor_id))?.name||'';
+                      const offVendor=poVendorName&&itemVendor&&itemVendor!==poVendorName;
+                      return<div key={i2} style={{padding:'4px 8px',borderRadius:5,cursor:'pointer',border:'1px dashed #94a3b8',background:'white',fontSize:11,display:'flex',gap:4,alignItems:'center'}} onClick={()=>{
+                        const open={};
+                        Object.entries(safeSizes(it2)).forEach(([sz,v])=>{if(safeNum(v)<=0)return;const picked=safePicks(it2).reduce((a,pk)=>a+(pk[sz]||0),0);const cm=poCommitted(it2.po_lines,sz);open[sz]=Math.max(0,safeNum(v)-picked-cm)});
+                        if(Object.keys(open).length===0&&safeNum(it2.est_qty)>0){const picked=safePicks(it2).reduce((a,pk)=>a+(pk['QTY']||0),0);const cm=poCommitted(it2.po_lines,'QTY');open['QTY']=Math.max(0,safeNum(it2.est_qty)-picked-cm)}
+                        setDraft(d=>({...d,adds:[...d.adds,{itemIdx:i2,sku:it2.sku||'',name:it2.name||'',color:it2.color||'',sizes:open,unit_cost:safeNum(cat?.nsa_cost??it2.nsa_cost)}]}));
+                      }}>
+                        <span style={{color:'#16a34a',fontWeight:800,fontSize:13}}>+</span>
+                        <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it2.sku}</span>
+                        <span style={{fontWeight:600}}>{it2.name}</span>
+                        {it2.color&&<span style={{color:'#64748b'}}>{it2.color}</span>}
+                        {offVendor&&<span style={{fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:3,background:'#fffbeb',color:'#b45309',border:'1px solid #fde68a'}} title={'Catalog vendor is '+itemVendor+' — it will still be added to this '+(poVendorName||'')+' PO'}>{itemVendor}</span>}
+                      </div>})}
+                  </div>
+                  <div style={{fontSize:9,color:'#94a3b8',marginTop:4}}>Quantities default to each size's open (not yet picked or on a PO) amount — adjust them above after adding. Need a SKU that isn't on this order yet? Add it on the Items tab first, then pull it onto the PO here.</div>
+                </div>}
+                <div style={{display:'flex',gap:6,marginTop:8}}>
+                  <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11,fontWeight:700}} onClick={()=>{
+                    const items2=o.items.map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
+                    let clampedAny=false;const willRemove=[];
+                    draft.lines.forEach(ln=>{
+                      if(ln.queued)return;
+                      const pl=items2[ln.lineIdx]?.po_lines?.[ln.poIdx];
+                      if(!pl||pl.po_id!==po.po_id)return;
+                      const rcvMap=pl.received||{};
+                      if(ln.removed){
+                        if(Object.values(rcvMap).some(v=>safeNum(v)>0))return;// safety: never drop a line with received history
+                        willRemove.push(ln);return;
+                      }
+                      const next={...pl};
+                      Object.keys(next).filter(k=>!k.startsWith('_')&&!NON_SZ_PO_KEYS.includes(k)&&typeof next[k]==='number').forEach(k=>{delete next[k]});
+                      const cncl={...(pl.cancelled||{})};
+                      const union=[...new Set([...Object.keys(ln.sizes),...Object.keys(rcvMap).filter(sz=>safeNum(rcvMap[sz])>0)])];
+                      union.forEach(sz=>{
+                        let q=Math.max(0,parseInt(ln.sizes[sz])||0);
+                        const r=safeNum(rcvMap[sz]);
+                        if(q<r){q=r;clampedAny=true}
+                        if(cncl[sz]!=null)cncl[sz]=Math.max(0,Math.min(safeNum(cncl[sz]),q-r));
+                        if(q>0)next[sz]=q;
+                      });
+                      if(Object.keys(cncl).length>0)next.cancelled=cncl;
+                      const szK=Object.keys(next).filter(k=>!k.startsWith('_')&&!NON_SZ_PO_KEYS.includes(k)&&typeof next[k]==='number');
+                      if(szK.length===0){willRemove.push(ln);return}
+                      const totR=szK.reduce((a,sz)=>a+safeNum((next.received||{})[sz]),0);
+                      const totOp=szK.reduce((a,sz)=>a+Math.max(0,(next[sz]||0)-safeNum((next.received||{})[sz])-safeNum((next.cancelled||{})[sz])),0);
+                      if(totR>0)next.status=totOp<=0?'received':'partial';
+                      items2[ln.lineIdx].po_lines[ln.poIdx]=next;
+                    });
+                    let addedCount=0;
+                    draft.adds.forEach(ad=>{
+                      const tgt=items2[ad.itemIdx];if(!tgt)return;
+                      const sizes={};Object.entries(ad.sizes||{}).forEach(([sz,v])=>{const q=Math.max(0,parseInt(v)||0);if(q>0)sizes[sz]=q});
+                      if(Object.keys(sizes).length===0)return;
+                      const nl={po_id:po.po_id,status:po.preexisting?'ordered':'waiting',created_at:new Date().toLocaleDateString(),memo:po.memo||'',received:{},shipments:[],unit_cost:safeNum(ad.unit_cost)};
+                      const vName=po.vendor||poVendorName;if(vName)nl.vendor=vName;
+                      if(po.po_type)nl.po_type=po.po_type;
+                      if(po.deco_vendor)nl.deco_vendor=po.deco_vendor;
+                      if(po.deco_type)nl.deco_type=po.deco_type;
+                      if(po.drop_ship)nl.drop_ship=true;
+                      if(po.preexisting)nl.preexisting=true;
+                      if(po.expected_date)nl.expected_date=po.expected_date;
+                      if(safeNum(po.shipping)>0)nl.shipping=po.shipping;// shipping is PO-level, mirrored across lines
+                      Object.entries(sizes).forEach(([sz,v])=>{nl[sz]=v});
+                      tgt.po_lines.push(nl);addedCount++;
+                    });
+                    willRemove.forEach(ln=>{items2[ln.lineIdx].po_lines[ln.poIdx]='__PO_REMOVE__'});
+                    const items3=items2.map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl!=='__PO_REMOVE__')}));
+                    const newAllLines=[];items3.forEach((it,i)=>{(it.po_lines||[]).forEach((pl,pi)=>{if(pl&&pl.po_id===po.po_id)newAllLines.push({lineIdx:i,poIdx:pi})})});
+                    if(newAllLines.length===0&&!window.confirm('This removes every item from '+po.po_id+' — the PO will be deleted from this order. Continue?'))return;
+                    const updated={...o,items:items3,updated_at:new Date().toLocaleString()};
+                    setO(updated);onSave(updated);
+                    if(newAllLines.length===0){setEditPO(null);nf('PO '+po.po_id+' removed from order')}
+                    else{
+                      const first=newAllLines[0];
+                      setEditPO({lineIdx:first.lineIdx,poIdx:first.poIdx,po:items3[first.lineIdx].po_lines[first.poIdx],allLines:newAllLines});
+                      nf('PO '+po.po_id+' updated'+(addedCount>0?' — '+addedCount+' item'+(addedCount!==1?'s':'')+' added':'')+(clampedAny?' (some sizes kept at received qty)':''));
+                    }
+                  }}>✓ Apply Changes</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setEditPO(p=>({...p,_draft:null}))}>Cancel</button>
+                </div>
+              </div>;
+            })()}
+          </div>}
+
           {/* Shipment history */}
           {shipments.length>0&&<>
             <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:6}}>Shipment history:</div>
