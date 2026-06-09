@@ -8869,8 +8869,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
     {/* EDIT PO MODAL — supports partial receiving with shipment log */}
     {editPO&&(()=>{
-      // All items on this PO (may be multiple if same PO across different line items)
-      const allLines=editPO.allLines||[{lineIdx:editPO.lineIdx,poIdx:editPO.poIdx}];
+      // All items on this PO (may be multiple if same PO across different line items).
+      // Some entry points (?po= deep link, financial summary, full-page view) build allLines with
+      // only lineIdx — resolve the missing poIdx by po_id here so every editing/receiving action
+      // targets a real po_line instead of silently no-opping on po_lines[undefined].
+      const _editPoId=editPO.po?.po_id;
+      const allLines=(editPO.allLines||[{lineIdx:editPO.lineIdx,poIdx:editPO.poIdx}]).map(ln=>{
+        if(ln.poIdx!=null)return ln;
+        const pi=((o.items[ln.lineIdx]||{}).po_lines||[]).findIndex(p=>p&&p.po_id===_editPoId);
+        return{...ln,poIdx:pi>=0?pi:0};
+      });
       const activeLineIdx=editPO._activeLineIdx||0;
       const activeLine=allLines[activeLineIdx]||allLines[0];
       const po=o.items[activeLine.lineIdx]?.po_lines?.[activeLine.poIdx]||editPO.po;
@@ -9064,7 +9072,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <div style={{display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}}>
                       {lnSzKeys.map(sz=>{const rcv=safeNum(ln.received[sz]);const below=rcv>0&&(ln.sizes[sz]||0)<rcv;return<div key={sz} style={{textAlign:'center'}}>
                         <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                        <input style={{width:46,textAlign:'center',border:'1px solid '+(below?'#dc2626':'#c4b5fd'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:below?'#fef2f2':'white'}} value={ln.sizes[sz]??''} placeholder="0"
+                        <input id={'po-editq-'+li+'-'+sz} style={{width:46,textAlign:'center',border:'1px solid '+(below?'#dc2626':'#c4b5fd'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:below?'#fef2f2':'white'}} value={ln.sizes[sz]??''} placeholder="0"
                           onChange={e=>{const v=Math.max(0,parseInt(e.target.value)||0);setDraft(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,sizes:{...l.sizes,[sz]:v}}:l)}))}}/>
                         {rcv>0&&<div style={{fontSize:9,fontWeight:700,color:below?'#dc2626':'#166534'}} title={below?'Below received — will be kept at '+rcv+' on save':'Already received'}>rcvd {rcv}</div>}
                       </div>})}
@@ -9674,7 +9682,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
         </div>;
       }
-      const{po,item,allLines,soId,soItems}=poFullPage;
+      const{po,item,soId,soItems}=poFullPage;
+      // Resolve missing poIdx (lineIdx-only entries from the ?po= deep link) by po_id so the
+      // full page's receive/edit actions always target a real po_line.
+      const allLines=(poFullPage.allLines||[]).map(ln=>{
+        if(ln.poIdx!=null)return ln;
+        const pi=(((o.items||soItems)[ln.lineIdx]||{}).po_lines||[]).findIndex(p=>p&&p.po_id===po?.po_id);
+        return{...ln,poIdx:pi>=0?pi:0};
+      });
       const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&k!=='shipping'&&typeof po[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
       const received=po.received||{};const cancelled=po.cancelled||{};const shipments=po.shipments||[];
       const getRcvd=sz=>(received[sz]||0);const getCncl=sz=>(cancelled[sz]||0);const getOpen=sz=>Math.max(0,(po[sz]||0)-getRcvd(sz)-getCncl(sz));
