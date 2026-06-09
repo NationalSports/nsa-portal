@@ -9355,8 +9355,29 @@ export default function App(){
             {label:'Expected Date',value:so.expected_date||'TBD',sub:j.daysOut!=null?(j.daysOut<=0?'PAST DUE':j.daysOut+' days out'):''},
             {label:'Rep',value:j.rep||REPS.find(r=>r.id===(cust.find(x=>x.id===so.customer_id)?.primary_rep_id||so.created_by))?.name||'—'},
           ];
-          const tables=[];
-          // Per-item PDF sections: mockup (in notes), size table, decoration spec, numbers/names
+          // Render a table as an HTML string, matching the buildDocHtml table style
+          const _tHtml=(title,headers,aligns,rows)=>{
+            let h='';
+            if(title)h+='<div style="font-weight:700;font-size:12px;margin:10px 0 4px;color:#333">'+title+'</div>';
+            h+='<table style="width:100%;border-collapse:collapse;margin:4px 0"><thead><tr>';
+            headers.forEach((hd,i)=>{h+='<th style="background:#e8e8e8;padding:3px 6px;text-align:'+(aligns[i]||'left')+';font-size:10px;font-weight:700;color:#333;border:1px solid #ccc">'+hd+'</th>'});
+            h+='</tr></thead><tbody>';
+            (rows||[]).forEach(row=>{
+              h+='<tr>';
+              const cells=row.cells||row;
+              (Array.isArray(cells)?cells:[]).forEach((cell,i)=>{
+                const isObj=cell&&typeof cell==='object'&&!Array.isArray(cell);
+                const val=isObj?cell.value:cell;
+                h+='<td style="padding:2px 6px;border-bottom:1px solid #ddd;font-size:10px;line-height:1.3;text-align:'+(aligns[i]||'left')+'">'+(val!=null?val:'')+'</td>';
+              });
+              h+='</tr>';
+            });
+            h+='</tbody></table>';
+            return h;
+          };
+          const _urlsFor=arr=>{const urls=[];for(const f of (arr||[])){if(!f)continue;const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f)){urls.push(u)}else if(_isPdfUrl(u,f)){const pt=_cloudinaryPdfThumb(u);if(pt)urls.push(pt)}}return urls};
+          // Build one HTML section per item: all info tables + mockup image(s) together
+          const itemSectionHtmls=[];
           itemDetails.forEach(gi=>{
             const it=safeItems(so)[gi.item_idx];
             if(!it)return;
@@ -9366,13 +9387,13 @@ export default function App(){
             const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
             const ndData=numbersData.find(n=>n.sku===gi.sku);
             const itemSizes=allSizes.filter(sz=>gi.sizes[sz]>0);
+            let sHtml='';
             // Size table
             const hdrs=['',...itemSizes,'Total'];
             const ordRow={cells:['Ordered']};itemSizes.forEach(sz=>{ordRow.cells.push(gi.sizes[sz]||'')});
             ordRow.cells.push({value:'<strong>'+rowTotal+'</strong>'});
-            tables.push({title:gi.sku+' — '+gi.name+(gi.color?' ('+gi.color+')':'')+' · '+rowTotal+' units',className:'sz-table',
-              headers:hdrs,aligns:hdrs.map((_,i)=>i===0?'left':'center'),rows:[ordRow]});
-            // Decoration spec for this item
+            sHtml+=_tHtml(gi.sku+' — '+gi.name+(gi.color?' ('+gi.color+')':'')+' · '+rowTotal+' units',hdrs,hdrs.map((_,i)=>i===0?'left':'center'),[ordRow]);
+            // Decoration spec
             if(itemArtDecos.length>0||itemNumDecos.length>0||itemNameDecos.length>0){
               const specRows=[];
               itemArtDecos.forEach(d=>{
@@ -9392,7 +9413,7 @@ export default function App(){
               itemNameDecos.forEach(nd=>{
                 specRows.push({cells:[nd.position||'—','Names'+(nd.front_and_back?' (Front + Back)':''),'—','—','—']});
               });
-              tables.push({title:'Decoration Spec — '+gi.sku,headers:['Position','Art / Type','Method','Size','Colors'],aligns:['left','left','left','left','left'],rows:specRows});
+              sHtml+=_tHtml('Decoration Spec — '+gi.sku,['Position','Art / Type','Method','Size','Colors'],['left','left','left','left','left'],specRows);
             }
             // Numbers list
             if(ndData?.roster&&Object.keys(ndData.roster).length>0){
@@ -9400,7 +9421,7 @@ export default function App(){
               ndData.sizes.forEach(sz=>{const nums=(ndData.roster[sz]||[]).filter(n=>n!=='');
                 if(nums.length>0)numRows.push({cells:[sz,nums.sort((a,b)=>Number(a)-Number(b)).join(', ')]});
               });
-              if(numRows.length>0)tables.push({title:'Number List — '+gi.sku,headers:['Size','Numbers'],aligns:['left','left'],rows:numRows});
+              if(numRows.length>0)sHtml+=_tHtml('Number List — '+gi.sku,['Size','Numbers'],['left','left'],numRows);
             }
             // Names list
             if(ndData?.names&&Object.keys(ndData.names).length>0){
@@ -9408,26 +9429,31 @@ export default function App(){
               ndData.sizes.forEach(sz=>{const nms=(ndData.names[sz]||[]).filter(n=>n!=='');
                 if(nms.length>0)nameRows.push({cells:[sz,nms.join(', ')]});
               });
-              if(nameRows.length>0)tables.push({title:'Names List — '+gi.sku,headers:['Size','Names'],aligns:['left','left'],rows:nameRows});
+              if(nameRows.length>0)sHtml+=_tHtml('Names List — '+gi.sku,['Size','Names'],['left','left'],nameRows);
             }
+            // Mockup image(s) for this item immediately after its tables
+            const _mk=gi.sku+'|'+(gi.color||'');
+            const itemMockUrls=_urlsFor(allArtFiles.flatMap(a=>{const v=a?.item_mockups?.[_mk];return v&&v.length>0?v:(a?.item_mockups?.[gi.sku]||[])}));
+            if(itemMockUrls.length>0){
+              sHtml+='<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;page-break-inside:avoid">'
+                +itemMockUrls.map(u=>'<img src="'+u+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')
+                +'</div>';
+            } else if(gi.image_url&&_isImgUrl(gi.image_url)){
+              sHtml+='<div style="margin:12px 0;page-break-inside:avoid"><img src="'+gi.image_url+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/></div>';
+            }
+            itemSectionHtmls.push(sHtml);
           });
-          // Generic production files list (general, not tied to a specific SKU)
-          if(prodFiles.length>0){
-            const fileRows=[];
-            prodFiles.forEach(f=>fileRows.push({cells:['Production',fileDisplayName(f)]}));
-            tables.push({title:'Production Files',headers:['Type','Filename'],aligns:['left','left'],rows:fileRows});
-          }
-          // Per-item mockup URLs for the PDF — each SKU shows its own labeled mockup
-          const _urlsFor=arr=>{const urls=[];for(const f of (arr||[])){if(!f)continue;const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f)){urls.push(u)}else if(_isPdfUrl(u,f)){const pt=_cloudinaryPdfThumb(u);if(pt)urls.push(pt)}}return urls};
-          const _pdfPerItem=itemDetails.map(gi=>{const _mk=gi.sku+'|'+(gi.color||'');return{sku:gi.sku,name:gi.name,color:gi.color,urls:_urlsFor(allArtFiles.flatMap(a=>{const v=a?.item_mockups?.[_mk];return v&&v.length>0?v:(a?.item_mockups?.[gi.sku]||[])}))}}).filter(x=>x.urls.length>0);
+          // Generic mockups not tied to a specific item
           const _pdfGenericUrls=_urlsFor(allArtFiles.flatMap(a=>(a?.mockup_files||a?.files||[])));
-          const _pdfHasAny=_pdfPerItem.length>0||_pdfGenericUrls.length>0;
-          const _pdfFallback=!_pdfHasAny&&itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url;
-          const _pdfMockHtml=_pdfHasAny||_pdfFallback?'<div style="margin:8px 0 12px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">'
-            +_pdfPerItem.map(x=>'<div style="margin-bottom:14px;page-break-inside:avoid"><div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px">'+x.sku+' — '+x.name+(x.color?' ('+x.color+')':'')+'</div><div style="display:flex;gap:10px;flex-wrap:wrap">'+x.urls.map(u=>'<img src="'+u+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')+'</div></div>').join('')
-            +(_pdfGenericUrls.length>0?'<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">'+_pdfGenericUrls.map(u=>'<img src="'+u+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')+'</div>':'')
-            +(_pdfFallback?'<div style="display:flex;justify-content:center"><img src="'+_pdfFallback+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/></div>':'')
-            +'<div style="font-size:9px;color:#666;margin-top:4px;width:100%;text-align:center">Mockup Preview</div></div>':'';
+          const _genericMockHtml=_pdfGenericUrls.length>0
+            ?'<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center">'+_pdfGenericUrls.map(u=>'<img src="'+u+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')+'</div>'
+            :'';
+          // Generic production files
+          let _prodFilesHtml='';
+          if(prodFiles.length>0){
+            _prodFilesHtml=_tHtml('Production Files',['Type','Filename'],['left','left'],
+              prodFiles.map(f=>({cells:['Production',fileDisplayName(f)]})));
+          }
           // Run-together siblings — only jobs checked in and ready to run on this same screen now,
           // so the sheet never lists a linked job whose garments aren't in hand yet.
           const _pid=c?.parent_id||c?.id||null;
@@ -9436,10 +9462,16 @@ export default function App(){
           const _sibs=[];
           if(_gk)sos.forEach(s2=>{if(_famPid(s2)!==_pid)return;safeJobs(s2).forEach(jj=>{if(s2.id===so.id&&jj.id===j.id)return;if(jobGroupKey(jj,_famPid(s2))!==_gk)return;if(!isJobReady(jj,s2))return;_sibs.push({soId:s2.id,cust:cust.find(x=>x.id===s2.customer_id)?.name||'—',qty:jj.total_units,manual:!!jj.link_group})})});
           const _linkHtml=_sibs.length?'<div style="margin:8px 0 12px;padding:10px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px"><div style="font-size:12px;font-weight:700;color:#3730a3">🔗 Runs together — reuse one screen setup ('+(j.total_units+_sibs.reduce((a,s)=>a+s.qty,0))+' units total)</div><ul style="margin:6px 0 0;padding-left:18px;font-size:12px;color:#3730a3">'+_sibs.map(s=>'<li>'+s.soId+' · '+s.cust+' — '+s.qty+' units'+(s.manual?'':' (matched by art)')+'</li>').join('')+'</ul></div>':'';
+          // Combine: per-item sections (page break between each), then generic mockups, prod files, siblings, job notes.
+          // The <style> override strips the yellow notes-box styling so item sections render cleanly.
+          const _notesCssReset='<style>.notes{background:white!important;border:none!important;padding:0!important;margin-top:0!important}.notes>.label{display:none!important}</style>';
+          const _itemSectionsHtml=itemSectionHtmls.map((s,i)=>
+            '<div style="'+(i<itemSectionHtmls.length-1?'page-break-after:always':'')+'">'+s+'</div>'
+          ).join('');
           printDoc({title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
             headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
-            infoBoxes,tables,
-            notes:(_linkHtml||'')+(_pdfMockHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
+            infoBoxes,tables:[],
+            notes:_notesCssReset+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
             showPricing:false});
         };
 
