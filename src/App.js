@@ -8669,6 +8669,7 @@ export default function App(){
   const[approvalNotifyModal,setApprovalNotifyModal]=useState(null);// {job,so,contact,method,message} for send-for-approval popup
   const[prodJobModal,setProdJobModal]=useState(null);// job object for production mockup view
   const[prodJobLightbox,setProdJobLightbox]=useState(false);// lightbox for mockup image
+  const[prodPdfDownloading,setProdPdfDownloading]=useState(false);
   const[prodLightboxIdx,setProdLightboxIdx]=useState(0);// index of current mockup in lightbox gallery
   const[prodLightboxZoom,setProdLightboxZoom]=useState(1);// zoom level for lightbox
   const[prodView,_setProdView]=useState(()=>loadState('prod_view','board'));const setProdView=v=>{_setProdView(v);try{localStorage.setItem('nsa_prod_view',JSON.stringify(v))}catch(e){}};const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
@@ -9392,6 +9393,29 @@ export default function App(){
         const itemMockupFiles=allArtFiles.flatMap(a=>Object.values(a?.item_mockups||{}).flat()).filter(f=>f);
         const mockupFiles=[...genericMockupFiles,...itemMockupFiles];
         const prodFiles=allArtFiles.flatMap(a=>a?.prod_files||[]);
+        // All mockups for an item across art files. Mockup slots store under the base sku|color
+        // key for the first art, but additional arts (front + back), numbers and names store
+        // under suffixed keys (sku|color|d1, |<colorWayId>, |numbers, |names) — collect them all
+        // so multi-location items show every mockup. Ordered: arts first, then numbers/names.
+        const collectItemMocks=(sku,color)=>{
+          const _mk=sku+'|'+(color||'');
+          const rank=k=>/\|numbers(_\d+)?$/.test(k)?2:/\|names(_\d+)?$/.test(k)?3:1;
+          const out=[];const seen=new Set();
+          allArtFiles.forEach(a=>{const m=a?.item_mockups||{};
+            const base=(m[_mk]&&m[_mk].length>0)?m[_mk]:(m[sku]||[]);
+            const extra=Object.keys(m).filter(k=>k.startsWith(_mk+'|')).sort((x,y)=>rank(x)-rank(y)).flatMap(k=>m[k]||[]);
+            [...base,...extra].forEach(f=>{if(!f)return;const u=typeof f==='string'?f:(f?.url||'');if(u&&seen.has(u))return;if(u)seen.add(u);out.push(f)});
+          });
+          return out;
+        };
+        // Ink/thread color name → hex for swatch chips (used by the modal cards and the PDF)
+        const colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
+          'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
+          'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000',
+          'Kelly Green':'#4CBB17','Forest Green':'#228B22','Charcoal':'#36454F','Vegas Gold':'#C5B358','Columbia Blue':'#9BDDFF',
+          'Scarlet':'#FF2400','Purple':'#6B21A8','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Cream':'#FFFDD0','Tan':'#D2B48C',
+          'Athletic Gold':'#FFB81C','Texas Orange':'#BF5700','Burnt Orange':'#CC5500','Teal':'#008080','Cyan':'#00FFFF','Lime':'#32CD32'};
+        const _swatchFor=cl=>{const s=String(cl||'');return colorMap2[s]||Object.entries(colorMap2).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
         // Numbers & Names roster data — extract from item decorations.
         // Split jobs carry per-item roster/sizes overrides on gi; prefer those over the source decoration's full roster.
         const numbersData=(()=>{const results=[];(j.items||[]).forEach(gi=>{
@@ -9407,15 +9431,40 @@ export default function App(){
         });return results})();
 
         // Print Production PDF
-        const printProdPDF=()=>{
+        const _buildProdPdfOpts=()=>{
           const infoBoxes=[
             {label:'Customer',value:c?.name||j.customer||'Unknown',sub:c?.alpha_tag||''},
             {label:'Sales Order',value:so.id,sub:so.memo||''},
             {label:'Expected Date',value:so.expected_date||'TBD',sub:j.daysOut!=null?(j.daysOut<=0?'PAST DUE':j.daysOut+' days out'):''},
             {label:'Rep',value:j.rep||REPS.find(r=>r.id===(cust.find(x=>x.id===so.customer_id)?.primary_rep_id||so.created_by))?.name||'—'},
           ];
-          const tables=[];
-          // Per-item PDF sections: mockup (in notes), size table, decoration spec, numbers/names
+          // Render a table as an HTML string, matching the buildDocHtml table style
+          const _tHtml=(title,headers,aligns,rows)=>{
+            let h='';
+            if(title)h+='<div style="font-weight:700;font-size:12px;margin:10px 0 4px;color:#333">'+title+'</div>';
+            h+='<table style="width:100%;border-collapse:collapse;margin:4px 0"><thead><tr>';
+            headers.forEach((hd,i)=>{h+='<th style="background:#e8e8e8;padding:3px 6px;text-align:'+(aligns[i]||'left')+';font-size:10px;font-weight:700;color:#333;border:1px solid #ccc">'+hd+'</th>'});
+            h+='</tr></thead><tbody>';
+            (rows||[]).forEach(row=>{
+              h+='<tr>';
+              const cells=row.cells||row;
+              (Array.isArray(cells)?cells:[]).forEach((cell,i)=>{
+                const isObj=cell&&typeof cell==='object'&&!Array.isArray(cell);
+                const val=isObj?cell.value:cell;
+                h+='<td style="padding:2px 6px;border-bottom:1px solid #ddd;font-size:10px;line-height:1.3;text-align:'+(aligns[i]||'left')+'">'+(val!=null?val:'')+'</td>';
+              });
+              h+='</tr>';
+            });
+            h+='</tbody></table>';
+            return h;
+          };
+          const _urlsFor=arr=>{const urls=[];for(const f of (arr||[])){if(!f)continue;const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f)){urls.push(u)}else if(_isPdfUrl(u,f)){const pt=_cloudinaryPdfThumb(u);if(pt)urls.push(pt)}}return urls};
+          // Color names → swatch chip HTML, mirroring the modal's PMS chips
+          const _chipsHtml=arr=>{const a=(arr||[]).filter(c2=>c2&&String(c2).trim());if(a.length===0)return '—';
+            return a.map(cl=>{const sw=_swatchFor(cl);
+              return '<span style="display:inline-block;white-space:nowrap;padding:1px 6px;background:#fff;border:1px solid '+(sw||'#d1d5db')+';border-radius:4px;font-size:9px;font-weight:700;margin:1px 3px 1px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'+(sw||'#e2e8f0')+';border:1px solid #d1d5db;margin-right:4px;vertical-align:-1px"></span>'+cl+'</span>'}).join('')};
+          // Build one HTML section per item: all info tables + mockup image(s) together
+          const itemSectionHtmls=[];
           itemDetails.forEach(gi=>{
             const it=safeItems(so)[gi.item_idx];
             if(!it)return;
@@ -9425,13 +9474,13 @@ export default function App(){
             const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
             const ndData=numbersData.find(n=>n.sku===gi.sku);
             const itemSizes=allSizes.filter(sz=>gi.sizes[sz]>0);
+            let sHtml='';
             // Size table
             const hdrs=['',...itemSizes,'Total'];
             const ordRow={cells:['Ordered']};itemSizes.forEach(sz=>{ordRow.cells.push(gi.sizes[sz]||'')});
             ordRow.cells.push({value:'<strong>'+rowTotal+'</strong>'});
-            tables.push({title:gi.sku+' — '+gi.name+(gi.color?' ('+gi.color+')':'')+' · '+rowTotal+' units',className:'sz-table',
-              headers:hdrs,aligns:hdrs.map((_,i)=>i===0?'left':'center'),rows:[ordRow]});
-            // Decoration spec for this item
+            sHtml+=_tHtml(gi.sku+' — '+gi.name+(gi.color?' ('+gi.color+')':'')+' · '+rowTotal+' units',hdrs,hdrs.map((_,i)=>i===0?'left':'center'),[ordRow]);
+            // Decoration spec
             if(itemArtDecos.length>0||itemNumDecos.length>0||itemNameDecos.length>0){
               const specRows=[];
               itemArtDecos.forEach(d=>{
@@ -9443,15 +9492,15 @@ export default function App(){
                 const cls=cwObj?(cwObj.inks||[]).filter(c2=>c2&&c2.trim()):_direct.length>0?_direct:_cwAll;
                 const sz2=artF?.art_sizes?.[d.position]||artF?.art_size||'—';
                 const flags=[];if(d.underbase)flags.push('Underbase');if(d.reversible)flags.push('Reversible');
-                specRows.push({cells:[d.position||'—',artF?.name||'—',dt.replace(/_/g,' ')+(flags.length?' ('+flags.join(', ')+')':''),sz2,cls.join(', ')||'—']});
+                specRows.push({cells:[d.position||'—',artF?.name||'—',dt.replace(/_/g,' ')+(flags.length?' ('+flags.join(', ')+')':''),sz2,_chipsHtml(cls)]});
               });
               itemNumDecos.forEach(nd=>{
-                specRows.push({cells:[nd.position||'—','Numbers'+(nd.front_and_back?' (Front + Back)':''),(nd.num_method||'heat_transfer').replace(/_/g,' '),nd.num_size||'—',nd.print_color||'—']});
+                specRows.push({cells:[nd.position||'—','Numbers'+(nd.front_and_back?' (Front + Back)':''),(nd.num_method||'heat_transfer').replace(/_/g,' '),nd.num_size||'—',_chipsHtml([nd.print_color])]});
               });
               itemNameDecos.forEach(nd=>{
                 specRows.push({cells:[nd.position||'—','Names'+(nd.front_and_back?' (Front + Back)':''),'—','—','—']});
               });
-              tables.push({title:'Decoration Spec — '+gi.sku,headers:['Position','Art / Type','Method','Size','Colors'],aligns:['left','left','left','left','left'],rows:specRows});
+              sHtml+=_tHtml('Decoration Spec — '+gi.sku,['Position','Art / Type','Method','Size','Colors'],['left','left','left','left','left'],specRows);
             }
             // Numbers list
             if(ndData?.roster&&Object.keys(ndData.roster).length>0){
@@ -9459,7 +9508,7 @@ export default function App(){
               ndData.sizes.forEach(sz=>{const nums=(ndData.roster[sz]||[]).filter(n=>n!=='');
                 if(nums.length>0)numRows.push({cells:[sz,nums.sort((a,b)=>Number(a)-Number(b)).join(', ')]});
               });
-              if(numRows.length>0)tables.push({title:'Number List — '+gi.sku,headers:['Size','Numbers'],aligns:['left','left'],rows:numRows});
+              if(numRows.length>0)sHtml+=_tHtml('Number List — '+gi.sku,['Size','Numbers'],['left','left'],numRows);
             }
             // Names list
             if(ndData?.names&&Object.keys(ndData.names).length>0){
@@ -9467,26 +9516,33 @@ export default function App(){
               ndData.sizes.forEach(sz=>{const nms=(ndData.names[sz]||[]).filter(n=>n!=='');
                 if(nms.length>0)nameRows.push({cells:[sz,nms.join(', ')]});
               });
-              if(nameRows.length>0)tables.push({title:'Names List — '+gi.sku,headers:['Size','Names'],aligns:['left','left'],rows:nameRows});
+              if(nameRows.length>0)sHtml+=_tHtml('Names List — '+gi.sku,['Size','Names'],['left','left'],nameRows);
             }
+            // Mockup image(s) for this item immediately after its tables — all locations
+            // (front + back arts, numbers/names) side by side
+            const itemMockUrls=_urlsFor(collectItemMocks(gi.sku,gi.color));
+            if(itemMockUrls.length>0){
+              const _mh=itemMockUrls.length>1?300:380;
+              const _mw=itemMockUrls.length>1?'48%':'100%';
+              sHtml+='<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;page-break-inside:avoid">'
+                +itemMockUrls.map(u=>'<img src="'+u+'" style="height:'+_mh+'px;max-width:'+_mw+';object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')
+                +'</div>';
+            } else if(gi.image_url&&_isImgUrl(gi.image_url)){
+              sHtml+='<div style="margin:12px 0;page-break-inside:avoid"><img src="'+gi.image_url+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/></div>';
+            }
+            itemSectionHtmls.push(sHtml);
           });
-          // Generic production files list (general, not tied to a specific SKU)
-          if(prodFiles.length>0){
-            const fileRows=[];
-            prodFiles.forEach(f=>fileRows.push({cells:['Production',fileDisplayName(f)]}));
-            tables.push({title:'Production Files',headers:['Type','Filename'],aligns:['left','left'],rows:fileRows});
-          }
-          // Per-item mockup URLs for the PDF — each SKU shows its own labeled mockup
-          const _urlsFor=arr=>{const urls=[];for(const f of (arr||[])){if(!f)continue;const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f)){urls.push(u)}else if(_isPdfUrl(u,f)){const pt=_cloudinaryPdfThumb(u);if(pt)urls.push(pt)}}return urls};
-          const _pdfPerItem=itemDetails.map(gi=>{const _mk=gi.sku+'|'+(gi.color||'');return{sku:gi.sku,name:gi.name,color:gi.color,urls:_urlsFor(allArtFiles.flatMap(a=>{const v=a?.item_mockups?.[_mk];return v&&v.length>0?v:(a?.item_mockups?.[gi.sku]||[])}))}}).filter(x=>x.urls.length>0);
+          // Generic mockups not tied to a specific item
           const _pdfGenericUrls=_urlsFor(allArtFiles.flatMap(a=>(a?.mockup_files||a?.files||[])));
-          const _pdfHasAny=_pdfPerItem.length>0||_pdfGenericUrls.length>0;
-          const _pdfFallback=!_pdfHasAny&&itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url;
-          const _pdfMockHtml=_pdfHasAny||_pdfFallback?'<div style="margin:8px 0 12px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">'
-            +_pdfPerItem.map(x=>'<div style="margin-bottom:14px;page-break-inside:avoid"><div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px">'+x.sku+' — '+x.name+(x.color?' ('+x.color+')':'')+'</div><div style="display:flex;gap:10px;flex-wrap:wrap">'+x.urls.map(u=>'<img src="'+u+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')+'</div></div>').join('')
-            +(_pdfGenericUrls.length>0?'<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">'+_pdfGenericUrls.map(u=>'<img src="'+u+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')+'</div>':'')
-            +(_pdfFallback?'<div style="display:flex;justify-content:center"><img src="'+_pdfFallback+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/></div>':'')
-            +'<div style="font-size:9px;color:#666;margin-top:4px;width:100%;text-align:center">Mockup Preview</div></div>':'';
+          const _genericMockHtml=_pdfGenericUrls.length>0
+            ?'<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center">'+_pdfGenericUrls.map(u=>'<img src="'+u+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')+'</div>'
+            :'';
+          // Generic production files
+          let _prodFilesHtml='';
+          if(prodFiles.length>0){
+            _prodFilesHtml=_tHtml('Production Files',['Type','Filename'],['left','left'],
+              prodFiles.map(f=>({cells:['Production',fileDisplayName(f)]})));
+          }
           // Run-together siblings — only jobs checked in and ready to run on this same screen now,
           // so the sheet never lists a linked job whose garments aren't in hand yet.
           const _pid=c?.parent_id||c?.id||null;
@@ -9495,12 +9551,20 @@ export default function App(){
           const _sibs=[];
           if(_gk)sos.forEach(s2=>{if(_famPid(s2)!==_pid)return;safeJobs(s2).forEach(jj=>{if(s2.id===so.id&&jj.id===j.id)return;if(jobGroupKey(jj,_famPid(s2))!==_gk)return;if(!isJobReady(jj,s2))return;_sibs.push({soId:s2.id,cust:cust.find(x=>x.id===s2.customer_id)?.name||'—',qty:jj.total_units,manual:!!jj.link_group})})});
           const _linkHtml=_sibs.length?'<div style="margin:8px 0 12px;padding:10px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px"><div style="font-size:12px;font-weight:700;color:#3730a3">🔗 Runs together — reuse one screen setup ('+(j.total_units+_sibs.reduce((a,s)=>a+s.qty,0))+' units total)</div><ul style="margin:6px 0 0;padding-left:18px;font-size:12px;color:#3730a3">'+_sibs.map(s=>'<li>'+s.soId+' · '+s.cust+' — '+s.qty+' units'+(s.manual?'':' (matched by art)')+'</li>').join('')+'</ul></div>':'';
-          printDoc({title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
+          // Combine: per-item sections (page break between each), then generic mockups, prod files, siblings, job notes.
+          // The <style> override strips the yellow notes-box styling so item sections render cleanly.
+          const _notesCssReset='<style>.notes{background:white!important;border:none!important;padding:0!important;margin-top:0!important}.notes>.label{display:none!important}</style>';
+          const _itemSectionsHtml=itemSectionHtmls.map((s,i)=>
+            '<div style="'+(i<itemSectionHtmls.length-1?'page-break-after:always':'')+'">'+s+'</div>'
+          ).join('');
+          return{title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
             headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
-            infoBoxes,tables,
-            notes:(_linkHtml||'')+(_pdfMockHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
-            showPricing:false});
+            infoBoxes,tables:[],
+            notes:_notesCssReset+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
+            showPricing:false};
         };
+        const printProdPDF=()=>printDoc(_buildProdPdfOpts());
+        const downloadProdPDF=async()=>{setProdPdfDownloading(true);try{await downloadDoc(_buildProdPdfOpts(),j.id+'-production')}finally{setProdPdfDownloading(false)}};
 
         return<div className="modal-overlay" onClick={()=>{setProdJobModal(null);setProdJobLightbox(false)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:860,maxHeight:'92vh',overflow:'auto'}}>
           <div className="modal-header" style={{background:'#1e293b',color:'white'}}>
@@ -9510,6 +9574,7 @@ export default function App(){
             </div>
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
               <button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'5px 12px'}} onClick={printProdPDF}>Print PDF</button>
+              <button className="btn btn-sm" style={{fontSize:11,background:'#0284c7',color:'white',border:'none',padding:'5px 12px'}} onClick={downloadProdPDF} disabled={prodPdfDownloading}>{prodPdfDownloading?'Generating…':'⬇ Download PDF'}</button>
               <button className="modal-close" style={{color:'white'}} onClick={()=>{setProdJobModal(null);setProdJobLightbox(false)}}>×</button>
             </div>
           </div>
@@ -9595,19 +9660,12 @@ export default function App(){
             </div>}
 
             {/* Per-item production cards — mockup, sizes, numbers/names, decoration spec, files */}
-            {(()=>{const colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
-              'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
-              'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000',
-              'Kelly Green':'#4CBB17','Forest Green':'#228B22','Charcoal':'#36454F','Vegas Gold':'#C5B358','Columbia Blue':'#9BDDFF',
-              'Scarlet':'#FF2400','Purple':'#6B21A8','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Cream':'#FFFDD0','Tan':'#D2B48C',
-              'Athletic Gold':'#FFB81C','Texas Orange':'#BF5700','Burnt Orange':'#CC5500','Teal':'#008080','Cyan':'#00FFFF','Lime':'#32CD32'};
-              const _swatchFor=cl=>{const s=String(cl||'');return colorMap2[s]||Object.entries(colorMap2).find(([k])=>s.toLowerCase().includes(k.toLowerCase()))?.[1]||pantoneHex(s)||null};
+            {(()=>{
               return<div style={{padding:20,background:'#f8fafc'}}>
                 {itemDetails.map((gi,gii)=>{
                   const it=safeItems(so)[gi.item_idx];
                   if(!it)return null;
-                  const _mk=gi.sku+'|'+(gi.color||'');
-                  const itemMocks=allArtFiles.flatMap(a=>{const v=a?.item_mockups?.[_mk];return v&&v.length>0?v:(a?.item_mockups?.[gi.sku]||[])}).filter(f=>f);
+                  const itemMocks=collectItemMocks(gi.sku,gi.color);
                   const artDecos=safeDecos(it).filter(d=>d.kind==='art');
                   const numDecos=safeDecos(it).filter(d=>d.kind==='numbers');
                   const nameDecos=safeDecos(it).filter(d=>d.kind==='names');
@@ -9637,7 +9695,7 @@ export default function App(){
                     {/* Mockup display */}
                     {itemMocks.length>0&&<div style={{padding:12,display:'flex',gap:8,flexWrap:'wrap',justifyContent:'center',background:'#fafbfc',borderBottom:'1px solid #e2e8f0'}}>
                       {itemMocks.map((f,fi)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const src=isImg?u:isPdf?_cloudinaryPdfThumb(u):null;
-                        return src?<img key={fi} src={src} alt="Mockup" style={{height:420,maxWidth:'100%',objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(f)}/>
+                        return src?<img key={fi} src={src} alt="Mockup" style={{height:itemMocks.length>1?320:420,maxWidth:itemMocks.length>1?'48%':'100%',objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(f)}/>
                         :<div key={fi} style={{padding:'10px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:6,fontSize:11,fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>openFile(f)}>📄 {fileDisplayName(f)}</div>;
                       })}
                     </div>}
@@ -9771,6 +9829,7 @@ export default function App(){
             {/* Bottom action bar */}
             <div style={{padding:16,display:'flex',gap:8,borderTop:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap'}}>
               <button className="btn btn-primary" style={{background:'#d97706',borderColor:'#d97706'}} onClick={printProdPDF}>Print Production PDF</button>
+              <button className="btn btn-primary" style={{background:'#0284c7',borderColor:'#0284c7'}} onClick={downloadProdPDF} disabled={prodPdfDownloading}>{prodPdfDownloading?'Generating…':'⬇ Download PDF'}</button>
               {(j.prod_status==='hold'||j.prod_status==='ready'||!j.prod_status)&&<button className="btn btn-primary" style={{background:'#16a34a',borderColor:'#16a34a'}} onClick={()=>moveJobStatus(j,'staging')}>➡️ Move to In Line</button>}
               {(j.prod_status==='staging'||j.prod_status==='in_process')&&<button className="btn btn-secondary" onClick={()=>{setAssignModal({job:j,soId:j.soId,targetStatus:j.prod_status});setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||''})}}>👤 {j.assigned_to?'Reassign':'Assign'} Decorator / Machine</button>}
               <button className="btn btn-secondary" onClick={()=>{setReturnToPage({page:pg,jobData:{...j}});setESOTab('jobs');setESO(so);setESOC(c);setPg('orders');setProdJobModal(null)}}>Open Full Job</button>

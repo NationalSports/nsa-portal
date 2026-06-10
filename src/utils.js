@@ -192,7 +192,18 @@ const _PRINT_CSS=`*{margin:0;padding:0;box-sizing:border-box}body{font-family:'S
 export const printDoc=opts=>{
   const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS});
   const w=window.open('','_blank');if(!w)return;
-  w.document.write(docHtml);w.document.close();setTimeout(()=>w.print(),300);
+  w.document.write(docHtml);w.document.close();
+  // Wait for every image (mockups, logo) to finish loading before printing — the
+  // print preview snapshots the page, so images still loading when print() fires
+  // come out as empty boxes.
+  let printed=false;
+  const go=()=>{if(printed)return;printed=true;setTimeout(()=>{w.focus();w.print()},100)};
+  const pending=Array.from(w.document.images||[]).filter(im=>!(im.complete&&im.naturalWidth>0));
+  if(pending.length===0){setTimeout(go,200);return}
+  let left=pending.length;
+  const done=()=>{left--;if(left<=0)go()};
+  pending.forEach(im=>{im.addEventListener('load',done);im.addEventListener('error',done)});
+  setTimeout(go,10000); // safety: print anyway if an image never loads
 };
 
 // Print a 4x6 thermal/label-printer-friendly QR label. The QR image is loaded
