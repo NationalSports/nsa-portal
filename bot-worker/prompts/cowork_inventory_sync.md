@@ -70,15 +70,20 @@ return a ~9,999,999 "unlimited" sentinel.
   union of codes seen across all SKUs on that conversionId, or a SKU known to
   carry the complete run) — a map learned from one short-run SKU leaves longer
   SKUs' extra sizes (extended/tall) as raw codes like `240`.
-- Persist the maps (localStorage/table) and reuse across runs; only re-learn when
-  a brand-new conversionId appears. (True footwear SKUs use numeric sizes
-  legitimately — leave those as-is.)
+- Persist the maps to the durable `adidas_size_maps` table (one row per conversionId,
+  `code_labels` = `{code: label}`) and **load it before processing** so the first
+  write is a label, never a raw code; only re-learn when a richer/new conversionId
+  example appears, then re-upsert. localStorage may mirror it for speed, but the table
+  is the source of truth (the skill folder is read-only). (True footwear SKUs use
+  numeric sizes legitimately — leave those as-is.)
 - **End-of-run health check (report-only):** after upserting, log any apparel
   conversionIds still missing labels (`window._mapGaps`). Expected: empty. A
   non-empty report is the early warning that a map regressed and numeric codes may
   have been written — re-learn that conversionId before the next run instead of
-  letting stale `240`-style rows pile up. The sync never deletes; pruning existing
-  code rows stays a manual, supervised step.
+  letting stale `240`-style rows pile up. Stale raw twins are also **self-healed per
+  SKU** — after upserting a SKU, the sync deletes that SKU's rows for codes that now
+  map to a different label (scoped to the SKU's remapped codes, so real footwear sizes
+  are untouched). A broad `^[0-9]{3}$` sweep stays available as a supervised backstop.
 
 ## Notes
 
