@@ -5,7 +5,7 @@ import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, BATCH_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
@@ -42,7 +42,7 @@ const _restockDate=(s)=>{if(!s)return null;let str=String(s).trim();if(!str)retu
 const restockDaysOut=(s)=>{const d=_restockDate(s);return d?Math.round((d.getTime()-Date.now())/86400000):null;};
 const fmtRestockLong=(s)=>{const d=_restockDate(s);return d?d.toLocaleDateString('en-US',{month:'short',day:'numeric'}):String(s||'');};
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -6359,10 +6359,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
             setO(updated);onSave(updated);setPOCounter(c=>c+1);
             setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')');
-            // If this addition pushes the SanMar batch queue over the free-ship threshold,
-            // pop a "ready to order" prompt with a dry-run API preview button.
+            // If this addition pushes the vendor's batch queue over the free-ship threshold
+            // (Momentec / SanMar / S&S), pop a "batch ready" prompt so the rep knows the
+            // threshold was crossed and which batch PO# the order goes under.
             const newBatchTotal=pendingBatchTotal+totalCost;
-            if(batchKey==='sanmar'&&batchConfig.threshold>0&&newBatchTotal>=batchConfig.threshold){
+            if(BATCH_NOTIFY_VENDORS.includes(batchKey)&&batchConfig.threshold>0&&newBatchTotal>=batchConfig.threshold){
               setBatchReadyPopup({vendorKey:batchKey,vendorName:batchConfig.name,total:newBatchTotal,threshold:batchConfig.threshold,batchPOs:[...pendingBatches,bp],count:pendingBatches.length+1});
             }
           }}><Icon name="package" size={14}/> Add to Batch ({poItems.filter((_,vi)=>!poExcluded[vi]).length})</button>}
@@ -6422,11 +6423,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }}><Icon name="cart" size={14}/> {preexistingPO?'Apply Preexisting PO':'Create PO'} ({poItems.filter((_,vi)=>!poExcluded[vi]).length})</button>}</div>
       </div></div>})()}
 
-      {/* Batch threshold popup — fires after Add-to-Batch when SanMar queue hits its free-ship threshold.
+      {/* Batch threshold popup — fires after Add-to-Batch when a BATCH_NOTIFY_VENDORS queue
+          (Momentec/SanMar/S&S) hits its free-ship threshold.
           Reads live from batchPOs (rather than the popup snapshot) so price edits show immediately. */}
       {batchReadyPopup&&(()=>{
         const liveBatches=(batchPOs||[]).filter(bp=>bp.vendor_key===batchReadyPopup.vendorKey);
         const liveTotal=liveBatches.reduce((a,bp)=>a+(bp.total_cost||0),0);
+        // Per-vendor batch PO number — the function form resolves the vendor's assigned NSA counter;
+        // a plain string prop (legacy parent) is the global next counter, which can drift once assigned.
+        const batchPONum=typeof nextBatchPONumber==='function'?nextBatchPONumber(batchReadyPopup.vendorKey):nextBatchPONumber;
         const updateLineCost=(bpId,itemIdx,newCost)=>{
           const c=Math.max(0,parseFloat(String(newCost).replace(/[$,\s]/g,''))||0);
           if(onBatchPO)onBatchPO(prev=>(prev||[]).map(bp=>{
@@ -6456,9 +6461,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div className="modal-body">
           <div style={{padding:14,background:'linear-gradient(135deg,#f0fdf4,#dcfce7)',border:'1px solid #86efac',borderRadius:8,marginBottom:14,display:'flex',alignItems:'center',justifyContent:'space-between',gap:16}}>
             <div>
-              <div style={{fontSize:10,color:'#166534',fontWeight:700,textTransform:'uppercase',letterSpacing:0.5}}>Use this PO# when ordering on sanmar.com</div>
-              <div style={{fontSize:24,fontWeight:900,fontFamily:'monospace',color:'#1e40af',letterSpacing:2}}>{nextBatchPONumber||'NSA-####'}</div>
-              <button style={{marginTop:4,fontSize:10,padding:'2px 8px',border:'1px solid #86efac',background:'white',borderRadius:4,cursor:'pointer',color:'#166534',fontWeight:700}} onClick={()=>{navigator.clipboard?.writeText(nextBatchPONumber||'');nf('Copied '+(nextBatchPONumber||''))}}>📋 Copy</button>
+              <div style={{fontSize:10,color:'#166534',fontWeight:700,textTransform:'uppercase',letterSpacing:0.5}}>Use this PO# when ordering online from {batchReadyPopup.vendorName}</div>
+              <div style={{fontSize:24,fontWeight:900,fontFamily:'monospace',color:'#1e40af',letterSpacing:2}}>{batchPONum||'NSA-####'}</div>
+              <button style={{marginTop:4,fontSize:10,padding:'2px 8px',border:'1px solid #86efac',background:'white',borderRadius:4,cursor:'pointer',color:'#166534',fontWeight:700}} onClick={()=>{navigator.clipboard?.writeText(batchPONum||'');nf('Copied '+(batchPONum||''))}}>📋 Copy</button>
             </div>
             <div style={{textAlign:'right'}}>
               <div style={{fontSize:11,color:'#166534',fontWeight:600}}>Free-ship threshold hit</div>
@@ -6509,7 +6514,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             })}
           </div>
           <p style={{fontSize:12,color:'#64748b',margin:0}}>
-            Use the PO# above when placing the order on sanmar.com. To edit sizes or remove a line, close this popup and use the Batch POs page. Preview the API payload below to see what would be sent once live submit is enabled.
+            Use the PO# above when placing the order online with {batchReadyPopup.vendorName}. The Order button below submits every queued PO listed above — same as the button on the Batch POs page. To edit sizes or remove a line first, open the Batch POs page.{batchReadyPopup.vendorKey==='sanmar'&&' Preview the API payload below to see what would be sent once live submit is enabled.'}
           </p>
         </div>
         <div className="modal-footer">
@@ -6517,14 +6522,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {onAssignTodo&&isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-secondary" style={{color:'#0f766e',borderColor:'#5eead4'}} title="Assign this batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, then stops before submit for your review" onClick={()=>{
             const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
             if(!bot){nf('No bot user found — apply the bot migration first','error');return}
-            const{title,description,bot_payload}=buildBotCartPayload({poNumber:nextBatchPONumber||'',vendorName:batchReadyPopup.vendorName,batches:liveBatches,soId:o.id});
+            const{title,description,bot_payload}=buildBotCartPayload({poNumber:batchPONum||'',vendorName:batchReadyPopup.vendorName,batches:liveBatches,soId:o.id});
             onAssignTodo({title,description,assigned_to:bot.id,so_id:o.id,priority:1,bot_payload});
             setBatchReadyPopup(null);
           }}>🤖 Assign to Claude</button>}
-          <button className="btn btn-secondary" style={{color:'#6d28d9',borderColor:'#c4b5fd'}} onClick={()=>{
-            setSanMarPreviewBatch({poNumber:nextBatchPONumber||'NSA-####',batchPOs:liveBatches,vendorName:batchReadyPopup.vendorName});
+          {batchReadyPopup.vendorKey==='sanmar'&&<button className="btn btn-secondary" style={{color:'#6d28d9',borderColor:'#c4b5fd'}} onClick={()=>{
+            setSanMarPreviewBatch({poNumber:batchPONum||'NSA-####',batchPOs:liveBatches,vendorName:batchReadyPopup.vendorName});
             setBatchReadyPopup(null);
-          }}>🔍 Preview SanMar API Payload</button>
+          }}>🔍 Preview SanMar API Payload</button>}
+          {onNavBatch&&<button className="btn btn-secondary" style={{color:'#7c3aed',borderColor:'#ddd6fe'}} onClick={()=>{setBatchReadyPopup(null);onNavBatch()}}><Icon name="package" size={14}/> Open Batch POs page</button>}
+          {onOrderBatch&&<button className="btn btn-primary" style={{background:'linear-gradient(135deg,#22c55e,#16a34a)',borderColor:'#16a34a',fontWeight:800}} onClick={()=>{
+            if(!window.confirm('Order '+(batchPONum||'this batch')+' for '+batchReadyPopup.vendorName+'? This submits all '+liveBatches.length+' queued PO'+(liveBatches.length!==1?'s':'')+' ($'+liveTotal.toFixed(2)+') and clears the queue — use '+(batchPONum||'the batch PO#')+' when placing the online order.'))return;
+            const orderedNum=onOrderBatch({vendorKey:batchReadyPopup.vendorKey,skipSoId:o.id});
+            if(!orderedNum){nf('Batch queue is empty — nothing to order','error');setBatchReadyPopup(null);return}
+            // Promote this SO's own queued lines through the editor copy — App skipped them
+            // (skipSoId), so a later save from the editor can't revert the promotion.
+            const myBatchIds=new Set(liveBatches.filter(bp=>bp.so_id===o.id).map(bp=>bp.id));
+            if(myBatchIds.size>0){
+              const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+batchReadyPopup.vendorName}:pl)}));
+              const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
+              setO(updated);onSave(updated);
+            }
+            setBatchReadyPopup(null);
+            nf('🚀 '+orderedNum+' ordered for '+batchReadyPopup.vendorName+' ($'+liveTotal.toFixed(2)+')');
+          }}>🚀 Order {batchPONum||'batch'} for {batchReadyPopup.vendorName} (${liveTotal.toFixed(2)})</button>}
         </div>
       </div></div>;
       })()}
@@ -9153,7 +9174,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               items from this order onto the PO (any SKU on the order, regardless of which vendor
               it's assigned to in the catalog). Batch-queued POs are edited from the Batch POs page
               instead so the queue entry stays in sync. */}
-          {po.batch_queue_id&&po.status==='queued'?<div style={{marginBottom:12,padding:'6px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#b45309'}}>This PO is queued in a batch — edit items and quantities from the Batch POs page (or remove it from the queue and recreate it).</div>:
+          {po.batch_queue_id&&po.status==='queued'?<div style={{marginBottom:12,padding:'6px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#b45309',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{flex:1,minWidth:180}}>This PO is queued in a batch — edit items and quantities from the Batch POs page (or remove it from the queue and recreate it).</span>{onNavBatch&&<button className="btn btn-sm" style={{fontSize:11,fontWeight:700,color:'#7c3aed',background:'white',border:'1px solid #ddd6fe',borderRadius:6,padding:'3px 10px',whiteSpace:'nowrap'}} onClick={()=>{setEditPO(null);onNavBatch()}}>Batch POs page →</button>}</div>:
           <div style={{marginBottom:12}}>
             <div style={{fontSize:11,color:'#64748b',cursor:'pointer',display:'flex',alignItems:'center',gap:4}} onClick={()=>{
               if(editPO._draft){setEditPO(p=>({...p,_draft:null}));return}
