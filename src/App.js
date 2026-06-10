@@ -122,19 +122,28 @@ const matchColorFilter=(p,clr)=>{
   const esc=f.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
   return new RegExp('\\b'+esc+'\\b','i').test(primary);
 };
-// Dedup products by SKU+color — merges true duplicates, prefers the copy with images.
-// Different colors under the same SKU stay as separate products (do not merge or delete).
-const _dedupProducts=(products,onRemove)=>{
+// Dedup products by SKU+color — merges true duplicates IN MEMORY ONLY. The DB-canonical
+// copy (id in dbIds) always wins so a stale local copy can never shadow a real row; among
+// copies with the same canonical status, prefer the one with images. Different colors under
+// the same SKU stay as separate products (do not merge or delete).
+// MUST stay free of DB writes: the old version deleted dupes from the DB and re-saved every
+// primary on each load/poll/realtime reload. With products.sku unique in the DB those writes
+// 409 forever (FK + products_sku_unique), every client retried them on every reload, and the
+// resulting WAL volume made realtime.list_changes take 10-15s per poll — pegging the DB CPU
+// and starving real reads/writes (2026-06-10 outage). The unique index now prevents dupes at
+// the source; in-memory cleanup is all that belongs here.
+const _dedupProducts=(products,dbIds)=>{
   const skuMap=new Map();const dupeIds=[];
   const _hasImg=p=>!!(p.image_url||p.back_image_url||(p.images&&p.images.length));
+  const _isDb=p=>!!(dbIds&&dbIds.has(p.id));
   const _key=p=>(p.sku||'').toLowerCase()+'|'+(p.color||'').trim().toLowerCase();
   products.forEach(p=>{
     if(!p.sku)return;
     const sk=_key(p);
     if(skuMap.has(sk)){
       let primary=skuMap.get(sk);let dupe=p;
-      // If the new copy has images but the current primary doesn't, swap them
-      if(_hasImg(p)&&!_hasImg(primary)){skuMap.set(sk,p);dupe=primary;primary=p}
+      // DB-canonical copy always wins; among equals, prefer the copy with images
+      if((_isDb(p)&&!_isDb(primary))||(_isDb(p)===_isDb(primary)&&_hasImg(p)&&!_hasImg(primary))){skuMap.set(sk,p);dupe=primary;primary=p}
       // Merge _colors arrays (preserve catalog-defined sibling colors only)
       (dupe._colors||[]).forEach(c=>{
         if(!primary._colors)primary._colors=[];
@@ -149,25 +158,9 @@ const _dedupProducts=(products,onRemove)=>{
     }else{skuMap.set(sk,p)}
   });
   if(dupeIds.length===0)return products;
-  const primaries=[...skuMap.values()].filter(p=>p._colors&&p._colors.length>0);
-  console.log('[Products] Deduped '+dupeIds.length+' duplicate SKUs:',dupeIds);
-  if(onRemove)onRemove(dupeIds,primaries);
-  return products.filter(p=>!dupeIds.includes(p.id));
-};
-// Shared DB-cleanup for deduped products. Duplicates are usually still referenced by
-// so_items, so the DELETE fails with a FK 409 and the dupe survives in the DB. Without a
-// guard we'd re-issue the failing delete (and re-save every primary) on every realtime
-// reload — each write rebroadcasts, the dupe reloads, dedup runs again → an infinite loop
-// that floods Supabase with 409/429s and starves real writes (e.g. mockup uploads). So we
-// attempt cleanup at most once per id; repeat reloads with the same dupes become no-ops.
-const _dupeCleanupAttempted=new Set();
-const _cleanupDuplicateProducts=(dupeIds,primaries)=>{
-  const fresh=dupeIds.filter(id=>id&&!_dupeCleanupAttempted.has(id));
-  if(fresh.length===0)return;
-  fresh.forEach(id=>_dupeCleanupAttempted.add(id));
-  fresh.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(r=>{if(r?.error)console.warn('[DB] dupe delete failed:',id,r.error.message);else console.log('[DB] Deleted duplicate product:',id)}).catch(e=>console.warn('[DB] dupe delete error:',id,e))}catch(e){console.warn('[DB] Failed to delete dupe:',id,e)}});
-  fresh.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}});
-  (primaries||[]).forEach(p=>_dbSaveProduct(p));
+  console.log('[Products] Deduped '+dupeIds.length+' duplicate SKUs (in-memory only):',dupeIds);
+  const drop=new Set(dupeIds);
+  return products.filter(p=>!drop.has(p.id));
 };
 // True when an error is a failed dynamic-import (a chunk that no longer exists
 // because a newer deploy replaced the hashed asset). These are recoverable only
@@ -3471,7 +3464,7 @@ export default function App(){
           if(_dbSaveFailedIds.size){
             setCust(prev=>d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(prev.find(p=>p.id===c.id)||c):c));
           }else{setCust(d.customers)}
-          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,_cleanupDuplicateProducts)});
+          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
           if(_dbSaveFailedIds.size){
             setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));
             setSOs(prev=>d.sales_orders.map(s=>{if(_dbSaveFailedIds.has(s.id))return prev.find(p=>p.id===s.id)||s;const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));
@@ -3624,7 +3617,7 @@ export default function App(){
         setInvs(invMerge.apply);
         if(d.messages.length)setMsgs(msgMerge.apply);
         setCust(custMerge.apply);
-        if(d.products.length)setProd(prev=>{const base=prodMerge.apply(prev);if(_jsonEq(base,prev))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,_cleanupDuplicateProducts)});
+        if(d.products.length)setProd(prev=>{const base=prodMerge.apply(prev);if(_jsonEq(base,prev))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
         if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
         if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
         setIssues(prev=>{const v=d.issues||[];return _jsonEq(prev,v)?prev:v});
@@ -3751,7 +3744,7 @@ export default function App(){
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
         if(!d._coreOnly)setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return changed(prev,v)?v:prev});
-        if(d.products.length)setProd(prev=>{const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;if(!changed(prev,base))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,_cleanupDuplicateProducts)});
+        if(d.products.length)setProd(prev=>{const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;if(!changed(prev,base))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
         // Refresh app_state keys (batch POs, inventory POs, etc.)
         const as=d.appState||{};
         if(as.inv_pos)setInvPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_pos)?as.inv_pos:prev);
@@ -3829,8 +3822,17 @@ export default function App(){
   // depth counter). Every 5 minutes, compare /asset-manifest.json's main.js hash to
   // what was recorded at startup. On a hash change (new deploy), drain any in-flight
   // saves then force a reload — the new bundle's guards are then active immediately.
+  // The reload additionally waits for a 60s idle gap (no typing/clicking) so it never
+  // lands mid-keystroke: dirtyRef covers order edits, but focused inputs that commit
+  // on blur and modal drafts (e.g. a half-written invoice message) are not saved by
+  // the version-reload autosave. A 10-minute cap keeps a busy tab from deferring the
+  // new build indefinitely.
   React.useEffect(()=>{
     let knownHash=null;
+    let lastInput=Date.now();
+    const markInput=()=>{lastInput=Date.now()};
+    window.addEventListener('pointerdown',markInput,{capture:true,passive:true});
+    window.addEventListener('keydown',markInput,{capture:true,passive:true});
     const check=async()=>{
       try{
         const res=await fetch('/asset-manifest.json?_='+Date.now(),{cache:'no-store'});
@@ -3841,8 +3843,11 @@ export default function App(){
         if(knownHash===null){knownHash=hash;return}// record on first run
         if(hash===knownHash)return;
         window.dispatchEvent(new Event('nsa:version-reload-pending'));
+        const deferStart=Date.now();
         const doReload=()=>{
-          if(_authErrorDetected||(_dbSavePendingIds.size===0&&_bgSync===0&&!dirtyRef.current))window.location.reload();
+          const savesIdle=_dbSavePendingIds.size===0&&_bgSync===0&&!dirtyRef.current;
+          const userIdle=document.hidden||Date.now()-lastInput>60000||Date.now()-deferStart>10*60*1000;
+          if(_authErrorDetected||(savesIdle&&userIdle))window.location.reload();
           else setTimeout(doReload,2000);
         };
         doReload();
@@ -3850,7 +3855,7 @@ export default function App(){
     };
     check();
     const t=setInterval(check,5*60*1000);
-    return()=>clearInterval(t);
+    return()=>{clearInterval(t);window.removeEventListener('pointerdown',markInput,{capture:true});window.removeEventListener('keydown',markInput,{capture:true})};
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
