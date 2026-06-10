@@ -3138,6 +3138,7 @@ export default function App(){
 
   const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);const[mobileMenuOpen,setMobileMenuOpen]=useState(false);
   const[dashView,setDashView]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user'));if(u?.role==='csr')return'csr';if(u?.role==='rep')return'sales';if(u?.role==='warehouse')return'warehouse';if(u?.role==='artist'||u?.role==='art')return'decorator';if(u?.role==='production')return'production'}catch{}return'admin'});// admin|sales|warehouse|decorator|production|csr
+  const[salesRepPeriod,setSalesRepPeriod]=useState('month');// month|3m|6m|ytd|lyr
   const[adminRepFilter,setAdminRepFilter]=useState('me');// 'me'|'all'|repId
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'daily',syncInterval:'daily',
@@ -6687,9 +6688,172 @@ export default function App(){
 
     {/* ═══ SALES REP VIEW ═══ */}
     {dashView==='sales'&&<>
-    <div className="stats-row">
-      <div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">My Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>(e.status==='draft'||e.status==='open'||e.status==='sent')&&e.created_by===cu.id).length}</div></div>
-      <div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">My Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>s.created_by===cu.id&&calcSOStatus(s)!=='complete').length}</div></div>
+    {/* ── Sales KPI Dashboard ── */}
+    {(()=>{
+      const now=new Date();const nowY=now.getFullYear();const nowM=now.getMonth();
+      const periodLabels={month:'This Month','3m':'Last 3 Months','6m':'Last 6 Months',ytd:'Year to Date',lyr:'Last Year'};
+      let pStart,pEnd,prevStart,prevEnd;
+      if(salesRepPeriod==='month'){pStart=new Date(nowY,nowM,1);pEnd=new Date(nowY,nowM+1,0,23,59,59);prevStart=new Date(nowY,nowM-1,1);prevEnd=new Date(nowY,nowM,0,23,59,59);}
+      else if(salesRepPeriod==='3m'){pStart=new Date(nowY,nowM-2,1);pEnd=new Date(nowY,nowM+1,0,23,59,59);prevStart=new Date(nowY,nowM-5,1);prevEnd=new Date(nowY,nowM-2,0,23,59,59);}
+      else if(salesRepPeriod==='6m'){pStart=new Date(nowY,nowM-5,1);pEnd=new Date(nowY,nowM+1,0,23,59,59);prevStart=new Date(nowY,nowM-11,1);prevEnd=new Date(nowY,nowM-5,0,23,59,59);}
+      else if(salesRepPeriod==='ytd'){pStart=new Date(nowY,0,1);pEnd=now;prevStart=new Date(nowY-1,0,1);prevEnd=new Date(nowY-1,nowM,now.getDate(),23,59,59);}
+      else{pStart=new Date(nowY-1,0,1);pEnd=new Date(nowY-1,11,31,23,59,59);prevStart=new Date(nowY-2,0,1);prevEnd=new Date(nowY-2,11,31,23,59,59);}
+      const inP=(d,s,e)=>{if(!d)return false;const dt=new Date(d);return dt>=s&&dt<=e};
+      // Rep's customer set (for histInvs filtering — histInvs have no created_by)
+      const repCustIds=new Set(cust.filter(c=>c.primary_rep_id===cu.id).map(c=>c.id));
+      // Combine portal SOs + NetSuite histInvs for full historical revenue.
+      // SO rev = calcOrderTotals; histInv rev = subtotal (pre-tax) or total.
+      // For each month: prefer SO data if it exists; supplement with histInvs for older months.
+      const sumRev=(list)=>list.reduce((a,s)=>{const c=cust.find(x=>x.id===s.customer_id);return a+calcOrderTotals(s,c?.tax_rate||0).rev},0);
+      const sumInvRev=(list)=>list.reduce((a,i)=>a+(i.subtotal!=null?Number(i.subtotal):Number(i.total)||0),0);
+      // Portal SOs for this rep
+      const mySosCur=sos.filter(s=>s.created_by===cu.id&&!['cancelled'].includes(s.status||'')&&inP(s.created_at,pStart,pEnd));
+      const mySosPrev=sos.filter(s=>s.created_by===cu.id&&!['cancelled'].includes(s.status||'')&&inP(s.created_at,prevStart,prevEnd));
+      const natSosCur=sos.filter(s=>!['cancelled'].includes(s.status||'')&&inP(s.created_at,pStart,pEnd));
+      // histInvs for this rep's customers (fills in months before portal launch)
+      const myHistCur=histInvs.filter(i=>repCustIds.has(i.customer_id)&&i.status!=='void'&&inP(i.date,pStart,pEnd));
+      const myHistPrev=histInvs.filter(i=>repCustIds.has(i.customer_id)&&i.status!=='void'&&inP(i.date,prevStart,prevEnd));
+      const natHistCur=histInvs.filter(i=>i.status!=='void'&&inP(i.date,pStart,pEnd));
+      const mySales=sumRev(mySosCur)+sumInvRev(myHistCur);
+      const mySalesPrev=sumRev(mySosPrev)+sumInvRev(myHistPrev);
+      const natSales=sumRev(natSosCur)+sumInvRev(natHistCur);
+      const salesChg=mySalesPrev>0?((mySales-mySalesPrev)/mySalesPrev*100):null;
+      // Top customers (portal SOs + histInvs combined)
+      const custMap={};
+      mySosCur.forEach(s=>{const c=cust.find(x=>x.id===s.customer_id);const rev=calcOrderTotals(s,c?.tax_rate||0).rev;
+        if(!custMap[s.customer_id])custMap[s.customer_id]={id:s.customer_id,name:c?.name||c?.alpha_tag||'Unknown',total:0,orders:0};
+        custMap[s.customer_id].total+=rev;custMap[s.customer_id].orders++;});
+      myHistCur.forEach(i=>{const c=cust.find(x=>x.id===i.customer_id);const rev=i.subtotal!=null?Number(i.subtotal):Number(i.total)||0;
+        if(!custMap[i.customer_id])custMap[i.customer_id]={id:i.customer_id,name:c?.name||c?.alpha_tag||i.raw_customer_name||'Unknown',total:0,orders:0};
+        custMap[i.customer_id].total+=rev;custMap[i.customer_id].orders++;});
+      const topCust=Object.values(custMap).sort((a,b)=>b.total-a.total).slice(0,8);
+      // Open estimates
+      const myOpenEsts=ests.filter(e=>e.created_by===cu.id&&['draft','pending','sent'].includes(e.status||'draft'));
+      const myOpenEstTotal=myOpenEsts.reduce((a,e)=>a+(e.total||0),0);
+      // New customers this period
+      const newCustIds=new Set();
+      mySosCur.forEach(s=>{if(!sos.some(o=>o.customer_id===s.customer_id&&new Date(o.created_at)<pStart))newCustIds.add(s.customer_id);});
+      // Monthly trend (last 12 months) — portal SOs + histInvs
+      const months=[];
+      for(let i=11;i>=0;i--){const d=new Date(nowY,nowM-i,1);const mS=new Date(d.getFullYear(),d.getMonth(),1);const mE=new Date(d.getFullYear(),d.getMonth()+1,0,23,59,59);
+        const mMySO=sumRev(sos.filter(s=>s.created_by===cu.id&&!['cancelled'].includes(s.status||'')&&inP(s.created_at,mS,mE)));
+        const mMyHist=sumInvRev(histInvs.filter(h=>repCustIds.has(h.customer_id)&&h.status!=='void'&&inP(h.date,mS,mE)));
+        const mNatSO=sumRev(sos.filter(s=>!['cancelled'].includes(s.status||'')&&inP(s.created_at,mS,mE)));
+        const mNatHist=sumInvRev(histInvs.filter(h=>h.status!=='void'&&inP(h.date,mS,mE)));
+        months.push({label:d.toLocaleDateString('en-US',{month:'short'}),y:d.getFullYear(),mySales:mMySO+mMyHist,natSales:mNatSO+mNatHist});}
+      // SVG chart
+      const cW=460,cH=72,cPad=4;
+      const maxV=Math.max(1,...months.map(m=>Math.max(m.mySales,m.natSales)));
+      const toX=i=>cPad+(i/(months.length-1))*(cW-2*cPad);
+      const toY=v=>cH-cPad-(v/maxV)*(cH-2*cPad);
+      const myPts=months.map((m,i)=>[toX(i),toY(m.mySales)]);
+      const natPts=months.map((m,i)=>[toX(i),toY(m.natSales)]);
+      const pathD=pts=>pts.map((p,i)=>(i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+      const areaD=pts=>pathD(pts)+' L'+pts[pts.length-1][0].toFixed(1)+','+(cH-cPad)+' L'+pts[0][0].toFixed(1)+','+(cH-cPad)+' Z';
+      const fmtM=n=>n==null?'$0':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
+      return<>
+      {/* Period selector */}
+      <div style={{display:'flex',gap:6,marginBottom:14,alignItems:'center'}}>
+        <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginRight:4}}>Period:</span>
+        {[['month','This Month'],['3m','3 Months'],['6m','6 Months'],['ytd','YTD'],['lyr','Prev Year']].map(([v,l])=>
+          <button key={v} onClick={()=>setSalesRepPeriod(v)} style={{padding:'5px 14px',borderRadius:20,border:'none',background:salesRepPeriod===v?'#1e293b':'#f1f5f9',color:salesRepPeriod===v?'white':'#64748b',fontWeight:700,fontSize:12,cursor:'pointer'}}>{l}</button>)}
+      </div>
+      {/* KPI row */}
+      <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr',gap:12,marginBottom:14}}>
+        {/* Hero sales card */}
+        <div style={{background:'linear-gradient(135deg,#1e293b 0%,#2563eb 100%)',borderRadius:14,padding:'18px 22px',color:'white',display:'flex',flexDirection:'column',justifyContent:'space-between'}}>
+          <div style={{fontSize:11,fontWeight:600,opacity:0.75,textTransform:'uppercase',letterSpacing:'0.5px'}}>{cu.name?.split(' ')[0]}'s Sales · {periodLabels[salesRepPeriod]}</div>
+          <div>
+            <div style={{fontSize:36,fontWeight:800,letterSpacing:'-1px',margin:'8px 0 4px'}}>{fmtM(mySales)}</div>
+            <div style={{fontSize:12,opacity:0.7}}>{mySosCur.length} order{mySosCur.length!==1?'s':''}{newCustIds.size>0?' · '+newCustIds.size+' new customer'+(newCustIds.size>1?'s':''):''}</div>
+            {mySalesPrev>0&&<div style={{fontSize:11,opacity:0.55,marginTop:4}}>vs {fmtM(mySalesPrev)} prior period</div>}
+          </div>
+          {salesChg!=null&&<div style={{display:'inline-flex',alignItems:'center',gap:4,marginTop:8,padding:'4px 12px',borderRadius:10,background:salesChg>=0?'rgba(134,239,172,0.2)':'rgba(252,165,165,0.2)',color:salesChg>=0?'#86efac':'#fca5a5',fontSize:14,fontWeight:800,width:'fit-content'}}>
+            {salesChg>=0?'↑':'↓'}{Math.abs(salesChg).toFixed(1)}% vs prior period
+          </div>}
+        </div>
+        {/* National sales */}
+        <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'14px 16px'}}>
+          <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>National Sales</div>
+          <div style={{fontSize:22,fontWeight:800,color:'#0f172a'}}>{fmtM(natSales)}</div>
+          <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>All reps combined</div>
+          {natSales>0&&mySales>0&&<div style={{fontSize:10,color:'#2563eb',marginTop:2,fontWeight:600}}>{(mySales/natSales*100).toFixed(1)}% of total</div>}
+        </div>
+        {/* Open estimates */}
+        <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'14px 16px',cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}>
+          <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Open Estimates</div>
+          <div style={{fontSize:22,fontWeight:800,color:'#d97706'}}>{myOpenEsts.length}</div>
+          <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>{fmtM(myOpenEstTotal)} pipeline</div>
+        </div>
+        {/* Active orders */}
+        <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'14px 16px',cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}>
+          <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Active Orders</div>
+          <div style={{fontSize:22,fontWeight:800,color:'#2563eb'}}>{sos.filter(s=>s.created_by===cu.id&&calcSOStatus(s)!=='complete').length}</div>
+          <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>{myTodos.filter(t=>t.type==='deadline').length} due this week</div>
+        </div>
+        {/* Approvals + tasks */}
+        <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'14px 16px'}}>
+          <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Pending</div>
+          <div style={{fontSize:22,fontWeight:800,color:'#7c3aed'}}>{myTodos.filter(t=>t.type==='art').length}</div>
+          <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>art approvals</div>
+          <div style={{fontSize:10,color:'#0891b2',marginTop:2,fontWeight:600}}>{myAssignedTodos.length} open tasks</div>
+        </div>
+      </div>
+      {/* Chart + Top Customers side by side */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+        {/* Sales trend chart */}
+        <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'16px 18px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+            <div style={{fontSize:13,fontWeight:700,color:'#334155'}}>Monthly Sales Trend — Last 12 Months</div>
+            <div style={{display:'flex',gap:14,fontSize:10,color:'#94a3b8'}}>
+              <span style={{display:'flex',alignItems:'center',gap:4}}><span style={{display:'inline-block',width:16,height:2,background:'#2563eb',borderRadius:1,verticalAlign:'middle'}}/> Me</span>
+              <span style={{display:'flex',alignItems:'center',gap:4}}><span style={{display:'inline-block',width:16,height:2,background:'#cbd5e1',borderRadius:1,verticalAlign:'middle'}}/> National</span>
+            </div>
+          </div>
+          <svg viewBox={'0 0 '+cW+' '+cH} style={{width:'100%',height:90,display:'block'}} preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="repSalesGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#2563eb" stopOpacity="0.18"/>
+                <stop offset="100%" stopColor="#2563eb" stopOpacity="0.01"/>
+              </linearGradient>
+            </defs>
+            {[0.25,0.5,0.75].map(f=>{const gy=(cH-cPad-f*(cH-2*cPad)).toFixed(1);return<line key={f} x1={cPad} y1={gy} x2={cW-cPad} y2={gy} stroke="#f1f5f9" strokeWidth="1"/>})}
+            <path d={pathD(natPts)} fill="none" stroke="#cbd5e1" strokeWidth="1.5" strokeDasharray="5,4"/>
+            <path d={areaD(myPts)} fill="url(#repSalesGrad)"/>
+            <path d={pathD(myPts)} fill="none" stroke="#2563eb" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+            {myPts.map((p,i)=><circle key={i} cx={p[0].toFixed(1)} cy={p[1].toFixed(1)} r="3" fill="#2563eb"/>)}
+          </svg>
+          <div style={{display:'flex',justifyContent:'space-between',marginTop:6}}>
+            {months.map((m,i)=><span key={i} style={{fontSize:9,color:'#94a3b8',fontWeight:500}}>{m.label}{i===11?' '+m.y:''}</span>)}
+          </div>
+          {/* Month-by-month $ labels for last 3 */}
+          <div style={{display:'flex',gap:8,marginTop:8,flexWrap:'wrap'}}>
+            {months.slice(-3).map((m,i)=><span key={i} style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#eff6ff',color:'#1e40af',fontWeight:600}}>{m.label}: {fmtM(m.mySales)}</span>)}
+          </div>
+        </div>
+        {/* Top customers */}
+        <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'16px 18px'}}>
+          <div style={{fontSize:13,fontWeight:700,color:'#334155',marginBottom:12}}>Top Customers · {periodLabels[salesRepPeriod]}</div>
+          {topCust.length===0?<div style={{color:'#94a3b8',fontSize:12,padding:'20px 0',textAlign:'center'}}>No orders in this period</div>:
+          topCust.map((c,i)=>{const barPct=topCust[0].total>0?(c.total/topCust[0].total*100):0;return<div key={c.id} style={{marginBottom:i<topCust.length-1?10:0}}>
+            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:3}}>
+              <span style={{fontSize:11,fontWeight:700,color:'#94a3b8',width:16,textAlign:'right',flexShrink:0}}>{i+1}</span>
+              <span style={{flex:1,fontSize:13,fontWeight:600,color:'#0f172a',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',cursor:'pointer'}} onClick={()=>{const cc=cust.find(x=>x.id===c.id);if(cc){setECust(cc);setPg('customers')}}}>{c.name}</span>
+              <span style={{fontSize:12,fontWeight:700,color:'#166534',flexShrink:0}}>{fmtM(c.total)}</span>
+              <span style={{fontSize:10,color:'#94a3b8',flexShrink:0}}>{c.orders} ord</span>
+            </div>
+            <div style={{height:4,background:'#f1f5f9',borderRadius:2,marginLeft:26}}>
+              <div style={{height:'100%',width:barPct+'%',background:'#2563eb',borderRadius:2,opacity:0.45}}/>
+            </div>
+          </div>;})}
+        </div>
+      </div>
+      </>;
+    })()}
+    {/* ── Action items row (retained) ── */}
+    <div className="stats-row" style={{marginBottom:14}}>
+      <div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>(e.status==='draft'||e.status==='open'||e.status==='sent')&&e.created_by===cu.id).length}</div></div>
+      <div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>s.created_by===cu.id&&calcSOStatus(s)!=='complete').length}</div></div>
       <div className="stat-card"><div className="stat-label">Pending Approvals</div><div className="stat-value" style={{color:'#7c3aed'}}>{myTodos.filter(t=>t.type==='art').length}</div></div>
       <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
       <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>

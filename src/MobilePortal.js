@@ -56,6 +56,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[moreSubPage,setMoreSubPage]=useState(null);
   const[scope,setScope]=useState('mine'); // mine | all — default reps see their own work first
   const[reportScope,setReportScope]=useState('mine'); // mine | all
+  const[salesPeriodMode,setSalesPeriodMode]=useState('month'); // month | 3m | 6m | ytd | lyr
   // Jobs filters
   const[jobsStatusF,setJobsStatusF]=useState('active');
   const[jobsDecoF,setJobsDecoF]=useState('all');
@@ -179,6 +180,71 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const urgentOrders=sScoped.filter(s=>{if(['completed','shipped','cancelled'].includes(s.status||''))return false;if(!s.expected_date)return false;const days=Math.ceil((new Date(s.expected_date)-now)/(1000*60*60*24));return days<=3&&days>=0});
     return{activeOrders:activeOrders.length,openInvoices:openInvoices.length,monthRevenue,urgentOrders:urgentOrders.length};
   },[sos,invs,scope,myCustIds]);
+
+  // ─── SALES DASHBOARD DATA ───
+  const salesDashData=useMemo(()=>{
+    const now=new Date();const nowY=now.getFullYear();const nowM=now.getMonth();
+    let pStart,pEnd,prevStart,prevEnd;
+    if(salesPeriodMode==='month'){
+      pStart=new Date(nowY,nowM,1);pEnd=new Date(nowY,nowM+1,0,23,59,59);
+      prevStart=new Date(nowY,nowM-1,1);prevEnd=new Date(nowY,nowM,0,23,59,59);
+    }else if(salesPeriodMode==='3m'){
+      pStart=new Date(nowY,nowM-2,1);pEnd=new Date(nowY,nowM+1,0,23,59,59);
+      prevStart=new Date(nowY,nowM-5,1);prevEnd=new Date(nowY,nowM-2,0,23,59,59);
+    }else if(salesPeriodMode==='6m'){
+      pStart=new Date(nowY,nowM-5,1);pEnd=new Date(nowY,nowM+1,0,23,59,59);
+      prevStart=new Date(nowY,nowM-11,1);prevEnd=new Date(nowY,nowM-5,0,23,59,59);
+    }else if(salesPeriodMode==='ytd'){
+      pStart=new Date(nowY,0,1);pEnd=now;
+      prevStart=new Date(nowY-1,0,1);prevEnd=new Date(nowY-1,nowM,now.getDate(),23,59,59);
+    }else{
+      pStart=new Date(nowY-1,0,1);pEnd=new Date(nowY-1,11,31,23,59,59);
+      prevStart=new Date(nowY-2,0,1);prevEnd=new Date(nowY-2,11,31,23,59,59);
+    }
+    const inPeriod=(d,s,e)=>{if(!d)return false;const dt=new Date(d);return dt>=s&&dt<=e};
+    const sumRev=(list)=>list.reduce((a,s)=>{const c=cust.find(x=>x.id===s.customer_id);return a+calcOrderTotals(s,c?.tax_rate||0).rev},0);
+    const sumInvRev=(list)=>list.reduce((a,i)=>a+(Number(i.total)||0),0);
+    const sosMy=sos.filter(s=>!['cancelled'].includes(s.status||'')&&inScope(s.customer_id,s.created_by));
+    const sosNat=sos.filter(s=>!['cancelled'].includes(s.status||''));
+    // histInvs normalized: _hist:true, created_at=invoice_date, total=raw total
+    const histMy=invs.filter(i=>i._hist&&i.status!=='cancelled'&&myCustIds.has(i.customer_id));
+    const histNat=invs.filter(i=>i._hist&&i.status!=='cancelled');
+    const mySosCur=sosMy.filter(s=>inPeriod(s.created_at,pStart,pEnd));
+    const mySosPrev=sosMy.filter(s=>inPeriod(s.created_at,prevStart,prevEnd));
+    const natSosCur=sosNat.filter(s=>inPeriod(s.created_at,pStart,pEnd));
+    const myHistCur=histMy.filter(i=>inPeriod(i.created_at,pStart,pEnd));
+    const myHistPrev=histMy.filter(i=>inPeriod(i.created_at,prevStart,prevEnd));
+    const natHistCur=histNat.filter(i=>inPeriod(i.created_at,pStart,pEnd));
+    const mySales=sumRev(mySosCur)+sumInvRev(myHistCur);
+    const mySalesPrev=sumRev(mySosPrev)+sumInvRev(myHistPrev);
+    const natSales=sumRev(natSosCur)+sumInvRev(natHistCur);
+    const salesChg=mySalesPrev>0?((mySales-mySalesPrev)/mySalesPrev*100):null;
+    // Top customers by revenue in period (SOs + histInvs)
+    const custMap={};
+    mySosCur.forEach(s=>{const c=cust.find(x=>x.id===s.customer_id);const rev=calcOrderTotals(s,c?.tax_rate||0).rev;
+      if(!custMap[s.customer_id])custMap[s.customer_id]={id:s.customer_id,name:c?.name||c?.alpha_tag||'Unknown',total:0,orders:0};
+      custMap[s.customer_id].total+=rev;custMap[s.customer_id].orders++;});
+    myHistCur.forEach(i=>{const c=cust.find(x=>x.id===i.customer_id);const rev=Number(i.total)||0;
+      if(!custMap[i.customer_id])custMap[i.customer_id]={id:i.customer_id,name:c?.name||c?.alpha_tag||i._cname||'Unknown',total:0,orders:0};
+      custMap[i.customer_id].total+=rev;custMap[i.customer_id].orders++;});
+    const topCust=Object.values(custMap).sort((a,b)=>b.total-a.total).slice(0,7);
+    // Open estimates (my scope, pending/sent/draft)
+    const myOpenEsts=ests.filter(e=>inScope(e.customer_id,e.created_by)&&['draft','pending','sent'].includes(e.status||'draft'));
+    const myOpenEstTotal=myOpenEsts.reduce((a,e)=>a+(e.total||0),0);
+    // New customers acquired in period (no prior orders)
+    const newCustIds=new Set();
+    mySosCur.forEach(s=>{if(!sos.some(o=>o.customer_id===s.customer_id&&new Date(o.created_at)<pStart))newCustIds.add(s.customer_id);});
+    // Monthly trend — last 12 months (SOs + histInvs)
+    const months=[];
+    for(let i=11;i>=0;i--){
+      const d=new Date(nowY,nowM-i,1);
+      const mStart=new Date(d.getFullYear(),d.getMonth(),1);const mEnd=new Date(d.getFullYear(),d.getMonth()+1,0,23,59,59);
+      months.push({label:d.toLocaleDateString('en-US',{month:'short'}),
+        mySales:sumRev(sosMy.filter(s=>inPeriod(s.created_at,mStart,mEnd)))+sumInvRev(histMy.filter(i=>inPeriod(i.created_at,mStart,mEnd))),
+        natSales:sumRev(sosNat.filter(s=>inPeriod(s.created_at,mStart,mEnd)))+sumInvRev(histNat.filter(i=>inPeriod(i.created_at,mStart,mEnd)))});
+    }
+    return{mySales,mySalesPrev,salesChg,natSales,topCust,openEsts:myOpenEsts.length,openEstTotal:myOpenEstTotal,newCusts:newCustIds.size,months,orderCount:mySosCur.length};
+  },[sos,ests,invs,salesPeriodMode,scope,myCustIds,cust]);
 
   // ─── SORT HELPER ───
   const sortList=(list,sortKey)=>{
@@ -907,7 +973,19 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   // ─── HOME TAB ───
   const renderHome=()=>{
     const priColors={1:'#dc2626',2:'#d97706',3:'#64748b'};
+    const{mySales,mySalesPrev,salesChg,natSales,topCust,openEsts,openEstTotal,newCusts,months,orderCount}=salesDashData;
+    const periodLabels={month:'This Month','3m':'3 Months','6m':'6 Months',ytd:'YTD',lyr:'Prev Year'};
+    // SVG sparkline chart dimensions
+    const cW=300,cH=68,cPad=3;
+    const maxV=Math.max(1,...months.map(m=>Math.max(m.mySales,m.natSales)));
+    const toX=(i)=>cPad+(i/(months.length-1))*(cW-2*cPad);
+    const toY=(v)=>cH-cPad-(v/maxV)*(cH-2*cPad);
+    const myPts=months.map((m,i)=>[toX(i),toY(m.mySales)]);
+    const natPts=months.map((m,i)=>[toX(i),toY(m.natSales)]);
+    const pathD=(pts)=>pts.map((p,i)=>(i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+    const areaD=(pts)=>pathD(pts)+' L'+pts[pts.length-1][0].toFixed(1)+','+(cH-cPad)+' L'+pts[0][0].toFixed(1)+','+(cH-cPad)+' Z';
     return<div className="mp-page">
+      {/* Header */}
       <div className="mp-greeting" style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
         <div>
           <div className="mp-greeting-text">Welcome, {cu.name?.split(' ')[0]}</div>
@@ -915,30 +993,116 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         </div>
         <ScopeToggle/>
       </div>
-      {/* Quick stats */}
-      <div className="mp-stats-grid">
-        <div className="mp-stat-card" onClick={()=>setTab('orders')}>
-          <div className="mp-stat-num">{stats.activeOrders}</div><div className="mp-stat-label">Active Orders</div>
-        </div>
-        <div className="mp-stat-card" onClick={()=>setTab('messages')}>
-          <div className="mp-stat-num" style={unreadForMeCount>0?{color:'#dc2626'}:{}}>{unreadForMeCount}</div><div className="mp-stat-label">Messages</div>
-        </div>
-        <div className="mp-stat-card">
-          <div className="mp-stat-num">{stats.openInvoices}</div><div className="mp-stat-label">Open Invoices</div>
-        </div>
-        <div className="mp-stat-card">
-          <div className="mp-stat-num" style={{color:'#16a34a'}}>{fmtMoney(stats.monthRevenue)}</div><div className="mp-stat-label">MTD Sales</div>
-        </div>
+      {/* Period selector */}
+      <div style={{display:'flex',gap:4,marginBottom:12,overflowX:'auto',WebkitOverflowScrolling:'touch',paddingBottom:2}}>
+        {[['month','Month'],['3m','3M'],['6m','6M'],['ytd','YTD'],['lyr','Prev Yr']].map(([v,l])=>
+          <button key={v} onClick={()=>setSalesPeriodMode(v)} style={{padding:'5px 14px',borderRadius:20,border:'none',background:salesPeriodMode===v?'#1e40af':'#f1f5f9',color:salesPeriodMode===v?'white':'#64748b',fontWeight:700,fontSize:12,cursor:'pointer',flexShrink:0}}>{l}</button>)}
       </div>
-      {/* Urgent orders */}
+      {/* Urgent orders alert */}
       {stats.urgentOrders>0&&<div className="mp-alert-banner">
         <MIcon name="alert" size={16}/><span>{stats.urgentOrders} order{stats.urgentOrders>1?'s':''} due within 3 days</span>
       </div>}
-      {/* Unread messages for me */}
-      {unreadForMeCount>0&&<div className="mp-msg-banner" onClick={()=>setTab('messages')}>
-        <MIcon name="mail" size={16}/><span>{unreadForMeCount} unread message{unreadForMeCount>1?'s':''} for you</span>
+      {/* ── KPI Cards ── */}
+      {/* My Sales — full-width hero card */}
+      <div style={{background:'linear-gradient(135deg,#1e40af 0%,#2563eb 100%)',borderRadius:14,padding:'16px 18px',marginBottom:10,color:'white'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+          <div>
+            <div style={{fontSize:11,fontWeight:600,opacity:0.8,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:4}}>My Sales · {periodLabels[salesPeriodMode]}</div>
+            <div style={{fontSize:32,fontWeight:800,letterSpacing:'-0.5px'}}>{fmtMoney(mySales)}</div>
+            <div style={{fontSize:12,opacity:0.7,marginTop:3}}>{orderCount} order{orderCount!==1?'s':''}{newCusts>0?' · '+newCusts+' new customer'+(newCusts>1?'s':''):''}</div>
+          </div>
+          {salesChg!=null&&<div style={{display:'flex',alignItems:'center',gap:3,padding:'5px 10px',borderRadius:10,background:salesChg>=0?'rgba(134,239,172,0.25)':'rgba(252,165,165,0.25)',color:salesChg>=0?'#bbf7d0':'#fca5a5',fontSize:13,fontWeight:800,flexShrink:0,marginTop:2}}>
+            {salesChg>=0?'↑':'↓'}{Math.abs(salesChg).toFixed(1)}%
+          </div>}
+        </div>
+        {mySalesPrev>0&&<div style={{fontSize:11,opacity:0.6,marginTop:6}}>vs {fmtMoney(mySalesPrev)} prior period</div>}
+      </div>
+      {/* 3-column secondary KPI row */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:14}}>
+        <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'10px 12px'}}>
+          <div style={{fontSize:9,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:3}}>National</div>
+          <div style={{fontSize:16,fontWeight:800,color:'#0f172a'}}>{fmtMoney(natSales)}</div>
+          <div style={{fontSize:9,color:'#94a3b8',marginTop:1}}>All reps</div>
+        </div>
+        <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'10px 12px',cursor:'pointer'}} onClick={()=>{setTab('more');setMoreSubPage('estimates');setEstsFilter('pending')}}>
+          <div style={{fontSize:9,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:3}}>Estimates</div>
+          <div style={{fontSize:16,fontWeight:800,color:'#d97706'}}>{openEsts}</div>
+          <div style={{fontSize:9,color:'#94a3b8',marginTop:1}}>{fmtMoney(openEstTotal)}</div>
+        </div>
+        <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'10px 12px',cursor:'pointer'}} onClick={()=>setTab('orders')}>
+          <div style={{fontSize:9,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:3}}>Active Ord.</div>
+          <div style={{fontSize:16,fontWeight:800,color:'#1e40af'}}>{stats.activeOrders}</div>
+          <div style={{fontSize:9,color:'#94a3b8',marginTop:1}}>{stats.openInvoices} inv open</div>
+        </div>
+      </div>
+      {/* ── Sales Trend Chart ── */}
+      <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'12px 14px',marginBottom:14}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#334155'}}>Monthly Sales Trend</div>
+          <div style={{display:'flex',gap:10,fontSize:10,color:'#94a3b8'}}>
+            <span style={{display:'flex',alignItems:'center',gap:3}}><span style={{display:'inline-block',width:14,height:2,background:'#2563eb',borderRadius:1,verticalAlign:'middle'}}/> Me</span>
+            <span style={{display:'flex',alignItems:'center',gap:3}}><span style={{display:'inline-block',width:14,height:2,background:'#cbd5e1',borderRadius:1,verticalAlign:'middle'}}/> National</span>
+          </div>
+        </div>
+        <svg viewBox={'0 0 '+cW+' '+cH} style={{width:'100%',height:80,display:'block'}} preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="salesGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#2563eb" stopOpacity="0.2"/>
+              <stop offset="100%" stopColor="#2563eb" stopOpacity="0.01"/>
+            </linearGradient>
+          </defs>
+          {[0.25,0.5,0.75].map(f=>{const gy=(cH-cPad-f*(cH-2*cPad)).toFixed(1);return<line key={f} x1={cPad} y1={gy} x2={cW-cPad} y2={gy} stroke="#f1f5f9" strokeWidth="1"/>})}
+          <path d={pathD(natPts)} fill="none" stroke="#cbd5e1" strokeWidth="1.5" strokeDasharray="4,3"/>
+          <path d={areaD(myPts)} fill="url(#salesGrad)"/>
+          <path d={pathD(myPts)} fill="none" stroke="#2563eb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          {myPts.map((p,i)=><circle key={i} cx={p[0].toFixed(1)} cy={p[1].toFixed(1)} r="2.5" fill="#2563eb"/>)}
+        </svg>
+        <div style={{display:'flex',justifyContent:'space-between',marginTop:4}}>
+          {months.map((m,i)=><span key={i} style={{fontSize:8,color:'#94a3b8',fontWeight:500,opacity:i%2===0?1:0}}>{m.label}</span>)}
+        </div>
+      </div>
+      {/* ── Top Customers ── */}
+      {topCust.length>0&&<div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'12px 14px',marginBottom:14}}>
+        <div style={{fontSize:12,fontWeight:700,color:'#334155',marginBottom:10}}>Top Customers · {periodLabels[salesPeriodMode]}</div>
+        {topCust.map((c,i)=>{
+          const barPct=topCust[0].total>0?(c.total/topCust[0].total*100):0;
+          return<div key={c.id} style={{marginBottom:i<topCust.length-1?8:0}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:3}}>
+              <span style={{fontSize:10,fontWeight:700,color:'#94a3b8',width:14,textAlign:'right',flexShrink:0}}>{i+1}</span>
+              <span style={{flex:1,fontSize:13,fontWeight:600,color:'#0f172a',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.name}</span>
+              <span style={{fontSize:12,fontWeight:700,color:'#166534',flexShrink:0}}>{fmtMoney(c.total)}</span>
+              <span style={{fontSize:10,color:'#94a3b8',flexShrink:0,width:32,textAlign:'right'}}>{c.orders} ord</span>
+            </div>
+            <div style={{height:3,background:'#f1f5f9',borderRadius:2,marginLeft:22}}>
+              <div style={{height:'100%',width:barPct+'%',background:'#2563eb',borderRadius:2,opacity:0.5}}/>
+            </div>
+          </div>;
+        })}
       </div>}
-      {/* To-Do List */}
+      {/* ── Messages (moved here) ── */}
+      <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'12px 14px',marginBottom:14}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:unreadForMeCount>0?8:0}}>
+          <div style={{display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:700,color:'#334155'}}>
+            <MIcon name="mail" size={14}/>
+            Messages
+            {unreadForMeCount>0&&<span style={{background:'#fee2e2',color:'#dc2626',borderRadius:10,padding:'1px 7px',fontSize:10,fontWeight:700}}>{unreadForMeCount}</span>}
+          </div>
+          <button onClick={()=>setTab('messages')} style={{background:'none',border:'none',color:'#2563eb',fontSize:11,fontWeight:700,cursor:'pointer',padding:0}}>View All →</button>
+        </div>
+        {myUnreadMsgs.length>0?myUnreadMsgs.slice(0,3).map((m,mi)=>{
+          const author=REPS.find(r=>r.id===m.author_id||r.id===m.from);
+          const initials=(author?.name||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+          return<div key={m.id} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 0',borderTop:mi>0?'1px solid #f8fafc':'none',cursor:'pointer'}} onClick={()=>setTab('messages')}>
+            <div style={{width:28,height:28,borderRadius:'50%',background:'#fee2e2',color:'#dc2626',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:10,flexShrink:0}}>{initials}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{author?.name||'Team'}</div>
+              <div style={{fontSize:11,color:'#64748b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{(m.body||m.text||'').slice(0,65)}</div>
+            </div>
+            <div style={{fontSize:10,color:'#94a3b8',flexShrink:0}}>{timeAgo(m.created_at)}</div>
+          </div>;
+        }):<div style={{fontSize:12,color:'#94a3b8',padding:'4px 0'}}>No unread messages</div>}
+      </div>
+      {/* ── To-Do List ── */}
       <div className="mp-section-title" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
         <span>To-Do ({myTodos.length})</span>
         {onAssignBot&&<button onClick={()=>setBotCompose(botCompose?null:{title:'',so_id:''})} style={{background:botCompose?'#0f766e':'#f0fdfa',color:botCompose?'white':'#0f766e',border:'1px solid #5eead4',borderRadius:8,padding:'4px 10px',fontSize:12,fontWeight:700,cursor:'pointer'}}>🤖 Assign to Claude</button>}
