@@ -52,7 +52,7 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
     if(cc){const ccArr=Array.isArray(cc)?cc:[cc];const _toEmails=new Set(payload.to.map(t=>(t.email||'').toLowerCase()));const _filtered=ccArr.filter(c=>c&&c.email&&!_toEmails.has(c.email.toLowerCase()));if(_filtered.length>0)payload.cc=_filtered}
     if(bcc){const bccArr=Array.isArray(bcc)?bcc:[bcc];if(bccArr.length>0)payload.bcc=bccArr}
     if(attachment&&attachment.length>0)payload.attachment=attachment;
-    const r=await fetch(_brevoProxy,{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},
+    const r=await authFetch(_brevoProxy,{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},
     body:JSON.stringify(payload)});
     const d=await r.json();if(!r.ok)return{ok:false,error:d.message||'Send failed'};return{ok:true,messageId:d.messageId}}
   catch(e){return{ok:false,error:e.message}}

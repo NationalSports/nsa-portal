@@ -588,111 +588,19 @@ function CartPage({ store, theme, cart, onUpdate }) {
 // Soft oversell guard: re-check live stock for plain (non-bundle) sized items
 // right before placing the order. Backorder-OK items (incoming) always pass.
 // Not fully atomic — shrinks the window, doesn't eliminate a simultaneous race.
-async function verifyStock(store, cart) {
-  const singles = cart.filter((l) => l.kind !== 'bundle' && l.webstore_product_id && l.size);
-  if (!singles.length) return null;
-  const ids = [...new Set(singles.map((l) => l.webstore_product_id))];
-  const { data, error } = await supabase.from('webstore_storefront_products')
-    .select('webstore_product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta')
-    .eq('store_id', store.id).in('webstore_product_id', ids);
-  if (error) return null; // don't block checkout on a lookup failure
-  const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
-  const need = {}; singles.forEach((l) => { const k = l.webstore_product_id + '|' + l.size; need[k] = (need[k] || 0) + (l.qty || 1); });
-  const short = [];
-  Object.entries(need).forEach(([k, q]) => {
-    const [wid, size] = k.split('|'); const p = byId[wid]; if (!p) return;
-    if (isIncoming(p)) return; // backorder allowed
-    if (effSizeQty(p, size) < q) short.push(`${p.name || 'item'} (size ${size})`);
-  });
-  if (short.length) return `Sorry — these just sold out while you were shopping: ${short.join(', ')}. Please remove or change them and try again.`;
-  return null;
-}
-
-// ── Order confirmation email (server-side Brevo proxy keeps the key secret) ──
-async function sendOrderEmail({ store, order, cart, buyer, shipping, total, discount = 0 }) {
+// ── Server-side checkout ─────────────────────────────────────────────
+// Pricing, stock + coupon validation, the order/items/number-claim writes,
+// PaymentIntent creation, and confirmation emails all happen in
+// netlify/functions/webstore-checkout — the browser sends item identities and
+// personalization only, never prices. (The old client-side placeOrder trusted
+// localStorage cart prices and could leave a paid order with no items.)
+async function checkoutCall(payload) {
   try {
-    const link = `${window.location.origin}/shop/${store.slug}/order/${order.id}`;
-    const rows = cart.map((l) => {
-      const det = lineDetail(l).join(' · ');
-      const img = l.image
-        ? `<td style="width:56px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"><img src="${l.image}" width="48" height="48" style="width:48px;height:48px;object-fit:cover;border-radius:6px;display:block;background:#f4f6f9"></td>`
-        : `<td style="width:56px;padding:8px 10px 8px 0;border-bottom:1px solid #eef1f5"></td>`;
-      return `<tr>${img}<td style="padding:8px 0;border-bottom:1px solid #eef1f5">${l.name}${l.kind === 'bundle' ? ' (package)' : ''}${l.qty > 1 ? ` ×${l.qty}` : ''}${det ? `<div style="font-size:12px;color:#64748b">${det}</div>` : ''}</td><td style="padding:8px 0;border-bottom:1px solid #eef1f5;text-align:right;font-weight:700;white-space:nowrap">${money(lineUnit(l) * (l.qty || 1))}</td></tr>`;
-    }).join('');
-    const accent = store.accent_color || '#e11d2a';
-    const a = order.ship_address || null;
-    const addrBlock = (order.ship_method === 'ship_home' && a) ? `<div style="margin-top:18px"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#64748b;margin-bottom:4px">Shipping to</div><div style="font-size:14px;line-height:1.5">${a.name ? a.name + '<br>' : ''}${a.street1 || ''}${a.street2 ? ', ' + a.street2 : ''}<br>${a.city || ''}${a.city ? ', ' : ''}${a.state || ''} ${a.zip || ''}</div><div style="font-size:12px;color:#94a3b8;margin-top:4px">Need to fix this? Use the “Track your order” link below to update your address before it ships.</div></div>` : '';
-    const nsaLogo = `${window.location.origin}/NEW%20NSA%20Logo%20on%20white.png`;
-    const logoBar = `<div style="background:#fff;border:1px solid #eef1f5;border-bottom:none;border-radius:10px 10px 0 0;padding:14px 24px;text-align:center"><img src="${nsaLogo}" alt="National Sports Apparel" height="36" style="height:36px;display:inline-block"></div>`;
-    const html = `<div style="font-family:'Source Sans 3',-apple-system,Segoe UI,Roboto,sans-serif;color:#2A2F3E;max-width:560px;margin:0 auto">
-      ${logoBar}
-      <div style="background:${store.primary_color || '#0b1f3a'};color:#fff;padding:18px 24px">
-        <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;opacity:.85">${store.name}</div>
-        <div style="font-size:22px;font-weight:800;margin-top:4px">Order confirmed${order.payment_mode === 'paid' ? ' &amp; paid' : ''}</div>
-      </div>
-      <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:22px 24px">
-        <p style="margin:0 0 14px">Thanks, ${buyer.name}! ${order.payment_mode === 'paid' ? "We've received your payment." : 'Your order has been placed and will be invoiced to the team.'}</p>
-        <table style="width:100%;border-collapse:collapse;font-size:14px">${rows}
-          ${discount > 0 ? `<tr><td></td><td style="padding:8px 0;color:#16a34a">Discount${order.coupon_code ? ` (${order.coupon_code})` : ''}</td><td style="padding:8px 0;text-align:right;color:#16a34a">−${money(discount)}</td></tr>` : ''}
-          ${shipping > 0 ? `<tr><td></td><td style="padding:8px 0;color:#475569">Shipping</td><td style="padding:8px 0;text-align:right">${money(shipping)}</td></tr>` : ''}
-          <tr><td></td><td style="padding:12px 0 0;font-weight:800;font-size:16px">Total</td><td style="padding:12px 0 0;text-align:right;font-weight:800;font-size:16px">${money(total)}</td></tr>
-        </table>
-        ${addrBlock}
-        <a href="${link}" style="display:inline-block;margin-top:20px;background:${accent};color:#fff;text-decoration:none;padding:13px 26px;border-radius:8px;font-weight:700">Track your order</a>
-        <p style="font-size:12px;color:#94a3b8;margin-top:18px">Save this email — the link above is how you check your order status anytime.</p>
-      </div></div>`;
-    await fetch('/.netlify/functions/brevo-proxy', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sender: { name: store.name || 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
-        to: [{ email: buyer.email, name: buyer.name }],
-        subject: `Your ${store.name} order is confirmed`,
-        htmlContent: html,
-      }),
-    });
-  } catch (e) { console.warn('[storefront] confirmation email failed:', e); }
-}
-
-// ── Checkout ─────────────────────────────────────────────────────────
-async function placeOrder({ store, cart, buyer, ship, payMode, stripePiId, status, sendEmail = true, coupon = null }) {
-  const subtotal = cart.reduce((a, l) => a + (Number(l.unit_price) || 0) * (l.qty || 1), 0);
-  const fundraise = cart.reduce((a, l) => a + ((Number(l.fundraise) || 0) + (Number(l.name_extra) || 0)) * (l.qty || 1), 0);
-  const shipping = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
-  const discount = couponDiscount(coupon, cart, shipping);
-  const total = Math.max(0, cartTotal(cart) + shipping - discount);
-  const { data: order, error } = await supabase.from('webstore_orders').insert({
-    store_id: store.id, status: status || (payMode === 'paid' ? 'paid' : 'unpaid'), payment_mode: payMode, order_kind: 'individual',
-    buyer_name: buyer.name, buyer_email: buyer.email, buyer_phone: buyer.phone || null,
-    ship_address: store.delivery_mode === 'ship_home' ? ship : null, ship_method: store.delivery_mode,
-    subtotal, fundraise_amt: fundraise, shipping_fee: shipping, total, stripe_pi_id: stripePiId || null,
-    coupon_code: coupon ? coupon.code : null, discount_amt: discount,
-  }).select().single();
-  if (error) return { error };
-
-  const items = [];
-  cart.forEach((l) => {
-    if (l.kind === 'bundle') {
-      const bref = (crypto.randomUUID && crypto.randomUUID()) || Math.random().toString(36).slice(2);
-      items.push({ order_id: order.id, product_id: null, sku: null, size: null, qty: 1, unit_price: l.unit_price, unit_fundraise: (l.fundraise || 0) + (l.name_extra || 0), player_name: null, player_number: null, bundle_ref: bref, bundle_product_id: l.webstore_product_id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
-      (l.components || []).forEach((c) => items.push({ order_id: order.id, product_id: c.product_id, sku: c.sku, size: c.size, qty: 1, unit_price: 0, unit_fundraise: 0, player_name: c.player_name || null, player_number: c.player_number || null, bundle_ref: bref, bundle_product_id: l.webstore_product_id, is_bundle_parent: false, name: c.name || null, image_url: c.image || null, line_status: 'pending' }));
-    } else {
-      items.push({ order_id: order.id, product_id: l.product_id, sku: l.sku, size: l.size, qty: l.qty || 1, unit_price: l.unit_price, unit_fundraise: (l.fundraise || 0) + (l.name_extra || 0), player_name: l.player_name || null, player_number: l.player_number || null, name: l.name || null, color: l.color || null, image_url: l.image || null, line_status: 'pending' });
-    }
-  });
-  await supabase.from('webstore_order_items').insert(items);
-
-  // Jersey number uniqueness claims (only when the store enforces it).
-  if (store.number_unique) {
-    const nums = new Set();
-    items.forEach((i) => { if (i.player_number) nums.add(i.player_number); });
-    for (const n of nums) {
-      const { error: ce } = await supabase.from('webstore_number_claims').insert({ store_id: store.id, player_number: String(n), order_id: order.id, player_name: buyer.name });
-      if (ce && /duplicate|unique/i.test(ce.message || '')) return { error: { message: `Number ${n} was just taken by someone else — please pick a different number.` }, order };
-    }
-  }
-  if (coupon && coupon.id) { try { await supabase.from('webstore_coupons').update({ used_count: (coupon.used_count || 0) + 1 }).eq('id', coupon.id); } catch {} }
-  if (sendEmail && buyer.email) sendOrderEmail({ store, order, cart, buyer, shipping, total, discount });
-  return { order, shipping, total };
+    const r = await fetch('/.netlify/functions/webstore-checkout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return { error: { message: d.error || ('Checkout failed (HTTP ' + r.status + ')') }, code: d.code, totals: d.totals };
+    return d;
+  } catch (e) { return { error: { message: e.message } }; }
 }
 
 // Percent coupons discount the order; whether shipping is included is per-coupon
@@ -739,38 +647,34 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const submitUnpaid = async () => {
     setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
     setBusy(true);
-    const stockErr = await verifyStock(store, cart);
-    if (stockErr) { setErr(stockErr); setBusy(false); return; }
-    const r = await placeOrder({ store, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', coupon });
+    const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100) });
     setBusy(false);
     if (r.error) { setErr(r.error.message); return; }
     onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
   };
 
-  // Order-first: create the PaymentIntent, persist the order as pending_payment
-  // (so number claims/stock are committed before charging), then show the card
-  // form. A Stripe webhook flips it to paid even if the buyer closes the tab.
+  // Order-first: the server re-prices the cart, persists the order as
+  // pending_payment (items + number claims committed transactionally), creates
+  // the PaymentIntent with the SERVER total, then we show the card form. The
+  // Stripe webhook flips it to paid even if the buyer closes the tab.
   const startCard = async () => {
     setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
     setBusy(true);
-    const stockErr = await verifyStock(store, cart);
-    if (stockErr) { setErr(stockErr); setBusy(false); return; }
-    try {
-      const res = await fetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create_intent', amount_cents: Math.round(payable * 100), customer_name: buyer.name, customer_email: buyer.email, invoice_id: store.slug, invoice_memo: store.name + ' webstore' }) });
-      const data = await res.json();
-      if (!data.clientSecret) { setErr(data.error || 'Could not start payment.'); setBusy(false); return; }
-      const r = await placeOrder({ store, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', stripePiId: data.intentId, status: 'pending_payment', sendEmail: false, coupon });
-      if (r.error) { setErr(r.error.message); setBusy(false); return; }
-      setPendingOrder(r.order);
-      setClientSecret(data.clientSecret);
-    } catch (e) { setErr('Payment setup failed: ' + e.message); }
+    const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100) });
+    if (r.error) { setErr(r.error.message); setBusy(false); return; }
+    if (!r.clientSecret) { setErr('Could not start payment.'); setBusy(false); return; }
+    setPendingOrder(r.order);
+    setClientSecret(r.clientSecret);
     setBusy(false);
   };
 
-  const confirmPaid = async () => {
+  const confirmPaid = async (paymentIntentId) => {
     if (!pendingOrder) { setErr('Order reference lost — your card was charged. Please contact us and we’ll confirm your order.'); return; }
-    await supabase.from('webstore_orders').update({ status: 'paid', confirmation_sent: true }).eq('id', pendingOrder.id);
-    if (buyer.email) sendOrderEmail({ store, order: { ...pendingOrder, status: 'paid', payment_mode: 'paid' }, cart, buyer, shipping: ship_, total: payable, discount });
+    // Server-side finalize verifies the PaymentIntent against the order, flips it
+    // to paid, and sends the confirmation email. If this call never lands (tab
+    // closed, network drop), the Stripe webhook does the same — the atomic
+    // confirmation_sent claim means exactly one of them sends the email.
+    await checkoutCall({ action: 'finalize', orderId: pendingOrder.id, stripePiId: paymentIntentId || pendingOrder.stripe_pi_id });
     onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}`);
   };
 
