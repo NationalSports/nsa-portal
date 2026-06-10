@@ -120,8 +120,19 @@ const now = new Date().toISOString();
 
 // 1) Base row for EVERY size: current stock + next-delivery date (in stock or not)
 const rows = {};
+const isFootwear = window._footwearCids?.has(conversionId) || conversionId === '51';
 for (const [code, sd] of Object.entries(sizes)) {
-  const label = sizeMap[conversionId]?.[code] || code;
+  const mapped = sizeMap[conversionId]?.[code];
+  const label = mapped || code;
+  // HARDENING — record any code present in THIS SKU's response but absent from the
+  // map. _convExpected/_mapGaps are blind to it (no catalog example advertised it),
+  // so it would otherwise be written raw and slip past the health check — exactly how
+  // FP9596's 440/480/500/510/520 (its 4XL/5XL extended tail) leaked through. Footwear
+  // numeric codes are real labels, so skip them.
+  if (!mapped && !isFootwear) {
+    window._unmappedSeen = window._unmappedSeen || {};
+    (window._unmappedSeen[conversionId] = window._unmappedSeen[conversionId] || {})[code] = sku;
+  }
   rows[code] = {
     id: `${sku}-${label}`,
     sku, size: label,
@@ -173,11 +184,20 @@ if (staleRawSizes.length) {
 ## Health check (run AFTER all SKUs are upserted)
 
 Surface size-map regressions so stale numeric codes can't quietly accrue again.
-`window._mapGaps` already holds the apparel conversionIds whose maps came back
-incomplete this run; just report it. Empty = every apparel code resolved to a
-label (no numeric rows written). Non-empty = a map regressed (a richer example
-wasn't reachable) and codes may have been written — re-learn that conversionId
-before the next run. This is **report-only**; it never deletes.
+Report **two complementary signals** — neither alone is sufficient:
+
+**(A) `window._mapGaps`** — apparel conversionIds whose maps came back incomplete
+vs. the catalog-derived expected code set (`_convExpected`). Empty = every code the
+*catalog advertised* resolved to a label. Non-empty = a map regressed (a richer
+example wasn't reachable) — re-learn that conversionId before the next run.
+
+**(B) `window._unmappedSeen`** — codes that actually appeared in a SKU's materials
+response but had **no map entry at write time**, so they were written raw. This is
+the stronger check: it catches codes that *no catalog example advertised* — so
+`_convExpected`/`_mapGaps` are blind to them — e.g. an extended big-&-tall tail
+(`440/480/500/510/520` on FP9596) that only surfaces in the SKU's own response.
+
+Both are **report-only**; they never delete.
 ```js
 const gaps = Object.entries(window._mapGaps || {})
   .filter(([cid]) => cid !== '51' && !window._footwearCids?.has(cid));
@@ -192,9 +212,29 @@ if (!gaps.length) {
   }
 }
 ```
+
+**(B)** Codes that actually appeared in a SKU's response but had no map entry —
+written raw even though `_mapGaps` can look clean:
+```js
+const unmapped = Object.entries(window._unmappedSeen || {})
+  .filter(([cid]) => cid !== '51' && !window._footwearCids?.has(cid));
+
+if (!unmapped.length) {
+  console.log('[health] no unmapped codes written — every size resolved to a label ✓');
+} else {
+  console.warn(`[health] ${unmapped.length} conversionId(s) wrote RAW codes this run:`);
+  for (const [cid, codeToSku] of unmapped) {
+    const codes = Object.keys(codeToSku);
+    console.warn(`  conv ${cid}: [${codes.join(', ')}] — re-learn from ${codeToSku[codes[0]]}, then re-sync it`);
+  }
+}
+```
 - Apparel `_mapGaps` is expected to be **empty** every run. If it isn't, re-learn the
   listed conversionId(s) (the report names a rich example SKU to learn from), then
   re-run those SKUs — don't let numeric codes persist.
+- `_unmappedSeen` must be **empty** too. Non-empty = real codes were written raw (the
+  FP9596 failure mode): re-learn the named conversionId from the example SKU it
+  reports, then re-sync that SKU so the self-heal drops the raw rows.
 - Stale raw-code rows are now **self-healed per SKU** (Per-SKU step 5): each relabel
   drops its own superseded raw twin, scoped to that SKU's remapped codes, so numeric
   duplicates can't accrue across runs. A broad supervised `^[0-9]{3}$` sweep stays
