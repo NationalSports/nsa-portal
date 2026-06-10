@@ -5435,6 +5435,8 @@ export default function App(){
   const canAccess=useCallback((pageId)=>{
     if(!cu)return false;
     if(cu.role==='admin'||cu.role==='super_admin')return true;
+    // Import is always on for reps and CSRs regardless of their stored access array
+    if(pageId==='import'&&(cu.role==='rep'||cu.role==='csr'))return true;
     if(!RESTRICTED_PAGES.has(pageId))return true; // purchase_orders / issues / settings gated only by role in `nav`
     return effectiveAccess.includes(pageId);
   },[cu,RESTRICTED_PAGES,effectiveAccess]);
@@ -25334,14 +25336,17 @@ export default function App(){
   // status and drive invite/deactivate actions through service-role endpoints.
   const loadTeamAuth=async()=>{
     setTeamAuthLoading(true);setTeamAuthError('');
+    const ctrl=new AbortController();
+    const timer=setTimeout(()=>ctrl.abort(),15000);
     try{
       const session=await _sbGetSession();
-      if(!session?.access_token){setTeamAuthError('Not signed in');setTeamAuthLoading(false);return}
-      const res=await fetch('/.netlify/functions/team-list',{headers:{Authorization:`Bearer ${session.access_token}`}});
+      if(!session?.access_token){clearTimeout(timer);setTeamAuthError('Not signed in');setTeamAuthLoading(false);return}
+      const res=await fetch('/.netlify/functions/team-list',{headers:{Authorization:`Bearer ${session.access_token}`},signal:ctrl.signal});
+      clearTimeout(timer);
       const json=await res.json().catch(()=>({error:'Bad response'}));
       if(!res.ok||json.error){setTeamAuthError(json.error||('HTTP '+res.status));setTeamAuthLoading(false);return}
       setTeamAuthData(json.members||[]);
-    }catch(e){setTeamAuthError(e.message||'Load failed')}
+    }catch(e){clearTimeout(timer);setTeamAuthError(e.name==='AbortError'?'Request timed out — click Refresh to try again':e.message||'Load failed')}
     setTeamAuthLoading(false);
   };
   const teamSendInvite=async(member)=>{
@@ -25395,11 +25400,11 @@ export default function App(){
     const initials=n=>{const p=(n||'').split(' ');return p.length>=2?(p[0][0]+p[p.length-1][0]).toUpperCase():(n||'??').slice(0,2).toUpperCase()};
     const avatarColors={super_admin:'#dc2626',admin:'#7c3aed',rep:'#2563eb',csr:'#16a34a',accounting:'#d97706',warehouse:'#475569',prod_manager:'#b45309',production:'#0891b2',prod_assistant:'#a16207'};
 
-    // Admins-only gate. Non-admins can no longer browse the team page directly.
+    // Admins-only gate.
     if(!isAdmin)return<div style={{padding:60,textAlign:'center',color:'#64748b'}}>
       <div style={{fontSize:48,marginBottom:12}}>🔒</div>
       <div style={{fontSize:18,fontWeight:700,color:'#0f172a',marginBottom:6}}>Admins only</div>
-      <div style={{fontSize:13}}>Contact Steve, Gayle, Denis, or Mike to manage team access.</div>
+      <div style={{fontSize:13}}>Contact your admin to manage team access.</div>
     </div>;
 
     const timeAgo=(ts)=>{if(!ts)return null;const diff=Date.now()-new Date(ts).getTime();if(diff<0)return new Date(ts).toLocaleDateString();const m=Math.floor(diff/60000);if(m<1)return'just now';if(m<60)return m+'m ago';const h=Math.floor(m/60);if(h<24)return h+'h ago';const d=Math.floor(h/24);if(d<30)return d+'d ago';return new Date(ts).toLocaleDateString()};
@@ -25454,6 +25459,7 @@ export default function App(){
     const activeReps=REPS.filter(r=>r.is_active!==false);
     const inactiveReps=REPS.filter(r=>r.is_active===false);
     const grouped=Object.keys(roles).map(r=>({role:r,label:roles[r],members:activeReps.filter(m=>m.role===r)})).filter(g=>g.members.length>0);
+    const activeTab=isAdmin?teamTab:'directory';
 
     const saveMember=async(m)=>{
       const isExisting=!!REPS.find(r=>r.id===m.id);
@@ -25550,17 +25556,17 @@ export default function App(){
       {/* Page header + tab switcher */}
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:14,flexWrap:'wrap',gap:8}}>
         <div>
-          <div style={{fontSize:11,color:'#64748b',fontWeight:600,textTransform:'uppercase',letterSpacing:1}}>Team Access</div>
-          <div style={{fontSize:13,color:'#475569'}}>Invite team members, manage portal access, and deactivate people who leave.</div>
+          <div style={{fontSize:11,color:'#64748b',fontWeight:600,textTransform:'uppercase',letterSpacing:1}}>{isAdmin?'Team Access':'Team Directory'}</div>
+          <div style={{fontSize:13,color:'#475569'}}>{isAdmin?'Invite team members, manage portal access, and deactivate people who leave.':'Your team contacts and organization.'}</div>
         </div>
         <div style={{display:'flex',gap:6}}>
-          <button className={`btn btn-sm ${teamTab==='access'?'btn-primary':'btn-secondary'}`} onClick={()=>{setTeamTab('access');if(teamAuthData==null&&!teamAuthLoading)loadTeamAuth()}}>Access Management</button>
-          <button className={`btn btn-sm ${teamTab==='directory'?'btn-primary':'btn-secondary'}`} onClick={()=>setTeamTab('directory')}>Team Directory</button>
-          <button className="btn btn-sm btn-primary" onClick={()=>setEditMember({id:'tm-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),name:'',role:'rep',is_active:true,email:'',phone:'',access:DEFAULT_ACCESS.rep,_isNew:true})}><Icon name="plus" size={12}/> Add Team Member</button>
+          {isAdmin&&<button className={`btn btn-sm ${activeTab==='access'?'btn-primary':'btn-secondary'}`} onClick={()=>{setTeamTab('access');if(teamAuthData==null&&!teamAuthLoading)loadTeamAuth()}}>Access Management</button>}
+          <button className={`btn btn-sm ${activeTab==='directory'?'btn-primary':'btn-secondary'}`} onClick={()=>setTeamTab('directory')}>Team Directory</button>
+          {isAdmin&&<button className="btn btn-sm btn-primary" onClick={()=>setEditMember({id:'tm-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),name:'',role:'rep',is_active:true,email:'',phone:'',access:DEFAULT_ACCESS.rep,_isNew:true})}><Icon name="plus" size={12}/> Add Team Member</button>}
         </div>
       </div>
 
-      {teamTab==='access'&&<>
+      {activeTab==='access'&&<>
         <div className="stats-row">
           <div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{accessCounts.all}</div></div>
           <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value" style={{color:'#166534'}}>{accessCounts.active}</div></div>
@@ -25620,7 +25626,7 @@ export default function App(){
         </div>
       </>}
 
-      {teamTab==='directory'&&<>
+      {activeTab==='directory'&&<>
         <div className="stats-row">
           <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value" style={{color:'#166534'}}>{activeReps.length}</div></div>
           <div className="stat-card"><div className="stat-label">Inactive</div><div className="stat-value" style={{color:'#94a3b8'}}>{inactiveReps.length}</div></div>
@@ -27522,7 +27528,7 @@ export default function App(){
   }
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{id:'import',label:'Import / Upload',icon:'upload'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
   const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',webstores:'Club Webstores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
   // ─── SCAN RESULT HANDLER ───
   function handleScanResult(val){
