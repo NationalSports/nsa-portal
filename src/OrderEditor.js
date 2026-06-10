@@ -7097,7 +7097,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const it=safeItems(o)[gi.item_idx];
                     // Art files referenced by THIS item's decorations, intersected with this job's art set.
                     const itemArtIds=it?[...new Set(safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&_jobArtIds.has(d.art_file_id)).map(d=>d.art_file_id))]:[];
-                    const _useIds=[...new Set([...(itemArtIds.length>0?itemArtIds:[j.art_file_id].filter(Boolean)),...(j._art_ids||[])].filter(Boolean))];
+                    const _useIds=itemArtIds.length>0?itemArtIds:[...new Set([j.art_file_id,...(j._art_ids||[])].filter(Boolean))];
                     const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
                     // Mockups: per-item (scoped to this SKU), then general (only if no per-item mockups exist for this SKU)
                     const _seen=new Set();
@@ -7309,7 +7309,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {itemDetails.map((gi,gii)=>{
                     const it=safeItems(o)[gi.item_idx];
                     const itemArtIds=it?[...new Set(safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&_jArtIds.has(d.art_file_id)).map(d=>d.art_file_id))]:[];
-                    const _useIds=[...new Set([...(itemArtIds.length>0?itemArtIds:[j.art_file_id].filter(Boolean)),...(j._art_ids||[])].filter(Boolean))];
+                    const _useIds=itemArtIds.length>0?itemArtIds:[...new Set([j.art_file_id,...(j._art_ids||[])].filter(Boolean))];
                     const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
                     const _seen=new Set();
                     const _mk=gi.sku+'|'+(gi.color||'');
