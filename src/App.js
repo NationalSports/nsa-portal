@@ -1208,6 +1208,27 @@ const _dbSaveEstimateInner = async (est) => {
   }catch(e){console.error('[DB] save estimate:',e);if(_isAuthError(e))return _handleAuthSaveFailure(est.id);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
 const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateInner);
+// Resolve which current item a preserved child row (PO/pick line) should re-attach to after the
+// order's structure changed. The row's original position wins when its SKU still matches; otherwise
+// fall back to SKU matching across all items — removing/reordering a line shifts every item_index
+// after it, which used to make these rows unmatchable and hard-block the save (the SO-1132 failure).
+// Among same-SKU candidates prefer a known matching color, then the closest index; a candidate whose
+// color is known and DIFFERENT is never used (navy's PO line on the red row would mislead receiving).
+// Returns the items[] index, or -1 when no current item can safely take the row.
+const _matchRestoreItem=(oi,items)=>{
+  const pos=items[oi.item_index];
+  if(pos&&(!oi.sku||!pos.sku||pos.sku===oi.sku))return oi.item_index;
+  if(!oi.sku)return -1;
+  const _norm=c=>String(c||'').trim().toLowerCase();
+  let best=-1,bestScore=-Infinity;
+  items.forEach((it,idx)=>{
+    if((it.sku||'')!==oi.sku)return;
+    if(oi.color&&it.color&&_norm(it.color)!==_norm(oi.color))return;
+    const score=(oi.color&&it.color?1000:0)-Math.abs(idx-oi.item_index);
+    if(score>bestScore){bestScore=score;best=idx}
+  });
+  return best;
+};
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
   // Optimistic locking: check version before saving (auto-heal on conflict)
@@ -1240,7 +1261,7 @@ const _dbSaveSOInner = async (so) => {
       await supabase.from('so_art_files').delete().eq('so_id',so.id);
     }
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
-    const _oldItemsResp=await _retryNet(()=>supabase.from('so_items').select('id,item_index,sku').eq('so_id',so.id));
+    const _oldItemsResp=await _retryNet(()=>supabase.from('so_items').select('id,item_index,sku,color').eq('so_id',so.id));
     // Fail-closed: refuse the save whenever reading existing items errored. A SELECT error returns oldItemIds=[],
     // which would skip the deco/pick/PO deletes' `.in([])` filter but still let the unconditional
     // `DELETE FROM so_items WHERE so_id=...` below wipe everything. Retrying later (via _dbSaveFailedIds) is safer.
@@ -1385,6 +1406,7 @@ const _dbSaveSOInner = async (so) => {
     // "PO 3021/3022 DOHSF vanished" failure) or POs another user/tab added that this client never saw — those rows
     // would be silently wiped. We read the live DB PO lines and re-inject any the client was never aware of, so
     // ONLY deliberate deletions (a PO the client loaded and then removed) actually stick.
+    const _restoredLines=[];// restored PO/pick lines, pushed back into React state after both restore passes
     if(oldItemIds.length){
       const{data:_dbPoRows,error:_dbPoErr}=await _retryNet(()=>supabase.from('so_item_po_lines').select('*').in('so_item_id',oldItemIds));
       if(_dbPoErr){
@@ -1409,13 +1431,16 @@ const _dbSaveSOInner = async (so) => {
           if(_posHydrated&&_knownPoIds.has(poId))return;
           // Otherwise the client never knew about this PO — re-inject it onto its original item so the save preserves it.
           const oi=_oldById.get(row.so_item_id);
-          const ci=oi?items[oi.item_index]:null;
-          // Guard against attaching to the wrong item if the order's structure changed (item removed/reordered).
-          if(!ci||(oi.sku&&ci.sku&&ci.sku!==oi.sku)){_unrestorable++;return;}
+          // Match by original position first, falling back to SKU(+color) across all items so a
+          // removed/reordered sibling line doesn't make this row unmatchable and block the save.
+          const _ti=oi?_matchRestoreItem(oi,items):-1;
+          const ci=_ti>=0?items[_ti]:null;
+          if(!ci){_unrestorable++;return;}
           const{id:_id,so_item_id:_sid,sizes,...rest}=row;const recovered={...rest,...(sizes||{})};
           if(recovered._billed&&!recovered.billed){recovered.billed=recovered._billed;delete recovered._billed;}
           if(recovered._tracking_numbers&&!recovered.tracking_numbers){recovered.tracking_numbers=recovered._tracking_numbers;delete recovered._tracking_numbers;}
           ci.po_lines=[...(ci.po_lines||[]),recovered];_restored++;
+          _restoredLines.push({idx:_ti,sku:ci.sku||null,kind:'po',line:recovered});
         });
         if(_restored){console.warn('[DB] Restored',_restored,'undeleted PO line(s) for',so.id,'(stale/foreign client state)');if(_dataLossAlert)_dataLossAlert({kind:'po_restored',soId:so.id,restored:_restored});}
         if(_unrestorable){
@@ -1494,10 +1519,12 @@ const _dbSaveSOInner = async (so) => {
           if(pickId&&_clientPickIds.has(pickId))return;
           if(_picksHydrated&&pickId&&_knownPickIds.has(pickId))return;
           const oi=_oldById.get(row.so_item_id);
-          const ci=oi?items[oi.item_index]:null;
-          if(!ci||(oi.sku&&ci.sku&&ci.sku!==oi.sku)){_unrestorable++;return;}
+          const _ti=oi?_matchRestoreItem(oi,items):-1;
+          const ci=_ti>=0?items[_ti]:null;
+          if(!ci){_unrestorable++;return;}
           const{id:_id,so_item_id:_sid,sizes,...rest}=row;const recovered={...rest,...(sizes||{})};
           ci.pick_lines=[...(ci.pick_lines||[]),recovered];_restored++;
+          _restoredLines.push({idx:_ti,sku:ci.sku||null,kind:'pick',line:recovered});
         });
         if(_restored){console.warn('[DB] Restored',_restored,'undeleted pick line(s) for',so.id,'(stale/foreign client state)');if(_dataLossAlert)_dataLossAlert({kind:'picks_restored',soId:so.id,restored:_restored});}
         if(_unrestorable){
@@ -1508,6 +1535,11 @@ const _dbSaveSOInner = async (so) => {
         }
       }
     }
+    // Push restored lines back into React state (sos + open editor). Without this the restore only
+    // patches this save's payload: the editor never learns about the lines, drops them again on its
+    // next save, and the guard re-restores forever — turning into a hard block as soon as the
+    // line-item structure shifts (the SO-1132 failure).
+    if(_restoredLines.length&&_restoredLinesSync){try{_restoredLinesSync(so.id,_restoredLines)}catch(e){console.warn('[DB] restored-line state sync failed:',e)}}
     // DATA-LOSS FIX: do NOT delete old item rows (or their decorations/picks/POs) here. We insert the new rows
     // first and only remove the old ones once the insert is verified (see "Commit/rollback the swap" below).
     // so_items has no unique (so_id,item_index) constraint, so new+old rows can briefly coexist. This closes the
@@ -1809,6 +1841,7 @@ const _dbSaveInvoiceInner = async (inv) => {
 const _dbSaveInvoice = (inv) => _queuedEntitySave(inv.id, inv, _dbSaveInvoiceInner);
 let _dbNotify=null; // set by App component for visible error toasts
 let _dataLossAlert=null; // set by App component — logs + emails on item-wipe attempts/events
+let _restoredLinesSync=null; // set by App component — merges PO/pick lines the save guard restored back into live state so a restore sticks instead of repeating on every save
 let _onEstStatusMerge=null; // set by App component — called when a version-conflict save merges a higher status from DB
 // ─── Session-expiry recovery ───
 // When a write fails with a 401 / JWT-expired / row-level-security error it means our Supabase auth
@@ -3990,6 +4023,35 @@ export default function App(){
         +'</div>';
       sendBrevoEmail({to:[{email:adminEmail,name:'Steve Peterson'}],cc:ccEmail?[{email:ccEmail}]:undefined,subject,htmlContent:html,senderName:'NSA Portal',senderEmail:companyInfo?.email||'team@nsa-teamwear.com'}).catch(e=>console.warn('[alert] email failed:',e));
     }catch(e){console.warn('[alert] _dataLossAlert failed:',e)}
+  };
+  // Merge PO/pick lines the save guard restored (stale/foreign client state) back into live state, so
+  // the restore happens once instead of on every save. Mirrors the in-save payload mutation: append each
+  // line to its verified item, and record the ids as hydrated so a LATER deliberate deletion by this
+  // client is honored instead of resurrected. All-or-nothing: if any line no longer matches its item
+  // (state moved on mid-save), bail untouched — merging a partial set could mark a PO "known" while not
+  // holding all its lines, which the next save would persist as a deletion.
+  _restoredLinesSync=(soId,restores)=>{
+    const apply=s=>{
+      if(!s||s.id!==soId||!Array.isArray(s.items)||!s.items.length)return s;
+      const out=s.items.slice();let applied=0;
+      for(const r of restores){
+        const it=out[r.idx];
+        if(!it||(r.sku&&it.sku&&it.sku!==r.sku))return s;
+        const k=r.kind==='pick'?'pick_lines':'po_lines';
+        const cur=Array.isArray(it[k])?it[k]:[];
+        const lineJson=JSON.stringify(r.line);
+        if(cur.some(l=>JSON.stringify(l)===lineJson))continue;// already merged (raced save)
+        out[r.idx]={...it,[k]:[...cur,r.line]};applied++;
+      }
+      if(!applied)return s;
+      const poIds=restores.filter(r=>r.kind==='po').map(r=>r.line.po_id).filter(Boolean);
+      const pickIds=restores.filter(r=>r.kind==='pick').map(r=>r.line.pick_id).filter(Boolean);
+      return{...s,items:out,
+        ...(poIds.length?{_hydratedPoIds:[...new Set([...(Array.isArray(s._hydratedPoIds)?s._hydratedPoIds:[]),...poIds])]}:{}),
+        ...(pickIds.length?{_hydratedPickIds:[...new Set([...(Array.isArray(s._hydratedPickIds)?s._hydratedPickIds:[]),...pickIds])]}:{})};
+    };
+    setSOs(prev=>{let any=false;const next=prev.map(s=>{const n=apply(s);if(n!==s)any=true;return n});return any?next:prev});
+    setESO(prev=>prev?apply(prev):prev);
   };
 
   // Load full details (orders + products) for a single OMG store on-demand.
