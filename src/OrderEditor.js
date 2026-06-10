@@ -1471,7 +1471,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const auDisc=(isFw,pricingGroup)=>{const base=auTierDisc(cust?.adidas_ua_tier||'B',pricingGroup);return isFw?Math.max(0,base-0.05):base};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
   const addP=p=>{const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(p.nsa_cost*(o.default_markup||1.65));
-    const avail=(p.available_sizes&&p.available_sizes.length)?[...p.available_sizes]:(isFw?[...FOOTWEAR_DEFAULT_SIZES]:['S','M','L','XL','2XL']);
+    // Footwear: vendor catalogs often list whole sizes only (e.g. 5–17), which makes a
+    // sparse, hard-to-fill grid. Default shoe runs to the standard 7–12 half-size set so the
+    // grid is usable out of the box; trust the catalog only when it already carries half
+    // sizes (a curated run). Staff can +Size for outliers either way.
+    const fwCatHasHalves=isFw&&(p.available_sizes||[]).some(s=>String(s).includes('.5'));
+    const avail=isFw?(fwCatHasHalves?[...p.available_sizes]:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?[...p.available_sizes]:['S','M','L','XL','2XL']);
     sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),...(p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
   const mvI=(i,dir)=>{const items=safeItems(o);const j=i+dir;if(j<0||j>=items.length)return;const next=[...items];[next[i],next[j]]=[next[j],next[i]];sv('items',next)};
   const uI=(i,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?{...it,[k]:v}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};const rmI=i=>{const item=safeItems(o)[i];if(item&&isSO){const pos=safePOs(item);if(pos.length>0){const hasReceived=pos.some(po=>Object.values(po.received||{}).some(v=>v>0));const hasBilled=pos.some(po=>Object.values(po.billed||{}).some(v=>v>0));if(hasReceived||hasBilled){nf('Cannot delete — this item has '+(hasReceived?'received':'')+(hasReceived&&hasBilled?' and ':'')+(hasBilled?'billed':'')+' PO quantities. Remove billing/receiving first.','error');return}nf('Cannot delete — this item has PO(s). Delete the PO(s) first before removing the item.','error');return}}sv('items',safeItems(o).filter((_,x)=>x!==i))};
