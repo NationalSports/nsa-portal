@@ -9560,6 +9560,9 @@ export default function App(){
           return{title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
             headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
             infoBoxes,tables:[],
+            // Repeat the Customer / Sales Order / Expected Date / Rep header on every
+            // page (without the NSA logo block) so multi-page sheets stay identifiable.
+            repeatInfoHeader:true,
             notes:_notesCssReset+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
             showPricing:false};
         };
