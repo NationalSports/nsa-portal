@@ -8610,6 +8610,7 @@ export default function App(){
   const[approvalNotifyModal,setApprovalNotifyModal]=useState(null);// {job,so,contact,method,message} for send-for-approval popup
   const[prodJobModal,setProdJobModal]=useState(null);// job object for production mockup view
   const[prodJobLightbox,setProdJobLightbox]=useState(false);// lightbox for mockup image
+  const[prodPdfDownloading,setProdPdfDownloading]=useState(false);
   const[prodLightboxIdx,setProdLightboxIdx]=useState(0);// index of current mockup in lightbox gallery
   const[prodLightboxZoom,setProdLightboxZoom]=useState(1);// zoom level for lightbox
   const[prodView,_setProdView]=useState(()=>loadState('prod_view','board'));const setProdView=v=>{_setProdView(v);try{localStorage.setItem('nsa_prod_view',JSON.stringify(v))}catch(e){}};const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
@@ -9348,7 +9349,7 @@ export default function App(){
         });return results})();
 
         // Print Production PDF
-        const printProdPDF=()=>{
+        const _buildProdPdfOpts=()=>{
           const infoBoxes=[
             {label:'Customer',value:c?.name||j.customer||'Unknown',sub:c?.alpha_tag||''},
             {label:'Sales Order',value:so.id,sub:so.memo||''},
@@ -9468,12 +9469,14 @@ export default function App(){
           const _itemSectionsHtml=itemSectionHtmls.map((s,i)=>
             '<div style="'+(i<itemSectionHtmls.length-1?'page-break-after:always':'')+'">'+s+'</div>'
           ).join('');
-          printDoc({title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
+          return{title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
             headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
             infoBoxes,tables:[],
             notes:_notesCssReset+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
-            showPricing:false});
+            showPricing:false};
         };
+        const printProdPDF=()=>printDoc(_buildProdPdfOpts());
+        const downloadProdPDF=async()=>{setProdPdfDownloading(true);try{await downloadDoc(_buildProdPdfOpts(),j.id+'-production')}finally{setProdPdfDownloading(false)}};
 
         return<div className="modal-overlay" onClick={()=>{setProdJobModal(null);setProdJobLightbox(false)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:860,maxHeight:'92vh',overflow:'auto'}}>
           <div className="modal-header" style={{background:'#1e293b',color:'white'}}>
@@ -9483,6 +9486,7 @@ export default function App(){
             </div>
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
               <button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'5px 12px'}} onClick={printProdPDF}>Print PDF</button>
+              <button className="btn btn-sm" style={{fontSize:11,background:'#0284c7',color:'white',border:'none',padding:'5px 12px'}} onClick={downloadProdPDF} disabled={prodPdfDownloading}>{prodPdfDownloading?'Generating…':'⬇ Download PDF'}</button>
               <button className="modal-close" style={{color:'white'}} onClick={()=>{setProdJobModal(null);setProdJobLightbox(false)}}>×</button>
             </div>
           </div>
@@ -9744,6 +9748,7 @@ export default function App(){
             {/* Bottom action bar */}
             <div style={{padding:16,display:'flex',gap:8,borderTop:'1px solid #e2e8f0',background:'#f8fafc',flexWrap:'wrap'}}>
               <button className="btn btn-primary" style={{background:'#d97706',borderColor:'#d97706'}} onClick={printProdPDF}>Print Production PDF</button>
+              <button className="btn btn-primary" style={{background:'#0284c7',borderColor:'#0284c7'}} onClick={downloadProdPDF} disabled={prodPdfDownloading}>{prodPdfDownloading?'Generating…':'⬇ Download PDF'}</button>
               {(j.prod_status==='hold'||j.prod_status==='ready'||!j.prod_status)&&<button className="btn btn-primary" style={{background:'#16a34a',borderColor:'#16a34a'}} onClick={()=>moveJobStatus(j,'staging')}>➡️ Move to In Line</button>}
               {(j.prod_status==='staging'||j.prod_status==='in_process')&&<button className="btn btn-secondary" onClick={()=>{setAssignModal({job:j,soId:j.soId,targetStatus:j.prod_status});setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||''})}}>👤 {j.assigned_to?'Reassign':'Assign'} Decorator / Machine</button>}
               <button className="btn btn-secondary" onClick={()=>{setReturnToPage({page:pg,jobData:{...j}});setESOTab('jobs');setESO(so);setESOC(c);setPg('orders');setProdJobModal(null)}}>Open Full Job</button>
