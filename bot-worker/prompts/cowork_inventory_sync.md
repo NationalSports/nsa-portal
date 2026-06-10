@@ -76,14 +76,19 @@ return a ~9,999,999 "unlimited" sentinel.
   example appears, then re-upsert. localStorage may mirror it for speed, but the table
   is the source of truth (the skill folder is read-only). (True footwear SKUs use
   numeric sizes legitimately — leave those as-is.)
-- **End-of-run health check (report-only):** after upserting, log any apparel
-  conversionIds still missing labels (`window._mapGaps`). Expected: empty. A
-  non-empty report is the early warning that a map regressed and numeric codes may
-  have been written — re-learn that conversionId before the next run instead of
-  letting stale `240`-style rows pile up. Stale raw twins are also **self-healed per
-  SKU** — after upserting a SKU, the sync deletes that SKU's rows for codes that now
-  map to a different label (scoped to the SKU's remapped codes, so real footwear sizes
-  are untouched). A broad `^[0-9]{3}$` sweep stays available as a supervised backstop.
+- **End-of-run health check (report-only):** after upserting, report **two** signals.
+  `window._mapGaps` = apparel conversionIds whose maps came back incomplete vs. the
+  catalog-derived expected set; expected empty. `window._unmappedSeen` = codes that
+  actually appeared in a SKU's response but had no map entry at write time (written
+  raw) — the stronger check, since it catches codes **no catalog example advertised**
+  (e.g. an extended big-&-tall tail like `440/480/500/510/520` on FP9596 that
+  `_mapGaps` can't see). Either being non-empty is the early warning that a map
+  regressed and numeric codes were written — re-learn that conversionId (the report
+  names an example SKU) before the next run instead of letting stale `240`-style rows
+  pile up. Stale raw twins are also **self-healed per SKU** — after upserting a SKU,
+  the sync deletes that SKU's rows for codes that now map to a different label (scoped
+  to the SKU's remapped codes, so real footwear sizes are untouched). A broad
+  `^[0-9]{3}$` sweep stays available as a supervised backstop.
 
 ## Notes
 
