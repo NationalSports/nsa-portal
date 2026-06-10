@@ -159,7 +159,7 @@ export default function Storefront() {
       <Header store={store} theme={theme} cartCount={cartCount(cart)} />
       {!isOpen && <PreviewBanner status={store.status} />}
       <main style={{ flex: 1 }}>
-        {route.view === 'home' && <Home store={store} theme={theme} products={products} />}
+        {route.view === 'home' && <Home store={store} theme={theme} products={products} bundleItems={bundleItems} compInfo={compInfo} />}
         {route.view === 'p' && <Wrap><ProductPage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
         {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
@@ -199,7 +199,7 @@ function PreviewBanner({ status }) {
 }
 
 // ── Home: hero + grid ────────────────────────────────────────────────
-function Home({ store, theme, products }) {
+function Home({ store, theme, products, bundleItems = [], compInfo = {} }) {
   const closes = closesLabel(store.close_at);
   const accentLight = shade(theme.accent, 18);
   const heroBg = store.banner_url
@@ -248,7 +248,7 @@ function Home({ store, theme, products }) {
         {products.length === 0
           ? <Splash>No products in this store yet.</Splash>
           : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(248px,1fr))', gap: 18 }}>
-              {products.map((p) => <Card key={p.webstore_product_id} store={store} theme={theme} p={p} />)}
+              {products.map((p) => <Card key={p.webstore_product_id} store={store} theme={theme} p={p} bundleItems={bundleItems} compInfo={compInfo} />)}
             </div>}
       </div>
     </>
@@ -297,10 +297,48 @@ function stockBadge(p) {
   return { text: 'Sold out', color: '#fff', bg: '#962C32' };
 }
 
-function Card({ store, theme, p }) {
-  const b = stockBadge(p);
+function bundleBadge(count) {
+  return { text: count > 1 ? `${count}-Piece Kit` : 'Package', color: '#fff', bg: '#192853' };
+}
+
+// Montage of a package's component photos so the grid card previews the actual
+// gear (jersey / shorts / hood …) instead of a generic placeholder. Layout
+// adapts to the piece count: 2 side-by-side, 3 as one hero + two stacked, 4 in
+// a 2×2. Thin white gaps separate the tiles into a clean "kit" composition.
+function BundleCollage({ comps, theme }) {
+  const imgs = comps.map((c) => c.img).filter(Boolean).slice(0, 4);
+  if (!imgs.length) return <Placeholder theme={theme} label="Package" />;
+  const n = imgs.length;
+  const Tile = ({ src, style }) => (
+    <div style={{ overflow: 'hidden', background: '#EEF1F6', ...style }}>
+      <img className="sf-img" src={src} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+    </div>
+  );
+  const grid = (cols, rows, children) => (
+    <div style={{ width: '100%', height: '100%', display: 'grid', gridTemplateColumns: cols, gridTemplateRows: rows, gap: 3, background: '#fff' }}>{children}</div>
+  );
+  if (n === 1) return grid('1fr', '1fr', [<Tile key={0} src={imgs[0]} />]);
+  if (n === 2) return grid('1fr 1fr', '1fr', imgs.map((s, i) => <Tile key={i} src={s} />));
+  if (n === 3) return grid('1.5fr 1fr', '1fr 1fr', [
+    <Tile key={0} src={imgs[0]} style={{ gridRow: '1 / span 2' }} />,
+    <Tile key={1} src={imgs[1]} />,
+    <Tile key={2} src={imgs[2]} />,
+  ]);
+  return grid('1fr 1fr', '1fr 1fr', imgs.map((s, i) => <Tile key={i} src={s} />));
+}
+
+function Card({ store, theme, p, bundleItems = [], compInfo = {} }) {
+  const isBundle = p.kind === 'bundle';
+  // For a package, preview the actual pieces instead of one image: pull each
+  // component's product photo (already loaded in compInfo) and montage them.
+  const comps = isBundle
+    ? bundleItems.filter((b) => b.bundle_id === p.webstore_product_id)
+        .map((c) => ({ img: compInfo[c.product_id]?.image_front_url, name: compInfo[c.product_id]?.name || c.sku }))
+    : [];
+  const hasCollage = isBundle && comps.some((c) => c.img);
+  const b = isBundle ? bundleBadge(comps.length) : stockBadge(p);
   const showFund = store.fundraise_show_parents && Number(p.fundraise_amount) > 0;
-  const go = () => navTo(`/shop/${store.slug}/${p.kind === 'bundle' ? 'b' : 'p'}/${p.webstore_product_id}`);
+  const go = () => navTo(`/shop/${store.slug}/${isBundle ? 'b' : 'p'}/${p.webstore_product_id}`);
   // Notched-corner card: angular clip-path (8px notches) borrowed from the
   // sport-card pattern on the marketing site. Photo fills the card with a
   // dark gradient overlay holding the title and price.
@@ -308,10 +346,14 @@ function Card({ store, theme, p }) {
   return (
     <div className="sf-card" onClick={go} style={{ cursor: 'pointer', position: 'relative', display: 'block', aspectRatio: '1 / 1.18', background: '#fff', overflow: 'hidden', clipPath: notch, boxShadow: '0 4px 14px rgba(15,26,56,.08)' }}>
       <div style={{ position: 'absolute', inset: 0, background: '#F7F8FB' }}>
-        {p.image_front_url
-          ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-          : <Placeholder theme={theme} label={p.name || store.name} />}
+        {hasCollage
+          ? <BundleCollage comps={comps} theme={theme} />
+          : p.image_front_url
+            ? <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            : <Placeholder theme={theme} label={p.name || store.name} />}
       </div>
+      {/* Count chip for packages — reinforces "this is multiple items" */}
+      {isBundle && comps.length > 1 && <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', padding: '5px 10px', background: 'rgba(15,26,56,0.82)', color: '#fff', borderRadius: 999, backdropFilter: 'blur(2px)' }}>{comps.length} pieces</span>}
       <span style={{ position: 'absolute', top: 12, left: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', padding: '5px 12px', background: b.bg, color: b.color, transform: 'skewX(-5deg)', boxShadow: '0 2px 6px rgba(0,0,0,.18)' }}><span style={{ display: 'inline-block', transform: 'skewX(5deg)' }}>{b.text}</span></span>
       {/* Bottom gradient overlay holding the name + price */}
       <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '46px 16px 18px', color: '#fff', background: 'linear-gradient(0deg, rgba(15,26,56,0.95) 0%, rgba(15,26,56,0.78) 55%, rgba(15,26,56,0) 100%)' }}>
