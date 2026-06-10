@@ -1413,6 +1413,9 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     let poList=pos;
     if(whPoFilter==='open')poList=poList.filter(p=>p.status!=='received');
     if(whQ.length>=2){const s=whQ.toLowerCase();poList=poList.filter(p=>((p.poId||'')+' '+(p.batchPoNumber||'')+' '+(p.vendor||'')+' '+(p.soId||'')+' '+(p.cust?.name||'')+' '+p.lines.map(l=>(l.item?.sku||'')+' '+(l.item?.name||'')).join(' ')).toLowerCase().includes(s))}
+    // Group the filtered POs by batch number (NSA ####) so a whole batch can be checked in from one card.
+    const _bGroups={};poList.forEach(p=>{if(!p.batchPoNumber)return;const g=_bGroups[p.batchPoNumber]||(_bGroups[p.batchPoNumber]={batchNo:p.batchPoNumber,vendor:p.vendor||'',poKeys:[],totOpen:0,totRcv:0,totOrd:0});if(!g.vendor&&p.vendor)g.vendor=p.vendor;g.poKeys.push(p.key);g.totOpen+=p.totOpen;g.totRcv+=p.totRcv;g.totOrd+=p.totOrd});
+    const batchList=Object.values(_bGroups).filter(g=>g.poKeys.length>1);
     return<div className="mp-page">
       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
         <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
@@ -1459,6 +1462,27 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           {poList.some(p=>p.totOpen>0)&&<button onClick={()=>{setWhBatchMode(b=>!b);setWhBatchSelected(new Set())}} style={{padding:'6px 12px',borderRadius:8,border:'1px solid '+(whBatchMode?'#dc2626':'#1e40af'),background:whBatchMode?'#fee2e2':'#dbeafe',color:whBatchMode?'#dc2626':'#1e40af',fontWeight:700,fontSize:12,cursor:'pointer',whiteSpace:'nowrap',minHeight:34}}>{whBatchMode?'Cancel':'Batch Check In'}</button>}
         </div>
         <div className="mp-count">{poList.length} PO{poList.length!==1?'s':''}{whBatchMode&&whBatchSelected.size>0?' · '+whBatchSelected.size+' selected':''}</div>
+        {!whBatchMode&&batchList.length>0&&<>
+          <div style={{fontSize:11,fontWeight:800,color:'#6d28d9',letterSpacing:0.3,margin:'2px 0 6px'}}>BATCHES</div>
+          {batchList.map(g=><div key={g.batchNo} className="mp-list-card" style={{borderLeft:'3px solid #7c3aed',background:'#faf5ff'}} onClick={()=>openBatchByNumber(g.batchNo,g.poKeys)}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  <span style={{fontWeight:800,color:'#7c3aed',fontSize:15,fontFamily:'monospace'}}>{g.batchNo}</span>
+                  <span style={{fontSize:9,padding:'1px 6px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',fontWeight:700}}>BATCH</span>
+                </div>
+                <div style={{fontSize:13,color:'#334155',marginTop:2}}>{g.vendor||'—'}</div>
+                <div style={{fontSize:11,color:'#94a3b8',marginTop:1}}>{g.poKeys.length} POs · tap to check in all</div>
+              </div>
+              <div style={{textAlign:'right',flexShrink:0,marginLeft:8}}>
+                <div style={{fontSize:16,fontWeight:800,color:g.totOpen>0?'#d97706':'#16a34a'}}>{g.totRcv}/{g.totOrd}</div>
+                <div style={{fontSize:10,color:'#94a3b8'}}>received</div>
+                {g.totOpen>0&&<div style={{fontSize:11,fontWeight:700,color:'#d97706',marginTop:2}}>{g.totOpen} open</div>}
+              </div>
+            </div>
+          </div>)}
+          <div style={{fontSize:11,fontWeight:800,color:'#94a3b8',letterSpacing:0.3,margin:'12px 0 6px'}}>INDIVIDUAL POs</div>
+        </>}
         {poList.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40,fontSize:14}}>No POs {whPoFilter==='open'?'awaiting check-in':'found'}</div>}
         {poList.slice(0,150).map(po=>{const b=PO_BADGE[po.status]||PO_BADGE.waiting;const isSelected=whBatchSelected.has(po.key);const canSelect=po.totOpen>0;
           return<div key={po.key} className="mp-list-card" style={whBatchMode&&isSelected?{border:'2px solid #1e40af',boxShadow:'0 0 0 2px #dbeafe'}:{}} onClick={()=>{if(whBatchMode){if(!canSelect)return;setWhBatchSelected(prev=>{const n=new Set(prev);n.has(po.key)?n.delete(po.key):n.add(po.key);return n});}else{openPO(po);}}}>
