@@ -2,7 +2,7 @@
 const {
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM,
-  poCommitted, calcSOStatus, buildJobs, isJobReady, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   buildQBSalesOrder, buildQBInvoice,
   checkInventoryConflicts,
@@ -1006,6 +1006,102 @@ describe('Job Readiness (isJobReady)', () => {
       art_files: [makeArtFile({ prod_files: ['sep.ai'] })],
     });
     expect(isJobReady(job, so)).toBe(false);
+  });
+});
+
+describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
+  test('fully received PO marks job items_received', () => {
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 15, items: [{ item_idx: 0 }] }],
+    });
+    const items = [makeSOItem({
+      sizes: { S: 5, M: 10 },
+      po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: { S: 5, M: 10 } }],
+    })];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.item_status).toBe('items_received');
+    expect(j.fulfilled_units).toBe(15);
+    expect(j.total_units).toBe(15);
+  });
+
+  test('un-receiving mis-shipped units reverts items_received back to partially_received', () => {
+    // The mis-ship scenario: 300 ordered, all received → 5 un-received on the PO (295/300).
+    // The job must drop out of items_received so it can be reviewed/split.
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1027-03', item_status: 'items_received', fulfilled_units: 300, total_units: 300, items: [{ item_idx: 0 }] }],
+    });
+    const items = [makeSOItem({
+      sizes: { XS: 5, S: 40, M: 85, L: 90, XL: 55, '2XL': 20, '3XL': 5 },
+      po_lines: [{ po_id: 'PO-3012', XS: 5, S: 40, M: 85, L: 90, XL: 55, '2XL': 20, '3XL': 5,
+        received: { S: 40, M: 85, L: 90, XL: 55, '2XL': 20, '3XL': 5 } }], // XS:5 un-received
+    })];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.item_status).toBe('partially_received');
+    expect(j.fulfilled_units).toBe(295);
+    expect(j.total_units).toBe(300);
+  });
+
+  test('un-receiving everything reverts to need_to_order', () => {
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1', item_status: 'items_received', fulfilled_units: 15, total_units: 15, items: [{ item_idx: 0 }] }],
+    });
+    const items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: {} }] })];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.item_status).toBe('need_to_order');
+    expect(j.fulfilled_units).toBe(0);
+  });
+
+  test('pulled picks count toward fulfillment alongside PO receipts', () => {
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 15, items: [{ item_idx: 0 }] }],
+    });
+    const items = [makeSOItem({
+      sizes: { S: 5, M: 10 },
+      pick_lines: [{ pick_id: 'IF-1', status: 'pulled', S: 5 }, { pick_id: 'IF-2', status: 'pick', M: 10 }],
+      po_lines: [{ po_id: 'PO-1', M: 10, received: { M: 10 } }],
+    })];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.item_status).toBe('items_received'); // 5 pulled + 10 received; un-pulled pick ignored
+    expect(j.fulfilled_units).toBe(15);
+  });
+
+  test('split job with its own gi.sizes keeps subset totals instead of full item sizes', () => {
+    // Custom split: remain job owns only the 5 mis-shipped XS; sibling owns the received 295.
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 5, items: [{ item_idx: 0, sizes: { XS: 5 } }] },
+        { id: 'JOB-1-C1', split_from: 'JOB-1', item_status: 'items_received', fulfilled_units: 295, total_units: 295,
+          items: [{ item_idx: 0, sizes: { S: 40, M: 85, L: 90, XL: 55, '2XL': 20, '3XL': 5 } }] },
+      ],
+    });
+    const items = [makeSOItem({
+      sizes: { XS: 5, S: 40, M: 85, L: 90, XL: 55, '2XL': 20, '3XL': 5 },
+      po_lines: [{ po_id: 'PO-3012', XS: 5, S: 40, M: 85, L: 90, XL: 55, '2XL': 20, '3XL': 5,
+        received: { S: 40, M: 85, L: 90, XL: 55, '2XL': 20, '3XL': 5 } }],
+    })];
+    const [remain, split] = recalcJobFulfillment(so, items);
+    expect(remain.total_units).toBe(5);
+    expect(remain.fulfilled_units).toBe(0);
+    expect(remain.item_status).toBe('need_to_order');
+    expect(split.total_units).toBe(295);
+    expect(split.fulfilled_units).toBe(295);
+    expect(split.item_status).toBe('items_received');
+    // Replacement XS arrives → remain job flips to items_received, split untouched
+    const items2 = [makeSOItem({
+      ...items[0],
+      po_lines: [...items[0].po_lines, { po_id: 'PO-3050', XS: 5, received: { XS: 5 } }],
+    })];
+    const [remain2, split2] = recalcJobFulfillment(so, items2);
+    expect(remain2.item_status).toBe('items_received');
+    expect(remain2.fulfilled_units).toBe(5);
+    expect(split2.total_units).toBe(295);
+  });
+
+  test('returns same job reference when nothing changed', () => {
+    const job = { id: 'JOB-1', item_status: 'items_received', fulfilled_units: 15, total_units: 15, items: [{ item_idx: 0 }] };
+    const so = makeSO({ jobs: [job] });
+    const items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: { S: 5, M: 10 } }] })];
+    expect(recalcJobFulfillment(so, items)[0]).toBe(job);
   });
 });
 

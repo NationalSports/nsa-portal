@@ -36,7 +36,7 @@ const prodLabel=(j)=>PROD_LABELS[j.prod_status]||(j.prod_status||'pending').repl
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],onPullIF,onReceiveSOPO,onReceiveInvPO,onAssignBot}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],onPullIF,onReceiveSOPO,onReceiveInvPO,onAssignBot,canAccess}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
   const[tab,setTab]=useState('home');
   const[botCompose,setBotCompose]=useState(null);// {title,so_id} when the quick "Assign to Claude" form is open
@@ -915,29 +915,30 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   // Warehouse staff get a quick-navigation grid (like the More page) instead of the
   // rep/CSR dashboard + TODO list — they need fast access to receiving, not sales stats.
   const renderWhHome=()=>{
+    const _ca=canAccess||(()=>true);
     const go=(sub)=>{setTab('more');setMoreSubPage(sub)};
     const tiles=[
-      {label:'Inventory',icon:'warehouse',color:'#16a34a',onClick:()=>go('inventory')},
-      {label:'Jobs',icon:'grid',color:'#0f172a',onClick:()=>go('jobs')},
-      {label:'Production',icon:'grid',color:'#7c3aed',onClick:()=>go('production')},
-      {label:'Orders',icon:'box',color:'#1e40af',onClick:()=>setTab('orders')},
-    ];
+      {label:'Inventory',icon:'warehouse',color:'#16a34a',access:'inventory',onClick:()=>go('inventory')},
+      {label:'Jobs',icon:'grid',color:'#0f172a',access:'jobs',onClick:()=>go('jobs')},
+      {label:'Production',icon:'grid',color:'#7c3aed',access:'production',onClick:()=>go('production')},
+      {label:'Orders',icon:'box',color:'#1e40af',access:'orders',onClick:()=>setTab('orders')},
+    ].filter(t=>_ca(t.access));
     return<div className="mp-page">
       <div className="mp-greeting"><div className="mp-greeting-text">Welcome, {cu.name?.split(' ')[0]}</div>
         <div className="mp-greeting-sub">{new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}</div></div>
-      {stats.urgentOrders>0&&<div className="mp-alert-banner" onClick={()=>setTab('orders')} style={{cursor:'pointer'}}><MIcon name="alert" size={16}/><span>{stats.urgentOrders} order{stats.urgentOrders>1?'s':''} due within 3 days</span></div>}
-      <button onClick={()=>go('warehouse')} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'15px',borderRadius:12,border:'1px solid #fcd34d',background:'#fffbeb',color:'#b45309',fontWeight:700,fontSize:15,cursor:'pointer',margin:'4px 0 12px',minHeight:52}}>
+      {stats.urgentOrders>0&&_ca('orders')&&<div className="mp-alert-banner" onClick={()=>setTab('orders')} style={{cursor:'pointer'}}><MIcon name="alert" size={16}/><span>{stats.urgentOrders} order{stats.urgentOrders>1?'s':''} due within 3 days</span></div>}
+      {_ca('warehouse')&&<button onClick={()=>go('warehouse')} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'15px',borderRadius:12,border:'1px solid #fcd34d',background:'#fffbeb',color:'#b45309',fontWeight:700,fontSize:15,cursor:'pointer',margin:'4px 0 12px',minHeight:52}}>
         <MIcon name="box" size={20}/> Warehouse — Check In / Pull
-      </button>
+      </button>}
       <div className="mp-more-grid">
         {tiles.map(t=><div key={t.label} className="mp-more-item" onClick={t.onClick}>
           <div className="mp-more-icon" style={{color:t.color}}><MIcon name={t.icon} size={22}/></div>
           <div>{t.label}</div>
         </div>)}
-        <div className="mp-more-item" onClick={()=>setTab('messages')}>
+        {_ca('messages')&&<div className="mp-more-item" onClick={()=>setTab('messages')}>
           <div className="mp-more-icon" style={unreadForMeCount>0?{color:'#dc2626'}:{}}><MIcon name="mail" size={22}/></div>
           <div>Messages{unreadForMeCount>0?' ('+unreadForMeCount+')':''}</div>
-        </div>
+        </div>}
       </div>
     </div>;
   };
@@ -1809,37 +1810,38 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       </div>;
     }
     // More menu grid
+    const _ca=canAccess||(()=>true);
     return<div className="mp-page">
       <div className="mp-page-title">More</div>
       <div className="mp-more-grid">
-        <div className="mp-more-item" onClick={()=>setSubPage('estimates')}>
+        {_ca('estimates')&&<div className="mp-more-item" onClick={()=>setSubPage('estimates')}>
           <div className="mp-more-icon"><MIcon name="dollar" size={22}/></div>
           <div>Estimates</div>
-        </div>
-        <div className="mp-more-item" onClick={()=>setSubPage('invoices')}>
+        </div>}
+        {_ca('invoices')&&<div className="mp-more-item" onClick={()=>setSubPage('invoices')}>
           <div className="mp-more-icon"><MIcon name="file" size={22}/></div>
           <div>Invoices</div>
-        </div>
-        <div className="mp-more-item" onClick={()=>setSubPage('inventory')}>
+        </div>}
+        {_ca('inventory')&&<div className="mp-more-item" onClick={()=>setSubPage('inventory')}>
           <div className="mp-more-icon" style={{color:'#16a34a'}}><MIcon name="warehouse" size={22}/></div>
           <div>Inventory</div>
-        </div>
-        <div className="mp-more-item" onClick={()=>setSubPage('jobs')}>
+        </div>}
+        {_ca('jobs')&&<div className="mp-more-item" onClick={()=>setSubPage('jobs')}>
           <div className="mp-more-icon"><MIcon name="grid" size={22}/></div>
           <div>Jobs</div>
-        </div>
-        <div className="mp-more-item" onClick={()=>setSubPage('production')}>
+        </div>}
+        {_ca('production')&&<div className="mp-more-item" onClick={()=>setSubPage('production')}>
           <div className="mp-more-icon" style={{color:'#7c3aed'}}><MIcon name="grid" size={22}/></div>
           <div>Production</div>
-        </div>
-        <div className="mp-more-item" onClick={()=>setSubPage('warehouse')}>
+        </div>}
+        {_ca('warehouse')&&<div className="mp-more-item" onClick={()=>setSubPage('warehouse')}>
           <div className="mp-more-icon" style={{color:'#d97706'}}><MIcon name="box" size={22}/></div>
           <div>Warehouse</div>
-        </div>
-        <div className="mp-more-item" onClick={()=>setSubPage('reports')}>
+        </div>}
+        {_ca('reports')&&<div className="mp-more-item" onClick={()=>setSubPage('reports')}>
           <div className="mp-more-icon" style={{color:'#2563eb'}}><MIcon name="dollar" size={22}/></div>
           <div>Reports</div>
-        </div>
+        </div>}
         <div className="mp-more-item" onClick={onSwitchDesktop}>
           <div className="mp-more-icon"><MIcon name="monitor" size={22}/></div>
           <div>Desktop View</div>
@@ -2075,6 +2077,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       {id:'warehouse',label:'Warehouse',icon:'box',sub:true},
       {id:'reports',label:'Reports',icon:'dollar',sub:true},
     ];
+    const visibleNavItems=canAccess?navItems.filter(item=>canAccess(item.id==='home'?'dashboard':item.id)):navItems;
     return<>
       <div className={`mp-drawer-backdrop${drawerOpen?' open':''}`} onClick={()=>setDrawerOpen(false)}/>
       <div className={`mp-drawer${drawerOpen?' open':''}`}>
@@ -2083,7 +2086,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <button onClick={()=>setDrawerOpen(false)} style={{background:'none',border:'none',color:'#94a3b8',fontSize:20,cursor:'pointer',padding:4}}><MIcon name="x" size={20}/></button>
         </div>
         <nav style={{flex:1,padding:'8px 0',overflowY:'auto'}}>
-          {navItems.map(item=>{
+          {visibleNavItems.map(item=>{
             const isActive=(item.sub&&moreSubPage===item.id&&tab==='more')||(!item.sub&&tab===item.id);
             return<button key={item.id} onClick={()=>{
               setDrawerOpen(false);setDetail(null);

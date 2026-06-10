@@ -255,6 +255,34 @@ const isJobReady = (j, o) => {
   return totalSz > 0 && fulfilledSz >= totalSz;
 };
 
+// ── Job Fulfillment Recalculation ──
+// Recomputes every job's fulfilled/total units and item_status from its items' CURRENT
+// pulled picks + PO receipts. Every flow that changes receiving or pull state (receive
+// shipment, edit/delete a shipment receipt, pull stock, undo a pull) must run this so the
+// "Items Received" badge moves in BOTH directions — including back to partially_received
+// when a receipt is reduced (e.g. mis-shipped units un-received on the PO).
+// Split jobs carry only their subset of sizes in gi.sizes (same convention as isJobReady),
+// so honor that before falling back to the full SO item sizes — otherwise a receive after
+// a custom split would clobber both halves' totals with the full item quantity.
+// NOTE: no spread syntax in this file — babel would inject an ESM helper import for it,
+// which makes webpack treat this CommonJS module as ESM and drop module.exports entirely.
+const recalcJobFulfillment = (o, items) => safeJobs(o).map(j => {
+  let total = 0, fulfilled = 0;
+  (j.items || []).forEach(gi => {
+    const it = safeArr(items)[gi.item_idx]; if (!it) return;
+    const sizeSrc = (gi.sizes && Object.keys(gi.sizes).length > 0) ? gi.sizes : safeSizes(it);
+    Object.entries(sizeSrc).filter(([, v]) => safeNum(v) > 0).forEach(([sz, v]) => {
+      total += v;
+      const pulledQty = safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
+      const rcvdQty = safePOs(it).reduce((a, pk) => a + safeNum((pk.received || {})[sz]), 0);
+      fulfilled += Math.min(v, pulledQty + rcvdQty);
+    });
+  });
+  const itemSt = fulfilled >= total && total > 0 ? 'items_received' : fulfilled > 0 ? 'partially_received' : 'need_to_order';
+  if (j.item_status === itemSt && j.fulfilled_units === fulfilled && j.total_units === total) return j;
+  return Object.assign({}, j, { item_status: itemSt, fulfilled_units: fulfilled, total_units: total });
+});
+
 // ── Linking jobs that share a decoration ("run together") ──
 // Two jobs are "the same screen/setup" when they carry the same artwork (matched by name +
 // deco type, the same way art is de-duped across orders elsewhere). Used to auto-detect jobs
@@ -608,7 +636,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, isJobReady, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars

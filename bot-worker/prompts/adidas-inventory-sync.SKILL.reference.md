@@ -6,9 +6,21 @@ in the Claude desktop app at ~/Documents/Claude/Scheduled/adidas-inventory-sync/
 This file is NOT executed by the app. It exists so the live skill can be diffed
 against a known-good version. The companion spec is cowork_inventory_sync.md.
 
+HOW THE LIVE SKILL DIFFERS FROM THE SNIPPETS BELOW — read before applying any
+edit. The live skill talks to Supabase with raw `fetch` + auth headers (its own
+SB/SK URL+key constants) through an `_upsertRows(rows)` helper, and it
+batch-upserts a whole queue at once (not one SKU at a time). It also mirrors the
+size maps to a local `size-maps.json` for speed. The code blocks here are written
+in supabase-client / per-SKU style as a LOGIC reference only — translate them to
+the live skill's fetch + `_upsertRows` + batch pattern when applying; do NOT paste
+them verbatim. (This style mismatch is exactly what caused a bad first paste, so
+the note stays.) The durable source of truth for the maps is the
+`adidas_size_maps` table either way; `size-maps.json` is just a cache.
+
 When updating the live skill, change ONLY the size-label mapping and the per-SKU
 processing shown here — keep its existing Cowork login/auth, catalog pre-filter,
-materials/information API helper (matCall), Supabase client, and batch runner.
+materials/information API helper (matCall), fetch+auth Supabase helpers
+(`_upsertRows`), and batch runner.
 -->
 
 ---
@@ -23,8 +35,9 @@ Keep `adidas_inventory` current from Adidas Cowork. One row per SKU+size:
 
 > KEEP AS-IS from the current skill: Cowork login/auth, the catalog pre-filter
 > that finds which SKUs are on B2B, the materials/information API helper
-> (`matCall`), the Supabase client, and the batch/queue runner. Only the
-> size-label mapping and the per-SKU processing below change.
+> (`matCall`), the fetch+auth Supabase helpers (`_upsertRows`), and the
+> batch/queue runner. Only the size-label mapping and the per-SKU processing
+> below change.
 
 ## Size labels — build COMPLETE maps (resolve before processing)
 
@@ -34,6 +47,16 @@ conversionId, read from the product page's SizeBar
 slow pages timing out the loader, and a single example SKU not exposing the
 conversionId's full size run (extended/tall sizes then fall back to raw codes
 like `240`).
+
+**(0) Load persisted maps FIRST — before any SKU is processed** — so the first write
+is a label, never a raw code. The live skill folder is read-only, so the durable home
+is the `adidas_size_maps` table (not `size-maps.json`):
+```js
+window._sizeMaps = window._sizeMaps || {};
+{ const { data } = await supabase.from('adidas_size_maps').select('conversion_id, code_labels');
+  (data || []).forEach(r => { window._sizeMaps[r.conversion_id] =
+    { ...(r.code_labels || {}), ...(window._sizeMaps[r.conversion_id] || {}) }; }); } // union; in-memory wins ties
+```
 
 **(1) In the catalog pre-filter, record the FULL expected code set + every example per conversionId:**
 ```js
@@ -71,9 +94,18 @@ for (let i=0;i<cids.length;i+=2) await Promise.all(
   cids.slice(i,i+2).map(cid => window._learnConvMap(cid, window._convExpected[cid], window._convExamples[cid] || [])));
 ```
 
-- **Persist** `window._sizeMaps` to `size-maps.json` after learning; reuse across
-  runs (merge, never overwrite); re-learn a conversionId whenever a richer example
-  appears.
+- **Persist** each conversionId back to the `adidas_size_maps` table after learning
+  (merge, never overwrite), so the next run/machine starts complete:
+  ```js
+  for (const cid of Object.keys(window._sizeMaps)) {
+    await supabase.from('adidas_size_maps').upsert(
+      { conversion_id: cid, code_labels: window._sizeMaps[cid], updated_at: new Date().toISOString() },
+      { onConflict: 'conversion_id' });
+  }
+  ```
+  Re-learn (and re-upsert) a conversionId whenever a richer example appears.
+  localStorage may still mirror the maps for speed, but the table is the source of
+  truth — a file in the read-only skill folder can't persist across runs/machines.
 - **Footwear:** exclude footwear conversionIds (`window._footwearCids`, derived
   from the catalog division/product type) — their numeric codes are real labels.
 - Apply `label = map[conversionId][code]`; report `window._mapGaps` (apparel codes
@@ -125,6 +157,17 @@ for (const d of futureDates) {
 
 // 4) Upsert (on conflict sku,size)
 await supabase.from('adidas_inventory').upsert(Object.values(rows), { onConflict: 'sku,size' });
+
+// 5) Self-heal: drop THIS SKU's superseded raw-code rows. Because the conflict key is
+//    (sku,size), a relabel ('370' → '3XL') writes a NEW row, so the raw twin would
+//    otherwise linger and double-count in the portal's B2B totals. Scope it to exactly
+//    the codes that now resolve to a DIFFERENT label — footwear codes map to themselves
+//    (or aren't in the map), so real numeric shoe sizes are never touched.
+const staleRawSizes = Object.keys(sizes)
+  .filter(code => { const lbl = sizeMap[conversionId]?.[code]; return lbl && lbl !== code; });
+if (staleRawSizes.length) {
+  await supabase.from('adidas_inventory').delete().eq('sku', sku).in('size', staleRawSizes);
+}
 ```
 
 ## Health check (run AFTER all SKUs are upserted)
@@ -152,8 +195,10 @@ if (!gaps.length) {
 - Apparel `_mapGaps` is expected to be **empty** every run. If it isn't, re-learn the
   listed conversionId(s) (the report names a rich example SKU to learn from), then
   re-run those SKUs — don't let numeric codes persist.
-- Pruning stale 3-digit code rows from the DB stays a **manual, supervised** step
-  (the `^[0-9]{3}$` delete, run on request) — the sync never deletes on its own.
+- Stale raw-code rows are now **self-healed per SKU** (Per-SKU step 5): each relabel
+  drops its own superseded raw twin, scoped to that SKU's remapped codes, so numeric
+  duplicates can't accrue across runs. A broad supervised `^[0-9]{3}$` sweep stays
+  available as a one-off backstop, but the sync no longer relies on it.
 
 ## Rules
 - `requestedDeliveryDates` is a **read-only projection** — NEVER place/submit an order.
