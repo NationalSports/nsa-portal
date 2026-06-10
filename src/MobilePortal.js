@@ -911,7 +911,37 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   }
 
   // ─── HOME TAB ───
+  // Warehouse staff get a quick-navigation grid (like the More page) instead of the
+  // rep/CSR dashboard + TODO list — they need fast access to receiving, not sales stats.
+  const renderWhHome=()=>{
+    const go=(sub)=>{setTab('more');setMoreSubPage(sub)};
+    const tiles=[
+      {label:'Inventory',icon:'warehouse',color:'#16a34a',onClick:()=>go('inventory')},
+      {label:'Jobs',icon:'grid',color:'#0f172a',onClick:()=>go('jobs')},
+      {label:'Production',icon:'grid',color:'#7c3aed',onClick:()=>go('production')},
+      {label:'Orders',icon:'box',color:'#1e40af',onClick:()=>setTab('orders')},
+    ];
+    return<div className="mp-page">
+      <div className="mp-greeting"><div className="mp-greeting-text">Welcome, {cu.name?.split(' ')[0]}</div>
+        <div className="mp-greeting-sub">{new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}</div></div>
+      {stats.urgentOrders>0&&<div className="mp-alert-banner" onClick={()=>setTab('orders')} style={{cursor:'pointer'}}><MIcon name="alert" size={16}/><span>{stats.urgentOrders} order{stats.urgentOrders>1?'s':''} due within 3 days</span></div>}
+      <button onClick={()=>go('warehouse')} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'20px',borderRadius:14,border:'none',background:'#d97706',color:'white',fontWeight:800,fontSize:18,cursor:'pointer',margin:'4px 0 14px',minHeight:64}}>
+        <MIcon name="box" size={26}/> Warehouse — Check In / Pull
+      </button>
+      <div className="mp-more-grid">
+        {tiles.map(t=><div key={t.label} className="mp-more-item" onClick={t.onClick}>
+          <div className="mp-more-icon" style={{color:t.color}}><MIcon name={t.icon} size={22}/></div>
+          <div>{t.label}</div>
+        </div>)}
+        <div className="mp-more-item" onClick={()=>setTab('messages')}>
+          <div className="mp-more-icon" style={unreadForMeCount>0?{color:'#dc2626'}:{}}><MIcon name="mail" size={22}/></div>
+          <div>Messages{unreadForMeCount>0?' ('+unreadForMeCount+')':''}</div>
+        </div>
+      </div>
+    </div>;
+  };
   const renderHome=()=>{
+    if(cu.role==='warehouse')return renderWhHome();
     const priColors={1:'#dc2626',2:'#d97706',3:'#64748b'};
     return<div className="mp-page">
       <div className="mp-greeting" style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
@@ -1301,10 +1331,6 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
               <div className="mp-info-item"><div className="mp-info-label">Type</div><div className="mp-info-val">{po.kind==='inv'?'Inventory':'Order PO'}</div></div>
             </div>
             <div className="mp-section-title">Items ({po.lines.length}){po.totOpen>0?' — enter qty received':''}</div>
-            {po.totOpen>0&&<div style={{display:'flex',gap:6,marginBottom:10}}>
-              <button onClick={()=>whRcvSetAll(po)} style={{flex:1,padding:'8px',borderRadius:8,border:'1px solid #86efac',background:'#f0fdf4',color:'#166534',fontWeight:700,fontSize:13,cursor:'pointer',minHeight:36}}>✓ All received</button>
-              <button onClick={whRcvClear} style={{padding:'8px 14px',borderRadius:8,border:'1px solid #e2e8f0',background:'white',color:'#64748b',fontWeight:700,fontSize:13,cursor:'pointer',minHeight:36}}>Clear</button>
-            </div>}
             {po.lines.map((l,i)=>{const item=l.item;const szEntries=Object.entries(l.sizes).filter(([,s])=>s.ord>0);
               return<div key={i} className="mp-item-card">
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
@@ -1320,6 +1346,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                     </div>})}
                 </div>
               </div>})}
+            {po.totOpen>0&&<div style={{display:'flex',gap:6,marginTop:6}}>
+              <button onClick={()=>whRcvSetAll(po)} style={{flex:1,padding:'10px',borderRadius:8,border:'1px solid #86efac',background:'#f0fdf4',color:'#166534',fontWeight:700,fontSize:13,cursor:'pointer',minHeight:40}}>✓ All received</button>
+              <button onClick={whRcvClear} style={{padding:'10px 14px',borderRadius:8,border:'1px solid #e2e8f0',background:'white',color:'#64748b',fontWeight:700,fontSize:13,cursor:'pointer',minHeight:40}}>Clear</button>
+            </div>}
           </div>
           {!done&&<div style={{position:'sticky',bottom:0,background:'white',borderTop:'1px solid #e2e8f0',padding:'12px 16px',paddingBottom:'max(12px, env(safe-area-inset-bottom))'}}>
             <button disabled={whSaving||grandRcv===0} onClick={()=>confirmReceive(po)} style={{width:'100%',padding:'14px',borderRadius:12,border:'none',background:grandRcv>0&&!whSaving?'#1e40af':'#cbd5e1',color:'white',fontWeight:800,fontSize:15,cursor:grandRcv>0&&!whSaving?'pointer':'default',minHeight:48}}>
@@ -1354,10 +1384,6 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                 <span style={{fontSize:11,color:'#64748b'}}>{po.vendor||(po.kind==='so'?po.soId:'Inventory PO')}</span>
                 <span style={{marginLeft:'auto',fontSize:11,color:poRcv>=po.totOpen?'#16a34a':'#d97706',fontWeight:700}}>{poRcv}/{po.totOpen} open</span>
               </div>
-              <div style={{display:'flex',gap:6,marginBottom:8}}>
-                <button onClick={()=>batchPoSetAll(po)} style={{flex:1,padding:'7px',borderRadius:8,border:'1px solid #86efac',background:'#f0fdf4',color:'#166534',fontWeight:700,fontSize:12,cursor:'pointer',minHeight:34}}>✓ All received</button>
-                <button onClick={()=>batchPoClear(po)} style={{padding:'7px 12px',borderRadius:8,border:'1px solid #e2e8f0',background:'white',color:'#64748b',fontWeight:700,fontSize:12,cursor:'pointer',minHeight:34}}>Clear</button>
-              </div>
               {po.lines.map((l,i)=>{const szEntries=Object.entries(l.sizes).filter(([,s])=>s.open>0);if(szEntries.length===0)return null;const item=l.item;
                 return<div key={i} className="mp-item-card">
                   <div style={{marginBottom:8}}>
@@ -1365,7 +1391,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                     <div style={{fontSize:12,color:'#64748b'}}>{item.sku}{item.color?' · '+item.color:''}</div>
                   </div>
                   <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                    {szEntries.map(([sz,s])=>{const v=(whBatchQty[po.key]?.[i]||{})[sz]??0;/* pre-filled to full on open; Clear sets 0 */
+                    {szEntries.map(([sz,s])=>{const v=(whBatchQty[po.key]?.[i]||{})[sz]??0;/* start at 0; Clear/All received toggle */
                       return<div key={sz} style={{textAlign:'center',minWidth:62,padding:'6px',borderRadius:8,border:'1px solid #e2e8f0',background:'#f8fafc'}}>
                         <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:2}}>{sz}</div>
                         <div style={{fontSize:9,color:'#94a3b8',marginBottom:4}}>{s.rcv}/{s.ord} · {s.open} open</div>
@@ -1373,6 +1399,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                       </div>})}
                   </div>
                 </div>})}
+              <div style={{display:'flex',gap:6,marginTop:4}}>
+                <button onClick={()=>batchPoSetAll(po)} style={{flex:1,padding:'8px',borderRadius:8,border:'1px solid #86efac',background:'#f0fdf4',color:'#166534',fontWeight:700,fontSize:12,cursor:'pointer',minHeight:34}}>✓ All received</button>
+                <button onClick={()=>batchPoClear(po)} style={{padding:'8px 12px',borderRadius:8,border:'1px solid #e2e8f0',background:'white',color:'#64748b',fontWeight:700,fontSize:12,cursor:'pointer',minHeight:34}}>Clear</button>
+              </div>
             </div>})}
         </div>
         <div style={{position:'sticky',bottom:0,background:'white',borderTop:'1px solid #e2e8f0',padding:'12px 16px',paddingBottom:'max(12px, env(safe-area-inset-bottom))'}}>
