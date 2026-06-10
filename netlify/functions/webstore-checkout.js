@@ -117,6 +117,23 @@ async function checkStock(sb, store, lines) {
   return null;
 }
 
+// Enforce the store's allowed jersey-number range (configured per store but
+// previously unchecked — a tampered or stale cart could submit any number).
+function checkNumberRange(store, lines) {
+  const min = Number.isFinite(+store.number_min) ? +store.number_min : 0;
+  const max = Number.isFinite(+store.number_max) ? +store.number_max : 99;
+  const nums = [];
+  lines.forEach((l) => {
+    if (l.kind === 'bundle') (l.components || []).forEach((c) => { if (c.player_number) nums.push(c.player_number); });
+    else if (l.player_number) nums.push(l.player_number);
+  });
+  for (const raw of nums) {
+    const v = parseInt(String(raw).replace(/[^0-9]/g, ''), 10);
+    if (!Number.isFinite(v) || v < min || v > max) return `Number ${raw} is outside this store's allowed range (${min}–${max}). Please choose a number in range.`;
+  }
+  return null;
+}
+
 async function loadCoupon(sb, store, code) {
   if (!code || !String(code).trim()) return { coupon: null };
   const { data } = await sb.from('webstore_coupons').select('*').eq('store_id', store.id).ilike('code', String(code).trim()).limit(1);
@@ -168,6 +185,9 @@ async function placeOrder(sb, body) {
 
   const priced = await priceCart(sb, store, cart);
   if (priced.error) return bad(409, priced.error);
+
+  const numErr = checkNumberRange(store, priced.lines);
+  if (numErr) return bad(409, numErr);
 
   const stockErr = await checkStock(sb, store, priced.lines);
   if (stockErr) return bad(409, stockErr);
@@ -230,16 +250,30 @@ async function placeOrder(sb, body) {
   if (itemErr) { await rollback(); return bad(502, 'Could not save your order items: ' + itemErr.message); }
 
   if (store.number_unique) {
-    const nums = [...new Set(items.map((i) => i.player_number).filter(Boolean))];
-    const claimed = [];
-    for (const n of nums) {
-      const { error: ce } = await sb.from('webstore_number_claims').insert({ store_id: store.id, player_number: String(n), order_id: order.id, player_name: String(buyer.name).trim() });
+    // A number is one-per-player across the store. Within one checkout the same
+    // number legitimately repeats across a single player's bundle components
+    // (jersey + shorts share #10), so group by player identity — but assigning
+    // one number to two DIFFERENT players violates the unique rule and is caught
+    // here rather than silently collapsing to a single claim (which used to let
+    // two kids share #10). Claims record the player's name, not the buyer's.
+    const numbered = items.filter((i) => !i.is_bundle_parent && i.player_number);
+    const identsByNum = {}; // number -> Set(player identity)
+    const nameByNum = {};   // number -> player name to record on the claim
+    numbered.forEach((i) => {
+      const num = String(i.player_number);
+      const ident = (i.player_name && i.player_name.trim().toLowerCase()) || ('grp:' + (i.bundle_ref || i.product_id || i.sku || num));
+      (identsByNum[num] = identsByNum[num] || new Set()).add(ident);
+      if (!nameByNum[num]) nameByNum[num] = (i.player_name && i.player_name.trim()) || String(buyer.name).trim();
+    });
+    const conflict = Object.entries(identsByNum).find(([, set]) => set.size > 1);
+    if (conflict) { await rollback(); return bad(409, `Number ${conflict[0]} can't go to two different players — each number in this store is unique. Please give each player a different number.`, { code: 'number_conflict', number: conflict[0] }); }
+    for (const [n, pname] of Object.entries(nameByNum)) {
+      const { error: ce } = await sb.from('webstore_number_claims').insert({ store_id: store.id, player_number: n, order_id: order.id, player_name: pname });
       if (ce) {
         await rollback();
-        if (/duplicate|unique/i.test(ce.message || '')) return bad(409, `Number ${n} was just taken by someone else — please pick a different number.`, { code: 'number_taken', number: String(n) });
+        if (/duplicate|unique/i.test(ce.message || '')) return bad(409, `Number ${n} was just taken by someone else — please pick a different number.`, { code: 'number_taken', number: n });
         return bad(502, 'Could not reserve your number: ' + ce.message);
       }
-      claimed.push(n);
     }
   }
 

@@ -853,7 +853,7 @@ function OrderStatusPage({ store, theme, orderId }) {
         </div>
       ))}
       <div style={{ marginTop: 18, fontWeight: 900, fontSize: 18 }}>Total: {money(order.total)}</div>
-      {order.ship_method === 'ship_home' && <ShippingBlock theme={theme} order={order} shipped={!!order.shipped_at || ['shipped', 'complete'].includes(cur)} onSaved={(addr) => setOrder((o) => ({ ...o, ship_address: addr }))} />}
+      {order.ship_method === 'ship_home' && <ShippingBlock theme={theme} order={order} shipped={!!order.shipped_at || curIdx >= 4} onSaved={(addr) => setOrder((o) => ({ ...o, ship_address: addr }))} />}
     </div>
   );
 }
