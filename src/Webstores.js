@@ -325,7 +325,12 @@ function Webstores({ cust = [], REPS = [], onCreateSO, onOpenSO }) {
     if (error) {
       if (isMissingTable(error)) setNeedsMigration(true); else setErr(error.message);
       setStores([]);
-    } else setStores(data || []);
+    } else {
+      // Hide OMG pop-up shadow stores — they're created by the OMG ingest to track
+      // those orders on the webstore rails and are managed on the OMG Stores page,
+      // not here. (Filtered client-side to avoid PostgREST's null-vs-neq gotcha.)
+      setStores((data || []).filter((s) => s.source !== 'omg' && !s.omg_sale_code));
+    }
     setLoading(false);
   }, []);
 

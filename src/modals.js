@@ -704,16 +704,11 @@ function QuoteForm({token,supabaseClient}){
       await supabaseClient.from('quote_requests').update(updates).eq('id',qr.id);
       if(andSubmit){
         setSubmitted(true);
-        // Send notification email to rep
+        // Notify the rep via the content-locked server endpoint — the public quote
+        // form is unauthenticated, so it can't use the (staff-only) brevo-proxy.
+        // quote-notify builds recipient/subject/body entirely from DB rows.
         try{
-          const{data:repData}=await supabaseClient.from('team_members').select('email,name').eq('id',qr.created_by).single();
-          if(repData?.email){
-            const itemSummary=itemRows.map((it,i)=>`${i+1}. ${it.sku||it.description} - ${it.color||'no color'} - ${Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([s,v])=>s+':'+v).join(', ')||('Qty: '+(it.total_qty||'TBD'))}`).join('<br/>');
-            await fetch('/.netlify/functions/brevo-proxy',{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},
-              body:JSON.stringify({sender:{name:'NSA Quote System',email:'noreply@nationalsportsapparel.com'},to:[{email:repData.email}],
-                subject:'Quote Request Submitted — '+custName,
-                htmlContent:`<h2>Quote Request from ${custName}</h2><p><strong>${contactName||'Customer'}</strong> has submitted their quote request.</p><h3>Items:</h3><p>${itemSummary}</p><p>${globalNotes?'<strong>Notes:</strong> '+globalNotes:''}</p><p><a href="${window.location.origin}">Open NSA Portal to review</a></p>`})});
-          }
+          await fetch('/.netlify/functions/quote-notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({quoteRequestId:qr.id})});
         }catch(emailErr){console.warn('Email notification failed:',emailErr)}
       }
     }catch(e){setError('Save failed: '+e.message)}
