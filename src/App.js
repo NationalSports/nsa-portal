@@ -5417,8 +5417,8 @@ export default function App(){
   const DEFAULT_ACCESS_BY_ROLE=useMemo(()=>({
     super_admin:Array.from(RESTRICTED_PAGES),
     admin:Array.from(RESTRICTED_PAGES),
-    rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','import','team'],
-    csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import','team'],
+    rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','import'],
+    csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import'],
     accounting:['dashboard','invoices','customers','reports','qb','import'],
     warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
     prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
@@ -5435,6 +5435,8 @@ export default function App(){
   const canAccess=useCallback((pageId)=>{
     if(!cu)return false;
     if(cu.role==='admin'||cu.role==='super_admin')return true;
+    // Import is always on for reps and CSRs regardless of their stored access array
+    if(pageId==='import'&&(cu.role==='rep'||cu.role==='csr'))return true;
     if(!RESTRICTED_PAGES.has(pageId))return true; // purchase_orders / issues / settings gated only by role in `nav`
     return effectiveAccess.includes(pageId);
   },[cu,RESTRICTED_PAGES,effectiveAccess]);
@@ -25398,7 +25400,12 @@ export default function App(){
     const initials=n=>{const p=(n||'').split(' ');return p.length>=2?(p[0][0]+p[p.length-1][0]).toUpperCase():(n||'??').slice(0,2).toUpperCase()};
     const avatarColors={super_admin:'#dc2626',admin:'#7c3aed',rep:'#2563eb',csr:'#16a34a',accounting:'#d97706',warehouse:'#475569',prod_manager:'#b45309',production:'#0891b2',prod_assistant:'#a16207'};
 
-    // Non-admins see the Team Directory tab only (no Access Management controls).
+    // Admins-only gate.
+    if(!isAdmin)return<div style={{padding:60,textAlign:'center',color:'#64748b'}}>
+      <div style={{fontSize:48,marginBottom:12}}>🔒</div>
+      <div style={{fontSize:18,fontWeight:700,color:'#0f172a',marginBottom:6}}>Admins only</div>
+      <div style={{fontSize:13}}>Contact your admin to manage team access.</div>
+    </div>;
 
     const timeAgo=(ts)=>{if(!ts)return null;const diff=Date.now()-new Date(ts).getTime();if(diff<0)return new Date(ts).toLocaleDateString();const m=Math.floor(diff/60000);if(m<1)return'just now';if(m<60)return m+'m ago';const h=Math.floor(m/60);if(h<24)return h+'h ago';const d=Math.floor(h/24);if(d<30)return d+'d ago';return new Date(ts).toLocaleDateString()};
     const STATUS_META={
@@ -25439,8 +25446,8 @@ export default function App(){
     const DEFAULT_ACCESS={
       super_admin:ALL_PAGES.map(p=>p.id),
       admin:ALL_PAGES.map(p=>p.id),
-      rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','import','team'],
-      csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import','team'],
+      rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','import'],
+      csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import'],
       accounting:['dashboard','invoices','customers','reports','qb','import'],
       warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
       prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
