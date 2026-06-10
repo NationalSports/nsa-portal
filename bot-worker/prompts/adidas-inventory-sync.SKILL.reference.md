@@ -6,9 +6,21 @@ in the Claude desktop app at ~/Documents/Claude/Scheduled/adidas-inventory-sync/
 This file is NOT executed by the app. It exists so the live skill can be diffed
 against a known-good version. The companion spec is cowork_inventory_sync.md.
 
+HOW THE LIVE SKILL DIFFERS FROM THE SNIPPETS BELOW — read before applying any
+edit. The live skill talks to Supabase with raw `fetch` + auth headers (its own
+SB/SK URL+key constants) through an `_upsertRows(rows)` helper, and it
+batch-upserts a whole queue at once (not one SKU at a time). It also mirrors the
+size maps to a local `size-maps.json` for speed. The code blocks here are written
+in supabase-client / per-SKU style as a LOGIC reference only — translate them to
+the live skill's fetch + `_upsertRows` + batch pattern when applying; do NOT paste
+them verbatim. (This style mismatch is exactly what caused a bad first paste, so
+the note stays.) The durable source of truth for the maps is the
+`adidas_size_maps` table either way; `size-maps.json` is just a cache.
+
 When updating the live skill, change ONLY the size-label mapping and the per-SKU
 processing shown here — keep its existing Cowork login/auth, catalog pre-filter,
-materials/information API helper (matCall), Supabase client, and batch runner.
+materials/information API helper (matCall), fetch+auth Supabase helpers
+(`_upsertRows`), and batch runner.
 -->
 
 ---
@@ -23,8 +35,9 @@ Keep `adidas_inventory` current from Adidas Cowork. One row per SKU+size:
 
 > KEEP AS-IS from the current skill: Cowork login/auth, the catalog pre-filter
 > that finds which SKUs are on B2B, the materials/information API helper
-> (`matCall`), the Supabase client, and the batch/queue runner. Only the
-> size-label mapping and the per-SKU processing below change.
+> (`matCall`), the fetch+auth Supabase helpers (`_upsertRows`), and the
+> batch/queue runner. Only the size-label mapping and the per-SKU processing
+> below change.
 
 ## Size labels — build COMPLETE maps (resolve before processing)
 
