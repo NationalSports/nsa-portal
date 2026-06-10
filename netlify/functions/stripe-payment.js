@@ -1,6 +1,11 @@
 // Netlify serverless function for Stripe payment processing
 // Creates PaymentIntents for the coach portal checkout
 const stripe = require('stripe');
+const crypto = require('crypto');
+const { verifyUser, getSupabaseAdmin } = require('./_shared');
+
+// Hard ceiling on a single PaymentIntent — override with STRIPE_MAX_AMOUNT_CENTS.
+const MAX_AMOUNT_CENTS = parseInt(process.env.STRIPE_MAX_AMOUNT_CENTS || '', 10) || 5000000; // $50,000
 
 exports.handler = async (event) => {
   // Handle CORS preflight
@@ -40,12 +45,49 @@ exports.handler = async (event) => {
     const { action } = body;
 
     if (action === 'create_intent') {
-      // Create a PaymentIntent for invoice payment
+      // Create a PaymentIntent for invoice payment.
+      // Public by necessity (coach portal + storefront pay without accounts), so the
+      // guardrails live here: floor + ceiling, an idempotency key so client retries
+      // can't mint duplicate intents, and — when the ids resolve to real invoices —
+      // a server-side cap at the open balance so a tampered client can't set the price.
       const { amount_cents, customer_name, customer_email, invoice_id, invoice_memo, alpha_tag } = body;
 
       if (!amount_cents || amount_cents < 50) {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Amount must be at least $0.50' }) };
       }
+      if (amount_cents > MAX_AMOUNT_CENTS) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: `Amount exceeds the $${Math.floor(MAX_AMOUNT_CENTS / 100).toLocaleString()} per-payment limit — please contact NSA to pay this invoice.` }) };
+      }
+
+      // Best-effort invoice-balance validation. invoice_id may be a comma-joined list
+      // (multi-invoice portal payments) or a webstore slug (no invoice rows — skipped;
+      // webstore carts get verified when checkout moves server-side). Fail-open on DB
+      // errors so a Supabase blip can't take payments down — the ceiling still applies.
+      try {
+        const ids = String(invoice_id || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+        if (ids.length) {
+          const admin = getSupabaseAdmin();
+          const { data: invRows, error: invErr } = await admin.from('invoices').select('id,total,paid').in('id', ids);
+          if (invErr) {
+            console.warn('[stripe-payment] invoice lookup failed, skipping balance check:', invErr.message);
+          } else if (invRows && invRows.length) {
+            const balanceCents = Math.round(invRows.reduce((a, r) => a + Math.max(0, (Number(r.total) || 0) - (Number(r.paid) || 0)), 0) * 100);
+            // Headroom for the CC surcharge the portal adds on top (3%) + rounding.
+            const maxCents = Math.ceil(balanceCents * 1.05) + 100;
+            if (balanceCents <= 0 || amount_cents > maxCents) {
+              return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match the open balance for this invoice. Please reload the page and try again.' }) };
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[stripe-payment] balance check skipped:', e.message);
+      }
+
+      // Same payer + same invoice(s) + same amount on the same day → same intent
+      // (Stripe replays the original response for ~24h on a matching key).
+      const idemKey = body.idempotency_key || crypto.createHash('sha256')
+        .update(['nsa_pi', invoice_id || '', Math.round(amount_cents), (customer_email || '').toLowerCase(), new Date().toISOString().slice(0, 10)].join('|'))
+        .digest('hex');
 
       const intent = await client.paymentIntents.create({
         amount: Math.round(amount_cents),
@@ -60,7 +102,7 @@ exports.handler = async (event) => {
         },
         ...(customer_email ? { receipt_email: customer_email } : {}),
         description: `NSA Invoice ${invoice_id || ''} — ${customer_name || 'Customer'}`,
-      });
+      }, { idempotencyKey: idemKey });
 
       return {
         statusCode: 200,
@@ -71,6 +113,12 @@ exports.handler = async (event) => {
 
     if (action === 'refund') {
       // Refund a PaymentIntent — full when amount_cents omitted, else partial.
+      // Staff-only: refunds are issued from the admin UIs, never by public payers.
+      // This action was previously open to any caller who knew a PaymentIntent id.
+      const v = await verifyUser(event);
+      if (!v.ok) {
+        return { statusCode: v.status, headers: corsHeaders(), body: JSON.stringify({ error: v.error }) };
+      }
       const { payment_intent_id, amount_cents } = body;
       if (!payment_intent_id) {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'payment_intent_id required' }) };
@@ -83,7 +131,12 @@ exports.handler = async (event) => {
     }
 
     if (action === 'get_intent') {
-      // Retrieve intent status (for verification after payment)
+      // Retrieve intent status (for verification after payment). Staff-only — exposes
+      // payer metadata and card last4; no public flow uses it.
+      const v = await verifyUser(event);
+      if (!v.ok) {
+        return { statusCode: v.status, headers: corsHeaders(), body: JSON.stringify({ error: v.error }) };
+      }
       const { intent_id } = body;
       if (!intent_id) {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'intent_id required' }) };
@@ -113,7 +166,7 @@ exports.handler = async (event) => {
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Content-Type': 'application/json',
   };
