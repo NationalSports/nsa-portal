@@ -57,6 +57,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[scope,setScope]=useState('mine'); // mine | all — default reps see their own work first
   const[reportScope,setReportScope]=useState('mine'); // mine | all
   const[salesPeriodMode,setSalesPeriodMode]=useState('month'); // month | 3m | 6m | ytd | lyr
+  const[salesCustomM,setSalesCustomM]=useState(()=>new Date().getMonth());
+  const[salesCustomY,setSalesCustomY]=useState(()=>new Date().getFullYear());
   // Jobs filters
   const[jobsStatusF,setJobsStatusF]=useState('active');
   const[jobsDecoF,setJobsDecoF]=useState('all');
@@ -178,10 +180,12 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   // ─── SALES DASHBOARD DATA ───
   const salesDashData=useMemo(()=>{
     const now=new Date();const nowY=now.getFullYear();const nowM=now.getMonth();
+    const selM=salesPeriodMode==='month'?salesCustomM:nowM;
+    const selY=salesPeriodMode==='month'?salesCustomY:nowY;
     let pStart,pEnd,prevStart,prevEnd;
     if(salesPeriodMode==='month'){
-      pStart=new Date(nowY,nowM,1);pEnd=new Date(nowY,nowM+1,0,23,59,59);
-      prevStart=new Date(nowY,nowM-1,1);prevEnd=new Date(nowY,nowM,0,23,59,59);
+      pStart=new Date(selY,selM,1);pEnd=new Date(selY,selM+1,0,23,59,59);
+      prevStart=new Date(selY,selM-1,1);prevEnd=new Date(selY,selM,0,23,59,59);
     }else if(salesPeriodMode==='3m'){
       pStart=new Date(nowY,nowM-2,1);pEnd=new Date(nowY,nowM+1,0,23,59,59);
       prevStart=new Date(nowY,nowM-5,1);prevEnd=new Date(nowY,nowM-2,0,23,59,59);
@@ -233,12 +237,12 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     for(let i=11;i>=0;i--){
       const d=new Date(nowY,nowM-i,1);
       const mStart=new Date(d.getFullYear(),d.getMonth(),1);const mEnd=new Date(d.getFullYear(),d.getMonth()+1,0,23,59,59);
-      months.push({label:d.toLocaleDateString('en-US',{month:'short'}),
+      months.push({label:d.toLocaleDateString('en-US',{month:'short'}),y:d.getFullYear(),m:d.getMonth(),
         mySales:sumRev(sosMy.filter(s=>inPeriod(s.created_at,mStart,mEnd)))+sumInvRev(histMy.filter(i=>inPeriod(i.created_at,mStart,mEnd))),
         natSales:sumRev(sosNat.filter(s=>inPeriod(s.created_at,mStart,mEnd)))+sumInvRev(histNat.filter(i=>inPeriod(i.created_at,mStart,mEnd)))});
     }
-    return{mySales,mySalesPrev,salesChg,natSales,topCust,openEsts:myOpenEsts.length,openEstTotal:myOpenEstTotal,newCusts:newCustIds.size,months,orderCount:mySosCur.length};
-  },[sos,ests,invs,salesPeriodMode,scope,myCustIds,cust]);
+    return{mySales,mySalesPrev,salesChg,natSales,topCust,openEsts:myOpenEsts.length,openEstTotal:myOpenEstTotal,newCusts:newCustIds.size,months,orderCount:mySosCur.length,selM,selY};
+  },[sos,ests,invs,salesPeriodMode,salesCustomM,salesCustomY,scope,myCustIds,cust]);
 
   // ─── SORT HELPER ───
   const sortList=(list,sortKey)=>{
@@ -967,8 +971,12 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   // ─── HOME TAB ───
   const renderHome=()=>{
     const priColors={1:'#dc2626',2:'#d97706',3:'#64748b'};
-    const{mySales,mySalesPrev,salesChg,natSales,topCust,openEsts,openEstTotal,newCusts,months,orderCount}=salesDashData;
-    const periodLabels={month:'This Month','3m':'3 Months','6m':'6 Months',ytd:'YTD',lyr:'Prev Year'};
+    const{mySales,mySalesPrev,salesChg,natSales,topCust,openEsts,openEstTotal,newCusts,months,orderCount,selM,selY}=salesDashData;
+    const now2=new Date();const nowM2=now2.getMonth();const nowY2=now2.getFullYear();
+    const isCurrentMonth=selM===nowM2&&selY===nowY2;
+    const navMonth=(dir)=>{let m=salesCustomM+dir,y=salesCustomY;if(m<0){m=11;y--;}else if(m>11){m=0;y++;}if(y>nowY2||(y===nowY2&&m>nowM2))return;setSalesCustomM(m);setSalesCustomY(y);};
+    const monthLabel=new Date(selY,selM,1).toLocaleDateString('en-US',{month:'long',year:'numeric'});
+    const periodLabels={month:monthLabel,'3m':'3 Months','6m':'6 Months',ytd:'YTD',lyr:'Prev Year'};
     // SVG sparkline chart dimensions
     const cW=300,cH=68,cPad=3;
     const maxV=Math.max(1,...months.map(m=>Math.max(m.mySales,m.natSales)));
@@ -988,10 +996,15 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         <ScopeToggle/>
       </div>
       {/* Period selector */}
-      <div style={{display:'flex',gap:4,marginBottom:12,overflowX:'auto',WebkitOverflowScrolling:'touch',paddingBottom:2}}>
+      <div style={{display:'flex',gap:4,marginBottom:salesPeriodMode==='month'?6:12,overflowX:'auto',WebkitOverflowScrolling:'touch',paddingBottom:2}}>
         {[['month','Month'],['3m','3M'],['6m','6M'],['ytd','YTD'],['lyr','Prev Yr']].map(([v,l])=>
-          <button key={v} onClick={()=>setSalesPeriodMode(v)} style={{padding:'5px 14px',borderRadius:20,border:'none',background:salesPeriodMode===v?'#1e40af':'#f1f5f9',color:salesPeriodMode===v?'white':'#64748b',fontWeight:700,fontSize:12,cursor:'pointer',flexShrink:0}}>{l}</button>)}
+          <button key={v} onClick={()=>{setSalesPeriodMode(v);if(v==='month'){setSalesCustomM(nowM2);setSalesCustomY(nowY2);}}} style={{padding:'5px 14px',borderRadius:20,border:'none',background:salesPeriodMode===v?'#1e40af':'#f1f5f9',color:salesPeriodMode===v?'white':'#64748b',fontWeight:700,fontSize:12,cursor:'pointer',flexShrink:0}}>{l}</button>)}
       </div>
+      {salesPeriodMode==='month'&&<div style={{display:'flex',alignItems:'center',gap:4,marginBottom:12}}>
+        <button onClick={()=>navMonth(-1)} style={{background:'none',border:'1px solid #e2e8f0',cursor:'pointer',padding:'4px 12px',fontSize:14,color:'#334155',fontWeight:700,borderRadius:16}}>‹</button>
+        <div style={{flex:1,textAlign:'center',fontSize:13,fontWeight:700,color:'#1e293b'}}>{monthLabel}</div>
+        <button onClick={()=>navMonth(1)} disabled={isCurrentMonth} style={{background:'none',border:'1px solid #e2e8f0',cursor:isCurrentMonth?'default':'pointer',padding:'4px 12px',fontSize:14,color:isCurrentMonth?'#cbd5e1':'#334155',fontWeight:700,borderRadius:16}}>›</button>
+      </div>}
       {/* Urgent orders alert */}
       {stats.urgentOrders>0&&<div className="mp-alert-banner">
         <MIcon name="alert" size={16}/><span>{stats.urgentOrders} order{stats.urgentOrders>1?'s':''} due within 3 days</span>
@@ -1073,6 +1086,28 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           </div>;
         })}
       </div>}
+      {/* ── Monthly Breakdown ── */}
+      <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'12px 14px',marginBottom:14}}>
+        <div style={{fontSize:12,fontWeight:700,color:'#334155',marginBottom:10}}>Monthly Breakdown — Last 12 Months</div>
+        {[...months].reverse().map((m,i)=>{
+          const isSelected=salesPeriodMode==='month'&&m.m===selM&&m.y===selY;
+          const pct=m.natSales>0?(m.mySales/m.natSales*100):0;
+          return<div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 0',borderBottom:i<11?'1px solid #f8fafc':'none',background:isSelected?'#eff6ff':'transparent',borderRadius:isSelected?6:0,marginLeft:isSelected?-4:0,marginRight:isSelected?-4:0,paddingLeft:isSelected?4:0,paddingRight:isSelected?4:0,cursor:'pointer'}}
+            onClick={()=>{if(salesPeriodMode==='month'){setSalesCustomM(m.m);setSalesCustomY(m.y);}}}>
+            <div style={{width:42,fontSize:11,fontWeight:isSelected?700:500,color:isSelected?'#1e40af':'#64748b',flexShrink:0}}>
+              {m.label} {String(m.y).slice(2)}
+            </div>
+            <div style={{flex:1}}>
+              <div style={{height:3,background:'#f1f5f9',borderRadius:2}}>
+                <div style={{height:'100%',width:(m.natSales>0?Math.min(100,(m.mySales/m.natSales*100)):0)+'%',background:isSelected?'#2563eb':'#93c5fd',borderRadius:2}}/>
+              </div>
+            </div>
+            <div style={{width:66,textAlign:'right',fontSize:11,fontWeight:isSelected?700:500,color:m.mySales>0?(isSelected?'#1e40af':'#166534'):'#94a3b8',flexShrink:0}}>{m.mySales>0?fmtMoney(m.mySales):'—'}</div>
+            <div style={{width:30,textAlign:'right',fontSize:10,color:pct>0?'#2563eb':'#94a3b8',fontWeight:600,flexShrink:0}}>{pct>0?pct.toFixed(0)+'%':'—'}</div>
+            {isSelected&&<div style={{fontSize:9,padding:'1px 5px',borderRadius:6,background:'#2563eb',color:'white',fontWeight:700,flexShrink:0}}>✓</div>}
+          </div>;
+        })}
+      </div>
       {/* ── Messages (moved here) ── */}
       <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'12px 14px',marginBottom:14}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:unreadForMeCount>0?8:0}}>

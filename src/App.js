@@ -3136,6 +3136,8 @@ export default function App(){
   const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);const[mobileMenuOpen,setMobileMenuOpen]=useState(false);
   const[dashView,setDashView]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user'));if(u?.role==='csr')return'csr';if(u?.role==='rep')return'sales';if(u?.role==='warehouse')return'warehouse';if(u?.role==='artist'||u?.role==='art')return'decorator';if(u?.role==='production')return'production'}catch{}return'admin'});// admin|sales|warehouse|decorator|production|csr
   const[salesRepPeriod,setSalesRepPeriod]=useState('month');// month|3m|6m|ytd|lyr
+  const[salesRepCustomM,setSalesRepCustomM]=useState(()=>new Date().getMonth());
+  const[salesRepCustomY,setSalesRepCustomY]=useState(()=>new Date().getFullYear());
   const[adminRepFilter,setAdminRepFilter]=useState('me');// 'me'|'all'|repId
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'daily',syncInterval:'daily',
@@ -6678,9 +6680,15 @@ export default function App(){
     {/* ── Sales KPI Dashboard ── */}
     {(()=>{
       const now=new Date();const nowY=now.getFullYear();const nowM=now.getMonth();
-      const periodLabels={month:'This Month','3m':'Last 3 Months','6m':'Last 6 Months',ytd:'Year to Date',lyr:'Last Year'};
+      // Month navigation helpers
+      const selM=salesRepPeriod==='month'?salesRepCustomM:nowM;
+      const selY=salesRepPeriod==='month'?salesRepCustomY:nowY;
+      const isCurrentMonth=selM===nowM&&selY===nowY;
+      const navMonth=(dir)=>{let m=salesRepCustomM+dir,y=salesRepCustomY;if(m<0){m=11;y--;}else if(m>11){m=0;y++;}if(y>nowY||(y===nowY&&m>nowM))return;setSalesRepCustomM(m);setSalesRepCustomY(y);};
+      const monthName=(m,y)=>new Date(y,m,1).toLocaleDateString('en-US',{month:'long',year:'numeric'});
+      const periodLabels={month:monthName(selM,selY),'3m':'Last 3 Months','6m':'Last 6 Months',ytd:'Year to Date',lyr:'Last Year'};
       let pStart,pEnd,prevStart,prevEnd;
-      if(salesRepPeriod==='month'){pStart=new Date(nowY,nowM,1);pEnd=new Date(nowY,nowM+1,0,23,59,59);prevStart=new Date(nowY,nowM-1,1);prevEnd=new Date(nowY,nowM,0,23,59,59);}
+      if(salesRepPeriod==='month'){pStart=new Date(selY,selM,1);pEnd=new Date(selY,selM+1,0,23,59,59);prevStart=new Date(selY,selM-1,1);prevEnd=new Date(selY,selM,0,23,59,59);}
       else if(salesRepPeriod==='3m'){pStart=new Date(nowY,nowM-2,1);pEnd=new Date(nowY,nowM+1,0,23,59,59);prevStart=new Date(nowY,nowM-5,1);prevEnd=new Date(nowY,nowM-2,0,23,59,59);}
       else if(salesRepPeriod==='6m'){pStart=new Date(nowY,nowM-5,1);pEnd=new Date(nowY,nowM+1,0,23,59,59);prevStart=new Date(nowY,nowM-11,1);prevEnd=new Date(nowY,nowM-5,0,23,59,59);}
       else if(salesRepPeriod==='ytd'){pStart=new Date(nowY,0,1);pEnd=now;prevStart=new Date(nowY-1,0,1);prevEnd=new Date(nowY-1,nowM,now.getDate(),23,59,59);}
@@ -6727,7 +6735,7 @@ export default function App(){
         const mMyHist=sumInvRev(histInvs.filter(h=>repCustIds.has(h.customer_id)&&h.status!=='void'&&inP(h.date,mS,mE)));
         const mNatSO=sumRev(sos.filter(s=>!['cancelled'].includes(s.status||'')&&inP(s.created_at,mS,mE)));
         const mNatHist=sumInvRev(histInvs.filter(h=>h.status!=='void'&&inP(h.date,mS,mE)));
-        months.push({label:d.toLocaleDateString('en-US',{month:'short'}),y:d.getFullYear(),mySales:mMySO+mMyHist,natSales:mNatSO+mNatHist});}
+        months.push({label:d.toLocaleDateString('en-US',{month:'short'}),y:d.getFullYear(),m:d.getMonth(),mySales:mMySO+mMyHist,natSales:mNatSO+mNatHist});}
       // SVG chart
       const cW=460,cH=72,cPad=4;
       const maxV=Math.max(1,...months.map(m=>Math.max(m.mySales,m.natSales)));
@@ -6739,11 +6747,16 @@ export default function App(){
       const areaD=pts=>pathD(pts)+' L'+pts[pts.length-1][0].toFixed(1)+','+(cH-cPad)+' L'+pts[0][0].toFixed(1)+','+(cH-cPad)+' Z';
       const fmtM=n=>n==null?'$0':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
       return<>
-      {/* Period selector */}
-      <div style={{display:'flex',gap:6,marginBottom:14,alignItems:'center'}}>
+      {/* Period selector + month navigation */}
+      <div style={{display:'flex',gap:6,marginBottom:14,alignItems:'center',flexWrap:'wrap'}}>
         <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginRight:4}}>Period:</span>
-        {[['month','This Month'],['3m','3 Months'],['6m','6 Months'],['ytd','YTD'],['lyr','Prev Year']].map(([v,l])=>
-          <button key={v} onClick={()=>setSalesRepPeriod(v)} style={{padding:'5px 14px',borderRadius:20,border:'none',background:salesRepPeriod===v?'#1e293b':'#f1f5f9',color:salesRepPeriod===v?'white':'#64748b',fontWeight:700,fontSize:12,cursor:'pointer'}}>{l}</button>)}
+        {[['month','Month'],['3m','3 Months'],['6m','6 Months'],['ytd','YTD'],['lyr','Prev Year']].map(([v,l])=>
+          <button key={v} onClick={()=>{setSalesRepPeriod(v);if(v==='month'){setSalesRepCustomM(nowM);setSalesRepCustomY(nowY);}}} style={{padding:'5px 14px',borderRadius:20,border:'none',background:salesRepPeriod===v?'#1e293b':'#f1f5f9',color:salesRepPeriod===v?'white':'#64748b',fontWeight:700,fontSize:12,cursor:'pointer'}}>{l}</button>)}
+        {salesRepPeriod==='month'&&<div style={{display:'flex',alignItems:'center',gap:4,marginLeft:8,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:20,padding:'2px 4px'}}>
+          <button onClick={()=>navMonth(-1)} style={{background:'none',border:'none',cursor:'pointer',padding:'2px 8px',fontSize:14,color:'#334155',fontWeight:700,borderRadius:16}}>‹</button>
+          <span style={{fontSize:12,fontWeight:700,color:'#1e293b',minWidth:110,textAlign:'center'}}>{monthName(selM,selY)}</span>
+          <button onClick={()=>navMonth(1)} disabled={isCurrentMonth} style={{background:'none',border:'none',cursor:isCurrentMonth?'default':'pointer',padding:'2px 8px',fontSize:14,color:isCurrentMonth?'#cbd5e1':'#334155',fontWeight:700,borderRadius:16}}>›</button>
+        </div>}
       </div>
       {/* KPI row */}
       <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr',gap:12,marginBottom:14}}>
@@ -6833,6 +6846,38 @@ export default function App(){
               <div style={{height:'100%',width:barPct+'%',background:'#2563eb',borderRadius:2,opacity:0.45}}/>
             </div>
           </div>;})}
+        </div>
+      </div>
+      {/* Monthly breakdown table */}
+      <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'16px 18px',marginBottom:16}}>
+        <div style={{fontSize:13,fontWeight:700,color:'#334155',marginBottom:12}}>Monthly Breakdown — Last 12 Months</div>
+        <div style={{overflowX:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+            <thead>
+              <tr style={{borderBottom:'2px solid #e2e8f0'}}>
+                <th style={{textAlign:'left',padding:'4px 10px 8px 4px',color:'#64748b',fontWeight:700,fontSize:11,textTransform:'uppercase'}}>Month</th>
+                <th style={{textAlign:'right',padding:'4px 10px 8px',color:'#64748b',fontWeight:700,fontSize:11,textTransform:'uppercase'}}>My Sales</th>
+                <th style={{textAlign:'right',padding:'4px 10px 8px',color:'#64748b',fontWeight:700,fontSize:11,textTransform:'uppercase'}}>National</th>
+                <th style={{textAlign:'right',padding:'4px 4px 8px',color:'#64748b',fontWeight:700,fontSize:11,textTransform:'uppercase'}}>My %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...months].reverse().map((m,i)=>{
+                const isSelected=salesRepPeriod==='month'&&m.m===selM&&m.y===selY;
+                const pct=m.natSales>0?(m.mySales/m.natSales*100):0;
+                return<tr key={i} style={{borderBottom:'1px solid #f1f5f9',background:isSelected?'#eff6ff':'transparent',cursor:'pointer'}}
+                  onClick={()=>{setSalesRepPeriod('month');setSalesRepCustomM(m.m);setSalesRepCustomY(m.y);}}>
+                  <td style={{padding:'7px 10px 7px 4px',fontWeight:isSelected?700:500,color:isSelected?'#1e40af':'#334155'}}>
+                    {m.label} {m.y}
+                    {isSelected&&<span style={{marginLeft:6,fontSize:9,padding:'1px 6px',borderRadius:8,background:'#2563eb',color:'white',fontWeight:700}}>selected</span>}
+                  </td>
+                  <td style={{textAlign:'right',padding:'7px 10px',fontWeight:isSelected?700:500,color:m.mySales>0?(isSelected?'#1e40af':'#166534'):'#94a3b8'}}>{m.mySales>0?fmtM(m.mySales):'—'}</td>
+                  <td style={{textAlign:'right',padding:'7px 10px',color:'#334155',fontWeight:500}}>{m.natSales>0?fmtM(m.natSales):'—'}</td>
+                  <td style={{textAlign:'right',padding:'7px 4px',color:pct>0?'#2563eb':'#94a3b8',fontWeight:600}}>{pct>0?pct.toFixed(1)+'%':'—'}</td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
         </div>
       </div>
       </>;
