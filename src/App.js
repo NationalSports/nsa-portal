@@ -15,11 +15,11 @@ import { jsPDF } from 'jspdf';
 import { svg2pdf } from 'svg2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, barcodeSvg, probeCloudinaryPdfPages } from './utils';
 import { calcOrderTotals, auTierDisc } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -2210,6 +2210,7 @@ const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd
 const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);fd.append('filename_override',file.name);const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=typeof f==='string'?f:(f?.url||'');return isUrl(s)?decodeURIComponent(s.split('/').pop().split('?')[0]):s};
+const fileBaseName=f=>fileDisplayName(f).replace(/\.[^.]+$/,'');
 const _isDownloadOnly=u=>{const e=_urlExt(u);return['ai','eps','dst','psd','tiff','tif','cdr'].includes(e)};
 const _isDisplayableFile=(u,f)=>_isImgUrl(u,f)||_isPdfUrl(u,f);
 const _filterDisplayable=files=>(files||[]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');return u&&_isDisplayableFile(u,f)});
@@ -9378,7 +9379,7 @@ export default function App(){
         });return results})();
 
         // Print Production PDF
-        const printProdPDF=()=>{
+        const printProdPDF=async()=>{
           const infoBoxes=[
             {label:'Customer',value:c?.name||j.customer||'Unknown',sub:c?.alpha_tag||''},
             {label:'Sales Order',value:so.id,sub:so.memo||''},
@@ -9466,10 +9467,48 @@ export default function App(){
           const _sibs=[];
           if(_gk)sos.forEach(s2=>{if(_famPid(s2)!==_pid)return;safeJobs(s2).forEach(jj=>{if(s2.id===so.id&&jj.id===j.id)return;if(jobGroupKey(jj,_famPid(s2))!==_gk)return;if(!isJobReady(jj,s2))return;_sibs.push({soId:s2.id,cust:cust.find(x=>x.id===s2.customer_id)?.name||'—',qty:jj.total_units,manual:!!jj.link_group})})});
           const _linkHtml=_sibs.length?'<div style="margin:8px 0 12px;padding:10px 12px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px"><div style="font-size:12px;font-weight:700;color:#3730a3">🔗 Runs together — reuse one screen setup ('+(j.total_units+_sibs.reduce((a,s)=>a+s.qty,0))+' units total)</div><ul style="margin:6px 0 0;padding-left:18px;font-size:12px;color:#3730a3">'+_sibs.map(s=>'<li>'+s.soId+' · '+s.cust+' — '+s.qty+' units'+(s.manual?'':' (matched by art)')+'</li>').join('')+'</ul></div>':'';
+          // ── Embroidery: machine-design barcodes + digitizer run-sheet appendix ──
+          // The digitizer delivers DG######_DESCRIPTION.DST plus a .pdf run sheet sharing
+          // the same base name. The barcode encodes the exact DST base name so a scan at
+          // the machine matches the file the design server holds.
+          const embDesigns=[];
+          if(isEmb){const _seen=new Set();
+            allArtFiles.forEach(a=>{[...(a?.prod_files||[]),...(a?.files||[])].forEach(f=>{
+              if(!isDstFile(f))return;
+              const base=fileBaseName(f);const k=base.toUpperCase();
+              if(!base||_seen.has(k))return;_seen.add(k);
+              embDesigns.push({base,dg:dgCodeOf(base),art:a?.name||''});
+            })});
+          }
+          const _bcHtml=!isEmb?'':embDesigns.length
+            ?'<div style="margin:8px 0 12px;padding:12px;background:#fff;border:2px solid #1e293b;border-radius:8px;page-break-inside:avoid"><div style="font-size:13px;font-weight:800;color:#1e293b">🧵 MACHINE DESIGNS — SCAN TO LOAD</div><div style="font-size:9px;color:#64748b;margin-bottom:8px">Barcode = DST file name. Scan at the machine to pull the design from the design server.</div><div style="display:flex;gap:18px;flex-wrap:wrap">'
+              +embDesigns.map(d=>'<div style="text-align:center"><div style="display:inline-block;background:#fff">'+(barcodeSvg(d.base)||'<div style="font-size:12px;font-weight:700;padding:8px">'+d.base+'</div>')+'</div>'+((d.dg||d.art)?'<div style="font-size:10px;font-weight:700;color:#334155">'+[d.dg,d.art].filter(Boolean).join(' · ')+'</div>':'')+'</div>').join('')
+              +'</div></div>'
+            :'<div style="margin:8px 0 12px;padding:10px 12px;background:#fef2f2;border:2px solid #fecaca;border-radius:8px;font-size:12px;font-weight:800;color:#b91c1c">⚠ NO DST FILE ATTACHED — upload the digitizer\'s .DST to this job\'s art files to print machine barcodes.</div>';
+          // Appendix: every page of the digitizer PDF whose base name matches a DST,
+          // appended full-page after the sheet (falls back to any prod-file PDFs).
+          let _appendixHtml='';
+          if(isEmb&&embDesigns.length){
+            const _bases=new Set(embDesigns.map(d=>d.base.toUpperCase()));
+            const _cands=[];const _seenU=new Set();
+            allArtFiles.forEach(a=>{const _inProd=new Set(a?.prod_files||[]);
+              [...(a?.prod_files||[]),...(a?.files||[])].forEach(f=>{
+                const u=typeof f==='string'?f:(f?.url||'');
+                if(!u||_seenU.has(u)||!_isPdfUrl(u,f))return;_seenU.add(u);
+                _cands.push({f,u,base:fileBaseName(f),fromProd:_inProd.has(f)});
+              })});
+            const _matched=_cands.filter(p=>_bases.has(p.base.toUpperCase()));
+            const _chosen=_matched.length?_matched:_cands.filter(p=>p.fromProd);
+            for(const p of _chosen){
+              const _pages=await probeCloudinaryPdfPages(p.u);
+              _pages.forEach((src,i)=>{_appendixHtml+='<div style="page-break-before:always"><div style="font-size:10px;font-weight:700;color:#475569;padding:2px 0 6px">📎 '+fileDisplayName(p.f)+' — page '+(i+1)+' of '+_pages.length+'</div><img src="'+src+'" style="width:100%"/></div>'});
+            }
+          }
           printDoc({title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
             headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
             infoBoxes,tables,
-            notes:(_linkHtml||'')+(_pdfMockHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
+            notes:(_bcHtml||'')+(_linkHtml||'')+(_pdfMockHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
+            appendixHtml:_appendixHtml,
             showPricing:false});
         };
 

@@ -299,6 +299,10 @@ export const prodFilesStatusFor=(deco)=>deco==='dtf'?'order_dtf_transfers':deco=
 // A .dst IS the embroidery production file — if one is attached anywhere on the art, prod files are effectively done.
 export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.dst')};
 export const artProdFilesReady=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.prod_files||[]).length>0)return true;if((af.deco_type||'')==='embroidery')return(af.files||[]).some(isDstFile);return false};
+// Digitizer design code — the digitizing house stamps a "DG" number into every delivered
+// file name (DG648617_A_3D_CAP_FRONT.DST, sometimes written DG-648617). Normalizes to
+// "DG648617"; null when the name carries no DG number.
+export const dgCodeOf=name=>{const m=String(name||'').match(/DG[-_ ]?(\d{4,})/i);return m?'DG'+m[1]:null};
 export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files',art_complete:'Art Complete'};
 export const ART_FILE_SC={waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'},art_complete:{bg:'#dcfce7',c:'#166534'}};
 

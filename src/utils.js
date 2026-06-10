@@ -1,5 +1,6 @@
 /* eslint-disable */
 import { NSA as _NSA_CONST } from './constants';
+import JsBarcode from 'jsbarcode';
 
 // ── Brevo Email ──
 // Public availability flag — NOT the API key. The real key lives only in the
@@ -95,6 +96,7 @@ export const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormDa
 // ── File helpers ──
 export const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 export const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=typeof f==='string'?f:(f?.url||'');return isUrl(s)?decodeURIComponent(s.split('/').pop().split('?')[0]):s};
+export const fileBaseName=f=>fileDisplayName(f).replace(/\.[^.]+$/,'');
 export const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
 export const _isDownloadOnly=u=>{const e=_urlExt(u);return['ai','eps','dst','psd','tiff','tif','cdr'].includes(e)};
 export const _isImgUrl=(u,f)=>{if(_isPdfUrl(u,f))return false;const e=_urlExt(u);if(_isDownloadOnly(u))return false;if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;if(u&&typeof u==='string'&&/(?:assetly|assets)\.ordermygear\.com\//.test(u))return true;return false};
@@ -106,9 +108,27 @@ export const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)
 
 // ── File filtering helpers ──
 export const _filterDisplayable=files=>(files||[]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');return u&&_isDisplayableFile(u,f)});
-export const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;
+export const _cloudinaryPdfPage=(u,n)=>{if(!u||!u.includes('cloudinary.com'))return null;
   let t=u.replace('/raw/upload/','/image/upload/').replace('/video/upload/','/image/upload/');
-  return t.replace('/image/upload/','/image/upload/pg_1,f_png/')};
+  return t.replace('/image/upload/','/image/upload/pg_'+n+',f_png/')};
+export const _cloudinaryPdfThumb=u=>_cloudinaryPdfPage(u,1);
+// Probe how many pages a Cloudinary-hosted PDF has by loading page renders until one
+// fails (Cloudinary rejects pg_N past the last page). Capped; also warms the browser
+// cache so the print window paints the appendix pages without waiting on the network.
+export const probeCloudinaryPdfPages=async(u,cap=15)=>{
+  if(!_cloudinaryPdfPage(u,1))return[];
+  const tryLoad=src=>new Promise(res=>{const im=new Image();im.onload=()=>res(true);im.onerror=()=>res(false);im.src=src});
+  const out=[];
+  for(let n=1;n<=cap;n++){const src=_cloudinaryPdfPage(u,n);if(await tryLoad(src))out.push(src);else break}
+  return out};
+// Inline SVG Code 128 barcode for print documents — inline so the print window never
+// waits on (or drops) an external image request. Code 128 encodes full ASCII, incl. the
+// underscores in digitizer file names like DG648617_A_3D_CAP_FRONT.
+export const barcodeSvg=(text,{height=46,width=1.6,fontSize=13}={})=>{
+  try{const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    JsBarcode(svg,String(text),{format:'CODE128',width,height,fontSize,displayValue:true,margin:6,background:'#ffffff'});
+    return svg.outerHTML}
+  catch(e){console.warn('[barcodeSvg] '+(e?.message||e));return''}};
 
 // ── Brevo SMS ──
 // SMS is currently disabled (see _smsUiEnabled). The browser must never hold the
@@ -118,7 +138,7 @@ export const _brevoSmsSender='NSA';
 export const sendBrevoSms=async()=>({ok:false,error:'SMS sending is disabled. Route it through the server-side brevo-proxy to re-enable.'});
 
 // ── Document/print helpers ──
-export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tables,notes,footer,showPricing,portalLink,css,companyInfo})=>{
+export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tables,notes,footer,showPricing,portalLink,css,companyInfo,appendixHtml})=>{
   const _NSA={..._NSA_CONST,...(companyInfo||{})};
   let h='';
   // Header: logo/address left, doc type/number right
@@ -173,6 +193,8 @@ export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tabl
     if(portalLink)h+='<div style="text-align:right"><a href="'+portalLink+'" style="color:#2563eb;text-decoration:none">View Online Portal</a></div>';
     h+='</div>';
   }
+  // Full-page appendix (e.g. digitizer run sheets appended to production sheets)
+  if(appendixHtml)h+=appendixHtml;
   // Wrap with full page HTML for email attachment use
   const _css=css||'';
   const _title=docNum+(title?' - '+title:'');
