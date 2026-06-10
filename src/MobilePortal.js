@@ -81,6 +81,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[whSaving,setWhSaving]=useState(false);
   const[whBatchMode,setWhBatchMode]=useState(false);
   const[whBatchSelected,setWhBatchSelected]=useState(new Set());
+  const[whBatchQty,setWhBatchQty]=useState({}); // {poKey:{lineIdx:{size:qty}}} — editable qtys for batch partial receive
   // Send estimate modal
   const[sendEstModal,setSendEstModal]=useState(null); // estimate object or null
   // Send invoice modal
@@ -1178,18 +1179,39 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       setWhSaving(true);try{onReceiveInvPO&&onReceiveInvPO(po.invId,receivedMap)}finally{setWhSaving(false);setWhDetail(null);setWhRcvQty({})}
     }
   };
-  const batchReceive=(allPOs)=>{
+  // Build the full-open qty map for one PO ({lineIdx:{size:open}}) — used to pre-fill the
+  // review screen and to power the per-PO "All received" shortcut.
+  const fullOpenMap=(po)=>{const lm={};po.lines.forEach((l,i)=>{const m={};Object.entries(l.sizes).forEach(([sz,s])=>{if(s.open>0)m[sz]=s.open});if(Object.keys(m).length)lm[i]=m});return lm};
+  // Step 1 of batch check-in: open an editable review screen pre-filled to full open
+  // (so the common "everything arrived" case stays a couple of taps), with each size
+  // editable down for partial receipts.
+  const openBatchReview=(allPOs)=>{
+    const sel=allPOs.filter(p=>whBatchSelected.has(p.key)&&p.totOpen>0);
+    if(sel.length===0){if(nf)nf('Select POs with open items','error');return;}
+    const init={};sel.forEach(po=>{init[po.key]=fullOpenMap(po)});
+    setWhBatchQty(init);setWhDetail({kind:'batch'});
+  };
+  // Per-PO shortcuts on the review screen.
+  const batchPoSetAll=(po)=>setWhBatchQty(prev=>({...prev,[po.key]:fullOpenMap(po)}));
+  const batchPoClear=(po)=>setWhBatchQty(prev=>({...prev,[po.key]:{}}));
+  // Step 2: receive exactly the quantities entered on the review screen (skips zeros).
+  const confirmBatchReceive=(sel)=>{
     if(whSaving)return;
-    const toReceive=allPOs.filter(p=>whBatchSelected.has(p.key)&&p.totOpen>0);
-    if(toReceive.length===0){if(nf)nf('Select POs with open items','error');return;}
+    let total=0;sel.forEach(po=>{Object.values(whBatchQty[po.key]||{}).forEach(m=>Object.values(m||{}).forEach(v=>{total+=parseInt(v)||0}))});
+    if(total===0){if(nf)nf('Enter at least one quantity to receive','error');return;}
     setWhSaving(true);
     try{
-      toReceive.forEach(po=>{
-        if(po.kind==='so'){const lines=po.lines.map((l,i)=>{const rcv={};Object.entries(l.sizes).forEach(([sz,s])=>{if(s.open>0)rcv[sz]=s.open});return{itemIdx:l.itemIdx,poLineIdx:l.poLineIdx,rcv}}).filter(l=>Object.keys(l.rcv).length>0);if(lines.length>0)onReceiveSOPO&&onReceiveSOPO(po.soId,lines);}
-        else{const receivedMap={};po.lines.forEach(l=>{const m={};Object.entries(l.sizes).forEach(([sz,s])=>{if(s.open>0)m[sz]=s.open});if(Object.keys(m).length>0)receivedMap[l.idx]=m});if(Object.keys(receivedMap).length>0)onReceiveInvPO&&onReceiveInvPO(po.invId,receivedMap);}
+      // Collect SO-PO receipts grouped by soId so two POs on the same SO apply in one call —
+      // onReceiveSOPO reads the SO from a render snapshot, so separate per-PO calls would
+      // clobber each other. Inventory POs each target a distinct record, so they fire directly.
+      const soLines={};
+      sel.forEach(po=>{const lm=whBatchQty[po.key]||{};
+        if(po.kind==='so'){po.lines.forEach((l,i)=>{const rcv={};Object.entries(lm[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0)rcv[sz]=n});if(Object.keys(rcv).length>0)(soLines[po.soId]=soLines[po.soId]||[]).push({itemIdx:l.itemIdx,poLineIdx:l.poLineIdx,rcv})});}
+        else{const receivedMap={};po.lines.forEach((l,i)=>{const m={};Object.entries(lm[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0)m[sz]=n});if(Object.keys(m).length>0)receivedMap[l.idx]=m});if(Object.keys(receivedMap).length>0)onReceiveInvPO&&onReceiveInvPO(po.invId,receivedMap);}
       });
-      if(nf)nf('Received '+toReceive.length+' PO'+(toReceive.length!==1?'s':''));
-      setWhBatchSelected(new Set());setWhBatchMode(false);
+      Object.entries(soLines).forEach(([soId,lines])=>{if(lines.length>0)onReceiveSOPO&&onReceiveSOPO(soId,lines)});
+      if(nf)nf('Received '+total+' unit'+(total!==1?'s':'')+' across '+sel.length+' PO'+(sel.length!==1?'s':''));
+      setWhBatchSelected(new Set());setWhBatchMode(false);setWhBatchQty({});setWhDetail(null);
     }finally{setWhSaving(false);}
   };
 
@@ -1289,6 +1311,55 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       }
     }
 
+    // ─── BATCH RECEIVE REVIEW (edit qtys for partial check-in) ───
+    if(whDetail?.kind==='batch'){
+      const sel=pos.filter(p=>whBatchSelected.has(p.key)&&p.totOpen>0);
+      const grandRcv=sel.reduce((a,po)=>a+Object.values(whBatchQty[po.key]||{}).reduce((b,m)=>b+Object.values(m||{}).reduce((c,v)=>c+(parseInt(v)||0),0),0),0);
+      return<div className="mp-detail">
+        <div className="mp-detail-header">
+          <button className="mp-back-btn" onClick={()=>{setWhDetail(null);setWhBatchQty({})}}><MIcon name="back" size={22}/></button>
+          <div style={{flex:1}}><div className="mp-detail-id">Batch Check In</div><div className="mp-detail-sub">{sel.length} PO{sel.length!==1?'s':''} · edit qtys for partial receipts</div></div>
+          <span style={{fontSize:11,background:'#dbeafe',color:'#1e40af',padding:'3px 10px',borderRadius:12,fontWeight:700}}>{grandRcv} units</span>
+        </div>
+        <div className="mp-detail-body">
+          {sel.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40,fontSize:14}}>No open items in the selected POs.</div>}
+          {sel.map(po=>{const poRcv=Object.values(whBatchQty[po.key]||{}).reduce((b,m)=>b+Object.values(m||{}).reduce((c,v)=>c+(parseInt(v)||0),0),0);
+            return<div key={po.key} style={{marginBottom:18}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,paddingBottom:6,borderBottom:'2px solid #e2e8f0',flexWrap:'wrap'}}>
+                <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{po.poId}</span>
+                {po.kind==='inv'&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:6,background:'#f1f5f9',color:'#64748b',fontWeight:700}}>INV</span>}
+                <span style={{fontSize:11,color:'#64748b'}}>{po.vendor||(po.kind==='so'?po.soId:'Inventory PO')}</span>
+                <span style={{marginLeft:'auto',fontSize:11,color:poRcv>=po.totOpen?'#16a34a':'#d97706',fontWeight:700}}>{poRcv}/{po.totOpen} open</span>
+              </div>
+              <div style={{display:'flex',gap:6,marginBottom:8}}>
+                <button onClick={()=>batchPoSetAll(po)} style={{flex:1,padding:'7px',borderRadius:8,border:'1px solid #86efac',background:'#f0fdf4',color:'#166534',fontWeight:700,fontSize:12,cursor:'pointer',minHeight:34}}>✓ All received</button>
+                <button onClick={()=>batchPoClear(po)} style={{padding:'7px 12px',borderRadius:8,border:'1px solid #e2e8f0',background:'white',color:'#64748b',fontWeight:700,fontSize:12,cursor:'pointer',minHeight:34}}>Clear</button>
+              </div>
+              {po.lines.map((l,i)=>{const szEntries=Object.entries(l.sizes).filter(([,s])=>s.open>0);if(szEntries.length===0)return null;const item=l.item;
+                return<div key={i} className="mp-item-card">
+                  <div style={{marginBottom:8}}>
+                    <div style={{fontWeight:700,fontSize:14}}>{item.name||item.sku}</div>
+                    <div style={{fontSize:12,color:'#64748b'}}>{item.sku}{item.color?' · '+item.color:''}</div>
+                  </div>
+                  <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                    {szEntries.map(([sz,s])=>{const v=(whBatchQty[po.key]?.[i]||{})[sz]??0;/* pre-filled to full on open; Clear sets 0 */
+                      return<div key={sz} style={{textAlign:'center',minWidth:62,padding:'6px',borderRadius:8,border:'1px solid #e2e8f0',background:'#f8fafc'}}>
+                        <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:2}}>{sz}</div>
+                        <div style={{fontSize:9,color:'#94a3b8',marginBottom:4}}>{s.rcv}/{s.ord} · {s.open} open</div>
+                        {whNumInput(v,s.open,nv=>setWhBatchQty(prev=>({...prev,[po.key]:{...(prev[po.key]||{}),[i]:{...((prev[po.key]||{})[i]||{}),[sz]:nv}}})))}
+                      </div>})}
+                  </div>
+                </div>})}
+            </div>})}
+        </div>
+        <div style={{position:'sticky',bottom:0,background:'white',borderTop:'1px solid #e2e8f0',padding:'12px 16px',paddingBottom:'max(12px, env(safe-area-inset-bottom))'}}>
+          <button disabled={whSaving||grandRcv===0} onClick={()=>confirmBatchReceive(sel)} style={{width:'100%',padding:'14px',borderRadius:12,border:'none',background:grandRcv>0&&!whSaving?'#1e40af':'#cbd5e1',color:'white',fontWeight:800,fontSize:15,cursor:grandRcv>0&&!whSaving?'pointer':'default',minHeight:48}}>
+            {whSaving?'Saving…':'✓ Receive '+grandRcv+' unit'+(grandRcv!==1?'s':'')+' · '+sel.length+' PO'+(sel.length!==1?'s':'')}
+          </button>
+        </div>
+      </div>;
+    }
+
     // ─── WAREHOUSE LIST (IFs + POs) ───
     const openPoCount=pos.filter(p=>p.status!=='received').length;
     let poList=pos;
@@ -1363,8 +1434,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           </div>})}
         {poList.length>150&&<div style={{textAlign:'center',color:'#94a3b8',padding:12,fontSize:12}}>Showing first 150 of {poList.length}. Search to narrow.</div>}
         {whBatchMode&&whBatchSelected.size>0&&(()=>{const cnt=[...whBatchSelected].filter(k=>{const p=poList.find(x=>x.key===k);return p&&p.totOpen>0}).length;return<div style={{position:'sticky',bottom:0,background:'white',borderTop:'1px solid #e2e8f0',padding:'12px 16px',paddingBottom:'max(12px, env(safe-area-inset-bottom))'}}>
-          <button disabled={whSaving||cnt===0} onClick={()=>batchReceive(poList)} style={{width:'100%',padding:'14px',borderRadius:12,border:'none',background:cnt>0&&!whSaving?'#1e40af':'#cbd5e1',color:'white',fontWeight:800,fontSize:15,cursor:cnt>0&&!whSaving?'pointer':'default',minHeight:48}}>
-            {whSaving?'Saving…':'✓ Batch Check In ('+cnt+' PO'+(cnt!==1?'s':'')+')'}
+          <button disabled={whSaving||cnt===0} onClick={()=>openBatchReview(poList)} style={{width:'100%',padding:'14px',borderRadius:12,border:'none',background:cnt>0&&!whSaving?'#1e40af':'#cbd5e1',color:'white',fontWeight:800,fontSize:15,cursor:cnt>0&&!whSaving?'pointer':'default',minHeight:48}}>
+            {'Review & Check In ('+cnt+' PO'+(cnt!==1?'s':'')+') →'}
           </button>
         </div>})()}
       </>}
