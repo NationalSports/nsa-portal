@@ -42,7 +42,7 @@ const _restockDate=(s)=>{if(!s)return null;let str=String(s).trim();if(!str)retu
 const restockDaysOut=(s)=>{const d=_restockDate(s);return d?Math.round((d.getTime()-Date.now())/86400000):null;};
 const fmtRestockLong=(s)=>{const d=_restockDate(s);return d?d.toLocaleDateString('en-US',{month:'short',day:'numeric'}):String(s||'');};
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -6514,7 +6514,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             })}
           </div>
           <p style={{fontSize:12,color:'#64748b',margin:0}}>
-            Use the PO# above when placing the order online with {batchReadyPopup.vendorName}. To edit sizes or remove a line, open the Batch POs page.{batchReadyPopup.vendorKey==='sanmar'&&' Preview the API payload below to see what would be sent once live submit is enabled.'}
+            Use the PO# above when placing the order online with {batchReadyPopup.vendorName}. The Order button below submits every queued PO listed above — same as the button on the Batch POs page. To edit sizes or remove a line first, open the Batch POs page.{batchReadyPopup.vendorKey==='sanmar'&&' Preview the API payload below to see what would be sent once live submit is enabled.'}
           </p>
         </div>
         <div className="modal-footer">
@@ -6530,7 +6530,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setSanMarPreviewBatch({poNumber:batchPONum||'NSA-####',batchPOs:liveBatches,vendorName:batchReadyPopup.vendorName});
             setBatchReadyPopup(null);
           }}>🔍 Preview SanMar API Payload</button>}
-          {onNavBatch&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{setBatchReadyPopup(null);onNavBatch()}}><Icon name="package" size={14}/> Open Batch POs page</button>}
+          {onNavBatch&&<button className="btn btn-secondary" style={{color:'#7c3aed',borderColor:'#ddd6fe'}} onClick={()=>{setBatchReadyPopup(null);onNavBatch()}}><Icon name="package" size={14}/> Open Batch POs page</button>}
+          {onOrderBatch&&<button className="btn btn-primary" style={{background:'linear-gradient(135deg,#22c55e,#16a34a)',borderColor:'#16a34a',fontWeight:800}} onClick={()=>{
+            if(!window.confirm('Order '+(batchPONum||'this batch')+' for '+batchReadyPopup.vendorName+'? This submits all '+liveBatches.length+' queued PO'+(liveBatches.length!==1?'s':'')+' ($'+liveTotal.toFixed(2)+') and clears the queue — use '+(batchPONum||'the batch PO#')+' when placing the online order.'))return;
+            const orderedNum=onOrderBatch({vendorKey:batchReadyPopup.vendorKey,skipSoId:o.id});
+            if(!orderedNum){nf('Batch queue is empty — nothing to order','error');setBatchReadyPopup(null);return}
+            // Promote this SO's own queued lines through the editor copy — App skipped them
+            // (skipSoId), so a later save from the editor can't revert the promotion.
+            const myBatchIds=new Set(liveBatches.filter(bp=>bp.so_id===o.id).map(bp=>bp.id));
+            if(myBatchIds.size>0){
+              const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+batchReadyPopup.vendorName}:pl)}));
+              const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
+              setO(updated);onSave(updated);
+            }
+            setBatchReadyPopup(null);
+            nf('🚀 '+orderedNum+' ordered for '+batchReadyPopup.vendorName+' ($'+liveTotal.toFixed(2)+')');
+          }}>🚀 Order {batchPONum||'batch'} for {batchReadyPopup.vendorName} (${liveTotal.toFixed(2)})</button>}
         </div>
       </div></div>;
       })()}
