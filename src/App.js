@@ -10737,7 +10737,7 @@ export default function App(){
       const inv=invs.find(i=>i.id===viewInvoice.id)||viewInvoice;
       const ic=cust.find(c=>c.id===inv.customer_id);
       const so=sos.find(s=>s.id===inv.so_id);
-      const repObj=so?REPS.find(r=>r.id===so.created_by):null;
+      const repObj=REPS.find(r=>r.id===(ic?.primary_rep_id||so?.created_by))||null;
       const bal=inv.total-(inv.paid??0);
       const storedLineItems=inv.line_items||[];
       // Fallback: compute line items from SO when not stored on invoice
@@ -11568,7 +11568,7 @@ export default function App(){
                 const siBillName=siInv.billing_name||siCust?.name||'—';
                 const siBal=siInv.total-(siInv.paid||0);
                 const siShip=siInv.shipping||0;const siTax=siInv.tax||0;
-                const siRepObj=siSo?REPS.find(r=>r.id===siSo.created_by):null;
+                const siRepObj=REPS.find(r=>r.id===(siCust?.primary_rep_id||siSo?.created_by))||null;
                 const siPoNum=siInv._po_number||siSo?.po_number;
                 const siBillSub=siInv.billing_name?(siInv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+siCust?.name+'</span>':'';
                 const siBillAddr=siBillSub||(siCust?.billing_address_line1?siCust.billing_address_line1+(siCust.billing_city?'<br/>'+siCust.billing_city+(siCust.billing_state?' '+siCust.billing_state:'')+(siCust.billing_zip?' '+siCust.billing_zip:''):'')+'<br/>United States':'');
@@ -11662,7 +11662,7 @@ export default function App(){
     // Enrich invoices with computed fields — portal invs plus NetSuite invoice history (read-only).
     const enrichedInvs=invs.map(i=>{const age=agingDays(i.date);const dd=dueDays(i.due_date);const bal=i.total-i.paid;
       const overdue=dd!==null&&dd<0&&i.status!=='paid';
-      const so=sos.find(s=>s.id===i.so_id);const rep=so?so.created_by:null;
+      const so=sos.find(s=>s.id===i.so_id);const c=cust.find(x=>x.id===i.customer_id);const rep=c?.primary_rep_id||so?.created_by||null;
       return{...i,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||'Unknown'}});
     // Historical rows from NetSuite — no so_id, no payments, and no due_date column.
     // Treat status='paid' as fully paid; anything else leaves total as balance.
@@ -12172,8 +12172,8 @@ export default function App(){
     (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
     return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0,units}};
 
-    const filtSOs=rptRep==='all'?sos:sos.filter(s=>s.created_by===rptRep);
-    const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const so=sos.find(s=>s.id===i.so_id);return so?.created_by===rptRep});
+    const filtSOs=rptRep==='all'?sos:sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return(c?.primary_rep_id||s.created_by)===rptRep});
+    const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return(c?.primary_rep_id||so?.created_by)===rptRep});
     const filtBookingInvPOs=(invPOs||[]).filter(p=>p.is_booking).filter(p=>rptRep==='all'?true:p.created_by_id===rptRep);
 
     // Pipeline data
@@ -12189,9 +12189,9 @@ export default function App(){
     const _parseDtLB=(d)=>{if(!d)return null;const m2=d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m2)return null;let y2=parseInt(m2[3]);if(y2<100)y2+=2000;return{m:parseInt(m2[1])-1,y:y2,d:parseInt(m2[2])}};
     const _now=new Date();const _curM=_now.getMonth();const _curY=_now.getFullYear();const _curD=_now.getDate();
     const repData=REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=>{
-      const rSOs=sos.filter(s=>s.created_by===r.id);const rEsts=ests.filter(e=>e.created_by===r.id);
+      const rSOs=sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return(c?.primary_rep_id||s.created_by)===r.id});const rEsts=ests.filter(e=>e.created_by===r.id);
       const rev=rSOs.reduce((a,s)=>a+soCalc(s).rev,0);const margin=rSOs.reduce((a,s)=>a+soCalc(s).margin,0);
-      const rInv=invs.filter(i=>{const so=sos.find(s=>s.id===i.so_id);return so?.created_by===r.id});
+      const rInv=invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return(c?.primary_rep_id||so?.created_by)===r.id});
       const collected=rInv.filter(i=>i.status==='paid').reduce((a,i)=>a+i.paid,0);
       const openAR=rInv.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
       const uniqueCusts=[...new Set(rSOs.map(s=>s.customer_id))].length;
