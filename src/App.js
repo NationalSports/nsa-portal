@@ -10098,7 +10098,7 @@ export default function App(){
               <th>SKU</th><th>Product</th><th>Color</th>
               <th>Sizes Ordered</th><th>Total</th>
               <th>Cost</th>
-              <th>Receive</th>
+              <th style={{background:'#eff6ff',color:'#1e40af',fontWeight:800}}>Receive</th>
               <th style={{textAlign:'center'}}>Label</th>
             </tr></thead><tbody>
             {(()=>{
@@ -10119,7 +10119,7 @@ export default function App(){
                     <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><span key={sz} style={{padding:'2px 6px',background:'#f1f5f9',borderRadius:4,fontSize:10,fontWeight:700}}>{sz}: {v}</span>)}</div></td>
                     <td style={{fontWeight:800,fontSize:14}}>{it.qty}</td>
                     <td style={{fontSize:12,color:'#166534',fontWeight:700,whiteSpace:'nowrap'}}>{it.lineCost>0?('$'+it.lineCost.toFixed(2)):'—'}{it.unitCost>0&&<div style={{fontSize:10,color:'#94a3b8',fontWeight:500}}>${it.unitCost.toFixed(2)}/ea</div>}</td>
-                    <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:8,fontWeight:700,color:'#64748b'}}>{sz}</div><input id={'rcv-'+i+'-'+sz} type="number" className="form-input" style={{width:40,padding:'3px 4px',textAlign:'center',fontSize:12,fontWeight:700}} defaultValue={0} min={0} max={v} title={'Ordered '+v}/></div>)}</div></td>
+                    <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:3}}>{sz}</div><input id={'rcv-'+i+'-'+sz} type="number" className="form-input" style={{width:58,padding:'10px 6px',textAlign:'center',fontSize:18,fontWeight:800,color:'#0f172a',border:'2px solid #93c5fd',borderRadius:8,background:'#fff'}} defaultValue={0} min={0} max={v} title={'Ordered '+v}/></div>)}</div></td>
                     <td style={{textAlign:'center'}}><button className="btn btn-sm btn-secondary" style={{padding:'3px 8px',fontSize:12}} title={'Print 4×6 box label for '+(it.srcPoId||poId)} onClick={()=>_printOnePO(it.srcPoId||'')}>🖨️</button></td>
                   </tr>})}
               </React.Fragment>)
