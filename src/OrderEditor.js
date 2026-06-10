@@ -145,7 +145,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const lastSyncRef=React.useRef(order.id+':'+(order.updated_at||''));
     React.useEffect(()=>{
       const pickCount=safeItems(order).reduce((a,it)=>(safePicks(it).length)+a,0);
-      const key=order.id+':'+(order.updated_at||'')+':'+pickCount;
+      const poCount=safeItems(order).reduce((a,it)=>((Array.isArray(it.po_lines)?it.po_lines.length:0))+a,0);
+      const key=order.id+':'+(order.updated_at||'')+':'+pickCount+':'+poCount;
       if(key===lastSyncRef.current)return;
       lastSyncRef.current=key;
       const extJobs=safeJobs(order);
@@ -153,16 +154,34 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const hasExternalArtChange=JSON.stringify(order.art_files||[])!==JSON.stringify(o.art_files||[])&&!dirty;
       // Detect external pick_line changes (e.g., warehouse pulled an IF on another tab)
       const hasExternalPickChange=safeItems(order).some((ei,idx)=>{const li=safeItems(o)[idx];if(!li)return!!ei.pick_lines?.length;const ePicks=safePicks(ei);const lPicks=safePicks(li);if(ePicks.length!==lPicks.length)return true;return ePicks.some((ep,pi)=>ep.status!==lPicks[pi]?.status||ep.pick_id!==lPicks[pi]?.pick_id)});
-      if(!hasExternalJobChange&&!hasExternalArtChange&&!hasExternalPickChange)return;
+      // Detect external po_line ADDITIONS — e.g. lines the App save guard restored from the DB
+      // (stale/foreign client state). Additions only: a local-only line (a PO just created in this
+      // editor) must never be dropped because the incoming snapshot hasn't caught up yet.
+      const hasExternalPoChange=safeItems(order).some((ei,idx)=>{const li=safeItems(o)[idx];if(!li)return false;return(Array.isArray(ei.po_lines)?ei.po_lines.length:0)>(Array.isArray(li.po_lines)?li.po_lines.length:0)});
+      if(!hasExternalJobChange&&!hasExternalArtChange&&!hasExternalPickChange&&!hasExternalPoChange)return;
       setO(prev=>{const mergedJobs=safeJobs(prev).map(j=>{const ext=extJobs.find(ej=>ej.id===j.id);if(ext&&(ext.art_status!==j.art_status||ext.coach_approved_at!==j.coach_approved_at||ext.coach_rejected!==j.coach_rejected)){return{...j,art_status:ext.art_status,coach_approved_at:ext.coach_approved_at,coach_rejected:ext.coach_rejected,rejections:ext.rejections,sent_to_coach_at:ext.sent_to_coach_at}}return j});
         // Merge pick_line changes from external source (warehouse pulls, new IFs from other tabs)
-        const mergedItems=hasExternalPickChange?safeItems(prev).map((it,idx)=>{const ext=safeItems(order)[idx];if(!ext)return it;const ePicks=safePicks(ext);const lPicks=safePicks(it);if(JSON.stringify(ePicks)===JSON.stringify(lPicks))return it;return{...it,pick_lines:ePicks}}):prev.items;
+        // and union-add external po_lines (restored stale/foreign lines) onto their item.
+        const mergedItems=(hasExternalPickChange||hasExternalPoChange)?safeItems(prev).map((it,idx)=>{
+          const ext=safeItems(order)[idx];if(!ext)return it;
+          let next=it;
+          if(hasExternalPickChange){const ePicks=safePicks(ext);const lPicks=safePicks(next);if(JSON.stringify(ePicks)!==JSON.stringify(lPicks))next={...next,pick_lines:ePicks}}
+          if(hasExternalPoChange&&(!next.sku||!ext.sku||next.sku===ext.sku)){
+            const eLines=Array.isArray(ext.po_lines)?ext.po_lines:[];const lLines=Array.isArray(next.po_lines)?next.po_lines:[];
+            if(eLines.length>lLines.length){const have=new Set(lLines.map(l=>JSON.stringify(l)));const add=eLines.filter(l=>!have.has(JSON.stringify(l)));if(add.length)next={...next,po_lines:[...lLines,...add]}}
+          }
+          return next;
+        }):prev.items;
         // Merge external art by id: adopt incoming rows (status/approval changes, or groups added on another tab)
         // but NEVER drop a local group the incoming copy is missing. A stale poll/refresh snapshot must not
         // silently remove art the rep just added here — that drop would then be persisted as a DELETE on the
         // next save (and unlink it from the line items it was applied to). Union-merge keeps local-only groups.
         const mergedArt=hasExternalArtChange?(()=>{const ext=safeArt(order);const extById=new Map(ext.map(a=>[a.id,a]));const loc=safeArt(prev);const locIds=new Set(loc.map(a=>a.id));const out=loc.map(a=>extById.get(a.id)||a);ext.forEach(a=>{if(!locIds.has(a.id))out.push(a)});return out})():prev.art_files;
-        return{...prev,jobs:mergedJobs,items:mergedItems||prev.items,art_files:mergedArt,updated_at:order.updated_at}})
+        // Union the hydrated PO/pick id sets: ids the App-side restore marked as known must survive the
+        // editor round-trip, or a later deliberate deletion of those lines would be resurrected again.
+        const mergedPoIds=[...new Set([...(Array.isArray(prev._hydratedPoIds)?prev._hydratedPoIds:[]),...(Array.isArray(order._hydratedPoIds)?order._hydratedPoIds:[])])];
+        const mergedPickIds=[...new Set([...(Array.isArray(prev._hydratedPickIds)?prev._hydratedPickIds:[]),...(Array.isArray(order._hydratedPickIds)?order._hydratedPickIds:[])])];
+        return{...prev,jobs:mergedJobs,items:mergedItems||prev.items,art_files:mergedArt,updated_at:order.updated_at,_hydratedPoIds:mergedPoIds,_hydratedPickIds:mergedPickIds}})
     },[order.updated_at,order.items]);
     React.useEffect(()=>{if(initTab)setTab(initTab)},[initTab]);
     React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
