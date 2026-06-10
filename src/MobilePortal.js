@@ -37,6 +37,7 @@ const prodLabel=(j)=>PROD_LABELS[j.prod_status]||(j.prod_status||'pending').repl
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
 export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],onPullIF,onReceiveSOPO,onReceiveInvPO,onAssignBot}){
+  const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
   const[tab,setTab]=useState('home');
   const[botCompose,setBotCompose]=useState(null);// {title,so_id} when the quick "Assign to Claude" form is open
   const[q,setQ]=useState('');
@@ -925,8 +926,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       <div className="mp-greeting"><div className="mp-greeting-text">Welcome, {cu.name?.split(' ')[0]}</div>
         <div className="mp-greeting-sub">{new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}</div></div>
       {stats.urgentOrders>0&&<div className="mp-alert-banner" onClick={()=>setTab('orders')} style={{cursor:'pointer'}}><MIcon name="alert" size={16}/><span>{stats.urgentOrders} order{stats.urgentOrders>1?'s':''} due within 3 days</span></div>}
-      <button onClick={()=>go('warehouse')} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'20px',borderRadius:14,border:'none',background:'#d97706',color:'white',fontWeight:800,fontSize:18,cursor:'pointer',margin:'4px 0 14px',minHeight:64}}>
-        <MIcon name="box" size={26}/> Warehouse — Check In / Pull
+      <button onClick={()=>go('warehouse')} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'15px',borderRadius:12,border:'1px solid #fcd34d',background:'#fffbeb',color:'#b45309',fontWeight:700,fontSize:15,cursor:'pointer',margin:'4px 0 12px',minHeight:52}}>
+        <MIcon name="box" size={20}/> Warehouse — Check In / Pull
       </button>
       <div className="mp-more-grid">
         {tiles.map(t=><div key={t.label} className="mp-more-item" onClick={t.onClick}>
@@ -959,12 +960,12 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         <div className="mp-stat-card" onClick={()=>setTab('messages')}>
           <div className="mp-stat-num" style={unreadForMeCount>0?{color:'#dc2626'}:{}}>{unreadForMeCount}</div><div className="mp-stat-label">Messages</div>
         </div>
-        <div className="mp-stat-card">
+        {!isOps&&<div className="mp-stat-card">
           <div className="mp-stat-num">{stats.openInvoices}</div><div className="mp-stat-label">Open Invoices</div>
-        </div>
-        <div className="mp-stat-card">
+        </div>}
+        {!isOps&&<div className="mp-stat-card">
           <div className="mp-stat-num" style={{color:'#16a34a'}}>{fmtMoney(stats.monthRevenue)}</div><div className="mp-stat-label">MTD Sales</div>
-        </div>
+        </div>}
       </div>
       {/* Urgent orders */}
       {stats.urgentOrders>0&&<div className="mp-alert-banner">
@@ -1234,11 +1235,9 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     setTab('more');setMoreSubPage('warehouse');setWhTab('pos');setWhDetail({kind:'batch'});
     setShowSearch(false);setQ('');
   };
-  // Per-PO and whole-batch shortcuts on the review screen.
+  // Per-PO shortcuts on the review screen.
   const batchPoSetAll=(po)=>setWhBatchQty(prev=>({...prev,[po.key]:fullOpenMap(po)}));
   const batchPoClear=(po)=>setWhBatchQty(prev=>({...prev,[po.key]:{}}));
-  const batchSetAllPOs=(sel)=>setWhBatchQty(()=>{const o={};sel.forEach(po=>{o[po.key]=fullOpenMap(po)});return o});
-  const batchClearAll=()=>setWhBatchQty({});
   // Step 2: receive exactly the quantities entered on the review screen (skips zeros).
   const confirmBatchReceive=(sel)=>{
     if(whSaving)return;
@@ -1372,10 +1371,6 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         </div>
         <div className="mp-detail-body">
           {sel.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40,fontSize:14}}>No open items in the selected POs.</div>}
-          {sel.length>1&&<div style={{display:'flex',gap:6,marginBottom:14}}>
-            <button onClick={()=>batchSetAllPOs(sel)} style={{flex:1,padding:'9px',borderRadius:8,border:'1px solid #86efac',background:'#f0fdf4',color:'#166534',fontWeight:800,fontSize:13,cursor:'pointer',minHeight:38}}>✓ All received (all {sel.length} POs)</button>
-            <button onClick={batchClearAll} style={{padding:'9px 14px',borderRadius:8,border:'1px solid #e2e8f0',background:'white',color:'#64748b',fontWeight:700,fontSize:13,cursor:'pointer',minHeight:38}}>Clear all</button>
-          </div>}
           {sel.map(po=>{const poRcv=Object.values(whBatchQty[po.key]||{}).reduce((b,m)=>b+Object.values(m||{}).reduce((c,v)=>c+(parseInt(v)||0),0),0);
             return<div key={po.key} style={{marginBottom:18}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,paddingBottom:6,borderBottom:'2px solid #e2e8f0',flexWrap:'wrap'}}>
@@ -1743,20 +1738,20 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
           <div className="mp-page-title" style={{margin:0}}>Reports</div>
         </div>
-        {/* Scope toggle */}
+        {/* Scope toggle + sales performance — hidden for warehouse/production (no sales reporting) */}
+        {!isOps&&<>
         <div className="mp-filter-row">
           <button className={`mp-filter-btn${reportScope==='mine'?' active':''}`} onClick={()=>setReportScope('mine')}>My Customers</button>
           <button className={`mp-filter-btn${reportScope==='all'?' active':''}`} onClick={()=>setReportScope('all')}>Company</button>
         </div>
         {reportScope==='mine'&&myCustIds.size===0&&<div style={{fontSize:12,color:'#94a3b8',marginBottom:8}}>No customers assigned to you — showing company-wide.</div>}
-        {/* Sales performance */}
         <div className="mp-section-title">Sales Performance</div>
         <div className="mp-stats-grid">
           <div className="mp-stat-card"><div className="mp-stat-num" style={{color:'#16a34a'}}>{fmtMoney(monthRev)}</div><div className="mp-stat-label">Revenue (Month)</div></div>
           <div className="mp-stat-card"><div className="mp-stat-num" style={{color:'#16a34a'}}>{fmtMoney(qtrRev)}</div><div className="mp-stat-label">Revenue (Quarter)</div></div>
           <div className="mp-stat-card"><div className="mp-stat-num">{wonQtr}</div><div className="mp-stat-label">Won Est. (Qtr)</div></div>
           <div className="mp-stat-card"><div className="mp-stat-num">{openEsts}</div><div className="mp-stat-label">Open Estimates</div></div>
-        </div>
+        </div></>}
         {/* Open orders / production */}
         <div className="mp-section-title">Open Orders ({openSOs.length})</div>
         {Object.keys(statusCounts).length===0&&<div style={{fontSize:13,color:'#94a3b8',padding:'4px 0 8px'}}>No open orders.</div>}
@@ -1765,7 +1760,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
             <span style={statusBadge(st)}>{st.replace('_',' ')}</span><span style={{fontWeight:800,fontSize:16}}>{n}</span>
           </div>)}
         </div>}
-        {/* Top customers */}
+        {/* Top customers + AR — hidden for warehouse/production (no sales reporting) */}
+        {!isOps&&<>
         <div className="mp-section-title">Top Customers</div>
         {topCust.length===0&&<div style={{fontSize:13,color:'#94a3b8',padding:'4px 0 8px'}}>No revenue yet.</div>}
         {topCust.map(({c,v},i)=><div key={c.id} className="mp-list-card" onClick={()=>setDetail({type:'customer',data:c})} style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -1775,7 +1771,6 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           </div>
           <div style={{fontWeight:700,fontSize:14,color:'#16a34a',flexShrink:0}}>{fmtMoney(v)}</div>
         </div>)}
-        {/* AR / open invoices */}
         <div className="mp-section-title">Accounts Receivable</div>
         <div style={{background:'#0f172a',borderRadius:12,padding:'12px 14px',marginBottom:8,color:'white'}}>
           <div style={{fontSize:11,color:'#94a3b8',fontWeight:600}}>OUTSTANDING ({openInvList.length} invoices)</div>
@@ -1786,7 +1781,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <div className="mp-stat-card"><div className="mp-stat-num" style={{fontSize:16,color:'#d97706'}}>{fmtMoney(aging.d30)}</div><div className="mp-stat-label">1–30 Past</div></div>
           <div className="mp-stat-card"><div className="mp-stat-num" style={{fontSize:16,color:'#ea580c'}}>{fmtMoney(aging.d60)}</div><div className="mp-stat-label">31–60 Past</div></div>
           <div className="mp-stat-card"><div className="mp-stat-num" style={{fontSize:16,color:'#dc2626'}}>{fmtMoney(aging.d90)}</div><div className="mp-stat-label">60+ Past</div></div>
-        </div>
+        </div></>}
       </div>;
     }
     // More menu grid
