@@ -18,7 +18,7 @@ import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
-import { buildJobs, isJobReady, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
+import { buildJobs, isJobReady, recalcJobFulfillment, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
 import { calcOrderTotals, auTierDisc } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
@@ -10180,21 +10180,7 @@ export default function App(){
                     });
                     // Recalculate job item_status/fulfilled_units after receiving — mirrors the warehouse
                     // stock-pull flow so the Production dashboard and "Ready for Deco" tab reflect received stock.
-                    const updatedJobs=safeJobs(so).map(j=>{
-                      let total=0,fulfilled=0;
-                      (j.items||[]).forEach(gi=>{const it=updItems[gi.item_idx];if(!it)return;
-                        Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-                          total+=v;
-                          const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-                          const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-                          fulfilled+=Math.min(v,pQ+rQ);
-                        });
-                      });
-                      const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-                      if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
-                      return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
-                    });
-                    savSO({...so,items:updItems,jobs:updatedJobs,updated_at:new Date().toLocaleString()});
+                    savSO({...so,items:updItems,jobs:recalcJobFulfillment(so,updItems),updated_at:new Date().toLocaleString()});
                   });
                   nf('✅ '+poId+' '+(_batchStatus==='partial'?'partially received':'received')+' — '+_grandRcvd+'/'+totalUnits+' units. SO items updated.');
                   // Print label(s) after receiving — separate per source PO for batches
@@ -15657,20 +15643,6 @@ export default function App(){
   },[sos]); // eslint-disable-line react-hooks/exhaustive-deps
   const addWhAction=(action)=>{setWhRecentActions(prev=>[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,500))};
   // ─── Mobile warehouse mutations — parity with desktop IF-pull / PO-receive side effects ───
-  const _mobRecalcJobs=(so,items)=>safeJobs(so).map(j=>{
-    let total=0,fulfilled=0;
-    (j.items||[]).forEach(gi=>{const it=items[gi.item_idx];if(!it)return;
-      Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-        total+=v;
-        const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-        const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-        fulfilled+=Math.min(v,pQ+rQ);
-      });
-    });
-    const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-    if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
-    return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
-  });
   // Pull an IF (pick group) from mobile. pullMap: {itemIdx:{size:qty}} pulled this round.
   const mobilePullIF=(soId,pickId,pullMap)=>{
     const so=sos.find(s=>s.id===soId);if(!so)return;
@@ -15684,7 +15656,7 @@ export default function App(){
       });
       return changed?{...it,pick_lines:newPicks}:it;
     });
-    const updatedSO={...so,items:updatedItems,jobs:_mobRecalcJobs(so,updatedItems),updated_at:new Date().toLocaleString()};
+    const updatedSO={...so,items:updatedItems,jobs:recalcJobFulfillment(so,updatedItems),updated_at:new Date().toLocaleString()};
     // Deduct warehouse inventory for what was pulled
     const prodPatches={};
     Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const p=prod.find(x=>x.id===it.product_id)||prod.find(x=>x.sku===it.sku);if(!p)return;const newInv={...(prodPatches[p.id]||p._inv||{})};Object.entries(qtys).forEach(([sz,v])=>{if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});prodPatches[p.id]=newInv});
@@ -15713,7 +15685,7 @@ export default function App(){
       acts.push({type:'received',poId:po.po_id||'',soId,customer:cc?.name||'',sku:it.sku,name:it.name,color:it.color,qty:Object.values(rcv).reduce((a,v)=>a+(v||0),0),sizes:szStr,by:cu?.id||'warehouse'});
     });
     if(grand===0)return;
-    savSO({...so,items,jobs:_mobRecalcJobs(so,items),updated_at:new Date().toLocaleString()});
+    savSO({...so,items,jobs:recalcJobFulfillment(so,items),updated_at:new Date().toLocaleString()});
     acts.forEach(a=>addWhAction(a));
     nf('Received '+grand+' unit'+(grand!==1?'s':'')+' on '+soId);
   };
@@ -15963,21 +15935,7 @@ export default function App(){
                         return{...it2,pick_lines:[...existingPicks,newPick]};
                       });
                       // Recalculate job item_status after pulling — mirrors PO receive flow so the warehouse "Ready for Deco" tab and job-level todos reflect stock-pull fulfillment.
-                      const updatedJobs=safeJobs(so).map(j=>{
-                        let total=0,fulfilled=0;
-                        (j.items||[]).forEach(gi=>{const it=updatedItems[gi.item_idx];if(!it)return;
-                          Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-                            total+=v;
-                            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-                            const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-                            fulfilled+=Math.min(v,pQ+rQ);
-                          });
-                        });
-                        const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-                        if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
-                        return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
-                      });
-                      const updatedSO={...so,items:updatedItems,jobs:updatedJobs,updated_at:new Date().toLocaleString()};
+                      const updatedSO={...so,items:updatedItems,jobs:recalcJobFulfillment(so,updatedItems),updated_at:new Date().toLocaleString()};
                       // Inventory adjustments per item product
                       const prodPatches={};
                       pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});prodPatches[pi.p.id]=newInv});
@@ -16545,21 +16503,7 @@ export default function App(){
                         updItems[pl.itemIdx]={...updItems[pl.itemIdx],po_lines:pls};
                       });
                       // Recalculate job item_status after receiving items
-                      const updJobs=safeJobs(grpSO).map(j=>{
-                        let total=0,fulfilled=0;
-                        (j.items||[]).forEach(gi=>{const it=updItems[gi.item_idx];if(!it)return;
-                          Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-                            total+=v;
-                            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-                            const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-                            fulfilled+=Math.min(v,pQ+rQ);
-                          });
-                        });
-                        const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-                        if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
-                        return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
-                      });
-                      savSO({...grpSO,items:updItems,jobs:updJobs,updated_at:new Date().toLocaleString()});
+                      savSO({...grpSO,items:updItems,jobs:recalcJobFulfillment(grpSO,updItems),updated_at:new Date().toLocaleString()});
                     });
                   }
 
@@ -18338,19 +18282,7 @@ export default function App(){
                       return{...x,_inv:newInv};
                     }));
                     // Refresh job item_status so deco queues recompute
-                    const updJobs=safeJobs(so2).map(j=>{
-                      let total=0,fulfilled=0;
-                      (j.items||[]).forEach(gi=>{const it=updItems[gi.item_idx];if(!it)return;
-                        Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{total+=v;
-                          const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((b,pk)=>b+safeNum(pk[sz]),0);
-                          const rQ=safePOs(it).reduce((b,pk)=>b+safeNum((pk.received||{})[sz]),0);
-                          fulfilled+=Math.min(v,pQ+rQ);});
-                      });
-                      const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-                      if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
-                      return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
-                    });
-                    savSO({...so2,items:updItems,jobs:updJobs,updated_at:new Date().toLocaleString()},{skipMerge:true});
+                    savSO({...so2,items:updItems,jobs:recalcJobFulfillment(so2,updItems),updated_at:new Date().toLocaleString()},{skipMerge:true});
                     // Remove every recent action entry tied to this pick_id+SO so the history stays clean
                     const nextActions=whRecentActions.filter(x=>!(x.type==='pulled'&&x.pickId===a.pickId&&x.soId===a.soId));
                     setWhRecentActions(nextActions);
