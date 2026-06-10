@@ -18,8 +18,8 @@ import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
-import { buildJobs, isJobReady, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
+import { buildJobs, isJobReady, recalcJobFulfillment, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
+import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, authFetch } from './utils';
 import { calcOrderTotals, auTierDisc } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -890,7 +890,7 @@ const _dbSeed = async (d) => {
   if(d.omg_stores?.length){
     await supabase.from('omg_stores').upsert(d.omg_stores.map(s=>_pick(s,_omgStoreCols)),{onConflict:'id'});
     const allProds=[];d.omg_stores.forEach(s=>(s.products||[]).forEach(p=>allProds.push({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes,image_url:p.image_url||'',manufacturer:p.manufacturer||'',art_ready:!!p.art_ready,art_cust_ids:(p.decorations||[]).map(d=>d._cust_art_id||'').join('|')})));
-    if(allProds.length) await supabase.from('omg_store_products').upsert(allProds,{onConflict:'store_id,sku'});
+    if(allProds.length) await supabase.from('omg_store_products').upsert(allProds,{onConflict:'store_id,sku'}).then(r=>{if(r.error)console.warn('[DB] omg products seed failed (no unique store_id,sku constraint in DB):',r.error.message)});
   }
 };
 // ─── Auth error guard — set true when a 401/RLS error is detected; stops the
@@ -1720,7 +1720,7 @@ const _dbSaveArtFilesInner = async (so) => {
 const _dbSaveArtFiles = (so) => _queuedEntitySave(so.id, so, _dbSaveArtFilesInner);
 const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','shipping_name','shipping_address'];
 const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','shipping_name','shipping_address']);
-const _dbSaveInvoice = async (inv) => {
+const _dbSaveInvoiceInner = async (inv) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{try{
     const{payments,items,...rest}=inv;
@@ -1804,6 +1804,9 @@ const _dbSaveInvoice = async (inv) => {
     _dbSaveFailedIds.delete(inv.id);_clearSaveError(inv.id);_persistFailedIds();return true;
   }catch(e){console.error('[DB] save invoice:',e);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,e.message||String(e));_persistFailedIds();return false}});
 };
+// Queued per invoice id (same as SOs/estimates) so a direct awaited save — e.g. the final-invoice
+// commit that gates closing the SO — can't race the _diffSave effect saving the same invoice.
+const _dbSaveInvoice = (inv) => _queuedEntitySave(inv.id, inv, _dbSaveInvoiceInner);
 let _dbNotify=null; // set by App component for visible error toasts
 let _dataLossAlert=null; // set by App component — logs + emails on item-wipe attempts/events
 let _onEstStatusMerge=null; // set by App component — called when a version-conflict save merges a higher status from DB
@@ -3907,8 +3910,18 @@ export default function App(){
     const newProds=JSON.stringify((s.products||[]).map(p=>p.sku+p.cost+(p.decorations||[]).map(d=>d.type+':'+d.art_group).join('|')+p.vendor_id).sort());
     if(oldProds!==newProds&&(s.products||[]).length>0){
       const prods=(s.products||[]).map(p=>({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.no_deco?'no_deco':((p.decorations||[]).map(d=>d.type).join('|')||''),deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',vendor_id:p.vendor_id||'',art_group:(p.decorations||[]).map(d=>d.art_group).join('|')||'',art_cust_ids:(p.decorations||[]).map(d=>d._cust_art_id||'').join('|'),_cost_source:p._cost_source||'',art_ready:!!p.art_ready}));
-      // Delete old products and insert fresh (handles SKU changes)
-      if(supabase){supabase.from('omg_store_products').delete().eq('store_id',s.id).then(()=>{supabase.from('omg_store_products').insert(prods).then(r=>{if(r.error)console.error('[DB] omg products save:',r.error.message)})})}
+      // Insert the fresh set first, then delete the old rows by id (handles SKU changes).
+      // Never delete-then-insert: if the insert fails after the delete, the store's products are gone.
+      // Also self-heals duplicate rows left by the old pattern — oldIds covers every existing row.
+      if(supabase){(async()=>{try{
+        const{data:oldRows,error:oldErr}=await supabase.from('omg_store_products').select('id').eq('store_id',s.id);
+        if(oldErr){console.error('[DB] omg products: read of existing rows failed, save skipped:',oldErr.message);return}
+        const{error:insErr}=await supabase.from('omg_store_products').insert(prods);
+        if(insErr){console.error('[DB] omg products save:',insErr.message);return}
+        const oldIds=(oldRows||[]).map(r=>r.id);
+        if(oldIds.length){const{error:delErr}=await supabase.from('omg_store_products').delete().in('id',oldIds);
+          if(delErr)console.error('[DB] omg products: stale-row cleanup failed (duplicates until next save):',delErr.message)}
+      }catch(e){console.error('[DB] omg products save:',e.message||e)}})()}
     }
   }});_dbSnap.current.omg=omgStores}},[omgStores]);
 
@@ -4608,7 +4621,7 @@ export default function App(){
     const t=_pendingQBTokens.current;_pendingQBTokens.current=null;
     setQBConfig(prev=>({...prev,connected:true,sandbox:false,access_token:t.access_token,refresh_token:t.refresh_token,
       realm_id:t.realm_id,token_created_at:t.created_at||Date.now()}));
-    fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
+    authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:'company_info',access_token:t.access_token,realm_id:t.realm_id,sandbox:false})})
       .then(r=>r.json()).then(d=>{
         const ci=d?.CompanyInfo;
@@ -7301,7 +7314,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} nextBatchPONumber={'NSA '+batchCounter} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -8124,20 +8137,38 @@ export default function App(){
   const saveInvPO=()=>{
     const vendorId=invPOModal.vendor_id;const vendor=vend.find(v=>v.id===vendorId);
     if(!vendorId||!vendor){nf('Select a vendor','warn');return}
-    const validItems=invPOModal.items.filter(it=>(it.product_id||it.sku)&&Object.values(it.sizes||{}).some(v=>v>0));
+    // Allow custom/API items (no product_id) as long as they have a SKU.
+    // Also keep items with received units even if ordered qty was zeroed out —
+    // dropping them would orphan the receiving history (stock already moved).
+    const validItems=invPOModal.items.filter(it=>(it.product_id||it.sku)&&(Object.values(it.sizes||{}).some(v=>v>0)||Object.values(it.received||{}).some(v=>v>0)));
     if(validItems.length===0){nf('Add at least one item with quantities','warn');return}
     const isEdit=!!invPOModal.editId;
     if(isEdit){
-      // Update existing PO
+      // Update existing PO — editable in any status. Ordered qty can't drop below what was
+      // already received (clamped), and status is recomputed since items/quantities changed.
+      let clamped=false;
+      const newItems=validItems.map(it=>{
+        const sizes={...it.sizes};
+        Object.entries(it.received||{}).forEach(([sz,r])=>{if(r>0&&(sizes[sz]||0)<r){sizes[sz]=r;clamped=true}});
+        return{product_id:it.product_id,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||[],sizes,received:it.received||{},nsa_cost:it.nsa_cost||0};
+      });
+      let anyReceived=false,allReceived=true;
+      newItems.forEach(it=>{
+        Object.entries(it.sizes).forEach(([sz,ord])=>{if(ord>0&&((it.received||{})[sz]||0)<ord)allReceived=false});
+        if(Object.values(it.received||{}).some(v=>v>0))anyReceived=true;
+      });
+      const newStatus=anyReceived?(allReceived?'received':'partial'):'ordered';
       setInvPOs(prev=>prev.map(po=>{
         if(po.id!==invPOModal.editId)return po;
-        return{...po,vendor_id:vendorId,vendor_name:vendor.name,
-          items:validItems.map(it=>({product_id:it.product_id,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||[],sizes:{...it.sizes},received:it.received||{},nsa_cost:it.nsa_cost||0})),
+        const status=po.status==='cancelled'?po.status:newStatus;
+        return{...po,vendor_id:vendorId,vendor_name:vendor.name,items:newItems,status,
+          received_at:status==='received'?(po.received_at||new Date().toLocaleString()):null,
+          received_by:status==='received'?(po.received_by||cu?.name||null):null,
           expected_date:invPOModal.expected_date||'',memo:invPOModal.memo||'',is_booking:!!invPOModal.is_booking,_qb_synced:false};
       }));
       const existingPO=invPOs.find(p=>p.id===invPOModal.editId);
-      logChange('updated','Inventory PO',existingPO?.po_number||'',vendor.name+' — '+validItems.length+' items');
-      nf('PO '+(existingPO?.po_number||'')+' updated');
+      logChange('updated','Inventory PO',existingPO?.po_number||'',vendor.name+' — '+newItems.length+' items');
+      nf('PO '+(existingPO?.po_number||'')+' updated'+(clamped?' (some sizes kept at received qty)':''));
     } else {
       // Create new PO
       const poNum='PO '+invPOCounter+' NSA';
@@ -8341,7 +8372,7 @@ export default function App(){
             <div style={{padding:'10px 16px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',display:'flex',gap:8}}>
               {po.status!=='received'&&po.status!=='cancelled'&&<button className="btn btn-sm btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>setInvPOReceive(po)}>Receive Items</button>}
               <button className="btn btn-sm btn-secondary" onClick={()=>printInvPOPackingList(po)}>📦 Packing List</button>
-              {po.status==='ordered'&&<button className="btn btn-sm btn-secondary" onClick={()=>editInvPO(po)}>Edit</button>}
+              <button className="btn btn-sm btn-secondary" onClick={()=>editInvPO(po)}>Edit</button>
               <button className="btn btn-sm btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>deleteInvPO(po)}>Delete</button>
             </div>
           </div>})}
@@ -10195,21 +10226,7 @@ export default function App(){
                     });
                     // Recalculate job item_status/fulfilled_units after receiving — mirrors the warehouse
                     // stock-pull flow so the Production dashboard and "Ready for Deco" tab reflect received stock.
-                    const updatedJobs=safeJobs(so).map(j=>{
-                      let total=0,fulfilled=0;
-                      (j.items||[]).forEach(gi=>{const it=updItems[gi.item_idx];if(!it)return;
-                        Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-                          total+=v;
-                          const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-                          const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-                          fulfilled+=Math.min(v,pQ+rQ);
-                        });
-                      });
-                      const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-                      if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
-                      return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
-                    });
-                    savSO({...so,items:updItems,jobs:updatedJobs,updated_at:new Date().toLocaleString()});
+                    savSO({...so,items:updItems,jobs:recalcJobFulfillment(so,updItems),updated_at:new Date().toLocaleString()});
                   });
                   nf('✅ '+poId+' '+(_batchStatus==='partial'?'partially received':'received')+' — '+_grandRcvd+'/'+totalUnits+' units. SO items updated.');
                   // Print label(s) after receiving — separate per source PO for batches
@@ -10633,7 +10650,7 @@ export default function App(){
         return;
       }
       const fee=method==='cc'?Math.round(amount*CC_FEE_PCT*100)/100:0;
-      const newTotal=inv.total+fee; // CC surcharge added to invoice total
+      const newTotal=inv.total+fee; // CC surcharge folded into invoice total (cc_fee tracks it; GP/commissions subtract it)
       const newPaid=inv.paid+amount+fee; // Customer pays amount + fee
       const newStatus=newPaid>=newTotal?'paid':newPaid>0?'partial':'open';
       const payment={amount:amount+fee,method,ref,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
@@ -10733,7 +10750,7 @@ export default function App(){
               {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(inv.total)+'</strong>',style:'text-align:right'}]},
               ...(inv.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$(inv.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
               ...(bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$(bal)+'</strong>',style:'text-align:right'}]}]:[]),
-            ]}],footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms};
+            ]}],footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms,companyInfo:companyInfo};
       };
 
       return(<>
@@ -11119,7 +11136,7 @@ export default function App(){
           const totalActual=costLines.reduce((a,l)=>a+l.actual,0);
           const hasActuals=costLines.some(l=>l.actual>0);
           const variance=totalActual-totalExpected;
-          const revenue=inv.total??0;
+          const revenue=Math.max(0,safeNum(inv.total)-safeNum(inv.cc_fee||0));// exclude CC surcharges from GP
           const gp=revenue-totalActual;
           const gpPct=revenue>0?(gp/revenue*100):0;
           const cats={};costLines.forEach(l=>{if(!cats[l.category])cats[l.category]={expected:0,actual:0};cats[l.category].expected+=l.expected;cats[l.category].actual+=l.actual});
@@ -11797,7 +11814,7 @@ export default function App(){
                       ...(inv._bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$f(inv._bal)+'</strong>',style:'text-align:right'}]}]:[]),
                     ]
                   }],
-                  footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms
+                  footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms,companyInfo:companyInfo
                 });
               }}>🖨️</button>{canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} onClick={()=>deleteInvoice(inv.id)}><Icon name="trash" size={10}/></button>}</>}</td>
           </tr>})}</tbody></table>}
@@ -14131,13 +14148,16 @@ export default function App(){
     // Gross profit calculator for an invoice
     // GP = Invoice Revenue − Garment Cost − Deco Cost − Outbound Shipping (ShipStation) − Inbound Freight (Supplier Bills)
     const calcGP=(inv)=>{
+      // Commission revenue excludes CC surcharges: recordPayment folds card fees into inv.total
+      // (tracked in inv.cc_fee), and reps must not earn GP on a processing-fee pass-through.
+      const invRev=Math.max(0,safeNum(inv.total)-safeNum(inv.cc_fee||0));
       const so=sos.find(s=>s.id===inv.so_id);
-      if(!so)return{rev:inv.total??0,cost:0,gp:inv.total??0,shipRev:0,shipCost:0,inboundFreight:0};
-      const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
+      if(!so)return{rev:invRev,cost:0,gp:invRev,shipRev:0,shipCost:0,inboundFreight:0};
+      const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
       const af=safeArt(so);let rev=0,cost=0;
       safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
         rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);
-        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);rev+=qty*dp2.sell;cost+=qty*dp2.cost});
+        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);rev+=eq*dp2.sell;cost+=eq*dp2.cost});
       });
       // Outside deco POs — SO-level cost bucket
       (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
@@ -14149,8 +14169,8 @@ export default function App(){
       const inboundFreight=safeNum(so._inbound_freight||0);
       const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight;
       // Scale to invoice proportion (invoice may be partial payment of SO)
-      const soTotal=totalRev||1;const scale=safeNum(inv.total)/soTotal;
-      return{rev:inv.total,cost:Math.round(totalCost*scale*100)/100,gp:Math.round((inv.total-totalCost*scale)*100)/100,shipRev:Math.round(shipRev*scale*100)/100,shipCost:Math.round(shipCost*scale*100)/100,inboundFreight:Math.round(inboundFreight*scale*100)/100};
+      const soTotal=totalRev||1;const scale=invRev/soTotal;
+      return{rev:invRev,cost:Math.round(totalCost*scale*100)/100,gp:Math.round((invRev-totalCost*scale)*100)/100,shipRev:Math.round(shipRev*scale*100)/100,shipCost:Math.round(shipCost*scale*100)/100,inboundFreight:Math.round(inboundFreight*scale*100)/100};
     };
 
     // Build commission line items from paid invoices
@@ -14300,13 +14320,13 @@ export default function App(){
     const ytdLines=allLines.filter(l=>l.paidDate&&l.paidDate.getFullYear()===yr);
     const ytdComm=ytdLines.reduce((a,l)=>a+l.commAmt,0);
     const ytdGP=ytdLines.reduce((a,l)=>a+l.gp.gp,0);
-    const ytdRev=ytdLines.reduce((a,l)=>a+safeNum(l.inv.total),0);
+    const ytdRev=ytdLines.reduce((a,l)=>a+l.gp.rev,0);
     const ytdPromoLines=allPromoLines.filter(l=>{const y=l.soDate?parseInt(l.soDate.substring(0,4)):0;return y===yr});
     const ytdPromoCost=ytdPromoLines.reduce((a,l)=>a+l.totalCost,0);
     const ytdNetComm=Math.round((ytdComm-ytdPromoCost)*100)/100;
 
     // By customer
-    const byCust={};allLines.forEach(l=>{const cn=l.customer?.name||'Unknown';if(!byCust[cn])byCust[cn]={name:cn,gp:0,comm:0,invCount:0,rev:0,pipeRev:0,pipeGP:0,pipeComm:0,pipeCount:0};byCust[cn].gp+=l.gp.gp;byCust[cn].comm+=l.commAmt;byCust[cn].invCount++;byCust[cn].rev+=safeNum(l.inv.total)});
+    const byCust={};allLines.forEach(l=>{const cn=l.customer?.name||'Unknown';if(!byCust[cn])byCust[cn]={name:cn,gp:0,comm:0,invCount:0,rev:0,pipeRev:0,pipeGP:0,pipeComm:0,pipeCount:0};byCust[cn].gp+=l.gp.gp;byCust[cn].comm+=l.commAmt;byCust[cn].invCount++;byCust[cn].rev+=l.gp.rev});
     allPipeline.forEach(l=>{const cn=l.customer?.name||'Unknown';if(!byCust[cn])byCust[cn]={name:cn,gp:0,comm:0,invCount:0,rev:0,pipeRev:0,pipeGP:0,pipeComm:0,pipeCount:0};byCust[cn].pipeRev+=l.balance;byCust[cn].pipeGP+=l.gp.gp;byCust[cn].pipeComm+=l.expComm;byCust[cn].pipeCount++});
     const custList=Object.values(byCust).sort((a,b)=>(b.comm+b.pipeComm)-(a.comm+a.pipeComm));
 
@@ -14361,10 +14381,10 @@ export default function App(){
               <td style={{fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>{if(l.so){setESOTab('costs');setESO(l.so);setESOC(l.customer);setPg('orders')}}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
               <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
               {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
-              <td style={{textAlign:'right'}}>${safeNum(l.inv.total).toLocaleString()}</td>
+              <td style={{textAlign:'right'}}>${l.gp.rev.toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${l.gp.cost.toLocaleString()}</td>
               <td style={{textAlign:'right',fontWeight:700,color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString()}</td>
-              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:safeNum(l.inv.total)>0&&l.gp.gp/safeNum(l.inv.total)>=0.3?'#dcfce7':'#fef3c7',color:safeNum(l.inv.total)>0&&l.gp.gp/safeNum(l.inv.total)>=0.3?'#166534':'#92400e'}}>{safeNum(l.inv.total)>0?Math.round(l.gp.gp/safeNum(l.inv.total)*100):0}%</span></td>
+              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.gp.rev>0&&l.gp.gp/l.gp.rev>=0.3?'#dcfce7':'#fef3c7',color:l.gp.rev>0&&l.gp.gp/l.gp.rev>=0.3?'#166534':'#92400e'}}>{l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0}%</span></td>
               <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.isLate?'#fee2e2':'#dcfce7',color:l.isLate?'#dc2626':'#166534'}}>{l.daysToPay??'\u2014'}d</span></td>
               <td style={{textAlign:'center',fontWeight:600,color:l.commRate===0.30?'#166534':'#d97706'}}>{Math.round(l.commRate*100)}%</td>
               <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:'#166534'}}>${l.commAmt.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
@@ -14613,7 +14633,7 @@ export default function App(){
           const w=window.open('','_blank','width=900,height=1100');
           if(!w){alert('Popup blocked — please allow popups for this site.');return}
           const css=`body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;padding:24px;max-width:780px;margin:0 auto}h1{margin:0 0 4px;font-size:22px}h2{margin:0 0 16px;font-size:14px;color:#64748b;font-weight:500}table{width:100%;border-collapse:collapse;font-size:12px;margin:12px 0}th{text-align:left;padding:8px 6px;border-bottom:2px solid #1e293b;background:#f8fafc;font-size:11px;text-transform:uppercase;color:#475569}td{padding:8px 6px;border-bottom:1px solid #e2e8f0}tfoot td{border-top:2px solid #1e293b;font-weight:700}.tr{text-align:right}.tc{text-align:center}.muted{color:#64748b;font-size:10px}.pos{color:#166534}.neg{color:#dc2626}.box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin:8px 0}.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}.tile{padding:12px;border-radius:8px;text-align:center}.tile .v{font-size:20px;font-weight:800}.tile .l{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px}.t1{background:#f0f9ff;color:#1e40af}.t2{background:#fef2f2;color:#dc2626}.t3{background:#f0fdf4;color:#166534}.t4{background:#f5f3ff;color:#6d28d9}@media print{button{display:none}}`;
-          const earnedRows=rr.lines.map(l=>`<tr><td><strong>${l.inv.id}</strong><div class="muted">${l.inv.date||''}</div></td><td>${(l.customer?.name||'—').replace(/</g,'&lt;')}</td><td class="tr">${fmt0(safeNum(l.inv.total))}</td><td class="tr neg">${fmt0(l.gp.cost)}</td><td class="tr pos">${fmt0(l.gp.gp)}</td><td class="tc">${safeNum(l.inv.total)>0?Math.round(l.gp.gp/safeNum(l.inv.total)*100):0}%</td><td class="tc">${l.daysToPay??'—'}d</td><td class="tc">${Math.round(l.commRate*100)}%</td><td class="tr"><strong>${fmt(l.commAmt)}</strong></td></tr>`).join('');
+          const earnedRows=rr.lines.map(l=>`<tr><td><strong>${l.inv.id}</strong><div class="muted">${l.inv.date||''}</div></td><td>${(l.customer?.name||'—').replace(/</g,'&lt;')}</td><td class="tr">${fmt0(l.gp.rev)}</td><td class="tr neg">${fmt0(l.gp.cost)}</td><td class="tr pos">${fmt0(l.gp.gp)}</td><td class="tc">${l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0}%</td><td class="tc">${l.daysToPay??'—'}d</td><td class="tc">${Math.round(l.commRate*100)}%</td><td class="tr"><strong>${fmt(l.commAmt)}</strong></td></tr>`).join('');
           const promoRows=rr.promo.map(l=>`<tr><td><strong>${l.so.id}</strong><div class="muted">${l.soDate||''}</div></td><td>${(l.customer?.name||'—').replace(/</g,'&lt;')}</td><td class="tr neg">${fmt(l.productCost)}</td><td class="tr neg">${fmt(l.decoCost)}</td><td class="tr neg">${fmt(l.shipCost)}</td><td class="tr neg"><strong>−${fmt(l.totalCost)}</strong></td></tr>`).join('');
           w.document.write(`<!doctype html><html><head><title>Commission — ${rr.rep.name} — ${monthLabel}</title><style>${css}</style></head><body>
             <h1>Commission Statement</h1>
@@ -15645,36 +15665,30 @@ export default function App(){
       });
       if(!pending.length)return;
       console.log('[UPS] Auto-checking',pending.length,'packages for pickup status');
-      for(const shp of pending){
-        try{
-          const resp=await fetch('/.netlify/functions/ups-tracking?tracking='+encodeURIComponent(shp.tracking_number));
-          if(!resp.ok){console.warn('[UPS] Tracking API returned',resp.status,'for',shp.tracking_number);continue}
-          const data=await resp.json();
-          if(data.pickedUp){
-            const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString(),ups_status:data.status}:s);
-            savSO({...shp.so,_shipments:updatedShipments});
-          }
-        }catch(e){console.warn('[UPS] Auto-check failed for',shp.tracking_number,e)}
+      // Group by SO and save once per SO — saving inside the per-shipment loop from the
+      // original snapshot let each save overwrite the previous shipment's pickup flag.
+      const bySO=new Map();
+      pending.forEach(p=>{if(!bySO.has(p.so.id))bySO.set(p.so.id,{so:p.so,shps:[]});bySO.get(p.so.id).shps.push(p)});
+      for(const{so,shps}of bySO.values()){
+        let ships=so._shipments||[];let changed=false;
+        for(const shp of shps){
+          try{
+            const resp=await fetch('/.netlify/functions/ups-tracking?tracking='+encodeURIComponent(shp.tracking_number));
+            if(!resp.ok){console.warn('[UPS] Tracking API returned',resp.status,'for',shp.tracking_number);continue}
+            const data=await resp.json();
+            if(data.pickedUp){
+              ships=ships.map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString(),ups_status:data.status}:s);
+              changed=true;
+            }
+          }catch(e){console.warn('[UPS] Auto-check failed for',shp.tracking_number,e)}
+        }
+        if(changed)savSO({...so,_shipments:ships});
       }
     };
     checkPickups();
   },[sos]); // eslint-disable-line react-hooks/exhaustive-deps
   const addWhAction=(action)=>{setWhRecentActions(prev=>[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,500))};
   // ─── Mobile warehouse mutations — parity with desktop IF-pull / PO-receive side effects ───
-  const _mobRecalcJobs=(so,items)=>safeJobs(so).map(j=>{
-    let total=0,fulfilled=0;
-    (j.items||[]).forEach(gi=>{const it=items[gi.item_idx];if(!it)return;
-      Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-        total+=v;
-        const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-        const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-        fulfilled+=Math.min(v,pQ+rQ);
-      });
-    });
-    const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-    if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
-    return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
-  });
   // Pull an IF (pick group) from mobile. pullMap: {itemIdx:{size:qty}} pulled this round.
   const mobilePullIF=(soId,pickId,pullMap)=>{
     const so=sos.find(s=>s.id===soId);if(!so)return;
@@ -15688,7 +15702,7 @@ export default function App(){
       });
       return changed?{...it,pick_lines:newPicks}:it;
     });
-    const updatedSO={...so,items:updatedItems,jobs:_mobRecalcJobs(so,updatedItems),updated_at:new Date().toLocaleString()};
+    const updatedSO={...so,items:updatedItems,jobs:recalcJobFulfillment(so,updatedItems),updated_at:new Date().toLocaleString()};
     // Deduct warehouse inventory for what was pulled
     const prodPatches={};
     Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const p=prod.find(x=>x.id===it.product_id)||prod.find(x=>x.sku===it.sku);if(!p)return;const newInv={...(prodPatches[p.id]||p._inv||{})};Object.entries(qtys).forEach(([sz,v])=>{if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});prodPatches[p.id]=newInv});
@@ -15717,7 +15731,7 @@ export default function App(){
       acts.push({type:'received',poId:po.po_id||'',soId,customer:cc?.name||'',sku:it.sku,name:it.name,color:it.color,qty:Object.values(rcv).reduce((a,v)=>a+(v||0),0),sizes:szStr,by:cu?.id||'warehouse'});
     });
     if(grand===0)return;
-    savSO({...so,items,jobs:_mobRecalcJobs(so,items),updated_at:new Date().toLocaleString()});
+    savSO({...so,items,jobs:recalcJobFulfillment(so,items),updated_at:new Date().toLocaleString()});
     acts.forEach(a=>addWhAction(a));
     nf('Received '+grand+' unit'+(grand!==1?'s':'')+' on '+soId);
   };
@@ -15967,21 +15981,7 @@ export default function App(){
                         return{...it2,pick_lines:[...existingPicks,newPick]};
                       });
                       // Recalculate job item_status after pulling — mirrors PO receive flow so the warehouse "Ready for Deco" tab and job-level todos reflect stock-pull fulfillment.
-                      const updatedJobs=safeJobs(so).map(j=>{
-                        let total=0,fulfilled=0;
-                        (j.items||[]).forEach(gi=>{const it=updatedItems[gi.item_idx];if(!it)return;
-                          Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-                            total+=v;
-                            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-                            const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-                            fulfilled+=Math.min(v,pQ+rQ);
-                          });
-                        });
-                        const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-                        if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
-                        return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
-                      });
-                      const updatedSO={...so,items:updatedItems,jobs:updatedJobs,updated_at:new Date().toLocaleString()};
+                      const updatedSO={...so,items:updatedItems,jobs:recalcJobFulfillment(so,updatedItems),updated_at:new Date().toLocaleString()};
                       // Inventory adjustments per item product
                       const prodPatches={};
                       pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});prodPatches[pi.p.id]=newInv});
@@ -16549,21 +16549,7 @@ export default function App(){
                         updItems[pl.itemIdx]={...updItems[pl.itemIdx],po_lines:pls};
                       });
                       // Recalculate job item_status after receiving items
-                      const updJobs=safeJobs(grpSO).map(j=>{
-                        let total=0,fulfilled=0;
-                        (j.items||[]).forEach(gi=>{const it=updItems[gi.item_idx];if(!it)return;
-                          Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-                            total+=v;
-                            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-                            const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-                            fulfilled+=Math.min(v,pQ+rQ);
-                          });
-                        });
-                        const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-                        if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
-                        return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
-                      });
-                      savSO({...grpSO,items:updItems,jobs:updJobs,updated_at:new Date().toLocaleString()});
+                      savSO({...grpSO,items:updItems,jobs:recalcJobFulfillment(grpSO,updItems),updated_at:new Date().toLocaleString()});
                     });
                   }
 
@@ -16912,17 +16898,24 @@ export default function App(){
             if(!upsShipments.length){nf('No UPS packages to check');return}
             nf('Checking '+upsShipments.length+' UPS package'+(upsShipments.length!==1?'s':'')+'...');
             let confirmed=0;
-            for(const shp of upsShipments){
-              try{
-                const resp=await fetch('/.netlify/functions/ups-tracking?tracking='+encodeURIComponent(shp.tracking_number));
-                const data=await resp.json();
-                if(data.pickedUp){
-                  const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString(),ups_status:data.status}:s);
-                  savSO({...shp.so,_shipments:updatedShipments});
-                  addWhAction({type:'pickup_confirmed',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number,carrier:'ups',by:'auto-check'});
-                  confirmed++;
-                }
-              }catch(e){console.warn('[UPS] Check failed for',shp.tracking_number,e)}
+            // Group by SO and save once per SO — per-shipment saves from the same stale base
+            // overwrite each other when one SO has multiple pending UPS shipments.
+            const bySO=new Map();
+            upsShipments.forEach(p=>{if(!bySO.has(p.so.id))bySO.set(p.so.id,{so:p.so,shps:[]});bySO.get(p.so.id).shps.push(p)});
+            for(const{so,shps}of bySO.values()){
+              let ships=so._shipments||[];let changed=false;
+              for(const shp of shps){
+                try{
+                  const resp=await fetch('/.netlify/functions/ups-tracking?tracking='+encodeURIComponent(shp.tracking_number));
+                  const data=await resp.json();
+                  if(data.pickedUp){
+                    ships=ships.map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString(),ups_status:data.status}:s);
+                    addWhAction({type:'pickup_confirmed',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number,carrier:'ups',by:'auto-check'});
+                    confirmed++;changed=true;
+                  }
+                }catch(e){console.warn('[UPS] Check failed for',shp.tracking_number,e)}
+              }
+              if(changed)savSO({...so,_shipments:ships});
             }
             nf(confirmed>0?confirmed+' package'+(confirmed!==1?'s':'')+' confirmed picked up':'No new pickups detected');
           };
@@ -17242,8 +17235,10 @@ export default function App(){
                             if(Object.keys(remainingSizes).length===0)return;
                             const existing=(b[bi].items||[]).findIndex(x=>x.soId===ai.soId&&x.itemIdx===ai.itemIdx);
                             if(existing>=0){
-                              const merged={...b[bi].items[existing],sizes:{}};
-                              Object.entries(ai.sizes||{}).forEach(([sz])=>{merged.sizes[sz]=(b[bi].items[existing].sizes[sz]||0)+(remainingSizes[sz]||0)});
+                              // Start from the sizes already in the box (don't rebuild from ai.sizes — that drops
+                              // any size in the box but absent from the incoming add) and add the remaining qtys.
+                              const merged={...b[bi].items[existing],sizes:{...(b[bi].items[existing].sizes||{})}};
+                              Object.entries(remainingSizes).forEach(([sz,v])=>{merged.sizes[sz]=(merged.sizes[sz]||0)+v});
                               b[bi]={...b[bi],items:b[bi].items.map((x,xi)=>xi===existing?merged:x)};
                             } else {
                               b[bi]={...b[bi],items:[...(b[bi].items||[]),{sku:ai.sku,name:ai.name,color:ai.color||'',sizes:{...remainingSizes},soId:ai.soId,itemIdx:ai.itemIdx}]};
@@ -17280,8 +17275,9 @@ export default function App(){
                                 const b=[...shipModal.boxes];
                                 const existing=(b[bi].items||[]).findIndex(x=>x.soId===ai.soId&&x.itemIdx===ai.itemIdx);
                                 if(existing>=0){
-                                  const merged={...b[bi].items[existing],sizes:{}};
-                                  Object.entries(ai.sizes||{}).forEach(([sz,v])=>{merged.sizes[sz]=(b[bi].items[existing].sizes[sz]||0)+(remainingSizes[sz]||0)});
+                                  // Preserve sizes already boxed; only add the remaining quantities.
+                                  const merged={...b[bi].items[existing],sizes:{...(b[bi].items[existing].sizes||{})}};
+                                  Object.entries(remainingSizes).forEach(([sz,v])=>{merged.sizes[sz]=(merged.sizes[sz]||0)+v});
                                   b[bi]={...b[bi],items:b[bi].items.map((x,xi)=>xi===existing?merged:x)};
                                 } else {
                                   b[bi]={...b[bi],items:[...(b[bi].items||[]),{sku:ai.sku,name:ai.name,color:ai.color||'',sizes:{...remainingSizes},soId:ai.soId,itemIdx:ai.itemIdx}]};
@@ -18332,19 +18328,7 @@ export default function App(){
                       return{...x,_inv:newInv};
                     }));
                     // Refresh job item_status so deco queues recompute
-                    const updJobs=safeJobs(so2).map(j=>{
-                      let total=0,fulfilled=0;
-                      (j.items||[]).forEach(gi=>{const it=updItems[gi.item_idx];if(!it)return;
-                        Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{total+=v;
-                          const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((b,pk)=>b+safeNum(pk[sz]),0);
-                          const rQ=safePOs(it).reduce((b,pk)=>b+safeNum((pk.received||{})[sz]),0);
-                          fulfilled+=Math.min(v,pQ+rQ);});
-                      });
-                      const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-                      if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
-                      return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
-                    });
-                    savSO({...so2,items:updItems,jobs:updJobs,updated_at:new Date().toLocaleString()},{skipMerge:true});
+                    savSO({...so2,items:updItems,jobs:recalcJobFulfillment(so2,updItems),updated_at:new Date().toLocaleString()},{skipMerge:true});
                     // Remove every recent action entry tied to this pick_id+SO so the history stays clean
                     const nextActions=whRecentActions.filter(x=>!(x.type==='pulled'&&x.pickId===a.pickId&&x.soId===a.soId));
                     setWhRecentActions(nextActions);
@@ -20552,7 +20536,7 @@ export default function App(){
       }catch(e){console.warn('[QB] Token refresh failed:',e)}
     }
     try{
-      const r=await fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
+      const r=await authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action,access_token:payload.access_token||qbConfig.access_token,realm_id:qbConfig.realm_id,sandbox:qbConfig.sandbox,...payload})});
       if(!r.ok&&r.status!==401){const txt=await r.text();console.warn('[QB] API returned',r.status,txt);nf('QB API error ('+r.status+')','error');return null}
       const d=await r.json();
@@ -26323,7 +26307,7 @@ export default function App(){
       if(supabase){
         // Use Netlify function with service role to bypass RLS
         try{
-          const resp=await fetch('/.netlify/functions/create-quote-request',{method:'POST',headers:{'Content-Type':'application/json'},
+          const resp=await authFetch('/.netlify/functions/create-quote-request',{method:'POST',headers:{'Content-Type':'application/json'},
             body:JSON.stringify({id:newQR.id,token:newQR.token,customer_id:newQR.customer_id,contact_id:newQR.contact_id,created_by:newQR.created_by})});
           if(!resp.ok){const err=await resp.json().catch(()=>({error:'Unknown error'}));nf('DB error: '+(err.error||'Failed to create'),'error');return}
         }catch(e){nf('Network error: '+e.message,'error');return}
@@ -27286,7 +27270,7 @@ export default function App(){
         });
         const base64=await resizeImage(vecFile.url);
         if(!base64){nf('Failed to read image data','error');setVecProcessing(false);return}
-        const resp=await fetch('/.netlify/functions/vectorizer-proxy',{
+        const resp=await authFetch('/.netlify/functions/vectorizer-proxy',{
           method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({imageBase64:base64,mode:vecTestMode?'test':'production',outputFormat:'svg',maxColors:vecColors||0})
         });
@@ -27982,16 +27966,20 @@ export default function App(){
             const vendorId=invPOModal.vendor_id;
             const vendor=vend.find(v=>v.id===vendorId);
             const isSanMar=vendor&&/sanmar/i.test(vendor.name||'');
-            const available=vendorId?prod.filter(p=>p.vendor_id===vendorId&&!invPOModal.items.find(it=>it.product_id===p.id)):prod.filter(p=>!invPOModal.items.find(it=>it.product_id===p.id));
-            const matches=available.filter(p=>p.sku.toLowerCase().includes(pq)||p.name.toLowerCase().includes(pq)||(p.color||'').toLowerCase().includes(pq)||(p.brand||'').toLowerCase().includes(pq)).slice(0,15);
+            // Search the FULL catalog — the selected vendor's products surface first, but any SKU
+            // can be added to the PO even if it's assigned to a different vendor (or none).
+            const available=prod.filter(p=>!invPOModal.items.find(it=>it.product_id===p.id));
+            const matches=available.filter(p=>p.sku.toLowerCase().includes(pq)||p.name.toLowerCase().includes(pq)||(p.color||'').toLowerCase().includes(pq)||(p.brand||'').toLowerCase().includes(pq))
+              .sort((a,b)=>((vendorId&&a.vendor_id===vendorId)?0:1)-((vendorId&&b.vendor_id===vendorId)?0:1)).slice(0,15);
             const hasLocal=matches.length>0;const hasApi=invPOApiResults.length>0;
-            if(!hasLocal&&!hasApi&&!invPOApiLoading)return<div style={{padding:8,fontSize:12,color:'#94a3b8',marginTop:4}}>No products found{vendorId?' for this vendor':''}.{isSanMar?' Searching SanMar catalog...':''}</div>;
+            if(!hasLocal&&!hasApi&&!invPOApiLoading)return<div style={{padding:8,fontSize:12,color:'#94a3b8',marginTop:4}}>No products found.{isSanMar?' Searching SanMar catalog...':''}</div>;
             return<div style={{marginTop:4,border:'1px solid #e2e8f0',borderRadius:6,background:'white',maxHeight:220,overflowY:'auto'}}>
               {matches.map(p2=><div key={p2.id} style={{padding:'8px 12px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',fontSize:12,display:'flex',gap:8,alignItems:'center'}}
                 onClick={()=>{setInvPOModal(x=>({...x,productSearch:'',items:[...x.items,{product_id:p2.id,sku:p2.sku,name:p2.name,color:p2.color||'',available_sizes:[...p2.available_sizes],sizes:{},nsa_cost:p2.nsa_cost||0}]}))}}>
                 <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p2.sku}</span>
                 <span style={{flex:1}}>{p2.name}</span>
                 <span style={{color:'#94a3b8',fontSize:11}}>{p2.color}</span>
+                {vendorId&&p2.vendor_id!==vendorId&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:4,background:'#fffbeb',color:'#b45309',border:'1px solid #fde68a',whiteSpace:'nowrap'}} title="Assigned to a different vendor in the catalog — it will still be added to this PO">{vend.find(v=>v.id===p2.vendor_id)?.name||'No vendor'}</span>}
                 <span style={{fontSize:10,color:'#64748b'}}>${p2.nsa_cost?.toFixed(2)}</span>
               </div>)}
               {isSanMar&&invPOApiLoading&&<div style={{padding:'8px 12px',fontSize:12,color:'#64748b',fontStyle:'italic'}}>Searching SanMar catalog...</div>}
@@ -28016,8 +28004,9 @@ export default function App(){
         {invPOModal.items.length===0?<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:13}}>No items added yet. Select a vendor and add products above.</div>:
         invPOModal.items.map((it,idx)=>{
           const itTotal=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+          const itRcvd=Object.values(it.received||{}).reduce((a,v)=>a+v,0);
           const baseSizes=it.available_sizes||['S','M','L','XL','2XL'];
-          const extras=Object.keys(it.sizes||{}).filter(sz=>!baseSizes.includes(sz));
+          const extras=[...new Set([...Object.keys(it.sizes||{}),...Object.keys(it.received||{}).filter(sz=>(it.received[sz]||0)>0)])].filter(sz=>!baseSizes.includes(sz));
           const allSizes=[...baseSizes,...extras].sort((a,b)=>{const ai=SZ_ORD.indexOf(a),bi=SZ_ORD.indexOf(b);return (ai<0?999:ai)-(bi<0?999:bi)});
           const addableSizes=[...SZ_ORD,...EXTRA_SIZES].filter((sz,i,a)=>a.indexOf(sz)===i&&!allSizes.includes(sz));
           return<div key={idx} style={{padding:12,background:'#f8fafc',borderRadius:6,marginBottom:8,border:'1px solid #e2e8f0'}}>
@@ -28037,16 +28026,18 @@ export default function App(){
                 <span style={{fontSize:11,color:'#64748b'}}>/ea</span>
               </div>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
+                {itRcvd>0&&<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 7px',borderRadius:4}}>{itRcvd} received</span>}
                 <span style={{fontWeight:700,fontSize:13}}>{itTotal} units = ${(itTotal*(it.nsa_cost||0)).toFixed(2)}</span>
-                <button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:16,padding:'0 4px'}} onClick={()=>setInvPOModal(x=>({...x,items:x.items.filter((_,i2)=>i2!==idx)}))}>x</button>
+                <button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:16,padding:'0 4px'}} onClick={()=>{if(itRcvd>0&&!window.confirm(it.sku+' has '+itRcvd+' received unit'+(itRcvd!==1?'s':'')+' on this PO. Removing it will NOT reverse inventory that was already received. Remove it from the PO?'))return;setInvPOModal(x=>({...x,items:x.items.filter((_,i2)=>i2!==idx)}))}}>x</button>
               </div>
             </div>
             <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end'}}>
-              {allSizes.map(sz=>{const isExtra=!baseSizes.includes(sz);return<div key={sz} style={{textAlign:'center',position:'relative'}}>
+              {allSizes.map(sz=>{const isExtra=!baseSizes.includes(sz);const rcv=(it.received||{})[sz]||0;const below=rcv>0&&(it.sizes[sz]||0)<rcv;return<div key={sz} style={{textAlign:'center',position:'relative'}}>
                 <div style={{fontSize:10,fontWeight:700,color:isExtra?'#7c3aed':'#475569',marginBottom:2}}>{sz}</div>
-                <input style={{width:48,textAlign:'center',border:'1px solid '+(isExtra?'#c4b5fd':'#d1d5db'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} value={it.sizes[sz]||''} placeholder="0"
+                <input style={{width:48,textAlign:'center',border:'1px solid '+(below?'#dc2626':isExtra?'#c4b5fd':'#d1d5db'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:below?'#fef2f2':'white'}} value={it.sizes[sz]||''} placeholder="0"
                   onChange={e=>{const val=Math.max(0,parseInt(e.target.value)||0);setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>i2!==idx?ii:{...ii,sizes:{...ii.sizes,[sz]:val}})}))}}/>
-                {isExtra&&<button title="Remove this size" style={{position:'absolute',top:-4,right:-4,width:14,height:14,padding:0,fontSize:10,lineHeight:'12px',background:'#fff',border:'1px solid #c4b5fd',borderRadius:'50%',color:'#7c3aed',cursor:'pointer'}} onClick={()=>setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>{if(i2!==idx)return ii;const {[sz]:_drop,...rest}=ii.sizes||{};return{...ii,sizes:rest}})}))}>×</button>}
+                {rcv>0&&<div style={{fontSize:9,fontWeight:700,color:below?'#dc2626':'#166534'}} title={below?'Ordered below received — will be kept at '+rcv+' on save':'Already received'}>rcvd {rcv}</div>}
+                {isExtra&&rcv===0&&<button title="Remove this size" style={{position:'absolute',top:-4,right:-4,width:14,height:14,padding:0,fontSize:10,lineHeight:'12px',background:'#fff',border:'1px solid #c4b5fd',borderRadius:'50%',color:'#7c3aed',cursor:'pointer'}} onClick={()=>setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>{if(i2!==idx)return ii;const {[sz]:_drop,...rest}=ii.sizes||{};return{...ii,sizes:rest}})}))}>×</button>}
               </div>})}
               <div style={{textAlign:'center'}}>
                 <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',marginBottom:2}}>+ Size</div>

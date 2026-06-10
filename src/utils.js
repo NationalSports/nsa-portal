@@ -1,5 +1,15 @@
 /* eslint-disable */
 import { NSA as _NSA_CONST } from './constants';
+import { supabase as _sbAuthClient } from './lib/supabase';
+
+// fetch() that attaches the signed-in user's Supabase JWT — required by the
+// staff-only Netlify functions (qb-api, vectorizer, OMG ingest/notify, Stripe
+// refunds, create-quote-request), which verify the caller server-side.
+export const authFetch=async(url,opts={})=>{
+  let auth={};
+  try{const{data:{session}}=await _sbAuthClient.auth.getSession();if(session?.access_token)auth={Authorization:'Bearer '+session.access_token}}catch{}
+  return fetch(url,{...opts,headers:{...(opts.headers||{}),...auth}});
+};
 
 // ── Brevo Email ──
 // Public availability flag — NOT the API key. The real key lives only in the
@@ -119,7 +129,7 @@ export const sendBrevoSms=async()=>({ok:false,error:'SMS sending is disabled. Ro
 
 // ── Document/print helpers ──
 export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tables,notes,footer,showPricing,portalLink,css,companyInfo})=>{
-  const _NSA=companyInfo||_NSA_CONST||{name:'National Sports Apparel',legal:'National Sports Apparel LLC',addr:'9340 Cabot Dr, Suite A',city:'San Diego',state:'CA',zip:'91941',logoUrl:'/nsa-logo.svg'};
+  const _NSA={..._NSA_CONST,...(companyInfo||{})};
   let h='';
   // Header: logo/address left, doc type/number right
   h+='<div class="header"><div class="logo"><img src="'+_NSA.logoUrl+'" alt="NSA"/><div class="co-addr"><strong>'+(_NSA.legal||_NSA.name)+'</strong>'+_NSA.addr+'<br/>'+_NSA.city+', '+_NSA.state+' '+_NSA.zip+'<br/>United States</div></div>';

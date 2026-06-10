@@ -79,6 +79,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[whPoFilter,setWhPoFilter]=useState('open'); // open | all
   const[whQ,setWhQ]=useState('');
   const[whSaving,setWhSaving]=useState(false);
+  const[whBatchMode,setWhBatchMode]=useState(false);
+  const[whBatchSelected,setWhBatchSelected]=useState(new Set());
   // Send estimate modal
   const[sendEstModal,setSendEstModal]=useState(null); // estimate object or null
   // Send invoice modal
@@ -152,13 +154,17 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const searchResults=useMemo(()=>{
     if(!q||q.length<2)return null;
     const s=q.toLowerCase();
+    const poResults=[];const seenPO=new Set();
+    sos.forEach(so=>{const cc=custObj(so.customer_id);safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(po=>{const pid=po.po_id||'PO';const key='so|'+so.id+'|'+pid+'|'+(po.vendor||'');if(!seenPO.has(key)&&((pid+' '+(po.vendor||'')+' '+so.id+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')+' '+(it.sku||'')+' '+(it.name||'')).toLowerCase().includes(s))){seenPO.add(key);poResults.push({key,poId:pid,vendor:po.vendor||'',soId:so.id,cust:cc,kind:'so'})}})})});
+    (invPOs||[]).forEach(po=>{const key='inv|'+po.id;if(!seenPO.has(key)&&((po.po_number||'')+' '+(po.vendor_name||'')+' '+(po.items||[]).map(i=>(i.sku||'')+' '+(i.name||'')).join(' ')).toLowerCase().includes(s)){seenPO.add(key);poResults.push({key,poId:po.po_number,vendor:po.vendor_name||'',soId:null,cust:null,kind:'inv'});}});
     return{
       customers:cust.filter(c=>(c.name+' '+(c.alpha_tag||'')+' '+(c.email||'')).toLowerCase().includes(s)).slice(0,6),
       orders:sos.filter(so=>{const cc=custObj(so.customer_id);return(so.id+' '+(so.memo||'')+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')).toLowerCase().includes(s)}).slice(0,6),
       estimates:ests.filter(e=>{const cc=custObj(e.customer_id);return(e.id+' '+(e.memo||'')+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')).toLowerCase().includes(s)}).slice(0,6),
       invoices:invs.filter(i=>(i.id+' '+(cust.find(c=>c.id===i.customer_id)?.name||'')).toLowerCase().includes(s)).slice(0,6),
+      pos:poResults.slice(0,6),
     };
-  },[q,cust,sos,ests,invs]);
+  },[q,cust,sos,ests,invs,invPOs]);
 
   // ─── STATS ───
   const stats=useMemo(()=>{
@@ -1172,6 +1178,20 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       setWhSaving(true);try{onReceiveInvPO&&onReceiveInvPO(po.invId,receivedMap)}finally{setWhSaving(false);setWhDetail(null);setWhRcvQty({})}
     }
   };
+  const batchReceive=(allPOs)=>{
+    if(whSaving)return;
+    const toReceive=allPOs.filter(p=>whBatchSelected.has(p.key)&&p.totOpen>0);
+    if(toReceive.length===0){if(nf)nf('Select POs with open items','error');return;}
+    setWhSaving(true);
+    try{
+      toReceive.forEach(po=>{
+        if(po.kind==='so'){const lines=po.lines.map((l,i)=>{const rcv={};Object.entries(l.sizes).forEach(([sz,s])=>{if(s.open>0)rcv[sz]=s.open});return{itemIdx:l.itemIdx,poLineIdx:l.poLineIdx,rcv}}).filter(l=>Object.keys(l.rcv).length>0);if(lines.length>0)onReceiveSOPO&&onReceiveSOPO(po.soId,lines);}
+        else{const receivedMap={};po.lines.forEach(l=>{const m={};Object.entries(l.sizes).forEach(([sz,s])=>{if(s.open>0)m[sz]=s.open});if(Object.keys(m).length>0)receivedMap[l.idx]=m});if(Object.keys(receivedMap).length>0)onReceiveInvPO&&onReceiveInvPO(po.invId,receivedMap);}
+      });
+      if(nf)nf('Received '+toReceive.length+' PO'+(toReceive.length!==1?'s':''));
+      setWhBatchSelected(new Set());setWhBatchMode(false);
+    }finally{setWhSaving(false);}
+  };
 
   const PO_BADGE={waiting:{bg:'#fef3c7',c:'#92400e',l:'Waiting'},partial:{bg:'#dbeafe',c:'#1e40af',l:'Partial'},received:{bg:'#dcfce7',c:'#166534',l:'Received'}};
   const whNumInput=(val,max,onCh)=>{const over=val>max;return<input type="number" inputMode="numeric" min={0} max={max} value={val} onChange={e=>{const v=Math.max(0,parseInt(e.target.value)||0);onCh(v)}} style={{width:48,textAlign:'center',fontSize:16,fontWeight:800,border:'1px solid '+(over?'#dc2626':'#cbd5e1'),borderRadius:6,padding:'6px 0',color:over?'#dc2626':'#0f172a',boxSizing:'border-box'}}/>};
@@ -1313,14 +1333,18 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           <input placeholder="Search PO #, vendor, SO, SKU…" value={whQ} onChange={e=>setWhQ(e.target.value)} className="mp-search-input"/>
           {whQ&&<button onClick={()=>setWhQ('')} className="mp-clear-btn"><MIcon name="x" size={14}/></button>}
         </div>
-        <div className="mp-filter-row">
-          {[['open','Open'],['all','All']].map(([k,l])=><button key={k} className={`mp-filter-btn${whPoFilter===k?' active':''}`} onClick={()=>setWhPoFilter(k)}>{l}</button>)}
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+          <div className="mp-filter-row" style={{flex:1,margin:0}}>
+            {[['open','Open'],['all','All']].map(([k,l])=><button key={k} className={`mp-filter-btn${whPoFilter===k?' active':''}`} onClick={()=>setWhPoFilter(k)}>{l}</button>)}
+          </div>
+          {poList.some(p=>p.totOpen>0)&&<button onClick={()=>{setWhBatchMode(b=>!b);setWhBatchSelected(new Set())}} style={{padding:'6px 12px',borderRadius:8,border:'1px solid '+(whBatchMode?'#dc2626':'#1e40af'),background:whBatchMode?'#fee2e2':'#dbeafe',color:whBatchMode?'#dc2626':'#1e40af',fontWeight:700,fontSize:12,cursor:'pointer',whiteSpace:'nowrap',minHeight:34}}>{whBatchMode?'Cancel':'Batch Check In'}</button>}
         </div>
-        <div className="mp-count">{poList.length} PO{poList.length!==1?'s':''}</div>
+        <div className="mp-count">{poList.length} PO{poList.length!==1?'s':''}{whBatchMode&&whBatchSelected.size>0?' · '+whBatchSelected.size+' selected':''}</div>
         {poList.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40,fontSize:14}}>No POs {whPoFilter==='open'?'awaiting check-in':'found'}</div>}
-        {poList.slice(0,150).map(po=>{const b=PO_BADGE[po.status]||PO_BADGE.waiting;
-          return<div key={po.key} className="mp-list-card" onClick={()=>openPO(po)}>
+        {poList.slice(0,150).map(po=>{const b=PO_BADGE[po.status]||PO_BADGE.waiting;const isSelected=whBatchSelected.has(po.key);const canSelect=po.totOpen>0;
+          return<div key={po.key} className="mp-list-card" style={whBatchMode&&isSelected?{border:'2px solid #1e40af',boxShadow:'0 0 0 2px #dbeafe'}:{}} onClick={()=>{if(whBatchMode){if(!canSelect)return;setWhBatchSelected(prev=>{const n=new Set(prev);n.has(po.key)?n.delete(po.key):n.add(po.key);return n});}else{openPO(po);}}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+              {whBatchMode&&<div style={{width:22,height:22,borderRadius:5,border:'2px solid '+(isSelected?'#1e40af':'#cbd5e1'),background:isSelected?'#1e40af':'white',display:'flex',alignItems:'center',justifyContent:'center',color:'white',flexShrink:0,marginRight:10,opacity:canSelect?1:0.35}}>{isSelected&&<MIcon name="check" size={13}/>}</div>}
               <div style={{flex:1,minWidth:0}}>
                 <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                   <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{po.poId}</span>
@@ -1338,6 +1362,11 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
             </div>
           </div>})}
         {poList.length>150&&<div style={{textAlign:'center',color:'#94a3b8',padding:12,fontSize:12}}>Showing first 150 of {poList.length}. Search to narrow.</div>}
+        {whBatchMode&&whBatchSelected.size>0&&(()=>{const cnt=[...whBatchSelected].filter(k=>{const p=poList.find(x=>x.key===k);return p&&p.totOpen>0}).length;return<div style={{position:'sticky',bottom:0,background:'white',borderTop:'1px solid #e2e8f0',padding:'12px 16px',paddingBottom:'max(12px, env(safe-area-inset-bottom))'}}>
+          <button disabled={whSaving||cnt===0} onClick={()=>batchReceive(poList)} style={{width:'100%',padding:'14px',borderRadius:12,border:'none',background:cnt>0&&!whSaving?'#1e40af':'#cbd5e1',color:'white',fontWeight:800,fontSize:15,cursor:cnt>0&&!whSaving?'pointer':'default',minHeight:48}}>
+            {whSaving?'Saving…':'✓ Batch Check In ('+cnt+' PO'+(cnt!==1?'s':'')+')'}
+          </button>
+        </div>})()}
       </>}
     </div>;
   };
@@ -1687,7 +1716,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     return<div className="mp-search-overlay">
       <div className="mp-search-bar">
         <MIcon name="search" size={18}/>
-        <input autoFocus placeholder="Search orders, customers, estimates..." value={q} onChange={e=>setQ(e.target.value)} className="mp-search-input-full"/>
+        <input autoFocus placeholder="Search orders, customers, POs..." value={q} onChange={e=>setQ(e.target.value)} className="mp-search-input-full"/>
         <button onClick={()=>{setShowSearch(false);setQ('')}} className="mp-search-cancel">Cancel</button>
       </div>
       {searchResults&&<div className="mp-search-results">
@@ -1709,7 +1738,14 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
             <span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span><span style={{color:'#64748b',marginLeft:8}}>{fmtMoney(inv.total)}</span>
             <span style={{...statusBadge(inv.status||'open'),marginLeft:'auto'}}>{inv.status||'open'}</span>
           </div>)}</>}
-        {searchResults.orders.length===0&&searchResults.estimates.length===0&&searchResults.customers.length===0&&searchResults.invoices.length===0&&q.length>=2&&
+        {searchResults.pos.length>0&&<><div className="mp-search-section">POs</div>
+          {searchResults.pos.map(po=><div key={po.key} className="mp-search-item" onClick={()=>{setTab('more');setMoreSubPage('warehouse');setWhTab('pos');setWhRcvQty({});setWhDetail({kind:'po',key:po.key});setShowSearch(false);setQ('')}}>
+            <span style={{fontWeight:700,color:'#1e40af'}}>{po.poId||'PO'}</span>
+            <span style={{color:'#64748b',marginLeft:8}}>{po.vendor||'—'}</span>
+            {po.soId&&<span style={{color:'#94a3b8',marginLeft:6,fontSize:11}}>{po.soId}</span>}
+            {po.kind==='inv'&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:6,background:'#f1f5f9',color:'#64748b',fontWeight:700,marginLeft:'auto'}}>INV</span>}
+          </div>)}</>}
+        {searchResults.orders.length===0&&searchResults.estimates.length===0&&searchResults.customers.length===0&&searchResults.invoices.length===0&&searchResults.pos.length===0&&q.length>=2&&
           <div style={{padding:20,textAlign:'center',color:'#94a3b8',fontSize:14}}>No results found</div>}
       </div>}
     </div>;

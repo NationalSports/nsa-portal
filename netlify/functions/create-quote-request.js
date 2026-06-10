@@ -1,6 +1,7 @@
 // Netlify serverless function to create quote requests (bypasses RLS using service role)
 // This exists because the client-side anon key can't insert into quote_requests
 // due to RLS policy requiring current_profile_id() which may not resolve correctly.
+const { verifyUser } = require('./_shared');
 
 exports.handler = async (event) => {
   const headers = {
@@ -16,6 +17,13 @@ exports.handler = async (event) => {
 
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, headers, body: JSON.stringify({ error: 'Method not allowed' }) };
+  }
+
+  // Staff-only: quote requests are created from the logged-in app; without this
+  // gate any caller could insert rows with a forged customer_id/created_by.
+  const v = await verifyUser(event);
+  if (!v.ok) {
+    return { statusCode: v.status, headers, body: JSON.stringify({ error: v.error }) };
   }
 
   const sbUrl = process.env.REACT_APP_SUPABASE_URL;
