@@ -5819,6 +5819,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <button className="btn btn-secondary" disabled={invSendingState==='sending'} onClick={()=>{setInvSendModal(false);setInvSendingState(null)}}>Cancel</button>
           <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={!hasRecipients||invSendingState==='sending'||invSendingState==='success'} onClick={async()=>{
             setInvSendingState('sending');
+            try{
             const toList=allRecipients.map(em=>{const c=contacts.find(x=>x.email===em);return{email:em,name:c?.name||em}});
             const toEmail=toList.map(t=>t.email).join(', ');
             const toName=toList.map(t=>t.name).join(', ');
@@ -5959,6 +5960,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(onMsg)onMsg(prev=>[...prev,soMsg]);
             setInvSendingState('success');
             setTimeout(()=>{setInvSendModal(false);setInvSendingState(null)},1800);
+            }catch(err){console.error('[Invoice send]',err);setInvSendingState({error:err.message||'Unexpected error'});}
           }}>{invSendingState==='sending'?'⏳ Sending...':(()=>{const _today=new Date().toLocaleDateString('en-CA');const _isFuture=invSendAt&&invSendAt>_today;return(_isFuture?'📅 Schedule Invoice for '+invSendAt:'📧 Send Invoice')+(hasRecipients?' to '+allRecipients.length+' recipient'+(allRecipients.length>1?'s':''):' (No email)')})()}</button>
         </div>
       </div></div>
