@@ -9334,6 +9334,21 @@ export default function App(){
         const itemMockupFiles=allArtFiles.flatMap(a=>Object.values(a?.item_mockups||{}).flat()).filter(f=>f);
         const mockupFiles=[...genericMockupFiles,...itemMockupFiles];
         const prodFiles=allArtFiles.flatMap(a=>a?.prod_files||[]);
+        // All mockups for an item across art files. Mockup slots store under the base sku|color
+        // key for the first art, but additional arts (front + back), numbers and names store
+        // under suffixed keys (sku|color|d1, |<colorWayId>, |numbers, |names) — collect them all
+        // so multi-location items show every mockup. Ordered: arts first, then numbers/names.
+        const collectItemMocks=(sku,color)=>{
+          const _mk=sku+'|'+(color||'');
+          const rank=k=>/\|numbers(_\d+)?$/.test(k)?2:/\|names(_\d+)?$/.test(k)?3:1;
+          const out=[];const seen=new Set();
+          allArtFiles.forEach(a=>{const m=a?.item_mockups||{};
+            const base=(m[_mk]&&m[_mk].length>0)?m[_mk]:(m[sku]||[]);
+            const extra=Object.keys(m).filter(k=>k.startsWith(_mk+'|')).sort((x,y)=>rank(x)-rank(y)).flatMap(k=>m[k]||[]);
+            [...base,...extra].forEach(f=>{if(!f)return;const u=typeof f==='string'?f:(f?.url||'');if(u&&seen.has(u))return;if(u)seen.add(u);out.push(f)});
+          });
+          return out;
+        };
         // Numbers & Names roster data — extract from item decorations.
         // Split jobs carry per-item roster/sizes overrides on gi; prefer those over the source decoration's full roster.
         const numbersData=(()=>{const results=[];(j.items||[]).forEach(gi=>{
@@ -9432,12 +9447,14 @@ export default function App(){
               });
               if(nameRows.length>0)sHtml+=_tHtml('Names List — '+gi.sku,['Size','Names'],['left','left'],nameRows);
             }
-            // Mockup image(s) for this item immediately after its tables
-            const _mk=gi.sku+'|'+(gi.color||'');
-            const itemMockUrls=_urlsFor(allArtFiles.flatMap(a=>{const v=a?.item_mockups?.[_mk];return v&&v.length>0?v:(a?.item_mockups?.[gi.sku]||[])}));
+            // Mockup image(s) for this item immediately after its tables — all locations
+            // (front + back arts, numbers/names) side by side
+            const itemMockUrls=_urlsFor(collectItemMocks(gi.sku,gi.color));
             if(itemMockUrls.length>0){
-              sHtml+='<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;page-break-inside:avoid">'
-                +itemMockUrls.map(u=>'<img src="'+u+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')
+              const _mh=itemMockUrls.length>1?300:380;
+              const _mw=itemMockUrls.length>1?'48%':'100%';
+              sHtml+='<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;page-break-inside:avoid">'
+                +itemMockUrls.map(u=>'<img src="'+u+'" style="height:'+_mh+'px;max-width:'+_mw+';object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')
                 +'</div>';
             } else if(gi.image_url&&_isImgUrl(gi.image_url)){
               sHtml+='<div style="margin:12px 0;page-break-inside:avoid"><img src="'+gi.image_url+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/></div>';
@@ -9583,8 +9600,7 @@ export default function App(){
                 {itemDetails.map((gi,gii)=>{
                   const it=safeItems(so)[gi.item_idx];
                   if(!it)return null;
-                  const _mk=gi.sku+'|'+(gi.color||'');
-                  const itemMocks=allArtFiles.flatMap(a=>{const v=a?.item_mockups?.[_mk];return v&&v.length>0?v:(a?.item_mockups?.[gi.sku]||[])}).filter(f=>f);
+                  const itemMocks=collectItemMocks(gi.sku,gi.color);
                   const artDecos=safeDecos(it).filter(d=>d.kind==='art');
                   const numDecos=safeDecos(it).filter(d=>d.kind==='numbers');
                   const nameDecos=safeDecos(it).filter(d=>d.kind==='names');
@@ -9614,7 +9630,7 @@ export default function App(){
                     {/* Mockup display */}
                     {itemMocks.length>0&&<div style={{padding:12,display:'flex',gap:8,flexWrap:'wrap',justifyContent:'center',background:'#fafbfc',borderBottom:'1px solid #e2e8f0'}}>
                       {itemMocks.map((f,fi)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const src=isImg?u:isPdf?_cloudinaryPdfThumb(u):null;
-                        return src?<img key={fi} src={src} alt="Mockup" style={{height:420,maxWidth:'100%',objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(f)}/>
+                        return src?<img key={fi} src={src} alt="Mockup" style={{height:itemMocks.length>1?320:420,maxWidth:itemMocks.length>1?'48%':'100%',objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(f)}/>
                         :<div key={fi} style={{padding:'10px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:6,fontSize:11,fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>openFile(f)}>📄 {fileDisplayName(f)}</div>;
                       })}
                     </div>}
