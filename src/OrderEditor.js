@@ -5741,7 +5741,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
     {/* ═══ SEND TO COACH MODAL ═══ */}
     {invSendModal&&invReview&&(()=>{
-      const ir=invReview;const ic=ir._customer||cust;
+      const ir=invReview;const ic=ir._customer||cust;const irSO=ir._so||o;
+      const lineItems=ir._lineItems||ir.line_items||[];
+      const shipAmt=ir._shipAmt!=null?ir._shipAmt:(ir.shipping||0);
+      const taxAmt=ir._taxAmt!=null?ir._taxAmt:(ir.tax||0);
       const ownContacts=(ic?.contacts||[]).filter(c=>c.email);
       const inheritedAccts=getBillingContacts(ic,allCustomers).filter(a=>a._inherited_from&&a.email&&!ownContacts.find(o=>o.email===a.email));
       const contacts=[...ownContacts,...inheritedAccts];
