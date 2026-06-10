@@ -128,9 +128,19 @@ export const _brevoSmsSender='NSA';
 export const sendBrevoSms=async()=>({ok:false,error:'SMS sending is disabled. Route it through the server-side brevo-proxy to re-enable.'});
 
 // ── Document/print helpers ──
-export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tables,notes,footer,showPricing,portalLink,css,companyInfo})=>{
+export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tables,notes,footer,showPricing,portalLink,css,companyInfo,repeatInfoHeader,_runHeaderCss})=>{
   const _NSA={..._NSA_CONST,...(companyInfo||{})};
   let h='';
+  // Repeating running header (browser print): a slim band — doc id + the info
+  // cells (Customer / Sales Order / Expected Date / Rep) — that repeats on every
+  // page via position:fixed, sitting in the reserved top page margin. The NSA
+  // logo/address block stays a one-time, page-1-only header below it.
+  if(_runHeaderCss){
+    const _ihBoxes=(infoBoxes||[]).filter(b=>b.label!=='Bill To');
+    h+='<div class="run-header"><span class="rh-id">'+docType+' · #'+docNum+'</span>'
+      +_ihBoxes.map(b=>'<span class="rh-cell"><span class="rh-lbl">'+b.label+'</span>'+b.value+'</span>').join('')
+      +'</div>';
+  }
   // Header: logo/address left, doc type/number right
   h+='<div class="header"><div class="logo"><img src="'+_NSA.logoUrl+'" alt="NSA"/><div class="co-addr"><strong>'+(_NSA.legal||_NSA.name)+'</strong>'+_NSA.addr+'<br/>'+_NSA.city+', '+_NSA.state+' '+_NSA.zip+'<br/>United States</div></div>';
   h+='<div class="doc-id"><div class="doc-type">'+docType+'</div><div class="doc-num">#'+docNum+'</div><div class="doc-date">'+(date||new Date().toLocaleDateString())+'</div></div></div>';
@@ -142,8 +152,9 @@ export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tabl
     if(headerRight){h+='<div class="total-box">'+headerRight+'</div>'}
     h+='</div>';
   }
-  // Info row
-  if(infoBoxes&&infoBoxes.length>0){
+  // Info row — skipped when repeatInfoHeader is on, since those cells live in the
+  // repeating running header (page-1 band / Puppeteer header) on every page instead.
+  if(infoBoxes&&infoBoxes.length>0&&!repeatInfoHeader){
     const boxes=infoBoxes.filter(b=>b.label!=='Bill To');
     if(boxes.length>0){
       h+='<div class="info-row">';
@@ -184,13 +195,34 @@ export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tabl
     h+='</div>';
   }
   // Wrap with full page HTML for email attachment use
-  const _css=css||'';
+  const _css=(css||'')+(_runHeaderCss?_RUN_HEADER_CSS:'');
   const _title=docNum+(title?' - '+title:'');
   return'<html><head><title>'+_title+'</title><style>'+_css+'</style></head><body>'+h+'</body></html>';
 };
 const _PRINT_CSS=`*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4}.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;padding-bottom:10px;border-bottom:2px solid #ccc}.logo{display:flex;align-items:center;gap:8px}.logo img{height:50px}.co-addr{font-size:11px;color:#333;line-height:1.4}.co-addr strong{display:block;font-size:12px}.doc-id{text-align:right}.doc-id .doc-type{font-size:28px;font-weight:800;color:#333}.doc-id .doc-num{font-size:14px;color:#333;font-weight:700}.doc-id .doc-date{font-size:11px;color:#666}.bill-total{display:flex;justify-content:space-between;align-items:flex-start;margin:8px 0;gap:20px}.bill-to{flex:1}.bill-to .label{font-size:10px;font-weight:700;color:#333;background:#e8e8e8;padding:3px 6px;display:inline-block;margin-bottom:4px}.bill-to .value{font-size:12px;color:#1a1a1a;line-height:1.5}.total-box{background:#e8e8e8;padding:12px 20px;min-width:200px}.total-box .tl{font-size:13px;font-weight:800;color:#333}.total-box .ta{font-size:36px;font-weight:900;color:#1a1a1a;margin:4px 0}.total-box .ts{font-size:11px;color:#666}.info-row{display:flex;border:1px solid #ccc;margin-bottom:6px}.info-cell{flex:1;padding:3px 6px;border-right:1px solid #ccc}.info-cell:last-child{border-right:none}.info-cell .label{font-size:9px;font-weight:700;color:#333;background:#e8e8e8;padding:1px 4px;display:inline-block;margin-bottom:2px}.info-cell .value{font-size:11px;color:#1a1a1a}table{width:100%;border-collapse:collapse;margin:4px 0}th{background:#e8e8e8;padding:3px 6px;text-align:left;font-size:10px;font-weight:700;color:#333;border:1px solid #ccc}td{padding:2px 6px;border-bottom:1px solid #ddd;font-size:10px;line-height:1.3}tr.item-row td{border-bottom:none;padding-bottom:0}tr.deco-row td{padding-top:0;padding-bottom:1px}.sz-table th,.sz-table td{text-align:center;padding:3px 5px;font-size:10px;min-width:30px}.sz-table td.has-qty{font-weight:800;color:#1e3a5f;background:#eef2ff}.totals-row td{font-weight:800;border-top:2px solid #333;font-size:11px}.notes{margin-top:8px;padding:8px 10px;background:#fffbe6;border:1px solid #f0e6b8;font-size:10px}.notes .label{font-weight:700;color:#8b6914;margin-bottom:2px}.footer{margin-top:10px;padding-top:6px;border-top:1px solid #ddd;font-size:8px;color:#999;display:flex;justify-content:space-between}.amount{text-align:right;font-weight:700}.highlight{background:#e8e8e8;color:#166534}.badge{display:inline-block;padding:2px 6px;border-radius:10px;font-size:9px;font-weight:700}.no-price td:nth-child(n+5){display:none}.no-price th:nth-child(n+5){display:none}.sep-line{border-top:2px solid #c00;margin:2px 0}@media print{body{padding:14px 20px}th{background:#e8e8e8!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.total-box{background:#e8e8e8!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.info-cell .label,.bill-to .label{background:#e8e8e8!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}@page{margin:0.4in;size:letter}`;
+// Running-header styles for repeatInfoHeader docs (production job sheets), used
+// on the browser print path. The canonical Chrome recipe for a header that
+// repeats on every page without overlapping content: zero the @page margin so a
+// position:fixed band can sit at the paper edge, then reserve the strip below it
+// with body top-padding that box-decoration-break:clone repeats on EVERY page
+// (plain padding would only apply to page 1). The band wraps to a 2nd line for
+// long values rather than overflowing into the content.
+const _RUN_HEADER_CSS=`@page{margin:0!important}body{padding:0.8in 0.4in 0.45in!important;-webkit-box-decoration-break:clone;box-decoration-break:clone}.run-header{position:fixed;top:0;left:0;right:0;max-height:0.62in;box-sizing:border-box;padding:0.16in 0.4in 0.06in;display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 16px;background:#fff;overflow:hidden;border-bottom:2px solid #333;-webkit-print-color-adjust:exact;print-color-adjust:exact}.run-header .rh-id{font-weight:800;font-size:12px;color:#111;white-space:nowrap}.run-header .rh-cell{font-size:11px;color:#1a1a1a;white-space:nowrap}.run-header .rh-lbl{font-size:8px;font-weight:700;color:#666;text-transform:uppercase;letter-spacing:.3px;margin-right:4px}`;
+// Puppeteer headerTemplate (server-side PDF path) — repeats the same info cells
+// in each page's top margin. Kept to a single (wrapping) line so its height stays
+// well under the reserved margin.top; must be fully self-contained inline styles
+// since the template renders in an isolated context with no page CSS.
+export const _pdfHeaderTemplate=(docType,docNum,infoBoxes)=>{
+  const boxes=(infoBoxes||[]).filter(b=>b.label!=='Bill To');
+  const cells=boxes.map(b=>'<span style="margin-right:16px;white-space:nowrap"><span style="font-size:7px;font-weight:700;color:#666;text-transform:uppercase;letter-spacing:.3px;margin-right:4px">'+b.label+'</span><span style="font-size:10px;font-weight:600;color:#1a1a1a">'+b.value+'</span></span>').join('');
+  return '<div style="width:100%;box-sizing:border-box;font-size:10px;font-family:Segoe UI,Helvetica,Arial,sans-serif;color:#1a1a1a;padding:0 0.4in;-webkit-print-color-adjust:exact;print-color-adjust:exact">'
+    +'<div style="border-bottom:2px solid #333;padding-bottom:4px;line-height:1.35">'
+    +'<span style="font-size:11px;font-weight:800;color:#111;margin-right:16px;white-space:nowrap">'+docType+' · #'+docNum+'</span>'
+    +cells
+    +'</div></div>';
+};
 export const printDoc=opts=>{
-  const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS});
+  const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS,_runHeaderCss:!!opts.repeatInfoHeader});
   const w=window.open('','_blank');if(!w)return;
   w.document.write(docHtml);w.document.close();
   // Wait for every image (mockups, logo) to finish loading before printing — the
@@ -354,18 +386,27 @@ const _inlineLogoUrl=async(logoUrl)=>{
   }catch{return logoUrl;}
 };
 
-const _serverPdf=async(html,fname)=>{
-  const r=await fetch('/.netlify/functions/pdf-generator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html,filename:fname})});
+const _serverPdf=async(html,fname,extra)=>{
+  const r=await fetch('/.netlify/functions/pdf-generator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html,filename:fname,...(extra||{})})});
   if(!r.ok)throw new Error('PDF generation failed: '+r.status);
   return r.json();
 };
+
+// For repeatInfoHeader docs, tell the Puppeteer PDF function to repeat the info
+// cells in each page's top margin (and reserve that margin so content clears it).
+const _repeatHeaderPdfOpts=opts=>opts.repeatInfoHeader?{
+  displayHeaderFooter:true,
+  headerTemplate:_pdfHeaderTemplate(opts.docType,opts.docNum,opts.infoBoxes),
+  footerTemplate:'<span></span>',
+  margin:{top:'0.8in',right:'0.4in',bottom:'0.4in',left:'0.4in'},
+}:undefined;
 
 export const downloadDoc=async(opts,filename)=>{
   const logoUrl=await _inlineLogoUrl(_absLogoUrl(opts.companyInfo));
   const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS,companyInfo:{...(opts.companyInfo||{}),logoUrl}});
   const safe=String(filename||opts.docNum||'document').replace(/[^a-z0-9._-]+/gi,'_');
   const fname=safe.replace(/\.html?$/i,'')+'.pdf';
-  const {content}=await _serverPdf(docHtml,fname);
+  const {content}=await _serverPdf(docHtml,fname,_repeatHeaderPdfOpts(opts));
   const bytes=Uint8Array.from(atob(content),c=>c.charCodeAt(0));
   const blob=new Blob([bytes],{type:'application/pdf'});
   const url=URL.createObjectURL(blob);
@@ -378,7 +419,7 @@ export const buildPdfAttachment=async(opts,filename)=>{
   const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS,companyInfo:{...(opts.companyInfo||{}),logoUrl}});
   const safe=String(filename||opts.docNum||'document').replace(/[^a-z0-9._-]+/gi,'_');
   const fname=safe.replace(/\.html?$/i,'')+'.pdf';
-  return _serverPdf(docHtml,fname);
+  return _serverPdf(docHtml,fname,_repeatHeaderPdfOpts(opts));
 };
 
 export const openDocPDF=async(opts,filename)=>{
@@ -386,7 +427,7 @@ export const openDocPDF=async(opts,filename)=>{
   const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS,companyInfo:{...(opts.companyInfo||{}),logoUrl}});
   const safe=String(filename||opts.docNum||'document').replace(/[^a-z0-9._-]+/gi,'_');
   const fname=safe.replace(/\.html?$/i,'')+'.pdf';
-  const {content}=await _serverPdf(docHtml,fname);
+  const {content}=await _serverPdf(docHtml,fname,_repeatHeaderPdfOpts(opts));
   const bytes=Uint8Array.from(atob(content),c=>c.charCodeAt(0));
   const blob=new Blob([bytes],{type:'application/pdf'});
   const url=URL.createObjectURL(blob);
