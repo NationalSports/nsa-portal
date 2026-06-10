@@ -5741,7 +5741,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
     {/* ═══ SEND TO COACH MODAL ═══ */}
     {invSendModal&&invReview&&(()=>{
-      const ir=invReview;const ic=ir._customer||cust;
+      const ir=invReview;const ic=ir._customer||cust;const irSO=ir._so||o;
+      const lineItems=ir._lineItems||ir.line_items||[];
+      const shipAmt=ir._shipAmt!=null?ir._shipAmt:(ir.shipping||0);
+      const taxAmt=ir._taxAmt!=null?ir._taxAmt:(ir.tax||0);
       const ownContacts=(ic?.contacts||[]).filter(c=>c.email);
       const inheritedAccts=getBillingContacts(ic,allCustomers).filter(a=>a._inherited_from&&a.email&&!ownContacts.find(o=>o.email===a.email));
       const contacts=[...ownContacts,...inheritedAccts];
@@ -9933,7 +9936,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </tr></thead>
                 <tbody>
                   {poItems.map(({item:it,po:p},idx)=>{
-                    const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&k!=='shipping'&&typeof p[k]==='number');
+                    const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&k!=='shipping'&&typeof p[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
                     const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.unit_cost!=null?safeNum(p.unit_cost):safeNum(it.nsa_cost);
                     return<tr key={idx} style={{borderBottom:'1px solid #e2e8f0'}}>
                       <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
