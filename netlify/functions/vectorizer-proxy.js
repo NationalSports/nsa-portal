@@ -1,16 +1,23 @@
 // Netlify serverless function to proxy Vectorizer.AI API calls
 // Keeps API credentials server-side, accepts base64 image from frontend
 const zlib = require('zlib');
+const { verifyUser } = require('./_shared');
 
 exports.handler = async (event) => {
   const start = Date.now();
   const log = (msg) => console.log(`[vectorizer-proxy] ${msg} (${Date.now() - start}ms)`);
 
   if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type,Accept-Encoding', 'Access-Control-Allow-Methods': 'POST' }, body: '' };
+    return { statusCode: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type,Accept-Encoding,Authorization', 'Access-Control-Allow-Methods': 'POST' }, body: '' };
   }
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: 'Method not allowed' };
+  }
+
+  // Staff-only: each call consumes paid Vectorizer.AI credits.
+  const v = await verifyUser(event);
+  if (!v.ok) {
+    return { statusCode: v.status, headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ error: v.error }) };
   }
 
   const apiId = process.env.VECTORIZER_AI_API_ID;

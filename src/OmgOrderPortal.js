@@ -13,6 +13,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
 import { shipStationCall } from './vendorApis';
+import { authFetch } from './utils';
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const PDFJS_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
@@ -214,7 +215,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     if (!reportUrl.trim()) { flash('Paste the player report link first.', 'err'); return; }
     setBusy('ingest');
     try {
-      const r = await fetch('/.netlify/functions/omg-player-report-ingest', {
+      const r = await authFetch('/.netlify/functions/omg-player-report-ingest', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reportUrl: reportUrl.trim() }),
       });
       const d = await r.json();
@@ -259,7 +260,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     if (!draftContacts) return;
     setBusy('enrich');
     try {
-      const r = await fetch('/.netlify/functions/omg-packing-slip-ingest', {
+      const r = await authFetch('/.netlify/functions/omg-packing-slip-ingest', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ saleCode, storeName, orders: draftContacts }),
       });
@@ -287,7 +288,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     if (!store) return;
     setBusy(testEmail ? 'test' : 'notify');
     try {
-      const r = await fetch('/.netlify/functions/omg-order-notify', {
+      const r = await authFetch('/.netlify/functions/omg-order-notify', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ storeId: store.id, resend, ...(testEmail ? { testEmail } : {}), ...(orderIds && orderIds.length ? { orderIds } : {}) }),
       });

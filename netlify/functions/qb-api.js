@@ -2,6 +2,7 @@
 // Proxies requests from the frontend to QBO REST API
 // Handles: customers, invoices, bills, inventory adjustments, purchase orders, company info
 const https = require('https');
+const { verifyUser } = require('./_shared');
 
 const corsHeaders = (origin) => ({
   'Access-Control-Allow-Origin': origin || '*',
@@ -48,6 +49,14 @@ exports.handler = async (event) => {
   }
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, headers: corsHeaders(origin), body: JSON.stringify({ error: 'POST only' }) };
+  }
+
+  // Staff-only: QBO writes (invoices, payments, POs, inventory) were previously
+  // executable by any caller that supplied a token pair. Requires a signed-in,
+  // active team member's Supabase JWT in the Authorization header.
+  const v = await verifyUser(event);
+  if (!v.ok) {
+    return { statusCode: v.status, headers: corsHeaders(origin), body: JSON.stringify({ error: v.error }) };
   }
 
   let body;

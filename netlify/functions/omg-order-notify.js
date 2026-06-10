@@ -13,12 +13,17 @@
 // Env: REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY,
 //      BREVO_API_KEY, PORTAL_PUBLIC_URL (or Netlify URL)
 const { createClient } = require('@supabase/supabase-js');
+const { verifyUser } = require('./_shared');
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST only' }) };
+
+  // Staff-only: sends buyer emails via the server-side Brevo key.
+  const v = await verifyUser(event);
+  if (!v.ok) return { statusCode: v.status, headers, body: JSON.stringify({ error: v.error }) };
 
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

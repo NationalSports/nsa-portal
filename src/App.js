@@ -19,7 +19,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, authFetch } from './utils';
 import { calcOrderTotals, auTierDisc } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
@@ -4593,7 +4593,7 @@ export default function App(){
     const t=_pendingQBTokens.current;_pendingQBTokens.current=null;
     setQBConfig(prev=>({...prev,connected:true,sandbox:false,access_token:t.access_token,refresh_token:t.refresh_token,
       realm_id:t.realm_id,token_created_at:t.created_at||Date.now()}));
-    fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
+    authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:'company_info',access_token:t.access_token,realm_id:t.realm_id,sandbox:false})})
       .then(r=>r.json()).then(d=>{
         const ci=d?.CompanyInfo;
@@ -8109,20 +8109,37 @@ export default function App(){
   const saveInvPO=()=>{
     const vendorId=invPOModal.vendor_id;const vendor=vend.find(v=>v.id===vendorId);
     if(!vendorId||!vendor){nf('Select a vendor','warn');return}
-    const validItems=invPOModal.items.filter(it=>it.product_id&&Object.values(it.sizes||{}).some(v=>v>0));
+    // Keep items that have received units even if their ordered sizes were zeroed out —
+    // dropping them would orphan the receiving history (stock already moved).
+    const validItems=invPOModal.items.filter(it=>it.product_id&&(Object.values(it.sizes||{}).some(v=>v>0)||Object.values(it.received||{}).some(v=>v>0)));
     if(validItems.length===0){nf('Add at least one item with quantities','warn');return}
     const isEdit=!!invPOModal.editId;
     if(isEdit){
-      // Update existing PO
+      // Update existing PO — editable in any status. Ordered qty can't drop below what was
+      // already received (clamped), and status is recomputed since items/quantities changed.
+      let clamped=false;
+      const newItems=validItems.map(it=>{
+        const sizes={...it.sizes};
+        Object.entries(it.received||{}).forEach(([sz,r])=>{if(r>0&&(sizes[sz]||0)<r){sizes[sz]=r;clamped=true}});
+        return{product_id:it.product_id,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||[],sizes,received:it.received||{},nsa_cost:it.nsa_cost||0};
+      });
+      let anyReceived=false,allReceived=true;
+      newItems.forEach(it=>{
+        Object.entries(it.sizes).forEach(([sz,ord])=>{if(ord>0&&((it.received||{})[sz]||0)<ord)allReceived=false});
+        if(Object.values(it.received||{}).some(v=>v>0))anyReceived=true;
+      });
+      const newStatus=anyReceived?(allReceived?'received':'partial'):'ordered';
       setInvPOs(prev=>prev.map(po=>{
         if(po.id!==invPOModal.editId)return po;
-        return{...po,vendor_id:vendorId,vendor_name:vendor.name,
-          items:validItems.map(it=>({product_id:it.product_id,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||[],sizes:{...it.sizes},received:it.received||{},nsa_cost:it.nsa_cost||0})),
+        const status=po.status==='cancelled'?po.status:newStatus;
+        return{...po,vendor_id:vendorId,vendor_name:vendor.name,items:newItems,status,
+          received_at:status==='received'?(po.received_at||new Date().toLocaleString()):null,
+          received_by:status==='received'?(po.received_by||cu?.name||null):null,
           expected_date:invPOModal.expected_date||'',memo:invPOModal.memo||'',is_booking:!!invPOModal.is_booking,_qb_synced:false};
       }));
       const existingPO=invPOs.find(p=>p.id===invPOModal.editId);
-      logChange('updated','Inventory PO',existingPO?.po_number||'',vendor.name+' — '+validItems.length+' items');
-      nf('PO '+(existingPO?.po_number||'')+' updated');
+      logChange('updated','Inventory PO',existingPO?.po_number||'',vendor.name+' — '+newItems.length+' items');
+      nf('PO '+(existingPO?.po_number||'')+' updated'+(clamped?' (some sizes kept at received qty)':''));
     } else {
       // Create new PO
       const poNum='PO '+invPOCounter+' NSA';
@@ -8326,7 +8343,7 @@ export default function App(){
             <div style={{padding:'10px 16px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',display:'flex',gap:8}}>
               {po.status!=='received'&&po.status!=='cancelled'&&<button className="btn btn-sm btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>setInvPOReceive(po)}>Receive Items</button>}
               <button className="btn btn-sm btn-secondary" onClick={()=>printInvPOPackingList(po)}>📦 Packing List</button>
-              {po.status==='ordered'&&<button className="btn btn-sm btn-secondary" onClick={()=>editInvPO(po)}>Edit</button>}
+              <button className="btn btn-sm btn-secondary" onClick={()=>editInvPO(po)}>Edit</button>
               <button className="btn btn-sm btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>deleteInvPO(po)}>Delete</button>
             </div>
           </div>})}
@@ -20490,7 +20507,7 @@ export default function App(){
       }catch(e){console.warn('[QB] Token refresh failed:',e)}
     }
     try{
-      const r=await fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
+      const r=await authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action,access_token:payload.access_token||qbConfig.access_token,realm_id:qbConfig.realm_id,sandbox:qbConfig.sandbox,...payload})});
       if(!r.ok&&r.status!==401){const txt=await r.text();console.warn('[QB] API returned',r.status,txt);nf('QB API error ('+r.status+')','error');return null}
       const d=await r.json();
@@ -26261,7 +26278,7 @@ export default function App(){
       if(supabase){
         // Use Netlify function with service role to bypass RLS
         try{
-          const resp=await fetch('/.netlify/functions/create-quote-request',{method:'POST',headers:{'Content-Type':'application/json'},
+          const resp=await authFetch('/.netlify/functions/create-quote-request',{method:'POST',headers:{'Content-Type':'application/json'},
             body:JSON.stringify({id:newQR.id,token:newQR.token,customer_id:newQR.customer_id,contact_id:newQR.contact_id,created_by:newQR.created_by})});
           if(!resp.ok){const err=await resp.json().catch(()=>({error:'Unknown error'}));nf('DB error: '+(err.error||'Failed to create'),'error');return}
         }catch(e){nf('Network error: '+e.message,'error');return}
@@ -27224,7 +27241,7 @@ export default function App(){
         });
         const base64=await resizeImage(vecFile.url);
         if(!base64){nf('Failed to read image data','error');setVecProcessing(false);return}
-        const resp=await fetch('/.netlify/functions/vectorizer-proxy',{
+        const resp=await authFetch('/.netlify/functions/vectorizer-proxy',{
           method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({imageBase64:base64,mode:vecTestMode?'test':'production',outputFormat:'svg',maxColors:vecColors||0})
         });
@@ -27918,15 +27935,19 @@ export default function App(){
             const pq=(invPOModal.productSearch||'').trim().toLowerCase();
             if(!pq)return null;
             const vendorId=invPOModal.vendor_id;
-            const available=vendorId?prod.filter(p=>p.vendor_id===vendorId&&!invPOModal.items.find(it=>it.product_id===p.id)):prod.filter(p=>!invPOModal.items.find(it=>it.product_id===p.id));
-            const matches=available.filter(p=>p.sku.toLowerCase().includes(pq)||p.name.toLowerCase().includes(pq)||(p.color||'').toLowerCase().includes(pq)||(p.brand||'').toLowerCase().includes(pq)).slice(0,15);
-            if(matches.length===0)return<div style={{padding:8,fontSize:12,color:'#94a3b8',marginTop:4}}>No products found{vendorId?' for this vendor':''}.</div>;
+            // Search the FULL catalog — the selected vendor's products surface first, but any SKU
+            // can be added to the PO even if it's assigned to a different vendor (or none).
+            const available=prod.filter(p=>!invPOModal.items.find(it=>it.product_id===p.id));
+            const matches=available.filter(p=>p.sku.toLowerCase().includes(pq)||p.name.toLowerCase().includes(pq)||(p.color||'').toLowerCase().includes(pq)||(p.brand||'').toLowerCase().includes(pq))
+              .sort((a,b)=>((vendorId&&a.vendor_id===vendorId)?0:1)-((vendorId&&b.vendor_id===vendorId)?0:1)).slice(0,15);
+            if(matches.length===0)return<div style={{padding:8,fontSize:12,color:'#94a3b8',marginTop:4}}>No products found.</div>;
             return<div style={{marginTop:4,border:'1px solid #e2e8f0',borderRadius:6,background:'white',maxHeight:200,overflowY:'auto'}}>
               {matches.map(p2=><div key={p2.id} style={{padding:'8px 12px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',fontSize:12,display:'flex',gap:8,alignItems:'center'}}
                 onClick={()=>{setInvPOModal(x=>({...x,productSearch:'',items:[...x.items,{product_id:p2.id,sku:p2.sku,name:p2.name,color:p2.color||'',available_sizes:[...p2.available_sizes],sizes:{},nsa_cost:p2.nsa_cost||0}]}))}}>
                 <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p2.sku}</span>
                 <span style={{flex:1}}>{p2.name}</span>
                 <span style={{color:'#94a3b8',fontSize:11}}>{p2.color}</span>
+                {vendorId&&p2.vendor_id!==vendorId&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:4,background:'#fffbeb',color:'#b45309',border:'1px solid #fde68a',whiteSpace:'nowrap'}} title="Assigned to a different vendor in the catalog — it will still be added to this PO">{vend.find(v=>v.id===p2.vendor_id)?.name||'No vendor'}</span>}
                 <span style={{fontSize:10,color:'#64748b'}}>${p2.nsa_cost?.toFixed(2)}</span>
               </div>)}
             </div>;
@@ -27937,8 +27958,9 @@ export default function App(){
         {invPOModal.items.length===0?<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:13}}>No items added yet. Select a vendor and add products above.</div>:
         invPOModal.items.map((it,idx)=>{
           const itTotal=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+          const itRcvd=Object.values(it.received||{}).reduce((a,v)=>a+v,0);
           const baseSizes=it.available_sizes||['S','M','L','XL','2XL'];
-          const extras=Object.keys(it.sizes||{}).filter(sz=>!baseSizes.includes(sz));
+          const extras=[...new Set([...Object.keys(it.sizes||{}),...Object.keys(it.received||{}).filter(sz=>(it.received[sz]||0)>0)])].filter(sz=>!baseSizes.includes(sz));
           const allSizes=[...baseSizes,...extras].sort((a,b)=>{const ai=SZ_ORD.indexOf(a),bi=SZ_ORD.indexOf(b);return (ai<0?999:ai)-(bi<0?999:bi)});
           const addableSizes=[...SZ_ORD,...EXTRA_SIZES].filter((sz,i,a)=>a.indexOf(sz)===i&&!allSizes.includes(sz));
           return<div key={idx} style={{padding:12,background:'#f8fafc',borderRadius:6,marginBottom:8,border:'1px solid #e2e8f0'}}>
@@ -27951,16 +27973,18 @@ export default function App(){
                 <span style={{fontSize:11,color:'#64748b'}}>/ea</span>
               </div>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
+                {itRcvd>0&&<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 7px',borderRadius:4}}>{itRcvd} received</span>}
                 <span style={{fontWeight:700,fontSize:13}}>{itTotal} units = ${(itTotal*(it.nsa_cost||0)).toFixed(2)}</span>
-                <button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:16,padding:'0 4px'}} onClick={()=>setInvPOModal(x=>({...x,items:x.items.filter((_,i2)=>i2!==idx)}))}>x</button>
+                <button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:16,padding:'0 4px'}} onClick={()=>{if(itRcvd>0&&!window.confirm(it.sku+' has '+itRcvd+' received unit'+(itRcvd!==1?'s':'')+' on this PO. Removing it will NOT reverse inventory that was already received. Remove it from the PO?'))return;setInvPOModal(x=>({...x,items:x.items.filter((_,i2)=>i2!==idx)}))}}>x</button>
               </div>
             </div>
             <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end'}}>
-              {allSizes.map(sz=>{const isExtra=!baseSizes.includes(sz);return<div key={sz} style={{textAlign:'center',position:'relative'}}>
+              {allSizes.map(sz=>{const isExtra=!baseSizes.includes(sz);const rcv=(it.received||{})[sz]||0;const below=rcv>0&&(it.sizes[sz]||0)<rcv;return<div key={sz} style={{textAlign:'center',position:'relative'}}>
                 <div style={{fontSize:10,fontWeight:700,color:isExtra?'#7c3aed':'#475569',marginBottom:2}}>{sz}</div>
-                <input style={{width:48,textAlign:'center',border:'1px solid '+(isExtra?'#c4b5fd':'#d1d5db'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} value={it.sizes[sz]||''} placeholder="0"
+                <input style={{width:48,textAlign:'center',border:'1px solid '+(below?'#dc2626':isExtra?'#c4b5fd':'#d1d5db'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:below?'#fef2f2':'white'}} value={it.sizes[sz]||''} placeholder="0"
                   onChange={e=>{const val=Math.max(0,parseInt(e.target.value)||0);setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>i2!==idx?ii:{...ii,sizes:{...ii.sizes,[sz]:val}})}))}}/>
-                {isExtra&&<button title="Remove this size" style={{position:'absolute',top:-4,right:-4,width:14,height:14,padding:0,fontSize:10,lineHeight:'12px',background:'#fff',border:'1px solid #c4b5fd',borderRadius:'50%',color:'#7c3aed',cursor:'pointer'}} onClick={()=>setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>{if(i2!==idx)return ii;const {[sz]:_drop,...rest}=ii.sizes||{};return{...ii,sizes:rest}})}))}>×</button>}
+                {rcv>0&&<div style={{fontSize:9,fontWeight:700,color:below?'#dc2626':'#166534'}} title={below?'Ordered below received — will be kept at '+rcv+' on save':'Already received'}>rcvd {rcv}</div>}
+                {isExtra&&rcv===0&&<button title="Remove this size" style={{position:'absolute',top:-4,right:-4,width:14,height:14,padding:0,fontSize:10,lineHeight:'12px',background:'#fff',border:'1px solid #c4b5fd',borderRadius:'50%',color:'#7c3aed',cursor:'pointer'}} onClick={()=>setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>{if(i2!==idx)return ii;const {[sz]:_drop,...rest}=ii.sizes||{};return{...ii,sizes:rest}})}))}>×</button>}
               </div>})}
               <div style={{textAlign:'center'}}>
                 <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',marginBottom:2}}>+ Size</div>

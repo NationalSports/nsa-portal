@@ -18,6 +18,7 @@
 //
 // Env: REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY
 const { createClient } = require('@supabase/supabase-js');
+const { verifyUser } = require('./_shared');
 
 // Pull a SKU out of a string like "Black/White (KB9093)" → KB9093
 const extractSku = (str) => {
@@ -60,6 +61,10 @@ exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST only' }) };
   }
+
+  // Staff-only: ingests orders into webstore tables via service role.
+  const v = await verifyUser(event);
+  if (!v.ok) return { statusCode: v.status, headers, body: JSON.stringify({ error: v.error }) };
 
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
