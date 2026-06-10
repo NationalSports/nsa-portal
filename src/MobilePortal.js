@@ -158,7 +158,12 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const poResults=[];const seenPO=new Set();
     sos.forEach(so=>{const cc=custObj(so.customer_id);safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(po=>{const pid=po.po_id||'PO';const key='so|'+so.id+'|'+pid+'|'+(po.vendor||'');if(!seenPO.has(key)&&((pid+' '+(po.batch_po_number||'')+' '+(po.vendor||'')+' '+so.id+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')+' '+(it.sku||'')+' '+(it.name||'')).toLowerCase().includes(s))){seenPO.add(key);poResults.push({key,poId:pid,batchPo:po.batch_po_number||'',vendor:po.vendor||'',soId:so.id,cust:cc,kind:'so'})}})})});
     (invPOs||[]).forEach(po=>{const key='inv|'+po.id;if(!seenPO.has(key)&&((po.po_number||'')+' '+(po.vendor_name||'')+' '+(po.items||[]).map(i=>(i.sku||'')+' '+(i.name||'')).join(' ')).toLowerCase().includes(s)){seenPO.add(key);poResults.push({key,poId:po.po_number,vendor:po.vendor_name||'',soId:null,cust:null,kind:'inv'});}});
+    // Batches: group source PO lines by their batch_po_number (e.g. "NSA 4507") so the batch itself is searchable.
+    const batchMap={};
+    sos.forEach(so=>safeItems(so).forEach(it=>(it.po_lines||[]).forEach(po=>{const bn=po.batch_po_number;if(!bn)return;const pid=po.po_id||'PO';const pk='so|'+so.id+'|'+pid+'|'+(po.vendor||'');const b=batchMap[bn]||(batchMap[bn]={batchNo:bn,vendor:po.vendor||'',poKeys:new Set()});if(po.vendor&&!b.vendor)b.vendor=po.vendor;b.poKeys.add(pk)})));
+    const batchResults=Object.values(batchMap).filter(b=>(b.batchNo+' '+(b.vendor||'')).toLowerCase().includes(s)).slice(0,6).map(b=>({batchNo:b.batchNo,vendor:b.vendor,poKeys:[...b.poKeys]}));
     return{
+      batches:batchResults,
       customers:cust.filter(c=>(c.name+' '+(c.alpha_tag||'')+' '+(c.email||'')).toLowerCase().includes(s)).slice(0,6),
       orders:sos.filter(so=>{const cc=custObj(so.customer_id);return(so.id+' '+(so.memo||'')+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')).toLowerCase().includes(s)}).slice(0,6),
       estimates:ests.filter(e=>{const cc=custObj(e.customer_id);return(e.id+' '+(e.memo||'')+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')).toLowerCase().includes(s)}).slice(0,6),
@@ -1157,7 +1162,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   };
 
   const openIF=(grp)=>{const init={};grp.lines.forEach(l=>{const m={};whSizes(l.pick).forEach(sz=>{m[sz]=l.pick[sz]||0});init[l.itemIdx]=m});setWhPullQty(init);setWhDetail({kind:'if',soId:grp.soId,pickId:grp.pickId})};
-  const openPO=(po)=>{const init={};po.lines.forEach((l,i)=>{const m={};Object.entries(l.sizes).forEach(([sz,s])=>{if(s.open>0)m[sz]=s.open});init[i]=m});setWhRcvQty(init);setWhDetail({kind:'po',key:po.key})};
+  const openPO=(po)=>{setWhRcvQty({});setWhDetail({kind:'po',key:po.key})};// boxes start at 0 — warehouse enters what actually arrived
 
   const confirmPull=(grp)=>{
     if(whSaving)return;
@@ -1179,21 +1184,31 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       setWhSaving(true);try{onReceiveInvPO&&onReceiveInvPO(po.invId,receivedMap)}finally{setWhSaving(false);setWhDetail(null);setWhRcvQty({})}
     }
   };
-  // Build the full-open qty map for one PO ({lineIdx:{size:open}}) — used to pre-fill the
-  // review screen and to power the per-PO "All received" shortcut.
+  // Build the full-open qty map for one PO ({lineIdx:{size:open}}) — powers the "All received" shortcuts.
   const fullOpenMap=(po)=>{const lm={};po.lines.forEach((l,i)=>{const m={};Object.entries(l.sizes).forEach(([sz,s])=>{if(s.open>0)m[sz]=s.open});if(Object.keys(m).length)lm[i]=m});return lm};
-  // Step 1 of batch check-in: open an editable review screen pre-filled to full open
-  // (so the common "everything arrived" case stays a couple of taps), with each size
-  // editable down for partial receipts.
+  // Single-PO receive shortcuts (boxes start at 0; these fill/clear all sizes).
+  const whRcvSetAll=(po)=>setWhRcvQty(fullOpenMap(po));
+  const whRcvClear=()=>setWhRcvQty({});
+  // Step 1 of batch check-in: open an editable review screen. Boxes start at 0 so the
+  // warehouse enters what arrived; per-PO and whole-batch "All received" fill to full.
   const openBatchReview=(allPOs)=>{
     const sel=allPOs.filter(p=>whBatchSelected.has(p.key)&&p.totOpen>0);
     if(sel.length===0){if(nf)nf('Select POs with open items','error');return;}
-    const init={};sel.forEach(po=>{init[po.key]=fullOpenMap(po)});
-    setWhBatchQty(init);setWhDetail({kind:'batch'});
+    setWhBatchQty({});setWhDetail({kind:'batch'});
   };
-  // Per-PO shortcuts on the review screen.
+  // Open a whole batch (all source POs sharing a batch_po_number) in the review screen.
+  const openBatchByNumber=(batchNo,poKeys)=>{
+    const sel=buildPOs().filter(p=>poKeys.includes(p.key)&&p.totOpen>0);
+    if(sel.length===0){if(nf)nf(batchNo+' has no open units to receive','error');return;}
+    setWhBatchSelected(new Set(sel.map(p=>p.key)));setWhBatchQty({});setWhBatchMode(true);
+    setTab('more');setMoreSubPage('warehouse');setWhTab('pos');setWhDetail({kind:'batch'});
+    setShowSearch(false);setQ('');
+  };
+  // Per-PO and whole-batch shortcuts on the review screen.
   const batchPoSetAll=(po)=>setWhBatchQty(prev=>({...prev,[po.key]:fullOpenMap(po)}));
   const batchPoClear=(po)=>setWhBatchQty(prev=>({...prev,[po.key]:{}}));
+  const batchSetAllPOs=(sel)=>setWhBatchQty(()=>{const o={};sel.forEach(po=>{o[po.key]=fullOpenMap(po)});return o});
+  const batchClearAll=()=>setWhBatchQty({});
   // Step 2: receive exactly the quantities entered on the review screen (skips zeros).
   const confirmBatchReceive=(sel)=>{
     if(whSaving)return;
@@ -1286,6 +1301,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
               <div className="mp-info-item"><div className="mp-info-label">Type</div><div className="mp-info-val">{po.kind==='inv'?'Inventory':'Order PO'}</div></div>
             </div>
             <div className="mp-section-title">Items ({po.lines.length}){po.totOpen>0?' — enter qty received':''}</div>
+            {po.totOpen>0&&<div style={{display:'flex',gap:6,marginBottom:10}}>
+              <button onClick={()=>whRcvSetAll(po)} style={{flex:1,padding:'8px',borderRadius:8,border:'1px solid #86efac',background:'#f0fdf4',color:'#166534',fontWeight:700,fontSize:13,cursor:'pointer',minHeight:36}}>✓ All received</button>
+              <button onClick={whRcvClear} style={{padding:'8px 14px',borderRadius:8,border:'1px solid #e2e8f0',background:'white',color:'#64748b',fontWeight:700,fontSize:13,cursor:'pointer',minHeight:36}}>Clear</button>
+            </div>}
             {po.lines.map((l,i)=>{const item=l.item;const szEntries=Object.entries(l.sizes).filter(([,s])=>s.ord>0);
               return<div key={i} className="mp-item-card">
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
@@ -1293,7 +1312,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                   <div style={{fontSize:12,color:'#64748b'}}>{item.sku}{item.color?' · '+item.color:''}</div></div>
                 </div>
                 <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                  {szEntries.map(([sz,s])=>{const v=(whRcvQty[i]||{})[sz]??(s.open>0?s.open:0);
+                  {szEntries.map(([sz,s])=>{const v=(whRcvQty[i]||{})[sz]??0;/* start at 0 */
                     return<div key={sz} style={{textAlign:'center',minWidth:62,padding:'6px',borderRadius:8,border:s.open>0?'1px solid #e2e8f0':'1px solid #f1f5f9',background:s.open>0?'#f8fafc':'#fafafa'}}>
                       <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:2}}>{sz}</div>
                       <div style={{fontSize:9,color:'#94a3b8',marginBottom:4}}>{s.rcv}/{s.ord} rcvd</div>
@@ -1323,6 +1342,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         </div>
         <div className="mp-detail-body">
           {sel.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40,fontSize:14}}>No open items in the selected POs.</div>}
+          {sel.length>1&&<div style={{display:'flex',gap:6,marginBottom:14}}>
+            <button onClick={()=>batchSetAllPOs(sel)} style={{flex:1,padding:'9px',borderRadius:8,border:'1px solid #86efac',background:'#f0fdf4',color:'#166534',fontWeight:800,fontSize:13,cursor:'pointer',minHeight:38}}>✓ All received (all {sel.length} POs)</button>
+            <button onClick={batchClearAll} style={{padding:'9px 14px',borderRadius:8,border:'1px solid #e2e8f0',background:'white',color:'#64748b',fontWeight:700,fontSize:13,cursor:'pointer',minHeight:38}}>Clear all</button>
+          </div>}
           {sel.map(po=>{const poRcv=Object.values(whBatchQty[po.key]||{}).reduce((b,m)=>b+Object.values(m||{}).reduce((c,v)=>c+(parseInt(v)||0),0),0);
             return<div key={po.key} style={{marginBottom:18}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,paddingBottom:6,borderBottom:'2px solid #e2e8f0',flexWrap:'wrap'}}>
@@ -1809,6 +1832,13 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
             <span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span><span style={{color:'#64748b',marginLeft:8}}>{fmtMoney(inv.total)}</span>
             <span style={{...statusBadge(inv.status||'open'),marginLeft:'auto'}}>{inv.status||'open'}</span>
           </div>)}</>}
+        {searchResults.batches.length>0&&<><div className="mp-search-section">Batch POs</div>
+          {searchResults.batches.map(b=><div key={b.batchNo} className="mp-search-item" onClick={()=>openBatchByNumber(b.batchNo,b.poKeys)}>
+            <span style={{fontWeight:800,color:'#7c3aed',fontFamily:'monospace'}}>{b.batchNo}</span>
+            <span style={{color:'#64748b',marginLeft:8}}>{b.vendor||'—'}</span>
+            <span style={{color:'#94a3b8',marginLeft:6,fontSize:11}}>{b.poKeys.length} PO{b.poKeys.length!==1?'s':''}</span>
+            <span style={{fontSize:9,padding:'1px 6px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',fontWeight:700,marginLeft:'auto'}}>BATCH</span>
+          </div>)}</>}
         {searchResults.pos.length>0&&<><div className="mp-search-section">POs</div>
           {searchResults.pos.map(po=><div key={po.key} className="mp-search-item" onClick={()=>{setTab('more');setMoreSubPage('warehouse');setWhTab('pos');setWhRcvQty({});setWhDetail({kind:'po',key:po.key});setShowSearch(false);setQ('')}}>
             <span style={{fontWeight:700,color:'#1e40af'}}>{po.poId||'PO'}</span>
@@ -1817,7 +1847,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
             {po.soId&&<span style={{color:'#94a3b8',marginLeft:6,fontSize:11}}>{po.soId}</span>}
             {po.kind==='inv'&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:6,background:'#f1f5f9',color:'#64748b',fontWeight:700,marginLeft:'auto'}}>INV</span>}
           </div>)}</>}
-        {searchResults.orders.length===0&&searchResults.estimates.length===0&&searchResults.customers.length===0&&searchResults.invoices.length===0&&searchResults.pos.length===0&&q.length>=2&&
+        {searchResults.orders.length===0&&searchResults.estimates.length===0&&searchResults.customers.length===0&&searchResults.invoices.length===0&&searchResults.pos.length===0&&searchResults.batches.length===0&&q.length>=2&&
           <div style={{padding:20,textAlign:'center',color:'#94a3b8',fontSize:14}}>No results found</div>}
       </div>}
     </div>;
