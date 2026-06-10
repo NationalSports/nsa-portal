@@ -3822,8 +3822,17 @@ export default function App(){
   // depth counter). Every 5 minutes, compare /asset-manifest.json's main.js hash to
   // what was recorded at startup. On a hash change (new deploy), drain any in-flight
   // saves then force a reload — the new bundle's guards are then active immediately.
+  // The reload additionally waits for a 60s idle gap (no typing/clicking) so it never
+  // lands mid-keystroke: dirtyRef covers order edits, but focused inputs that commit
+  // on blur and modal drafts (e.g. a half-written invoice message) are not saved by
+  // the version-reload autosave. A 10-minute cap keeps a busy tab from deferring the
+  // new build indefinitely.
   React.useEffect(()=>{
     let knownHash=null;
+    let lastInput=Date.now();
+    const markInput=()=>{lastInput=Date.now()};
+    window.addEventListener('pointerdown',markInput,{capture:true,passive:true});
+    window.addEventListener('keydown',markInput,{capture:true,passive:true});
     const check=async()=>{
       try{
         const res=await fetch('/asset-manifest.json?_='+Date.now(),{cache:'no-store'});
@@ -3834,8 +3843,11 @@ export default function App(){
         if(knownHash===null){knownHash=hash;return}// record on first run
         if(hash===knownHash)return;
         window.dispatchEvent(new Event('nsa:version-reload-pending'));
+        const deferStart=Date.now();
         const doReload=()=>{
-          if(_authErrorDetected||(_dbSavePendingIds.size===0&&_bgSync===0&&!dirtyRef.current))window.location.reload();
+          const savesIdle=_dbSavePendingIds.size===0&&_bgSync===0&&!dirtyRef.current;
+          const userIdle=document.hidden||Date.now()-lastInput>60000||Date.now()-deferStart>10*60*1000;
+          if(_authErrorDetected||(savesIdle&&userIdle))window.location.reload();
           else setTimeout(doReload,2000);
         };
         doReload();
@@ -3843,7 +3855,7 @@ export default function App(){
     };
     check();
     const t=setInterval(check,5*60*1000);
-    return()=>clearInterval(t);
+    return()=>{clearInterval(t);window.removeEventListener('pointerdown',markInput,{capture:true});window.removeEventListener('keydown',markInput,{capture:true})};
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
