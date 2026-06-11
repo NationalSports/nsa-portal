@@ -215,7 +215,11 @@ export const PANTONE_MAP={
 '2905':'#9AC8E8','2915':'#60AEE0','2925':'#0098CC','2935':'#0068B0','2945':'#005898',
 '3005':'#0070BC','3015':'#006098','3025':'#005280'
 };
-export const pantoneHex=(code)=>{if(!code)return null;const s=code.toString().toUpperCase().replace(/\s*(C|U|CP|UP|TCX|TPX|TPG|TN)\s*$/,'').replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return PANTONE_MAP[s]||PANTONE_MAP[s.replace(/\s+/g,' ')]||null};
+// PANTONE_MAP keeps display casing (e.g. 'Reflex Blue'), but inks get typed in any case
+// ('Black','white','REFLEX BLUE'). Normalize keys to upper-case so named colors resolve to a
+// swatch instead of falling through to a blank fallback. Numeric codes are unaffected by case.
+const PANTONE_MAP_UC=Object.fromEntries(Object.entries(PANTONE_MAP).map(([k,v])=>[k.toUpperCase(),v]));
+export const pantoneHex=(code)=>{if(!code)return null;const s=code.toString().toUpperCase().replace(/\s*(C|U|CP|UP|TCX|TPX|TPG|TN)\s*$/,'').replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return PANTONE_MAP_UC[s]||PANTONE_MAP_UC[s.replace(/\s+/g,' ')]||null};
 export const pantoneSearch=(query)=>{if(!query||query.length<1)return[];const q=query.toUpperCase().replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return Object.entries(PANTONE_MAP).filter(([k])=>k.toUpperCase().includes(q)).slice(0,12).map(([code,hex])=>({code,hex}))};
 // Thread color name-to-hex lookup for common embroidery thread colors
 export const THREAD_COLORS={'cardinal':'#8C1515','navy':'#001f3f','gold':'#FFD700','white':'#FFFFFF','black':'#000000',
