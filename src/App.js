@@ -22351,6 +22351,86 @@ export default function App(){
       }));
     };
 
+    // Distribute a batch-PO bill down to the source SOs' po_lines. Batch bills used to stop at the
+    // batch record (submittedBatches.billed), which kept BILLED/tracking invisible on the SO Tracking
+    // tab and the Jobs page — both read item.po_lines only. Matches lines the same way batch receiving
+    // does (po_id OR batch_po_number equals the batch PO#/id), pours each allocation into matching
+    // lines capped at open qty (ordered − billed) per size, and writes billed/tracking_numbers/
+    // _bill_cost/_bill_details in the exact shape of the direct so_po path so every reader works
+    // unchanged. allocs: [{so_id,sku,color,size,qty,cost}] — empty so_id (auto-matched bills) pours
+    // across all linked SOs in order; an alloc whose SKU or size matches no linked line stays
+    // batch-level only (never written under a guessed key). freightBySO: optional {soId:$} applied
+    // as _inbound_freight in the same single save per SO.
+    const _applyBillToBatchSOs=(bill,batch,allocs,freightBySO)=>{
+      const batchKeys=[batch?.po_number,batch?.id].filter(Boolean).map(x=>String(x).toLowerCase());
+      const fBySO=freightBySO||{};
+      if(!batchKeys.length&&!Object.keys(fBySO).length)return;
+      setSOs(prev=>{
+        // Index every po_line linked to this batch
+        const lines=[];
+        prev.forEach(s=>{(s.items||[]).forEach((it,ii)=>{(it.po_lines||[]).forEach((pl,pi)=>{
+          const pid=String(pl.po_id||'').toLowerCase();const bpn=String(pl.batch_po_number||'').toLowerCase();
+          if(batchKeys.includes(pid)||batchKeys.includes(bpn))lines.push({soId:s.id,ii,pi,sku:(it.sku||'').toUpperCase(),color:(it.color||'').trim().toUpperCase(),pl});
+        })})});
+        const touched={};// soId -> {`ii|pi`: {sizes:{},cost}}
+        const poured={};// `soId|ii|pi|size` -> qty poured this pass, so capacity reflects earlier allocs
+        (allocs||[]).forEach(al=>{
+          if(!al||!al.size||!(al.qty>0))return;
+          const sku=(al.sku||'').toUpperCase();const color=(al.color||'').trim().toUpperCase();
+          let cands=lines.filter(l=>(!al.so_id||l.soId===al.so_id)&&l.sku===sku);
+          if(!cands.length)return;
+          if(color){const exact=cands.filter(l=>l.color===color);if(exact.length)cands=exact}
+          let rem=al.qty;const pours=[];
+          cands.forEach(l=>{
+            if(rem<=0)return;
+            const k=l.soId+'|'+l.ii+'|'+l.pi+'|'+al.size;
+            const cap=Math.max(0,safeNum(l.pl[al.size])-safeNum((l.pl.billed||{})[al.size])-(poured[k]||0));
+            const take=Math.min(rem,cap);
+            if(take>0){poured[k]=(poured[k]||0)+take;pours.push({l,qty:take});rem-=take}
+          });
+          // Out of room = over-billing on a real size: keep SO totals reconciled with the batch
+          // record by dumping the remainder on the last poured (or first) line — same as the so_po
+          // path allows. A size no linked line ordered stays batch-level instead (junk vendor size).
+          if(rem>0&&cands.some(l=>safeNum(l.pl[al.size])>0)){
+            const l=pours.length?pours[pours.length-1].l:cands[0];
+            const k=l.soId+'|'+l.ii+'|'+l.pi+'|'+al.size;poured[k]=(poured[k]||0)+rem;
+            const pe=pours.find(p=>p.l===l);if(pe)pe.qty+=rem;else pours.push({l,qty:rem});rem=0}
+          // Prorate the alloc's cost by poured share; remainder lands on the last pour.
+          let costApplied=0;
+          pours.forEach((p,i)=>{
+            const share=i===pours.length-1?Math.round((safeNum(al.cost)-costApplied)*100)/100:Math.round(safeNum(al.cost)*(p.qty/al.qty)*100)/100;
+            costApplied+=share;
+            const t=(touched[p.l.soId]=touched[p.l.soId]||{});
+            const e=(t[p.l.ii+'|'+p.l.pi]=t[p.l.ii+'|'+p.l.pi]||{sizes:{},cost:0});
+            e.sizes[al.size]=(e.sizes[al.size]||0)+p.qty;e.cost=Math.round((e.cost+share)*100)/100;
+          });
+        });
+        const touchedIds=new Set([...Object.keys(touched),...Object.keys(fBySO).filter(sid=>safeNum(fBySO[sid])>0)]);
+        if(!touchedIds.size)return prev;
+        return prev.map(s=>{
+          if(!touchedIds.has(s.id))return s;
+          const t=touched[s.id]||{};
+          const updatedItems=(s.items||[]).map((it,ii)=>{
+            const hasLine=(it.po_lines||[]).some((_,pi)=>t[ii+'|'+pi]);
+            if(!hasLine)return it;
+            return{...it,po_lines:(it.po_lines||[]).map((pl,pi)=>{
+              const e=t[ii+'|'+pi];if(!e)return pl;
+              const newBilled={...(pl.billed||{})};
+              Object.entries(e.sizes).forEach(([sz,q])=>{newBilled[sz]=(newBilled[sz]||0)+q});
+              const trackNums=[...(pl.tracking_numbers||[])];
+              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+              return{...pl,billed:newBilled,tracking_numbers:trackNums,
+                _bill_cost:Math.round((safeNum(pl._bill_cost||0)+e.cost)*100)/100,
+                _bill_details:[...(pl._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:e.sizes,tracking:bill.tracking,cost:e.cost}]};
+            })};
+          });
+          const updatedSO={...s,items:updatedItems,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+safeNum(fBySO[s.id]||0))*100)/100,updated_at:new Date().toLocaleString()};
+          _dbSaveSO(updatedSO);
+          return updatedSO;
+        });
+      });
+    };
+
     // Apply a bill using the wizard's explicit per-line mappings (SKU+size+color resolved against a
     // specific SO item / po_line or batch). Used when the bill was matched manually — the bill's
     // PO-number string won't match the target, so the po_number-based _applyFreightToSOs path can't
@@ -22413,14 +22493,11 @@ export default function App(){
           if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
           return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
         }));
-        if(billFreight>0&&soIds.length){
-          setSOs(prev=>prev.map(s=>{
-            if(!freightBySO[s.id])return s;
-            const updatedSO={...s,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+freightBySO[s.id])*100)/100,updated_at:new Date().toLocaleString()};
-            _dbSaveSO(updatedSO);
-            return updatedSO;
-          }));
-        }
+        // Flow the billed sizes down to the source SOs' po_lines too (freight rides along in the
+        // same save) — the batch record alone is invisible to the SO Tracking tab and Jobs page.
+        _applyBillToBatchSOs(bill,bill.matchedPO,
+          maps.map(mp=>({so_id:mp.so_id||'',sku:mp.sku||'',color:mp.color||'',size:mp.size,qty:safeNum(mp.allocated_qty),cost:safeNum(mp.bill_cost||0)})),
+          freightBySO);
         return true;
       }
       return false;
@@ -22463,8 +22540,14 @@ export default function App(){
           if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
           return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
         }));
-        // Apply freight to the associated SOs
-        if(batchSoIds.length)_applyFreightToSOs(bill,batchSoIds);
+        // Flow billed sizes + freight down to the source SOs' po_lines (matched by batch PO#) so
+        // the SO Tracking tab and Jobs page see this bill. Replaces _applyFreightToSOs here, which
+        // only wrote billed when the bill carried freight AND a line's po_id happened to match the
+        // bill's PO-number string — and never matched lines linked via batch_po_number.
+        const _batchAllocs=(bill.items||[]).filter(it=>it.size&&it.qty>0).map(it=>({so_id:'',sku:it.sku||'',color:it.color||'',size:it.size,qty:it.qty,cost:safeNum(it.extension||0)||safeNum(it.unit_price||0)*it.qty}));
+        const _batchFreight={};const _bf=safeNum(bill.freight||0);
+        if(_bf>0&&batchSoIds.length){let _fApplied=0;batchSoIds.forEach((sid,i)=>{const f=i===batchSoIds.length-1?Math.round((_bf-_fApplied)*100)/100:Math.round(_bf/batchSoIds.length*100)/100;_batchFreight[sid]=f;_fApplied+=f})}
+        _applyBillToBatchSOs(bill,bill.matchedPO,_batchAllocs,_batchFreight);
       }
       if(bill.matchedPOSource==='inv_po'&&bill.matchedPO){
         const poId=bill.matchedPO.id;
