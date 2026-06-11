@@ -9180,10 +9180,12 @@ export default function App(){
 
   const[assignTo,setAssignTo]=useState({machine:'',person:''});
   const moveJobStatus=(j,newStatus)=>{
-    // If moving to staging (In Line) or to in_process, prompt for assignment
-    if((newStatus==='staging'&&j.prod_status!=='staging')||(newStatus==='in_process'&&!j.assigned_to)){
+    // Decorator/machine assignment happens going In Line → In Process: always confirm it as work
+    // starts. Skip the prompt only when restoring an already-assigned job from Completed.
+    if(newStatus==='in_process'&&!(j.prod_status==='completed'&&j.assigned_to)){
+      const run2=!!(j.run_order&&j.run1_done&&!j.run2_done);// dual-run: run 2 picks its decorator fresh
       setAssignModal({job:j,soId:j.soId,targetStatus:newStatus});
-      setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||''});
+      setAssignTo({machine:j.assigned_machine||'',person:run2?'':j.assigned_to||''});
       return;
     }
     applyJobMove(j,newStatus,j.assigned_machine||'',j.assigned_to||'');
@@ -9223,7 +9225,8 @@ export default function App(){
       });
       savSO({...s,jobs:updatedJobs});
     });
-    // Timers per moved job: auto-clock-in on In Process, auto-clock-out on Completed/Shipped.
+    // Timers per moved job: auto-clock-in on In Process, auto-clock-out whenever a job leaves it
+    // (Completed/Shipped or back to In Line/Ready) so no timer keeps running off the In Process column.
     moveSet.forEach(m=>{
       const timerKey=m.soId+'|'+m.id;
       if(newStatus==='in_process'){
@@ -9232,7 +9235,7 @@ export default function App(){
           setActiveTimers(prev=>({...prev,[timerKey]:{person:decoratorName,clockIn:Date.now(),soId:m.soId}}));
           _idleAccum.current[timerKey]=0;
         }
-      } else if(newStatus==='completed'||newStatus==='shipped'){
+      } else {
         const active=activeTimers[timerKey];
         if(active){
           const mins=Math.round((Date.now()-active.clockIn)/60000);
@@ -9340,8 +9343,9 @@ export default function App(){
     const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>{const cc=cust.find(x=>x.id===j.so.customer_id);return(cc?.primary_rep_id||j.so.created_by)===prodFilter});
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
     const readyOnly=byDeco.filter(j=>(j.prod_status!=='hold'||isJobReady(j,j.so))).filter(j=>j.prod_status!=='shipped');
-    // Decorator filtering: decorators see all Ready for Prod, but only their assigned jobs in In Line/In Process/Completed
-    const roleFiltered=isDecorator?readyOnly.filter(j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'||j.assigned_to===cu?.name):readyOnly;
+    // Decorator filtering: decorators see all Ready for Prod plus the shared In Line queue (jobs sit
+    // unassigned until pulled into In Process), but only their assigned jobs in In Process/Completed
+    const roleFiltered=isDecorator?readyOnly.filter(j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'||(j.prod_status==='staging'&&!j.assigned_to)||j.assigned_to===cu?.name):readyOnly;
     const byStatus=prodStatF==='active'?roleFiltered.filter(j=>j.prod_status!=='completed'):prodStatF==='all'?roleFiltered:prodStatF==='hold'?roleFiltered.filter(j=>j.prod_status==='hold'||j.prod_status==='ready'):roleFiltered.filter(j=>j.prod_status===prodStatF);
     const totalUnits=byStatus.reduce((a,j)=>a+j.total_units,0);
     const fulfilledUnits=byStatus.reduce((a,j)=>a+j.fulfilled_units,0);
@@ -9376,7 +9380,7 @@ export default function App(){
         </div>
       </div>
       {isDecorator&&<div style={{marginBottom:8,padding:8,background:'#f5f3ff',borderRadius:6,fontSize:11,color:'#6d28d9'}}>
-        Showing all jobs in Ready for Prod. In Line, In Process, and Completed show only jobs assigned to you.
+        Showing all jobs in Ready for Prod and the In Line queue. In Process and Completed show only jobs assigned to you.
       </div>}
       <div className="stats-row">
         <div className="stat-card"><div className="stat-label">Total Jobs</div><div className="stat-value">{byStatus.length}</div></div>
@@ -9500,8 +9504,8 @@ export default function App(){
                           <div style={{fontSize:10,fontWeight:800,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8'}}>{j.run2_done?'Done':j.run1_done?'Current':'Pending'}</div>
                         </div>
                       </div>
-                      {/* Mark run done — reassign to another decorator and move back to In Line */}
-                      {!j.run1_done&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,background:'#166534',color:'white',border:'none',width:'100%'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run1_done:true});applyJobMove(j,'staging',j.assigned_machine||'',j.assigned_to||'');setAssignModal({job:j,soId:j.soId,targetStatus:'staging'});setAssignTo({machine:j.assigned_machine||'',person:''});nf(rl.run1+' done — reassign for '+rl.run2)}}>Mark {rl.run1} Done</button>}
+                      {/* Mark run done — back to In Line; run 2's decorator gets assigned when it's pulled into In Process */}
+                      {!j.run1_done&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,background:'#166534',color:'white',border:'none',width:'100%'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run1_done:true});applyJobMove(j,'staging',j.assigned_machine||'',j.assigned_to||'');nf(rl.run1+' done — back In Line for '+rl.run2)}}>Mark {rl.run1} Done</button>}
                       {j.run1_done&&!j.run2_done&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,background:'#166534',color:'white',border:'none',width:'100%'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run2_done:true});moveJobStatus(j,'completed')}}>Mark {rl.run2} Done</button>}
                     </div>})()}
                   </div>}
@@ -9535,8 +9539,9 @@ export default function App(){
                     }}>🔍 Open Job Detail</div>
                   </div>
 
-                  {/* Time Tracking — clock in/out for active jobs */}
-                  {(col.id==='in_process'||col.id==='staging')&&(()=>{
+                  {/* Time Tracking — clock in lives on the In Line queue (decorators take a job there);
+                      the running timer follows the job into In Process for clock-out/resume */}
+                  {(col.id==='staging'||col.id==='in_process')&&(()=>{
                     const timerKey=j.soId+'|'+j.id;
                     const active=activeTimers[timerKey];
                     const logs=jobTimeLogs.filter(l=>l.jobId===j.id&&l.soId===j.soId);
@@ -9569,8 +9574,8 @@ export default function App(){
                   <div style={{display:'flex',gap:4,flexWrap:'wrap',borderTop:'1px solid #e2e8f0',paddingTop:6}}>
                     {col.id==='hold'&&j.prod_status==='ready'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();applyJobMove(j,'hold',j.assigned_machine||'',j.assigned_to||'')}}>← Warehouse</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'staging')}}>→ In Line</button></>}
                     {col.id==='hold'&&j.prod_status==='hold'&&<span style={{fontSize:9,color:'#dc2626',fontWeight:600}}>⏳ Waiting on warehouse</span>}
-                    {col.id==='staging'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'hold')}}>← Ready</button>{!j.assigned_to&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#6d28d9',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();setAssignModal({job:j,soId:j.soId,targetStatus:'staging'});setAssignTo({machine:j.assigned_machine||'',person:''})}}>👤 Assign</button>}<button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>→ In Process</button></>}
-                    {col.id==='in_process'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'staging')}}>← In Line</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px',background:'#166534',borderColor:'#166534'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'completed')}}>✓ Done</button></>}
+                    {col.id==='staging'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'hold')}}>← Ready</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>→ In Process</button></>}
+                    {col.id==='in_process'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'staging')}}>← In Line</button><button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#6d28d9',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();setAssignModal({job:j,soId:j.soId,targetStatus:'in_process'});setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||''})}}>👤 Reassign</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px',background:'#166534',borderColor:'#166534'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'completed')}}>✓ Done</button></>}
                     {col.id==='completed'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>← Back</button>}
                   </div>
                 </div>}
@@ -28427,7 +28432,7 @@ export default function App(){
             setAssignModal(null);
           }}>✓ Assign & Move</button>
         </div>
-        {!assignTo.person&&<div style={{padding:'4px 14px 8px',fontSize:11,color:'#dc2626',fontWeight:600}}>A decorator must be assigned to move to In Line.</div>}
+        {!assignTo.person&&<div style={{padding:'4px 14px 8px',fontSize:11,color:'#dc2626',fontWeight:600}}>A decorator must be assigned to move to In Process.</div>}
       </div></div>}
     {/* Idle Warning — art timers only (global, not tied to any specific page) */}
     {idleWarning&&<div className="modal-overlay" style={{zIndex:10000}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:380}}>
