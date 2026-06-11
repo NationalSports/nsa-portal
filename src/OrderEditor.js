@@ -15,7 +15,7 @@ import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIO
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
-import { jobScreenKey, jobGroupKey, isJobReady, recalcJobFulfillment } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco } from './businessLogic';
 import { buildBotCartPayload, isBotOwner } from './lib/botTasks';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -47,6 +47,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
   const cuEmail=(cu?.email)||(REPS||[]).find(r=>r.id===cu?.id)?.email||'';
+  // Warehouse alert — fired by receive/shipment-edit flows the moment a job crosses into
+  // items_received with art already complete, so the person checking in knows it can move to decoration now.
+  const notifyDecoReady=(prevJobs,nextJobs)=>{const r=jobsNowReadyForDeco(prevJobs,nextJobs);if(r.length&&nf)nf('🎽 Ready for decoration: '+r.map(j=>j.art_name||j.id).join(', ')+' — all items in & art complete!')};
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);const[editingJobName,setEditingJobName]=useState(null);
@@ -9402,7 +9405,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
                   const updatedItems=o.items.map((it,i)=>i===activeLine.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===activeLine.poIdx?updatedPO:p)}:it);
                   const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};
-                  setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO,_editShipIdx:null});nf('Shipment #'+(si+1)+' updated');
+                  setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO,_editShipIdx:null});nf('Shipment #'+(si+1)+' updated');notifyDecoReady(o.jobs,updated.jobs);
                 }}>Save</button>
                 <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{
                   if(!window.confirm('Delete this shipment receipt? Received quantities will be recalculated.'))return;
@@ -9498,7 +9501,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               let updatedItems=[...o.items];
               updates.forEach(({ln,updatedPO})=>{updatedItems=updatedItems.map((it,i)=>i===ln.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===ln.poIdx?updatedPO:p)}:it)});
               const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};
-              setO(updated);onSave(updated);
+              setO(updated);onSave(updated);notifyDecoReady(o.jobs,updated.jobs);
               const activeLnUpdate=updates.find(u=>u.ln.lineIdx===activeLine.lineIdx&&u.ln.poIdx===activeLine.poIdx);
               setEditPO({...editPO,po:activeLnUpdate?activeLnUpdate.updatedPO:editPO.po,_selectedRecvLines:[]});
               // Capture received items for the confirmation modal so the user can print/download a box label.
@@ -10050,7 +10053,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const updatedPO={...pl,received:newReceived,shipments:newShipments,status:newStatus};
               const updatedItems=o.items.map((it2,i)=>i===lineIdx?{...it2,po_lines:it2.po_lines.map((p,j)=>j===poIdx?updatedPO:p)}:it2);
               const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};
-              setO(updated);onSave(updated);
+              setO(updated);onSave(updated);notifyDecoReady(o.jobs,updated.jobs);
               // If the active editPO row is this one, refresh its snapshot too
               setPoFullPage(prev=>prev?{...prev,po:lineIdx===prev.allLines?.[0]?.lineIdx?updatedPO:prev.po,_editShip:null}:prev);
               return updatedPO;
@@ -10187,7 +10190,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 let updatedItems=[...o.items];
                 updates.forEach(({ln,updatedPO})=>{updatedItems=updatedItems.map((it,i)=>i===ln.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===ln.poIdx?updatedPO:p)}:it)});
                 const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};
-                setO(updated);onSave(updated);
+                setO(updated);onSave(updated);notifyDecoReady(o.jobs,updated.jobs);
                 const firstUpdate=updates[0];
                 setPoFullPage({...poFullPage,po:firstUpdate?firstUpdate.updatedPO:po,_selectedFpRecvLines:[]});
                 const rcItems=updates.map(({ln,updatedPO})=>{const it=o.items[ln.lineIdx]||{};const rsk=Object.keys(updatedPO).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof updatedPO[k]==='number');const lastShip=updatedPO.shipments[updatedPO.shipments.length-1]||{};const sizes={};rsk.forEach(sz=>{if(lastShip[sz]>0)sizes[sz]=lastShip[sz]});return{sku:it.sku||'',name:it.name||'',color:it.color||'',sizes,qty:Object.values(sizes).reduce((a,v)=>a+v,0)}}).filter(x=>x.qty>0);
