@@ -452,7 +452,7 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
               <span style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.3}}>{isEmb?'Thread colors':'Ink colors'}</span>
               <span style={{fontSize:9,color:'#94a3b8'}}>{inkCount} color{inkCount===1?'':'s'}</span>
             </div>
-            {(cw.inks||[]).map((ink,ii)=>{const hex=isEmb?threadHex(ink):pantoneHex(ink);return<div key={ii} style={{display:'flex',gap:5,alignItems:'center',marginBottom:4}}>
+            {(cw.inks||[]).map((ink,ii)=>{const hex=isEmb?threadHex(ink):(pantoneHex(ink)||threadHex(ink));return<div key={ii} style={{display:'flex',gap:5,alignItems:'center',marginBottom:4}}>
               <span style={{fontSize:10,color:'#cbd5e1',width:12,textAlign:'right',flexShrink:0}}>{ii+1}</span>
               <span style={{width:14,height:14,borderRadius:3,flexShrink:0,border:'1px solid #d1d5db',background:hex||'#f1f5f9'}}/>
               <input className="form-input" value={ink} onChange={e=>{const inks=[...(cw.inks||[])];inks[ii]=e.target.value;updCw(ci,{inks})}} placeholder={isEmb?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1,padding:'4px 8px'}}/>
