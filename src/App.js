@@ -18,7 +18,7 @@ import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
-import { buildJobs, isJobReady, recalcJobFulfillment, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
+import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, authFetch } from './utils';
 import { calcOrderTotals, auTierDisc } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
@@ -4022,6 +4022,9 @@ export default function App(){
 
   // Notification helper — defined early so callbacks below can reference it
   const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_dbNotify=nf;
+  // Warehouse alert — fired by receive/pull flows the moment a job crosses into items_received
+  // with art already complete, so the person checking in knows it can move to decoration now.
+  const notifyDecoReady=(readyJobs)=>{if(readyJobs&&readyJobs.length)nf('🎽 Ready for decoration: '+readyJobs.map(j=>j.art_name||j.id).join(', ')+' — all items in & art complete!')};
   _onEstStatusMerge=(id,status,approved_by,approved_at)=>setEsts(prev=>prev.map(e=>e.id===id?{...e,status,...(approved_by?{approved_by}:{}),...(approved_at?{approved_at}:{})}:e));
   // Data-loss alert: logs to change_log + emails admin owner. Dedupes per SO+kind within 5 min.
   const _alertDedupeRef=React.useRef({});
@@ -6534,7 +6537,9 @@ export default function App(){
         if(j.item_status==='items_received'&&j.prod_status!=='completed'&&!j.split_from){
           const needsArt=j.art_status!=='art_complete';
           if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'📦 All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id+' · Art: '+(j.art_status||'needs_art').replace(/_/g,' '),so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:j.items_received_at||j.updated_at||so.updated_at})}
-          else{todos.push({type:'items_received',priority:3,msg:'📦 All items received: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units ready',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at})}
+          else{todos.push({type:'items_received',priority:3,msg:'📦 All items received: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units ready',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at});
+            // Warehouse hand-off — items are in and art is complete, so the job can move straight to decoration. Clears once production moves it off hold.
+            if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'🎽 Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at})}
         }
         // Notify rep when a job is completed (decoration done)
         if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'🏭 Job completed: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — ready to ship',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
@@ -6917,6 +6922,21 @@ export default function App(){
       <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Rush Orders</div><div className="stat-value" style={{color:'#dc2626'}}>{pullTasks.filter(t=>t.urgent).length}</div></div>
       <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Active Timers</div><div className="stat-value" style={{color:'#2563eb'}}>{Object.keys(activeTimers).length}</div></div>
     </div>
+    {/* Ready for decoration — jobs whose last units were just checked in with art already complete */}
+    {(()=>{
+      const readyNotifs=todos.filter(t=>t.type==='ready_for_deco'&&!dismissedNotifs.includes(t.dismissKey));
+      if(readyNotifs.length===0)return null;
+      return<div className="card" style={{marginBottom:16,borderLeft:'3px solid #22c55e'}}>
+        <div className="card-header"><h2>🎽 Ready for Decoration ({readyNotifs.length})</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
+          {readyNotifs.map((t,i)=><div key={t.dismissKey||i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){setESOTab('jobs');if(t.jobId){setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+            <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',flexShrink:0}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
+            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+          </div>)}
+        </div>
+      </div>;
+    })()}
     {/* My delegated tasks — what this warehouse worker needs to do, with due dates */}
     {(()=>{
       const canDelegateWh=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||WAREHOUSE_LEAD_IDS.includes(cu.id);
@@ -8855,7 +8875,9 @@ export default function App(){
         if(j.item_status==='items_received'&&j.prod_status!=='completed'&&!j.split_from){
           const needsArt=j.art_status!=='art_complete';
           if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:j.items_received_at||j.updated_at||so.updated_at})}
-          else{todos.push({type:'items_received',priority:3,msg:'All items received: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at})}
+          else{todos.push({type:'items_received',priority:3,msg:'All items received: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at});
+            // Warehouse hand-off — items are in and art is complete, so the job can move straight to decoration. Clears once production moves it off hold.
+            if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at})}
         }
         if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'Job completed: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
       });
@@ -10418,6 +10440,7 @@ export default function App(){
                   // together (a per-line savSO would read a stale SO each time and clobber prior updates).
                   const linesBySO={};
                   matchedLines.forEach(ml=>{(linesBySO[ml.soId]=linesBySO[ml.soId]||[]).push(ml)});
+                  const _decoReady=[];
                   Object.keys(linesBySO).forEach(soId=>{
                     const so=sos.find(s=>s.id===soId);if(!so)return;
                     const updItems=[...safeItems(so)];
@@ -10441,9 +10464,12 @@ export default function App(){
                     });
                     // Recalculate job item_status/fulfilled_units after receiving — mirrors the warehouse
                     // stock-pull flow so the Production dashboard and "Ready for Deco" tab reflect received stock.
-                    savSO({...so,items:updItems,jobs:recalcJobFulfillment(so,updItems),updated_at:new Date().toLocaleString()});
+                    const _newJobs=recalcJobFulfillment(so,updItems);
+                    _decoReady.push(...jobsNowReadyForDeco(so.jobs,_newJobs));
+                    savSO({...so,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()});
                   });
                   nf('✅ '+poId+' '+(_batchStatus==='partial'?'partially received':'received')+' — '+_grandRcvd+'/'+totalUnits+' units. SO items updated.');
+                  notifyDecoReady(_decoReady);
                   // Print label(s) after receiving — separate per source PO for batches
                   if(isBatch&&batchMatch.source_pos&&batchMatch.source_pos.length>1){
                     printBatchSeparateLabels(batchMatch.source_pos,poId,'RECEIVED — '+new Date().toLocaleDateString());
@@ -15887,7 +15913,8 @@ export default function App(){
       });
       return changed?{...it,pick_lines:newPicks}:it;
     });
-    const updatedSO={...so,items:updatedItems,jobs:recalcJobFulfillment(so,updatedItems),updated_at:new Date().toLocaleString()};
+    const _newJobs=recalcJobFulfillment(so,updatedItems);
+    const updatedSO={...so,items:updatedItems,jobs:_newJobs,updated_at:new Date().toLocaleString()};
     // Deduct warehouse inventory for what was pulled
     const prodPatches={};
     Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const p=prod.find(x=>x.id===it.product_id)||prod.find(x=>x.sku===it.sku);if(!p)return;const newInv={...(prodPatches[p.id]||p._inv||{})};Object.entries(qtys).forEach(([sz,v])=>{if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});prodPatches[p.id]=newInv});
@@ -15898,6 +15925,7 @@ export default function App(){
     const cc=cust.find(c=>c.id===so.customer_id);let grand=0;
     Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const szStr=Object.entries(qtys).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');const qty=Object.values(qtys).reduce((a,v)=>a+(v||0),0);grand+=qty;if(qty>0)addWhAction({type:'pulled',pickId,soId,customer:cc?.name||'',sku:it.sku,name:it.name,color:it.color,productId:it.product_id,sizes:szStr,qty,by:cu?.id||'warehouse'})});
     nf('✅ '+pickId+' pulled — '+grand+' units');
+    notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs));
   };
   // Receive (check in) SO-attached PO lines from mobile. lines: [{itemIdx,poLineIdx,rcv:{size:qty}}].
   const mobileReceiveSOPO=(soId,lines)=>{
@@ -15916,9 +15944,11 @@ export default function App(){
       acts.push({type:'received',poId:po.po_id||'',soId,customer:cc?.name||'',sku:it.sku,name:it.name,color:it.color,qty:Object.values(rcv).reduce((a,v)=>a+(v||0),0),sizes:szStr,by:cu?.id||'warehouse'});
     });
     if(grand===0)return;
-    savSO({...so,items,jobs:recalcJobFulfillment(so,items),updated_at:new Date().toLocaleString()});
+    const _newJobs=recalcJobFulfillment(so,items);
+    savSO({...so,items,jobs:_newJobs,updated_at:new Date().toLocaleString()});
     acts.forEach(a=>addWhAction(a));
     nf('Received '+grand+' unit'+(grand!==1?'s':'')+' on '+soId);
+    notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs));
   };
   // Persist warehouse recent actions to app_state (DB) + localStorage so they survive across devices/sessions
   React.useEffect(()=>{_saveAppState('wh_recent_actions',whRecentActions)},[whRecentActions]);
@@ -16166,7 +16196,8 @@ export default function App(){
                         return{...it2,pick_lines:[...existingPicks,newPick]};
                       });
                       // Recalculate job item_status after pulling — mirrors PO receive flow so the warehouse "Ready for Deco" tab and job-level todos reflect stock-pull fulfillment.
-                      const updatedSO={...so,items:updatedItems,jobs:recalcJobFulfillment(so,updatedItems),updated_at:new Date().toLocaleString()};
+                      const _newJobs=recalcJobFulfillment(so,updatedItems);
+                      const updatedSO={...so,items:updatedItems,jobs:_newJobs,updated_at:new Date().toLocaleString()};
                       // Inventory adjustments per item product
                       const prodPatches={};
                       pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});prodPatches[pi.p.id]=newInv});
@@ -16192,7 +16223,7 @@ export default function App(){
                           printQrLabel({id:pickIdToUse,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickIdToUse),shipBadge:labelShipBadge,lines});
                         }
                       }catch(e){/* label print is best-effort */}
-                      nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totPulling2+' units');setWhPulling(false);setWhViewIF(null);
+                      nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totPulling2+' units');notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs));setWhPulling(false);setWhViewIF(null);
                     }}>{whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPulling2+' units)':isPartial?'✓ Mark Partial Pull ('+totPulling2+' of '+grandNeed+')':'✓ Mark as Pulled')}</button>
                     {!isFull&&<button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
                       const filled={};pickItems.forEach(pi=>{filled[pi.itemIdx]=Object.fromEntries(pi.szKeys.map(sz=>[sz,Math.max(0,(pi.sizes[sz]||0)-(pi.pulled[sz]||0))]))});setPullQtys(filled);
@@ -16701,6 +16732,7 @@ export default function App(){
                   // Capture what was JUST received per item so the auto-printed label reflects the contents
                   // of the box that was just put away — not the entire PO.
                   const justReceived=[];
+                  const _decoReady=[];
 
                   // --- SO PO Lines: group by SO to avoid overwrite race ---
                   if(soPOLines.length>0){
@@ -16734,7 +16766,9 @@ export default function App(){
                         updItems[pl.itemIdx]={...updItems[pl.itemIdx],po_lines:pls};
                       });
                       // Recalculate job item_status after receiving items
-                      savSO({...grpSO,items:updItems,jobs:recalcJobFulfillment(grpSO,updItems),updated_at:new Date().toLocaleString()});
+                      const _newJobs=recalcJobFulfillment(grpSO,updItems);
+                      _decoReady.push(...jobsNowReadyForDeco(grpSO.jobs,_newJobs));
+                      savSO({...grpSO,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()});
                     });
                   }
 
@@ -16768,6 +16802,7 @@ export default function App(){
                     const soIds=[...new Set(poItems.filter(it=>it.soId).map(it=>it.soId))];const custNames=[...new Set(poItems.filter(it=>it.customer).map(it=>it.customer))];
                     addWhAction({type:'received',poId,soId:soIds.join(', ')||'',customer:custNames.join(', ')||vendorName||'',sku:poItems.map(it=>it.sku).join(', '),name:poItems[0]?.name||'',color:poItems[0]?.color||'',qty:totalQtyReceived,sizes:'',by:cu?.id||'warehouse'});
                     nf('Received '+totalQtyReceived+' unit'+(totalQtyReceived!==1?'s':'')+' on '+poId);
+                    notifyDecoReady(_decoReady);
                     // Auto-print 4x6 label on receive (same as IF pull label)
                     const scanUrl=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(poId);
                     const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+encodeURIComponent(scanUrl);

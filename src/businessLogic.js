@@ -283,6 +283,18 @@ const recalcJobFulfillment = (o, items) => safeJobs(o).map(j => {
   return Object.assign({}, j, { item_status: itemSt, fulfilled_units: fulfilled, total_units: total });
 });
 
+// ── Ready-for-decoration transition ──
+// Given a job list from before and after a fulfillment recalc, returns the jobs that JUST
+// crossed into items_received while their artwork is already complete — i.e. the moment the
+// warehouse checks in (or pulls) the final units and the job can move straight to decoration.
+// Jobs already past hold are excluded: production has them, so there's no hand-off to flag.
+const jobsNowReadyForDeco = (prevJobs, nextJobs) => safeArr(nextJobs).filter(j => {
+  if (j.item_status !== 'items_received' || j.art_status !== 'art_complete') return false;
+  if (j.prod_status && j.prod_status !== 'hold') return false;
+  const prev = safeArr(prevJobs).find(pj => pj.id === j.id);
+  return !!prev && prev.item_status !== 'items_received';
+});
+
 // ── Linking jobs that share a decoration ("run together") ──
 // Two jobs are "the same screen/setup" when they carry the same artwork (matched by name +
 // deco type, the same way art is de-duped across orders elsewhere). Used to auto-detect jobs
@@ -636,7 +648,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars

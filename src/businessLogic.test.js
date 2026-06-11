@@ -2,7 +2,7 @@
 const {
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM,
-  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   buildQBSalesOrder, buildQBInvoice,
   checkInventoryConflicts,
@@ -1102,6 +1102,48 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
     const so = makeSO({ jobs: [job] });
     const items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: { S: 5, M: 10 } }] })];
     expect(recalcJobFulfillment(so, items)[0]).toBe(job);
+  });
+});
+
+describe('Ready-for-decoration transition (jobsNowReadyForDeco)', () => {
+  const prevJob = (over) => ({ id: 'JOB-1', item_status: 'partially_received', art_status: 'art_complete', prod_status: 'hold', ...over });
+  const nextJob = (over) => ({ id: 'JOB-1', item_status: 'items_received', art_status: 'art_complete', prod_status: 'hold', ...over });
+
+  test('fires when the last items come in and art is complete', () => {
+    const ready = jobsNowReadyForDeco([prevJob()], [nextJob()]);
+    expect(ready.map(j => j.id)).toEqual(['JOB-1']);
+  });
+
+  test('does not fire when art is not complete', () => {
+    expect(jobsNowReadyForDeco([prevJob({ art_status: 'waiting_approval' })], [nextJob({ art_status: 'waiting_approval' })])).toEqual([]);
+  });
+
+  test('does not fire when the job was already items_received (no transition)', () => {
+    expect(jobsNowReadyForDeco([prevJob({ item_status: 'items_received' })], [nextJob()])).toEqual([]);
+  });
+
+  test('does not fire when items are still partial', () => {
+    expect(jobsNowReadyForDeco([prevJob()], [nextJob({ item_status: 'partially_received' })])).toEqual([]);
+  });
+
+  test('does not fire for jobs already past hold (production has them)', () => {
+    expect(jobsNowReadyForDeco([prevJob({ prod_status: 'staging' })], [nextJob({ prod_status: 'staging' })])).toEqual([]);
+  });
+
+  test('missing prod_status is treated as hold', () => {
+    const ready = jobsNowReadyForDeco([prevJob({ prod_status: undefined })], [nextJob({ prod_status: undefined })]);
+    expect(ready.map(j => j.id)).toEqual(['JOB-1']);
+  });
+
+  test('only the transitioning job fires when several jobs recalc together', () => {
+    const prev = [prevJob(), prevJob({ id: 'JOB-2', item_status: 'items_received' }), prevJob({ id: 'JOB-3', art_status: 'needs_art' })];
+    const next = [nextJob(), nextJob({ id: 'JOB-2' }), nextJob({ id: 'JOB-3', art_status: 'needs_art' })];
+    expect(jobsNowReadyForDeco(prev, next).map(j => j.id)).toEqual(['JOB-1']);
+  });
+
+  test('handles null/undefined job lists', () => {
+    expect(jobsNowReadyForDeco(null, null)).toEqual([]);
+    expect(jobsNowReadyForDeco(undefined, [nextJob()])).toEqual([]);
   });
 });
 
