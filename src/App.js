@@ -2327,12 +2327,14 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
   return out;
 };
 // Display-size variant of a Cloudinary image: the originals are full-res uploads (mock
-// JPGs run 2-4MB each) and the prod modal shows several at once. Only rewrites untouched
-// res.cloudinary.com image URLs (the /v<version>/ segment right after /image/upload/
-// means no transform present); everything else passes through. Downloads via openFile
-// keep the original URL/quality.
-const _cloudinaryDisplay=u=>(u&&typeof u==='string'&&u.includes('res.cloudinary.com')&&u.includes('/image/upload/v'))
-  ?u.replace('/image/upload/v','/image/upload/w_1600,c_limit,f_auto,q_auto/v'):u;
+// JPGs run 2-4MB each) and the prod modal shows several at once. w_800 covers the
+// ~420px-tall cards (~57KB vs 2.4MB); the lightbox asks for w_2000 to keep zoom detail.
+// fl_progressive paints JPEGs blurry-to-sharp instead of leaving a blank box. Only
+// rewrites untouched res.cloudinary.com image URLs (the /v<version>/ segment right after
+// /image/upload/ means no transform present); everything else passes through. Downloads
+// via openFile keep the original URL/quality.
+const _cloudinaryDisplay=(u,w=800)=>(u&&typeof u==='string'&&u.includes('res.cloudinary.com')&&u.includes('/image/upload/v'))
+  ?u.replace('/image/upload/v','/image/upload/w_'+w+',c_limit,f_auto,q_auto,fl_progressive/v'):u;
 const ImgUpload=({url,onUpload,size=48,onError})=>{const[drag,setDrag]=React.useState(false);const[uploading,setUploading]=React.useState(false);const[err,setErr]=React.useState(false);
   const doUpload=async(file)=>{if(!file||!file.type.startsWith('image/')){if(onError)onError('Please select an image file');return}setUploading(true);setErr(false);try{const u=await cloudUpload(file);onUpload(u)}catch(e){console.error('Upload failed',e);setErr(true);if(onError)onError('Upload failed: '+e.message)}finally{setUploading(false)}};
   return<div style={{width:size,height:size,borderRadius:6,border:err?'2px solid #dc2626':drag?'2px solid #3b82f6':'1px solid #e2e8f0',background:drag?'#eff6ff':err?'#fef2f2':'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,cursor:'pointer',overflow:'hidden',position:'relative'}}
@@ -10227,7 +10229,7 @@ export default function App(){
         const curFile=allMockups[idx];
         const curUrl=curFile?(typeof curFile==='string'?curFile:(curFile?.url||'')):'';
         const curIsImg=_isImgUrl(curUrl,curFile);const curIsPdf=_isPdfUrl(curUrl,curFile);
-        const curSrc=curIsImg?_cloudinaryDisplay(curUrl):curIsPdf?_cloudinaryPdfThumb(curUrl):null;
+        const curSrc=curIsImg?_cloudinaryDisplay(curUrl,2000):curIsPdf?_cloudinaryPdfThumb(curUrl):null;
         const zoom=prodLightboxZoom;
         return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(0,0,0,0.92)',zIndex:9999,display:'flex',flexDirection:'column'}}
           onClick={()=>{setProdJobLightbox(false);setProdLightboxZoom(1)}}>
