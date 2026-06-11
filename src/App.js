@@ -24211,11 +24211,28 @@ export default function App(){
       return false;
     };
     const mentions=entityFiltered.filter(_isMentioned);
-    const filtered=mF==='unread'?unread:mF==='mine'?entityFiltered.filter(_isMsgForMe):mF==='mentions'?mentions:entityFiltered;
-    // Thread grouping: show only top-level; for mentions, also surface parent if tagged in a reply
-    const mentionThreadIds=mF==='mentions'?new Set(filtered.filter(m=>m.thread_id).map(m=>m.thread_id)):null;
-    const topLevel=mF==='mentions'?[...filtered.filter(m=>!m.thread_id),...entityFiltered.filter(m=>!m.thread_id&&mentionThreadIds.has(m.id)&&!filtered.includes(m))]:filtered.filter(m=>!m.thread_id);
-    const replyCount=(id)=>filtered.filter(m=>m.thread_id===id).length;
+    // ── Conversation grouping: one thread per entity (Sales Order / Estimate / Job) ──
+    // Every message that shares an entity (entity_id / so_id) is one conversation, so a
+    // reply typed in the order's Messages tab shows up connected here — and vice-versa.
+    const groupKey=(m)=>(m.entity_type||'so')+'::'+(m.entity_id||m.so_id||m.id);
+    const convoMap=new Map();
+    for(const m of entityFiltered){const k=groupKey(m);if(!convoMap.has(k))convoMap.set(k,[]);convoMap.get(k).push(m)}
+    let convos=[...convoMap.values()].map(arr=>{
+      const sorted=[...arr].sort((a,b)=>(a.ts||'').localeCompare(b.ts));
+      const root=sorted[0],last=sorted[sorted.length-1];
+      return{key:groupKey(root),root,last,messages:sorted,
+        unreadCount:sorted.filter(m=>!(m.read_by||[]).includes(cu.id)).length,
+        isTagged:sorted.some(m=>(m.tagged_members||[]).includes(cu.id))};
+    });
+    convos.sort((a,b)=>(b.last.ts||'').localeCompare(a.last.ts||''));
+    // Status filter applies per-conversation: keep it if ANY message qualifies.
+    const topConvos=convos.filter(c=>mF==='unread'?c.unreadCount>0:mF==='mentions'?c.messages.some(_isMentioned):mF==='mine'?c.messages.some(_isMsgForMe):true);
+    const threadCount=new Set(allM.map(groupKey)).size;
+    // Currently-open conversation — pull the FULL history from msgs so nothing is hidden by filters.
+    const openAnchor=mThread?msgs.find(m=>m.id===mThread):null;
+    const openKey=openAnchor?groupKey(openAnchor):null;
+    const openMsgs=openKey?[...msgs].filter(m=>groupKey(m)===openKey).sort((a,b)=>(a.ts||'').localeCompare(b.ts)):[];
+    const openRootMsg=openMsgs[0]||openAnchor;
     // Entity type stats
     const soCount=allM.filter(m=>(m.entity_type||'so')==='so').length;
     const estCount=allM.filter(m=>m.entity_type==='estimate').length;
@@ -24247,9 +24264,9 @@ export default function App(){
     };
     const openThread=(m)=>{
       setMThread(m.id);setMThreadDept('all');setMThreadMentionQuery(null);setMThreadMentionIdx(0);
-      // Mark parent + all replies as read
-      const replyIds=new Set(allM.filter(mm=>mm.thread_id===m.id).map(mm=>mm.id));
-      const toMark=new Set([m.id,...replyIds]);
+      // Mark every message in this conversation (same entity) as read
+      const k=groupKey(m);
+      const toMark=new Set(msgs.filter(mm=>groupKey(mm)===k).map(mm=>mm.id));
       const needsUpdate=[...toMark].some(id=>{const mm=msgs.find(x=>x.id===id);return mm&&!(mm.read_by||[]).includes(cu.id)});
       if(needsUpdate){setMsgs(msgs.map(mm=>toMark.has(mm.id)?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm))}
     };
@@ -24275,8 +24292,8 @@ export default function App(){
     const threadSendReply=()=>{
       const inp=mThreadInputRef.current;if(!inp||!inp.value.trim())return;
       const text=inp.value.trim();const tagged=threadExtractTaggedIds(text);
-      const parentMsg=allM.find(mm=>mm.id===mThread);if(!parentMsg)return;
-      const nm={id:'m'+Date.now(),so_id:parentMsg.so_id||null,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:mThreadDept,tagged_members:tagged,entity_type:parentMsg.entity_type||'so',entity_id:parentMsg.entity_id||parentMsg.so_id,thread_id:mThread};
+      const anchor=openRootMsg;if(!anchor)return;
+      const nm={id:'m'+Date.now(),so_id:anchor.so_id||null,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:mThreadDept,tagged_members:tagged,entity_type:anchor.entity_type||'so',entity_id:anchor.entity_id||anchor.so_id,thread_id:anchor.thread_id||anchor.id};
       setMsgs([...msgs,nm]);inp.value='';setMThreadDept('all');setMThreadMentionQuery(null);nf(tagged.length?'Reply sent — '+tagged.length+' member(s) tagged':'Reply sent');
     };
     const threadHandleKeyDown=(e)=>{
@@ -24288,16 +24305,14 @@ export default function App(){
       }
       if(e.key==='Enter'&&mThreadMentionQuery==null&&e.target.value.trim()){threadSendReply()}
     };
-    // Thread view
-    const threadMsg=mThread?allM.find(mm=>mm.id===mThread):null;
-    const threadReplies=mThread?allM.filter(mm=>mm.thread_id===mThread).sort((a,b)=>(a.ts||'').localeCompare(b.ts)):[];
+    // Thread view — full conversation history is openMsgs / openRootMsg (computed above)
     return(<>
     {/* Prominent stats row */}
     <div className="stats-row">
       <div className="stat-card" style={{borderLeft:'4px solid #3b82f6'}}><div className="stat-label">Total Messages</div><div className="stat-value">{allM.length}</div></div>
       <div className="stat-card" style={{borderLeft:'4px solid #dc2626'}}><div className="stat-label">Unread</div><div className="stat-value" style={{color:unread.length>0?'#dc2626':''}}>{unread.length}</div></div>
       <div className="stat-card" style={{borderLeft:'4px solid #d97706'}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:mentions.length>0?'#d97706':''}}>{mentions.length}</div></div>
-      <div className="stat-card" style={{borderLeft:'4px solid #7c3aed'}}><div className="stat-label">Threads</div><div className="stat-value">{topLevel.length}</div></div>
+      <div className="stat-card" style={{borderLeft:'4px solid #7c3aed'}}><div className="stat-label">Threads</div><div className="stat-value">{threadCount}</div></div>
     </div>
     {/* Entity type filter row */}
     <div style={{display:'flex',gap:4,marginBottom:8}}>
@@ -24310,62 +24325,47 @@ export default function App(){
     <div style={{display:'flex',gap:16}}>
     {/* Message list */}
     <div className="card" style={{flex:mThread?'0 0 45%':'1',transition:'flex 0.2s'}}><div className="card-body" style={{padding:0}}>
-      {topLevel.length===0?<div className="empty" style={{padding:20}}>{mF==='mentions'?'No messages where you were tagged':'No messages'}</div>:
-      topLevel.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);const est2=ests.find(e=>e.id===m.entity_id);const entity=so||est2;const c2=cust.find(cc=>cc.id===entity?.customer_id);const isUnread=!(m.read_by||[]).includes(cu.id);const isTagged=(m.tagged_members||[]).includes(cu.id);const rc=replyCount(m.id);
-        return<div key={m.id} style={{padding:'14px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:mThread===m.id?'#e0e7ff':isTagged&&isUnread?'#fef3c7':isUnread?'#eff6ff':'white'}}
+      {topConvos.length===0?<div className="empty" style={{padding:20}}>{mF==='mentions'?'No messages where you were tagged':'No messages'}</div>:
+      topConvos.map(c=>{const m=c.root,lastAuthor=REPS.find(r=>r.id===c.last.author_id);const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);const est2=ests.find(e=>e.id===m.entity_id);const entity=so||est2;const c2=cust.find(cc=>cc.id===entity?.customer_id);const isUnread=c.unreadCount>0;const isTagged=c.isTagged;const count=c.messages.length;
+        return<div key={c.key} style={{padding:'14px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:openKey===c.key?'#e0e7ff':isTagged&&isUnread?'#fef3c7':isUnread?'#eff6ff':'white'}}
           onClick={()=>openThread(m)}>
           <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
-            <div style={{width:40,height:40,borderRadius:20,background:isTagged?'#f59e0b':isUnread?'#3b82f6':'#e2e8f0',color:isTagged||isUnread?'white':'#64748b',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,fontWeight:700,flexShrink:0}}>{isTagged?'@':(author?.name||'?')[0]}</div>
+            <div style={{width:40,height:40,borderRadius:20,background:isTagged?'#f59e0b':isUnread?'#3b82f6':'#e2e8f0',color:isTagged||isUnread?'white':'#64748b',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,fontWeight:700,flexShrink:0}}>{isTagged?'@':(lastAuthor?.name||'?')[0]}</div>
             <div style={{flex:1,minWidth:0}}>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:3,flexWrap:'wrap'}}>
-                <span style={{fontWeight:700,fontSize:13}}>{author?.name}</span>
                 <span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:entityBg(m),color:entityColor(m)}}>{entityLabel(m)}</span>
                 <span style={{fontSize:11,color:entityColor(m),fontWeight:600}}>{m.entity_id||m.so_id}</span>
                 {c2&&<span style={{fontSize:11,color:'#475569',fontWeight:600}}>{c2.name}</span>}
                 {entity?.memo&&<span style={{fontSize:10,color:'#94a3b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>— {entity.memo}</span>}
                 {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
-                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto',whiteSpace:'nowrap'}}>{m.ts}</span>
+                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto',whiteSpace:'nowrap'}}>{c.last.ts}</span>
               </div>
-              <div style={{fontSize:13,color:'#374151'}}>{renderMsgPageText(m.text)}</div>
+              <div style={{fontSize:13,color:'#374151'}}><span style={{fontWeight:600,color:'#475569'}}>{lastAuthor?.name?.split(' ')[0]}: </span>{renderMsgPageText(c.last.text)}</div>
               <div style={{display:'flex',gap:6,marginTop:4,alignItems:'center'}}>
-                {(m.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{(m.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
-                {rc>0&&<span style={{fontSize:10,color:'#3b82f6',fontWeight:600,display:'flex',alignItems:'center',gap:3}}><span style={{fontSize:12}}>&#8627;</span> {rc} {rc===1?'reply':'replies'}</span>}
+                {(c.last.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{(c.last.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
+                {count>1&&<span style={{fontSize:10,color:'#3b82f6',fontWeight:600,display:'flex',alignItems:'center',gap:3}}><span style={{fontSize:12}}>&#128172;</span> {count} messages</span>}
+                {c.unreadCount>0&&<span style={{fontSize:10,color:'#dc2626',fontWeight:700}}>{c.unreadCount} new</span>}
               </div>
             </div>
             {isUnread&&<div style={{width:10,height:10,borderRadius:5,background:isTagged?'#f59e0b':'#3b82f6',flexShrink:0,marginTop:8}}/>}
           </div></div>})}</div></div>
     {/* Thread panel */}
-    {mThread&&threadMsg&&<div className="card" style={{flex:'0 0 53%',display:'flex',flexDirection:'column',maxHeight:'calc(100vh - 260px)'}}>
+    {mThread&&openRootMsg&&<div className="card" style={{flex:'0 0 53%',display:'flex',flexDirection:'column',maxHeight:'calc(100vh - 260px)'}}>
       <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #e2e8f0',flexShrink:0}}>
         <button style={{fontSize:16,background:'none',border:'none',cursor:'pointer',color:'#64748b',padding:'2px 6px',borderRadius:4}} onClick={()=>setMThread(null)} title="Close thread">&times;</button>
-        <h2 style={{margin:0,fontSize:14}}>Thread</h2>
-        <span style={{fontSize:11,color:'#64748b'}}>{threadReplies.length} {threadReplies.length===1?'reply':'replies'}</span>
-        <button style={{fontSize:10,padding:'3px 10px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#1e40af',cursor:'pointer',fontWeight:600,marginLeft:'auto'}} onClick={()=>navigateToEntity(threadMsg)}>Open {entityLabel(threadMsg)}</button>
+        <h2 style={{margin:0,fontSize:14,display:'flex',gap:6,alignItems:'center'}}><span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:entityBg(openRootMsg),color:entityColor(openRootMsg)}}>{entityLabel(openRootMsg)}</span><span style={{color:entityColor(openRootMsg)}}>{openRootMsg.entity_id||openRootMsg.so_id}</span></h2>
+        <span style={{fontSize:11,color:'#64748b'}}>{openMsgs.length} {openMsgs.length===1?'message':'messages'}</span>
+        <button style={{fontSize:10,padding:'3px 10px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#1e40af',cursor:'pointer',fontWeight:600,marginLeft:'auto'}} onClick={()=>navigateToEntity(openRootMsg)}>Open {entityLabel(openRootMsg)}</button>
       </div>
       <div className="card-body" style={{flex:1,overflow:'auto',padding:16,display:'flex',flexDirection:'column',gap:10}}>
-        {/* Parent message */}
-        {(()=>{const author=REPS.find(r=>r.id===threadMsg.author_id);const isMe=threadMsg.author_id===cu.id;
-          return<div style={{padding:'12px 14px',borderRadius:8,background:isMe?'#dbeafe':'#f8fafc',border:'2px solid #3b82f6'}}>
-            <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
-              <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||'Unknown'}</span>
-                <span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:entityBg(threadMsg),color:entityColor(threadMsg)}}>{entityLabel(threadMsg)}</span>
-                <span style={{fontSize:10,color:entityColor(threadMsg),fontWeight:600}}>{threadMsg.entity_id||threadMsg.so_id}</span>
-              </div>
-              <span style={{fontSize:10,color:'#94a3b8'}}>{threadMsg.ts}</span>
-            </div>
-            <div style={{fontSize:13,color:'#0f172a'}}>{renderMsgPageText(threadMsg.text)}</div>
-            {(threadMsg.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:4,flexWrap:'wrap'}}>{(threadMsg.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
-          </div>})()}
-        {/* Divider */}
-        {threadReplies.length>0&&<div style={{display:'flex',alignItems:'center',gap:8,margin:'4px 0'}}><div style={{flex:1,height:1,background:'#e2e8f0'}}/><span style={{fontSize:10,color:'#94a3b8',fontWeight:600}}>{threadReplies.length} {threadReplies.length===1?'reply':'replies'}</span><div style={{flex:1,height:1,background:'#e2e8f0'}}/></div>}
-        {/* Replies */}
-        {threadReplies.map(r=>{const author=REPS.find(rep=>rep.id===r.author_id);const isMe=r.author_id===cu.id;const unread=!(r.read_by||[]).includes(cu.id);const dept=DEPTS.find(d=>d.id===r.dept);
-          return<div key={r.id} style={{padding:'10px 14px',borderRadius:8,background:isMe?'#dbeafe':'#f8fafc',border:unread?'2px solid #3b82f6':'1px solid #e2e8f0',marginLeft:isMe?24:0,marginRight:isMe?0:24}}>
+        {/* Full conversation — every message for this entity, oldest first */}
+        {openMsgs.map(r=>{const author=REPS.find(rep=>rep.id===r.author_id);const isMe=r.author_id===cu.id;const unread=!(r.read_by||[]).includes(cu.id);const dept=DEPTS.find(d=>d.id===r.dept);const isTagged=(r.tagged_members||[]).includes(cu.id);
+          return<div key={r.id} style={{padding:'10px 14px',borderRadius:8,background:isTagged?'#fef9c3':isMe?'#dbeafe':'#f8fafc',border:unread?'2px solid #3b82f6':'1px solid #e2e8f0',marginLeft:isMe?24:0,marginRight:isMe?0:24}}>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
               <div style={{display:'flex',gap:6,alignItems:'center'}}>
                 <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||'Unknown'}</span>
                 {dept&&dept.id!=='all'&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:dept.color+'20',color:dept.color}}>@{dept.label}</span>}
+                {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
               </div>
               <span style={{fontSize:10,color:'#94a3b8'}}>{r.ts}</span>
             </div>
