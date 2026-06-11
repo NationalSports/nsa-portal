@@ -8634,6 +8634,7 @@ export default function App(){
   const[activeSavedFilterIdx,setActiveSavedFilterIdx]=useState(null);
   const setJobFilters=(v)=>{setActiveSavedFilterIdx(null);_setJobFilters(v)};
   const[jobSortField,setJobSortField]=useState('expected');const[jobSortDir,setJobSortDir]=useState('asc');
+  const[jobTrackModal,setJobTrackModal]=useState(null);// enriched job row whose inbound tracking popup is open
   const _defaultSavedFilters=[
     {name:'Ready to Print',filters:{statuses:['staging'],rep:'all',deco:'screen_print',artSt:'art_complete',itemSt:'all',dueBefore:'',search:''}},
     {name:'Needs Art',filters:{statuses:['hold','staging','in_process'],rep:'all',deco:'all',artSt:'needs_art',itemSt:'all',dueBefore:'',search:''}},
@@ -8645,11 +8646,23 @@ export default function App(){
   const _saveSavedFilters=(fn)=>{setSavedJobFilters(prev=>{const next=typeof fn==='function'?fn(prev):fn;try{localStorage.setItem('nsa_saved_job_filters',JSON.stringify(next))}catch(e){}return next})};
 
   function rJobs(){
+    // Vendor-billed units per job — mirrors the SO Tracking tab's BILLED column (po_lines[].billed,
+    // populated by bill uploads), capped per size at the job's own quantities (split jobs carry only
+    // their subset of sizes, same convention as isJobReady). pulledStock counts units already pulled
+    // from warehouse stock; billedCov = billed-or-pulled coverage, so "All Billed" treats stock pulls
+    // the way Items Received does (a pulled unit isn't incoming, but nothing more needs billing).
+    const _jobInbound=(j,so)=>{let billed=0,pulledStock=0,billedCov=0;(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;
+      const sizeSrc=(gi.sizes&&Object.keys(gi.sizes).length>0)?gi.sizes:safeSizes(it);
+      Object.entries(sizeSrc).filter(([,v])=>v>0).forEach(([sz,v])=>{
+        const b=safePOs(it).reduce((a,pk)=>a+safeNum((pk.billed||{})[sz]),0);
+        const p=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+        billed+=Math.min(v,b);pulledStock+=Math.min(v,p);billedCov+=Math.min(v,b+p)})});
+      return{billed,pulledStock,billedCov}};
     // Build flat jobs list
     const allJobs=[];
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);const _pid=c?.parent_id||c?.id||null;
       buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>{allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
-        parentId:_pid,grpKey:jobGroupKey(j,_pid),
+        parentId:_pid,grpKey:jobGroupKey(j,_pid),..._jobInbound(j,so),
         repId:c?.primary_rep_id||so.created_by,rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',
         expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null})})});
     // Apply filters
@@ -8660,13 +8673,15 @@ export default function App(){
     if(jfRepId&&jfRepId!=='all')fj=fj.filter(j=>j.repId===jfRepId);
     if(jf.deco!=='all')fj=fj.filter(j=>j.deco_type===jf.deco);
     if(jf.artSt!=='all')fj=fj.filter(j=>j.art_status===jf.artSt);
-    if(jf.itemSt!=='all')fj=fj.filter(j=>j.item_status===jf.itemSt);
+    if(jf.itemSt==='all_billed')fj=fj.filter(j=>j.total_units>0&&j.billedCov>=j.total_units);
+    else if(jf.itemSt!=='all')fj=fj.filter(j=>j.item_status===jf.itemSt);
     if(jf.dueBefore)fj=fj.filter(j=>j.expected&&j.expected<=jf.dueBefore);
     if(jf.search){const s=jf.search.toLowerCase();fj=fj.filter(j=>(j.art_name||'').toLowerCase().includes(s)||(j.soId||'').toLowerCase().includes(s)||(j.customer||'').toLowerCase().includes(s)||(j.id||'').toLowerCase().includes(s)||(j.items||[]).some(gi=>(gi.sku||'').toLowerCase().includes(s)||(gi.name||'').toLowerCase().includes(s)))}
     // Sort
     fj.sort((a,b)=>{let va,vb;
       if(jobSortField==='expected'){va=a.expected||'9999';vb=b.expected||'9999'}
       else if(jobSortField==='units'){va=a.total_units;vb=b.total_units}
+      else if(jobSortField==='billed'){va=a.billed;vb=b.billed}
       else if(jobSortField==='customer'){va=a.customer;vb=b.customer}
       else if(jobSortField==='art'){va=a.art_name;vb=b.art_name}
       else{va=a.id;vb=b.id}
@@ -8698,7 +8713,7 @@ export default function App(){
     };
 
     const ART_STATUSES=[['needs_art','Needs Art'],['art_requested','Art Requested'],['art_in_progress','In Progress'],['waiting_approval','Waiting Approval'],['production_files_needed','Art Approved — Waiting'],['order_dtf_transfers','Order DTF Transfers'],['upload_emb_files','Upload EMB Files'],['art_complete','Art Complete']];
-    const ITEM_STATUSES=[['need_to_order','Need to Order'],['partially_received','Partially Received'],['items_received','Items Received']];
+    const ITEM_STATUSES=[['need_to_order','Need to Order'],['partially_received','Partially Received'],['items_received','Items Received'],['all_billed','All Billed']];
     const chipStyle=(active,sc)=>({fontSize:10,padding:'3px 10px',borderRadius:12,border:'1px solid '+(active?sc?.c||'#2563eb':'#e2e8f0'),
       background:active?(sc?.bg||'#eff6ff'):'white',color:active?(sc?.c||'#2563eb'):'#94a3b8',cursor:'pointer',fontWeight:600,display:'inline-flex',alignItems:'center',gap:4});
     const toggleArt=id=>setJF('artSt',jf.artSt===id?'all':id);
@@ -8734,7 +8749,7 @@ export default function App(){
         {/* Row 4: Product/Item Status chips */}
         <div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center',marginBottom:6}}>
           <span style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:4,minWidth:48}}>PRODUCT:</span>
-          {ITEM_STATUSES.map(([id,label])=>{const active=(jf.itemSt||'all')===id;const ct=allJobs.filter(j=>j.item_status===id).length;
+          {ITEM_STATUSES.map(([id,label])=>{const active=(jf.itemSt||'all')===id;const ct=id==='all_billed'?allJobs.filter(j=>j.total_units>0&&j.billedCov>=j.total_units).length:allJobs.filter(j=>j.item_status===id).length;
             return<button key={id} style={chipStyle(active,SC[id])}
               onClick={()=>toggleItem(id)}>{label} <span style={{fontSize:9,opacity:0.7}}>({ct})</span></button>})}
         </div>
@@ -8757,6 +8772,7 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Showing</div><div className="stat-value">{fj.length}<span style={{fontSize:12,fontWeight:400,color:'#94a3b8'}}>/{allJobs.length}</span></div></div>
         <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{fj.reduce((a,j)=>a+j.total_units,0)}</div></div>
         <div className="stat-card"><div className="stat-label">Fulfilled</div><div className="stat-value" style={{color:'#166534'}}>{fj.reduce((a,j)=>a+j.fulfilled_units,0)}</div></div>
+        <div className="stat-card"><div className="stat-label">Billed</div><div className="stat-value" style={{color:'#1e40af'}}>{fj.reduce((a,j)=>a+j.billed,0)}</div></div>
         <div className="stat-card"><div className="stat-label">Needs Art</div><div className="stat-value" style={{color:fj.filter(j=>j.art_status!=='art_complete').length>0?'#d97706':''}}>{fj.filter(j=>j.art_status!=='art_complete').length}</div></div>
         <div className="stat-card"><div className="stat-label">Needs Product</div><div className="stat-value" style={{color:fj.filter(j=>j.item_status==='need_to_order').length>0?'#92400e':''}}>{fj.filter(j=>j.item_status==='need_to_order').length}</div></div>
       </div>
@@ -8770,11 +8786,13 @@ export default function App(){
           <th style={{cursor:'pointer'}} onClick={()=>toggleSort('customer')}>Customer {sortIcon('customer')}</th>
           <th>SO</th><th>Rep</th>
           <th style={{cursor:'pointer'}} onClick={()=>toggleSort('units')}>Units {sortIcon('units')}</th>
+          <th style={{cursor:'pointer'}} title="Units the vendor has billed/shipped — from bill uploads on the SO Tracking tab" onClick={()=>toggleSort('billed')}>Billed {sortIcon('billed')}</th>
           <th>Art</th><th>Items</th><th>Ready?</th><th>Board</th>
           <th style={{cursor:'pointer'}} onClick={()=>toggleSort('expected')}>Due {sortIcon('expected')}</th>
-          {isA&&<th></th>}
+          <th></th>
         </tr></thead><tbody>
         {fj.map(j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
+          const bpct=j.total_units>0?Math.min(100,Math.round(j.billed/j.total_units*100)):0;
           const ready=isJobReady(j,j.so);
           const onBoard=safeJobs(j.so).some(ej=>ej.id===j.id);
           const sibs=linkSiblings(j);const _hue=sibs.length?grpHue(j.grpKey):null;
@@ -8786,6 +8804,9 @@ export default function App(){
             <td style={{fontSize:11}}>{j.rep?.split(' ')[0]}</td>
             <td><span style={{fontWeight:700}}>{j.fulfilled_units}/{j.total_units}</span>
               <div style={{width:40,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
+            <td title={j.billed+' of '+j.total_units+' units billed by vendor'+(j.pulledStock>0?' · '+j.pulledStock+' pulled from stock':'')}>
+              <span style={{fontWeight:700,color:j.total_units>0&&j.billed>=j.total_units?'#166534':j.billed>0?'#1e40af':'#94a3b8'}}>{j.billed}/{j.total_units}</span>
+              <div style={{width:40,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:bpct>=100?'#22c55e':bpct>0?'#3b82f6':'#e2e8f0',width:bpct+'%'}}/></div></td>
             <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{j.art_status==='art_complete'?'Done':j.art_status==='waiting_approval'?'Waiting':'Need'}</span></td>
             <td style={{fontSize:11}}>{(j.items||[]).length} <span style={{color:'#94a3b8'}}>garment{(j.items||[]).length!==1?'s':''}</span></td>
             <td>{ready?<span style={{fontSize:10,fontWeight:700,color:'#166534'}}>✅ Ready</span>
@@ -8796,20 +8817,126 @@ export default function App(){
               :<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:ready?'#166534':'#64748b',color:'white',border:'none'}}
                 onClick={()=>promoteJob(j)}>→ Board</button>}</td>
             <td style={{fontSize:11,color:j.daysOut!=null&&j.daysOut<=7?'#dc2626':'#64748b',fontWeight:j.daysOut!=null&&j.daysOut<=3?700:400}}>{j.expected||'—'}{j.daysOut!=null&&j.daysOut<=3?' ⚠️':''}</td>
-            {isA&&<td onClick={e=>e.stopPropagation()}>
-              <button title={'Delete '+j.id+' (admin only)'} style={{background:'transparent',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:11,color:'#dc2626'}} onClick={()=>{
-                if(!window.confirm('Delete '+j.id+' ('+(j.art_name||'unnamed')+')?\n\nThis removes the job from '+j.soId+' and deletes the so_jobs row from the database. The SO itself stays.'))return;
-                const so=sos.find(s=>s.id===j.soId);
-                if(!so){nf(j.soId+' not found','error');return}
-                const updated={...so,jobs:safeJobs(so).filter(jj=>jj.id!==j.id),updated_at:new Date().toLocaleString()};
-                setSOs(prev=>prev.map(s=>s.id===so.id?updated:s));
-                _dbSaveSO(updated);
-                nf('Deleted '+j.id)
-              }}>🗑</button>
-            </td>}
+            <td onClick={e=>e.stopPropagation()}>
+              <button title={'Inbound tracking for '+j.id+' — billed, received & shipments per item'} style={{background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,cursor:'pointer',padding:'2px 8px',fontSize:10,fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}} onClick={()=>setJobTrackModal(j)}>📦 Track</button>
+            </td>
           </tr>})}
         </tbody></table>}
       </div></div>
+
+      {/* ── JOB INBOUND TRACKING MODAL ── per-item billed/received/shipment detail for one job,
+          organized from the same po_lines data that drives the SO Tracking tab */}
+      {jobTrackModal&&(()=>{
+        const jm=jobTrackModal;
+        const so=sos.find(s=>s.id===jm.soId)||jm.so;
+        const trackUrl=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
+        const PO_META=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
+        const szSort=(a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b));
+        // One section per job item, each listing that item's POs with per-size billed/received/shipment detail
+        const sections=(jm.items||[]).map(gi=>{
+          const it=safeItems(so)[gi.item_idx];if(!it)return null;
+          const sizeSrc=(gi.sizes&&Object.keys(gi.sizes).length>0)?gi.sizes:safeSizes(it);
+          const jobQty=Object.values(sizeSrc).reduce((a,v)=>a+safeNum(v),0);
+          const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+Object.entries(sizeSrc).filter(([,v])=>v>0).reduce((x,[sz])=>x+safeNum(pk[sz]),0),0);
+          const pos=safePOs(it).map(po=>{
+            const billed=po.billed||{};const received=po.received||{};
+            const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!PO_META.has(k)&&typeof po[k]==='number').sort(szSort);
+            const totals={ordered:szKeys.reduce((a,sz)=>a+(po[sz]||0),0),billed:szKeys.reduce((a,sz)=>a+(billed[sz]||0),0),received:szKeys.reduce((a,sz)=>a+(received[sz]||0),0)};
+            const st=po.drop_ship?(totals.billed>=totals.ordered&&totals.ordered>0?'shipped':totals.billed>0?'partial':'waiting'):(totals.received>=totals.ordered&&totals.ordered>0?'received':totals.billed>0?(totals.received>0?'partial':'in_transit'):'waiting');
+            return{po,billed,received,szKeys,totals,st,bills:po._bill_details||[],trackNums:po.tracking_numbers||[]};
+          }).filter(p=>p.totals.ordered>0);
+          return{gi,it,jobQty,pulled,pos};
+        }).filter(Boolean);
+        const stBadge=st=><span className={`badge ${st==='received'||st==='shipped'?'badge-green':st==='in_transit'?'badge-blue':st==='partial'?'badge-amber':'badge-gray'}`}>{st==='shipped'?'Shipped':st==='received'?'Received':st==='in_transit'?'In Transit':st==='partial'?'Partial':'Waiting'}</span>;
+        return<div className="modal-overlay" onClick={()=>setJobTrackModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:860,width:'94vw'}}>
+          <div className="modal-header">
+            <div><h2 style={{margin:0}}>📦 Inbound Tracking — {jm.id}</h2>
+              <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{jm.art_name} · {jm.customer} · {jm.soId}{jm.expected?' · Due '+jm.expected:''}</div></div>
+            <button className="modal-close" onClick={()=>setJobTrackModal(null)}>×</button>
+          </div>
+          <div className="modal-body" style={{maxHeight:'68vh',overflowY:'auto'}}>
+            {/* Summary tiles */}
+            <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:14}}>
+              {[['Job Units',jm.total_units,'#0f172a'],
+                ['Billed',jm.billed,jm.total_units>0&&jm.billed>=jm.total_units?'#166534':jm.billed>0?'#1e40af':'#94a3b8'],
+                ['Checked In',jm.fulfilled_units,jm.total_units>0&&jm.fulfilled_units>=jm.total_units?'#166534':jm.fulfilled_units>0?'#d97706':'#94a3b8'],
+                ['From Stock',jm.pulledStock,jm.pulledStock>0?'#7c3aed':'#94a3b8']].map(([l,v,c])=>
+                <div key={l} style={{padding:'8px 12px',background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',textAlign:'center'}}>
+                  <div style={{fontSize:9,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:0.5}}>{l}</div>
+                  <div style={{fontSize:18,fontWeight:800,color:c}}>{v}</div></div>)}
+            </div>
+            {sections.length===0&&<div className="empty" style={{padding:24}}>No items on this job</div>}
+            <div style={{display:'grid',gap:12}}>
+            {sections.map((sec,si)=><div key={si} style={{borderRadius:8,border:'1px solid #e2e8f0',borderLeft:'3px solid #2563eb',overflow:'hidden'}}>
+              {/* Item header */}
+              <div style={{padding:'8px 12px',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',background:'#f8fafc',borderBottom:'1px solid #e2e8f0'}}>
+                <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{sec.gi.sku}</span>
+                <span style={{fontWeight:600,fontSize:12}}>{sec.gi.name||sec.it.name||''}</span>
+                {(sec.gi.color||sec.it.color)&&<span style={{fontSize:11,color:'#64748b'}}>{sec.gi.color||sec.it.color}</span>}
+                <span style={{fontSize:10,fontWeight:700,color:'#475569',background:'#e2e8f0',padding:'2px 8px',borderRadius:10}}>{sec.jobQty} units on job</span>
+                {sec.pulled>0&&<span style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#ede9fe',padding:'2px 8px',borderRadius:10}}>🏬 {sec.pulled} from stock</span>}
+              </div>
+              {sec.pos.length===0?<div style={{padding:'12px 14px',fontSize:11,color:'#94a3b8'}}>{sec.pulled>0?'No purchase orders — fulfilled from warehouse stock.':'No purchase orders yet — nothing incoming for this item.'}</div>:
+              sec.pos.map((p,pi)=><div key={pi} style={{borderTop:pi>0?'1px solid #e2e8f0':'none'}}>
+                {/* PO header */}
+                <div style={{padding:'7px 12px',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',background:'white'}}>
+                  <span style={{fontFamily:'monospace',fontWeight:600,color:'#1e40af',fontSize:12}}>{p.po.po_id||'PO'}</span>
+                  {(p.po.vendor||p.po.deco_vendor)&&<span style={{fontSize:11,color:'#64748b'}}>{p.po.vendor||p.po.deco_vendor}</span>}
+                  {stBadge(p.st)}
+                  {p.po.drop_ship&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
+                  {p.po.expected_date&&<span style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>Expected: {p.po.expected_date}</span>}
+                </div>
+                <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
+                  <thead><tr style={{borderBottom:'1px solid #e2e8f0',background:'#f1f5f9'}}>
+                    <th style={{padding:'4px 10px',textAlign:'left',fontSize:9,color:'#64748b',fontWeight:700}}>SIZE</th>
+                    <th style={{padding:'4px 10px',textAlign:'center',fontSize:9,color:'#64748b',fontWeight:700}}>ORDERED</th>
+                    <th style={{padding:'4px 10px',textAlign:'center',fontSize:9,color:'#64748b',fontWeight:700}}>BILLED</th>
+                    <th style={{padding:'4px 10px',textAlign:'center',fontSize:9,color:'#64748b',fontWeight:700}}>RECEIVED</th>
+                    <th style={{padding:'4px 10px',textAlign:'left',fontSize:9,color:'#64748b',fontWeight:700}}>SHIPMENTS</th>
+                  </tr></thead>
+                  <tbody>
+                    {p.szKeys.map(sz=>{const ordered=p.po[sz]||0;const b=p.billed[sz]||0;const r=p.received[sz]||0;
+                      const shps=p.bills.filter(bd=>(bd.sizes||{})[sz]>0);
+                      return<tr key={sz} style={{borderBottom:'1px solid #f1f5f9'}}>
+                        <td style={{padding:'4px 10px',fontWeight:700,fontFamily:'monospace'}}>{sz}</td>
+                        <td style={{padding:'4px 10px',textAlign:'center',fontWeight:600}}>{ordered}</td>
+                        <td style={{padding:'4px 10px',textAlign:'center',fontWeight:700,color:b>=ordered&&ordered>0?'#166534':b>0?'#d97706':'#d1d5db'}}>{b>0?b:'—'}</td>
+                        <td style={{padding:'4px 10px',textAlign:'center',fontWeight:700,color:r>=ordered&&ordered>0?'#166534':r>0?'#d97706':'#d1d5db'}}>{r>0?r:'—'}</td>
+                        <td style={{padding:'4px 10px'}}>{shps.length>0?<div style={{display:'flex',flexDirection:'column',gap:2}}>
+                          {shps.map((bd,bi)=><div key={bi} style={{display:'flex',alignItems:'center',gap:6,fontSize:10}}>
+                            <span style={{color:'#64748b'}}>{bd.date||''}</span>
+                            <span style={{fontWeight:700,color:'#1e40af'}}>{bd.sizes[sz]} units</span>
+                            {bd.tracking&&<a href={trackUrl(bd.tracking)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'1px 5px',borderRadius:3,textDecoration:'none'}}>{bd.tracking}</a>}
+                            {bd.doc&&<span style={{fontSize:9,color:'#94a3b8'}}>Doc #{bd.doc}</span>}
+                          </div>)}</div>:<span style={{color:'#d1d5db',fontSize:10}}>—</span>}</td>
+                      </tr>})}
+                    <tr style={{borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
+                      <td style={{padding:'4px 10px',fontWeight:800,fontSize:9,color:'#64748b'}}>TOTAL</td>
+                      <td style={{padding:'4px 10px',textAlign:'center',fontWeight:800}}>{p.totals.ordered}</td>
+                      <td style={{padding:'4px 10px',textAlign:'center',fontWeight:800,color:p.totals.billed>=p.totals.ordered&&p.totals.ordered>0?'#166534':p.totals.billed>0?'#d97706':'#d1d5db'}}>{p.totals.billed>0?p.totals.billed:'—'}</td>
+                      <td style={{padding:'4px 10px',textAlign:'center',fontWeight:800,color:p.totals.received>=p.totals.ordered&&p.totals.ordered>0?'#166534':p.totals.received>0?'#d97706':'#d1d5db'}}>{p.totals.received>0?p.totals.received:'—'}</td>
+                      <td style={{padding:'4px 10px'}}>{p.trackNums.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{p.trackNums.map((tn,ti)=><a key={ti} href={trackUrl(tn)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:10,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:4,textDecoration:'none'}}>{tn}</a>)}</div>}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>)}
+            </div>)}
+            </div>
+          </div>
+          <div className="modal-footer">
+            {isA&&<button className="btn btn-sm" style={{background:'#fee2e2',color:'#dc2626',border:'1px solid #fecaca',fontWeight:700,marginRight:'auto'}} onClick={()=>{
+              if(!window.confirm('Delete '+jm.id+' ('+(jm.art_name||'unnamed')+')?\n\nThis removes the job from '+jm.soId+' and deletes the so_jobs row from the database. The SO itself stays.'))return;
+              const so2=sos.find(s=>s.id===jm.soId);
+              if(!so2){nf(jm.soId+' not found','error');return}
+              const updated={...so2,jobs:safeJobs(so2).filter(jj=>jj.id!==jm.id),updated_at:new Date().toLocaleString()};
+              setSOs(prev=>prev.map(s=>s.id===so2.id?updated:s));
+              _dbSaveSO(updated);
+              nf('Deleted '+jm.id);setJobTrackModal(null);
+            }}>🗑 Delete Job</button>}
+            <button className="btn btn-secondary" onClick={()=>{setJobTrackModal(null);setESOTab('tracking');setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}}>Open SO Tracking →</button>
+            <button className="btn btn-primary" onClick={()=>setJobTrackModal(null)}>Close</button>
+          </div>
+        </div></div>})()}
     </>);
   };
 
