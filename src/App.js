@@ -17,7 +17,7 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
-import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
+import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, authFetch } from './utils';
 import { calcOrderTotals, auTierDisc } from './pricing';
@@ -8442,7 +8442,7 @@ export default function App(){
     if(!so)return;
     const c=cust.find(x=>x.id===so.customer_id);
     const shipAddrSub=(()=>{
-      if(so.ship_to_id==='custom'&&so.ship_to_custom)return so.ship_to_custom;
+      const sel=orderShipToSub(so,c);if(sel)return sel;
       if(c?.shipping_address_line1){let a=c.shipping_address_line1;if(c.shipping_address_line2)a+='<br/>'+c.shipping_address_line2;a+='<br/>'+(c.shipping_city||'')+', '+(c.shipping_state||'')+' '+(c.shipping_zip||'');return a}
       if(c?.billing_address_line1){let a=c.billing_address_line1;if(c.billing_address_line2)a+='<br/>'+c.billing_address_line2;a+='<br/>'+(c.billing_city||'')+', '+(c.billing_state||'')+' '+(c.billing_zip||'');return a}
       return '';
@@ -11051,6 +11051,8 @@ export default function App(){
       const inv=invs.find(i=>i.id===viewInvoice.id)||viewInvoice;
       const ic=cust.find(c=>c.id===inv.customer_id);
       const so=sos.find(s=>s.id===inv.so_id);
+      // Older invoices have no shipping override stored — fall back to the SO's selected ship-to
+      const invShipSel=(inv.shipping_name||inv.shipping_address)?null:resolveOrderShipTo(so,ic);
       const repObj=REPS.find(r=>r.id===(ic?.primary_rep_id||so?.created_by))||null;
       const bal=inv.total-(inv.paid??0);
       const storedLineItems=inv.line_items||[];
@@ -11100,9 +11102,9 @@ export default function App(){
         const billToName=inv.billing_name||ic?.name||'—';
         const billToSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
         const billAddr=billToSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
-        const shipToName=inv.shipping_name||ic?.name||'—';
+        const shipToName=inv.shipping_name||invShipSel?.name||ic?.name||'—';
         const shipToOverrideSub=inv.shipping_name?(inv.shipping_address||'').replace(/\n/g,'<br/>')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
-        const shipAddr=shipToOverrideSub||(ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'');
+        const shipAddr=shipToOverrideSub||(invShipSel?orderShipToSub(so,ic):'')||(ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'');
         const poNum=inv._po_number||so?.po_number;
         const {rows:pRows,subtotal:pSubTotal}=buildInvoicePdfRows(inv,so,_$);
         return{title:billToName,docNum:inv.id,docType:'INVOICE',
@@ -11243,7 +11245,7 @@ export default function App(){
 
           {/* Invoice info grid */}
           <div className="card-body" style={{padding:'20px 24px'}}>
-            <div style={{display:'grid',gridTemplateColumns:(inv.shipping_name||inv.shipping_address||ic?.shipping_address_line1)?'1fr 1fr 1fr 1fr 1fr':'1fr 1fr 1fr 1fr',gap:16,marginBottom:20}}>
+            <div style={{display:'grid',gridTemplateColumns:(inv.shipping_name||inv.shipping_address||invShipSel||ic?.shipping_address_line1)?'1fr 1fr 1fr 1fr 1fr':'1fr 1fr 1fr 1fr',gap:16,marginBottom:20}}>
               <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Bill To</div>
                 {inv.billing_name?<><div style={{fontSize:14,fontWeight:700}}>{inv.billing_name}</div><div style={{fontSize:11,color:'#64748b'}}>{inv.billing_address||''}</div><div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>on behalf of {ic?.name}</div></>
                 :<><div style={{fontSize:14,fontWeight:700}}>{ic?.name||'—'}</div>{ic?.alpha_tag&&<div style={{fontSize:11,color:'#64748b'}}>{ic.alpha_tag}</div>}{ic?.billing_address_line1&&<div style={{fontSize:11,color:'#64748b',marginTop:2}}>{ic.billing_address_line1}{ic.billing_city?', '+ic.billing_city:''}{ic.billing_state?' '+ic.billing_state:''}{ic.billing_zip?' '+ic.billing_zip:''}</div>}</>}
@@ -11254,8 +11256,9 @@ export default function App(){
                     {altAddrs2.map((a,i)=><option key={i} value={JSON.stringify(a)}>{a.label||'Alt '+(i+1)}</option>)}
                   </select>})()}
               </div>
-              {(inv.shipping_name||inv.shipping_address||ic?.shipping_address_line1)&&<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Ship To</div>
+              {(inv.shipping_name||inv.shipping_address||invShipSel||ic?.shipping_address_line1)&&<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Ship To</div>
                 {inv.shipping_name||inv.shipping_address?<><div style={{fontSize:14,fontWeight:700}}>{inv.shipping_name||ic?.name||'—'}</div><div style={{fontSize:11,color:'#64748b',whiteSpace:'pre-line'}}>{inv.shipping_address||''}</div>{inv.shipping_name&&<div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>on behalf of {ic?.name}</div>}</>
+                :invShipSel?<><div style={{fontSize:14,fontWeight:700}}>{invShipSel.name||ic?.name||'—'}</div><div style={{fontSize:11,color:'#64748b',marginTop:2,whiteSpace:'pre-line'}}>{invShipSel.text||[invShipSel.street,[invShipSel.city,[invShipSel.state,invShipSel.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')].filter(Boolean).join('\n')}</div>{invShipSel.name&&invShipSel.name!==ic?.name&&<div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>on behalf of {ic?.name}</div>}</>
                 :<><div style={{fontSize:14,fontWeight:700}}>{ic?.name||'—'}</div>{ic?.shipping_address_line1&&<div style={{fontSize:11,color:'#64748b',marginTop:2}}>{ic.shipping_address_line1}{ic.shipping_city?', '+ic.shipping_city:''}{ic.shipping_state?' '+ic.shipping_state:''}{ic.shipping_zip?' '+ic.shipping_zip:''}</div>}</>}
               </div>}
               <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Invoice Date</div>
@@ -11886,7 +11889,8 @@ export default function App(){
                 const siPoNum=siInv._po_number||siSo?.po_number;
                 const siBillSub=siInv.billing_name?(siInv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+siCust?.name+'</span>':'';
                 const siBillAddr=siBillSub||(siCust?.billing_address_line1?siCust.billing_address_line1+(siCust.billing_city?'<br/>'+siCust.billing_city+(siCust.billing_state?' '+siCust.billing_state:'')+(siCust.billing_zip?' '+siCust.billing_zip:''):'')+'<br/>United States':'');
-                const siShipAddr=siCust?.shipping_address_line1?siCust.shipping_address_line1+(siCust.shipping_city?'<br/>'+siCust.shipping_city+(siCust.shipping_state?' '+siCust.shipping_state:'')+(siCust.shipping_zip?' '+siCust.shipping_zip:''):'')+'<br/>United States':'';
+                const siShipName=siInv.shipping_name||(!siInv.shipping_address?resolveOrderShipTo(siSo,siCust)?.name:null)||siCust?.name||'—';
+                const siShipAddr=(siInv.shipping_name||siInv.shipping_address?(siInv.shipping_address||'').replace(/\n/g,'<br/>'):'')||orderShipToSub(siSo,siCust)||(siCust?.shipping_address_line1?siCust.shipping_address_line1+(siCust.shipping_city?'<br/>'+siCust.shipping_city+(siCust.shipping_state?' '+siCust.shipping_state:'')+(siCust.shipping_zip?' '+siCust.shipping_zip:''):'')+'<br/>United States':'');
                 // Build rows from the invoice's own line items (honors per-line price overrides)
                 const {rows:siRows,subtotal:siSubTotal}=buildInvoicePdfRows(siInv,siSo,_$si);
                 // Build PDF attachment
@@ -11896,7 +11900,7 @@ export default function App(){
                     headerRight:'<div class="ta">'+_$si(siInv.total)+'</div><div class="ts">Balance Due: <strong>'+_$si(siBal)+'</strong></div>'+(siPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+siPoNum+'</div>':''),
                     infoBoxes:[
                       {label:'Bill To',value:siBillName,sub:siBillAddr},
-                      ...(siShipAddr?[{label:'Ship To',value:siCust?.name||'—',sub:siShipAddr}]:[]),
+                      ...(siShipAddr?[{label:'Ship To',value:siShipName,sub:siShipAddr}]:[]),
                       {label:'Invoice Date',value:siInv.date||'—',sub:siInv.due_date?'Due: '+siInv.due_date:''},
                       {label:'Sales Order',value:siInv.so_id||'—',sub:siInv.memo||''+(siPoNum?'<br/><strong>PO# '+siPoNum+'</strong>':'')},
                       {label:'Payment Terms',value:siInv.inv_type==='deposit'?(siInv.deposit_pct||50)+'% Deposit':siInv.inv_type==='partial'?'Partial Invoice':siInv.inv_type==='full'?'Invoice':'Final Invoice',sub:'Rep: '+(siRepObj?.name||'—')}
@@ -12156,7 +12160,8 @@ export default function App(){
                 const billToName=inv.billing_name||ic?.name||'—';
                 const fBillSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
                 const fBillAddr=fBillSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
-                const fShipAddr=ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'';
+                const fShipName=inv.shipping_name||(!inv.shipping_address?resolveOrderShipTo(so,ic)?.name:null)||ic?.name||'—';
+                const fShipAddr=(inv.shipping_name||inv.shipping_address?(inv.shipping_address||'').replace(/\n/g,'<br/>'):'')||orderShipToSub(so,ic)||(ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'');
                 const fPoNum=inv._po_number||so?.po_number;
                 // Build rows from the invoice's own line items (honors per-line price overrides)
                 const fStoredLi=inv.line_items||[];
@@ -12169,7 +12174,7 @@ export default function App(){
                     +'<div class="ts">Balance Due: <strong>'+_$f(inv._bal)+'</strong></div>'+(fPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+fPoNum+'</div>':''),
                   infoBoxes:[
                     {label:'Bill To',value:billToName,sub:fBillAddr},
-                    ...(fShipAddr?[{label:'Ship To',value:ic?.name||'—',sub:fShipAddr}]:[]),
+                    ...(fShipAddr?[{label:'Ship To',value:fShipName,sub:fShipAddr}]:[]),
                     {label:'Invoice Date',value:inv.date||new Date().toLocaleDateString(),sub:inv.due_date?'Due: '+inv.due_date:''},
                     {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||so?.memo||''+(fPoNum?'<br/><strong>PO# '+fPoNum+'</strong>':'')},
                     {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':inv.inv_type==='full'?'Invoice':'Final Invoice',sub:'Rep: '+(REPS.find(r=>r.id===inv._rep)?.name||'—')},
@@ -17209,7 +17214,7 @@ export default function App(){
                       const firstSO=Object.values(grp.soMap)[0];
                       const shipCust=cust.find(c2=>c2.id===firstSO?.customer_id);
                       const shipAddrSub=(()=>{
-                        if(firstSO?.ship_to_id==='custom'&&firstSO?.ship_to_custom)return firstSO.ship_to_custom;
+                        const sel=orderShipToSub(firstSO,shipCust);if(sel)return sel;
                         if(shipCust?.shipping_address_line1){
                           let a=shipCust.shipping_address_line1;
                           if(shipCust.shipping_address_line2)a+='<br/>'+shipCust.shipping_address_line2;
@@ -17683,7 +17688,7 @@ export default function App(){
                     const boxFirstSO=Object.values(shipModal.soMap||shipModal.grp.soMap||{})[0];
                     const boxCust=cust.find(c2=>c2.id===boxFirstSO?.customer_id);
                     const boxAddrSub=(()=>{
-                      if(boxFirstSO?.ship_to_id==='custom'&&boxFirstSO?.ship_to_custom)return boxFirstSO.ship_to_custom;
+                      const sel=orderShipToSub(boxFirstSO,boxCust);if(sel)return sel;
                       if(boxCust?.shipping_address_line1){
                         let a=boxCust.shipping_address_line1;
                         if(boxCust.shipping_address_line2)a+='<br/>'+boxCust.shipping_address_line2;

@@ -85,6 +85,33 @@ function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_lin
   if(!cu)return a;add(cu,'Default');addAlts(cu);
   return a}
 
+// Resolve the ship-to selected on an order/estimate (ship_to_id) into structured fields.
+// Returns {name,text} for a custom free-text address, {name,street,city,state,zip} for an
+// alternate shipping address (id format `${customerId}_alt_${i}` — see getAddrs above),
+// or null when the order ships to the customer's default address.
+function resolveOrderShipTo(o,cu){
+  const id=o?.ship_to_id;
+  if(!id||id==='default')return null;
+  if(id==='custom')return o.ship_to_custom?{name:cu?.name||'',text:String(o.ship_to_custom)}:null;
+  if(!cu)return null;
+  const m=/_alt_(\d+)$/.exec(String(id));
+  if(m&&String(id)===cu.id+'_alt_'+m[1]){
+    const alts=(cu.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city));
+    const ab=alts[parseInt(m[1],10)];
+    if(ab)return{name:ab.label||cu.name||'',street:ab.street||'',city:ab.city||'',state:ab.state||'',zip:ab.zip||''};
+  }
+  return null;
+}
+
+// <br/>-joined ship-to block for printed docs; '' when the order uses the customer default.
+function orderShipToSub(o,cu){
+  const sel=resolveOrderShipTo(o,cu);
+  if(!sel)return'';
+  if(sel.text)return sel.text.replace(/\n/g,'<br/>');
+  const cityLine=[sel.city,[sel.state,sel.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  return[sel.street,cityLine].filter(Boolean).join('<br/>');
+}
+
 
 // SEND ESTIMATE MODAL
 
@@ -466,4 +493,4 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
     <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
-export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
+export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };

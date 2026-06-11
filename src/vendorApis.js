@@ -3,7 +3,7 @@
 // Vendor API integrations — all use Netlify proxy functions
 // ═══════════════════════════════════════════
 import { NSA } from './constants';
-import { calcSOStatus } from './components';
+import { calcSOStatus, resolveOrderShipTo } from './components';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
@@ -44,20 +44,40 @@ const testShipStationConnection = async () => {
   }
 };
 
-const convertSOToShipStation = (so, customer) => {
-  const shipToAddress = customer.shipping_address_line1 ? {
+// Ship-to block for ShipStation orders/labels. Honors the SO's selected ship-to
+// (alternate shipping address or custom text) before falling back to the customer's
+// default shipping/billing address — labels must print the address chosen on the SO.
+const ssShipToAddress = (so, customer) => {
+  const phone = customer.contacts?.[0]?.phone || '';
+  const sel = resolveOrderShipTo(so, customer);
+  if (sel && sel.street) {
+    return { name: sel.name || customer.name, company: customer.name,
+      street1: sel.street, street2: '', city: sel.city, state: sel.state,
+      postalCode: sel.zip, country: 'US', phone, residential: true };
+  }
+  if (sel && sel.text) {
+    // Custom free-text address — labels need structured fields, so parse "street / city, ST zip"
+    const m = sel.text.replace(/<br\s*\/?>/gi, '\n').match(/^\s*([\s\S]+?)[,\n]\s*([^,\n]+?),?\s+([A-Za-z]{2})\.?\s+(\d{5}(?:-\d{4})?)\s*$/);
+    if (m) return { name: customer.name, company: customer.name,
+      street1: m[1].replace(/\s*\n\s*/g, ', ').trim(), street2: '',
+      city: m[2].trim(), state: m[3].toUpperCase(), postalCode: m[4], country: 'US', phone, residential: true };
+    console.warn('[ShipStation] Could not parse custom ship-to address, using customer default:', sel.text);
+  }
+  return customer.shipping_address_line1 ? {
     name: customer.name, company: customer.name,
     street1: customer.shipping_address_line1, street2: customer.shipping_address_line2 || '',
     city: customer.shipping_city, state: customer.shipping_state,
-    postalCode: customer.shipping_zip, country: 'US',
-    phone: customer.contacts?.[0]?.phone || '', residential: true
+    postalCode: customer.shipping_zip, country: 'US', phone, residential: true
   } : {
     name: customer.name, company: customer.name,
     street1: customer.billing_address_line1, street2: customer.billing_address_line2 || '',
     city: customer.billing_city, state: customer.billing_state,
-    postalCode: customer.billing_zip, country: 'US',
-    phone: customer.contacts?.[0]?.phone || '', residential: true
+    postalCode: customer.billing_zip, country: 'US', phone, residential: true
   };
+};
+
+const convertSOToShipStation = (so, customer) => {
+  const shipToAddress = ssShipToAddress(so, customer);
   const items = so.items.map(item => {
     const totalQty = Object.values(item.sizes).reduce((sum, qty) => sum + qty, 0);
     return {
@@ -124,28 +144,20 @@ const fetchRecentShipments = async () => {
 // Create a ShipStation label for an order
 const _ssCarrierMap = { 'UPS': { carrierCode: 'ups', serviceCode: 'ups_ground' }, 'FedEx': { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, 'USPS': { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service, dimensions) => {
-  // Validate customer address before calling API
-  const hasShipAddr = customer.shipping_address_line1 && customer.shipping_city && customer.shipping_state && customer.shipping_zip;
-  const hasBillAddr = customer.billing_address_line1 && customer.billing_city && customer.billing_state && customer.billing_zip;
-  if (!hasShipAddr && !hasBillAddr) throw new Error('Customer has no shipping or billing address. Please add an address to the customer record first.');
-  // Ensure order exists in ShipStation first
+  // Resolve and validate the ship-to (SO-selected address or customer default) before calling API
+  const shipTo = ssShipToAddress(so, customer);
+  if (!shipTo.street1 || !shipTo.city || !shipTo.state || !shipTo.postalCode) throw new Error('Ship-to address is incomplete (needs street, city, state, zip). Check the address selected on the SO or the customer record.');
+  // Upsert the order in ShipStation (createorder updates by orderKey) — the label prints
+  // the ORDER's ship-to, so an already-pushed order must be refreshed with the resolved address.
   let ssOrderId = so._shipstation_order_id;
-  if (!ssOrderId) {
+  try {
     const ssOrder = await pushSOToShipStation(so, customer);
-    ssOrderId = ssOrder.orderId;
+    ssOrderId = ssOrder.orderId || ssOrderId;
+  } catch (e) {
+    if (!ssOrderId) throw e;
+    console.warn('[ShipStation] Order refresh failed, using existing order:', e.message);
   }
   if (!ssOrderId) throw new Error('Could not create or find ShipStation order. Please check ShipStation connection.');
-  const shipTo = hasShipAddr ? {
-    name: customer.name, company: customer.name,
-    street1: customer.shipping_address_line1, street2: customer.shipping_address_line2 || '',
-    city: customer.shipping_city, state: customer.shipping_state,
-    postalCode: customer.shipping_zip, country: 'US', phone: customer.contacts?.[0]?.phone || ''
-  } : {
-    name: customer.name, company: customer.name,
-    street1: customer.billing_address_line1, street2: customer.billing_address_line2 || '',
-    city: customer.billing_city, state: customer.billing_state,
-    postalCode: customer.billing_zip, country: 'US', phone: customer.contacts?.[0]?.phone || ''
-  };
   // Map carrier — dropdown values are lowercase ('fedex','ups','usps')
   const carrierLower = (carrier || 'fedex').toLowerCase();
   const carrierMap = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };

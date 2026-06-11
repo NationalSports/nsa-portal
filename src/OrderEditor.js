@@ -7,7 +7,7 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced } from './safeHelpers';
-import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
+import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import QuickMockBuilder from './QuickMockBuilder';
@@ -2679,7 +2679,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               }).filter(Boolean);
               const totalUnits=packRows.reduce((a,r)=>{const v=r.cells[4].value;return a+(typeof v==='number'?v:0)},0);
               const shipAddrSub=(()=>{
-                if(o.ship_to_id==='custom'&&o.ship_to_custom)return o.ship_to_custom;
+                const sel=orderShipToSub(o,cust);if(sel)return sel;
                 if(cust?.shipping_address_line1){let a=cust.shipping_address_line1;if(cust.shipping_address_line2)a+='<br/>'+cust.shipping_address_line2;a+='<br/>'+(cust.shipping_city||'')+', '+(cust.shipping_state||'')+' '+(cust.shipping_zip||'');return a}
                 if(cust?.billing_address_line1){let a=cust.billing_address_line1;if(cust.billing_address_line2)a+='<br/>'+cust.billing_address_line2;a+='<br/>'+(cust.billing_city||'')+', '+(cust.billing_state||'')+' '+(cust.billing_zip||'');return a}
                 return '';
@@ -5621,12 +5621,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const invTaxAmt=invType==='deposit'?Math.round(invTax*invDepositPct/100*100)/100:invTax;
             const defaultMemo=invType==='deposit'?invDepositPct+'% Deposit — '+o.memo:invType==='partial'?'Partial — '+o.memo:invType==='full'?'Invoice — '+o.memo:'Final Invoice — '+o.memo;
             const billingOverride=invBilling?JSON.parse(invBilling):null;
+            // Snapshot the SO's selected ship-to (alt/custom address) onto the invoice so it
+            // prints the address the order actually ships to, not the customer default.
+            const shipToSel=resolveOrderShipTo(o,cust);
+            const shippingOverride=shipToSel?{shipping_name:shipToSel.name||cust?.name||'',shipping_address:shipToSel.text||[shipToSel.street,shipToSel.city,shipToSel.state,shipToSel.zip].filter(Boolean).join(', ')}:null;
             const inv={id:invId,type:'invoice',inv_type:invType,customer_id:o.customer_id,so_id:o.id,
               date:_invDateStr,due_date:dueDate,total:Math.round(invTotal*100)/100,paid:0,
               memo:invMemo||defaultMemo,status:'open',_rep:o.created_by||cu.id,
               tax:Math.round(invTaxAmt*100)/100,tax_rate:o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0),tax_exempt:o.tax_exempt||cust?.tax_exempt||false,shipping:Math.round(invShipAmt*100)/100,
               ...(invType==='deposit'?{deposit_pct:invDepositPct}:{}),
               ...(billingOverride?{billing_name:billingOverride.label||'',billing_address:[billingOverride.street,billingOverride.city,billingOverride.state,billingOverride.zip].filter(Boolean).join(', ')}:{}),
+              ...(shippingOverride||{}),
               ...(o.po_number?{_po_number:o.po_number}:{}),
               ...(invCredit>0?{credit_amount:Math.round((invType==='deposit'?invCredit*invDepositPct/100:invCredit)*100)/100}:{}),
               ...(depositApplied>0?{deposit_applied:Math.round(depositApplied*100)/100}:{}),
@@ -5669,7 +5674,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
         const rBillName=ir.billing_name||ic?.name||'—';const rBillSub=ir.billing_name?(ir.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
         const rBillAddr=rBillSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
-        const rShipAddr=ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'';
+        const rShipName=ir.shipping_name||ic?.name||'—';
+        const rShipAddr=(ir.shipping_name||ir.shipping_address?(ir.shipping_address||'').replace(/\n/g,'<br/>'):'')||orderShipToSub(irSO,ic)||(ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'');
         const rPoNum=ir._po_number||irSO?.po_number;
         // Build rows with decoration detail from SO items
         const rows=[];let subTotal=0;
@@ -5701,7 +5707,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             +'<div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(rPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+rPoNum+'</div>':''),
           infoBoxes:[
             {label:'Bill To',value:rBillName,sub:rBillAddr},
-            ...(rShipAddr?[{label:'Ship To',value:ic?.name||'—',sub:rShipAddr}]:[]),
+            ...(rShipAddr?[{label:'Ship To',value:rShipName,sub:rShipAddr}]:[]),
             {label:'Invoice Date',value:ir.date||new Date().toLocaleDateString(),sub:ir.due_date?'Due: '+ir.due_date:''},
             {label:'Sales Order',value:ir.so_id||'—',sub:ir.memo||''+(rPoNum?'<br/><strong>PO# '+rPoNum+'</strong>':'')},
             {label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':ir.inv_type==='partial'?'Partial Invoice':ir.inv_type==='full'?'Invoice':'Final Invoice',sub:''}
@@ -5899,7 +5905,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const irPoNum=ir._po_number||irSO?.po_number;
             const eBillSub=ir.billing_name?(ir.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
             const eBillAddr=eBillSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
-            const eShipAddr=ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'';
+            const eShipName=ir.shipping_name||ic?.name||'—';
+            const eShipAddr=(ir.shipping_name||ir.shipping_address?(ir.shipping_address||'').replace(/\n/g,'<br/>'):'')||orderShipToSub(irSO,ic)||(ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'');
             // Build rows with decoration detail from SO items
             const eRows=[];let eSubTotal=0;
             const eSoItems=irSO?safeItems(irSO):[];const eSoArt=irSO?safeArt(irSO):[];
@@ -5931,7 +5938,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 headerRight:'<div class="ta">'+_$e(ir.total)+'</div><div class="ts">Balance Due: <strong>'+_$e(irBal)+'</strong></div>'+(irPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+irPoNum+'</div>':''),
                 infoBoxes:[
                   {label:'Bill To',value:irBillName,sub:eBillAddr},
-                  ...(eShipAddr?[{label:'Ship To',value:ic?.name||'—',sub:eShipAddr}]:[]),
+                  ...(eShipAddr?[{label:'Ship To',value:eShipName,sub:eShipAddr}]:[]),
                   {label:'Invoice Date',value:ir.date||'—',sub:ir.due_date?'Due: '+ir.due_date:''},
                   {label:'Sales Order',value:ir.so_id||'—',sub:ir.memo||''+(irPoNum?'<br/><strong>PO# '+irPoNum+'</strong>':'')},
                   {label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':ir.inv_type==='partial'?'Partial Invoice':ir.inv_type==='full'?'Invoice':'Final Invoice',sub:''}
