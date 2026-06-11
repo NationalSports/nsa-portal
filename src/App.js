@@ -2289,29 +2289,50 @@ const _prodJobGenericMocks=artFiles=>artFiles.flatMap(a=>{
   const hasPerItem=Object.values(a?.item_mockups||{}).some(v=>(v||[]).length>0);
   return hasPerItem?[]:(a?.mockup_files||a?.files||[]);
 }).filter(f=>f);
-// All mockups for one garment line. Mockup slots store under the base sku|color key for
-// the first art, but additional arts (front + back), numbers and names store under
-// suffixed keys (sku|color|d1, |<colorWayId>, |numbers, |names) — collect them all so
-// multi-location items show every mockup. Ordered: arts first, then numbers/names.
-// Two garment lines can share sku|color while printing DIFFERENT designs, and the
-// item_mockups key alone can't tell them apart — so art-design mocks are only read from
-// the art files this item's own decorations reference. The |numbers / |names keys stay
-// job-wide because those mocks save to the job's primary art file.
+// All mockups for one garment line, mirroring the Art Dashboard's slot system: one slot
+// per art decoration on the ITEM (first deco reads the base sku|color key, additional
+// decos read suffixed keys |<colorWayId> / |d1), each from that decoration's OWN art
+// file, then |numbers / |names keys job-wide (those mocks save to the job's primary
+// art). Two garment lines can share sku|color while printing different designs, and a
+// re-uploaded mock can leave a stale copy under an unused sub-key — reading per-deco
+// slots instead of sweeping every key on every art keeps both out of the display.
 const _prodJobItemMocks=(artFiles,so,gi)=>{
-  const _mk=gi.sku+'|'+(gi.color||'');
+  const sku=gi.sku;const _mk=sku+'|'+(gi.color||'');
   const _isNN=k=>/\|(numbers|names)(_\d+)?$/.test(k);
-  const rank=k=>/\|numbers(_\d+)?$/.test(k)?2:/\|names(_\d+)?$/.test(k)?3:1;
-  const it=safeItems(so)[gi.item_idx];
-  const ownArtIds=new Set(it?safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id):[]);
   const out=[];const seen=new Set();
+  const push=f=>{if(!f)return;const u=typeof f==='string'?f:(f?.url||'');if(u&&seen.has(u))return;if(u)seen.add(u);out.push(f)};
+  const it=safeItems(so)[gi.item_idx];
+  const decos=it?safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];
+  if(decos.length>0){
+    decos.forEach((d,i)=>{
+      const a=artFiles.find(x=>x?.id===d.art_file_id);if(!a)return;
+      const m=a.item_mockups||{};
+      const disc=i===0?'':(d.color_way_id||('d'+i));
+      const key=_mk+(disc?('|'+disc):'');
+      // Slot key first, then the same fallback chain the approval/coach views use:
+      // base sku|color, legacy bare sku, any non-numbers/names sub-key.
+      const v=(m[key]&&m[key].length>0)?m[key]
+        :(m[_mk]&&m[_mk].length>0)?m[_mk]
+        :(m[sku]&&m[sku].length>0)?m[sku]
+        :(Object.entries(m).find(([k,arr])=>k.startsWith(_mk+'|')&&!_isNN(k)&&(arr||[]).length>0)?.[1]||[]);
+      v.forEach(push);
+    });
+  }else{
+    // No art decorations (numbers-only line, or art swapped out): legacy job-wide lookup
+    artFiles.forEach(a=>{const m=a?.item_mockups||{};((m[_mk]&&m[_mk].length>0)?m[_mk]:(m[sku]||[])).forEach(push)});
+  }
+  const rank=k=>/\|numbers(_\d+)?$/.test(k)?1:2;
   artFiles.forEach(a=>{const m=a?.item_mockups||{};
-    const own=ownArtIds.size===0||ownArtIds.has(a.id);
-    const base=own?((m[_mk]&&m[_mk].length>0)?m[_mk]:(m[gi.sku]||[])):[];
-    const extra=Object.keys(m).filter(k=>k.startsWith(_mk+'|')&&(own||_isNN(k))).sort((x,y)=>rank(x)-rank(y)).flatMap(k=>m[k]||[]);
-    [...base,...extra].forEach(f=>{if(!f)return;const u=typeof f==='string'?f:(f?.url||'');if(u&&seen.has(u))return;if(u)seen.add(u);out.push(f)});
-  });
+    Object.keys(m).filter(k=>k.startsWith(_mk+'|')&&_isNN(k)).sort((x,y)=>rank(x)-rank(y)).forEach(k=>(m[k]||[]).forEach(push))});
   return out;
 };
+// Display-size variant of a Cloudinary image: the originals are full-res uploads (mock
+// JPGs run 2-4MB each) and the prod modal shows several at once. Only rewrites untouched
+// res.cloudinary.com image URLs (the /v<version>/ segment right after /image/upload/
+// means no transform present); everything else passes through. Downloads via openFile
+// keep the original URL/quality.
+const _cloudinaryDisplay=u=>(u&&typeof u==='string'&&u.includes('res.cloudinary.com')&&u.includes('/image/upload/v'))
+  ?u.replace('/image/upload/v','/image/upload/w_1600,c_limit,f_auto,q_auto/v'):u;
 const ImgUpload=({url,onUpload,size=48,onError})=>{const[drag,setDrag]=React.useState(false);const[uploading,setUploading]=React.useState(false);const[err,setErr]=React.useState(false);
   const doUpload=async(file)=>{if(!file||!file.type.startsWith('image/')){if(onError)onError('Please select an image file');return}setUploading(true);setErr(false);try{const u=await cloudUpload(file);onUpload(u)}catch(e){console.error('Upload failed',e);setErr(true);if(onError)onError('Upload failed: '+e.message)}finally{setUploading(false)}};
   return<div style={{width:size,height:size,borderRadius:6,border:err?'2px solid #dc2626':drag?'2px solid #3b82f6':'1px solid #e2e8f0',background:drag?'#eff6ff':err?'#fef2f2':'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,cursor:'pointer',overflow:'hidden',position:'relative'}}
@@ -9937,7 +9958,7 @@ export default function App(){
               if(dispMocks.length===0)return null;
               return<div style={{background:'#0f172a',padding:20,borderBottom:'2px solid #334155',position:'relative'}}>
                 <div style={{display:'grid',gridTemplateColumns:dispMocks.length===1?'1fr':dispMocks.length===2?'1fr 1fr':dispMocks.length===3?'1fr 1fr 1fr':'1fr 1fr',gap:12}}>
-                  {dispMocks.map(({f,i,u})=>{const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const pdfThumb=isPdf?_cloudinaryPdfThumb(u):null;const imgSrc=isImg?u:pdfThumb;
+                  {dispMocks.map(({f,i,u})=>{const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const pdfThumb=isPdf?_cloudinaryPdfThumb(u):null;const imgSrc=isImg?_cloudinaryDisplay(u):pdfThumb;
                     return<div key={i} style={{borderRadius:12,background:'#1e293b',border:'2px solid #334155',overflow:'hidden',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',minHeight:dispMocks.length===1?340:220}}
                       onClick={()=>{setProdLightboxIdx(i);setProdLightboxZoom(1);setProdJobLightbox(true)}}>
                       <img src={imgSrc} alt={'Mockup '+(i+1)} style={{width:'100%',height:'100%',objectFit:'contain',display:'block',padding:8}}/>
@@ -10047,7 +10068,7 @@ export default function App(){
                     </div>
                     {/* Mockup display */}
                     {itemMocks.length>0&&<div style={{padding:12,display:'flex',gap:8,flexWrap:'wrap',justifyContent:'center',background:'#fafbfc',borderBottom:'1px solid #e2e8f0'}}>
-                      {itemMocks.map((f,fi)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const src=isImg?u:isPdf?_cloudinaryPdfThumb(u):null;
+                      {itemMocks.map((f,fi)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const src=isImg?_cloudinaryDisplay(u):isPdf?_cloudinaryPdfThumb(u):null;
                         return src?<img key={fi} src={src} alt="Mockup" style={{height:itemMocks.length>1?320:420,maxWidth:itemMocks.length>1?'48%':'100%',objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(f)}/>
                         :<div key={fi} style={{padding:'10px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:6,fontSize:11,fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>openFile(f)}>📄 {fileDisplayName(f)}</div>;
                       })}
@@ -10206,7 +10227,7 @@ export default function App(){
         const curFile=allMockups[idx];
         const curUrl=curFile?(typeof curFile==='string'?curFile:(curFile?.url||'')):'';
         const curIsImg=_isImgUrl(curUrl,curFile);const curIsPdf=_isPdfUrl(curUrl,curFile);
-        const curSrc=curIsImg?curUrl:curIsPdf?_cloudinaryPdfThumb(curUrl):null;
+        const curSrc=curIsImg?_cloudinaryDisplay(curUrl):curIsPdf?_cloudinaryPdfThumb(curUrl):null;
         const zoom=prodLightboxZoom;
         return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(0,0,0,0.92)',zIndex:9999,display:'flex',flexDirection:'column'}}
           onClick={()=>{setProdJobLightbox(false);setProdLightboxZoom(1)}}>
@@ -10242,7 +10263,7 @@ export default function App(){
           </div>
           {/* Thumbnail strip */}
           {allMockups.length>1&&<div style={{display:'flex',gap:8,justifyContent:'center',padding:'12px 20px',background:'rgba(0,0,0,0.5)',flexShrink:0}} onClick={e=>e.stopPropagation()}>
-            {allMockups.map((f,i)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const thumb=isImg?u:isPdf?_cloudinaryPdfThumb(u):null;
+            {allMockups.map((f,i)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const thumb=isImg?_cloudinaryDisplay(u):isPdf?_cloudinaryPdfThumb(u):null;
               return<div key={i} style={{width:64,height:64,borderRadius:8,border:i===idx?'3px solid #3b82f6':'2px solid #475569',overflow:'hidden',background:'#1e293b',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',opacity:i===idx?1:0.6,transition:'all 0.15s'}}
                 onClick={()=>{setProdLightboxIdx(i);setProdLightboxZoom(1)}}>
                 {thumb?<img src={thumb} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>:<span style={{fontSize:9,color:'#94a3b8',textAlign:'center',padding:4}}>{fileDisplayName(f)}</span>}
