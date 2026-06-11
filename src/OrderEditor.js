@@ -50,6 +50,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Warehouse alert — fired by receive/shipment-edit flows the moment a job crosses into
   // items_received with art already complete, so the person checking in knows it can move to decoration now.
   const notifyDecoReady=(prevJobs,nextJobs)=>{const r=jobsNowReadyForDeco(prevJobs,nextJobs);if(r.length&&nf)nf('🎽 Ready for decoration: '+r.map(j=>j.art_name||j.id).join(', ')+' — all items in & art complete!')};
+  // One-click hand-off from the PO receive views: staging = "In Line" on the production board.
+  // Mirrors the jobs-tab Production select (no assignment prompt — production assigns on the board).
+  const moveJobToDeco=(jobId)=>{const jj=safeJobs(o).find(x=>x.id===jobId);const updJobs=safeJobs(o).map(x=>x.id===jobId?{...x,prod_status:'staging'}:x);const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf('🎽 '+(jj?.art_name||jobId)+' moved to In Line for decoration')};
+  // Persistent banner for the PO modal/full-page views: every job touching the given item lines
+  // that is checked in, art-complete, and still on hold — stays visible until the job is moved
+  // (or dismissed by moving it), unlike the 3.5s toast.
+  const decoReadyBanner=(lineIdxs)=>{
+    const idxSet=new Set(lineIdxs);
+    const readyJobs=safeJobs(o).filter(jj=>jj.item_status==='items_received'&&jj.art_status==='art_complete'&&(jj.prod_status==='hold'||!jj.prod_status)&&(jj.items||[]).some(gi=>idxSet.has(gi.item_idx)));
+    if(readyJobs.length===0)return null;
+    return<div style={{padding:'12px 14px',background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:8,marginBottom:12,boxShadow:'0 2px 8px rgba(34,197,94,0.25)'}}>
+      <div style={{fontSize:14,fontWeight:800,color:'#166534'}}>🎽 Ready for decoration — all items in & art complete</div>
+      {readyJobs.map(jj=><div key={jj.id} style={{display:'flex',alignItems:'center',gap:10,marginTop:8,padding:'8px 10px',background:'white',border:'1px solid #bbf7d0',borderRadius:6}}>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontWeight:700,fontSize:13,color:'#14532d'}}>{jj.art_name||jj.id}</div>
+          <div style={{fontSize:11,color:'#15803d'}}>{jj.id} · {jj.total_units} units{jj.deco_type?' · '+jj.deco_type.replace(/_/g,' '):''}</div>
+        </div>
+        <button className="btn btn-sm" style={{background:'#16a34a',color:'white',border:'none',fontWeight:800,fontSize:12,padding:'8px 16px',whiteSpace:'nowrap'}} onClick={()=>moveJobToDeco(jj.id)}>→ Move to Deco</button>
+      </div>)}
+    </div>;
+  };
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);const[editingJobName,setEditingJobName]=useState(null);
@@ -9071,6 +9092,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
         </div>
         <div className="modal-body">
+          {/* Ready-for-deco hand-off — persists after the receive toast fades */}
+          {po.po_type!=='outside_deco'&&decoReadyBanner(allLines.map(ln=>ln.lineIdx))}
           {/* Vendor — who this PO is written to */}
           {(()=>{
             const _vRec=po.po_type==='outside_deco'?null:vendorList.find(v=>v.id===item?.vendor_id);
@@ -9904,6 +9927,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {po.expected_date&&<div style={{fontSize:10,color:'#94a3b8'}}>Expected: {po.expected_date}</div>}
             </div>
           </div>
+
+          {/* Ready-for-deco hand-off — persists after the receive toast fades */}
+          {!isDecoPO&&decoReadyBanner((allLines||[]).map(ln=>ln.lineIdx))}
 
           {/* PO Total Summary */}
           <div className="card" style={{marginBottom:16,background:'#0f172a',color:'white'}}>
