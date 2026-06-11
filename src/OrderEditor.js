@@ -9230,6 +9230,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {_vEmail&&<span style={{fontSize:11,color:'#64748b'}}>✉ {_vEmail}</span>}
             </div>;
           })()}
+          {/* Decoration PO(s) created alongside this product PO — SO-level deco buckets
+              (o.deco_pos) covering any item on this PO. Surfaced here so the rep can copy the
+              DPO number (or jump to its page) without hunting for the line-item badge. */}
+          {(()=>{
+            const _poIdxs=new Set(allLines.map(ln=>ln.lineIdx));
+            const relDecos=(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).some(ix=>_poIdxs.has(ix)));
+            if(relDecos.length===0)return null;
+            return<div style={{padding:'8px 12px',background:'#faf5ff',border:'1px solid #ede9fe',borderRadius:6,marginBottom:12}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>🎨 Decoration PO{relDecos.length>1?'s':''} on these items</div>
+              {relDecos.map(dp=>{const dt=(dp.deco_type||'').replace(/_/g,' ');return<div key={dp.id||dp.po_id} style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:'3px 0'}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{dp.po_id}</span>
+                <button className="btn btn-sm btn-secondary" title="Copy deco PO number" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{navigator.clipboard?.writeText(dp.po_id||'').then(()=>nf('Copied '+(dp.po_id||'PO number'))).catch(()=>nf('Copy failed','error'))}}>📋 Copy</button>
+                <span style={{fontSize:12,color:'#475569'}}>{dp.vendor}</span>
+                {dt&&<span style={{fontSize:10,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>{dt}</span>}
+                {dp.drop_ship&&<span style={{fontSize:10,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
+                <span style={{flex:1}}/>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)});setEditPO(null)}}>View &rarr;</button>
+              </div>})}
+            </div>;
+          })()}
           {/* All items on this PO */}
           {allLines.length>1&&<div style={{marginBottom:12}}>
             <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Items on this PO ({allLines.length})</div>
