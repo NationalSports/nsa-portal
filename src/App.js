@@ -17,7 +17,7 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
-import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
+import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, authFetch } from './utils';
 import { calcOrderTotals, auTierDisc } from './pricing';
@@ -8443,7 +8443,7 @@ export default function App(){
     const c=cust.find(x=>x.id===so.customer_id);
     const shipAddrSub=(()=>{
       const sel=orderShipToSub(so,c);if(sel)return sel;
-      if(c?.shipping_address_line1){let a=c.shipping_address_line1;if(c.shipping_address_line2)a+='<br/>'+c.shipping_address_line2;a+='<br/>'+(c.shipping_city||'')+', '+(c.shipping_state||'')+' '+(c.shipping_zip||'');return a}
+      const _da=custShipAddrSub(c);if(_da)return _da;
       if(c?.billing_address_line1){let a=c.billing_address_line1;if(c.billing_address_line2)a+='<br/>'+c.billing_address_line2;a+='<br/>'+(c.billing_city||'')+', '+(c.billing_state||'')+' '+(c.billing_zip||'');return a}
       return '';
     })();
@@ -11104,7 +11104,7 @@ export default function App(){
         const billAddr=billToSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
         const shipToName=inv.shipping_name||invShipSel?.name||ic?.name||'—';
         const shipToOverrideSub=inv.shipping_name?(inv.shipping_address||'').replace(/\n/g,'<br/>')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
-        const shipAddr=shipToOverrideSub||(invShipSel?orderShipToSub(so,ic):'')||(ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'');
+        const shipAddr=shipToOverrideSub||(invShipSel?orderShipToSub(so,ic):'')||custShipAddrSub(ic);
         const poNum=inv._po_number||so?.po_number;
         const {rows:pRows,subtotal:pSubTotal}=buildInvoicePdfRows(inv,so,_$);
         return{title:billToName,docNum:inv.id,docType:'INVOICE',
@@ -11258,8 +11258,8 @@ export default function App(){
               </div>
               {(inv.shipping_name||inv.shipping_address||invShipSel||ic?.shipping_address_line1)&&<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Ship To</div>
                 {inv.shipping_name||inv.shipping_address?<><div style={{fontSize:14,fontWeight:700}}>{inv.shipping_name||ic?.name||'—'}</div><div style={{fontSize:11,color:'#64748b',whiteSpace:'pre-line'}}>{inv.shipping_address||''}</div>{inv.shipping_name&&<div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>on behalf of {ic?.name}</div>}</>
-                :invShipSel?<><div style={{fontSize:14,fontWeight:700}}>{invShipSel.name||ic?.name||'—'}</div><div style={{fontSize:11,color:'#64748b',marginTop:2,whiteSpace:'pre-line'}}>{invShipSel.text||[invShipSel.street,[invShipSel.city,[invShipSel.state,invShipSel.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')].filter(Boolean).join('\n')}</div>{invShipSel.name&&invShipSel.name!==ic?.name&&<div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>on behalf of {ic?.name}</div>}</>
-                :<><div style={{fontSize:14,fontWeight:700}}>{ic?.name||'—'}</div>{ic?.shipping_address_line1&&<div style={{fontSize:11,color:'#64748b',marginTop:2}}>{ic.shipping_address_line1}{ic.shipping_city?', '+ic.shipping_city:''}{ic.shipping_state?' '+ic.shipping_state:''}{ic.shipping_zip?' '+ic.shipping_zip:''}</div>}</>}
+                :invShipSel?<><div style={{fontSize:14,fontWeight:700}}>{invShipSel.name||ic?.name||'—'}</div><div style={{fontSize:11,color:'#64748b',marginTop:2,whiteSpace:'pre-line'}}>{invShipSel.text||[invShipSel.attention?'Attn: '+invShipSel.attention:null,invShipSel.street,[invShipSel.city,[invShipSel.state,invShipSel.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')].filter(Boolean).join('\n')}</div>{invShipSel.name&&invShipSel.name!==ic?.name&&<div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>on behalf of {ic?.name}</div>}</>
+                :<><div style={{fontSize:14,fontWeight:700}}>{ic?.name||'—'}</div>{ic?.shipping_attention&&<div style={{fontSize:11,color:'#64748b',marginTop:1}}>Attn: {ic.shipping_attention}</div>}{ic?.shipping_address_line1&&<div style={{fontSize:11,color:'#64748b',marginTop:2}}>{ic.shipping_address_line1}{ic.shipping_city?', '+ic.shipping_city:''}{ic.shipping_state?' '+ic.shipping_state:''}{ic.shipping_zip?' '+ic.shipping_zip:''}</div>}</>}
               </div>}
               <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Invoice Date</div>
                 <div style={{fontSize:14,fontWeight:600}}>{inv.date||'—'}</div>
@@ -11890,7 +11890,7 @@ export default function App(){
                 const siBillSub=siInv.billing_name?(siInv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+siCust?.name+'</span>':'';
                 const siBillAddr=siBillSub||(siCust?.billing_address_line1?siCust.billing_address_line1+(siCust.billing_city?'<br/>'+siCust.billing_city+(siCust.billing_state?' '+siCust.billing_state:'')+(siCust.billing_zip?' '+siCust.billing_zip:''):'')+'<br/>United States':'');
                 const siShipName=siInv.shipping_name||(!siInv.shipping_address?resolveOrderShipTo(siSo,siCust)?.name:null)||siCust?.name||'—';
-                const siShipAddr=(siInv.shipping_name||siInv.shipping_address?(siInv.shipping_address||'').replace(/\n/g,'<br/>'):'')||orderShipToSub(siSo,siCust)||(siCust?.shipping_address_line1?siCust.shipping_address_line1+(siCust.shipping_city?'<br/>'+siCust.shipping_city+(siCust.shipping_state?' '+siCust.shipping_state:'')+(siCust.shipping_zip?' '+siCust.shipping_zip:''):'')+'<br/>United States':'');
+                const siShipAddr=(siInv.shipping_name||siInv.shipping_address?(siInv.shipping_address||'').replace(/\n/g,'<br/>'):'')||orderShipToSub(siSo,siCust)||custShipAddrSub(siCust);
                 // Build rows from the invoice's own line items (honors per-line price overrides)
                 const {rows:siRows,subtotal:siSubTotal}=buildInvoicePdfRows(siInv,siSo,_$si);
                 // Build PDF attachment
@@ -12161,7 +12161,7 @@ export default function App(){
                 const fBillSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
                 const fBillAddr=fBillSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
                 const fShipName=inv.shipping_name||(!inv.shipping_address?resolveOrderShipTo(so,ic)?.name:null)||ic?.name||'—';
-                const fShipAddr=(inv.shipping_name||inv.shipping_address?(inv.shipping_address||'').replace(/\n/g,'<br/>'):'')||orderShipToSub(so,ic)||(ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'');
+                const fShipAddr=(inv.shipping_name||inv.shipping_address?(inv.shipping_address||'').replace(/\n/g,'<br/>'):'')||orderShipToSub(so,ic)||custShipAddrSub(ic);
                 const fPoNum=inv._po_number||so?.po_number;
                 // Build rows from the invoice's own line items (honors per-line price overrides)
                 const fStoredLi=inv.line_items||[];
@@ -17216,12 +17216,7 @@ export default function App(){
                       const shipCust=cust.find(c2=>c2.id===firstSO?.customer_id);
                       const shipAddrSub=(()=>{
                         const sel=orderShipToSub(firstSO,shipCust);if(sel)return sel;
-                        if(shipCust?.shipping_address_line1){
-                          let a=shipCust.shipping_address_line1;
-                          if(shipCust.shipping_address_line2)a+='<br/>'+shipCust.shipping_address_line2;
-                          a+='<br/>'+(shipCust.shipping_city||'')+', '+(shipCust.shipping_state||'')+' '+(shipCust.shipping_zip||'');
-                          return a;
-                        }
+                        const _da=custShipAddrSub(shipCust);if(_da)return _da;
                         if(shipCust?.billing_address_line1){
                           let a=shipCust.billing_address_line1;
                           if(shipCust.billing_address_line2)a+='<br/>'+shipCust.billing_address_line2;
@@ -17664,12 +17659,7 @@ export default function App(){
                     const boxCust=cust.find(c2=>c2.id===boxFirstSO?.customer_id);
                     const boxAddrSub=(()=>{
                       const sel=orderShipToSub(boxFirstSO,boxCust);if(sel)return sel;
-                      if(boxCust?.shipping_address_line1){
-                        let a=boxCust.shipping_address_line1;
-                        if(boxCust.shipping_address_line2)a+='<br/>'+boxCust.shipping_address_line2;
-                        a+='<br/>'+(boxCust.shipping_city||'')+', '+(boxCust.shipping_state||'')+' '+(boxCust.shipping_zip||'');
-                        return a;
-                      }
+                      const _da=custShipAddrSub(boxCust);if(_da)return _da;
                       if(boxCust?.billing_address_line1){
                         let a=boxCust.billing_address_line1;
                         if(boxCust.billing_address_line2)a+='<br/>'+boxCust.billing_address_line2;

@@ -51,7 +51,7 @@ const ssShipToAddress = (so, customer) => {
   const phone = customer.contacts?.[0]?.phone || '';
   const sel = resolveOrderShipTo(so, customer);
   if (sel && sel.street) {
-    return { name: sel.name || customer.name, company: customer.name,
+    return { name: sel.attention || sel.name || customer.name, company: customer.name,
       street1: sel.street, street2: '', city: sel.city, state: sel.state,
       postalCode: sel.zip, country: 'US', phone, residential: true };
   }
@@ -63,13 +63,14 @@ const ssShipToAddress = (so, customer) => {
       city: m[2].trim(), state: m[3].toUpperCase(), postalCode: m[4], country: 'US', phone, residential: true };
     console.warn('[ShipStation] Could not parse custom ship-to address, using customer default:', sel.text);
   }
+  const attnName = customer.shipping_attention || customer.name;
   return customer.shipping_address_line1 ? {
-    name: customer.name, company: customer.name,
+    name: attnName, company: customer.name,
     street1: customer.shipping_address_line1, street2: customer.shipping_address_line2 || '',
     city: customer.shipping_city, state: customer.shipping_state,
     postalCode: customer.shipping_zip, country: 'US', phone, residential: true
   } : {
-    name: customer.name, company: customer.name,
+    name: attnName, company: customer.name,
     street1: customer.billing_address_line1, street2: customer.billing_address_line2 || '',
     city: customer.billing_city, state: customer.billing_state,
     postalCode: customer.billing_zip, country: 'US', phone, residential: true
