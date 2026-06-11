@@ -2271,6 +2271,47 @@ const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;
   // Force Cloudinary to render page 1 as PNG via /image/upload/ with pg_1,f_png transform
   let t=u.replace('/raw/upload/','/image/upload/').replace('/video/upload/','/image/upload/');
   return t.replace('/image/upload/','/image/upload/pg_1,f_png/')};
+// ── Production job mockup scoping (prod-board job modal + lightbox + job-sheet PDF) ──
+// One production job can carry multiple designs: each garment line references its own
+// art via its decorations. Every art file the job touches:
+const _prodJobArtFiles=(j,so)=>{const ids=new Set();
+  (j._art_ids||[j.art_file_id].filter(Boolean)).forEach(id=>ids.add(id));
+  (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;
+    safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)});
+  });
+  return[...ids].map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
+};
+// Generic mockup_files/files only represent the job when the art carries NO per-item
+// mockups (legacy single-design art). Reused art arrives with the source order's generic
+// mocks still attached (a different garment/color from a prior SO), so once per-item
+// mocks exist the generic bucket is stale here — same rule as skusMissingMockups.
+const _prodJobGenericMocks=artFiles=>artFiles.flatMap(a=>{
+  const hasPerItem=Object.values(a?.item_mockups||{}).some(v=>(v||[]).length>0);
+  return hasPerItem?[]:(a?.mockup_files||a?.files||[]);
+}).filter(f=>f);
+// All mockups for one garment line. Mockup slots store under the base sku|color key for
+// the first art, but additional arts (front + back), numbers and names store under
+// suffixed keys (sku|color|d1, |<colorWayId>, |numbers, |names) — collect them all so
+// multi-location items show every mockup. Ordered: arts first, then numbers/names.
+// Two garment lines can share sku|color while printing DIFFERENT designs, and the
+// item_mockups key alone can't tell them apart — so art-design mocks are only read from
+// the art files this item's own decorations reference. The |numbers / |names keys stay
+// job-wide because those mocks save to the job's primary art file.
+const _prodJobItemMocks=(artFiles,so,gi)=>{
+  const _mk=gi.sku+'|'+(gi.color||'');
+  const _isNN=k=>/\|(numbers|names)(_\d+)?$/.test(k);
+  const rank=k=>/\|numbers(_\d+)?$/.test(k)?2:/\|names(_\d+)?$/.test(k)?3:1;
+  const it=safeItems(so)[gi.item_idx];
+  const ownArtIds=new Set(it?safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id):[]);
+  const out=[];const seen=new Set();
+  artFiles.forEach(a=>{const m=a?.item_mockups||{};
+    const own=ownArtIds.size===0||ownArtIds.has(a.id);
+    const base=own?((m[_mk]&&m[_mk].length>0)?m[_mk]:(m[gi.sku]||[])):[];
+    const extra=Object.keys(m).filter(k=>k.startsWith(_mk+'|')&&(own||_isNN(k))).sort((x,y)=>rank(x)-rank(y)).flatMap(k=>m[k]||[]);
+    [...base,...extra].forEach(f=>{if(!f)return;const u=typeof f==='string'?f:(f?.url||'');if(u&&seen.has(u))return;if(u)seen.add(u);out.push(f)});
+  });
+  return out;
+};
 const ImgUpload=({url,onUpload,size=48,onError})=>{const[drag,setDrag]=React.useState(false);const[uploading,setUploading]=React.useState(false);const[err,setErr]=React.useState(false);
   const doUpload=async(file)=>{if(!file||!file.type.startsWith('image/')){if(onError)onError('Please select an image file');return}setUploading(true);setErr(false);try{const u=await cloudUpload(file);onUpload(u)}catch(e){console.error('Upload failed',e);setErr(true);if(onError)onError('Upload failed: '+e.message)}finally{setUploading(false)}};
   return<div style={{width:size,height:size,borderRadius:6,border:err?'2px solid #dc2626':drag?'2px solid #3b82f6':'1px solid #e2e8f0',background:drag?'#eff6ff':err?'#fef2f2':'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,cursor:'pointer',overflow:'hidden',position:'relative'}}
@@ -9694,13 +9735,7 @@ export default function App(){
         };
         const c=cust.find(x=>x.id===so.customer_id);
         const af=safeArt(so).find(f=>f.id===j.art_file_id);
-        const allArtFiles=(()=>{const ids=new Set();
-          (j._art_ids||[j.art_file_id].filter(Boolean)).forEach(id=>ids.add(id));
-          (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;
-            safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)});
-          });
-          return[...ids].map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
-        })();
+        const allArtFiles=_prodJobArtFiles(j,so);
         // Build per-location decoration details — only decorations belonging to THIS job's deco_type
         const machine=MACHINES.find(m=>m.id===j.assigned_machine);
         const itemDetails=(j.items||[]).map(gi=>{
@@ -9719,26 +9754,10 @@ export default function App(){
         const colorList=(()=>{const d2=allArtFiles.flatMap(a=>(a.ink_colors||a.thread_colors||'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean));if(d2.length>0)return d2;return[...new Set(allArtFiles.flatMap(a=>(a.color_ways||[]).flatMap(cw=>(cw.inks||[]).filter(c2=>c2&&c2.trim()))))];})();
         const isEmb=j.deco_type==='embroidery';
         const isSP=j.deco_type==='screen_print';
-        // Mockup files — aggregate from all art files in this job (general bucket + per-item mockups)
-        const genericMockupFiles=allArtFiles.flatMap(a=>(a?.mockup_files||a?.files||[])).filter(f=>f);
-        const itemMockupFiles=allArtFiles.flatMap(a=>Object.values(a?.item_mockups||{}).flat()).filter(f=>f);
-        const mockupFiles=[...genericMockupFiles,...itemMockupFiles];
+        // Mockup files — generic bucket only; per-item mockups render on their item cards below
+        const genericMockupFiles=_prodJobGenericMocks(allArtFiles);
         const prodFiles=allArtFiles.flatMap(a=>a?.prod_files||[]);
-        // All mockups for an item across art files. Mockup slots store under the base sku|color
-        // key for the first art, but additional arts (front + back), numbers and names store
-        // under suffixed keys (sku|color|d1, |<colorWayId>, |numbers, |names) — collect them all
-        // so multi-location items show every mockup. Ordered: arts first, then numbers/names.
-        const collectItemMocks=(sku,color)=>{
-          const _mk=sku+'|'+(color||'');
-          const rank=k=>/\|numbers(_\d+)?$/.test(k)?2:/\|names(_\d+)?$/.test(k)?3:1;
-          const out=[];const seen=new Set();
-          allArtFiles.forEach(a=>{const m=a?.item_mockups||{};
-            const base=(m[_mk]&&m[_mk].length>0)?m[_mk]:(m[sku]||[]);
-            const extra=Object.keys(m).filter(k=>k.startsWith(_mk+'|')).sort((x,y)=>rank(x)-rank(y)).flatMap(k=>m[k]||[]);
-            [...base,...extra].forEach(f=>{if(!f)return;const u=typeof f==='string'?f:(f?.url||'');if(u&&seen.has(u))return;if(u)seen.add(u);out.push(f)});
-          });
-          return out;
-        };
+        const collectItemMocks=gi=>_prodJobItemMocks(allArtFiles,so,gi);
         // Ink/thread color name → hex for swatch chips (used by the modal cards and the PDF)
         const colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
           'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
@@ -9851,7 +9870,7 @@ export default function App(){
             }
             // Mockup image(s) for this item immediately after its tables — all locations
             // (front + back arts, numbers/names) side by side
-            const itemMockUrls=_urlsFor(collectItemMocks(gi.sku,gi.color));
+            const itemMockUrls=_urlsFor(collectItemMocks(gi));
             if(itemMockUrls.length>0){
               const _mh=itemMockUrls.length>1?300:380;
               const _mw=itemMockUrls.length>1?'48%':'100%';
@@ -9864,7 +9883,7 @@ export default function App(){
             itemSectionHtmls.push(sHtml);
           });
           // Generic mockups not tied to a specific item
-          const _pdfGenericUrls=_urlsFor(allArtFiles.flatMap(a=>(a?.mockup_files||a?.files||[])));
+          const _pdfGenericUrls=_urlsFor(genericMockupFiles);
           const _genericMockHtml=_pdfGenericUrls.length>0
             ?'<div style="margin:12px 0;display:flex;gap:10px;flex-wrap:wrap;justify-content:center">'+_pdfGenericUrls.map(u=>'<img src="'+u+'" style="height:380px;max-width:100%;object-fit:contain;border-radius:6px;border:1px solid #e2e8f0;background:#fff"/>').join('')+'</div>'
             :'';
@@ -9999,7 +10018,7 @@ export default function App(){
                 {itemDetails.map((gi,gii)=>{
                   const it=safeItems(so)[gi.item_idx];
                   if(!it)return null;
-                  const itemMocks=collectItemMocks(gi.sku,gi.color);
+                  const itemMocks=collectItemMocks(gi);
                   const artDecos=safeDecos(it).filter(d=>d.kind==='art');
                   const numDecos=safeDecos(it).filter(d=>d.kind==='numbers');
                   const nameDecos=safeDecos(it).filter(d=>d.kind==='names');
@@ -10176,15 +10195,13 @@ export default function App(){
       {/* Lightbox — full-size zoomable mockup viewer with gallery */}
       {prodJobLightbox&&prodJobModal&&(()=>{
         const so=prodJobModal.so||sos.find(s=>s.id===prodJobModal.soId);
-        const allArtIds=(()=>{const ids=new Set();
-          (prodJobModal._art_ids||[prodJobModal.art_file_id].filter(Boolean)).forEach(id=>ids.add(id));
-          (prodJobModal.items||[]).forEach(gi=>{const it=so?safeItems(so)[gi.item_idx]:null;if(!it)return;
-            safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')ids.add(d.art_file_id)});
-          });
-          return[...ids];
-        })();
-        const allMockups=[];
-        allArtIds.forEach(aid=>{const artF=so?safeArt(so).find(f=>f.id===aid):null;if(!artF)return;(artF?.mockup_files||artF?.files||[]).forEach(f=>allMockups.push(f));Object.values(artF?.item_mockups||{}).flat().forEach(f=>{if(f)allMockups.push(f)})});
+        // Same scoping as the modal: generic bucket first (so the hero's Click-to-Zoom indices
+        // line up), then each garment line's own mockups, deduped by url.
+        const _lbArts=so?_prodJobArtFiles(prodJobModal,so):[];
+        const allMockups=[];const _lbSeen=new Set();
+        const _lbPush=f=>{if(!f)return;const u=typeof f==='string'?f:(f?.url||'');if(u&&_lbSeen.has(u))return;if(u)_lbSeen.add(u);allMockups.push(f)};
+        _prodJobGenericMocks(_lbArts).forEach(_lbPush);
+        (prodJobModal.items||[]).forEach(gi=>_prodJobItemMocks(_lbArts,so,gi).forEach(_lbPush));
         const idx=Math.min(prodLightboxIdx,allMockups.length-1);
         const curFile=allMockups[idx];
         const curUrl=curFile?(typeof curFile==='string'?curFile:(curFile?.url||'')):'';
