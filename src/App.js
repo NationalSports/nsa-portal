@@ -9530,8 +9530,9 @@ export default function App(){
                     }}>🔍 Open Job Detail</div>
                   </div>
 
-                  {/* Time Tracking — clock in/out lives in In Process, where work actually happens */}
-                  {col.id==='in_process'&&(()=>{
+                  {/* Time Tracking — clock in lives on the In Line queue (decorators take a job there);
+                      the running timer follows the job into In Process for clock-out/resume */}
+                  {(col.id==='staging'||col.id==='in_process')&&(()=>{
                     const timerKey=j.soId+'|'+j.id;
                     const active=activeTimers[timerKey];
                     const logs=jobTimeLogs.filter(l=>l.jobId===j.id&&l.soId===j.soId);
