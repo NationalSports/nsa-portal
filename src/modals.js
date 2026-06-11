@@ -387,6 +387,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
       {i>0?<button className="btn btn-sm btn-secondary" onClick={()=>rmC(i)}><Icon name="trash" size={12}/></button>:<div/>}</div>)}
     <button className="btn btn-sm btn-secondary" onClick={addC}><Icon name="plus" size={12}/> Contact</button>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Shipping</div>
+    <input className="form-input" placeholder="Attn: (optional — individual name at this address)" value={f.shipping_attention||''} onChange={e=>sv('shipping_attention',e.target.value)} style={{marginBottom:6}}/>
     <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 60px 80px',gap:8}}><AddressAutocomplete placeholder="Street" value={f.shipping_address_line1||''} onChange={v=>sv('shipping_address_line1',v)} onPlaceSelect={p=>{setF(x=>({...x,shipping_address_line1:p.street,shipping_city:p.city,shipping_state:p.state,shipping_zip:p.zip}))}}/><input className="form-input" placeholder="City *" value={f.shipping_city||''} onChange={e=>sv('shipping_city',e.target.value)} style={err.c?{borderColor:'#dc2626'}:{}}/><input className="form-input" placeholder="ST" value={f.shipping_state||''} onChange={e=>sv('shipping_state',e.target.value)} style={err.s?{borderColor:'#dc2626'}:{}}/><input className="form-input" placeholder="ZIP" value={f.shipping_zip||''} onChange={e=>sv('shipping_zip',e.target.value)}/></div>
     <div style={{fontSize:10,color:'#64748b',marginTop:8,marginBottom:4,fontStyle:'italic'}}>Billing address defaults to shipping address above.</div>
     {(f.alt_billing_addresses||[]).length>0&&<div style={{fontSize:10,fontWeight:600,color:'#64748b',marginTop:6,marginBottom:4}}>Alternate Addresses</div>}
@@ -399,6 +400,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
         <input className="form-input" placeholder="Label (e.g. Coach's Home, District Office)" value={ab.label||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,label:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
         <button className="btn btn-sm btn-secondary" onClick={()=>sv('alt_billing_addresses',(f.alt_billing_addresses||[]).filter((_,i)=>i!==ai))} style={{padding:'2px 6px'}}><Icon name="trash" size={12}/></button>
       </div>
+      <input className="form-input" placeholder="Attn: (optional individual name)" value={ab.attention||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,attention:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11,marginBottom:4}}/>
       <div style={{display:'grid',gridTemplateColumns:'2fr 1fr 60px 80px',gap:6}}>
         <AddressAutocomplete placeholder="Street" value={ab.street||''} onChange={v=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,street:v};sv('alt_billing_addresses',a)}} onPlaceSelect={p=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,street:p.street,city:p.city,state:p.state,zip:p.zip};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
         <input className="form-input" placeholder="City" value={ab.city||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,city:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
@@ -406,7 +408,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
         <input className="form-input" placeholder="ZIP" value={ab.zip||''} onChange={e=>{const a=[...(f.alt_billing_addresses||[])];a[ai]={...ab,zip:e.target.value};sv('alt_billing_addresses',a)}} style={{fontSize:11}}/>
       </div>
     </div>)}
-    <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginTop:4}} onClick={()=>sv('alt_billing_addresses',[...(f.alt_billing_addresses||[]),{type:'shipping',label:'',street:'',city:'',state:'',zip:''}])}><Icon name="plus" size={10}/> Add Alternate Address</button>
+    <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginTop:4}} onClick={()=>sv('alt_billing_addresses',[...(f.alt_billing_addresses||[]),{type:'shipping',label:'',attention:'',street:'',city:'',state:'',zip:''}])}><Icon name="plus" size={10}/> Add Alternate Address</button>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Pricing</div>
     <div className="form-row form-row-2"><div><label className="form-label">Tier</label><select className="form-select" value={f.adidas_ua_tier||'B'} onChange={e=>sv('adidas_ua_tier',e.target.value)}><option value="A">A - 40%</option><option value="B">B - 35%</option><option value="C">C - 30%</option></select></div>
       <div><label className="form-label">Markup</label><input className="form-input" type="number" step="0.05" value={f.catalog_markup||1.65} onChange={e=>sv('catalog_markup',parseFloat(e.target.value)||1.65)}/></div></div>

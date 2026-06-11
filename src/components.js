@@ -85,6 +85,43 @@ function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_lin
   if(!cu)return a;add(cu,'Default');addAlts(cu);
   return a}
 
+// Resolve the ship-to selected on an order/estimate (ship_to_id) into structured fields.
+// Returns {name,text} for a custom free-text address, {name,street,city,state,zip} for an
+// alternate shipping address (id format `${customerId}_alt_${i}` — see getAddrs above),
+// or null when the order ships to the customer's default address.
+function resolveOrderShipTo(o,cu){
+  const id=o?.ship_to_id;
+  if(!id||id==='default')return null;
+  if(id==='custom')return o.ship_to_custom?{name:cu?.name||'',text:String(o.ship_to_custom)}:null;
+  if(!cu)return null;
+  const m=/_alt_(\d+)$/.exec(String(id));
+  if(m&&String(id)===cu.id+'_alt_'+m[1]){
+    const alts=(cu.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city));
+    const ab=alts[parseInt(m[1],10)];
+    if(ab)return{name:ab.label||cu.name||'',attention:ab.attention||'',street:ab.street||'',city:ab.city||'',state:ab.state||'',zip:ab.zip||''};
+  }
+  return null;
+}
+
+// <br/>-joined ship-to block for printed docs; '' when the order uses the customer default.
+function orderShipToSub(o,cu){
+  const sel=resolveOrderShipTo(o,cu);
+  if(!sel)return'';
+  if(sel.text)return sel.text.replace(/\n/g,'<br/>');
+  const attn=sel.attention?'Attn: '+sel.attention:null;
+  const cityLine=[sel.city,[sel.state,sel.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  return[attn,sel.street,cityLine].filter(Boolean).join('<br/>');
+}
+
+// Default customer shipping address sub-block for printed docs (includes attention line).
+function custShipAddrSub(cu){
+  if(!cu)return'';
+  const attn=cu.shipping_attention?'Attn: '+cu.shipping_attention:null;
+  const l1=cu.shipping_address_line1||'';const l2=cu.shipping_address_line2||'';
+  const cityLine=[cu.shipping_city,[(cu.shipping_state||''),(cu.shipping_zip||'')].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  return[attn,l1,l2,cityLine].filter(Boolean).join('<br/>');
+}
+
 
 // SEND ESTIMATE MODAL
 
@@ -466,4 +503,4 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
     <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
-export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
+export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
