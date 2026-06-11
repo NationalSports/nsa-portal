@@ -8630,7 +8630,7 @@ export default function App(){
   </>);
 
   // JOBS LIST
-  const[jobFilters,_setJobFilters]=useState({statuses:[],rep:_initRepF,deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});
+  const[jobFilters,_setJobFilters]=useState({statuses:[],rep:_initRepF,deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:'',readyF:'all'});
   const[activeSavedFilterIdx,setActiveSavedFilterIdx]=useState(null);
   const setJobFilters=(v)=>{setActiveSavedFilterIdx(null);_setJobFilters(v)};
   const[jobSortField,setJobSortField]=useState('expected');const[jobSortDir,setJobSortDir]=useState('asc');
@@ -8642,7 +8642,7 @@ export default function App(){
     {name:'Art Awaiting Approval',filters:{statuses:['hold','staging','in_process'],rep:'all',deco:'all',artSt:'waiting_approval',itemSt:'all',dueBefore:'',search:''}},
     {name:'All Active',filters:{statuses:['hold','staging','in_process'],rep:'all',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''}},
   ];
-  const[savedJobFilters,setSavedJobFilters]=useState(()=>{try{const s=localStorage.getItem('nsa_saved_job_filters');if(s){const parsed=JSON.parse(s);if(Array.isArray(parsed)&&parsed.length>0)return parsed.map(f=>({...f,filters:{...f.filters,itemSt:f.filters.itemSt||'all'}}))}}catch(e){}return _defaultSavedFilters});
+  const[savedJobFilters,setSavedJobFilters]=useState(()=>{try{const s=localStorage.getItem('nsa_saved_job_filters');if(s){const parsed=JSON.parse(s);if(Array.isArray(parsed)&&parsed.length>0)return parsed.map(f=>({...f,filters:{...f.filters,itemSt:f.filters.itemSt||'all',readyF:f.filters.readyF||(f.filters.readyOnly?'ready':'all')}}))}}catch(e){}return _defaultSavedFilters});
   const _saveSavedFilters=(fn)=>{setSavedJobFilters(prev=>{const next=typeof fn==='function'?fn(prev):fn;try{localStorage.setItem('nsa_saved_job_filters',JSON.stringify(next))}catch(e){}return next})};
 
   function rJobs(){
@@ -8668,7 +8668,18 @@ export default function App(){
     // Apply filters
     let fj=allJobs;
     const jf=jobFilters;
-    if(jf.statuses.length>0)fj=fj.filter(j=>jf.statuses.includes(j.prod_status));
+    // Legacy 'ready' prod_status folds into 'hold' (same normalization the run-with badge uses) so
+    // those jobs aren't invisible to the Hold chip.
+    const _normSt=s=>s==='ready'?'hold':s;
+    // True production readiness per the floor's rule: art finalized (incl. production files) AND
+    // every garment picked/received — and the job hasn't already started running.
+    const _isReadyToRun=j=>(_normSt(j.prod_status)==='hold')&&isJobReady(j,j.so);
+    // The complement: queued (on hold) but NOT ready yet — still waiting on art, production
+    // files, or goods. This is the "what's coming" pipeline view.
+    const _isNotReadyYet=j=>(_normSt(j.prod_status)==='hold')&&!isJobReady(j,j.so);
+    if(jf.statuses.length>0)fj=fj.filter(j=>jf.statuses.includes(_normSt(j.prod_status)));
+    if(jf.readyF==='ready')fj=fj.filter(_isReadyToRun);
+    else if(jf.readyF==='not_ready')fj=fj.filter(_isNotReadyYet);
     const jfRepId=jf.rep==='_me_'?cu?.id:jf.rep;
     if(jfRepId&&jfRepId!=='all')fj=fj.filter(j=>j.repId===jfRepId);
     if(jf.deco!=='all')fj=fj.filter(j=>j.deco_type===jf.deco);
@@ -8694,7 +8705,7 @@ export default function App(){
     const _clusterLinked=arr=>{const seen=new Set();const out=[];arr.forEach(j=>{const g=j.grpKey;if(!g){out.push(j);return}if(seen.has(g))return;seen.add(g);arr.forEach(x=>{if(x.grpKey===g)out.push(x)})});return out;};
     fj=_clusterLinked(fj);
     const decoTypes=[...new Set(allJobs.map(j=>j.deco_type).filter(Boolean))];
-    const STATUSES=[['hold','Ready for Prod'],['staging','In Line'],['in_process','In Process'],['completed','Completed']];
+    const STATUSES=[['hold','On Hold'],['staging','In Line'],['in_process','In Process'],['completed','Completed']];
     const toggleStatus=st=>{setJobFilters(prev=>{const ss=prev.statuses.includes(st)?prev.statuses.filter(s=>s!==st):[...prev.statuses,st];return{...prev,statuses:ss}})};
     const setJF=(k,v)=>setJobFilters(prev=>({...prev,[k]:v}));
     const toggleSort=f=>{if(jobSortField===f)setJobSortDir(d=>d==='asc'?'desc':'asc');else{setJobSortField(f);setJobSortDir('asc')}};
@@ -8730,14 +8741,20 @@ export default function App(){
           <select className="form-select" style={{width:140,fontSize:11}} value={jf.deco} onChange={e=>setJF('deco',e.target.value)}>
             <option value="all">All Deco Types</option>{decoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}</select>
           <div style={{display:'flex',alignItems:'center',gap:4,fontSize:11,color:'#64748b'}}><span>Due by:</span><input type="date" className="form-input" style={{width:130,padding:'3px 6px',fontSize:11}} value={jf.dueBefore} onChange={e=>setJF('dueBefore',e.target.value)}/></div>
-          {(jf.search||jf.rep!=='all'||jf.deco!=='all'||jf.artSt!=='all'||(jf.itemSt||'all')!=='all'||jf.dueBefore)&&<button className="btn btn-sm btn-secondary" onClick={()=>setJobFilters({statuses:jf.statuses,rep:'all',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''})}>Clear</button>}
+          {(jf.search||jf.rep!=='all'||jf.deco!=='all'||jf.artSt!=='all'||(jf.itemSt||'all')!=='all'||jf.dueBefore||(jf.readyF||'all')!=='all')&&<button className="btn btn-sm btn-secondary" onClick={()=>setJobFilters({statuses:jf.statuses,rep:'all',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:'',readyF:'all'})}>Clear</button>}
         </div>
         {/* Row 2: Production Status chips */}
         <div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center',marginBottom:6}}>
           <span style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:4,minWidth:48}}>PROD:</span>
-          {STATUSES.map(([id,label])=>{const active=jf.statuses.includes(id);const ct=allJobs.filter(j=>j.prod_status===id).length;
-            return<button key={id} style={chipStyle(active,SC[id])}
+          {STATUSES.map(([id,label])=>{const active=jf.statuses.includes(id);const ct=allJobs.filter(j=>_normSt(j.prod_status)===id).length;
+            return<button key={id} title={id==='hold'?'Queued for production (hold status). Being on hold does NOT mean the job is ready to run — use the ✅ Ready for Prod chip for that.':undefined} style={chipStyle(active,SC[id])}
               onClick={()=>toggleStatus(id)}>{label} <span style={{fontSize:9,opacity:0.7}}>({ct})</span></button>})}
+          {(()=>{const ct=allJobs.filter(_isReadyToRun).length;const active=jf.readyF==='ready';
+            return<button title="Truly ready to run: artwork finalized with production files attached AND every garment picked or received — and not started yet. A job is NOT ready for production until both are done." style={{...chipStyle(active,{c:'#166534',bg:'#dcfce7'}),marginLeft:10,fontWeight:700}}
+              onClick={()=>setJF('readyF',jf.readyF==='ready'?'all':'ready')}>✅ Ready for Prod <span style={{fontSize:9,opacity:0.7}}>({ct})</span></button>})()}
+          {(()=>{const ct=allJobs.filter(_isNotReadyYet).length;const active=jf.readyF==='not_ready';
+            return<button title="What's coming: jobs queued (on hold) that are NOT ready to run yet — still waiting on art, production files, or goods. The Prod Ready column shows what each one is waiting on." style={{...chipStyle(active,{c:'#d97706',bg:'#fef3c7'}),fontWeight:700}}
+              onClick={()=>setJF('readyF',jf.readyF==='not_ready'?'all':'not_ready')}>⏳ Not Ready <span style={{fontSize:9,opacity:0.7}}>({ct})</span></button>})()}
         </div>
         {/* Row 3: Art Status chips */}
         <div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center',marginBottom:6}}>
@@ -8759,7 +8776,7 @@ export default function App(){
           {savedJobFilters.map((sf,i)=>{const isActive=activeSavedFilterIdx===i;
             return<span key={i} style={{display:'inline-flex',alignItems:'center',gap:0}}><button style={{fontSize:10,padding:'2px 8px',borderRadius:'10px 0 0 10px',border:'1px solid '+(isActive?'#7c3aed':'#ddd6fe'),borderRight:'none',
               background:isActive?'#7c3aed':'#f5f3ff',color:isActive?'#fff':'#7c3aed',cursor:'pointer',fontWeight:600}}
-              onClick={()=>{setActiveSavedFilterIdx(i);_setJobFilters({...sf.filters,itemSt:sf.filters.itemSt||'all'})}}>{sf.name}</button><button style={{fontSize:9,padding:'2px 4px',borderRadius:'0 10px 10px 0',border:'1px solid '+(isActive?'#7c3aed':'#ddd6fe'),
+              onClick={()=>{setActiveSavedFilterIdx(i);_setJobFilters({...sf.filters,itemSt:sf.filters.itemSt||'all',readyF:sf.filters.readyF||(sf.filters.readyOnly?'ready':'all')})}}>{sf.name}</button><button style={{fontSize:9,padding:'2px 4px',borderRadius:'0 10px 10px 0',border:'1px solid '+(isActive?'#7c3aed':'#ddd6fe'),
               background:isActive?'#7c3aed':'#f5f3ff',color:isActive?'#c4b5fd':'#c4b5fd',cursor:'pointer',lineHeight:1}}
               onClick={()=>{if(window.confirm('Remove saved filter "'+sf.name+'"?'))_saveSavedFilters(prev=>prev.filter((_,j)=>j!==i))}}>×</button></span>})}
           <button style={{fontSize:10,padding:'2px 8px',borderRadius:10,border:'1px solid #e2e8f0',background:'white',color:'#94a3b8',cursor:'pointer'}}
@@ -8787,7 +8804,9 @@ export default function App(){
           <th>SO</th><th>Rep</th>
           <th style={{cursor:'pointer'}} onClick={()=>toggleSort('units')}>Units {sortIcon('units')}</th>
           <th style={{cursor:'pointer'}} title="Units the vendor has billed/shipped — from bill uploads on the SO Tracking tab" onClick={()=>toggleSort('billed')}>Billed {sortIcon('billed')}</th>
-          <th>Art</th><th>Items</th><th>Ready?</th><th>Board</th>
+          <th>Art</th><th>Items</th>
+          <th title="Can production start? ✅ Ready = artwork approved with production files attached AND every garment checked in or pulled from stock. Otherwise shows what's still blocking. Green rows are ready but not on the board yet.">Prod Ready <span style={{color:'#94a3b8',fontWeight:400,fontSize:10}}>ⓘ</span></th>
+          <th title="Whether this job has been added to the Production Board — the production team's scheduling queue (Production page).">Prod Board <span style={{color:'#94a3b8',fontWeight:400,fontSize:10}}>ⓘ</span></th>
           <th style={{cursor:'pointer'}} onClick={()=>toggleSort('expected')}>Due {sortIcon('expected')}</th>
           <th></th>
         </tr></thead><tbody>
@@ -8809,13 +8828,16 @@ export default function App(){
               <div style={{width:40,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:bpct>=100?'#22c55e':bpct>0?'#3b82f6':'#e2e8f0',width:bpct+'%'}}/></div></td>
             <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{j.art_status==='art_complete'?'Done':j.art_status==='waiting_approval'?'Waiting':'Need'}</span></td>
             <td style={{fontSize:11}}>{(j.items||[]).length} <span style={{color:'#94a3b8'}}>garment{(j.items||[]).length!==1?'s':''}</span></td>
-            <td>{ready?<span style={{fontSize:10,fontWeight:700,color:'#166534'}}>✅ Ready</span>
-              :<span style={{fontSize:9,color:'#94a3b8'}}>{j.art_status!=='art_complete'?'🎨 Art':
-                (() => {const af2=safeArr(j.so?.art_files).find(f=>f.id===j.art_file_id);return af2&&(af2.prod_files||[]).length===0?'🔧 Files':'📦 Items'})()
-              }</span>}</td>
-            <td onClick={e=>e.stopPropagation()}>{onBoard?<span style={{fontSize:9,fontWeight:700,color:'#2563eb'}}>On Board</span>
-              :<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:ready?'#166534':'#64748b',color:'white',border:'none'}}
-                onClick={()=>promoteJob(j)}>→ Board</button>}</td>
+            <td>{ready?<span title="Artwork, production files, and garments are all in — production can start" style={{fontSize:10,fontWeight:700,color:'#166534',whiteSpace:'nowrap'}}>✅ Ready</span>
+              :(()=>{
+                if(j.art_status!=='art_complete')return<span title="Not ready: artwork isn't finished/approved yet" style={{fontSize:9,color:'#94a3b8',whiteSpace:'nowrap'}}>🎨 Needs art</span>;
+                const af2=safeArr(j.so?.art_files).find(f=>f.id===j.art_file_id);
+                if(af2&&(af2.prod_files||[]).length===0)return<span title="Not ready: art is approved but production files (print/emb files) aren't attached yet" style={{fontSize:9,color:'#94a3b8',whiteSpace:'nowrap'}}>🔧 Needs files</span>;
+                return<span title="Not ready: garments aren't all in yet — waiting on receiving or stock pulls" style={{fontSize:9,color:'#94a3b8',whiteSpace:'nowrap'}}>📦 Needs goods</span>;
+              })()}</td>
+            <td onClick={e=>e.stopPropagation()}>{onBoard?<span title="This job is on the Production Board (the production team's queue)" style={{fontSize:9,fontWeight:700,color:'#2563eb',whiteSpace:'nowrap'}}>✓ On Board</span>
+              :<button className="btn btn-sm" title={(ready?'Job is ready — add ':'Job isn\'t ready yet, but you can still queue it — add ')+j.id+' to the Production Board (the production team\'s work queue)'} style={{fontSize:9,padding:'2px 8px',background:ready?'#166534':'#64748b',color:'white',border:'none',whiteSpace:'nowrap'}}
+                onClick={()=>promoteJob(j)}>+ Add to Board</button>}</td>
             <td style={{fontSize:11,color:j.daysOut!=null&&j.daysOut<=7?'#dc2626':'#64748b',fontWeight:j.daysOut!=null&&j.daysOut<=3?700:400}}>{j.expected||'—'}{j.daysOut!=null&&j.daysOut<=3?' ⚠️':''}</td>
             <td onClick={e=>e.stopPropagation()}>
               <button title={'Inbound tracking for '+j.id+' — billed, received & shipments per item'} style={{background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,cursor:'pointer',padding:'2px 8px',fontSize:10,fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}} onClick={()=>setJobTrackModal(j)}>📦 Track</button>
