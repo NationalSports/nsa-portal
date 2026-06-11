@@ -53,6 +53,34 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // One-click hand-off from the PO receive views: staging = "In Line" on the production board.
   // Mirrors the jobs-tab Production select (no assignment prompt — production assigns on the board).
   const moveJobToDeco=(jobId)=>{const jj=safeJobs(o).find(x=>x.id===jobId);const updJobs=safeJobs(o).map(x=>x.id===jobId?{...x,prod_status:'staging'}:x);const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf('🎽 '+(jj?.art_name||jobId)+' moved to In Line for decoration')};
+  // Garment lines for a job: SKU/name/color with a size breakdown, honoring the split-job
+  // convention where gi.sizes carries only that job's subset of the SO item's sizes.
+  const jobGarmentLines=(jj)=>(jj.items||[]).map(gi=>{
+    const it=safeItems(o)[gi.item_idx]||{};
+    const sizes=(gi.sizes&&Object.keys(gi.sizes).length>0)?gi.sizes:Object.fromEntries(Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0));
+    const szKeys=Object.keys(sizes).filter(sz=>safeNum(sizes[sz])>0).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+    return{sku:it.sku||gi.sku||'',name:safeStr(it.name)||gi.name||'',color:safeStr(it.color)||gi.color||'',sizes,szKeys,qty:szKeys.reduce((a,sz)=>a+safeNum(sizes[sz]),0)};
+  }).filter(ln=>ln.qty>0);
+  // Printable pull sheet for one job — what to grab and stage for decoration, with a checkbox per line.
+  const printDecoPullSheet=(jj)=>{
+    const lines=jobGarmentLines(jj);
+    const w=window.open('','_blank','width=700,height=900');if(!w)return;
+    w.document.write('<html><head><title>Pull Sheet — '+jj.id+'</title><style>body{font-family:sans-serif;padding:24px;font-size:13px}h1{font-size:20px;margin:0 0 2px}table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #ddd;padding:8px;text-align:center;font-size:13px}th{background:#f0f0f0;font-weight:700}@media print{body{padding:12px}}</style></head><body>');
+    w.document.write('<h1>PULL SHEET — '+jj.id+'</h1>');
+    w.document.write('<p style="margin:2px 0;font-size:15px;font-weight:700">'+(jj.art_name||'')+'</p>');
+    w.document.write('<p style="margin:2px 0;color:#444">'+(jj.deco_type||'').replace(/_/g,' ')+' · '+jj.total_units+' units · SO '+o.id+(cust?.name?' — '+cust.name:'')+(o.memo?' · '+o.memo:'')+'</p>');
+    lines.forEach(ln=>{
+      w.document.write('<p style="margin:14px 0 4px;font-weight:700;font-size:14px">'+ln.sku+' — '+(ln.name||'')+(ln.color?' ('+ln.color+')':'')+'</p>');
+      w.document.write('<table><thead><tr><th style="width:60px">Pulled</th>');
+      ln.szKeys.forEach(sz=>w.document.write('<th>'+sz+'</th>'));
+      w.document.write('<th>Total</th></tr></thead><tbody><tr><td style="font-size:18px">&#9744;</td>');
+      ln.szKeys.forEach(sz=>w.document.write('<td style="font-weight:700;font-size:15px">'+ln.sizes[sz]+'</td>'));
+      w.document.write('<td style="font-weight:800;font-size:15px">'+ln.qty+'</td></tr></tbody></table>');
+    });
+    w.document.write('<p style="font-weight:800;font-size:15px;margin-top:14px">Total: '+lines.reduce((a,ln)=>a+ln.qty,0)+' units</p>');
+    w.document.write('<div style="margin-top:24px;padding-top:12px;border-top:1px solid #ccc;font-size:10px;color:#999">Printed '+new Date().toLocaleString()+' · NSA Portal</div>');
+    w.document.write('</body></html>');w.document.close();w.print();
+  };
   // Persistent banner for the PO modal/full-page views: every job touching the given item lines
   // that is checked in, art-complete, and still on hold — stays visible until the job is moved
   // (or dismissed by moving it), unlike the 3.5s toast.
@@ -62,13 +90,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(readyJobs.length===0)return null;
     return<div style={{padding:'12px 14px',background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:8,marginBottom:12,boxShadow:'0 2px 8px rgba(34,197,94,0.25)'}}>
       <div style={{fontSize:14,fontWeight:800,color:'#166534'}}>🎽 Ready for decoration — all items in & art complete</div>
-      {readyJobs.map(jj=><div key={jj.id} style={{display:'flex',alignItems:'center',gap:10,marginTop:8,padding:'8px 10px',background:'white',border:'1px solid #bbf7d0',borderRadius:6}}>
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{fontWeight:700,fontSize:13,color:'#14532d'}}>{jj.art_name||jj.id}</div>
-          <div style={{fontSize:11,color:'#15803d'}}>{jj.id} · {jj.total_units} units{jj.deco_type?' · '+jj.deco_type.replace(/_/g,' '):''}</div>
+      {readyJobs.map(jj=>{const lines=jobGarmentLines(jj);return<div key={jj.id} style={{marginTop:8,padding:'8px 10px',background:'white',border:'1px solid #bbf7d0',borderRadius:6}}>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontWeight:700,fontSize:13,color:'#14532d'}}>{jj.art_name||jj.id}</div>
+            <div style={{fontSize:11,color:'#15803d'}}>{jj.id} · {jj.total_units} units{jj.deco_type?' · '+jj.deco_type.replace(/_/g,' '):''}</div>
+          </div>
+          <button className="btn btn-sm" style={{background:'white',color:'#166534',border:'1px solid #16a34a',fontWeight:700,fontSize:11,padding:'7px 12px',whiteSpace:'nowrap'}} onClick={()=>printDecoPullSheet(jj)}>🖨️ Pull Sheet</button>
+          <button className="btn btn-sm" style={{background:'#16a34a',color:'white',border:'none',fontWeight:800,fontSize:12,padding:'8px 16px',whiteSpace:'nowrap'}} onClick={()=>moveJobToDeco(jj.id)}>→ Move to Deco</button>
         </div>
-        <button className="btn btn-sm" style={{background:'#16a34a',color:'white',border:'none',fontWeight:800,fontSize:12,padding:'8px 16px',whiteSpace:'nowrap'}} onClick={()=>moveJobToDeco(jj.id)}>→ Move to Deco</button>
-      </div>)}
+        {lines.length>0&&<div style={{marginTop:6,borderTop:'1px dashed #bbf7d0',paddingTop:6}}>
+          {lines.map((ln,li)=><div key={li} style={{display:'flex',gap:8,alignItems:'baseline',fontSize:11,padding:'2px 0',flexWrap:'wrap'}}>
+            <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{ln.sku}</span>
+            <span style={{color:'#334155',fontWeight:600}}>{ln.name}{ln.color?' — '+ln.color:''}</span>
+            <span style={{marginLeft:'auto',color:'#475569'}}>{ln.szKeys.map(sz=>sz+':'+ln.sizes[sz]).join('  ')}</span>
+            <span style={{fontWeight:800,color:'#166534'}}>{ln.qty} units</span>
+          </div>)}
+        </div>}
+      </div>})}
     </div>;
   };
   const isE=mode==='estimate';const isSO=mode==='so';
