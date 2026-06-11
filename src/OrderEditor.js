@@ -9426,10 +9426,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const shQrData=JSON.stringify({type:'PO_RECV',id:po.po_id,shipment:si+1,so:o.id,sku:item?.sku,date:sh.date});
               const isEditing=editPO._editShipIdx===si;
               const shSzKeys=szKeys.filter(sz=>sh[sz]);
+              // The whole receipt: a multi-item receive appends one shipment entry per line, all with
+              // the same date — pair them by date + occurrence so editing covers every item received
+              // together, not just the active tab's slice.
+              const _occ=shipments.slice(0,si).filter(s=>(s.date||'')===(sh.date||'')).length;
+              const receiptLines=allLines.map(ln=>{
+                const it2=o.items[ln.lineIdx];const pl=it2?.po_lines?.[ln.poIdx];if(!it2||!pl)return null;
+                const shs=pl.shipments||[];
+                const matchIdxs=shs.map((s,i2)=>(s.date||'')===(sh.date||'')?i2:-1).filter(i2=>i2>=0);
+                const shipIdx=matchIdxs[_occ];
+                if(shipIdx==null)return null;
+                const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&!NON_SZ_PO_KEYS.includes(k)&&typeof pl[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+                return{ln,it:it2,pl,shipIdx,sh:shs[shipIdx],szKeys:sk};
+              }).filter(Boolean);
               return<div key={si} style={{marginBottom:4}}>
               <div style={{padding:'6px 10px',background:isEditing?'#dbeafe':'#f0fdf4',borderRadius:isEditing?'6px 6px 0 0':'6px',fontSize:11,display:'flex',gap:12,alignItems:'center',cursor:'pointer'}} onClick={()=>setEditPO(p=>({...p,_editShipIdx:isEditing?null:si}))}>
               <span style={{fontWeight:700,color:'#166534'}}>📦 {sh.date}</span>
               {szKeys.map(sz=>sh[sz]?<span key={sz} style={{color:'#374151'}}>{sz}:<strong>{sh[sz]}</strong></span>:null)}
+              {receiptLines.length>1&&<span style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:8}}>{receiptLines.length} items in receipt</span>}
               <span style={{marginLeft:'auto',fontSize:9,color:'#64748b'}}>{isEditing?'▲ close':'✏️ edit'}</span>
               <button style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#64748b',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();
                 printQrLabel({
@@ -9445,40 +9459,56 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               }}>🖨️</button>
             </div>
             {isEditing&&<div style={{padding:10,border:'1px solid #bfdbfe',borderRadius:'0 0 6px 6px',background:'#eff6ff',marginBottom:2}}>
-              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8}}>
                 <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
                 <input type="date" id={'sh-edit-date-'+si} className="form-input" style={{width:140,fontSize:12}} defaultValue={sh.date}/>
-                <span style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Quantities:</span>
-                {szKeys.map(sz=>{const v=sh[sz]||0;if(!v&&!shSzKeys.includes(sz))return null;return<div key={sz} style={{textAlign:'center'}}>
-                  <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                  <input id={'sh-edit-'+si+'-'+sz} style={{width:42,textAlign:'center',border:'1px solid #93c5fd',borderRadius:4,padding:'3px 2px',fontSize:13,fontWeight:700,background:'white'}} defaultValue={v}/>
-                </div>})}
+                {receiptLines.length>1&&<span style={{fontSize:10,color:'#1e40af',fontWeight:600}}>This receipt covers {receiptLines.length} items — all are editable below.</span>}
               </div>
+              {receiptLines.map((rl,ri)=>{const rlShSz=rl.szKeys.filter(sz=>rl.sh[sz]);return<div key={ri} style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6,padding:'6px 8px',background:'white',border:'1px solid #dbeafe',borderRadius:6}}>
+                <div style={{minWidth:180,flex:1}}>
+                  <span style={{fontFamily:'monospace',fontWeight:800,fontSize:11,color:'#1e40af'}}>{rl.it.sku}</span>
+                  <span style={{fontSize:11,color:'#334155',marginLeft:6}}>{rl.it.name}{rl.it.color?' — '+rl.it.color:''}</span>
+                </div>
+                {rl.szKeys.map(sz=>{const v=rl.sh[sz]||0;if(!v&&!rlShSz.includes(sz))return null;return<div key={sz} style={{textAlign:'center'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                  <input id={'sh-edit-'+si+'-'+ri+'-'+sz} style={{width:42,textAlign:'center',border:'1px solid #93c5fd',borderRadius:4,padding:'3px 2px',fontSize:13,fontWeight:700,background:'white'}} defaultValue={v}/>
+                </div>})}
+              </div>})}
               <div style={{display:'flex',gap:6}}>
                 <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>{
                   const dateEl=document.getElementById('sh-edit-date-'+si);
-                  const updatedSh={date:dateEl?.value||sh.date};
-                  szKeys.forEach(sz=>{const el=document.getElementById('sh-edit-'+si+'-'+sz);if(el){const v=parseInt(el.value)||0;if(v>0)updatedSh[sz]=v}else if(sh[sz])updatedSh[sz]=sh[sz]});
-                  // Recalculate received totals from all shipments
-                  const newShipments=shipments.map((s,i)=>i===si?updatedSh:s);
-                  const newReceived={};newShipments.forEach(s=>{szKeys.forEach(sz=>{if(s[sz])newReceived[sz]=(newReceived[sz]||0)+s[sz]})});
-                  const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-getCncl(sz)),0);
-                  const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
-                  const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
-                  const updatedItems=o.items.map((it,i)=>i===activeLine.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===activeLine.poIdx?updatedPO:p)}:it);
+                  // Apply every receipt line's edits in one pass so a multi-item receipt saves atomically
+                  let updatedItems=o.items;let activeUpdatedPO=null;
+                  receiptLines.forEach((rl,ri)=>{
+                    const updatedSh={date:dateEl?.value||sh.date};
+                    rl.szKeys.forEach(sz=>{const el=document.getElementById('sh-edit-'+si+'-'+ri+'-'+sz);if(el){const v=parseInt(el.value)||0;if(v>0)updatedSh[sz]=v}else if(rl.sh[sz])updatedSh[sz]=rl.sh[sz]});
+                    const newShipments=(rl.pl.shipments||[]).map((s,i2)=>i2===rl.shipIdx?updatedSh:s);
+                    const newReceived={};newShipments.forEach(s=>{rl.szKeys.forEach(sz=>{if(s[sz])newReceived[sz]=(newReceived[sz]||0)+s[sz]})});
+                    const cncl2=rl.pl.cancelled||{};
+                    const newTotalOpen=rl.szKeys.reduce((a,sz)=>a+Math.max(0,(rl.pl[sz]||0)-(newReceived[sz]||0)-(cncl2[sz]||0)),0);
+                    const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
+                    const updatedPO={...rl.pl,received:newReceived,shipments:newShipments,status:newStatus};
+                    if(rl.ln.lineIdx===activeLine.lineIdx&&rl.ln.poIdx===activeLine.poIdx)activeUpdatedPO=updatedPO;
+                    updatedItems=updatedItems.map((it2,i)=>i===rl.ln.lineIdx?{...it2,po_lines:it2.po_lines.map((p,j)=>j===rl.ln.poIdx?updatedPO:p)}:it2);
+                  });
                   const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};
-                  setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO,_editShipIdx:null});nf('Shipment #'+(si+1)+' updated');notifyDecoReady(o.jobs,updated.jobs);
+                  setO(updated);onSave(updated);setEditPO({...editPO,po:activeUpdatedPO||editPO.po,_editShipIdx:null});nf('Receipt updated'+(receiptLines.length>1?' — '+receiptLines.length+' items':''));notifyDecoReady(o.jobs,updated.jobs);
                 }}>Save</button>
                 <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{
-                  if(!window.confirm('Delete this shipment receipt? Received quantities will be recalculated.'))return;
-                  const newShipments=shipments.filter((_,i)=>i!==si);
-                  const newReceived={};newShipments.forEach(s=>{szKeys.forEach(sz=>{if(s[sz])newReceived[sz]=(newReceived[sz]||0)+s[sz]})});
-                  const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-getCncl(sz)),0);
-                  const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
-                  const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
-                  const updatedItems=o.items.map((it,i)=>i===activeLine.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===activeLine.poIdx?updatedPO:p)}:it);
+                  if(!window.confirm(receiptLines.length>1?'Delete this receipt for all '+receiptLines.length+' items? Received quantities will be recalculated.':'Delete this shipment receipt? Received quantities will be recalculated.'))return;
+                  let updatedItems=o.items;let activeUpdatedPO=null;
+                  receiptLines.forEach(rl=>{
+                    const newShipments=(rl.pl.shipments||[]).filter((_,i2)=>i2!==rl.shipIdx);
+                    const newReceived={};newShipments.forEach(s=>{rl.szKeys.forEach(sz=>{if(s[sz])newReceived[sz]=(newReceived[sz]||0)+s[sz]})});
+                    const cncl2=rl.pl.cancelled||{};
+                    const newTotalOpen=rl.szKeys.reduce((a,sz)=>a+Math.max(0,(rl.pl[sz]||0)-(newReceived[sz]||0)-(cncl2[sz]||0)),0);
+                    const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
+                    const updatedPO={...rl.pl,received:newReceived,shipments:newShipments,status:newStatus};
+                    if(rl.ln.lineIdx===activeLine.lineIdx&&rl.ln.poIdx===activeLine.poIdx)activeUpdatedPO=updatedPO;
+                    updatedItems=updatedItems.map((it2,i)=>i===rl.ln.lineIdx?{...it2,po_lines:it2.po_lines.map((p,j)=>j===rl.ln.poIdx?updatedPO:p)}:it2);
+                  });
                   const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};
-                  setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO,_editShipIdx:null});nf('Shipment deleted');
+                  setO(updated);onSave(updated);setEditPO({...editPO,po:activeUpdatedPO||editPO.po,_editShipIdx:null});nf('Receipt deleted'+(receiptLines.length>1?' — '+receiptLines.length+' items':''));
                 }}><Icon name="trash" size={10}/> Delete</button>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setEditPO(p=>({...p,_editShipIdx:null}))}>Cancel</button>
               </div>
