@@ -16470,7 +16470,7 @@ export default function App(){
         <button className="btn btn-sm" style={{fontSize:10,background:whTab==='receive'?'#1e40af':'#2563eb',color:'white',border:whTab==='receive'?'2px solid #1e40af':'none',padding:whTab==='receive'?'3px 11px':'4px 12px',fontWeight:700,borderRadius:4,boxShadow:whTab==='receive'?'0 2px 6px rgba(37,99,235,0.4)':'none'}}
           onClick={()=>setWhTab('receive')}>📱 Scan to Receive</button>
         <button className="btn btn-sm" style={{fontSize:10,background:'#92400e',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
-          onClick={()=>setManualShipModal({soSearch:'',so:null,cust:null,carrier:'fedex',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}>⚡ Manual Ship</button>
+          onClick={()=>setManualShipModal({custSearch:'',custFilter:null,so:null,cust:null,carrier:'fedex',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}>⚡ Manual Ship</button>
         {_whCanDelegate&&<button className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
           onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_whTodayStr,doc_label:'',wh_only:true})}>📌 Assign Task</button>}
       </div>
@@ -17695,59 +17695,95 @@ export default function App(){
           </div>
 
           {!manualShipModal.so?<>
-            {/* SO Search */}
-            <label style={{fontSize:12,fontWeight:700,color:'#334155',marginBottom:4,display:'block'}}>Search Sales Order</label>
-            <input className="form-input" placeholder="Type SO# or customer name..." value={manualShipModal.soSearch||''} autoFocus
-              style={{fontSize:12,marginBottom:8}}
-              onChange={e=>setManualShipModal({...manualShipModal,soSearch:e.target.value})}/>
-            {(()=>{
-              const q=(manualShipModal.soSearch||'').toLowerCase();
-              if(q.length<2)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>Type at least 2 characters to search</div>;
-              const results=sos.filter(so=>{
-                if(so.deleted_at)return false;
-                const st=calcSOStatus(so);
-                if(st==='complete')return false;
-                const c2=cust.find(cc=>cc.id===so.customer_id);
-                return so.id.toLowerCase().includes(q)||(c2?.name||'').toLowerCase().includes(q)||(so.memo||'').toLowerCase().includes(q);
-              }).slice(0,10);
-              if(results.length===0)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No matching orders</div>;
-              return<div style={{display:'grid',gap:4}}>
-                {results.map(so=>{
-                  const c2=cust.find(cc=>cc.id===so.customer_id);
+            {!manualShipModal.custFilter?<>
+              {/* Step 1: Club / Customer Search */}
+              <label style={{fontSize:12,fontWeight:700,color:'#334155',marginBottom:4,display:'block'}}>Search Customer / Club</label>
+              <input className="form-input" placeholder="Type club or customer name..." value={manualShipModal.custSearch||''} autoFocus
+                style={{fontSize:12,marginBottom:8}}
+                onChange={e=>setManualShipModal({...manualShipModal,custSearch:e.target.value})}/>
+              {(()=>{
+                const q=(manualShipModal.custSearch||'').toLowerCase();
+                if(q.length<2)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>Type at least 2 characters to search</div>;
+                const openSosByCust={};
+                sos.forEach(so=>{
+                  if(so.deleted_at)return;
                   const st=calcSOStatus(so);
-                  const itemCount=safeItems(so).length;
-                  const jobCount=safeJobs(so).filter(j=>j.prod_status!=='draft').length;
-                  return<div key={so.id} style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0',cursor:'pointer'}}
-                    onClick={()=>{
-                      const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
-                        const key=it.sku+'|'+(it.color||'');if(!shippedBySz[key])shippedBySz[key]={};
-                        Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key][sz]=(shippedBySz[key][sz]||0)+safeNum(v)});
-                      })});
-                      const availItems=[];
-                      safeItems(so).forEach((item,ii)=>{
-                        const key=item.sku+'|'+(item.color||'');const shipped=shippedBySz[key]||{};
-                        const remainSz={};Object.entries(safeSizes(item)).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
-                        const qty=Object.values(remainSz).reduce((a,v)=>a+v,0);
-                        if(qty>0)availItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:remainSz,itemIdx:ii,qty});
-                      });
-                      setManualShipModal({...manualShipModal,so,cust:c2,availItems,shipItems:[],markShipped:{}});
-                    }}
-                    onMouseEnter={e=>{e.currentTarget.style.background='#eff6ff'}}
-                    onMouseLeave={e=>{e.currentTarget.style.background='#f8fafc'}}>
-                    <div style={{display:'flex',alignItems:'center',gap:8}}>
-                      <span style={{fontWeight:800,color:'#1e40af',fontSize:12,fontFamily:'monospace'}}>{so.id}</span>
-                      <span style={{fontSize:11,color:'#334155'}}>{c2?.name||'Unknown'}</span>
-                      <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#f1f5f9',color:'#64748b'}}>{st}</span>
-                      <span style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>{itemCount} items · {jobCount} jobs</span>
-                    </div>
-                    {so.memo&&<div style={{fontSize:10,color:'#64748b',marginTop:2,fontStyle:'italic',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{so.memo}</div>}
-                  </div>})}
-              </div>;
-            })()}
+                  if(st==='complete')return;
+                  if(!openSosByCust[so.customer_id])openSosByCust[so.customer_id]=[];
+                  openSosByCust[so.customer_id].push(so);
+                });
+                const results=cust.filter(cc=>(cc.name||'').toLowerCase().includes(q)).sort((a,b)=>(a.name||'').localeCompare(b.name||'')).slice(0,12);
+                if(results.length===0)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No matching customers</div>;
+                return<div style={{display:'grid',gap:4}}>
+                  {results.map(cc=>{
+                    const openCount=(openSosByCust[cc.id]||[]).length;
+                    return<div key={cc.id} style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0',cursor:'pointer'}}
+                      onClick={()=>setManualShipModal({...manualShipModal,custFilter:cc})}
+                      onMouseEnter={e=>{e.currentTarget.style.background='#eff6ff'}}
+                      onMouseLeave={e=>{e.currentTarget.style.background='#f8fafc'}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8}}>
+                        <span style={{fontWeight:700,color:'#1e3a5f',fontSize:12}}>{cc.name||'Unknown'}</span>
+                        <span style={{marginLeft:'auto',fontSize:10,color:openCount>0?'#166534':'#94a3b8',fontWeight:openCount>0?700:400}}>
+                          {openCount} open SO{openCount!==1?'s':''}
+                        </span>
+                      </div>
+                    </div>;
+                  })}
+                </div>;
+              })()}
+            </>:<>
+              {/* Step 2: Open SOs for selected customer */}
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+                <button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,color:'#64748b',padding:0}} onClick={()=>setManualShipModal({...manualShipModal,custFilter:null,custSearch:''})}>←</button>
+                <span style={{fontWeight:700,color:'#1e3a5f',fontSize:13}}>{manualShipModal.custFilter.name}</span>
+                <span style={{fontSize:10,color:'#64748b'}}>— select an order to ship</span>
+              </div>
+              {(()=>{
+                const custSos=sos.filter(so=>{
+                  if(so.deleted_at)return false;
+                  const st=calcSOStatus(so);
+                  if(st==='complete')return false;
+                  return so.customer_id===manualShipModal.custFilter.id;
+                });
+                if(custSos.length===0)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No open sales orders for this customer</div>;
+                return<div style={{display:'grid',gap:4}}>
+                  {custSos.map(so=>{
+                    const st=calcSOStatus(so);
+                    const itemCount=safeItems(so).length;
+                    const jobCount=safeJobs(so).filter(j=>j.prod_status!=='draft').length;
+                    return<div key={so.id} style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0',cursor:'pointer'}}
+                      onClick={()=>{
+                        const c2=manualShipModal.custFilter;
+                        const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
+                          const key=it.sku+'|'+(it.color||'');if(!shippedBySz[key])shippedBySz[key]={};
+                          Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key][sz]=(shippedBySz[key][sz]||0)+safeNum(v)});
+                        })});
+                        const availItems=[];
+                        safeItems(so).forEach((item,ii)=>{
+                          const key=item.sku+'|'+(item.color||'');const shipped=shippedBySz[key]||{};
+                          const remainSz={};Object.entries(safeSizes(item)).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
+                          const qty=Object.values(remainSz).reduce((a,v)=>a+v,0);
+                          if(qty>0)availItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:remainSz,itemIdx:ii,qty});
+                        });
+                        setManualShipModal({...manualShipModal,so,cust:c2,availItems,shipItems:[],markShipped:{}});
+                      }}
+                      onMouseEnter={e=>{e.currentTarget.style.background='#eff6ff'}}
+                      onMouseLeave={e=>{e.currentTarget.style.background='#f8fafc'}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8}}>
+                        <span style={{fontWeight:800,color:'#1e40af',fontSize:12,fontFamily:'monospace'}}>{so.id}</span>
+                        <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#f1f5f9',color:'#64748b'}}>{st}</span>
+                        <span style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>{itemCount} items · {jobCount} jobs</span>
+                      </div>
+                      {so.memo&&<div style={{fontSize:10,color:'#64748b',marginTop:2,fontStyle:'italic',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{so.memo}</div>}
+                    </div>;
+                  })}
+                </div>;
+              })()}
+            </>}
           </>:<>
             {/* Selected SO */}
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
-              <button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,color:'#64748b',padding:0}} onClick={()=>setManualShipModal({...manualShipModal,so:null,cust:null,availItems:[],shipItems:[],soSearch:''})}>←</button>
+              <button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,color:'#64748b',padding:0}} onClick={()=>setManualShipModal({...manualShipModal,so:null,cust:null,availItems:[],shipItems:[]})}>←</button>
               <span style={{fontWeight:800,color:'#1e40af',fontSize:14,fontFamily:'monospace'}}>{manualShipModal.so.id}</span>
               <span style={{fontSize:12,fontWeight:600,color:'#334155'}}>{manualShipModal.cust?.name||'Unknown'}</span>
               <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#f1f5f9',color:'#64748b'}}>{calcSOStatus(manualShipModal.so)}</span>
