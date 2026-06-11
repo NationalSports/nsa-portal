@@ -1178,6 +1178,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     sos.forEach(so=>{const cc=custObj(so.customer_id);safeItems(so).forEach((it,ii)=>{(it.po_lines||[]).forEach((po,pli)=>{
       const pid=po.po_id||'PO';const key='so|'+so.id+'|'+pid+'|'+(po.vendor||'');
       const e=map[key]||(map[key]={key,kind:'so',poId:pid,batchPoNumber:po.batch_po_number||'',soId:so.id,cust:cc,vendor:po.vendor||'',lines:[],created_at:po.created_at||so.created_at});
+      if(po.drop_ship)e.dropShip=true;// vendor ships direct to the customer — warehouse never receives this PO
       const sizes={};let ordered=0,received=0,open=0;
       whSizes(po).forEach(sz=>{const ord=po[sz]||0;const rcv=(po.received||{})[sz]||0;const can=(po.cancelled||{})[sz]||0;const o=Math.max(0,ord-rcv-can);sizes[sz]={ord,rcv,open:o};ordered+=ord;received+=rcv;open+=o});
       e.lines.push({itemIdx:ii,poLineIdx:pli,item:it,sizes,ordered,received,open});
@@ -1230,7 +1231,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   };
   // Open a whole batch (all source POs sharing a batch_po_number) in the review screen.
   const openBatchByNumber=(batchNo,poKeys)=>{
-    const sel=buildPOs().filter(p=>poKeys.includes(p.key)&&p.totOpen>0);
+    const sel=buildPOs().filter(p=>poKeys.includes(p.key)&&p.totOpen>0&&!p.dropShip);
     if(sel.length===0){if(nf)nf(batchNo+' has no open units to receive','error');return;}
     setWhBatchSelected(new Set(sel.map(p=>p.key)));setWhBatchQty({});setWhBatchMode(true);
     setTab('more');setMoreSubPage('warehouse');setWhTab('pos');setWhDetail({kind:'batch'});
@@ -1324,13 +1325,17 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
             <span style={{fontSize:11,background:b.bg,color:b.c,padding:'3px 10px',borderRadius:12,fontWeight:700}}>{b.l}</span>
           </div>
           <div className="mp-detail-body">
+            {po.dropShip&&<div style={{padding:'12px 14px',marginBottom:12,borderRadius:10,background:'#f5f3ff',border:'1px solid #ddd6fe',borderLeft:'4px solid #7c3aed'}}>
+              <div style={{fontWeight:800,fontSize:14,color:'#5b21b6',marginBottom:2}}>📦 Drop Ship — nothing arrives at the warehouse</div>
+              <div style={{fontSize:12,color:'#475569'}}>{po.vendor||'The vendor'} ships this PO directly to the customer. Do not receive or count in these items.</div>
+            </div>}
             <div className="mp-info-grid">
               <div className="mp-info-item"><div className="mp-info-label">Ordered</div><div className="mp-info-val">{po.totOrd}</div></div>
               <div className="mp-info-item"><div className="mp-info-label">Received</div><div className="mp-info-val" style={{color:'#16a34a'}}>{po.totRcv}</div></div>
               <div className="mp-info-item"><div className="mp-info-label">Open</div><div className="mp-info-val" style={{color:po.totOpen>0?'#d97706':'#94a3b8'}}>{po.totOpen}</div></div>
-              <div className="mp-info-item"><div className="mp-info-label">Type</div><div className="mp-info-val">{po.kind==='inv'?'Inventory':'Order PO'}</div></div>
+              <div className="mp-info-item"><div className="mp-info-label">Type</div><div className="mp-info-val">{po.kind==='inv'?'Inventory':po.dropShip?'Drop Ship':'Order PO'}</div></div>
             </div>
-            <div className="mp-section-title">Items ({po.lines.length}){po.totOpen>0?' — enter qty received':''}</div>
+            <div className="mp-section-title">Items ({po.lines.length}){po.totOpen>0&&!po.dropShip?' — enter qty received':''}</div>
             {po.lines.map((l,i)=>{const item=l.item;const szEntries=Object.entries(l.sizes).filter(([,s])=>s.ord>0);
               return<div key={i} className="mp-item-card">
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
@@ -1342,16 +1347,16 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                     return<div key={sz} style={{textAlign:'center',minWidth:62,padding:'6px',borderRadius:8,border:s.open>0?'1px solid #e2e8f0':'1px solid #f1f5f9',background:s.open>0?'#f8fafc':'#fafafa'}}>
                       <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:2}}>{sz}</div>
                       <div style={{fontSize:9,color:'#94a3b8',marginBottom:4}}>{s.rcv}/{s.ord} rcvd</div>
-                      {s.open>0?whNumInput(v,s.open,nv=>setWhRcvQty(prev=>({...prev,[i]:{...(prev[i]||{}),[sz]:nv}}))):<div style={{fontSize:16,fontWeight:800,color:'#16a34a',padding:'6px 0'}}>✓</div>}
+                      {s.open>0?(po.dropShip?<div style={{fontSize:14,fontWeight:800,color:'#7c3aed',padding:'6px 0'}} title="Drop ship — never received here">—</div>:whNumInput(v,s.open,nv=>setWhRcvQty(prev=>({...prev,[i]:{...(prev[i]||{}),[sz]:nv}})))):<div style={{fontSize:16,fontWeight:800,color:'#16a34a',padding:'6px 0'}}>✓</div>}
                     </div>})}
                 </div>
               </div>})}
-            {po.totOpen>0&&<div style={{display:'flex',gap:6,marginTop:6}}>
+            {po.totOpen>0&&!po.dropShip&&<div style={{display:'flex',gap:6,marginTop:6}}>
               <button onClick={()=>whRcvSetAll(po)} style={{flex:1,padding:'10px',borderRadius:8,border:'1px solid #86efac',background:'#f0fdf4',color:'#166534',fontWeight:700,fontSize:13,cursor:'pointer',minHeight:40}}>✓ All received</button>
               <button onClick={whRcvClear} style={{padding:'10px 14px',borderRadius:8,border:'1px solid #e2e8f0',background:'white',color:'#64748b',fontWeight:700,fontSize:13,cursor:'pointer',minHeight:40}}>Clear</button>
             </div>}
           </div>
-          {!done&&<div style={{position:'sticky',bottom:0,background:'white',borderTop:'1px solid #e2e8f0',padding:'12px 16px',paddingBottom:'max(12px, env(safe-area-inset-bottom))'}}>
+          {!done&&!po.dropShip&&<div style={{position:'sticky',bottom:0,background:'white',borderTop:'1px solid #e2e8f0',padding:'12px 16px',paddingBottom:'max(12px, env(safe-area-inset-bottom))'}}>
             <button disabled={whSaving||grandRcv===0} onClick={()=>confirmReceive(po)} style={{width:'100%',padding:'14px',borderRadius:12,border:'none',background:grandRcv>0&&!whSaving?'#1e40af':'#cbd5e1',color:'white',fontWeight:800,fontSize:15,cursor:grandRcv>0&&!whSaving?'pointer':'default',minHeight:48}}>
               {whSaving?'Saving…':'✓ Receive ('+grandRcv+' units)'}
             </button>
@@ -1362,7 +1367,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
 
     // ─── BATCH RECEIVE REVIEW (edit qtys for partial check-in) ───
     if(whDetail?.kind==='batch'){
-      const sel=pos.filter(p=>whBatchSelected.has(p.key)&&p.totOpen>0);
+      const sel=pos.filter(p=>whBatchSelected.has(p.key)&&p.totOpen>0&&!p.dropShip);
       const grandRcv=sel.reduce((a,po)=>a+Object.values(whBatchQty[po.key]||{}).reduce((b,m)=>b+Object.values(m||{}).reduce((c,v)=>c+(parseInt(v)||0),0),0),0);
       return<div className="mp-detail">
         <div className="mp-detail-header">
@@ -1410,8 +1415,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     }
 
     // ─── WAREHOUSE LIST (IFs + POs) ───
-    const openPoCount=pos.filter(p=>p.status!=='received').length;
-    let poList=pos;
+    const openPoCount=pos.filter(p=>p.status!=='received'&&!p.dropShip).length;
+    let poList=pos.filter(p=>!p.dropShip);// drop-ship POs never arrive — keep them out of the warehouse list
     if(whPoFilter==='open')poList=poList.filter(p=>p.status!=='received');
     if(whQ.length>=2){const s=whQ.toLowerCase();poList=poList.filter(p=>((p.poId||'')+' '+(p.batchPoNumber||'')+' '+(p.vendor||'')+' '+(p.soId||'')+' '+(p.cust?.name||'')+' '+p.lines.map(l=>(l.item?.sku||'')+' '+(l.item?.name||'')).join(' ')).toLowerCase().includes(s))}
     // Group the filtered POs by batch number (NSA ####) so a whole batch can be checked in from one card.

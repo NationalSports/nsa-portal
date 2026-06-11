@@ -16641,7 +16641,12 @@ export default function App(){
             {(()=>{
               const openPOs=[];
               submittedBatches.filter(sb=>sb.status!=='received').forEach(sb=>{
-                openPOs.push({id:sb.po_number,vendor:sb.vendor_name,units:sb.total_units,date:sb.submitted_at,type:'batch'})});
+                // Drop-ship batch items ship vendor→customer and never arrive here — don't count
+                // them toward what the warehouse expects (skip the batch when it's all drop ship).
+                const dsUnits=(sb.source_pos||[]).reduce((a,sp)=>a+(sp.items||[]).filter(x=>x.drop_ship).reduce((b,x)=>b+(safeNum(x.qty)||Object.values(x.sizes||{}).reduce((c,v)=>c+safeNum(v),0)),0),0);
+                const units=Math.max(0,safeNum(sb.total_units)-dsUnits);
+                if(units<=0&&dsUnits>0)return;
+                openPOs.push({id:sb.po_number,vendor:sb.vendor_name,units,date:sb.submitted_at,type:'batch'})});
               sos.forEach(so=>{safeItems(so).forEach(it=>{safePOs(it).filter(po=>!po.drop_ship).forEach(po=>{
                 const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof po[k]==='number');
                 const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);
@@ -16671,10 +16676,14 @@ export default function App(){
           const poId=whRecvPO;const lc=poId.toLowerCase();
           // Look up PO across all sources
           const batchMatch=submittedBatches.find(sb=>sb.po_number.toLowerCase()===lc);
-          const soPOLines=[];
+          const soPOLines=[];const dropShipLines=[];
           sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);
             safeItems(so).forEach((it,idx)=>{safePOs(it).forEach((po,pli)=>{
-              if((po.po_id||'').toLowerCase()===lc)soPOLines.push({so,soId:so.id,customer:c2?.name||c2?.alpha_tag||'',item:it,itemIdx:idx,poLine:po,poLineIdx:pli})
+              if((po.po_id||'').toLowerCase()!==lc)return;
+              const entry={so,soId:so.id,customer:c2?.name||c2?.alpha_tag||'',item:it,itemIdx:idx,poLine:po,poLineIdx:pli};
+              // Drop-ship lines ship vendor→customer and never arrive at the warehouse — keep them
+              // out of the receive flow entirely so they can't be counted in or received.
+              if(po.drop_ship)dropShipLines.push(entry);else soPOLines.push(entry);
             })})});
           const invMatch=invPOs.find(p=>(p.po_number||p.id||'').toLowerCase()===lc);
 
@@ -16701,7 +16710,7 @@ export default function App(){
             });
           } else if(batchMatch){
             vendorName=batchMatch.vendor_name;poDate=batchMatch.submitted_at;
-            batchMatch.source_pos.forEach((sp,spi)=>{sp.items.forEach((it,iti)=>{
+            batchMatch.source_pos.forEach((sp,spi)=>{(sp.items||[]).filter(it2=>!it2.drop_ship).forEach((it,iti)=>{
               const szKeys=Object.keys(it.sizes).filter(k=>it.sizes[k]>0);
               poItems.push({_idx:spi*100+iti,sku:it.sku,name:it.name,color:it.color||'',
                 soId:sp.so_id,customer:sp.customer,szKeys,
@@ -16709,6 +16718,27 @@ export default function App(){
             })});
           }
 
+          // Drop-ship PO scanned — nothing from this PO ever arrives at the warehouse. Show an
+          // explicit notice instead of a receive form so it can't be received or counted in by mistake.
+          if(poItems.length===0&&!batchMatch&&dropShipLines.length>0){
+            const ds0=dropShipLines[0];
+            const dsVendor=ds0.poLine?.vendor||ds0.poLine?.deco_vendor||'The vendor';
+            return<div style={{maxWidth:600,margin:'0 auto'}}>
+              <button onClick={()=>setWhRecvPO(null)} className="btn btn-sm btn-secondary" style={{marginBottom:16}}><Icon name="arrow-left" size={14}/> Back to Scan</button>
+              <div className="card" style={{borderLeft:'4px solid #7c3aed',overflow:'hidden'}}>
+                <div style={{background:'linear-gradient(135deg,#5b21b6,#7c3aed)',color:'white',padding:'16px 20px'}}>
+                  <div style={{fontSize:11,fontWeight:700,opacity:0.85,letterSpacing:1}}>📦 DROP SHIP PO</div>
+                  <div style={{fontSize:20,fontWeight:800,fontFamily:'monospace'}}>{poId}</div>
+                </div>
+                <div className="card-body" style={{textAlign:'center',padding:24}}>
+                  <div style={{fontSize:40,marginBottom:8}}>📦</div>
+                  <div style={{fontSize:16,fontWeight:800,color:'#5b21b6',marginBottom:6}}>Nothing arrives at the warehouse for this PO</div>
+                  <div style={{fontSize:13,color:'#475569',marginBottom:12}}>{dsVendor} ships this order <strong>directly to the customer</strong>{ds0.customer?' ('+ds0.customer+')':''}. Do not receive or count in these items.</div>
+                  <div style={{fontSize:12,color:'#64748b'}}>SO: <strong>{ds0.soId}</strong>{ds0.item?.sku?' · '+ds0.item.sku:''}</div>
+                </div>
+              </div>
+            </div>;
+          }
           if(poItems.length===0&&!batchMatch)return<div style={{maxWidth:600,margin:'0 auto',textAlign:'center',padding:40}}>
             <button onClick={()=>setWhRecvPO(null)} className="btn btn-sm btn-secondary" style={{marginBottom:16}}><Icon name="arrow-left" size={14}/> Back to Scan</button>
             <div style={{color:'#dc2626',fontSize:14,fontWeight:700}}>PO "{poId}" not found</div>
@@ -16733,6 +16763,11 @@ export default function App(){
                 <BarcodeScanner placeholder="Scan next PO..." onScan={handleReceiveScan}/>
               </div>
             </div>
+
+            {/* Mixed PO — some lines drop ship. Those never arrive here and are excluded above. */}
+            {dropShipLines.length>0&&<div style={{margin:'0 0 12px',padding:'10px 14px',background:'#f5f3ff',border:'1px solid #ddd6fe',borderLeft:'4px solid #7c3aed',borderRadius:8,fontSize:12,color:'#5b21b6',fontWeight:600}}>
+              📦 {dropShipLines.length} drop-ship line{dropShipLines.length!==1?'s':''} on this PO {dropShipLines.length!==1?'are':'is'} not shown — those items ship direct to the customer and will never arrive at the warehouse.
+            </div>}
 
             {/* PO Header */}
             <div className="card" style={{marginBottom:0,overflow:'hidden',borderLeft:'4px solid '+(poStatus==='received'?'#22c55e':poStatus==='partial'?'#2563eb':'#d97706')}}>
