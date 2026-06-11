@@ -17,11 +17,13 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, soLineKey, buildInvoicedQtyMap } from './safeHelpers';
-import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
+import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, BinLocationPicker, binLabel } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, authFetch } from './utils';
 import { calcOrderTotals, auTierDisc } from './pricing';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
+// Canonical size-key comparator — keeps size chips in S → M → L → XL order everywhere.
+const _szOrdCmp=(a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b));
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
 // PO-wide status for global search: a PO can span multiple line items (SKUs/colors). The per-line
@@ -6336,7 +6338,7 @@ export default function App(){
       const urgent=daysOut!=null&&daysOut<=3;
 
       safeItems(so).forEach((item,ii)=>{
-        const szKeys=Object.keys(item.sizes||{}).filter(k=>SZ_ORD.includes(k)||(item.sizes[k]>0));
+        const szKeys=Object.keys(item.sizes||{}).filter(k=>SZ_ORD.includes(k)||(item.sizes[k]>0)).sort(_szOrdCmp);
         const totalOrdered=szKeys.reduce((a,s)=>a+(item.sizes[s]||0),0);
         if(totalOrdered===0)return;
         const picks=safePicks(item);
@@ -6459,7 +6461,7 @@ export default function App(){
       if(pullSeen[key]){
         const m=pullSeen[key];
         t.szKeys.forEach(s=>{m.sizes[s]=(m.sizes[s]||0)+(t.sizes[s]||0);m.pulled[s]=(m.pulled[s]||0)+(t.pulled[s]||0)});
-        m.szKeys=[...new Set([...m.szKeys,...t.szKeys])];
+        m.szKeys=[...new Set([...m.szKeys,...t.szKeys])].sort(_szOrdCmp);
         m.totalOrdered+=t.totalOrdered;m.totalPulled+=t.totalPulled;m.needsPull=m.totalOrdered-m.totalPulled;
         m._subTasks.push(sub);
         if(!m._skus.includes(t.sku))m._skus.push(t.sku);
@@ -16052,6 +16054,42 @@ export default function App(){
     checkPickups();
   },[sos]); // eslint-disable-line react-hooks/exhaustive-deps
   const addWhAction=(action)=>{setWhRecentActions(prev=>[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,500))};
+  // ─── Put-away bin locations — optional "where did it go?" prompt right after IF pulls / PO check-ins ───
+  // whBinPrompt: null | {kind:'pick',soId,pickId,label,context} | {kind:'receive',poId,rcvId?,invId?,batch?,label,context}
+  const[whBinPrompt,setWhBinPrompt]=useState(null);
+  const saveWhBins=(info,bins)=>{
+    if(!info||!bins||bins.length===0)return;
+    const mergeBins=(prev)=>[...new Set([...(prev||[]),...bins])];
+    // Only stamp recent-action rows logged by the pull/receive that opened this prompt (not older history)
+    const isFresh=(a)=>!a.bins&&Date.now()-(a.ts||0)<10*60*1000;
+    if(info.kind==='pick'){
+      const so=sos.find(s=>s.id===info.soId);
+      if(so){
+        let changed=false;
+        const items=safeItems(so).map(it=>{
+          const picks=it.pick_lines||[];
+          if(!picks.some(pk=>pk.pick_id===info.pickId&&pk.status==='pulled'))return it;
+          changed=true;
+          return{...it,pick_lines:picks.map(pk=>pk.pick_id===info.pickId&&pk.status==='pulled'?{...pk,bins:mergeBins(pk.bins)}:pk)};
+        });
+        if(changed)savSO({...so,items,updated_at:new Date().toLocaleString()});
+      }
+      setWhRecentActions(prev=>prev.map(a=>a.type==='pulled'&&a.pickId===info.pickId&&a.soId===info.soId&&isFresh(a)?{...a,bins}:a));
+    }else{
+      // PO check-in — stamp the shipment entries created by this receive (rcv_id), plus inventory/batch PO records
+      if(info.rcvId){
+        sos.forEach(so=>{
+          if(!safeItems(so).some(it=>(it.po_lines||[]).some(po=>(po.shipments||[]).some(sh=>sh.rcv_id===info.rcvId))))return;
+          const items=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).map(po=>(po.shipments||[]).some(sh=>sh.rcv_id===info.rcvId)?{...po,shipments:po.shipments.map(sh=>sh.rcv_id===info.rcvId?{...sh,bins}:sh)}:po)}));
+          savSO({...so,items,updated_at:new Date().toLocaleString()});
+        });
+      }
+      if(info.invId)setInvPOs(prev=>prev.map(p=>p.id===info.invId?{...p,bins:mergeBins(p.bins)}:p));
+      if(info.batch)setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===info.poId?{...sb,bins:mergeBins(sb.bins)}:sb));
+      setWhRecentActions(prev=>prev.map(a=>a.type==='received'&&a.poId===info.poId&&isFresh(a)?{...a,bins}:a));
+    }
+    nf('📍 Bin location saved: '+bins.join(', '));
+  };
   // ─── Mobile warehouse mutations — parity with desktop IF-pull / PO-receive side effects ───
   // Pull an IF (pick group) from mobile. pullMap: {itemIdx:{size:qty}} pulled this round.
   const mobilePullIF=(soId,pickId,pullMap)=>{
@@ -16081,12 +16119,14 @@ export default function App(){
     notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs));
   };
   // Receive (check in) SO-attached PO lines from mobile. lines: [{itemIdx,poLineIdx,rcv:{size:qty}}].
+  // Returns the rcv_id stamped on the shipment entries (so the bin-location prompt can find them), or null.
   const mobileReceiveSOPO=(soId,lines)=>{
-    const so=sos.find(s=>s.id===soId);if(!so)return;
+    const so=sos.find(s=>s.id===soId);if(!so)return null;
+    const rcvId='RCV-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
     const items=safeItems(so).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
     let grand=0;const cc=cust.find(c=>c.id===so.customer_id);const acts=[];
     lines.forEach(({itemIdx,poLineIdx,rcv})=>{const it=items[itemIdx];if(!it)return;const po=it.po_lines[poLineIdx];if(!po)return;
-      const newReceived={...(po.received||{})};const shipment={date:new Date().toLocaleDateString()};let any=false;
+      const newReceived={...(po.received||{})};const shipment={date:new Date().toLocaleDateString(),rcv_id:rcvId};let any=false;
       Object.entries(rcv||{}).forEach(([sz,qty])=>{if(qty>0){newReceived[sz]=(newReceived[sz]||0)+qty;shipment[sz]=qty;any=true;grand+=qty}});
       if(!any)return;
       const szKeys=Object.keys(po).filter(k=>SZ_ORD.includes(k));
@@ -16096,12 +16136,13 @@ export default function App(){
       const szStr=Object.entries(rcv).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');
       acts.push({type:'received',poId:po.po_id||'',soId,customer:cc?.name||'',sku:it.sku,name:it.name,color:it.color,qty:Object.values(rcv).reduce((a,v)=>a+(v||0),0),sizes:szStr,by:cu?.id||'warehouse'});
     });
-    if(grand===0)return;
+    if(grand===0)return null;
     const _newJobs=recalcJobFulfillment(so,items);
     savSO({...so,items,jobs:_newJobs,updated_at:new Date().toLocaleString()});
     acts.forEach(a=>addWhAction(a));
     nf('Received '+grand+' unit'+(grand!==1?'s':'')+' on '+soId);
     notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs));
+    return rcvId;
   };
   // Persist warehouse recent actions to app_state (DB) + localStorage so they survive across devices/sessions
   React.useEffect(()=>{_saveAppState('wh_recent_actions',whRecentActions)},[whRecentActions]);
@@ -16158,7 +16199,7 @@ export default function App(){
         const key=t.soId+'|'+(t._pickId||'__'+t.itemIdx);
         if(seen[key]){
           const g=seen[key];g._groupTasks.push(t);g.needsPull+=t.needsPull;g.totalOrdered+=t.totalOrdered;g.totalPulled+=(t.totalPulled||0);
-          (t.szKeys||[]).forEach(s=>{g.sizes[s]=(g.sizes[s]||0)+(t.sizes[s]||0);g.pulled[s]=(g.pulled[s]||0)+(t.pulled?.[s]||0);if(!g.szKeys.includes(s))g.szKeys.push(s)});
+          (t.szKeys||[]).forEach(s=>{g.sizes[s]=(g.sizes[s]||0)+(t.sizes[s]||0);g.pulled[s]=(g.pulled[s]||0)+(t.pulled?.[s]||0);if(!g.szKeys.includes(s))g.szKeys.push(s)});g.szKeys.sort(_szOrdCmp);
           g._extraCount=(g._extraCount||0)+1;
         }else{
           const g={...t,sizes:{...t.sizes},pulled:{...(t.pulled||{})},szKeys:[...(t.szKeys||[])],_groupTasks:[t],_extraCount:0};
@@ -16377,6 +16418,7 @@ export default function App(){
                         }
                       }catch(e){/* label print is best-effort */}
                       nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totPulling2+' units');notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs));setWhPulling(false);setWhViewIF(null);
+                      setWhBinPrompt({kind:'pick',soId:t.soId,pickId:pickIdToUse,label:pickIdToUse,context:(t.cName?t.cName+' · ':'')+totPulling2+' units pulled'});
                     }}>{whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPulling2+' units)':isPartial?'✓ Mark Partial Pull ('+totPulling2+' of '+grandNeed+')':'✓ Mark as Pulled')}</button>
                     {!isFull&&<button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
                       const filled={};pickItems.forEach(pi=>{filled[pi.itemIdx]=Object.fromEntries(pi.szKeys.map(sz=>[sz,Math.max(0,(pi.sizes[sz]||0)-(pi.pulled[sz]||0))]))});setPullQtys(filled);
@@ -16402,6 +16444,7 @@ export default function App(){
                         {allSzKeys.map(sz=>{const v=pk[sz]||0;return<span key={sz} style={{minWidth:36,textAlign:'center',fontSize:11,fontWeight:v?700:400,color:v?'#0f172a':'#d1d5db'}}>{v||'—'}</span>})}
                         <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:st==='pulled'?'#dcfce7':'#fef3c7',color:st==='pulled'?'#166534':'#92400e'}}>{st==='pulled'?'✓ Pulled':'Needs Pull'}</span>
                         {pk.memo&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>{pk.memo}</span>}
+                        {(pk.bins||[]).map(b=><span key={b} title={binLabel(b)} style={{fontSize:9,fontWeight:800,padding:'1px 6px',borderRadius:4,background:'#cffafe',color:'#0e7490'}}>📍 {b}</span>)}
                       </div>;
                     })}
                   </div>;
@@ -16847,6 +16890,7 @@ export default function App(){
                         return shSizes.length>0&&<div key={si} style={{padding:'4px 8px',background:'#f0fdf4',borderRadius:4,fontSize:10,display:'inline-flex',gap:6,marginRight:4,marginBottom:2}}>
                           <span style={{fontWeight:700,color:'#166534'}}>{sh.date}</span>
                           {shSizes.map(sz=><span key={sz}>{sz}:<strong>{sh[sz]}</strong></span>)}
+                          {(sh.bins||[]).length>0&&<span style={{fontWeight:800,color:'#0e7490'}}>📍 {sh.bins.join(', ')}</span>}
                         </div>})}
                     </div>}
                   </div>})}
@@ -16881,6 +16925,8 @@ export default function App(){
                   if(preTotal>0&&preTotal<totalOpen&&!window.confirm('Partial receive: '+preTotal+' of '+totalOpen+' open units. Continue?')){return}
                   setWhReceiving(true);
                   const date=document.getElementById('wh-recv-date')?.value||new Date().toISOString().split('T')[0];
+                  // Tag every shipment entry created by this receive so the bin-location prompt can stamp them afterwards
+                  const rcvId='RCV-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
                   let anyReceived=false;let totalQtyReceived=0;
                   // Capture what was JUST received per item so the auto-printed label reflects the contents
                   // of the box that was just put away — not the entire PO.
@@ -16900,7 +16946,7 @@ export default function App(){
                       lines.forEach(pl=>{
                         const po=updItems[pl.itemIdx]?.po_lines?.[pl.poLineIdx];if(!po)return;
                         const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof po[k]==='number');
-                        const shipment={date};const newReceived={...(po.received||{})};
+                        const shipment={date,rcv_id:rcvId};const newReceived={...(po.received||{})};
                         const rcvSizes={};
                         szKeys.forEach(sz=>{
                           const open=Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0));
@@ -17001,7 +17047,8 @@ export default function App(){
                         w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),400);
                       }
                     }
-                    setWhRecvPO(null)}
+                    setWhRecvPO(null);
+                    setWhBinPrompt({kind:'receive',poId,rcvId:soPOLines.length>0?rcvId:null,invId:invMatch?.id||null,batch:!!batchMatch,label:poId,context:(vendorName?vendorName+' · ':'')+totalQtyReceived+' units received'});}
                   else{const allAlreadyDone=totalOpen<=0;nf(allAlreadyDone?'All items on '+poId+' already fully received':'Enter at least one quantity to receive','error')}
                 }}>{whReceiving?'Saving...':'✓ Confirm Received'}</button>
               </div>}
@@ -18209,6 +18256,10 @@ export default function App(){
         </div>
       </div></div>}
 
+      {/* ── BIN LOCATION PROMPT — optional put-away spot after IF pulls / PO check-ins ── */}
+      {whBinPrompt&&<BinLocationPicker title={whBinPrompt.label} subtitle={whBinPrompt.context}
+        onSave={bins=>{saveWhBins(whBinPrompt,bins);setWhBinPrompt(null)}} onSkip={()=>setWhBinPrompt(null)}/>}
+
       {/* ── DELIVER TAB — Warehouse delivers directly ── */}
       {whTab==='deliver'&&<>
         {fDeliver.length===0?<div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'#64748b'}}>
@@ -18681,7 +18732,7 @@ export default function App(){
                 <span style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'underline'}}>{a.soId}</span>
                 <span style={{fontSize:11,color:'#64748b'}}>{a.customer}</span>
               </div>
-              <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{a.artName?a.artName+' ':''}{a.decoType?' ('+a.decoType.replace(/_/g,' ')+') ':''}{a.sku?a.sku+' ':''}{ a.name||''}{a.color?' ('+a.color+')':''}{a.qty?' — '+a.qty+' units':''}{a.sizes?' — '+a.sizes:''}{a.tracking?' · Tracking: '+a.tracking:''}{a.carrier?' · '+a.carrier.toUpperCase():''}{a.cost?' · '+a.cost:''}</div>
+              <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{a.artName?a.artName+' ':''}{a.decoType?' ('+a.decoType.replace(/_/g,' ')+') ':''}{a.sku?a.sku+' ':''}{ a.name||''}{a.color?' ('+a.color+')':''}{a.qty?' — '+a.qty+' units':''}{a.sizes?' — '+a.sizes:''}{a.tracking?' · Tracking: '+a.tracking:''}{a.carrier?' · '+a.carrier.toUpperCase():''}{a.cost?' · '+a.cost:''}{(a.bins||[]).length>0&&<span style={{color:'#0e7490',fontWeight:700}}> · 📍 {a.bins.join(', ')}</span>}</div>
             </div>
             <div style={{textAlign:'right',flexShrink:0,display:'flex',flexDirection:'column',gap:2,alignItems:'flex-end'}}>
               <div style={{fontSize:10,color:'#94a3b8'}}>{a.at}</div>
@@ -28068,7 +28119,7 @@ export default function App(){
   // LOGIN GATE
   if(!cu)return<ComponentErrorBoundary name="LoginGate"><React.Suspense fallback={<LazyFallback/>}><LoginGate onLogin={handleLogin} reps={REPS} supabase={supabase} sbSignIn={_sbSignIn} sbSignUp={_sbSignUp} sbResendSignup={_sbResendSignup} sbResetPassword={_sbResetPassword} sbGetSession={_sbGetSession} sbLinkTeamAuth={_sbLinkTeamAuth} sbGetMyProfile={_sbGetMyProfile}/></React.Suspense></ComponentErrorBoundary>;
   // MOBILE PORTAL GATE
-  if(mobileMode)return<ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO} onAssignBot={assignBotTask} canAccess={canAccess}/></ComponentErrorBoundary>;
+  if(mobileMode)return<ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO} onSaveBins={saveWhBins} onAssignBot={assignBotTask} canAccess={canAccess}/></ComponentErrorBoundary>;
 
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     {/* Mobile sidebar backdrop */}

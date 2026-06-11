@@ -466,4 +466,69 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
     <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
-export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
+// ─── BIN LOCATION PICKER ───
+// Warehouse put-away grid: 5 shelving units in a row, 4 bays each — bays numbered
+// straight across 1-20 — and every bay is 5 shelves high (1 = bottom … 5 = top).
+// A location code is "<bay>-<shelf>" (e.g. "7-3" = bay 7, shelf 3). Shown right after
+// an IF pull or a PO check-in so the crew can tap where the units physically went.
+// Selecting is optional — Skip records nothing.
+const WH_UNITS=5, WH_BAYS_PER_UNIT=4, WH_SHELVES=5;
+const binLabel=(code)=>{const[b,s]=String(code).split('-');return'Bay '+b+' · Shelf '+s};
+const BinLocationPicker=({title,subtitle,onSave,onSkip})=>{
+  const[sel,setSel]=useState([]);
+  const toggle=(code)=>setSel(p=>p.includes(code)?p.filter(x=>x!==code):[...p,code]);
+  return<div style={{position:'fixed',inset:0,background:'rgba(15,23,42,0.55)',zIndex:10000,display:'flex',alignItems:'center',justifyContent:'center',padding:10}} onClick={onSkip}>
+    <div onClick={e=>e.stopPropagation()} style={{background:'white',borderRadius:16,maxWidth:1100,width:'100%',maxHeight:'94vh',display:'flex',flexDirection:'column',boxShadow:'0 24px 64px rgba(0,0,0,0.35)'}}>
+      <div style={{padding:'14px 20px',background:'linear-gradient(135deg,#155e75,#0891b2)',color:'white',borderRadius:'16px 16px 0 0'}}>
+        <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+          <span style={{fontSize:20}}>📍</span>
+          <div style={{flex:1,minWidth:160}}>
+            <div style={{fontSize:16,fontWeight:900}}>Bin Location{title?' — '+title:''}</div>
+            {subtitle&&<div style={{fontSize:12,opacity:0.85,marginTop:2}}>{subtitle}</div>}
+          </div>
+          <span style={{fontSize:10,fontWeight:700,padding:'3px 10px',borderRadius:12,background:'rgba(255,255,255,0.18)'}}>Optional</span>
+        </div>
+        <div style={{fontSize:11,opacity:0.8,marginTop:6}}>Tap every spot these units went — bay number across, shelf 1 (bottom) to 5 (top). Multiple allowed.</div>
+      </div>
+      <div style={{padding:14,overflow:'auto',flex:1,WebkitOverflowScrolling:'touch'}}>
+        <div style={{display:'flex',gap:12,flexWrap:'wrap',justifyContent:'center'}}>
+          {Array.from({length:WH_UNITS},(_,u)=>{
+            const bays=Array.from({length:WH_BAYS_PER_UNIT},(_,i)=>u*WH_BAYS_PER_UNIT+i+1);
+            return<div key={u} style={{border:'2px solid #cbd5e1',borderRadius:12,padding:'8px 8px 10px',background:'#f8fafc'}}>
+              <div style={{textAlign:'center',fontSize:10,fontWeight:800,color:'#475569',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Bays {bays[0]}–{bays[bays.length-1]}</div>
+              <div style={{display:'grid',gridTemplateColumns:'14px repeat('+WH_BAYS_PER_UNIT+',minmax(40px,48px))',gap:4}}>
+                {Array.from({length:WH_SHELVES},(_,si)=>{
+                  const shelf=WH_SHELVES-si;// render shelf 5 (top) first, 1 (bottom) last — mirrors the physical rack
+                  return<React.Fragment key={shelf}>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:800,color:'#94a3b8'}}>{shelf}</div>
+                    {bays.map(bay=>{
+                      const code=bay+'-'+shelf;const on=sel.includes(code);
+                      return<button key={code} onClick={()=>toggle(code)} title={binLabel(code)}
+                        style={{minHeight:42,borderRadius:8,cursor:'pointer',fontSize:11,fontWeight:800,padding:0,
+                          border:on?'2px solid #0e7490':'1px solid #cbd5e1',
+                          background:on?'#0891b2':'white',color:on?'white':'#64748b',
+                          boxShadow:on?'0 2px 8px rgba(8,145,178,0.4)':'none'}}>{code}</button>;
+                    })}
+                  </React.Fragment>;
+                })}
+              </div>
+            </div>;
+          })}
+        </div>
+      </div>
+      <div style={{padding:'12px 16px',borderTop:'1px solid #e2e8f0',background:'#f8fafc',borderRadius:'0 0 16px 16px'}}>
+        {sel.length>0&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
+          {sel.map(c=><span key={c} onClick={()=>toggle(c)} title="Tap to remove" style={{cursor:'pointer',fontSize:12,fontWeight:800,padding:'4px 10px',borderRadius:8,background:'#cffafe',color:'#0e7490'}}>📍 {binLabel(c)} ×</span>)}
+        </div>}
+        <div style={{display:'flex',gap:8}}>
+          <button onClick={onSkip} style={{flex:1,maxWidth:160,padding:12,borderRadius:10,border:'1px solid #cbd5e1',background:'white',color:'#64748b',fontWeight:700,fontSize:14,cursor:'pointer',minHeight:48}}>Skip</button>
+          <button disabled={sel.length===0} onClick={()=>sel.length>0&&onSave(sel)}
+            style={{flex:2,padding:12,borderRadius:10,border:'none',background:sel.length>0?'#0e7490':'#cbd5e1',color:'white',fontWeight:800,fontSize:14,cursor:sel.length>0?'pointer':'default',minHeight:48}}>
+            ✓ Save Location{sel.length>1?'s ('+sel.length+')':''}</button>
+        </div>
+      </div>
+    </div>
+  </div>;
+};
+
+export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor, BinLocationPicker, binLabel };
