@@ -32,3 +32,9 @@
 # System Health alert — every 2 hours, emails Steve if orphan jobs detected
 [functions."so-health-alert"]
   schedule = "0 */2 * * *"
+
+# UPS pickup auto-check — daily at 13:00 UTC (~5-6 AM PT). Marks shipments as
+# picked up in Supabase once UPS has scanned the package, so Awaiting Pickup
+# clears itself even when nobody has the portal open.
+[functions."ups-pickup-sync"]
+  schedule = "0 13 * * *"
