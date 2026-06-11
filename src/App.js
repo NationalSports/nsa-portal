@@ -8651,13 +8651,17 @@ export default function App(){
     // their subset of sizes, same convention as isJobReady). pulledStock counts units already pulled
     // from warehouse stock; billedCov = billed-or-pulled coverage, so "All Billed" treats stock pulls
     // the way Items Received does (a pulled unit isn't incoming, but nothing more needs billing).
-    const _jobInbound=(j,so)=>{let billed=0,pulledStock=0,billedCov=0;(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;
+    const _jobInbound=(j,so)=>{let billed=0,pulledStock=0,billedCov=0,ifCov=0;(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;
       const sizeSrc=(gi.sizes&&Object.keys(gi.sizes).length>0)?gi.sizes:safeSizes(it);
       Object.entries(sizeSrc).filter(([,v])=>v>0).forEach(([sz,v])=>{
         const b=safePOs(it).reduce((a,pk)=>a+safeNum((pk.billed||{})[sz]),0);
         const p=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-        billed+=Math.min(v,b);pulledStock+=Math.min(v,p);billedCov+=Math.min(v,b+p)})});
-      return{billed,pulledStock,billedCov}};
+        const r=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+        // Pick lines reserved but not pulled yet — warehouse Inventory Fulfillment still to do.
+        // Any non-pulled pick counts as coverage, same as calcSOStatus's covered logic.
+        const pp=safePicks(it).filter(pk=>pk.status!=='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+        billed+=Math.min(v,b);pulledStock+=Math.min(v,p);billedCov+=Math.min(v,b+p);ifCov+=Math.min(v,p+r+pp)})});
+      return{billed,pulledStock,billedCov,ifCov}};
     // Build flat jobs list
     const allJobs=[];
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);const _pid=c?.parent_id||c?.id||null;
@@ -8684,7 +8688,11 @@ export default function App(){
     if(jfRepId&&jfRepId!=='all')fj=fj.filter(j=>j.repId===jfRepId);
     if(jf.deco!=='all')fj=fj.filter(j=>j.deco_type===jf.deco);
     if(jf.artSt!=='all')fj=fj.filter(j=>j.art_status===jf.artSt);
+    // Waiting IF: garments aren't all in yet, but every missing unit sits on a reserved pick line
+    // awaiting the warehouse Inventory Fulfillment pull — nothing left to order or receive.
+    const _isWaitingIF=j=>j.total_units>0&&j.fulfilled_units<j.total_units&&j.ifCov>=j.total_units;
     if(jf.itemSt==='all_billed')fj=fj.filter(j=>j.total_units>0&&j.billedCov>=j.total_units);
+    else if(jf.itemSt==='waiting_if')fj=fj.filter(_isWaitingIF);
     else if(jf.itemSt!=='all')fj=fj.filter(j=>j.item_status===jf.itemSt);
     if(jf.dueBefore)fj=fj.filter(j=>j.expected&&j.expected<=jf.dueBefore);
     if(jf.search){const s=jf.search.toLowerCase();fj=fj.filter(j=>(j.art_name||'').toLowerCase().includes(s)||(j.soId||'').toLowerCase().includes(s)||(j.customer||'').toLowerCase().includes(s)||(j.id||'').toLowerCase().includes(s)||(j.items||[]).some(gi=>(gi.sku||'').toLowerCase().includes(s)||(gi.name||'').toLowerCase().includes(s)))}
@@ -8724,7 +8732,8 @@ export default function App(){
     };
 
     const ART_STATUSES=[['needs_art','Needs Art'],['art_requested','Art Requested'],['art_in_progress','In Progress'],['waiting_approval','Waiting Approval'],['production_files_needed','Art Approved — Waiting'],['order_dtf_transfers','Order DTF Transfers'],['upload_emb_files','Upload EMB Files'],['art_complete','Art Complete']];
-    const ITEM_STATUSES=[['need_to_order','Need to Order'],['partially_received','Partially Received'],['items_received','Items Received'],['all_billed','All Billed']];
+    const ITEM_STATUSES=[['need_to_order','Need to Order'],['partially_received','Partially Received'],['waiting_if','Waiting IF Pull'],['items_received','Items Received'],['all_billed','All Billed']];
+    const ITEM_CHIP_TIPS={waiting_if:'Only thing left is the warehouse pull: every missing garment is reserved on a pick line (Inventory Fulfillment) — nothing to order or receive from vendors.',all_billed:'Every unit is covered by vendor bills and/or warehouse stock pulls — nothing left un-billed.'};
     const chipStyle=(active,sc)=>({fontSize:10,padding:'3px 10px',borderRadius:12,border:'1px solid '+(active?sc?.c||'#2563eb':'#e2e8f0'),
       background:active?(sc?.bg||'#eff6ff'):'white',color:active?(sc?.c||'#2563eb'):'#94a3b8',cursor:'pointer',fontWeight:600,display:'inline-flex',alignItems:'center',gap:4});
     const toggleArt=id=>setJF('artSt',jf.artSt===id?'all':id);
@@ -8766,8 +8775,8 @@ export default function App(){
         {/* Row 4: Product/Item Status chips */}
         <div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center',marginBottom:6}}>
           <span style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:4,minWidth:48}}>PRODUCT:</span>
-          {ITEM_STATUSES.map(([id,label])=>{const active=(jf.itemSt||'all')===id;const ct=id==='all_billed'?allJobs.filter(j=>j.total_units>0&&j.billedCov>=j.total_units).length:allJobs.filter(j=>j.item_status===id).length;
-            return<button key={id} style={chipStyle(active,SC[id])}
+          {ITEM_STATUSES.map(([id,label])=>{const active=(jf.itemSt||'all')===id;const ct=id==='all_billed'?allJobs.filter(j=>j.total_units>0&&j.billedCov>=j.total_units).length:id==='waiting_if'?allJobs.filter(_isWaitingIF).length:allJobs.filter(j=>j.item_status===id).length;
+            return<button key={id} title={ITEM_CHIP_TIPS[id]} style={chipStyle(active,id==='waiting_if'?{c:'#7c3aed',bg:'#ede9fe'}:SC[id])}
               onClick={()=>toggleItem(id)}>{label} <span style={{fontSize:9,opacity:0.7}}>({ct})</span></button>})}
         </div>
         {/* Row 5: Saved filters */}
