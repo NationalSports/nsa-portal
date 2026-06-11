@@ -224,6 +224,56 @@ const jobLiveArtIds = (j, o) => {
   return arr.filter(id => { const a = safeArr(o?.art_files).find(f => f.id === id); return a && !a.archived; });
 };
 
+// ── Split-family fulfillment apportioning ──
+// Received/pulled units are tracked on the SO line item, so every job referencing that item
+// reads the same pool. For unrelated jobs that's correct — the same physical garment fulfills
+// a front-print job AND a back-embroidery job. But a split family (a parent and the slices
+// split off it via split_from) PARTITIONS the item's units between its jobs, so within a
+// family the pool must be apportioned, never double-counted: after a split-by-received the
+// parent's open remainder would otherwise re-count the very receipts its slice was created to
+// own. Slices claim first (deepest split first — matching the receipts-go-to-the-split-first
+// convention used when a split is created); the root parent takes what's left. Each job is
+// capped at its own per-size quantities (gi.sizes when the split recorded them, else the full
+// item sizes). Returns one {total, fulfilled, fulSizes[<item index>]} entry per job, aligned
+// with the jobs array.
+const allocateJobFulfillment = (jobs, items) => {
+  const byId = {};
+  jobs.forEach(j => { if (j && j.id) byId[j.id] = j; });
+  const famMeta = (j) => {
+    let cur = j, depth = 0; const seen = {};
+    while (cur && cur.id && cur.split_from && byId[cur.split_from] && !seen[cur.id]) {
+      seen[cur.id] = 1; cur = byId[cur.split_from]; depth++;
+    }
+    return { root: (cur && cur.id) || (j && j.id) || '', depth };
+  };
+  const order = jobs.map((j, i) => ({ i, m: famMeta(j) })).sort((a, b) => (b.m.depth - a.m.depth) || (a.i - b.i));
+  const claimed = {}; // family root::item_idx::size -> units already taken by deeper slices
+  const out = new Array(jobs.length);
+  order.forEach(e => {
+    const j = jobs[e.i];
+    const res = { total: 0, fulfilled: 0, fulSizes: [] };
+    out[e.i] = res;
+    if (!j) return;
+    (j.items || []).forEach((gi, gii) => {
+      const fs = {};
+      res.fulSizes[gii] = fs;
+      const it = safeArr(items)[gi.item_idx]; if (!it) return;
+      const sizeSrc = (gi.sizes && Object.keys(gi.sizes).length > 0) ? gi.sizes : safeSizes(it);
+      Object.entries(sizeSrc).filter(([, v]) => safeNum(v) > 0).forEach(([sz, v]) => {
+        res.total += v;
+        const pulledQty = safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
+        const rcvdQty = safePOs(it).reduce((a, pk) => a + safeNum((pk.received || {})[sz]), 0);
+        const ck = e.m.root + '::' + gi.item_idx + '::' + sz;
+        const take = Math.min(safeNum(v), Math.max(0, pulledQty + rcvdQty - (claimed[ck] || 0)));
+        claimed[ck] = (claimed[ck] || 0) + take;
+        if (take > 0) fs[sz] = take;
+        res.fulfilled += take;
+      });
+    });
+  });
+  return out;
+};
+
 // ── Job Readiness Check ──
 const isJobReady = (j, o) => {
   if (j.art_status !== 'art_complete') return false;
@@ -238,21 +288,13 @@ const isJobReady = (j, o) => {
     if ((af.deco_type || '') === 'embroidery' && (af.files || []).some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); })) continue;
     return false;
   }
-  let totalSz = 0, fulfilledSz = 0;
-  (j.items || []).forEach(gi => {
-    const it = safeItems(o)[gi.item_idx]; if (!it) return;
-    // Use the job's own size quantities when available — split jobs carry only their subset of
-    // sizes (e.g. just 3XL) so checking the full SO item would require the sibling split's
-    // garments to be received before this job is considered ready.
-    const sizeSrc = (gi.sizes && Object.keys(gi.sizes).length > 0) ? gi.sizes : safeSizes(it);
-    Object.entries(sizeSrc).filter(([, v]) => v > 0).forEach(([sz, v]) => {
-      totalSz += v;
-      const picked = safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
-      const rcvd = safePOs(it).reduce((a, pk) => a + safeNum((pk.received || {})[sz]), 0);
-      fulfilledSz += Math.min(v, picked + rcvd);
-    });
-  });
-  return totalSz > 0 && fulfilledSz >= totalSz;
+  // Garments in hand — family-apportioned so a split slice and its parent never both count the
+  // same receipts (a parent left with 10 open units must not read ready off its sibling's 90).
+  const jobs = safeJobs(o);
+  let ji = jobs.indexOf(j);
+  if (ji === -1) ji = jobs.findIndex(x => x && x.id && j.id && x.id === j.id);
+  const a = allocateJobFulfillment(ji === -1 ? [j] : jobs, safeItems(o))[ji === -1 ? 0 : ji];
+  return a.total > 0 && a.fulfilled >= a.total;
 };
 
 // ── Job Fulfillment Recalculation ──
@@ -263,25 +305,34 @@ const isJobReady = (j, o) => {
 // when a receipt is reduced (e.g. mis-shipped units un-received on the PO).
 // Split jobs carry only their subset of sizes in gi.sizes (same convention as isJobReady),
 // so honor that before falling back to the full SO item sizes — otherwise a receive after
-// a custom split would clobber both halves' totals with the full item quantity.
+// a custom split would clobber both halves' totals with the full item quantity. Receipts are
+// apportioned within each split family (see allocateJobFulfillment) so a slice and its parent
+// never both count the same units, and jobs carrying per-size splits get gi.fulfilled /
+// gi.fulSizes refreshed to the apportioned amounts — stored fulSizes is what the UI's size
+// chips show (and what syncJobs preserves), so it has to track receipts in both directions.
 // NOTE: no spread syntax in this file — babel would inject an ESM helper import for it,
 // which makes webpack treat this CommonJS module as ESM and drop module.exports entirely.
-const recalcJobFulfillment = (o, items) => safeJobs(o).map(j => {
-  let total = 0, fulfilled = 0;
-  (j.items || []).forEach(gi => {
-    const it = safeArr(items)[gi.item_idx]; if (!it) return;
-    const sizeSrc = (gi.sizes && Object.keys(gi.sizes).length > 0) ? gi.sizes : safeSizes(it);
-    Object.entries(sizeSrc).filter(([, v]) => safeNum(v) > 0).forEach(([sz, v]) => {
-      total += v;
-      const pulledQty = safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
-      const rcvdQty = safePOs(it).reduce((a, pk) => a + safeNum((pk.received || {})[sz]), 0);
-      fulfilled += Math.min(v, pulledQty + rcvdQty);
+const recalcJobFulfillment = (o, items) => {
+  const alloc = allocateJobFulfillment(safeJobs(o), items);
+  return safeJobs(o).map((j, ji) => {
+    const a = alloc[ji];
+    const itemSt = a.fulfilled >= a.total && a.total > 0 ? 'items_received' : a.fulfilled > 0 ? 'partially_received' : 'need_to_order';
+    let giChanged = false;
+    const newItems = (j.items || []).map((gi, gii) => {
+      if (!gi.sizes || Object.keys(gi.sizes).length === 0) return gi;
+      const fs = a.fulSizes[gii] || {};
+      const f = Object.keys(fs).reduce((x, sz) => x + fs[sz], 0);
+      const old = gi.fulSizes || {};
+      const oldKeys = Object.keys(old).filter(sz => safeNum(old[sz]) > 0);
+      const same = safeNum(gi.fulfilled) === f && oldKeys.length === Object.keys(fs).length && oldKeys.every(sz => safeNum(old[sz]) === fs[sz]);
+      if (same) return gi;
+      giChanged = true;
+      return Object.assign({}, gi, { fulSizes: fs, fulfilled: f });
     });
+    if (!giChanged && j.item_status === itemSt && j.fulfilled_units === a.fulfilled && j.total_units === a.total) return j;
+    return Object.assign({}, j, { item_status: itemSt, fulfilled_units: a.fulfilled, total_units: a.total, items: newItems });
   });
-  const itemSt = fulfilled >= total && total > 0 ? 'items_received' : fulfilled > 0 ? 'partially_received' : 'need_to_order';
-  if (j.item_status === itemSt && j.fulfilled_units === fulfilled && j.total_units === total) return j;
-  return Object.assign({}, j, { item_status: itemSt, fulfilled_units: fulfilled, total_units: total });
-});
+};
 
 // ── Ready-for-decoration transition ──
 // Given a job list from before and after a fulfillment recalc, returns the jobs that JUST
