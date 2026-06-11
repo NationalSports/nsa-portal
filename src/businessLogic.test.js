@@ -1007,6 +1007,22 @@ describe('Job Readiness (isJobReady)', () => {
     });
     expect(isJobReady(job, so)).toBe(false);
   });
+
+  test('split parent with open units is not ready off its slice\'s receipts', () => {
+    // Split-by-received: the slice owns the 90 checked-in L's; the parent's 10 are still open.
+    // Both jobs read the same item-level receipt pool — the parent must not count the slice's.
+    const jobs = [
+      { id: 'JOB-1', art_status: 'art_complete', art_file_id: 'af1', items: [{ item_idx: 0, sizes: { L: 10 }, fulSizes: {} }] },
+      { id: 'JOB-1-S', split_from: 'JOB-1', art_status: 'art_complete', art_file_id: 'af1', items: [{ item_idx: 0, sizes: { L: 90 }, fulSizes: { L: 90 } }] },
+    ];
+    const so = makeSO({
+      jobs,
+      items: [makeSOItem({ sizes: { L: 100 }, po_lines: [{ po_id: 'PO-1', L: 100, received: { L: 90 } }] })],
+      art_files: [makeArtFile({ prod_files: ['sep.ai'] })],
+    });
+    expect(isJobReady(jobs[1], so)).toBe(true);  // slice owns its 90 received units
+    expect(isJobReady(jobs[0], so)).toBe(false); // parent's 10 are still on backorder
+  });
 });
 
 describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
@@ -1095,6 +1111,71 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
     expect(remain2.item_status).toBe('items_received');
     expect(remain2.fulfilled_units).toBe(5);
     expect(split2.total_units).toBe(295);
+  });
+
+  test('split halves sharing a size never double-count the shared receipts', () => {
+    // Split-by-received: 90 of 100 L received → slice owns the 90, parent keeps 10 open.
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 10,
+          items: [{ item_idx: 0, sizes: { L: 10 }, fulSizes: {} }] },
+        { id: 'JOB-1-S', split_from: 'JOB-1', item_status: 'items_received', fulfilled_units: 90, total_units: 90,
+          items: [{ item_idx: 0, sizes: { L: 90 }, fulSizes: { L: 90 } }] },
+      ],
+    });
+    const items = [makeSOItem({ sizes: { L: 100 }, po_lines: [{ po_id: 'PO-1', L: 100, received: { L: 90 } }] })];
+    const [remain, split] = recalcJobFulfillment(so, items);
+    expect(split.fulfilled_units).toBe(90);
+    expect(split.item_status).toBe('items_received');
+    // The parent's 10 open units must NOT read as fulfilled off the slice's receipts
+    expect(remain.fulfilled_units).toBe(0);
+    expect(remain.item_status).toBe('need_to_order');
+    // Backorder arrives → the 10 new units flow to the parent, slice untouched
+    const items2 = [makeSOItem({ sizes: { L: 100 }, po_lines: [{ po_id: 'PO-1', L: 100, received: { L: 100 } }] })];
+    const [remain2, split2] = recalcJobFulfillment(so, items2);
+    expect(remain2.fulfilled_units).toBe(10);
+    expect(remain2.item_status).toBe('items_received');
+    expect(remain2.items[0].fulSizes).toEqual({ L: 10 });
+    expect(split2.fulfilled_units).toBe(90);
+    // Un-receiving pulls from the parent's allocation first, then the slice's
+    const items3 = [makeSOItem({ sizes: { L: 100 }, po_lines: [{ po_id: 'PO-1', L: 100, received: { L: 85 } }] })];
+    const [remain3, split3] = recalcJobFulfillment(so, items3);
+    expect(remain3.fulfilled_units).toBe(0);
+    expect(split3.fulfilled_units).toBe(85);
+    expect(split3.item_status).toBe('partially_received');
+    expect(split3.items[0].fulSizes).toEqual({ L: 85 });
+  });
+
+  test('legacy received-split without per-size allocations: slice claims the pool before the parent', () => {
+    // Splits created before per-size allocations carry no gi.sizes; both halves cap at the full
+    // item sizes. The slice claims the receipts first so the parent no longer re-counts them.
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 10, items: [{ item_idx: 0 }] },
+        { id: 'JOB-1-S', split_from: 'JOB-1', item_status: 'items_received', fulfilled_units: 90, total_units: 90, items: [{ item_idx: 0 }] },
+      ],
+    });
+    const items = [makeSOItem({ sizes: { L: 100 }, po_lines: [{ po_id: 'PO-1', L: 100, received: { L: 90 } }] })];
+    const [remain, split] = recalcJobFulfillment(so, items);
+    expect(split.fulfilled_units).toBe(90); // capped by the pool, not doubled
+    expect(remain.fulfilled_units).toBe(0); // leftovers only
+  });
+
+  test('unrelated jobs decorating the same item still each count the full pool', () => {
+    // Front-print and back-emb jobs on the same shirts: the same physical units fulfill both,
+    // so family apportioning must NOT kick in between jobs that aren't split from each other.
+    const so = makeSO({
+      jobs: [
+        { id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 15, items: [{ item_idx: 0 }] },
+        { id: 'JOB-2', item_status: 'need_to_order', fulfilled_units: 0, total_units: 15, items: [{ item_idx: 0 }] },
+      ],
+    });
+    const items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: { S: 5, M: 10 } }] })];
+    const [front, back] = recalcJobFulfillment(so, items);
+    expect(front.fulfilled_units).toBe(15);
+    expect(front.item_status).toBe('items_received');
+    expect(back.fulfilled_units).toBe(15);
+    expect(back.item_status).toBe('items_received');
   });
 
   test('returns same job reference when nothing changed', () => {

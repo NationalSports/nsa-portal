@@ -6881,26 +6881,80 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         sent_to_coach_at:j.sent_to_coach_at||null,coach_approved_at:j.coach_approved_at||null,coach_approval_comment:j.coach_approval_comment||null,coach_rejected:j.coach_rejected||null,coach_email_opened_at:j.coach_email_opened_at||null,
         follow_up_at:j.follow_up_at||null});
 
-      // Split job by received — create partial job with received items
+      // Resolve per-size totals/fulfillment for a given job item, honoring any prior split overrides.
+      const _giSizes=gi=>{
+        if(gi.sizes)return{...gi.sizes};
+        const it=safeItems(o)[gi.item_idx];if(!it)return{};
+        const out={};
+        Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{out[sz]=safeNum(v)});
+        return out;
+      };
+      const _giFulSizes=(gi,maxSizes)=>{
+        if(gi.fulSizes)return{...gi.fulSizes};
+        const it=safeItems(o)[gi.item_idx];if(!it)return{};
+        const out={};
+        Object.entries(maxSizes||_giSizes(gi)).forEach(([sz,cap])=>{
+          const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+          const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+          out[sz]=Math.min(safeNum(cap),pQ+rQ);
+        });
+        return out;
+      };
+      // Split job by received — carve the received/pulled units off into a new job that can go
+      // to production now; the open balance stays on the original. Both halves get explicit
+      // per-size allocations (sizes/fulSizes, same convention as splitCustom): receipts live on
+      // the shared SO line item, so without per-job allocations both halves keep displaying the
+      // full item's checked-in counts and the next receive recalc clobbers their totals back to
+      // the full item quantities (see recalcJobFulfillment).
       const splitByReceived=(jIdx)=>{
         const j=jobs[jIdx];if(!j||!j.items?.length)return;
-        const rcvdItems=[];let rcvdTotal=0;
-        j.items.forEach(ji=>{
-          const it=safeItems(o)[ji.item_idx];if(!it)return;
-          let ful=0;
-          Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-            const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-            ful+=Math.min(v,pQ+rQ);
+        const rcvdItems=[];const keepItems=[];let rcvdTotal=0;let keepTotal=0;
+        j.items.forEach(gi=>{
+          const curSizes=_giSizes(gi);
+          const curFul=_giFulSizes(gi,curSizes);
+          const splitSizes={};const remainSizes={};
+          let sUnits=0,rUnits=0;
+          Object.entries(curSizes).forEach(([sz,v])=>{
+            const f=Math.max(0,Math.min(safeNum(curFul[sz]),safeNum(v)));
+            if(f>0){splitSizes[sz]=f;sUnits+=f}
+            const rem=safeNum(v)-f;
+            if(rem>0){remainSizes[sz]=rem;rUnits+=rem}
           });
-          if(ful>0){rcvdItems.push({...ji,fulfilled:ful,units:ful});rcvdTotal+=ful}
+          // Partition the roster like splitCustom: first N per size go with the received slice.
+          const _srcIt=safeItems(o)[gi.item_idx];
+          const _srcDeco=_srcIt?safeDecos(_srcIt).find(d=>d.kind==='numbers'):null;
+          const baseRoster=gi.roster||_srcDeco?.roster||null;
+          let splitRoster=null,remainRoster=null;
+          if(baseRoster){
+            splitRoster={};remainRoster={};
+            Object.keys(curSizes).forEach(sz=>{
+              const arr=Array.isArray(baseRoster[sz])?baseRoster[sz].slice():[];
+              const sCap=safeNum(splitSizes[sz]);
+              const rCap=safeNum(remainSizes[sz]);
+              if(sCap>0){const head=arr.slice(0,sCap);splitRoster[sz]=head.concat(Array(Math.max(0,sCap-head.length)).fill(''))}
+              if(rCap>0){const tail=arr.slice(sCap);remainRoster[sz]=tail.concat(Array(Math.max(0,rCap-tail.length)).fill(''))}
+            });
+          }
+          if(sUnits>0){
+            const item={...gi,sizes:splitSizes,fulSizes:{...splitSizes},units:sUnits,fulfilled:sUnits};
+            if(splitRoster)item.roster=splitRoster;
+            rcvdItems.push(item);rcvdTotal+=sUnits;
+          }
+          if(rUnits>0){
+            const item={...gi,sizes:remainSizes,fulSizes:{},units:rUnits,fulfilled:0};
+            if(remainRoster)item.roster=remainRoster;
+            keepItems.push(item);keepTotal+=rUnits;
+          }
         });
         if(rcvdTotal===0){nf('Nothing received to split','error');return}
-        const splitId=j.id+'-S';
-        const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__S',split_from:j.id,item_status:'items_received',items:rcvdItems,
+        if(keepItems.length===0||keepTotal===0){nf('Everything is already received — nothing left to split off','error');return}
+        const existingS=jobs.filter(jj=>jj.split_from===j.id&&jj.id.startsWith(j.id+'-S')).length;
+        const suffix='S'+(existingS>0?existingS+1:'');
+        const splitId=j.id+'-'+suffix;
+        const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__'+suffix,split_from:j.id,item_status:'items_received',items:rcvdItems,
           fulfilled_units:rcvdTotal,total_units:rcvdTotal,
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
-        const remainJob={...j,total_units:j.total_units-rcvdTotal,fulfilled_units:Math.max(0,j.fulfilled_units-rcvdTotal),item_status:'need_to_order'};
+        const remainJob={...j,items:keepItems,total_units:keepTotal,fulfilled_units:0,item_status:'need_to_order'};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
         const updated={...o,jobs:newJobs2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Split! '+splitId+' ready with '+rcvdTotal+' units');
       };
@@ -6922,25 +6976,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const remainJob={...j,items:keepItems,total_units:keepUnits,fulfilled_units:keepFul};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
         const updated={...o,jobs:newJobs2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Split by SKU! '+splitId+' with '+splitItems.length+' garment(s)');
-      };
-      // Resolve per-size totals/fulfillment for a given job item, honoring any prior split overrides.
-      const _giSizes=gi=>{
-        if(gi.sizes)return{...gi.sizes};
-        const it=safeItems(o)[gi.item_idx];if(!it)return{};
-        const out={};
-        Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{out[sz]=safeNum(v)});
-        return out;
-      };
-      const _giFulSizes=(gi,maxSizes)=>{
-        if(gi.fulSizes)return{...gi.fulSizes};
-        const it=safeItems(o)[gi.item_idx];if(!it)return{};
-        const out={};
-        Object.entries(maxSizes||_giSizes(gi)).forEach(([sz,cap])=>{
-          const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-          const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-          out[sz]=Math.min(safeNum(cap),pQ+rQ);
-        });
-        return out;
       };
       // Combine job items sharing the same item_idx+sku — sums units/fulfilled and merges per-size maps.
       // Used when merging jobs back together so a previously size-split item rejoins as a single line.
